@@ -39,7 +39,7 @@ use super::{
 use crate::{
     canonical::PlanHash,
     compile::{
-        compile, compile_unvalidated, CompileError, CompiledPlan, Frame, KernelKey, LeaseTable, LineageKey,
+        compile, compile_unvalidated, CompileError, CompiledPlan, Frame, KernelKey, LeaseTable, LineageKey, Placement,
         PlacementError, RegionProgram, RewriteRecord, SlotId,
     },
     elaborate::BindingUses,
@@ -806,6 +806,8 @@ struct Installed {
     /// The plan's validation report, for a rollback that installs the plan again.
     report: ValidationReport,
     programs: Vec<Arc<RegionProgram>>,
+    /// Where each node of the compiled plan runs, which says what a cut of its state owners is armed over.
+    placement: Placement,
     /// The rewrites compilation considered, applied or skipped.
     rewrites: Arc<[RewriteRecord]>,
 }
@@ -1116,6 +1118,7 @@ impl InstallerCore {
             bindings: queued.bindings,
             report: queued.report,
             programs: programs.clone(),
+            placement: queued.compiled.placement,
             rewrites: queued.compiled.rewrites.into(),
         });
         Ok((
@@ -1835,6 +1838,7 @@ impl InstallerCore {
                 bindings: queued.bindings,
                 report: queued.report,
                 programs,
+                placement: queued.compiled.placement.clone(),
                 rewrites: queued.compiled.rewrites.clone().into(),
             },
             compiled: queued.compiled,
@@ -1986,7 +1990,7 @@ impl InstallerCore {
         }
         let Some(plan) = plan else { return Ok(None) };
         plan.check_frame(&self.frame).map_err(Rejection::Unplaceable)?;
-        let affected = plan.affected_points(&self.frame, &active.programs, &queued.compiled.programs);
+        let affected = plan.affected_points(&active.placement, &queued.compiled.placement);
         CutSetup::checked(plan, affected).map(Some)
     }
 

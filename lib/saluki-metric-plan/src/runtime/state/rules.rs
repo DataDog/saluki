@@ -28,7 +28,10 @@ use saluki_core::execution::{
 };
 use snafu::Snafu;
 
-use crate::limits::values::{MAX_OPEN_EPOCHS, MAX_TRANSITION_LCM, TICK_GRACE};
+use crate::{
+    compile::UpstreamPoint,
+    limits::values::{MAX_OPEN_EPOCHS, MAX_TRANSITION_LCM, TICK_GRACE},
+};
 
 const NANOS_PER_SEC: u64 = 1_000_000_000;
 
@@ -126,10 +129,19 @@ enum InEpoch {
 }
 
 impl WatermarkTracker {
-    /// Creates a tracker of the given upstream admission points, none of which has sent anything.
+    /// Creates a tracker of a state owner's upstream points, none of which has sent anything.
     ///
     /// A tracker of no point has no watermark, and has trivially switched to every generation.
-    pub fn new<I>(upstream: I) -> Self
+    pub fn new(upstream: &[UpstreamPoint]) -> Self {
+        // The points' clocks group them for their resets.
+        Self::of_one_clock(upstream.iter().map(|point| point.id))
+    }
+
+    /// Creates a tracker of upstream admission points all stamped by one clock, as the lanes of one source's point
+    /// are, none of which has sent anything.
+    ///
+    /// A tracker of no point has no watermark, and has trivially switched to every generation.
+    pub fn of_one_clock<I>(upstream: I) -> Self
     where
         I: IntoIterator<Item = AdmissionPointId>,
     {
@@ -751,10 +763,22 @@ pub struct RetiringRefs<'a> {
     pub by: &'a GenerationRef,
 }
 
+/// The boundary flush of a retained lineage upstream of a state owner a cut affects: the flush at the cut's time that
+/// closes exactly the buckets ending by it, under the generation the lineage served.
+#[derive(Clone, Copy, Debug)]
+pub struct BoundaryRefs<'a> {
+    /// The generation the lineage served before the cut.
+    pub served: &'a GenerationRef,
+
+    /// The cut's time, which the boundary flush runs at.
+    pub at: AdmissionTime,
+}
+
 /// Returns the generation a drain of one lineage is stamped with, decided when the drain starts.
 ///
 /// 1. A retiring lineage whose replacement's cut is armed drains under the generation it served.
-/// 2. Otherwise the candidates come from the schedule: its generation when steady; during a cut, the new generation
+/// 2. A boundary flush drains under the generation the lineage served.
+/// 3. Otherwise the candidates come from the schedule: its generation when steady; during a cut, the new generation
 ///    first once every upstream point has switched to it (`switched`), and the old one first before. The first
 ///    candidate whose program binds the lineage (`binds`) is the drain's.
 ///
@@ -762,6 +786,7 @@ pub struct RetiringRefs<'a> {
 /// so it holds nothing, and its tick is skipped.
 pub fn stamping_generation<B, S>(
     schedule: &AdmissionSchedule, binds: B, switched: S, retiring: Option<RetiringRefs<'_>>,
+    boundary: Option<BoundaryRefs<'_>>,
 ) -> Option<GenerationRef>
 where
     B: Fn(GenerationId) -> bool,
@@ -769,6 +794,9 @@ where
 {
     if let Some(retiring) = retiring.filter(|retiring| retiring.by.cut().is_some()) {
         return Some(retiring.owner.clone());
+    }
+    if let Some(boundary) = boundary {
+        return Some(boundary.served.clone());
     }
     let candidates: [Option<&GenerationRef>; 2] = match schedule {
         AdmissionSchedule::Steady(generation) => [Some(generation), None],

@@ -1233,7 +1233,7 @@ mod tests {
 
     impl Lanes {
         fn new(lanes: usize, points: usize) -> Self {
-            let tracker = WatermarkTracker::new((0..points).map(|point| AdmissionPointId::new(point as u32)));
+            let tracker = WatermarkTracker::of_one_clock((0..points).map(|point| AdmissionPointId::new(point as u32)));
             Self {
                 events: vec![Vec::new(); lanes],
                 view: vec![vec![None; points]; lanes],

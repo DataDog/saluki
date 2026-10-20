@@ -4,9 +4,12 @@
 use saluki_core::execution::{BatchHeader, EntryId, ExitId};
 
 use super::{telemetry::Layout, RegionError};
-use crate::compile::{
-    DecisionExit, DecisionFunction, EntryKey, EntrySource, ExitSet, KernelIndex, LeaseTable, RegionProgram, RegisterId,
-    Route, Step,
+use crate::{
+    compile::{
+        DecisionExit, DecisionFunction, EntryKey, EntrySource, ExitSet, KernelIndex, LeaseTable, RegionProgram,
+        RegisterId, Route, Step, StepExit,
+    },
+    ir::NodeId,
 };
 
 /// Where one output of a step leads.
@@ -107,7 +110,8 @@ pub(super) struct ProgramCode {
 }
 
 impl ProgramCode {
-    /// Translates a program for a region with `exit_count` exits, which is an isolation slot's if `isolation`.
+    /// Translates a program for a region with `exit_count` exits, which is the region of the state owner `state`, if
+    /// it is given: today, an isolation slot's.
     ///
     /// Each exit toward an encode host writes the lease of the output it delivers to from `leases`, the lease table of
     /// the program's generation, so that the host knows which encoder stream a buffer belongs to. An exit toward a
@@ -120,10 +124,13 @@ impl ProgramCode {
     /// outside an isolation slot, as a stateless step, or without exactly one entry for its time-driven output, if an
     /// isolation slot's program has any step but state steps and exits, or if an exit delivers to an encode host
     /// without a lease table, or to an output the lease table has no lease for: a program the region cannot run, since
-    /// the host could only drop such buffers as addressed to no lease.
+    /// the host could only drop such buffers as addressed to no lease, or if a step writes to another region of the
+    /// slot, which a region cannot do yet.
     pub fn translate(
-        program: &RegionProgram, layout: &Layout, exit_count: usize, isolation: bool, leases: Option<&LeaseTable>,
+        program: &RegionProgram, layout: &Layout, exit_count: usize, state: Option<&NodeId>,
+        leases: Option<&LeaseTable>,
     ) -> Result<Self, RegionError> {
+        let isolation = state.is_some();
         let malformed = |entry: &EntryKey, message: String| RegionError::MalformedProgram {
             slot: program.slot(),
             entry: *entry,
@@ -289,6 +296,15 @@ impl ProgramCode {
                         exit,
                         entry: consumer,
                     } => {
+                        let exit = match exit {
+                            StepExit::Slot(exit) => exit,
+                            StepExit::Region(region) => {
+                                return Err(malformed(
+                                    key,
+                                    format!("a step writes to {} of the slot, which has no other regions", region),
+                                ))
+                            }
+                        };
                         if exit.get() >= exit_count {
                             return Err(malformed(
                                 key,

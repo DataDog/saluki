@@ -60,7 +60,7 @@ use std::{
     time::Duration,
 };
 
-use saluki_core::execution::{BatchHeader, EntryId};
+use saluki_core::execution::{AdmissionPointId, BatchHeader, EntryId};
 use saluki_metric_kernels::aggregate::EmissionFilter;
 use serde_json::{json, Value};
 use snafu::Snafu;
@@ -70,8 +70,8 @@ use super::{
         Branch, Decision, DecisionExit, DecisionKind, DecisionNode, ExitTarget, PredicateIndex, PredicateTable,
         EXIT_SET_CAPACITY, MEMO_COST_FLOOR,
     },
-    frame::{ExitIndex, Frame, FrameTarget, SlotId},
-    placement::{EntryKey, Placement},
+    frame::{ExitIndex, Frame, FrameTarget, SlotId, SlotKind},
+    placement::{EntryKey, Placement, RegionKey, UpstreamPoint},
     resolve,
     rewrite::r5b::PushedFilterSite,
     Role,
@@ -458,8 +458,8 @@ pub enum Step {
         /// The register.
         register: RegisterId,
 
-        /// The exit.
-        exit: ExitIndex,
+        /// The exit: one of the slot's, or the input of another region of the slot.
+        exit: StepExit,
 
         /// The consumer's entry, set in each buffer's header.
         entry: EntrySource,
@@ -489,6 +489,25 @@ pub enum Step {
     },
 }
 
+/// Where a [`Step::Exit`] hands its buffers.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum StepExit {
+    /// One of the slot's exits, which the topology connects.
+    Slot(ExitIndex),
+
+    /// The input of another region of the same slot: an internal exit of the slot's component.
+    Region(RegionKey),
+}
+
+impl fmt::Display for StepExit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Slot(exit) => write!(f, "exit {}", exit),
+            Self::Region(region) => write!(f, "region {}", region),
+        }
+    }
+}
+
 /// The steps that run a batch arriving at one entry of a slot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EntryProgram {
@@ -509,17 +528,45 @@ pub struct EntryProgram {
 #[derive(Clone, Debug)]
 pub struct RegionProgram {
     slot: SlotId,
+    region: RegionKey,
     fingerprint: PlanHash,
     entries: Vec<EntryProgram>,
     kernels: Vec<ProgramKernel>,
     decisions: Vec<Decision>,
     state_params: Vec<StateParamsEntry>,
+    state_upstream: Vec<UpstreamPoint>,
+    progress: Vec<(StepExit, Vec<AdmissionPointId>)>,
+    output_points: Vec<AdmissionPointId>,
 }
 
 impl RegionProgram {
     /// Returns the slot the program is for.
     pub fn slot(&self) -> SlotId {
         self.slot
+    }
+
+    /// Returns the region of the slot the program is for.
+    pub fn region(&self) -> &RegionKey {
+        &self.region
+    }
+
+    /// Returns the points upstream of the region's state owner, whose latest admission times make up its watermark:
+    /// empty for a region without one.
+    pub fn state_upstream(&self) -> &[UpstreamPoint] {
+        &self.state_upstream
+    }
+
+    /// Returns the exits, of the slot or to other regions of it, that forward the progress of points upstream of a
+    /// state owner downstream of them, each with those points, so that its watermark advances even when a batch leaves
+    /// the region without output.
+    pub fn progress(&self) -> &[(StepExit, Vec<AdmissionPointId>)] {
+        &self.progress
+    }
+
+    /// Returns the IDs that stamp the time-driven output of the region's state owner, one per lane of the region, in
+    /// lane order: empty for a region without one.
+    pub fn output_points(&self) -> &[AdmissionPointId] {
+        &self.output_points
     }
 
     /// Returns the program's fingerprint: a hash of its entries, steps, kernel keys, decisions, and state parameters.
@@ -863,13 +910,38 @@ impl Context<'_, '_> {
                 message: format!("the program of slot {} has no canonical form: {}", slot, message),
             }
         })?;
+        // The slot runs one region, which forwards progress on the exits the frame found on a path to a state owner,
+        // and stamps its state owner's output with the frame's output points.
+        let frame_slot = self.frame.slot(slot).ok_or_else(|| CompileError::Internal {
+            message: format!("the frame has no slot {}", slot),
+        })?;
+        let progress = frame_slot
+            .exits
+            .iter()
+            .filter(|exit| !exit.progress_points.is_empty())
+            .map(|exit| (StepExit::Slot(exit.index), exit.progress_points.clone()))
+            .collect();
+        let output_points = match &frame_slot.kind {
+            SlotKind::Isolation { output_points, .. } if !members.is_empty() => output_points.clone(),
+            _ => Vec::new(),
+        };
+        let state_upstream = placed
+            .regions
+            .iter()
+            .find(|region| region.key == RegionKey::Main)
+            .map(|region| region.upstream.clone())
+            .unwrap_or_default();
         Ok(RegionProgram {
             slot,
+            region: RegionKey::Main,
             fingerprint,
             entries,
             kernels,
             decisions,
             state_params,
+            state_upstream,
+            progress,
+            output_points,
         })
     }
 
@@ -1196,7 +1268,7 @@ impl Context<'_, '_> {
     /// Returns the exit an edge from `slot` to the input port `(to, port)` leaves by, and where the consumer's entry
     /// comes from: the consumer region's entry when it leads to another slot, and the output's lease when it leads to
     /// the encode host of a bound output's delivery host. A fixed component or destination reads no entry.
-    fn exit_for(&self, slot: SlotId, to: usize, port: usize) -> Option<(ExitIndex, EntrySource)> {
+    fn exit_for(&self, slot: SlotId, to: usize, port: usize) -> Option<(StepExit, EntrySource)> {
         let graph = self.graph;
         let mut lease = None;
         let target = match (self.roles[to], self.slot_of[to]) {
@@ -1220,7 +1292,7 @@ impl Context<'_, '_> {
             FrameTarget::EncodeHost(_) => EntrySource::Lease(lease?),
             FrameTarget::Fixed(_) | FrameTarget::Destination(_) => EntrySource::None,
         };
-        Some((exit, entry))
+        Some((StepExit::Slot(exit), entry))
     }
 }
 
@@ -1458,7 +1530,12 @@ fn fingerprint(
                 EntrySource::Region(entry) => json!(entry.get()),
                 EntrySource::Lease(output) => json!({"lease": output.as_str()}),
             };
-            json!({"exit": {"register": register.0, "exit": exit.get(), "entry": entry}})
+            let exit = match exit {
+                StepExit::Slot(exit) => json!(exit.get()),
+                StepExit::Region(RegionKey::Main) => json!({"region": "main"}),
+                StepExit::Region(RegionKey::State(node)) => json!({"region": {"state": node.to_string()}}),
+            };
+            json!({"exit": {"register": register.0, "exit": exit, "entry": entry}})
         }
         Step::Drop { register, node } => json!({"drop": {"register": register.0, "node": node.to_string()}}),
         Step::State {

@@ -62,7 +62,7 @@ use std::{
 use saluki_core::execution::{AdmissionPointId, EntryId};
 
 use super::{
-    frame::{ExitIndex, Frame, FrameSource, FrameTarget, Site, SlotId},
+    frame::{ExitIndex, ExitRouting, Frame, FrameSource, FrameTarget, Site, SlotId, SlotKind},
     program::KernelIndex,
     resolve, Role,
 };
@@ -282,6 +282,73 @@ pub struct PlacedEntry {
     pub input: PortRef,
 }
 
+/// Which region of a slot a node runs in.
+///
+/// A slot's component runs its main region on its lanes, and may run a **sub-region** per state owner: a task of the
+/// component with an input of its own, created when a generation that has the state owner is prepared and retired with
+/// the last such generation.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum RegionKey {
+    /// The slot's own region, which runs its entries and every node before its first state owner, and a state owner
+    /// all of whose inputs enter the slot from outside it.
+    Main,
+
+    /// The sub-region of a state owner, which runs the state owner and the stateless nodes after it in the slot.
+    State(NodeId),
+}
+
+impl fmt::Display for RegionKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Main => f.write_str("main"),
+            Self::State(node) => write!(f, "state `{}`", node),
+        }
+    }
+}
+
+/// The clock that stamps an upstream point: the points of one clock reset together.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ClockId {
+    /// The clock of a fixed component, which stamps every lane's point of its outputs.
+    Source(NodeId),
+
+    /// The output clock of a state owner, which stamps its time-driven output at its derived point.
+    Derived(NodeId),
+}
+
+/// One point whose latest admission time makes up a state owner's watermark.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct UpstreamPoint {
+    /// The point: an admission point of a fixed component, or the derived point of a state owner upstream.
+    pub id: AdmissionPointId,
+
+    /// The clock that stamps it.
+    pub clock: ClockId,
+
+    /// Whether the point is a state owner's derived point, whose batches hold buckets closed before their stamp.
+    pub derived: bool,
+}
+
+/// What one region of a slot runs in a placed candidate.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegionPlacement {
+    /// The region.
+    pub key: RegionKey,
+
+    /// The candidate's nodes in the region, in plan order.
+    pub nodes: Vec<NodeId>,
+
+    /// The region's entries from outside the slot, as in [`SlotPlacement::entries`]: the main region's are the slot's.
+    pub entries: Vec<PlacedEntry>,
+
+    /// The regions of the same slot the region sends to, each with how it sends to their lanes: always to a later
+    /// region, so that the regions of a slot form a DAG rooted at the main region.
+    pub internal: Vec<(RegionKey, ExitRouting)>,
+
+    /// The points upstream of the region's state owner, in ID order: empty for a region without one.
+    pub upstream: Vec<UpstreamPoint>,
+}
+
 /// What one slot runs in a placed candidate.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SlotPlacement {
@@ -297,6 +364,10 @@ pub struct SlotPlacement {
 
     /// The exits the candidate uses, in exit order. The slot's other exits stay idle.
     pub exits_used: Vec<ExitIndex>,
+
+    /// The slot's regions: the main region first, then a sub-region per state owner that needs one, in topological
+    /// order.
+    pub regions: Vec<RegionPlacement>,
 }
 
 impl SlotPlacement {
@@ -339,6 +410,45 @@ impl Placement {
     /// Returns `true` if the candidate leaves the exit idle.
     pub fn is_idle(&self, slot: SlotId, exit: ExitIndex) -> bool {
         self.slot(slot).is_none_or(|placed| !placed.exits_used.contains(&exit))
+    }
+
+    /// Returns the slot and region a node of the candidate runs in, if it runs in a slot.
+    pub fn region_of(&self, node: &NodeId) -> Option<(SlotId, RegionKey)> {
+        self.slots.iter().find_map(|placed| {
+            placed
+                .regions
+                .iter()
+                .find(|region| region.nodes.contains(node))
+                .map(|region| (placed.slot, region.key.clone()))
+        })
+    }
+
+    /// Returns the admission points upstream of a state owner of the candidate: the real points of its upstream, and,
+    /// through each derived point, those upstream of the state owner whose point it is. Empty for a node that is no
+    /// state owner of the candidate.
+    pub fn admission_upstream(&self, node: &NodeId) -> BTreeSet<AdmissionPointId> {
+        let mut points = BTreeSet::new();
+        let mut visited = BTreeSet::new();
+        let mut pending = vec![node.clone()];
+        while let Some(owner) = pending.pop() {
+            if !visited.insert(owner.clone()) {
+                continue;
+            }
+            let region = self
+                .slots
+                .iter()
+                .flat_map(|placed| &placed.regions)
+                .find(|region| region.nodes.contains(&owner));
+            for point in region.map(|region| region.upstream.as_slice()).unwrap_or_default() {
+                match &point.clock {
+                    ClockId::Derived(upstream) if point.derived => pending.push(upstream.clone()),
+                    _ => {
+                        points.insert(point.id);
+                    }
+                }
+            }
+        }
+        points
     }
 }
 
@@ -920,6 +1030,7 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
             nodes: Vec::new(),
             entries: Vec::new(),
             exits_used: Vec::new(),
+            regions: Vec::new(),
         })
         .collect::<Vec<_>>();
     let mut sites = BTreeMap::new();
@@ -1031,6 +1142,34 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
     }
     for (placed, used) in slots.iter_mut().zip(exits_used) {
         placed.exits_used = used.into_iter().collect();
+    }
+    // Each slot runs everything in its main region. The state owner of an isolation slot has the points the frame
+    // found upstream of the slot.
+    for placed in &mut slots {
+        let upstream = match frame.slot(placed.slot).map(|slot| &slot.kind) {
+            Some(SlotKind::Isolation { upstream, .. }) if !placed.nodes.is_empty() => upstream
+                .iter()
+                .filter_map(|&id| {
+                    let source = frame
+                        .admission_points()
+                        .iter()
+                        .find(|point| point.lane_of(id).is_some())?;
+                    Some(UpstreamPoint {
+                        id,
+                        clock: ClockId::Source(source.node.clone()),
+                        derived: false,
+                    })
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        placed.regions = vec![RegionPlacement {
+            key: RegionKey::Main,
+            nodes: placed.nodes.clone(),
+            entries: placed.entries.clone(),
+            internal: Vec::new(),
+            upstream,
+        }];
     }
 
     Ok(Placement {

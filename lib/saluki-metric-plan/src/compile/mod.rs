@@ -79,12 +79,12 @@ pub use self::frame::{
     PointRouting, Site, Slot, SlotId, SlotKind, SlotNamer,
 };
 pub use self::placement::{
-    place, place_unvalidated, EntryKey, MissingCapability, PlacedEntry, Placement, PlacementError, PlacementProblem,
-    SlotPlacement,
+    place, place_unvalidated, ClockId, EntryKey, MissingCapability, PlacedEntry, Placement, PlacementError,
+    PlacementProblem, RegionKey, RegionPlacement, SlotPlacement, UpstreamPoint,
 };
 pub use self::program::{
     CompileError, DecisionIndex, EntryProgram, EntrySource, KernelIndex, KernelKey, LeaseTable, LineageInfo,
-    LineageKey, ProgramKernel, RegionProgram, RegisterId, Route, StateParamsEntry, StateParamsIndex, Step,
+    LineageKey, ProgramKernel, RegionProgram, RegisterId, Route, StateParamsEntry, StateParamsIndex, Step, StepExit,
 };
 pub use self::rewrite::{
     optimize, r5b::PushedFilterSite, Optimized, Rewrite, RewriteContext, RewriteId, RewriteOutcome, RewriteRecord,

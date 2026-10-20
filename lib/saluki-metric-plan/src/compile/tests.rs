@@ -1543,7 +1543,7 @@ fn to(register: u16) -> Route {
 fn to_fixed(register: u16, exit: u16) -> Step {
     Step::Exit {
         register: reg(register),
-        exit: ExitIndex::new(exit),
+        exit: StepExit::Slot(ExitIndex::new(exit)),
         entry: EntrySource::None,
     }
 }
@@ -1552,7 +1552,7 @@ fn to_fixed(register: u16, exit: u16) -> Step {
 fn to_destination(register: u16, exit: u16) -> Step {
     Step::Exit {
         register: reg(register),
-        exit: ExitIndex::new(exit),
+        exit: StepExit::Slot(ExitIndex::new(exit)),
         entry: EntrySource::None,
     }
 }
@@ -1579,7 +1579,7 @@ fn to_next(register: u16, exit: u16) -> Step {
 fn to_entry(register: u16, exit: u16, entry: u16) -> Step {
     Step::Exit {
         register: reg(register),
-        exit: ExitIndex::new(exit),
+        exit: StepExit::Slot(ExitIndex::new(exit)),
         entry: EntrySource::Region(EntryId::new(entry)),
     }
 }

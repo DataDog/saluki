@@ -514,7 +514,7 @@ fn a_state_owner_fed_straight_by_an_admission_point_runs_in_the_isolation_slot_t
             EntryKey::Admission(point(0)),
             vec![Step::Exit {
                 register: RegisterId::new(0),
-                exit: to_agg,
+                exit: StepExit::Slot(to_agg),
                 entry: EntrySource::Region(EntryId::new(0)),
             }]
         )]
@@ -609,7 +609,7 @@ fn a_state_owners_kernel_is_keyed_by_its_lineage_and_its_per_call_parameters_by_
                 EntryKey::StateOutput(KernelIndex::new(0)),
                 vec![Step::Exit {
                     register: RegisterId::new(0),
-                    exit: to_post,
+                    exit: StepExit::Slot(to_post),
                     entry: EntrySource::Region(EntryId::new(0)),
                 }]
             ),

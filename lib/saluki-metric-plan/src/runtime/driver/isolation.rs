@@ -168,7 +168,7 @@ impl StateSlot {
             None => (LaneContext::ONE, None),
         };
         Self {
-            tracker: WatermarkTracker::new(upstream),
+            tracker: WatermarkTracker::of_one_clock(upstream),
             output: OutputClock::new(output_point),
             gate: TickGate::default(),
             schedule,
@@ -703,6 +703,7 @@ fn stamping(generations: &[LiveGeneration], state: &StateSlot, handle: InstanceH
         |id| binds(generations, id, bound),
         |id| state.tracker.switched(id),
         retiring,
+        None,
     )
 }
 

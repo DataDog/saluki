@@ -138,7 +138,7 @@ fn a_tracker_follows_each_point_and_reports_resets_and_faults() {
         ),
     ];
     for (name, upstream, steps) in cases {
-        let mut tracker = WatermarkTracker::new(upstream.iter().copied());
+        let mut tracker = WatermarkTracker::of_one_clock(upstream.iter().copied());
         assert_eq!(tracker.watermark(), None, "{}: before any header", name);
         for (index, step) in steps.into_iter().enumerate() {
             assert_eq!(
@@ -168,7 +168,7 @@ fn a_tracker_follows_each_point_and_reports_resets_and_faults() {
 
 #[test]
 fn a_tracker_lists_its_points_once_in_id_order() {
-    let tracker = WatermarkTracker::new([B, A, B]);
+    let tracker = WatermarkTracker::of_one_clock([B, A, B]);
     assert_eq!(tracker.upstream().collect::<Vec<_>>(), [A, B]);
     assert_eq!(tracker.progress(A), None);
 
@@ -239,14 +239,14 @@ fn a_tracker_has_switched_once_every_point_sent_the_generation_or_a_later_one() 
         ),
     ];
     for (name, headers, new, expected) in cases {
-        let mut tracker = WatermarkTracker::new([A, B]);
+        let mut tracker = WatermarkTracker::of_one_clock([A, B]);
         for header in &headers {
             tracker.observe(header);
         }
         assert_eq!(tracker.switched(GenerationId::new(new)), expected, "{}", name);
     }
     // A tracker of no point has trivially switched.
-    assert!(WatermarkTracker::new([]).switched(GenerationId::new(9)));
+    assert!(WatermarkTracker::of_one_clock([]).switched(GenerationId::new(9)));
 }
 
 #[test]
@@ -264,7 +264,7 @@ fn an_epoch_is_newer_than_another_when_it_is_less_than_half_the_range_ahead() {
 
 /// Observes a header of `point` in epoch 0 after one in epoch 1, which one path in stamping order never delivers.
 fn observe_an_older_epoch() -> (Observation, WatermarkTracker) {
-    let mut tracker = WatermarkTracker::new([A]);
+    let mut tracker = WatermarkTracker::of_one_clock([A]);
     assert_eq!(tracker.observe(&stamped(A, 100, 0, 1)), Observation::Ok);
     assert!(matches!(
         tracker.observe(&stamped(A, 40, 1, 2)),
@@ -332,7 +332,7 @@ fn a_tracker_is_in_the_publication_epoch_when_every_recorded_point_is() {
         ),
     ];
     for (name, headers, epochs, expected) in cases {
-        let mut tracker = WatermarkTracker::new([A, B]);
+        let mut tracker = WatermarkTracker::of_one_clock([A, B]);
         for header in &headers {
             tracker.observe(header);
         }
@@ -359,7 +359,7 @@ proptest::proptest! {
             .map(|(point, offset)| (AdmissionPointId::new(*point), base.wrapping_add(*offset)))
             .collect::<Vec<_>>();
         let cut = cut(100, &epochs);
-        let mut tracker = WatermarkTracker::new([A, B]);
+        let mut tracker = WatermarkTracker::of_one_clock([A, B]);
         let mut current = std::collections::BTreeMap::new();
         for (point, t_a, switch) in headers {
             let point = AdmissionPointId::new(point);
@@ -728,7 +728,7 @@ fn a_drain_is_stamped_with_the_first_generation_that_binds_its_lineage() {
     ];
     for (name, schedule, binds, switched, retiring, expected) in cases {
         let retiring = retiring.map(|(owner, by)| RetiringRefs { owner, by });
-        let stamped = stamping_generation(schedule, binds, switched, retiring);
+        let stamped = stamping_generation(schedule, binds, switched, retiring, None);
         assert_eq!(
             stamped.map(|generation| generation.id()),
             expected.map(GenerationId::new),
@@ -790,7 +790,7 @@ fn time_driven_output_is_stamped_with_times_that_only_grow_within_an_epoch() {
 
 #[test]
 fn a_trackers_view_of_one_epoch_counts_the_points_in_it() {
-    let mut tracker = WatermarkTracker::new([A, B]);
+    let mut tracker = WatermarkTracker::of_one_clock([A, B]);
     assert_eq!(tracker.watermark_in(0), None);
     assert!(
         !tracker.switched_epoch(0),
@@ -825,12 +825,12 @@ fn a_trackers_view_of_one_epoch_counts_the_points_in_it() {
         Some(secs(95)),
         "the final latest times are exact once both left"
     );
-    assert_eq!(WatermarkTracker::new([]).watermark_in(0), None);
+    assert_eq!(WatermarkTracker::of_one_clock([]).watermark_in(0), None);
 }
 
 #[test]
 fn a_point_that_skips_an_epoch_is_left_out_of_its_watermark_and_finals_are_kept_for_the_open_epochs_only() {
-    let mut tracker = WatermarkTracker::new([A, B]);
+    let mut tracker = WatermarkTracker::of_one_clock([A, B]);
     tracker.observe(&stamped(A, 100, 0, 1));
     tracker.observe(&stamped(B, 90, 0, 1));
     // A stamps in epochs 1 and 2; B goes from 0 to 2 directly, two resets while it was blocked.
@@ -844,7 +844,7 @@ fn a_point_that_skips_an_epoch_is_left_out_of_its_watermark_and_finals_are_kept_
 
     // Past `MAX_OPEN_EPOCHS` switches, the oldest final time is no longer kept: the point is left out of it. B's time
     // in epoch 0 is later than A's, so only A's absence makes the watermark B's.
-    let mut tracker = WatermarkTracker::new([A, B]);
+    let mut tracker = WatermarkTracker::of_one_clock([A, B]);
     tracker.observe(&stamped(B, 150, 0, 1));
     for epoch in 0..=MAX_OPEN_EPOCHS as u32 {
         tracker.observe(&stamped(A, 100 + u64::from(epoch), epoch, 1));
@@ -862,7 +862,7 @@ fn a_point_that_skips_an_epoch_is_left_out_of_its_watermark_and_finals_are_kept_
 #[test]
 fn points_with_consecutive_ids_are_found_by_index_and_others_by_search() {
     let lanes = (10..14).map(AdmissionPointId::new).collect::<Vec<_>>();
-    let mut tracker = WatermarkTracker::new(lanes.iter().copied());
+    let mut tracker = WatermarkTracker::of_one_clock(lanes.iter().copied());
     for (offset, point) in lanes.iter().enumerate() {
         assert_eq!(
             tracker.observe(&stamped(*point, 100 + offset as u64, 0, 1)),
@@ -880,7 +880,7 @@ fn points_with_consecutive_ids_are_found_by_index_and_others_by_search() {
     assert_eq!(tracker.watermark(), Some(secs(100)));
     assert_eq!(tracker.progress(AdmissionPointId::new(13)).unwrap().latest, secs(103));
 
-    let mut sparse = WatermarkTracker::new([OTHER, A]);
+    let mut sparse = WatermarkTracker::of_one_clock([OTHER, A]);
     assert_eq!(sparse.observe(&stamped(OTHER, 5, 0, 1)), Observation::Ok);
     assert_eq!(sparse.observe(&stamped(B, 5, 0, 1)), Observation::Fault);
     assert_eq!(sparse.progress(OTHER).unwrap().latest, secs(5));
@@ -894,7 +894,7 @@ fn step(tracker: &mut WatermarkTracker, window: &mut ResetWindow, header: BatchH
 
 #[test]
 fn with_one_point_a_reset_window_opens_and_closes_on_one_header() {
-    let mut tracker = WatermarkTracker::new([A]);
+    let mut tracker = WatermarkTracker::of_one_clock([A]);
     let mut window = ResetWindow::default();
     assert_eq!(step(&mut tracker, &mut window, stamped(A, 100, 0, 1)), WindowStep::None);
     assert_eq!(step(&mut tracker, &mut window, stamped(A, 110, 0, 1)), WindowStep::None);
@@ -912,7 +912,7 @@ fn with_one_point_a_reset_window_opens_and_closes_on_one_header() {
 
 #[test]
 fn a_reset_window_routes_each_batch_by_its_epoch_until_every_point_switched() {
-    let mut tracker = WatermarkTracker::new([A, B]);
+    let mut tracker = WatermarkTracker::of_one_clock([A, B]);
     let mut window = ResetWindow::default();
     step(&mut tracker, &mut window, stamped(A, 100, 0, 1));
     step(&mut tracker, &mut window, stamped(B, 90, 0, 1));
@@ -941,7 +941,7 @@ fn a_reset_window_routes_each_batch_by_its_epoch_until_every_point_switched() {
 
 #[test]
 fn a_reset_inside_a_window_moves_its_target_and_closes_every_older_epoch_together() {
-    let mut tracker = WatermarkTracker::new([A, B]);
+    let mut tracker = WatermarkTracker::of_one_clock([A, B]);
     let mut window = ResetWindow::default();
     step(&mut tracker, &mut window, stamped(A, 100, 0, 1));
     step(&mut tracker, &mut window, stamped(B, 90, 0, 1));
@@ -962,7 +962,7 @@ fn a_reset_inside_a_window_moves_its_target_and_closes_every_older_epoch_togethe
 
 #[test]
 fn a_window_that_would_keep_more_than_the_most_epochs_open_closes_the_oldest_at_once() {
-    let mut tracker = WatermarkTracker::new([A, B]);
+    let mut tracker = WatermarkTracker::of_one_clock([A, B]);
     let mut window = ResetWindow::default();
     step(&mut tracker, &mut window, stamped(A, 100, 0, 1));
     step(&mut tracker, &mut window, stamped(B, 90, 0, 1));
@@ -988,7 +988,7 @@ fn a_window_that_would_keep_more_than_the_most_epochs_open_closes_the_oldest_at_
 fn a_header_several_epochs_newer_holds_every_epoch_in_between_open() {
     // B skipped epoch 1, two resets while it was blocked, and its first header in epoch 2 reaches the lane before A's
     // batch of epoch 1: epoch 1 is held open all the same, and closes at A's final time there, B left out.
-    let mut tracker = WatermarkTracker::new([A, B]);
+    let mut tracker = WatermarkTracker::of_one_clock([A, B]);
     let mut window = ResetWindow::default();
     step(&mut tracker, &mut window, stamped(A, 100, 0, 1));
     step(&mut tracker, &mut window, stamped(B, 90, 0, 1));
@@ -1013,7 +1013,7 @@ fn a_header_several_epochs_newer_holds_every_epoch_in_between_open() {
 
 #[test]
 fn a_header_further_ahead_than_the_most_epochs_a_window_keeps_closes_the_oldest_between_at_once() {
-    let mut tracker = WatermarkTracker::new([A, B]);
+    let mut tracker = WatermarkTracker::of_one_clock([A, B]);
     let mut window = ResetWindow::default();
     step(&mut tracker, &mut window, stamped(A, 100, 0, 1));
     step(&mut tracker, &mut window, stamped(B, 90, 0, 1));
@@ -1032,7 +1032,7 @@ fn a_header_further_ahead_than_the_most_epochs_a_window_keeps_closes_the_oldest_
 
 #[test]
 fn a_lane_whose_input_ends_inside_a_window_closes_every_older_epoch() {
-    let mut tracker = WatermarkTracker::new([A, B]);
+    let mut tracker = WatermarkTracker::of_one_clock([A, B]);
     let mut window = ResetWindow::default();
     step(&mut tracker, &mut window, stamped(A, 100, 0, 1));
     step(&mut tracker, &mut window, stamped(B, 90, 0, 1));
@@ -1044,7 +1044,7 @@ fn a_lane_whose_input_ends_inside_a_window_closes_every_older_epoch() {
 
 #[test]
 fn an_epoch_is_the_publication_epoch_when_every_recorded_point_was_in_it() {
-    let tracker = WatermarkTracker::new([A, B]);
+    let tracker = WatermarkTracker::of_one_clock([A, B]);
     assert!(tracker.is_publication_epoch(&cut(100, &[(A, 3), (B, 3)]), 3));
     assert!(!tracker.is_publication_epoch(&cut(100, &[(A, 3), (B, 3)]), 4));
     assert!(

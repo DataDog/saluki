@@ -83,7 +83,7 @@ impl Instance {
         Self {
             key,
             kernel,
-            tracker: WatermarkTracker::new(upstream.iter().copied()),
+            tracker: WatermarkTracker::of_one_clock(upstream.iter().copied()),
             gated: None,
             last_flush: None,
             retiring: None,

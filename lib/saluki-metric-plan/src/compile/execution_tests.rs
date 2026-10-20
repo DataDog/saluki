@@ -446,6 +446,9 @@ impl Executor {
                     }
                 }
                 Step::Exit { register, exit, entry } => {
+                    let StepExit::Slot(exit) = exit else {
+                        panic!("a step writes to {}, and the slot has no other regions", exit);
+                    };
                     for mut buffer in std::mem::take(&mut registers[register.get()]) {
                         let mut stamped = header.clone();
                         stamped.entry = entry.region();

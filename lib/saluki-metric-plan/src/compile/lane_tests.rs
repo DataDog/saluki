@@ -647,7 +647,7 @@ fn a_candidate_passes_every_lanes_batches_through_the_keyed_exit_to_the_state_la
     );
     let pass = vec![Step::Exit {
         register: RegisterId::new(0),
-        exit: to_agg.index,
+        exit: StepExit::Slot(to_agg.index),
         entry: EntrySource::Region(EntryId::new(0)),
     }];
     let program = &compiled.programs[passing.id.get()];
@@ -708,7 +708,7 @@ fn without_pipelining_aggregation_fed_straight_by_dogstatsd_places_through_the_o
     let program = &compiled.programs[pre.id.get()];
     let pass = vec![Step::Exit {
         register: RegisterId::new(0),
-        exit: to_agg.index,
+        exit: StepExit::Slot(to_agg.index),
         entry: EntrySource::Region(EntryId::new(0)),
     }];
     assert_eq!(

@@ -92,8 +92,11 @@ pub struct RegionConfig {
     /// The budgets an isolation slot's state owners draw their state from.
     pub(crate) state_budgets: Option<StateBudgets>,
 
-    /// What kind of slot the region runs.
-    pub(crate) kind: SlotKind,
+    /// The state owner the region holds, if it holds one.
+    pub(crate) state: Option<StateRegionConfig>,
+
+    /// The admission points upstream of the region's state owner, as the frame found them for its isolation slot.
+    pub(crate) upstream: Vec<AdmissionPointId>,
 
     /// The exits that forward the progress of admission points upstream of state owners, with those points.
     pub(crate) progress: Vec<(ExitId, Vec<AdmissionPointId>)>,
@@ -115,6 +118,17 @@ pub struct RegionConfig {
 
     /// The handles one state lane publishes its own telemetry to, for an isolation slot on several lanes.
     pub(crate) state_lane_telemetry: Option<StateLaneTelemetry>,
+}
+
+/// The state owner a region holds: its own, which it ticks, stamps the time-driven output of, and keeps the lineages
+/// of.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StateRegionConfig {
+    /// The state owner.
+    pub node: NodeId,
+
+    /// The IDs that stamp the state owner's time-driven output, one per lane of the region, in lane order.
+    pub output_points: Vec<AdmissionPointId>,
 }
 
 /// The counters a region adds what its keyed exits send to, for its lane: the routed buffers, the events in them, and
@@ -166,6 +180,20 @@ impl RegionConfig {
                 ExitRouting::One | ExitRouting::Affinity | ExitRouting::Spread => None,
             })
             .collect();
+        // An isolation slot holds the one state owner of the boot plan the frame laid it out for.
+        let (state, upstream) = match &slot.kind {
+            SlotKind::Fused => (None, Vec::new()),
+            SlotKind::Isolation {
+                output_points,
+                upstream,
+            } => {
+                let state = slot.nodes.first().map(|node| StateRegionConfig {
+                    node: node.clone(),
+                    output_points: output_points.clone(),
+                });
+                (state, upstream.clone())
+            }
+        };
         Self {
             slot: slot.id,
             name: slot.name.clone(),
@@ -177,7 +205,8 @@ impl RegionConfig {
             schedule: None,
             wall_clock: None,
             state_budgets: None,
-            kind: slot.kind.clone(),
+            state,
+            upstream,
             progress,
             state_telemetry: slot.is_isolation().then(|| telemetry.state(slot.name.as_str())),
             slot_lanes: slot.lanes,
@@ -281,7 +310,8 @@ impl fmt::Debug for RegionConfig {
             .field("schedule", &self.schedule.is_some())
             .field("wall_clock", &self.wall_clock)
             .field("state_budgets", &self.state_budgets)
-            .field("kind", &self.kind)
+            .field("state", &self.state)
+            .field("upstream", &self.upstream)
             .field("progress", &self.progress)
             .field("slot_lanes", &self.slot_lanes)
             .field("keyed", &self.keyed.len())
@@ -897,6 +927,8 @@ pub struct MetricRegionDriver {
     progress: Vec<ProgressExit>,
     /// The state of an isolation slot, which only an isolation slot's region has.
     state: Option<Box<StateSlot>>,
+    /// The state owner the region holds, which only an isolation slot's region has.
+    state_node: Option<NodeId>,
     /// The lane of its slot the region runs as.
     lane: LaneContext,
     /// The panics of every generation the region runs, shared by the lanes of its slot.
@@ -939,7 +971,8 @@ impl MetricRegionDriver {
             schedule,
             wall_clock,
             state_budgets,
-            kind,
+            state,
+            upstream,
             progress,
             state_telemetry,
             slot_lanes,
@@ -966,12 +999,10 @@ impl MetricRegionDriver {
                 lane, slot_lanes
             )));
         }
-        let state = match kind {
-            SlotKind::Fused => None,
-            SlotKind::Isolation {
-                output_points,
-                upstream,
-            } => {
+        let mut state_node = None;
+        let state = match state {
+            None => None,
+            Some(StateRegionConfig { node, output_points }) => {
                 let schedule = schedule.ok_or_else(|| RegionError::StateConfig {
                     region: name.to_string(),
                     message: "it runs an isolation slot, which needs the topology's schedule to decide which \
@@ -983,6 +1014,7 @@ impl MetricRegionDriver {
                     .get(usize::from(lane.index))
                     .copied()
                     .ok_or_else(|| lane_error(format!("its slot has no output point for {}", lane)))?;
+                state_node = Some(node);
                 Some(Box::new(StateSlot::new(
                     output_point,
                     upstream,
@@ -1030,6 +1062,7 @@ impl MetricRegionDriver {
             failures,
             progress,
             state,
+            state_node,
             lane,
             ledger,
             keyed,
@@ -1123,7 +1156,7 @@ impl MetricRegionDriver {
             &program,
             &layout,
             self.exit_count,
-            self.state.is_some(),
+            self.state_node.as_ref(),
             leases.as_deref(),
         )?;
         let state_error = |message: String| RegionError::StateBinding {

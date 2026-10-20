@@ -91,6 +91,7 @@ fn classify(active: &Plan, candidate: &Plan) -> Option<(CutPlan, Vec<AdmissionPo
         owners: vec![id("dsd_agg")],
         widths,
         unknown_widths,
+        boundary: Vec::new(),
     };
     Some((plan, vec![AdmissionPointId::new(0)]))
 }
@@ -498,6 +499,7 @@ fn a_frame_that_readmits_records_cannot_be_cut_over() {
         owners: vec![id("dsd_agg")],
         widths: vec![Duration::from_secs(10)],
         unknown_widths: Vec::new(),
+        boundary: Vec::new(),
     };
     let Err(PlacementError::Unplaceable { problems }) = cut.check_frame(&frame) else {
         panic!("the frame readmits records")

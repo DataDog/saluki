@@ -2371,7 +2371,7 @@ impl LaneRecorder {
                     harness.driver_index(slot.id, lane),
                     StateLaneModel {
                         lane,
-                        tracker: WatermarkTracker::new(upstream.iter().copied()),
+                        tracker: WatermarkTracker::of_one_clock(upstream.iter().copied()),
                         epoch: 0,
                         newest: 0,
                         gated: None,

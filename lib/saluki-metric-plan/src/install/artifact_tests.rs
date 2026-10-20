@@ -1784,6 +1784,7 @@ fn a_cut_serving_an_artifact_of_a_failed_generation_is_dropped_as_a_preparation_
                 owners: vec!["dsd_agg".parse().unwrap()],
                 widths: vec![Duration::from_secs(10)],
                 unknown_widths: Vec::new(),
+                boundary: Vec::new(),
             };
             Some((plan, vec![saluki_core::execution::AdmissionPointId::new(0)]))
         });

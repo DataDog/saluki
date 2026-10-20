@@ -321,7 +321,9 @@ fn a_new_or_rebound_output_on_a_frame_host_places_as_a_lease_with_no_new_structu
         .iter()
         .flat_map(|entry| &entry.steps)
         .filter_map(|step| match step {
-            Step::Exit { exit, entry, .. } if *exit == to_dd_out => entry.lease().map(ToString::to_string),
+            Step::Exit { exit, entry, .. } if *exit == StepExit::Slot(to_dd_out) => {
+                entry.lease().map(ToString::to_string)
+            }
             _ => None,
         })
         .collect::<std::collections::BTreeSet<_>>();

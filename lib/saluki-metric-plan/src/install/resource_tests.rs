@@ -250,6 +250,7 @@ fn classify(active: &Plan, candidate: &Plan) -> Option<(CutPlan, Vec<AdmissionPo
         owners: vec!["dsd_agg".parse().unwrap()],
         widths: vec![std::time::Duration::from_secs(10)],
         unknown_widths: Vec::new(),
+        boundary: Vec::new(),
     };
     Some((plan, vec![AdmissionPointId::new(0)]))
 }

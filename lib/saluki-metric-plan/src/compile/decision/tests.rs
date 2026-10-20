@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 
 use super::*;
 use crate::{
-    compile::{compile, CompileError, DecisionIndex, EntrySource, ExitIndex, Frame, RegisterId, Route, Step},
+    compile::{compile, CompileError, DecisionIndex, EntrySource, ExitIndex, Frame, RegisterId, Route, Step, StepExit},
     ir::{NativeComponentId, NodeId, Operand, OutputId, Plan},
     model::{Kind, PortType},
     operators::OperatorRegistry,
@@ -688,7 +688,7 @@ fn splits_and_tees_joined_by_edges_are_one_decision_and_a_map_ends_it() {
             ),
             Step::Exit {
                 register: RegisterId::new(2),
-                exit: ExitIndex::new(0),
+                exit: StepExit::Slot(ExitIndex::new(0)),
                 entry: EntrySource::None,
             },
             Step::Map {

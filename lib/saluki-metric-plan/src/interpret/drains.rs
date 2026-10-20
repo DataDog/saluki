@@ -455,6 +455,7 @@ impl Run<'_, '_> {
             },
             |generation| instance.tracker.switched(generation),
             instance.retiring_refs(),
+            None,
         )?;
         Some(Drain {
             instance: index,

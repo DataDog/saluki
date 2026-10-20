@@ -12,7 +12,8 @@ use saluki_core::execution::{AdmissionMode, AdmissionPointId, GenerationId};
 use super::core::StateBinding;
 use crate::{
     compile::{
-        Frame, KernelKey, LineageKey, MissingCapability, PlacementError, PlacementProblem, RegionProgram, SlotId,
+        Frame, KernelKey, LineageKey, MissingCapability, Placement, PlacementError, PlacementProblem, RegionProgram,
+        SlotId,
     },
     extension::TransitionClass,
     ir::{Edge, HostId, Node, NodeId, OutputDecl, OutputId, Plan, PortRef, RecipientId},
@@ -262,6 +263,7 @@ impl PlanDiff {
             owners: owners.iter().map(|owner| owner.node.clone()).collect(),
             widths,
             unknown_widths,
+            boundary: Vec::new(),
         })
     }
 }
@@ -280,29 +282,23 @@ pub struct CutPlan {
     /// The affected owners whose bucket width, in a plan that has them, is not known: no cut time lines up with an
     /// unknown width.
     pub unknown_widths: Vec<NodeId>,
+
+    /// The retained state owners upstream of an affected one, in the order of the diff: each makes a boundary flush at
+    /// the cut's time, and their widths are among [`widths`][Self::widths].
+    pub boundary: Vec<NodeId>,
 }
 
 impl CutPlan {
-    /// Returns the slots that run an affected owner in either generation, in slot order, given the programs of every
-    /// slot of the active generation and of the candidate.
-    pub fn slots(&self, active: &[Arc<RegionProgram>], candidate: &[Arc<RegionProgram>]) -> Vec<SlotId> {
-        let owners = self.owners.iter().collect::<BTreeSet<_>>();
-        active
-            .iter()
-            .chain(candidate)
-            .filter(|program| program.kernels().iter().any(|kernel| owners.contains(&kernel.key.node)))
-            .map(|program| program.slot())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect()
-    }
-
-    /// Returns the admission points the cut is armed over, in ID order: the points upstream of the isolation slots that
-    /// run an affected owner in either generation (see [`Frame::affected_points`]).
-    pub fn affected_points(
-        &self, frame: &Frame, active: &[Arc<RegionProgram>], candidate: &[Arc<RegionProgram>],
-    ) -> Vec<AdmissionPointId> {
-        frame.affected_points(&self.slots(active, candidate))
+    /// Returns the admission points the cut is armed over, in ID order: the points upstream of every affected owner in
+    /// either generation, through the derived points of state owners upstream of it (see
+    /// [`Placement::admission_upstream`]).
+    pub fn affected_points(&self, active: &Placement, candidate: &Placement) -> Vec<AdmissionPointId> {
+        let mut points = BTreeSet::new();
+        for owner in &self.owners {
+            points.extend(active.admission_upstream(owner));
+            points.extend(candidate.admission_upstream(owner));
+        }
+        points.into_iter().collect()
     }
 
     /// Checks that the frame can be cut over.
