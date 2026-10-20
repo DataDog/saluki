@@ -547,9 +547,8 @@ check-licenses: ## Check that the third-party license file is up to date
 check-features: check-rust-build-tools cargo-install-cargo-hack
 check-features: ## Checks that all packages with feature flags can be built with different flag combinations
 	@echo "[*] Checking feature flag compatibility matrix..."
-	@find . -name Cargo.toml -not -path './target/*' | grep -v '^./Cargo.toml' | \
-	xargs -I {} -- cargo read-manifest --manifest-path {} | \
-	jq -r "select(.features | del(.default) | length > 0) | .name" | \
+	@cargo metadata --no-deps --format-version 1 | \
+	jq -r '.workspace_members as $$members | .packages[] | select(.id as $$id | $$members | index($$id)) | select(.features | del(.default) | length > 0) | .name' | \
 	xargs -I {} -- cargo hack --feature-powerset --package {} check --tests --quiet
 
 .PHONY: check-aix-cross
@@ -581,6 +580,12 @@ test: check-rust-build-tools cargo-install-cargo-nextest
 test: ## Runs all unit tests
 	@echo "[*] Running unit tests..."
 	cargo nextest run --lib --bins --no-fail-fast -E 'not test(/property_test_*/)'
+	@$(MAKE) test-webpki-backport
+
+.PHONY: test-webpki-backport
+test-webpki-backport: check-rust-build-tools cargo-install-cargo-nextest
+test-webpki-backport: ## Runs the vendored certificate-verifier regression tests
+	cargo nextest run --locked --manifest-path vendor/rustls-webpki/Cargo.toml --features aws-lc-rs,ring --lib
 
 .PHONY: test-property
 test-property: check-rust-build-tools cargo-install-cargo-nextest

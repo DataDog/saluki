@@ -43,6 +43,7 @@ members = [
   "test/antithesis/scenarios/differential",
   "test/antithesis/scenarios/general",
 ]
+exclude = ["vendor/rustls-webpki"]
 resolver = "2"
 
 [workspace.package]
@@ -302,6 +303,9 @@ mutable_key_type = "allow"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(system_allocator)'] }
 
 [patch.crates-io]
+# Backport compromised-key distrust without upgrading the pinned FIPS module.
+# Remove with a compatible upstream upgrade; provenance and tests are in vendor/rustls-webpki/BACKPORT.md.
+rustls-webpki = { path = "vendor/rustls-webpki" }
 # byteorder's `read_f64_into` asserts `align_of::<u64>() <= align_of::<f64>()`, which does not hold
 # on AIX, breaking the build. This unmerged fix (unlikely to land upstream) works around it; remove
 # once we can shed the byteorder dependency: https://github.com/BurntSushi/byteorder/pull/223

@@ -37,6 +37,9 @@ use tracing::warn;
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util;
 
+#[cfg(test)]
+mod certificate_distrust_tests;
+
 /// Tracks if the default cryptography provider for `rustls` has been set.
 static DEFAULT_CRYPTO_PROVIDER_SET: OnceLock<()> = OnceLock::new();
 

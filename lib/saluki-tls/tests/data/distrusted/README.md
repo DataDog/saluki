@@ -1,0 +1,19 @@
+# Captured certificate chains
+
+These public certificates were captured on October 20, 2026, from the endpoints listed at
+<https://emudhra.we-have-a-problem.com/>. Each affected chain contains an intermediate whose
+complete DER SPKI SHA-256 and certificate SHA-256 match
+<https://emudhra.we-have-a-problem.com/affected-certificates.json>.
+
+Each PEM contains the leaf followed by the served intermediates. The six `emSign` paths
+and six AAA cross-sign paths cover the DV, OV, and EV G3B/G3C issuers.
+`unaffected.pem` comes from `https://testovg1.emsign.com`.
+
+`roots.pem` deliberately trusts `emSign ECC Root CA - G3`, `AAA Certificate Services`, and
+`emSign Root CA - G1`. Keeping these roots trusted ensures that rejection tests the compromised
+key blocklist, rather than missing roots. The last root supports the unaffected control.
+No private keys are included.
+
+Tests use a fixed validation time of October 20, 2026, 14:40 UTC and require the explicit
+`CertDistrusted` verifier error for affected chains. The upstream security change also tests blocked
+leaves and roots, unused intermediates, and alternative valid paths with generated fixtures.
