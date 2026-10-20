@@ -1402,9 +1402,10 @@ async fn a_recipient_whose_intake_stays_down_retires_at_its_deadline_and_persist
     let primary = Intake::start().await;
     let removed = Intake::start().await;
     let storage = tempfile::tempdir().unwrap();
+    // The share of the disk the retry storage may use is checked against the real volume, so allow all of it.
     let config = format!(
         "dd_url: \"{}\"\nadditional_endpoints: {{\"{}\": [key-removed]}}\nforwarder_storage_max_size_in_bytes: \
-         10485760\nforwarder_storage_path: \"{}\"",
+         10485760\nforwarder_storage_max_disk_ratio: 1.0\nforwarder_storage_path: \"{}\"",
         primary.url(),
         removed.url(),
         storage.path().display()
