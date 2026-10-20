@@ -2492,3 +2492,83 @@ fn trace_19_on_a_frame_a_cut_through_a_chain_delivers_every_point_once_under_the
         ],
     );
 }
+
+/// Returns the generations every region of the replay's frame still runs, after releasing those that retired: those
+/// a batch, a lineage's retiring or boundary mark, or a held header still keeps live.
+fn running(replay: &mut Replay) -> Vec<u64> {
+    replay.harness.publish();
+    let mut running = replay
+        .harness
+        .drivers()
+        .iter()
+        .flat_map(|driver| driver.generations())
+        .map(|generation| generation.get())
+        .collect::<Vec<_>>();
+    running.sort_unstable();
+    running.dedup();
+    running
+}
+
+#[test]
+fn trace_17_on_a_frame_without_a_tick_after_the_cut_a_second_aggregation_retires_the_generation_it_replaces() {
+    // `again` starts at a cut at 60, at which `dsd_agg` makes a boundary flush under generation 1, its last drain under
+    // it: no tick follows, as with clocked aggregation's hour-long flush interval. The flush's progress reaches
+    // `again`'s sub-region through `metrics`'s region, which holds no header of generation 1 past it, so generation 1
+    // retires.
+    let trace = Trace::new()
+        .install(aggregated_after(false))
+        .admit(id("dsd"), t(5), vec![gauge("g", 1.0)])
+        .admit(id("otlp"), t(6), vec![gauge_at("o", 6, 10.0)])
+        .advance(t(11))
+        .install(aggregated_after(true))
+        .admit(id("dsd"), t(55), vec![gauge("g", 2.0)])
+        .heartbeat(id("otlp"), t(65))
+        .heartbeat(id("dsd"), t(65));
+    let (run, mut replay) = Replay::run(&trace, false, t(1));
+    assert_delivered(
+        &run,
+        &replay,
+        "b",
+        &[
+            (1, 6_000, "o gauge [6:10]"),
+            (1, 11_000, "g gauge [0:1]"),
+            (1, 60_000, "g gauge [50:2]"),
+        ],
+    );
+    assert_eq!(run.live(), [GenerationId::new(2)]);
+    assert_eq!(running(&mut replay), [2]);
+}
+
+#[test]
+fn trace_17_on_a_frame_a_second_aggregation_a_later_program_drops_crosses_at_the_first_ones_boundary_flush() {
+    // `again` starts at a cut at 60, and a later program drops it at a cut at 120, at which `dsd_agg` makes a boundary
+    // flush under generation 2 and, with no tick after it, stamps generation 3's progress at once. The new program
+    // routes nothing of `dsd_agg`'s to `again`'s sub-region, but generation 2's, still live, forwards the progress
+    // there: `again`'s old lineage crosses at it, and generation 2 retires.
+    let trace = Trace::new()
+        .install(aggregated_after(false))
+        .admit(id("dsd"), t(5), vec![gauge("g", 1.0)])
+        .heartbeat(id("dsd"), t(11))
+        .advance(t(11))
+        .install(aggregated_after(true))
+        .admit(id("otlp"), t(65), vec![gauge_at("o", 65, 40.0)])
+        .admit(id("dsd"), t(66), vec![gauge("g", 8.0)])
+        .advance(t(71))
+        .install(aggregated_after(false))
+        .admit(id("dsd"), t(115), vec![gauge("g", 16.0)])
+        .heartbeat(id("otlp"), t(125))
+        .heartbeat(id("dsd"), t(125));
+    let (run, mut replay) = Replay::run(&trace, false, t(1));
+    assert_delivered(
+        &run,
+        &replay,
+        "b",
+        &[
+            (1, 11_000, "g gauge [0:1]"),
+            (2, 120_000, "o gauge [65:40]"),
+            (2, 120_000, "g gauge [60:8, 110:16]"),
+        ],
+    );
+    assert_eq!(run.live(), [GenerationId::new(3)]);
+    assert_eq!(running(&mut replay), [3]);
+}

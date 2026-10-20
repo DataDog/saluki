@@ -296,6 +296,42 @@ fn compiled(plan: &Plan, frame: &Frame) -> crate::compile::CompiledPlan {
 }
 
 #[test]
+fn kernel_reuse_changes_a_region_whose_steps_stay_when_the_progress_it_forwards_changes() {
+    // A second aggregation in front of the main output follows `dsd_agg`'s derived point: aggregation's region runs
+    // the same steps with the same kernels, but now forwards its derived point's progress toward it. Keeping the
+    // active program would forward none, and the second aggregation's watermark would follow `dsd_agg`'s output only
+    // when it emits.
+    let frame = frame();
+    let boot = compiled(&boot_plan(), &frame);
+    let again = edited(|value| {
+        let mut params = node_mut(value, "dsd_agg")["params"].clone();
+        params["window"] = json!("1m");
+        value["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"id": "again", "op": "aggregate", "params": params}));
+        let edges = value["edges"].as_array_mut().unwrap();
+        let into = edges
+            .iter_mut()
+            .find(|edge| edge["to"] == "metrics_fanout_0.in")
+            .expect("an edge leads to the main output");
+        into["to"] = json!("again.in");
+        edges.push(json!({"from": "again.out", "to": "metrics_fanout_0.in"}));
+    });
+    let candidate = compiled(&again, &frame);
+    let slots = kernel_reuse(Some(&boot.programs), &candidate.programs);
+    let dsd_agg = &slots[3];
+    assert_eq!(dsd_agg.slot, SlotId::new(3));
+    assert!(dsd_agg.build.is_empty() && dsd_agg.release.is_empty());
+    assert!(boot.programs[3].progress().is_empty());
+    assert!(!candidate.programs[3].progress().is_empty());
+    assert!(
+        !dsd_agg.unchanged,
+        "the region runs the candidate's program, which forwards its progress"
+    );
+}
+
+#[test]
 fn kernel_reuse_keeps_every_kernel_whose_key_is_unchanged() {
     let frame = frame();
     let boot = compiled(&boot_plan(), &frame);

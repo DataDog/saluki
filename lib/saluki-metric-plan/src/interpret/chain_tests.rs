@@ -6,7 +6,10 @@
 //! milliseconds in expectations, a cut margin of 1 second. A state owner's output is a derived point of its own, which
 //! the state owners downstream observe: they admit its batches before the ticks its stamps release.
 
-use saluki_core::data_model::event::metric::{context::Context, Metric};
+use saluki_core::{
+    data_model::event::metric::{context::Context, Metric},
+    execution::GenerationId,
+};
 use serde_json::json;
 
 use super::transition_tests::{
@@ -44,34 +47,35 @@ fn chain(first: &str, second: &str) -> Plan {
 }
 
 /// The default program's shape, `dsd -> dsd_agg -> joined <- otlp`, emitting everything `joined` carries to `a`, and a
-/// second aggregation of it, over a minute, to `b`.
-fn aggregated_after() -> Plan {
-    plan(
-        vec![
-            node(
-                "dsd",
-                "source",
-                json!({"binding": "dogstatsd", "timestamps": "untimestamped"}),
-            ),
-            node("otlp", "source", json!({"binding": "otlp"})),
-            node("dsd_agg", "aggregate", aggregation("10s")),
-            node("joined", "merge", json!({"inputs": 2})),
-            node("t", "tee", json!({"ports": 2})),
-            node("again", "aggregate", aggregation("1m")),
-            node("out_a", "emit", json!({"output": "a"})),
-            node("out_b", "emit", json!({"output": "b"})),
-        ],
-        &[
-            "dsd.metrics -> dsd_agg.in",
-            "dsd_agg.out -> joined.0",
-            "otlp.metrics -> joined.1",
-            "joined.out -> t.in",
-            "t.0 -> out_a.in",
-            "t.1 -> again.in",
-            "again.out -> out_b.in",
-        ],
-        &["a", "b"],
-    )
+/// copy of it to `b`: with `again`, aggregated a second time, over a minute, or otherwise as it is.
+fn aggregated_after(again: bool) -> Plan {
+    let mut nodes = vec![
+        node(
+            "dsd",
+            "source",
+            json!({"binding": "dogstatsd", "timestamps": "untimestamped"}),
+        ),
+        node("otlp", "source", json!({"binding": "otlp"})),
+        node("dsd_agg", "aggregate", aggregation("10s")),
+        node("joined", "merge", json!({"inputs": 2})),
+        node("t", "tee", json!({"ports": 2})),
+        node("out_a", "emit", json!({"output": "a"})),
+        node("out_b", "emit", json!({"output": "b"})),
+    ];
+    let mut edges = vec![
+        "dsd.metrics -> dsd_agg.in",
+        "dsd_agg.out -> joined.0",
+        "otlp.metrics -> joined.1",
+        "joined.out -> t.in",
+        "t.0 -> out_a.in",
+    ];
+    if again {
+        nodes.push(node("again", "aggregate", aggregation("1m")));
+        edges.extend(["t.1 -> again.in", "again.out -> out_b.in"]);
+    } else {
+        edges.push("t.1 -> out_b.in");
+    }
+    plan(nodes, &edges, &["a", "b"])
 }
 
 #[test]
@@ -144,7 +148,7 @@ fn trace_17_a_second_aggregation_after_the_first_follows_every_source_and_the_fi
         .with_heartbeats_at_ticks()
         .run(
             &Trace::new()
-                .install(aggregated_after())
+                .install(aggregated_after(true))
                 .admit(id("dsd"), t(5), vec![gauge("g", 1.0)])
                 .admit(id("otlp"), t(6), vec![gauge_at("o", 6, 10.0)])
                 .advance(t(11))
@@ -293,4 +297,78 @@ fn trace_19_a_cut_through_a_chain_delivers_every_point_once_under_the_expected_g
             (2, 181_000, "g gauge [120:16]"),
         ])
     );
+}
+
+#[test]
+fn trace_17_without_a_tick_after_the_cut_a_second_aggregation_retires_the_generation_it_replaces() {
+    // `again` starts at a cut at 60, which `dsd_agg` owes a boundary flush at 60 under generation 1. No tick follows
+    // the cut, as with clocked aggregation's hour-long flush interval: the boundary flush, which the stamps at 65 make
+    // due, is `dsd_agg`'s last drain under generation 1, and generation 1 retires once it is out. What `dsd` admitted
+    // before 60 reaches `b` under generation 1, through `dsd_agg`'s flushes, never through `again`.
+    let registry = OperatorRegistry::native();
+    let catalog = catalog();
+    let run = Interpreter::new(&registry, &catalog)
+        .run(
+            &Trace::new()
+                .install(aggregated_after(false))
+                .admit(id("dsd"), t(5), vec![gauge("g", 1.0)])
+                .admit(id("otlp"), t(6), vec![gauge_at("o", 6, 10.0)])
+                .advance(t(11))
+                .install(aggregated_after(true))
+                .admit(id("dsd"), t(55), vec![gauge("g", 2.0)])
+                .heartbeat(id("otlp"), t(65))
+                .heartbeat(id("dsd"), t(65)),
+        )
+        .unwrap();
+    assert_eq!(installs(&run), outcomes(&[(0, "active 1"), (4, "cut 2 at 60000")]));
+    assert_eq!(
+        delivered(&run, "b"),
+        expected(&[
+            (1, 6_000, "o gauge [6:10]"),
+            (1, 11_000, "g gauge [0:1]"),
+            (1, 60_000, "g gauge [50:2]"),
+        ])
+    );
+    assert_eq!(run.live(), [GenerationId::new(2)]);
+}
+
+#[test]
+fn trace_17_a_second_aggregation_a_later_program_drops_crosses_at_the_first_ones_boundary_flush() {
+    // `again` starts at a cut at 60, and a later program drops it at a cut at 120, which `dsd_agg` owes a boundary
+    // flush at 120 under generation 2. The new program no longer routes `dsd_agg`'s output to `again`, and no tick of
+    // `dsd_agg` follows: its boundary flush is its last drain under generation 2, after which it stamps generation 3's
+    // progress at once, at 120. `again`'s old lineage, which `otlp` already switched, crosses at it, and makes its final
+    // flush at 120 with everything both points sent it; generation 2 then retires.
+    let registry = OperatorRegistry::native();
+    let catalog = catalog();
+    let run = Interpreter::new(&registry, &catalog)
+        .run(
+            &Trace::new()
+                .install(aggregated_after(false))
+                .admit(id("dsd"), t(5), vec![gauge("g", 1.0)])
+                .heartbeat(id("dsd"), t(11))
+                .advance(t(11))
+                .install(aggregated_after(true))
+                .admit(id("otlp"), t(65), vec![gauge_at("o", 65, 40.0)])
+                .admit(id("dsd"), t(66), vec![gauge("g", 8.0)])
+                .advance(t(71))
+                .install(aggregated_after(false))
+                .admit(id("dsd"), t(115), vec![gauge("g", 16.0)])
+                .heartbeat(id("otlp"), t(125))
+                .heartbeat(id("dsd"), t(125)),
+        )
+        .unwrap();
+    assert_eq!(
+        installs(&run),
+        outcomes(&[(0, "active 1"), (4, "cut 2 at 60000"), (8, "cut 3 at 120000")])
+    );
+    assert_eq!(
+        delivered(&run, "b"),
+        expected(&[
+            (1, 11_000, "g gauge [0:1]"),
+            (2, 120_000, "o gauge [65:40]"),
+            (2, 120_000, "g gauge [60:8, 110:16]"),
+        ])
+    );
+    assert_eq!(run.live(), [GenerationId::new(3)]);
 }

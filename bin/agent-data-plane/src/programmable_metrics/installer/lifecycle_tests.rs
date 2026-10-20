@@ -2463,8 +2463,6 @@ async fn a_second_aggregation_after_enrichment_runs_in_a_sub_region_and_flushes_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "V7a: the generation of a second aggregation that a cut removes never retires: the lineage downstream of \
-            `dsd_agg` waits for `dsd_agg`'s new-generation stamp, which the new program no longer routes to it"]
 async fn a_second_aggregation_after_enrichment_retires_with_its_sub_region_when_a_later_program_drops_it() {
     let mut harness = Lifecycle::start().await;
     let export = harness.export.clone();
@@ -2482,6 +2480,39 @@ async fn a_second_aggregation_after_enrichment_retires_with_its_sub_region_when_
         .await;
     assert_eq!(state_region_of(&dropped, "agg"), None);
     harness.finish().await;
+}
+
+#[tokio::test]
+async fn with_clocked_aggregation_a_second_aggregation_retires_the_generations_it_replaces_and_that_ran_it() {
+    // Clocked aggregation flushes every hour, so `dsd_agg` never ticks here. Adding `agg` cuts at a time `dsd_agg` owes
+    // a boundary flush at: its last drain under generation 1, after which generation 1 retires. Dropping `agg` again
+    // cuts the same way: `dsd_agg`'s boundary flush is its last drain under generation 2, and the progress of
+    // generation 3 it stamps at once lets `agg`'s old lineage cross, though the new program no longer routes `dsd_agg`'s
+    // output to it; generation 2, the last that runs `agg`'s sub-region, then retires.
+    let (mut lifecycle, clock) = start_clocked(Options::new(MetricsPath::Plan, Aggregation::Clocked)).await;
+    let export = lifecycle.export.clone();
+    let mut sent = 0;
+    feed_counts(&mut lifecycle, 1, &mut sent).await;
+    for (revision, artifact, generation) in [(1, second_aggregation(&export), 2), (2, export.clone(), 3)] {
+        lifecycle.deliver(vec![config(revision, &artifact)]);
+        let started = tokio::time::Instant::now();
+        let installed = loop {
+            let status = lifecycle.status.load_full();
+            if active(&status) == Some(generation) && live(&status) == [generation] {
+                break PlanStatus::clone(&status);
+            }
+            assert!(
+                started.elapsed() < PATIENCE,
+                "the installer's status never changed as expected: {}",
+                status
+            );
+            clock.set(AdmissionTime::from_unix_secs(clock.now().as_unix_secs() + 10));
+            feed_counts(&mut lifecycle, 1, &mut sent).await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+        assert_eq!(state_region_of(&installed, "agg").is_some(), generation == 2);
+    }
+    lifecycle.topology.stop().await;
 }
 
 #[tokio::test]

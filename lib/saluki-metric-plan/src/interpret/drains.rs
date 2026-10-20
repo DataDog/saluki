@@ -126,7 +126,16 @@ impl Run<'_, '_> {
             .collect::<Vec<_>>();
         let mut drains = Vec::new();
         for (index, at) in due {
-            drains.extend(self.drain(index, DrainKind::Boundary, Some(at), at));
+            let by = self
+                .instances
+                .get(index)
+                .and_then(|instance| instance.boundary.as_ref())
+                .and_then(|boundary| self.programs.get(&boundary.by))
+                .map(|program| program.generation.clone());
+            drains.extend(
+                self.drain(index, DrainKind::Boundary, Some(at), at)
+                    .map(|drain| Drain { handover: by, ..drain }),
+            );
             if let Some(instance) = self.instances.get_mut(index) {
                 instance.boundary = None;
                 instance.last_flush = Some(instance.last_flush.map_or(at, |last| last.max(at)));
@@ -463,16 +472,18 @@ impl Run<'_, '_> {
             let Some(instance) = self.instances.get(index) else {
                 continue;
             };
-            let Some(at) = instance
+            let Some((at, by)) = instance
                 .retiring
                 .as_ref()
-                .and_then(|retiring| retiring.by.cut())
-                .map(|cut| cut.at)
+                .and_then(|retiring| Some((retiring.by.cut()?.at, retiring.by.clone())))
             else {
                 continue;
             };
             if let Some(drain) = self.drain(index, DrainKind::FinalRetire, Some(at), at) {
-                drains.push(drain);
+                drains.push(Drain {
+                    handover: Some(by),
+                    ..drain
+                });
             }
         }
         self.run_drains(drains, now)?;
@@ -538,6 +549,7 @@ impl Run<'_, '_> {
             flush,
             stamp_at,
             generation,
+            handover: None,
         })
     }
 
@@ -653,13 +665,30 @@ impl Run<'_, '_> {
         );
         let progress = observed && flushed && !self.sibling_retiring(drain.instance);
         if !queue.is_empty() || progress {
-            self.output_clocks.insert(key, clock);
+            self.output_clocks.insert(key.clone(), clock);
             if observed && !self.closed {
                 self.derived.push_back(DerivedStamp {
                     header,
                     held: Vec::new(),
                 });
             }
+        }
+        // The lineage's last drain under the generation the cut replaces is out, and its upstream points switched: from
+        // now on it stamps the cut's generation, which its progress says at once, at the same time, rather than at its
+        // next drain, which may be a flush interval away. A retiring lineage downstream, which has then received
+        // everything the replaced generation sends it at the point, crosses at it.
+        let handover = drain.handover.filter(|by| {
+            self.instances
+                .get(drain.instance)
+                .is_some_and(|instance| instance.tracker.switched(by.id()))
+        });
+        if let Some(by) = handover.filter(|_| progress && !self.closed) {
+            let header = clock.stamp(drain.stamp_at, by);
+            self.output_clocks.insert(key, clock);
+            self.derived.push_back(DerivedStamp {
+                header,
+                held: Vec::new(),
+            });
         }
         Ok(queue)
     }

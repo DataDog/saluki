@@ -1686,6 +1686,12 @@ impl MetricRegionDriver {
     /// exit toward a state owner downstream that lists the point and the step wrote nothing to, so that its watermark
     /// reaches the flush time even when the flush emits nothing there. A step that sends progress moves the output
     /// clock as one that emits does, so that the point's stamps only grow.
+    ///
+    /// After a lineage's last drain under the generation a cut replaces, its boundary flush or its final retirement,
+    /// once every upstream point switched to the cut's generation, every such exit also receives the progress of the
+    /// cut's generation at the same time: the state owner stamps it from now on, and a retiring lineage downstream,
+    /// which has received everything the replaced generation sends it at the point, crosses at it rather than at the
+    /// state owner's next drain, which may be a flush interval away.
     fn forward_drain_progress(&mut self, exits: &mut ExitSink) {
         let Self {
             state,
@@ -1725,6 +1731,35 @@ impl MetricRegionDriver {
         }
         if sent {
             state.output = step.latch;
+        }
+
+        let by = match step.kind {
+            DrainKind::Boundary { .. } => state
+                .instances
+                .get(state.bound(step.instance))
+                .and_then(|instance| instance.boundary.as_ref())
+                .map(|boundary| &boundary.by),
+            DrainKind::FinalRetire => state.retiring_of(step.instance).map(|retiring| &retiring.by),
+            _ => None,
+        };
+        let Some(by) = by.filter(|by| state.tracker.switched(by.id())).map(Arc::clone) else {
+            return;
+        };
+        let mut latch = step.latch;
+        let Some(at) = step.stamp.admitted_at else { return };
+        let handover = latch.stamp(at, by);
+        let Some(mark) = SentMark::of(&handover) else { return };
+        let mut sent = false;
+        for exit in progress.iter_mut() {
+            let Some(position) = exit.points.iter().position(|upstream| *upstream == point) else {
+                continue;
+            };
+            exits.emit(exit.exit, EventsBuffer::with_capacity(0).with_header(handover.clone()));
+            exit.last[position] = Some(mark);
+            sent = true;
+        }
+        if sent {
+            state.output = latch;
         }
     }
 

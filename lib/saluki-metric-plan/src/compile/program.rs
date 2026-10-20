@@ -71,7 +71,7 @@ use super::{
         EXIT_SET_CAPACITY, MEMO_COST_FLOOR,
     },
     frame::{ExitIndex, Frame, FrameTarget, SlotId},
-    placement::{EntryKey, Placement, RegionKey, UpstreamPoint},
+    placement::{ClockId, EntryKey, Placement, RegionKey, UpstreamPoint},
     resolve,
     rewrite::r5b::PushedFilterSite,
     Role,
@@ -569,7 +569,8 @@ impl RegionProgram {
         &self.output_points
     }
 
-    /// Returns the program's fingerprint: a hash of its entries, steps, kernel keys, decisions, and state parameters.
+    /// Returns the program's fingerprint: a hash of its entries, steps, kernel keys, decisions, state parameters, and
+    /// the points its state owner follows, the progress its exits forward, and its state owner's derived points.
     ///
     /// Two programs with equal fingerprints do the same thing with the same kernels, so a region can keep running the
     /// one it has.
@@ -1015,8 +1016,13 @@ impl Context<'_, '_> {
             });
         }
 
+        let placed = Placed {
+            upstream: &placed_region.upstream,
+            progress: &placed_region.progress,
+            output_points: &placed_region.output_points,
+        };
         let fingerprint =
-            fingerprint(slot, &key, &entries, &kernels, &decisions, &state_params).map_err(|message| {
+            fingerprint(slot, &key, &entries, &kernels, &decisions, &state_params, placed).map_err(|message| {
                 CompileError::Internal {
                     message: format!(
                         "the program of {} of slot {} has no canonical form: {}",
@@ -1577,14 +1583,27 @@ impl EntryBuilder<'_, '_, '_> {
 }
 
 /// Returns the fingerprint of a program: the hash of a JSON description of everything it does.
+/// What a region does with time, besides its steps, which its fingerprint covers too: the points its state owner's
+/// watermark follows, the progress its exits forward, and the derived points its state owner stamps.
+struct Placed<'a> {
+    upstream: &'a [UpstreamPoint],
+    progress: &'a [(StepExit, Vec<AdmissionPointId>)],
+    output_points: &'a [AdmissionPointId],
+}
+
 fn fingerprint(
     slot: SlotId, region: &RegionKey, entries: &[EntryProgram], kernels: &[ProgramKernel], decisions: &[Decision],
-    state_params: &[StateParamsEntry],
+    state_params: &[StateParamsEntry], placed: Placed<'_>,
 ) -> Result<PlanHash, String> {
     let params_hash = |index: StateParamsIndex| {
         state_params
             .get(index.get())
             .map_or(Value::Null, |entry| json!(entry.hash.to_string()))
+    };
+    let exit = |exit: &StepExit| match exit {
+        StepExit::Slot(exit) => json!(exit.get()),
+        StepExit::Region(RegionKey::Main) => json!({"region": "main"}),
+        StepExit::Region(RegionKey::State(node)) => json!({"region": {"state": node.to_string()}}),
     };
     let route = |route: &Route| match route {
         Route::Register(register) => json!({"register": register.0}),
@@ -1605,19 +1624,18 @@ fn fingerprint(
         Step::Concat { inputs, output } => json!({"concat": {
             "inputs": inputs.iter().map(|register| register.0).collect::<Vec<_>>(), "output": output.0
         }}),
-        Step::Exit { register, exit, entry } => {
+        Step::Exit {
+            register,
+            exit: exit_to,
+            entry,
+        } => {
             // A lease is named by its output, never by its identifier, so a rebinding leaves the fingerprint as it is.
             let entry = match entry {
                 EntrySource::None => Value::Null,
                 EntrySource::Region(entry) => json!(entry.get()),
                 EntrySource::Lease(output) => json!({"lease": output.as_str()}),
             };
-            let exit = match exit {
-                StepExit::Slot(exit) => json!(exit.get()),
-                StepExit::Region(RegionKey::Main) => json!({"region": "main"}),
-                StepExit::Region(RegionKey::State(node)) => json!({"region": {"state": node.to_string()}}),
-            };
-            json!({"exit": {"register": register.0, "exit": exit, "entry": entry}})
+            json!({"exit": {"register": register.0, "exit": exit(exit_to), "entry": entry}})
         }
         Step::Drop { register, node } => json!({"drop": {"register": register.0, "node": node.to_string()}}),
         Step::State {
@@ -1706,6 +1724,41 @@ fn fingerprint(
         description["state_params"] = state_params
             .iter()
             .map(|entry| json!(entry.hash.to_string()))
+            .collect::<Vec<_>>()
+            .into();
+    }
+    // A region's progress, watermark points, and derived points are part of what it does: a program that forwards the
+    // progress of another point, or follows other points, is another program, though its steps are the same. Programs
+    // without any keep the description they had before.
+    if !placed.upstream.is_empty() {
+        description["upstream"] = placed
+            .upstream
+            .iter()
+            .map(|point| {
+                let clock = match &point.clock {
+                    ClockId::Source(node) => json!({"source": node.to_string()}),
+                    ClockId::Derived(node) => json!({"derived": node.to_string()}),
+                };
+                json!({"point": point.id.get(), "clock": clock, "derived": point.derived})
+            })
+            .collect::<Vec<_>>()
+            .into();
+    }
+    if !placed.progress.is_empty() {
+        description["progress"] = placed
+            .progress
+            .iter()
+            .map(|(to, points)| {
+                json!({"exit": exit(to), "points": points.iter().map(|point| point.get()).collect::<Vec<_>>()})
+            })
+            .collect::<Vec<_>>()
+            .into();
+    }
+    if !placed.output_points.is_empty() {
+        description["output_points"] = placed
+            .output_points
+            .iter()
+            .map(|point| json!(point.get()))
             .collect::<Vec<_>>()
             .into();
     }

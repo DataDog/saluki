@@ -872,10 +872,28 @@ struct ProgressExit {
     points: Vec<AdmissionPointId>,
     /// The header the exit last carried for each point, by a buffer the region wrote to it or as progress.
     last: Vec<Option<SentMark>>,
-    /// For an exit toward a state owner with several upstream points, the header of the last batch the region
-    /// completed from each point, without its entry: its final header in an epoch once the point's epoch changes, and
-    /// its last when input ends, which the state owner receives before anything newer, and before its input closes.
-    latest: Option<Vec<Option<BatchHeader>>>,
+    /// For an exit toward a state owner with several upstream points, the last batch the region completed from each
+    /// point: its final header in an epoch once the point's epoch changes, and its last when input ends, which the state
+    /// owner receives before anything newer, and before its input closes.
+    latest: Option<Vec<Option<LatestHeader>>>,
+}
+
+/// The last batch a region completed from one point, for an exit toward a state owner with several upstream points.
+#[derive(Clone)]
+struct LatestHeader {
+    /// What its header says of the point's progress.
+    mark: SentMark,
+    /// Its header, without its entry, until the exit carries it: only an uncarried header is ever sent again, and a
+    /// header holds its generation, which a point that stamps rarely, as a derived point does, would otherwise keep
+    /// live until its next stamp.
+    header: Option<BatchHeader>,
+}
+
+impl LatestHeader {
+    /// Returns the header to send if the exit, which last carried `last` from the point, has not carried it.
+    fn uncarried(&self, last: Option<SentMark>) -> Option<&BatchHeader> {
+        self.header.as_ref().filter(|_| last != Some(self.mark))
+    }
 }
 
 impl ProgressExit {
@@ -1919,10 +1937,13 @@ impl MetricRegionDriver {
             let Some(position) = exit.points.iter().position(|upstream| *upstream == point) else {
                 continue;
             };
-            let Some(previous) = &latest[position] else {
+            let Some(previous) = latest[position].as_ref() else {
                 continue;
             };
-            if epoch_newer(header.epoch, previous.epoch) && exit.last[position] != SentMark::of(previous) {
+            if !epoch_newer(header.epoch, previous.mark.epoch()) {
+                continue;
+            }
+            if let Some(previous) = previous.uncarried(exit.last[position]) {
                 exits.emit(exit.exit, EventsBuffer::with_capacity(0).with_header(previous.clone()));
             }
         }
@@ -1969,13 +1990,17 @@ impl MetricRegionDriver {
             }
             // A header of an epoch older than the point's latest, which only a wiring fault produces and the state
             // owner counts as such, is never the point's final header of an epoch.
+            let carried = exit.last[position] == Some(mark);
             if let Some(latest) = &mut exit.latest {
                 let latest = &mut latest[position];
                 if latest
                     .as_ref()
-                    .is_none_or(|latest| !epoch_newer(latest.epoch, mark.epoch()))
+                    .is_none_or(|latest| !epoch_newer(latest.mark.epoch(), mark.epoch()))
                 {
-                    *latest = Some(progress());
+                    *latest = Some(LatestHeader {
+                        mark,
+                        header: (!carried).then(progress),
+                    });
                 }
             }
         }
@@ -1996,10 +2021,9 @@ impl MetricRegionDriver {
                 let Some(previous) = previous else {
                     continue;
                 };
-                let mark = SentMark::of(previous);
-                if *last != mark {
-                    exits.emit(exit.exit, EventsBuffer::with_capacity(0).with_header(previous.clone()));
-                    *last = mark;
+                if let Some(header) = previous.uncarried(*last) {
+                    exits.emit(exit.exit, EventsBuffer::with_capacity(0).with_header(header.clone()));
+                    *last = Some(previous.mark);
                 }
             }
         }

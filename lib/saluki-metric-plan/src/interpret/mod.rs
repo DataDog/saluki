@@ -178,6 +178,11 @@
 //!   ([`stamping_generation`][crate::runtime::state::rules::stamping_generation]'s rule 2). A retiring lineage of `Y`
 //!   crosses at `X`'s first stamp of the new generation, which may follow the cut's finalization: the program it served
 //!   stays live until then.
+//! - After `X`'s last drain under the generation a cut replaces, its boundary flush or its final retirement, once every
+//!   point upstream of `X` switched to the cut's generation, `X` stamps that generation's progress at once, at the same
+//!   time, rather than at its next drain, a flush interval away or never if no lineage of `X` remains: `Y`'s retiring
+//!   lineage, which has then received everything the replaced generation sends it at the point, crosses at it, though
+//!   the new plan may no longer route `X`'s output to `Y`.
 //!
 //! [tracker]: crate::runtime::state::rules::WatermarkTracker#clocks
 //! [observe_after]: crate::runtime::state::rules::WatermarkTracker::observe_after
@@ -478,6 +483,7 @@ pub struct RunOutput {
     watermarks: BTreeMap<NodeId, Option<AdmissionTime>>,
     signals: BTreeMap<SignalName, SignalValue>,
     candidates: Candidates,
+    live: Vec<GenerationId>,
 }
 
 impl RunOutput {
@@ -505,6 +511,12 @@ impl RunOutput {
     /// Returns every `install` and `cancel` event's outcome, in trace order.
     pub fn installs(&self) -> &[InstallRecord] {
         &self.installs
+    }
+
+    /// Returns the generations whose plans are live when the trace ends, in identifier order: the active one, and each
+    /// replaced one a lineage still retires under, or owes a boundary flush under.
+    pub fn live(&self) -> &[GenerationId] {
+        &self.live
     }
 
     /// Returns the loss a node counted, by class, over the whole run.
@@ -948,6 +960,9 @@ struct Drain {
     flush: Option<AdmissionTime>,
     stamp_at: AdmissionTime,
     generation: GenerationRef,
+    /// For a lineage's last drain under the generation a cut replaces, its boundary flush or its final retirement, the
+    /// cut's generation, which the state owner's progress is stamped with at once after it.
+    handover: Option<GenerationRef>,
 }
 
 /// One stamp of a state owner's output clock at its derived point, which the isolated state owners downstream observe
@@ -1103,6 +1118,7 @@ impl<'r, 'a> Run<'r, 'a> {
                 self.output.watermarks.insert(node.id.clone(), watermark);
             }
         }
+        self.output.live = self.programs.keys().copied().collect();
         // Records are made when installations are decided, which a cut can delay; they are reported in trace order.
         self.output.installs.sort_by_key(|record| record.event);
         Ok(self.output)
