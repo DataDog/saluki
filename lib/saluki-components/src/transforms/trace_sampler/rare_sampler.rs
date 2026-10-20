@@ -33,7 +33,7 @@ const TTL_RENEWAL_PERIOD: Duration = Duration::from_secs(60);
 pub(super) const RARE_KEY: &str = "_dd.rare";
 
 /// Metric key indicating a span is a top-level span (legacy, set by the agent).
-const KEY_TOP_LEVEL: &str = "_top_level";
+pub(super) const KEY_TOP_LEVEL: &str = "_top_level";
 
 /// Metric key indicating a span is a top-level span, set directly by tracers/SDKs.
 ///
@@ -146,6 +146,13 @@ impl RareSampler {
             seen: FastHashMap::default(),
             telemetry,
         }
+    }
+
+    /// Turns rare sampling on or off without forgetting previously seen span signatures.
+    ///
+    /// The rate limiter also keeps its state, as in the Datadog Agent's `pkg/trace/sampler/rare_sampler.go`.
+    pub(super) fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
     }
 
     /// Sample a trace. Returns `true` if the trace should be kept by the rare sampler.

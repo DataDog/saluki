@@ -5,8 +5,8 @@
 //! - [`TestComponentDriver`] builds one component from its builder, connects its input and outputs, and runs it the way
 //!   the topology would. It returns a [`ComponentControl`] to feed and stop the component, and an [`Outputs`] (or a
 //!   single [`Output`]) to observe what it dispatches.
-//! - [`TestComponentSupervisor`] is the per-component supervisor on its own, for code that spawns supervised children
-//!   but isn't a whole component. The driver runs every component under one. Prefer it over
+//! - [`TestComponentSupervisor`] is the topology supervisor on its own, for code that spawns supervised children but
+//!   isn't a whole component. The driver runs every component under one. Prefer it over
 //!   `Supervisor::new(..).handle()`, which looks equivalent but never runs, so every child spawned on it is dropped.
 //!
 //! # Driving a component
@@ -25,7 +25,8 @@
 //! ```
 //!
 //! Use [`TestComponentDriver::options`] to change the component ID, the channel capacity, the deadlines, or the
-//! resource registry the component is built with.
+//! resource registry the component is built with. To run a source that the test builds by hand, wrap it in a
+//! [`PrebuiltSource`].
 //!
 //! # Things to know
 //!
@@ -53,6 +54,12 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! ## Wait for changes that don't arrive on the input
+//!
+//! Some changes reach a running component another way, such as a `Live` configuration update that its run loop
+//! applies. Wait for the effect with [`ComponentControl::wait_until`], for example by polling a counter that the
+//! component increments, rather than sleeping for a fixed time.
 //!
 //! ## Keep the handles alive
 //!
@@ -82,6 +89,9 @@ pub use self::driver::{DriverOptions, TestComponentDriver};
 
 mod output;
 pub use self::output::{Output, Outputs};
+
+mod prebuilt;
+pub use self::prebuilt::PrebuiltSource;
 
 mod supervisor;
 pub use self::supervisor::TestComponentSupervisor;

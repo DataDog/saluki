@@ -4,25 +4,29 @@ use agent_data_plane_config::SalukiConfiguration;
 use agent_data_plane_config_system::ConfigurationSystem;
 use arc_swap::ArcSwap;
 use datadog_agent_commons::ipc::tls::build_ipc_server_tls_config;
-use datadog_agent_runtime::remote_agent::{RemoteAgentBootstrap, StatusSectionProvider};
+use datadog_agent_runtime::{
+    control_plane::{ConfigRuntimeWorker, RuntimeConfigSnapshot},
+    remote_agent::{RemoteAgentBootstrap, StatusSectionProvider},
+};
 use saluki_api::EndpointType;
 use saluki_app::{
-    accounting::ResourceTelemetryWorker, api::APIBuilder, config::ConfigWorker, logging::LoggingOverrideController,
+    accounting::ResourceTelemetryWorker,
+    api::APIBuilder,
+    config::ConfigWorker,
+    logging::{DynamicLogLevelWorker, LoggingOverrideController},
 };
 use saluki_core::accounting::ComponentRegistry;
 use saluki_core::{
     health::HealthRegistry,
+    observability::metrics::InternalTelemetryAPIWorker,
     runtime::{RestartStrategy, RuntimeConfiguration, SupervisionTreeHandle, Supervisor},
 };
 use saluki_error::GenericError;
 
 use crate::{
     config::DataPlaneConfiguration,
-    internal::{
-        config_runtime::ConfigRuntimeWorker, logging::DynamicLogLevelWorker, telemetry::InternalTelemetryAPIWorker,
-        DogStatsDStatusSection, TopologyControlSurfaces,
-    },
-    state::metrics::get_datadog_agent_remappings,
+    internal::{logging::get_translated_log_level_stream, DogStatsDStatusSection, TopologyControlSurfaces},
+    state::metrics::{get_compat_remappings, get_datadog_agent_remappings},
 };
 
 /// Creates the control plane supervisor.
@@ -49,13 +53,15 @@ pub async fn create_control_plane_supervisor(
 
     supervisor.add_worker(health_registry.worker());
     supervisor.add_worker(ResourceTelemetryWorker::new(component_registry));
-    supervisor.add_worker(InternalTelemetryAPIWorker::new());
+    supervisor.add_worker(InternalTelemetryAPIWorker::new(Some(get_compat_remappings())));
     supervisor.add_worker(DynamicLogLevelWorker::new(
-        config_system.live(|config| &config.control.logging.level),
+        get_translated_log_level_stream(config_system),
         logging_controller,
     ));
     supervisor.add_worker(ConfigWorker::new(config_system.raw_snapshot()));
-    supervisor.add_worker(ConfigRuntimeWorker::new(current_config));
+    supervisor.add_worker(ConfigRuntimeWorker::new(RuntimeConfigSnapshot::from_shared(
+        current_config,
+    )));
     supervisor.add_worker(root_tree.worker());
 
     let api_listen_address = dp.api_listen_address()?;
@@ -75,10 +81,7 @@ pub async fn create_control_plane_supervisor(
 
         supervisor.add_worker(ra_bootstrap.create_dataspace_anchor());
         supervisor.add_worker(ra_bootstrap.create_event_reporter());
-        privileged_api = privileged_api
-            .with_grpc_service(ra_bootstrap.create_status_service(status_sections))
-            .with_grpc_service(ra_bootstrap.create_flare_service())
-            .with_grpc_service(ra_bootstrap.create_telemetry_service(get_datadog_agent_remappings()));
+        supervisor.add_worker(ra_bootstrap.create_services_worker(status_sections, get_datadog_agent_remappings()));
     }
 
     supervisor.add_worker(privileged_api.into_supervisor());

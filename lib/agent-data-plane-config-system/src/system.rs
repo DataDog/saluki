@@ -230,7 +230,7 @@ impl ConfigurationUpdates {
     ///
     /// Returns [`Error::UpdateStreamClosed`] when the configuration stream closes. The stream does
     /// not reopen, so each later call fails in the same way at once.
-    pub fn run(&self) -> impl Future<Output = std::result::Result<(), Error>> + Send + 'static {
+    pub fn run(&self) -> impl Future<Output = Result<()>> + Send + 'static {
         let state = Arc::clone(&self.state);
         async move {
             // A panic does not poison this lock, so a later call takes over the state as the panic left it.
@@ -410,6 +410,7 @@ mod tests {
     use agent_data_plane_config::Provenance;
     use agent_data_plane_config::{Live, SalukiConfiguration};
     use datadog_agent_config::DatadogConfiguration;
+    use futures::StreamExt as _;
     use saluki_config::dynamic::{ConfigSetting, ConfigUpdate, Provenance as StreamProvenance};
     use serde_json::{json, Value};
     use tokio::sync::mpsc;
@@ -610,6 +611,39 @@ mod tests {
         assert!(config.shared.metrics_encoding.histogram.aggregates.is_empty());
         assert!(config.shared.endpoints.proxy.no_proxy.is_empty());
         assert!(config.shared.endpoints.additional_endpoints.is_empty());
+    }
+
+    // Regression: the Agent streams `DD_APM_ANALYZED_SPANS` as the raw JSON string it stores, and the
+    // map deserializers rejected it, so the startup gate failed and ADP restarted in a loop.
+    #[tokio::test]
+    async fn connected_startup_accepts_json_encoded_event_extraction_settings() {
+        let (agent_tx, agent_rx) = mpsc::channel(1);
+        agent_tx
+            .send(ConfigUpdate::snapshot([
+                ConfigSetting::explicit(
+                    "apm_config.analyzed_spans",
+                    json!(r#"{"test-service|operation": 0.75}"#),
+                ),
+                ConfigSetting::explicit(
+                    "apm_config.analyzed_rate_by_service",
+                    json!(r#"{"legacy-service": 0.5}"#),
+                ),
+            ]))
+            .await
+            .unwrap();
+        let base = SourceTree::all_explicit(json!({ "api_key": TEST_API_KEY }));
+
+        // The updates only include later updates. This test does not need them, so it never runs them.
+        let (system, _updates) = ConfigurationSystem::connected(agent_rx, base)
+            .await
+            .expect("startup accepts the streamed JSON strings");
+
+        let config = system.config();
+        assert_eq!(
+            config.domains.traces.analyzed_spans_by_service["test-service"]["operation"],
+            0.75
+        );
+        assert_eq!(config.domains.traces.analyzed_rate_by_service["legacy-service"], 0.5);
     }
 
     #[tokio::test]
@@ -1443,6 +1477,36 @@ mod tests {
         assert!(*view);
         // A fixed view never resolves, so this bound is deterministic rather than timing-dependent.
         assert!(tokio::time::timeout(Duration::from_millis(100), view.changed())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn live_stream_yields_each_change() {
+        let (system, agent_tx) = connected_system(json!({})).await;
+        let mut levels = Box::pin(system.live(|c| &c.control.logging.level).into_stream());
+
+        for level in ["debug", "warn"] {
+            agent_tx
+                .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                    "log_level",
+                    json!(level),
+                )))
+                .await
+                .unwrap();
+
+            let updated = tokio::time::timeout(Duration::from_secs(2), levels.next())
+                .await
+                .expect("the stream observes the log level update");
+            assert_eq!(updated.as_deref(), Some(level));
+        }
+    }
+
+    #[tokio::test]
+    async fn fixed_live_stream_never_yields_or_ends() {
+        let mut values = Box::pin(Live::new_fixed(true).into_stream());
+        // Like `changed`, the stream of a fixed view never resolves, so this bound is deterministic.
+        assert!(tokio::time::timeout(Duration::from_millis(100), values.next())
             .await
             .is_err());
     }

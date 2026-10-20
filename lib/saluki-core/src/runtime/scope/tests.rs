@@ -10,15 +10,14 @@ use std::{
 use async_trait::async_trait;
 use saluki_error::{generic_error, GenericError};
 use tokio::{
-    sync::{oneshot, watch},
+    sync::{mpsc, oneshot, watch},
     task::JoinHandle,
     time::{timeout, Instant},
 };
 
 use super::*;
 use crate::runtime::{
-    self, AutoShutdown, NodeSnapshot, NodeState, RuntimeConfiguration, SupervisionTreeHandle, Supervisor,
-    SupervisorError,
+    self, NodeSnapshot, NodeState, RuntimeConfiguration, SupervisionTreeHandle, Supervisor, SupervisorError,
 };
 use crate::test_support::wait_until;
 
@@ -119,7 +118,7 @@ fn until_stopped(
     .build()
 }
 
-/// A supervisable worker that counts how many times it starts, and exits at once or at shutdown, cleanly or not.
+/// A supervisable worker that counts how many times it starts, and fails at once or runs until it is told to stop.
 struct CountingWorker {
     name: &'static str,
     starts: Arc<AtomicUsize>,
@@ -128,11 +127,11 @@ struct CountingWorker {
 
 #[derive(Clone, Copy)]
 enum Exit {
-    /// Exits cleanly at once.
-    Immediately,
-
     /// Runs until it is told to stop.
     OnShutdown,
+
+    /// Fails at once.
+    Fail,
 
     /// Fails to initialize.
     FailInit,
@@ -152,8 +151,10 @@ impl Supervisable for CountingWorker {
         self.starts.fetch_add(1, Ordering::SeqCst);
         let exit = self.exit;
         Ok(Box::pin(async move {
-            if matches!(exit, Exit::OnShutdown) {
-                process_shutdown.await;
+            match exit {
+                Exit::OnShutdown => process_shutdown.await,
+                Exit::Fail => return Err(generic_error!("worker failed")),
+                Exit::FailInit => {}
             }
             Ok(())
         }))
@@ -208,7 +209,7 @@ impl Supervisable for RespawningOwner {
                 child_runs.fetch_add(1, Ordering::SeqCst);
                 let _ = ran_tx.send(());
             })
-            .spawn_child();
+            .spawn();
             let _ = ran_rx.await;
 
             if first {
@@ -220,9 +221,92 @@ impl Supervisable for RespawningOwner {
     }
 }
 
+/// A supervisable worker that counts how many times it starts, and whose first instance drains the output of a child.
+///
+/// The child holds the only sender of the channel, and fails after a moment. Its sender closes when it fails. Thus, the
+/// body sees the failure first, and returns before the scope sees the exit of the child. This is the same shape as a
+/// component that sends its work to a child task and dispatches what comes back. Each later instance runs until it is
+/// told to stop.
+struct DrainingOwner {
+    starts: Arc<AtomicUsize>,
+    edge: Edge,
+}
+
+#[async_trait]
+impl Supervisable for DrainingOwner {
+    fn name(&self) -> &str {
+        "owner"
+    }
+
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+        let first = self.starts.fetch_add(1, Ordering::SeqCst) == 0;
+        let edge = self.edge;
+        Ok(Box::pin(async move {
+            if !first {
+                process_shutdown.await;
+                return Ok(());
+            }
+
+            let (output_tx, mut output_rx) = mpsc::channel::<()>(1);
+            let child = runtime::worker("child", async move {
+                let _output_tx = output_tx;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                Err::<(), GenericError>(generic_error!("child failed"))
+            });
+            match edge {
+                Edge::Needed => child.needed().spawn(),
+                Edge::Hosted => child.hosted().spawn(),
+            };
+
+            while output_rx.recv().await.is_some() {}
+            Ok(())
+        }))
+    }
+}
+
+/// A supervisable worker that counts how many times it starts, and whose first instance returns by itself at once.
+///
+/// Before it returns, the first instance spawns a needed child named `owner`, which runs until it is told to stop.
+/// `owner` spawns a needed child of its own that fails when it is told to stop. When the body of this worker returns,
+/// its scope closes and tells `owner` to stop. Then the scope of `owner` closes, and tells the child to stop. Thus, the
+/// child fails after a stop that was requested of `owner`. Each later instance runs until it is told to stop.
+struct ReturningGrandparent {
+    starts: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Supervisable for ReturningGrandparent {
+    fn name(&self) -> &str {
+        "grandparent"
+    }
+
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+        let first = self.starts.fetch_add(1, Ordering::SeqCst) == 0;
+        Ok(Box::pin(async move {
+            if !first {
+                process_shutdown.await;
+                return Ok(());
+            }
+
+            runtime::worker_with_shutdown("owner", |shutdown| async move {
+                runtime::worker_with_shutdown("child", |shutdown| async move {
+                    shutdown.await;
+                    Err::<(), GenericError>(generic_error!("child failed while it stopped"))
+                })
+                .needed()
+                .spawn();
+                shutdown.await;
+            })
+            .needed()
+            .spawn();
+            Ok(())
+        }))
+    }
+}
+
 #[test]
-fn spawn_child_outside_a_scope_panics() {
-    let result = std::panic::catch_unwind(|| runtime::worker("child", async {}).spawn_child());
+fn spawn_outside_supervision_panics() {
+    let result = std::panic::catch_unwind(|| runtime::worker("child", async {}).spawn());
     assert!(result.is_err(), "spawning into a scope outside supervision must panic");
 }
 
@@ -233,14 +317,14 @@ fn nested_outside_a_scope_panics() {
 }
 
 #[tokio::test]
-async fn spawn_child_or_detached_runs_the_child_outside_supervision() {
+async fn spawn_or_detached_runs_the_child_outside_supervision() {
     let ran = flag();
     let child_ran = Arc::clone(&ran);
 
     let id = runtime::worker("child", async move {
         child_ran.store(true, Ordering::SeqCst);
     })
-    .spawn_child_or_detached();
+    .spawn_or_detached();
 
     assert!(
         id.is_none(),
@@ -264,7 +348,7 @@ async fn owner_does_not_finish_until_its_children_have() {
                 let _ = release_rx.await;
                 done.store(true, Ordering::SeqCst);
             })
-            .spawn_child();
+            .spawn();
         })
         .build(),
     );
@@ -332,7 +416,7 @@ async fn children_spawned_by_a_failing_body_never_start() {
             runtime::worker("child", async move {
                 child_ran.store(true, Ordering::SeqCst);
             })
-            .spawn_child();
+            .spawn();
             Err::<(), GenericError>(generic_error!("owner failed"))
         })
         .build(),
@@ -364,7 +448,7 @@ async fn hosted_child_failure_is_reaped_and_the_owner_keeps_running() {
                 child_failed.store(true, Ordering::SeqCst);
                 Err::<(), GenericError>(generic_error!("child failed"))
             })
-            .spawn_child();
+            .spawn();
             shutdown.await;
         })
         .build(),
@@ -381,17 +465,15 @@ async fn hosted_child_failure_is_reaped_and_the_owner_keeps_running() {
 
 #[tokio::test]
 async fn needed_child_terminating_fails_the_owner() {
-    let mut sup = Supervisor::new("sup")
-        .unwrap()
-        .with_auto_shutdown(AutoShutdown::AnySignificant);
+    let mut sup = Supervisor::new("sup").unwrap();
     sup.add_worker(
         runtime::worker_with_shutdown("owner", |shutdown| async move {
             // The child exits cleanly, but without a request to stop. Because the child is needed, this exit fails the
             // owner.
-            runtime::worker("child", async {}).needed().spawn_child();
+            runtime::worker("child", async {}).needed().spawn();
             shutdown.await;
         })
-        .with_significant(true)
+        .needed()
         .build(),
     );
 
@@ -413,7 +495,7 @@ async fn needed_child_failing_to_initialize_fails_the_owners_initialization() {
                 exit: Exit::FailInit,
             })
             .needed()
-            .spawn_child();
+            .spawn();
             shutdown.await;
         })
         .build(),
@@ -429,27 +511,26 @@ async fn needed_child_failing_to_initialize_fails_the_owners_initialization() {
 async fn hosted_child_exceeding_the_scope_limit_fails_the_owner() {
     let starts = counter();
 
-    let mut sup = Supervisor::new("sup")
-        .unwrap()
-        .with_auto_shutdown(AutoShutdown::AnySignificant);
+    let mut sup = Supervisor::new("sup").unwrap();
     let child_starts = Arc::clone(&starts);
     sup.add_worker(
         runtime::worker_with_shutdown("owner", move |shutdown| async move {
             runtime::supervisable(CountingWorker {
                 name: "child",
                 starts: child_starts,
-                exit: Exit::Immediately,
+                exit: Exit::Fail,
             })
-            .spawn_child();
+            .spawn();
             shutdown.await;
         })
-        .with_significant(true)
+        .needed()
         .build(),
     );
 
-    // A scope allows the default intensity, which is one restart in the period. The second exit exceeds this
-    // intensity. The usual result for a hosted child is that the scope reaps it and the owner continues. Here, the
-    // owner fails instead, so that the level above can retry the failure.
+    // The scope restarts a hosted child when it fails, if the child can start again. A scope allows the default
+    // intensity, which is one restart in the period. The second failure exceeds this intensity. The usual result for
+    // a hosted child is that the scope reaps it and the owner continues. Here, the owner fails instead, so that the
+    // level above can retry the failure.
     let result = run_to_exit(sup).await;
     assert!(
         matches!(result, Err(SupervisorError::SignificantChildExited)),
@@ -462,9 +543,7 @@ async fn hosted_child_exceeding_the_scope_limit_fails_the_owner() {
 async fn nested_scope_child_exceeding_the_limit_fails_the_scopes_owner() {
     let starts = counter();
 
-    let mut sup = Supervisor::new("sup")
-        .unwrap()
-        .with_auto_shutdown(AutoShutdown::AnySignificant);
+    let mut sup = Supervisor::new("sup").unwrap();
     let child_starts = Arc::clone(&starts);
     sup.add_worker(
         runtime::worker_with_shutdown("owner", move |shutdown| async move {
@@ -473,14 +552,14 @@ async fn nested_scope_child_exceeding_the_limit_fails_the_scopes_owner() {
                 runtime::supervisable(CountingWorker {
                     name: "driver",
                     starts: child_starts,
-                    exit: Exit::Immediately,
+                    exit: Exit::Fail,
                 })
                 .build(),
             );
             shutdown.await;
             drop(guard);
         })
-        .with_significant(true)
+        .needed()
         .build(),
     );
 
@@ -509,7 +588,7 @@ async fn exits_during_close_are_requested_and_never_restarted() {
                 starts: child_starts,
                 exit: Exit::OnShutdown,
             })
-            .spawn_child();
+            .spawn();
             let _ = stop_rx.await;
         })
         .build(),
@@ -532,6 +611,88 @@ async fn exits_during_close_are_requested_and_never_restarted() {
 }
 
 #[tokio::test]
+async fn needed_child_failure_that_the_body_sees_first_fails_the_owner() {
+    let starts = counter();
+
+    let mut sup = Supervisor::new("sup").unwrap();
+    sup.add_worker(
+        runtime::supervisable(DrainingOwner {
+            starts: Arc::clone(&starts),
+            edge: Edge::Needed,
+        })
+        .hosted()
+        .build(),
+    );
+
+    // The body of the owner returns as soon as the output of its child closes, before the scope sees that the child
+    // failed. The scope sees the failure as it closes. Nothing told the owner to stop, so the needed child still fails
+    // the owner. The owner is hosted and can start again, so the supervisor restarts it after the failure.
+    let (tx, run) = run_with_trigger(sup).await;
+    wait_until("the failed owner is restarted", || starts.load(Ordering::SeqCst) == 2).await;
+
+    tx.send(()).unwrap();
+    assert!(join(run).await.is_ok());
+}
+
+#[tokio::test]
+async fn hosted_child_failure_that_the_body_sees_first_does_not_fail_the_owner() {
+    let starts = counter();
+
+    let mut sup = Supervisor::new("sup").unwrap();
+    let tree = sup.tree_handle();
+    sup.add_worker(
+        runtime::supervisable(DrainingOwner {
+            starts: Arc::clone(&starts),
+            edge: Edge::Hosted,
+        })
+        .hosted()
+        .build(),
+    );
+
+    // The same failure as above, but of a hosted child. The scope only logs it, and the owner finishes cleanly. The
+    // supervisor does not restart a hosted owner after a clean exit.
+    let (tx, run) = run_with_trigger(sup).await;
+    wait_until("the owner finishes", || {
+        node_state(&tree, "owner") == Some(NodeState::Exited)
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+
+    tx.send(()).unwrap();
+    assert!(join(run).await.is_ok());
+}
+
+#[tokio::test]
+async fn child_failing_after_its_owner_is_told_to_stop_does_not_fail_the_owner() {
+    let starts = counter();
+
+    let mut sup = Supervisor::new("sup").unwrap();
+    let tree = sup.tree_handle();
+    sup.add_worker(
+        runtime::supervisable(ReturningGrandparent {
+            starts: Arc::clone(&starts),
+        })
+        .hosted()
+        .build(),
+    );
+
+    // The grandparent returns by itself, so its scope closes and tells `owner` to stop. Then the needed child of `owner`
+    // fails as it stops. This stop was requested of `owner`, so the failure does not fail `owner`. If it did, `owner`
+    // would fail the grandparent, because nothing told the grandparent to stop, and the supervisor would restart it.
+    let (tx, run) = run_with_trigger(sup).await;
+    wait_until("the grandparent finishes", || {
+        node_state(&tree, "grandparent") == Some(NodeState::Exited)
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+
+    tx.send(()).unwrap();
+    assert!(join(run).await.is_ok());
+}
+
+#[tokio::test]
 async fn exits_after_the_owner_is_told_to_stop_are_requested() {
     let starts = counter();
     let drained = flag();
@@ -546,7 +707,8 @@ async fn exits_after_the_owner_is_told_to_stop_are_requested() {
                 starts: child_starts,
                 released: release_rx,
             })
-            .spawn_child();
+            .needed()
+            .spawn();
             shutdown.await;
 
             // The owner closes the input of its child, and then drains. The child is permanent, and it exits when its
@@ -590,6 +752,7 @@ async fn exits_in_a_nested_scope_after_its_owner_is_told_to_stop_are_requested()
                     starts: driver_starts,
                     released: release_rx,
                 })
+                .needed()
                 .build(),
             );
             shutdown.await;
@@ -664,8 +827,8 @@ async fn children_are_held_to_their_own_shutdown_strategy() {
         runtime::worker_with_shutdown("owner", |shutdown| async move {
             runtime::worker("stubborn", pending::<()>())
                 .with_shutdown_timeout(Duration::from_millis(100))
-                .spawn_child();
-            runtime::worker_with_shutdown("prompt", |shutdown| shutdown).spawn_child();
+                .spawn();
+            runtime::worker_with_shutdown("prompt", |shutdown| shutdown).spawn();
             shutdown.await;
         })
         .build(),
@@ -695,7 +858,7 @@ async fn a_supervisor_budget_does_not_reach_into_a_scope() {
                 timeout: Duration::from_millis(100),
             })
             .with_budget_bounded_shutdown()
-            .spawn_child();
+            .spawn();
             shutdown.await;
         })
         .build(),
@@ -733,7 +896,7 @@ async fn an_owner_aborted_by_its_supervisor_takes_its_children_with_it() {
                 pending::<()>().await;
             })
             .with_shutdown_timeout(Duration::from_secs(30))
-            .spawn_child();
+            .spawn();
             pending::<()>().await;
         })
         .build(),
@@ -894,7 +1057,7 @@ async fn detached_child_runs_on_the_runtime_that_it_was_placed_on() {
         let _ = thread_tx.send(std::thread::current().name().map(String::from));
     })
     .on_runtime(pool.handle().clone())
-    .spawn_child_or_detached();
+    .spawn_or_detached();
     assert!(
         id.is_none(),
         "there is no scope to spawn into, so the child runs detached"
@@ -991,6 +1154,33 @@ async fn precreated_scope_holds_its_children_until_adopted() {
 }
 
 #[tokio::test]
+async fn precreated_scope_child_exceeding_the_limit_fails_the_hosts_supervisor() {
+    let starts = counter();
+
+    let scope = UnadoptedScope::new("pre");
+    scope.scope().spawn(
+        runtime::supervisable(CountingWorker {
+            name: "child",
+            starts: Arc::clone(&starts),
+            exit: Exit::Fail,
+        })
+        .build(),
+    );
+
+    // The host only holds the child. Thus, the failure of the child goes through the host, and does not end at the
+    // host.
+    let mut sup = Supervisor::new("sup").unwrap();
+    sup.add_worker(scope.into_host());
+
+    let result = run_to_exit(sup).await;
+    assert!(
+        matches!(result, Err(SupervisorError::SignificantChildExited)),
+        "the host should have failed, taking the supervisor down with it, got {result:?}"
+    );
+    assert_eq!(starts.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
 async fn restarted_adopter_gets_a_new_scope() {
     let starts = counter();
     let child_runs = counter();
@@ -1029,7 +1219,7 @@ async fn children_spawned_while_a_scope_is_entered_go_into_it() {
         runtime::worker("child", async move {
             child_ran.store(true, Ordering::SeqCst);
         })
-        .spawn_child();
+        .spawn();
     });
 
     let mut sup = Supervisor::new("sup").unwrap();
@@ -1046,16 +1236,16 @@ async fn children_spawned_while_a_scope_is_entered_go_into_it() {
 }
 
 #[tokio::test]
-async fn ambient_spawn_from_a_scope_child_still_lands_on_the_supervisor() {
+async fn spawning_a_sibling_from_a_scope_child_lands_on_the_supervisor() {
     let mut sup = Supervisor::new("sup").unwrap();
     let handle = sup.handle();
     sup.add_worker(
         runtime::worker_with_shutdown("owner", |shutdown| async move {
             runtime::worker_with_shutdown("child", |shutdown| async move {
-                runtime::worker_with_shutdown("sibling", |shutdown| shutdown).spawn();
+                runtime::worker_with_shutdown("sibling", |shutdown| shutdown).spawn_sibling();
                 shutdown.await;
             })
-            .spawn_child();
+            .spawn();
             shutdown.await;
         })
         .build(),
@@ -1066,6 +1256,40 @@ async fn ambient_spawn_from_a_scope_child_still_lands_on_the_supervisor() {
         handle.active_children() == 1
     })
     .await;
+
+    tx.send(()).unwrap();
+    assert!(join(run).await.is_ok());
+}
+
+#[tokio::test]
+async fn ambient_spawn_from_a_supervised_worker_goes_into_its_scope() {
+    let ran = flag();
+
+    let mut sup = Supervisor::new("sup").unwrap();
+    let handle = sup.handle();
+    let tree = sup.tree_handle();
+    let child_ran = Arc::clone(&ran);
+    sup.add_worker(
+        runtime::worker_with_shutdown("owner", move |shutdown| async move {
+            runtime::spawn(
+                runtime::worker_with_shutdown("child", move |shutdown| async move {
+                    child_ran.store(true, Ordering::SeqCst);
+                    shutdown.await;
+                })
+                .build(),
+            );
+            shutdown.await;
+        })
+        .build(),
+    );
+
+    let (tx, run) = run_with_trigger(sup).await;
+    wait_until("the child runs", || ran.load(Ordering::SeqCst)).await;
+
+    // The child belongs to the owner. It is not a sibling of the owner on the supervisor.
+    assert_eq!(handle.active_children(), 0);
+    let root = tree.snapshot().root;
+    assert!(find(find(&root, "owner").unwrap(), "child").is_some());
 
     tx.send(()).unwrap();
     assert!(join(run).await.is_ok());

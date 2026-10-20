@@ -361,6 +361,71 @@ async fn clones_observe_latest_state_and_closed_subscriptions_wait() {
     );
 }
 
+/// Keeps the last accepted snapshot when assigned nothing; see [`ProductDecoder::keeps_previous`].
+///
+/// An assignment whose only configuration fails to decode is rejected rather than treated as empty.
+#[derive(Default)]
+struct KeepsLastWhenEmpty {
+    assigned: bool,
+    value: Option<u32>,
+}
+
+impl ProductDecoder for KeepsLastWhenEmpty {
+    const PRODUCT: &'static str = "KEEPS_LAST";
+
+    type Snapshot = Option<u32>;
+    type Error = String;
+
+    fn decode(&mut self, _id: &ConfigId, payload: &[u8]) -> Result<(), Self::Error> {
+        self.assigned = true;
+        let [digit @ b'0'..=b'9'] = payload else {
+            return Err("Not a digit.".to_owned());
+        };
+        self.value = Some(u32::from(digit - b'0'));
+        Ok(())
+    }
+
+    fn build(self) -> Result<Self::Snapshot, Self::Error> {
+        match self.value {
+            None if self.assigned => Err("Nothing valid.".to_owned()),
+            value => Ok(value),
+        }
+    }
+
+    fn keeps_previous(snapshot: &Self::Snapshot) -> bool {
+        snapshot.is_none()
+    }
+}
+
+// A latest-state subscription coalesces publications, so a withdrawal published before the consumer reads must not
+// replace the configuration it has not yet applied.
+#[tokio::test]
+async fn keeps_previous_retains_the_last_snapshot_and_clears_a_rejection() {
+    let empty = std::iter::empty::<(&str, &str)>;
+    let (publisher, mut subscription) = TestPublisher::<Option<u32>>::new();
+
+    // With nothing accepted yet, the empty state is published so `current` reports it.
+    publisher.assign::<KeepsLastWhenEmpty>(empty());
+    assert_eq!(*subscription.changed().await.unwrap(), None);
+    let unassigned = subscription.current().unwrap();
+    publisher.assign::<KeepsLastWhenEmpty>(empty());
+    assert!(Arc::ptr_eq(&subscription.changed().await.unwrap(), &unassigned));
+
+    publisher.assign::<KeepsLastWhenEmpty>([("a", "1")]);
+    publisher.assign::<KeepsLastWhenEmpty>(empty());
+    assert_eq!(*subscription.changed().await.unwrap(), Some(1));
+
+    publisher.assign::<KeepsLastWhenEmpty>([("a", "2")]);
+    publisher.assign::<KeepsLastWhenEmpty>([("a", "x")]);
+    assert_eq!(*expect_rejection(subscription.changed()).await, "Nothing valid.");
+    publisher.assign::<KeepsLastWhenEmpty>(empty());
+    assert_eq!(
+        *subscription.changed().await.unwrap(),
+        Some(2),
+        "the withdrawal clears the rejection and keeps the last accepted snapshot"
+    );
+}
+
 #[tokio::test]
 async fn a_pending_publication_is_observed_after_the_publisher_stops() {
     let (publisher, mut subscription) = TestPublisher::<u32>::new();

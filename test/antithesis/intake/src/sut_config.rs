@@ -36,7 +36,7 @@ impl SutConfig {
     pub(crate) fn load(dir: &Path) -> Option<Self> {
         let path = dir.join("datadog.yaml");
         let yaml = fs::read_to_string(&path).ok()?;
-        match serde_yaml::from_str(&yaml) {
+        match serde_saphyr::from_str(&yaml) {
             Ok(config) => Some(config),
             Err(e) => {
                 warn!(path = %path.display(), error = %e, "Cannot read the sampled config, skipping Pyld60.");
@@ -68,7 +68,7 @@ mod tests {
         let yaml = format!(
             "hostname: h\nuse_v3_api:\n  series:\n    enabled: \"{series_v3}\"\nserializer_compressor_kind: {compressor}\ndogstatsd_buffer_size: 8192\n"
         );
-        serde_yaml::from_str(&yaml).expect("parse config")
+        serde_saphyr::from_str(&yaml).expect("parse config")
     }
 
     #[test]
@@ -80,7 +80,7 @@ mod tests {
         assert!(config(true, "snappy").expected_series_v3());
         assert!(!config(false, "zstd").expected_series_v3());
         // datadog_only resolves against the rig's non-Datadog dd_url, so it means v2.
-        let datadog_only: SutConfig = serde_yaml::from_str(
+        let datadog_only: SutConfig = serde_saphyr::from_str(
             "use_v3_api:\n  series:\n    enabled: \"datadog_only\"\nserializer_compressor_kind: zstd\n",
         )
         .expect("parse");

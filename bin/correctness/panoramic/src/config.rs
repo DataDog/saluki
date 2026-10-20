@@ -576,10 +576,10 @@ where
     D: Deserializer<'de>,
     M: FromIterator<(String, String)>,
 {
-    BTreeMap::<String, serde_yaml::Value>::deserialize(deserializer)?
+    BTreeMap::<String, serde_json::Value>::deserialize(deserializer)?
         .into_iter()
         .map(|(name, value)| match value {
-            serde_yaml::Value::String(value) => Ok((name, value)),
+            serde_json::Value::String(value) => Ok((name, value)),
             _ => Err(D::Error::custom(format!(
                 "environment variable '{}' must be a YAML string: quote any value that would otherwise \
                  parse as a boolean or a number (\"true\", \"8125\")",
@@ -623,7 +623,7 @@ where
     let content = std::fs::read_to_string(&config_path)
         .error_context(format!("Failed to read configuration file: {}", config_path.display()))?;
 
-    let mut case: T = serde_yaml::from_str(&content)
+    let mut case: T = serde_saphyr::from_str(&content)
         .error_context(format!("Failed to parse configuration file: {}", config_path.display()))?;
 
     case.set_loaded_from(config_path);
@@ -701,7 +701,7 @@ fn try_load_test(
     let content = std::fs::read_to_string(config_path)
         .error_context(format!("Failed to read config file: {}", config_path.display()))?;
 
-    let peek: serde_yaml::Value = serde_yaml::from_str(&content).error_context(format!(
+    let peek: serde_json::Value = serde_saphyr::from_str(&content).error_context(format!(
         "Failed to parse config file as YAML: {}",
         config_path.display()
     ))?;
@@ -760,7 +760,7 @@ fn try_load_test(
                 .to_string();
             // Parse both schemas from YAML text: flattening or a Value roundtrip changes scalar coercion.
             let base: CorrectnessConfig = load_case(config_path)?;
-            let matrix: MatrixVariants = serde_yaml::from_str(&content)
+            let matrix: MatrixVariants = serde_saphyr::from_str(&content)
                 .error_context(format!("Failed to parse configuration file: {}", config_path.display()))?;
             if matrix.variants.is_empty() {
                 return Err(generic_error!(
@@ -883,7 +883,7 @@ mod tests {
 
     #[test]
     fn target_exec_action_deserializes_command() {
-        let action: ActionConfig = serde_yaml::from_str(
+        let action: ActionConfig = serde_saphyr::from_str(
             r#"
 action: target_exec
 command: ["pwsh", "-File", "C:\\test\\send.ps1"]
@@ -901,7 +901,7 @@ timeout: 12s
 
     #[test]
     fn dogstatsd_replay_action_deserializes_capture_and_stats_configuration() {
-        let action: ActionConfig = serde_yaml::from_str(
+        let action: ActionConfig = serde_saphyr::from_str(
             r#"
 action: dogstatsd_replay
 sender: ["python3", "/tmp/send.py"]
@@ -1105,7 +1105,7 @@ procedure:
     duration: 5s
 "#;
 
-        let error = match serde_yaml::from_str::<IntegrationConfig>(yaml) {
+        let error = match serde_saphyr::from_str::<IntegrationConfig>(yaml) {
             Ok(_) => panic!("an unquoted boolean env value should be rejected"),
             Err(e) => format!("{e:?}"),
         };
@@ -1185,7 +1185,7 @@ variants:
         let config_path = base_dir.path().join("dsd-matrix").join("config.yaml");
 
         let base: CorrectnessConfig = load_case(&config_path).unwrap();
-        let matrix: MatrixVariants = serde_yaml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        let matrix: MatrixVariants = serde_saphyr::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
         let expanded = matrix.expand(&base, "dsd-matrix");
 
         assert_eq!(expanded.len(), 1);
@@ -1269,7 +1269,7 @@ procedure:
     timeout: 30s
 "#;
 
-        let config: IntegrationConfig = serde_yaml::from_str(yaml).expect("case should parse");
+        let config: IntegrationConfig = serde_saphyr::from_str(yaml).expect("case should parse");
 
         assert!(config.intake.enabled);
         let AssertionStep::Action(ActionConfig::DogstatsdSend { payload, port, .. }) = &config.procedure[0] else {
@@ -1304,7 +1304,7 @@ procedure:
     duration: 5s
 "#;
 
-        let config: IntegrationConfig = serde_yaml::from_str(yaml).expect("case should parse");
+        let config: IntegrationConfig = serde_saphyr::from_str(yaml).expect("case should parse");
 
         assert!(!config.intake.enabled);
     }
@@ -1472,7 +1472,7 @@ variants:
         );
         let path = dir.path().join("matrix/config.yaml");
         let ordinary: CorrectnessConfig = load_case(&path).unwrap();
-        let matrix: MatrixVariants = serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let matrix: MatrixVariants = serde_saphyr::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let expanded = matrix.expand(&ordinary, "matrix");
         assert_eq!(
             expanded.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
@@ -1554,7 +1554,7 @@ variants:
         );
         let path = dir.path().join("prepared/config.yaml");
         let base: CorrectnessConfig = load_case(&path).unwrap();
-        let matrix: MatrixVariants = serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let matrix: MatrixVariants = serde_saphyr::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let mut configs = vec![("prepared/base".to_string(), base.clone())];
         configs.extend(matrix.expand(&base, "prepared"));
         let entries = [
@@ -1638,18 +1638,18 @@ baseline:
   image: base
   command: [sleep, 10, 01, 1e3, true, 1.50]
   entrypoint: [env, 20, 02, 2e3, false, 2.50]
-  env: {BOOL: "true", NUMBER: "8125", SCIENTIFIC: "1e3", LEADING_ZERO: 01}
+  env: {BOOL: "true", NUMBER: "8125", SCIENTIFIC: "1e3", LEADING_ZERO: "01"}
 comparison:
   image: comp
   command: [wait, 30, 03, 3e3, false, 3.50]
   entrypoint: [exec, 40, 04, 4e3, true, 4.50]
-  env: {BOOL: "false", NUMBER: "8126", SCIENTIFIC: "2e3", LEADING_ZERO: 02}
+  env: {BOOL: "false", NUMBER: "8126", SCIENTIFIC: "2e3", LEADING_ZERO: "02"}
 variants: [{name: one, env: {QUOTED: "true"}}]
 "#,
         );
         let path = dir.path().join("scalars/config.yaml");
         let ordinary: CorrectnessConfig = load_case(&path).unwrap();
-        let matrix: MatrixVariants = serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let matrix: MatrixVariants = serde_saphyr::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let expanded = matrix.expand(&ordinary, "scalars");
         let cases = discover_tests(&[dir.path().to_path_buf()], LINUX_RUNTIME, &[]).unwrap();
         assert_eq!(cases.len(), 1);
@@ -1678,9 +1678,19 @@ variants: [{name: one, env: {QUOTED: "true"}}]
 
     #[test]
     fn all_environment_maps_reject_non_string_yaml_values() {
-        for value in ["true", "false", "8125", "1e3", "1.5", "null", "[text]", "{key: text}"] {
+        for value in [
+            "true",
+            "false",
+            "8125",
+            "01",
+            "1e3",
+            "1.5",
+            "null",
+            "[text]",
+            "{key: text}",
+        ] {
             let integration = format!("name: strict\ntimeout: 1s\nprocedure: []\nenv: {{INVALID: {value}}}\n");
-            let error = serde_yaml::from_str::<IntegrationConfig>(&integration).unwrap_err();
+            let error = serde_saphyr::from_str::<IntegrationConfig>(&integration).unwrap_err();
             assert!(error
                 .to_string()
                 .contains("environment variable 'INVALID' must be a YAML string"));

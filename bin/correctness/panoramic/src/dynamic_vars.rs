@@ -368,7 +368,7 @@ mod tests {
     fn config_with_env_keys(keys: &[&str]) -> IntegrationConfig {
         let env_block = keys.iter().map(|k| format!("  {k}: \"cmd\"\n")).collect::<String>();
         let yaml = format!("name: t\ntimeout: 10s\nprocedure: []\nenv:\n{env_block}");
-        serde_yaml::from_str(&yaml).expect("minimal integration config should deserialize")
+        serde_saphyr::from_str(&yaml).expect("minimal integration config should deserialize")
     }
 
     #[tokio::test]

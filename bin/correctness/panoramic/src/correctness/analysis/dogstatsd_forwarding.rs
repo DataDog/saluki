@@ -2,11 +2,26 @@ use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use saluki_error::{generic_error, GenericError};
+use tracing::info;
+
+/// Number of times each distinct forwarded message was seen, keyed by the raw message bytes.
+type MessageCounts = BTreeMap<Vec<u8>, usize>;
+
+/// Analysis failure: the overall error, plus the per-message details backing it.
+type AnalysisError = (GenericError, Vec<String>);
 
 pub fn run_analysis(
     baseline_packets: &[String], comparison_packets: &[String], require_packets: bool,
-) -> Result<(), (GenericError, Vec<String>)> {
-    if baseline_packets.is_empty() && comparison_packets.is_empty() {
+) -> Result<(), AnalysisError> {
+    let (baseline_counts, baseline_filtered) = forwarded_message_counts(baseline_packets)?;
+    let (comparison_counts, comparison_filtered) = forwarded_message_counts(comparison_packets)?;
+
+    info!(
+        "Filtered {} internal telemetry DogStatsD message(s) from baseline, and {} internal telemetry DogStatsD message(s) from comparison.",
+        baseline_filtered, comparison_filtered
+    );
+
+    if baseline_counts.is_empty() && comparison_counts.is_empty() {
         if require_packets {
             return Err((
                 generic_error!("No forwarded DogStatsD packets were captured."),
@@ -20,8 +35,6 @@ pub fn run_analysis(
         return Ok(());
     }
 
-    let baseline_counts = forwarded_message_counts(baseline_packets)?;
-    let comparison_counts = forwarded_message_counts(comparison_packets)?;
     let details = message_count_differences(&baseline_counts, &comparison_counts);
 
     if details.is_empty() {
@@ -34,13 +47,19 @@ pub fn run_analysis(
     }
 }
 
-fn forwarded_message_counts(packets: &[String]) -> Result<BTreeMap<Vec<u8>, usize>, (GenericError, Vec<String>)> {
+fn forwarded_message_counts(packets: &[String]) -> Result<(MessageCounts, usize), AnalysisError> {
     let mut counts = BTreeMap::new();
+    let mut filtered = 0;
 
     for packet in packets {
         let payload = decode_forwarded_packet(packet)?;
         for message in payload.split(|byte| *byte == b'\n') {
             if message.is_empty() {
+                continue;
+            }
+
+            if is_internal_telemetry(message) {
+                filtered += 1;
                 continue;
             }
 
@@ -55,12 +74,14 @@ fn forwarded_message_counts(packets: &[String]) -> Result<BTreeMap<Vec<u8>, usiz
         }
     }
 
-    Ok(counts)
+    Ok((counts, filtered))
 }
 
-fn message_count_differences(
-    baseline_counts: &BTreeMap<Vec<u8>, usize>, comparison_counts: &BTreeMap<Vec<u8>, usize>,
-) -> Vec<String> {
+fn is_internal_telemetry(message: &[u8]) -> bool {
+    message.starts_with(b"datadog.")
+}
+
+fn message_count_differences(baseline_counts: &MessageCounts, comparison_counts: &MessageCounts) -> Vec<String> {
     let messages = baseline_counts
         .keys()
         .chain(comparison_counts.keys())
@@ -95,7 +116,7 @@ fn message_count_differences(
     details
 }
 
-fn decode_forwarded_packet(packet: &str) -> Result<Vec<u8>, (GenericError, Vec<String>)> {
+fn decode_forwarded_packet(packet: &str) -> Result<Vec<u8>, AnalysisError> {
     STANDARD.decode(packet).map_err(|e| {
         (
             generic_error!("Failed to decode forwarded DogStatsD packet capture."),
@@ -108,7 +129,18 @@ fn decode_forwarded_packet(packet: &str) -> Result<Vec<u8>, (GenericError, Vec<S
 
 #[cfg(test)]
 mod tests {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
     use super::run_analysis;
+
+    /// Encodes `messages` as a single captured packet, the way the intake records them.
+    fn packet(messages: &[&str]) -> String {
+        STANDARD.encode(messages.join("\n"))
+    }
+
+    const BASELINE_TELEMETRY: &str = "datadog.dogstatsd.client.metrics:1|c|#client:go|c:baseline-container-id";
+    const COMPARISON_TELEMETRY: &str = "datadog.dogstatsd.client.metrics:1|c|#client:go|c:comparison-container-id";
+    const CORPUS_MESSAGE: &str = "my.metric:1|c";
 
     #[test]
     fn matching_messages_pass_regardless_of_packet_boundaries() {
@@ -129,6 +161,31 @@ mod tests {
     #[test]
     fn optional_empty_captures_pass() {
         run_analysis(&[], &[], false).expect("empty optional captures should pass");
+    }
+
+    #[test]
+    fn internal_agent_telemetry_is_ignored() {
+        let baseline = vec![packet(&[BASELINE_TELEMETRY]), packet(&[CORPUS_MESSAGE])];
+        let comparison = vec![packet(&[COMPARISON_TELEMETRY]), packet(&[CORPUS_MESSAGE])];
+
+        run_analysis(&baseline, &comparison, true).expect("internal telemetry should be filtered out");
+    }
+
+    #[test]
+    fn internal_agent_telemetry_is_ignored_within_a_packet() {
+        let baseline = vec![packet(&[BASELINE_TELEMETRY, CORPUS_MESSAGE])];
+        let comparison = vec![packet(&[CORPUS_MESSAGE])];
+
+        run_analysis(&baseline, &comparison, true).expect("internal telemetry should be filtered out");
+    }
+
+    #[test]
+    fn required_packets_fail_when_only_internal_telemetry_was_captured() {
+        let packets = vec![packet(&[BASELINE_TELEMETRY])];
+
+        let error = run_analysis(&packets, &packets, true).expect_err("filtered-only captures should fail");
+
+        assert!(error.0.to_string().contains("No forwarded DogStatsD packets"));
     }
 
     #[test]

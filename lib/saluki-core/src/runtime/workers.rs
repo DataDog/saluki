@@ -58,7 +58,8 @@ type WorkerBody = Box<dyn FnOnce(ShutdownHandle) -> SupervisorFuture + Send>;
 ///
 /// Create such a worker with [`with_shutdown`][Self::with_shutdown] instead, which gives its body the signal.
 ///
-/// This worker cannot be restarted, as the future is consumed during initialization.
+/// This worker cannot be restarted, as the future is consumed during initialization. It reports this through
+/// [`can_restart`][Supervisable::can_restart], so its owner never restarts it.
 pub struct FnWorker {
     name: String,
     body: Mutex<Option<WorkerBody>>,
@@ -146,6 +147,11 @@ impl Supervisable for FnWorker {
         self.wants_signal
     }
 
+    fn can_restart(&self) -> bool {
+        // The body is consumed when the worker starts, so there is nothing left to start a second time.
+        false
+    }
+
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let body = self
             .body
@@ -215,6 +221,13 @@ mod tests {
         // The supervisor uses this to skip allocating a shutdown coordinator it would never fire: an `FnWorker` runs
         // until its own terminal condition regardless of what the supervisor signals.
         assert!(!FnWorker::new("test", async {}).wants_shutdown_signal());
+    }
+
+    #[test]
+    fn worker_cannot_restart() {
+        // Owners derive the restart policy from this, so that they never try to start a consumed body again.
+        assert!(!FnWorker::new("test", async {}).can_restart());
+        assert!(!FnWorker::with_shutdown("test", |shutdown| shutdown).can_restart());
     }
 
     #[tokio::test]

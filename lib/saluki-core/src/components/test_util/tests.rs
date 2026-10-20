@@ -5,7 +5,7 @@ use saluki_error::{generic_error, GenericError};
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 
-use super::TestComponentDriver;
+use super::{PrebuiltSource, TestComponentDriver};
 use crate::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use crate::components::{
     destinations::{Destination, DestinationBuilder, DestinationContext},
@@ -149,9 +149,16 @@ enum ChildBehavior {
     /// Never finishes, and is aborted as soon as the supervisor stops. The destination returns after its first event,
     /// rather than once its input closes.
     AbortedOnStop,
+
+    /// Is needed, and fails at once while it holds the only sender of a channel. The destination returns cleanly when
+    /// it sees that channel close, so its `run` returns before its scope sees the failure.
+    NeededFailsBeforeRunReturns,
+
+    /// Is needed, and fails at once. The destination waits for its input to close, so the failure stops its `run`.
+    NeededFailsWhileRunWaits,
 }
 
-/// A destination that spawns one child on the ambient supervisor, then consumes its input until it closes.
+/// A destination that spawns one child into its scope, then consumes its input until it closes.
 struct SpawningDestination {
     child: ChildBehavior,
 }
@@ -176,6 +183,24 @@ impl Destination for SpawningDestination {
                     .spawn();
                 context.events().next().await;
                 return Ok(());
+            }
+            ChildBehavior::NeededFailsBeforeRunReturns => {
+                let (child_tx, mut child_rx) = tokio::sync::mpsc::channel::<()>(1);
+                runtime::worker("child", async move {
+                    let _child_tx = child_tx;
+                    Err::<(), _>(generic_error!("child failed on purpose"))
+                })
+                .needed()
+                .spawn();
+                let _ = child_rx.recv().await;
+                return Ok(());
+            }
+            ChildBehavior::NeededFailsWhileRunWaits => {
+                runtime::worker("child", async {
+                    Err::<(), _>(generic_error!("child failed on purpose"))
+                })
+                .needed()
+                .spawn();
             }
         }
 
@@ -289,7 +314,8 @@ async fn children_spawned_from_run_join_the_component_supervisor() {
     .await
     .expect("destination should build");
 
-    control.supervisor().wait_for_children(1).await;
+    // The destination's worker, and the child in its scope.
+    control.supervisor().wait_for_running_descendants(2).await;
 
     control
         .shutdown()
@@ -307,7 +333,8 @@ async fn child_ignoring_shutdown_surfaces_as_shutdown_timed_out() {
         .await
         .expect("destination should build");
 
-    control.supervisor().wait_for_children(1).await;
+    // The destination's worker, and the child in its scope.
+    control.supervisor().wait_for_running_descendants(2).await;
 
     let started = Instant::now();
     let error = control
@@ -364,17 +391,63 @@ async fn run_returning_on_its_own_stops_the_children_it_spawned() {
     })
     .await
     .expect("destination should build");
-    control.supervisor().wait_for_children(1).await;
+    // The destination's worker, and the child in its scope.
+    control.supervisor().wait_for_running_descendants(2).await;
 
     // The destination returns after its first event, without shutdown being signalled. Its supervisor stops with it,
     // and aborts the child on the way.
     control.send_event(Event::Metric(Metric::counter("stop", 1.0))).await;
-    control.supervisor().wait_for_children(0).await;
+    control.supervisor().wait_for_running_descendants(0).await;
 
     control
         .wait()
         .await
         .expect("the destination's run should return cleanly");
+}
+
+#[tokio::test]
+async fn needed_child_failing_before_run_returns_fails_the_component() {
+    // The destination returns cleanly when it sees the child's channel close, before its scope sees the child fail.
+    // The scope sees the failure as it closes, and fails the component with it, as in a topology.
+    let control = TestComponentDriver::destination(SpawningDestinationBuilder {
+        child: ChildBehavior::NeededFailsBeforeRunReturns,
+    })
+    .await
+    .expect("destination should build");
+
+    let error = control
+        .wait()
+        .await
+        .expect_err("the child's failure should fail the component");
+    assert!(
+        format!("{error:#}").contains("child failed on purpose"),
+        "the error should come from the child: {error:#}"
+    );
+}
+
+#[tokio::test]
+async fn needed_child_failing_while_run_waits_fails_the_component() {
+    // The child fails while the destination still waits for its input, so the scope stops `run` before it returns. That
+    // is the child's failure, not an abort at the end of the shutdown budget.
+    let control = TestComponentDriver::destination(SpawningDestinationBuilder {
+        child: ChildBehavior::NeededFailsWhileRunWaits,
+    })
+    .await
+    .expect("destination should build");
+
+    let error = control
+        .wait()
+        .await
+        .expect_err("the child's failure should fail the component");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("child failed on purpose"),
+        "the error should come from the child: {message}"
+    );
+    assert!(
+        !message.contains("shutdown budget"),
+        "the failure is not an abort: {message}"
+    );
 }
 
 #[tokio::test]
@@ -475,4 +548,113 @@ async fn unbounded_wait_timeout_is_accepted_by_every_wait() {
     control.send_event(Event::Metric(Metric::counter("drained", 1.0))).await;
     control.wait_until_input_drained().await;
     control.shutdown().await.expect("destination should stop cleanly");
+}
+
+#[tokio::test]
+async fn wait_until_returns_once_the_condition_holds() {
+    let (control, _outputs) = TestComponentDriver::source(SourceBuilderFor {
+        source: || AssertingSource,
+    })
+    .await
+    .expect("source should build");
+
+    let dataspace = control.supervisor().dataspace().clone();
+    control
+        .wait_until(
+            || {
+                !dataspace
+                    .current_values::<SourceState>(IdentifierFilter::exact("state"))
+                    .is_empty()
+            },
+            || "the source asserts its state".to_string(),
+        )
+        .await;
+
+    control
+        .shutdown()
+        .await
+        .expect("source should stop cleanly on shutdown");
+}
+
+#[tokio::test]
+#[should_panic(
+    expected = "timed out after 10ms waiting until the condition holds for component 'topology.test.sources.test'"
+)]
+async fn wait_until_panics_with_its_description_once_the_wait_timeout_elapses() {
+    let (control, _outputs) = TestComponentDriver::options()
+        .with_wait_timeout(Duration::from_millis(10))
+        .source(SourceBuilderFor { source: || StuckSource })
+        .await
+        .expect("source should build");
+
+    control.wait_until(|| false, || "the condition holds".to_string()).await;
+}
+
+#[tokio::test]
+#[should_panic(
+    expected = "the condition holds for component 'topology.test.transforms.test'; its `run` has already returned"
+)]
+async fn wait_until_says_when_the_run_has_already_returned() {
+    let (control, _outputs) = TestComponentDriver::options()
+        .with_wait_timeout(Duration::from_millis(10))
+        .transform(FailingTransformBuilder {
+            failure: Failure::ReturnsError,
+        })
+        .await
+        .expect("transform should build");
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !control.is_finished() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the transform's run should fail straight away");
+
+    control.wait_until(|| false, || "the condition holds".to_string()).await;
+}
+
+#[tokio::test]
+async fn prebuilt_source_runs_with_the_driver_options() {
+    let source = PrebuiltSource::new(Box::new(TwoOutputSource), TwoOutputSourceBuilder::new().outputs);
+    let (control, mut outputs) = TestComponentDriver::options()
+        .with_component_id("prebuilt")
+        .source(source)
+        .await
+        .expect("source should build");
+    control.wait_until_ready().await;
+    assert_eq!(
+        control.component_context().to_string(),
+        "topology.test.sources.prebuilt"
+    );
+
+    let alt = outputs
+        .named_output("alt")
+        .next()
+        .await
+        .expect("alt output should receive a buffer");
+    assert_eq!(metric_names(alt), ["to_alt"]);
+
+    control
+        .shutdown()
+        .await
+        .expect("source should stop cleanly on shutdown");
+}
+
+#[tokio::test]
+async fn prebuilt_source_refuses_a_second_build() {
+    let builder = PrebuiltSource::new(Box::new(StuckSource), Vec::new());
+    builder
+        .build(BuildContext::test_source("prebuilt"))
+        .await
+        .map(drop)
+        .expect("the first build should hand the source over");
+
+    let Err(error) = builder.build(BuildContext::test_source("prebuilt")).await else {
+        panic!("a second build should be refused");
+    };
+    assert!(
+        error.to_string().contains("can only be built once"),
+        "unexpected error: {error:#}"
+    );
 }

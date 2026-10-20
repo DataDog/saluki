@@ -22,9 +22,9 @@ use crate::rand::Probe;
 ///
 /// Pinned to `error`: the quietest level that still logs and a value both
 /// targets parse identically. Louder levels blow Antithesis's per-hour
-/// log-output budget. `off` is intentionally absent — `serde_yaml` renders it as
-/// the bare scalar `off`, which a YAML 1.1 reader decodes as the boolean
-/// `false`, and the Datadog Agent then rejects the level and refuses to boot.
+/// log-output budget. `off` is intentionally absent — rendered as the bare scalar
+/// `off`, a YAML 1.1 reader decodes it as the boolean `false`, and the Datadog
+/// Agent then rejects the level and refuses to boot.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum LogLevel {
@@ -221,7 +221,7 @@ impl DatadogConfig {
     ///
     /// Returns an error if serialization fails.
     pub fn to_yaml(&self) -> anyhow::Result<String> {
-        let mut yaml = serde_yaml::to_string(self).context("serialize datadog.yaml")?;
+        let mut yaml = serde_saphyr::to_string(self).context("serialize datadog.yaml")?;
         yaml.push_str(STATIC_YAML_TAIL);
         Ok(yaml)
     }
@@ -296,7 +296,7 @@ impl DriverConfig {
     ///
     /// Returns an error if serialization fails.
     pub fn to_yaml(&self) -> anyhow::Result<String> {
-        serde_yaml::to_string(self).context("serialize driver.yaml")
+        serde_saphyr::to_string(self).context("serialize driver.yaml")
     }
 
     /// Read the driver config from the `driver.yaml` that `first_sample_config`
@@ -310,7 +310,7 @@ impl DriverConfig {
         let path = config_dir.join("driver.yaml");
         let yaml = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
         let config: Self =
-            serde_yaml::from_str(&yaml).with_context(|| format!("parse driver config from {}", path.display()))?;
+            serde_saphyr::from_str(&yaml).with_context(|| format!("parse driver config from {}", path.display()))?;
         anyhow::ensure!(
             (1..=MAX_CONTEXTS_PER_REQUEST).contains(&config.context_count),
             "context_count {} outside 1..={} in {}, the intake would reject every fetch and the driver would ship nothing",
@@ -379,7 +379,7 @@ impl ContextSourceConfig {
     ///
     /// Returns an error if serialization fails.
     pub fn to_yaml(&self) -> anyhow::Result<String> {
-        serde_yaml::to_string(self).context("serialize context_source.yaml")
+        serde_saphyr::to_string(self).context("serialize context_source.yaml")
     }
 
     /// Read the context-source config from the `context_source.yaml` that `first_sample_config` wrote
@@ -395,7 +395,7 @@ impl ContextSourceConfig {
     pub fn read(config_dir: &Path) -> anyhow::Result<Self> {
         let path = config_dir.join("context_source.yaml");
         let yaml = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-        let config: Self = serde_yaml::from_str(&yaml)
+        let config: Self = serde_saphyr::from_str(&yaml)
             .with_context(|| format!("parse context source config from {}", path.display()))?;
         for (kind, cap) in [
             ("metric_contexts", config.metric_contexts),
@@ -507,7 +507,7 @@ mod tests {
     /// The Agent's nested switch and ADP's safety gate, as a timeline renders them.
     fn series_api(seed: u64) -> (bool, bool) {
         let yaml = render(seed);
-        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("parse rendered yaml");
+        let parsed: serde_json::Value = serde_saphyr::from_str(&yaml).expect("parse rendered yaml");
         // A string, not a YAML boolean: ADP's typed model reads this leaf as `String`, so an unquoted
         // boolean fails deserialization and the target never boots.
         let agent = match parsed["use_v3_api"]["series"]["enabled"]

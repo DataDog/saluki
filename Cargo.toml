@@ -8,6 +8,7 @@ members = [
   "bin/correctness/stele",
   "lib/agent-data-plane-config",
   "lib/agent-data-plane-config-system",
+  "lib/datadog-agent/apm",
   "lib/datadog-agent/commons",
   "lib/datadog-agent/config",
   "lib/datadog-agent/config-overlay-model",
@@ -54,11 +55,13 @@ repository = "https://github.com/DataDog/saluki"
 [workspace.dependencies]
 agent-data-plane-config = { path = "lib/agent-data-plane-config" }
 agent-data-plane-config-system = { path = "lib/agent-data-plane-config-system" }
+datadog-agent-apm = { path = "lib/datadog-agent/apm" }
 datadog-agent-commons = { path = "lib/datadog-agent/commons" }
 datadog-agent-config = { path = "lib/datadog-agent/config" }
 datadog-agent-config-overlay-model = { path = "lib/datadog-agent/config-overlay-model" }
 datadog-agent-config-testing = { path = "lib/datadog-agent/config-testing" }
 datadog-agent-metrics-v3 = { path = "lib/datadog-agent/metrics-v3" }
+datadog-agent-remote-config = { path = "lib/datadog-agent/remote-config" }
 datadog-agent-runtime = { path = "lib/datadog-agent/runtime" }
 datadog-protos = { path = "lib/protos/datadog" }
 containerd-protos = { path = "lib/protos/containerd" }
@@ -191,7 +194,7 @@ prost-types = { version = "0.14", default-features = false }
 serde_json = { version = "1.0.149", default-features = false, features = [
   "std",
 ] }
-faster-hex = { version = "0.10", default-features = false }
+faster-hex = { version = "1.0", default-features = false }
 rustls-pki-types = { version = "1.14", default-features = false, features = [
   "alloc",
 ] }
@@ -225,7 +228,7 @@ bollard = { version = "0.21", default-features = false }
 home = { version = "0.5", default-features = false }
 reqwest = { version = "0.13", default-features = false }
 lading-payload = { git = "https://github.com/DataDog/lading", rev = "c61c51c5fbb1d0ebcf1b12de847c042522c8c7a7" }
-serde_yaml = { version = "0.9", default-features = false }
+serde-saphyr = { version = "1.3", default-features = false, features = ["deserialize", "serialize"] }
 serde_with = { version = "3.18.0", default-features = false, features = [
   "macros",
 ] }

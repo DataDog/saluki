@@ -72,7 +72,8 @@ impl<T, E> Subscription<T, E> {
     /// this waits indefinitely after any pending publication has been observed, so a caller may `select!` on it.
     ///
     /// A published snapshot is not guaranteed to differ from the previous one: after the worker restarts, it decodes
-    /// every product again.
+    /// every product again. An accepted update can also retain the same `Arc` when the product's
+    /// [`keeps_previous`](crate::ProductDecoder::keeps_previous) returns `true`.
     ///
     /// # Errors
     ///
@@ -141,6 +142,23 @@ impl<T, E> Publisher<T, E> {
         drop(replaced);
     }
 
+    /// Clears any rejection and notifies subscribers, publishing `snapshot` only if none has been accepted yet.
+    pub(crate) fn keep_previous(&self, snapshot: T) {
+        // Dropped after the lock is released, as in `accept`.
+        let mut replaced = (None, None);
+        self.sender.send_modify(|state| {
+            let unused = match &state.accepted {
+                Some(_) => Some(snapshot),
+                None => {
+                    state.accepted = Some(Arc::new(snapshot));
+                    None
+                }
+            };
+            replaced = (unused, state.rejection.take());
+        });
+        drop(replaced);
+    }
+
     pub(crate) fn reject(&self, error: E) {
         // Dropped after the lock is released, as in `accept`.
         let mut replaced = None;
@@ -154,6 +172,7 @@ impl<T, E> Publisher<T, E> {
     pub(crate) fn publish(&self, outcome: Outcome<T, E>) {
         match outcome {
             Outcome::Accepted(snapshot) => self.accept(snapshot),
+            Outcome::KeepsPrevious(snapshot) => self.keep_previous(snapshot),
             Outcome::Rejected { error, .. } => self.reject(error),
             Outcome::Panicked => {}
         }

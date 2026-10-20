@@ -42,10 +42,16 @@
 //!
 //! # Requested exits and other exits
 //!
-//! If a child exits while its scope closes, the exit is a requested exit. If a child exits after its owner, or a
-//! process above its owner, was told to stop, the exit is also a requested exit, even if the scope is still open. The
-//! scope never restarts a child after a requested exit, and a requested exit never fails the owner. Thus, a child that
-//! exits while its owner drains cannot cut that drain short.
+//! If a child exits after its owner, or a process above its owner, was told to stop, the exit is a requested exit. This
+//! is true even if the scope is still open. The scope never restarts a child after a requested exit, and a requested
+//! exit never fails the owner. Thus, a child that exits while its owner drains cannot cut that drain short.
+//!
+//! The scope never restarts a child while the scope closes. If the child exits cleanly, the exit is also a requested
+//! exit, whatever the reason that the scope closes. But if the child fails and nothing told its owner to stop, the
+//! failure has the same effect as when the scope is open: a needed child fails the owner. This is necessary because a
+//! body often returns because a child failed. For example, the body sees the output channel of the child close. The
+//! body then returns before the scope sees the exit of the child, so the scope sees the failure only as it closes. If
+//! the body itself failed, its own error has priority.
 //!
 //! If a child exits while its scope is open and no stop was requested, the child stopped by itself. Two things then
 //! decide what occurs next:
@@ -64,11 +70,11 @@
 //!
 //! # How to spawn children
 //!
-//! [`ChildBuilder::spawn_child`][crate::runtime::ChildBuilder::spawn_child] spawns into the scope of the current
-//! process. [`current`] returns a handle to that scope, and you can move that handle to other tasks. Some code can run
-//! fully outside supervision, for example a primitive that a test constructs. That code uses
-//! [`spawn_child_or_detached`][crate::runtime::ChildBuilder::spawn_child_or_detached] or [`nested_or_detached`]. If
-//! there is no scope, these functions run the work as a detached task, the same as without scopes.
+//! [`spawn`][crate::runtime::spawn] and [`ChildBuilder::spawn`][crate::runtime::ChildBuilder::spawn] spawn into the
+//! scope of the current process. [`current`] returns a handle to that scope, and you can move that handle to other
+//! tasks. Some code can run fully outside supervision, for example a primitive that a test constructs. That code uses
+//! [`spawn_or_detached`][crate::runtime::ChildBuilder::spawn_or_detached] or [`nested_or_detached`]. If there is no
+//! scope, these functions run the work as a detached task, the same as without scopes.
 //!
 //! # Scopes owned by values
 //!
@@ -119,19 +125,19 @@ use tracing::{debug, warn};
 
 pub(super) use self::drive::{drive, DriveContext, StopLink};
 use super::{
-    restart::RestartType,
     supervisable::{InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture},
-    supervisor::{ChildConfig, ChildId, ChildSpecification, ChildState, SupervisedChild, WorkerSpec},
+    supervisor::{ChildConfig, ChildId, ChildSpecification, ChildState, Registration, SupervisedChild, WorkerSpec},
 };
 
-/// How the termination of a child affects the scope that owns it.
+/// How the termination of a child affects its owner, which is its supervisor or the process that owns its scope.
 ///
-/// The scope uses the edge only if a child terminates while the scope is open and its restart policy does not restart
-/// it. If the restart policy requires a restart but the child reached the restart limit of its scope, the child fails
+/// The owner uses the edge only if a child terminates without a request to stop and its restart policy does not restart
+/// it. If the restart policy requires a restart but the child reached the restart limit of its owner, the child fails
 /// the owner. The edge of the child has no effect on this.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Edge {
-    /// The scope hosts the child: if the child terminates and is not restarted, it is reaped and the owner continues.
+    /// The owner only runs the child: if the child terminates and is not restarted, it is reaped and the owner
+    /// continues.
     #[default]
     Hosted,
 
@@ -213,8 +219,8 @@ impl Scope {
 
     /// Spawns a child into the scope.
     ///
-    /// Accepts all values that [`SupervisorHandle::spawn`][crate::runtime::SupervisorHandle::spawn] accepts. By
-    /// default, the child is [temporary][RestartType::Temporary] and hosted.
+    /// Accepts all values that [`SupervisorHandle::spawn`][crate::runtime::SupervisorHandle::spawn] accepts. This
+    /// includes a nested supervisor. By default, the child is hosted.
     ///
     /// The returned [`ChildId`] identifies the child in this scope.
     pub fn spawn<S, T>(&self, child: T) -> ChildId
@@ -222,7 +228,7 @@ impl Scope {
         S: ChildState,
         T: Into<ChildSpecification<S>>,
     {
-        let (spec, config) = S::into_child_parts(child.into(), RestartType::Temporary).into_parts();
+        let (spec, config) = S::into_child_parts(child.into(), Registration::Spawned).into_parts();
         self.enqueue(spec, config)
     }
 
@@ -244,8 +250,8 @@ impl Scope {
     /// Runs `fut` with this scope as the current one.
     ///
     /// If `fut` spawns into the current scope, the spawn goes into this scope instead. This applies to spawns through
-    /// [`current`], [`ChildBuilder::spawn_child`][crate::runtime::ChildBuilder::spawn_child], or [`nested`]. While
-    /// `fut` runs, this scope replaces the scope that was current before.
+    /// [`current`], [`spawn`][crate::runtime::spawn], or [`nested`]. While `fut` runs, this scope replaces the scope
+    /// that was current before.
     pub fn enter<F: Future>(&self, fut: F) -> impl Future<Output = F::Output> {
         CURRENT_SCOPE.scope(ScopeSlot::prefilled(self.clone()), fut)
     }
@@ -273,7 +279,7 @@ impl fmt::Debug for Scope {
 /// drops the children that wait and each child that is spawned into it later.
 ///
 /// Most code does not use this type. Every supervised worker already has a scope, which is available through
-/// [`current`] or [`ChildBuilder::spawn_child`][crate::runtime::ChildBuilder::spawn_child].
+/// [`current`] or [`spawn`][crate::runtime::spawn].
 pub struct UnadoptedScope {
     scope: Scope,
 
@@ -298,8 +304,8 @@ impl UnadoptedScope {
     /// The worker only holds the children of the scope. It runs until it is told to stop, and then the scope closes.
     /// Use this for work that is spawned outside supervised processes, such as work at startup before the supervision
     /// tree runs. The worker makes that work part of the tree when the tree runs. The worker fails if one of the
-    /// children of the scope fails its owner. If the worker is itself spawned into a scope, it passes that failure to
-    /// the owner of that scope.
+    /// children of the scope fails its owner. The worker passes that failure to the supervisor or scope that it is
+    /// added to.
     ///
     /// If the supervisor starts the worker again, for example because the supervisor restarts, the new worker holds
     /// nothing. The scope closed when the first worker stopped, and the scope drops each child that is spawned into it
@@ -307,7 +313,6 @@ impl UnadoptedScope {
     pub fn into_host(self) -> ChildSpecification<WorkerSpec> {
         let name = self.scope.name().to_string();
         ChildSpecification::worker(ScopeHost::new(name, None))
-            .with_restart_type(RestartType::Temporary)
             .with_budget_bounded_shutdown()
             .forwarding_failures()
             .adopting(self)
@@ -523,7 +528,6 @@ fn nested_under(owner: &Scope, name: String) -> ScopeGuard {
     // because the scope of the owner closed first, the specification is dropped. The nested scope then closes, and it
     // drops the children that wait in it and each child that is spawned into it later.
     let host = ChildSpecification::worker(ScopeHost::new(name, Some(close_signal)))
-        .with_restart_type(RestartType::Temporary)
         .with_budget_bounded_shutdown()
         .forwarding_failures()
         .adopting(unadopted);
@@ -613,7 +617,7 @@ impl fmt::Debug for ScopeGuard {
 /// no other place to report them. The worker runs on the runtime that it was placed on, if it was placed on one. No
 /// other setting of the worker applies, because nothing supervises the worker.
 pub(super) fn spawn_detached(child: ChildSpecification<WorkerSpec>, shutdown: ShutdownHandle) {
-    let (spec, config) = WorkerSpec::into_child_parts(child, RestartType::Temporary).into_parts();
+    let (spec, config) = WorkerSpec::into_child_parts(child, Registration::Spawned).into_parts();
     let SupervisedChild::Worker(worker) = spec else {
         unreachable!("a worker specification always lowers to a worker");
     };
@@ -664,6 +668,12 @@ impl Supervisable for ScopeHost {
         // The host has no timeout of its own. Its body returns as soon as it is told to stop, and then its scope stops
         // each child according to the child's own shutdown strategy. The host waits for that, however long it takes.
         ShutdownStrategy::Graceful(Duration::MAX)
+    }
+
+    fn can_restart(&self) -> bool {
+        // The host adopts its scope when it starts. That scope closes when the host stops, so a restarted host would
+        // hold nothing.
+        false
     }
 
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
