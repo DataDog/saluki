@@ -10,7 +10,7 @@ use crate::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use crate::components::{
     destinations::{Destination, DestinationBuilder, DestinationContext},
     sources::{Source, SourceBuilder, SourceContext},
-    transforms::{Transform, TransformBuilder, TransformContext},
+    transforms::{SynchronousTransform, SynchronousTransformBuilder, Transform, TransformBuilder, TransformContext},
     BuildContext,
 };
 use crate::data_model::event::{metric::Metric, Event, EventType};
@@ -271,6 +271,28 @@ impl TransformBuilder for FailingTransformBuilder {
 }
 
 impl MemoryBounds for FailingTransformBuilder {
+    fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+}
+
+/// A synchronous transform that removes every metric named `drop`.
+struct DropNamed;
+
+impl SynchronousTransform for DropNamed {
+    fn transform_buffer(&mut self, buffer: &mut EventsBuffer) {
+        buffer.remove_if(|event| matches!(event, Event::Metric(metric) if metric.context().name() == "drop"));
+    }
+}
+
+struct DropNamedBuilder;
+
+#[async_trait]
+impl SynchronousTransformBuilder for DropNamedBuilder {
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
+        Ok(Box::new(DropNamed))
+    }
+}
+
+impl MemoryBounds for DropNamedBuilder {
     fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
 }
 
@@ -657,4 +679,43 @@ async fn prebuilt_source_refuses_a_second_build() {
         error.to_string().contains("can only be built once"),
         "unexpected error: {error:#}"
     );
+}
+
+#[tokio::test]
+async fn synchronous_transform_dispatches_each_transformed_buffer_until_its_input_closes() {
+    let (control, mut output) = TestComponentDriver::synchronous_transform(DropNamedBuilder)
+        .await
+        .expect("synchronous transform should build");
+    control.wait_until_ready().await;
+
+    control
+        .send_events(["kept", "drop", "also_kept"].map(|name| Event::Metric(Metric::counter(name, 1.0))))
+        .await;
+    control
+        .shutdown()
+        .await
+        .expect("the synchronous transform should stop once its input closes");
+
+    let names = output
+        .collect()
+        .await
+        .into_iter()
+        .flat_map(metric_names)
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["kept", "also_kept"]);
+}
+
+#[tokio::test]
+async fn synchronous_transform_stops_with_the_dispatch_error_once_its_output_is_dropped() {
+    let (control, output) = TestComponentDriver::synchronous_transform(DropNamedBuilder)
+        .await
+        .expect("synchronous transform should build");
+    drop(output);
+
+    control.send_event(Event::Metric(Metric::counter("kept", 1.0))).await;
+    let error = control
+        .wait()
+        .await
+        .expect_err("dispatching to a dropped output should fail the run");
+    assert_eq!(format!("{error:#}"), "Failed to send to output.");
 }
