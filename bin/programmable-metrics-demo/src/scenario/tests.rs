@@ -343,27 +343,19 @@ fn the_scenario_edits_compose_as_the_check_expects() {
         );
     }
 
-    // S5c: a second aggregation after enrichment is valid and publishable, and the default program's keeps its name.
-    // The editor does not place plans, so it flags nothing, and ADP's placement refuses it.
+    // S5c: a second aggregation after enrichment is valid and publishable, and the default program's keeps its name, so
+    // the editor flags nothing; ADP runs it in a sub-region (or, on several state lanes, refuses it).
     let (outcome, compiled) = compile(&edits::second_aggregation(&source).unwrap(), Some(&context));
     assert!(compiled.is_some(), "S5c: publishable");
     assert!(outcome.diagnostics.is_empty(), "S5c: {:#?}", outcome.diagnostics);
+    assert!(outcome.preview.valid && !outcome.preview.unchanged, "S5c");
 
-    // S5d: the one aggregation moved after enrichment is publishable. It is no longer named `dsd_agg`, so the editor
-    // warns of the host's telemetry contract, and ADP's placement refuses it.
-    let edited = edits::aggregation_after_enrichment(&source).unwrap();
-    let (outcome, compiled) = compile(&edited, Some(&context));
+    // S5d: the one aggregation moved after enrichment is publishable, and keeps its name, so the editor flags nothing;
+    // ADP runs it in a sub-region, a moved state owner at a cut.
+    let (outcome, compiled) = compile(&edits::aggregation_after_enrichment(&source).unwrap(), Some(&context));
     assert!(compiled.is_some(), "S5d: publishable");
-    assert_eq!(
-        outcome
-            .diagnostics
-            .iter()
-            .map(|diagnostic| (diagnostic.severity, diagnostic.rule))
-            .collect::<Vec<_>>(),
-        [(crate::checks::Severity::Warning, Some("telemetry_contract"))],
-        "S5d: {:#?}",
-        outcome.diagnostics
-    );
+    assert!(outcome.diagnostics.is_empty(), "S5d: {:#?}", outcome.diagnostics);
+    assert!(outcome.preview.valid && !outcome.preview.unchanged, "S5d");
     assert!(
         outcome.preview.reason.contains("not placed"),
         "{}",

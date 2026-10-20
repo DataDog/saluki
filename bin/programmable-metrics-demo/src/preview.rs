@@ -7,8 +7,9 @@
 //! catalog of its export, and its active plan (`GET /programmable-metrics/plan`). So the editor shows ADP's own
 //! verdict, each finding placed in the source through the artifact node each plan node came from
 //! ([`Composed::ids`](saluki_metric_plan::compose::Composed::ids)), and the diff publishing would install. ADP still
-//! decides: it composes the artifact again when it arrives, against the default program and catalog of that moment, and compiles the plan into its regions, which can refuse a plan that validates: a new output, or a state
-//! owner the frame cannot run where it is placed, such as the aggregation moved after enrichment. The preview does
+//! decides: it composes the artifact again when it arrives, against the default program and catalog of that moment,
+//! and compiles the plan into its regions, which can refuse a plan that validates: a new output, a state owner the
+//! frame cannot run on its lanes, or a sub-region the budget for what is made after boot cannot hold. The preview does
 //! not place the plan.
 
 use std::collections::BTreeMap;

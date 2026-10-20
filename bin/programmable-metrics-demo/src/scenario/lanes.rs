@@ -27,8 +27,8 @@
 //!   ends and `agg`'s starts, and the canary check balances across it, as across any cut. The editor warns that the
 //!   host's telemetry contract reads the aggregator's series from a node named `dsd_agg`, which the program lacks.
 //! - **S14b**: the renamed aggregation with `demo.debug.*` dropped ahead of the policy: a new generation, which keeps
-//!   `agg`'s state on every state lane: no cut is armed, completed, or given up (`plan_cuts_total`), and the state
-//!   lanes of the slot `dsd_agg` go on counting events.
+//!   `agg`'s state: no cut is armed, completed, or given up (`plan_cuts_total`). Since V7a, `agg` runs in a sub-region
+//!   of the slot its input comes from, on one lane, so the state lanes of the slot `dsd_agg` count no events.
 //!
 //! The second launch's counters expire one second after their last update (`dogstatsd_expiry_seconds: 1`), rather
 //! than never, as the first launch's do (`0`): an aggregation keeps a counter without expiry forever, so a state lane
@@ -115,6 +115,14 @@ fn plan_value(state: &Value, name: &str, label: (&str, &str)) -> Option<f64> {
 /// Returns the cut installations ADP counted as ending with `outcome`.
 pub(super) fn cuts(state: &Value, outcome: &str) -> f64 {
     plan_value(state, "plan_cuts_total", ("outcome", outcome)).unwrap_or_default()
+}
+
+/// Returns how many state lanes DogStatsD aggregation runs on, from the Lanes panel's view in a sample of the demo's
+/// state: one if the view does not say.
+pub(super) fn state_lanes(state: &Value) -> u64 {
+    lane_slot(state, STATE_SLOT)
+        .and_then(|slot| slot["lanes"].as_u64())
+        .unwrap_or(1)
 }
 
 /// Returns the slot named `component` of the Lanes panel's view in a sample of the demo's state.
@@ -234,9 +242,7 @@ impl Runner {
         let mut step = StepReport::new("S12a", "the frame runs on the lanes asked for");
         let result = self.lanes_step(&mut step, &settings.lanes).await;
         self.finish(step, result)?;
-        let state_lanes = lane_slot(&self.state().await?, STATE_SLOT)
-            .and_then(|slot| slot["lanes"].as_u64())
-            .unwrap_or(1);
+        let state_lanes = state_lanes(&self.state().await?);
 
         let mut step = StepReport::new("S12b", "a counter whose state lane is empty at a tick");
         let result = if state_lanes < 2 {
@@ -320,14 +326,13 @@ impl Runner {
                 after
             ));
         }
+        // Since V7a, the renamed aggregation runs in a sub-region of the slot its input comes from, on one lane, not
+        // on the state lanes the boot layout gave `dsd_agg`, which then receive nothing.
         let events = lane_values(&state, "plan_lane_events_total", STATE_SLOT, None);
-        let grown = events
-            .iter()
-            .filter(|(lane, events)| **events > events_before.get(lane).copied().unwrap_or_default())
-            .count();
-        if grown == 0 {
+        if events != events_before {
             return Err(generic_error!(
-                "S14b: no state lane of `{}` counted events since the routing change: {:?}, before {:?}.",
+                "S14b: the state lanes of `{}` counted events since the routing change, though the renamed \
+                 aggregation runs in a sub-region: {:?}, before {:?}.",
                 STATE_SLOT,
                 events,
                 events_before
@@ -335,8 +340,8 @@ impl Runner {
         }
         if let Some(step) = self.report.steps.last_mut() {
             step.outcome = format!(
-                "{}; plan_cuts_total unchanged {:?}; {} state lanes counting under `{}`",
-                step.outcome, after, grown, STATE_SLOT
+                "{}; plan_cuts_total unchanged {:?}; the state lanes of `{}` idle, `agg` in a sub-region",
+                step.outcome, after, STATE_SLOT
             );
         }
         Ok(())
@@ -732,7 +737,9 @@ impl Runner {
     }
 
     /// Waits for ADP to count one more completed cut than `completed`, and returns when it saw it, in Unix seconds.
-    async fn wait_cut(&mut self, completed: f64, since: Instant, timeout: Duration) -> Result<u64, GenericError> {
+    pub(super) async fn wait_cut(
+        &mut self, completed: f64, since: Instant, timeout: Duration,
+    ) -> Result<u64, GenericError> {
         let (cancelled, not_armed) = {
             let state = self.state().await?;
             (cuts(&state, "cancelled"), cuts(&state, "not_armed"))

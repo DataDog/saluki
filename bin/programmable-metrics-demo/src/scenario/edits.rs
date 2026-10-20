@@ -665,25 +665,28 @@ pub fn width_change(source: &str, width: &str) -> Result<String, GenericError> {
     Ok(edited)
 }
 
-/// S5, a second aggregation: an aggregation with every parameter, in front of the policy. A program may have any number
-/// of aggregations, but the frame runs one only in its isolation slot, which enrichment has no exit to, so ADP refuses
-/// it when it places the plan, which the editor does not.
+/// S5c, a second aggregation: an aggregation with every parameter, in front of the policy, after enrichment, named
+/// `rollup`. A program may have any number of aggregations; ADP runs this one in a region of its own, a
+/// sub-region it makes when the generation installs. Its one-second windows are no longer than the default program's,
+/// so each family still arrives about once a second. It has a name of its own, rather than ending `let metrics` as the
+/// node `metrics`, which the default program's enrichment is: a state owner whose ID a later program gives a stateless
+/// node cannot change to it (transition class `reject`), so that revoking would be refused.
 pub fn second_aggregation(source: &str) -> Result<String, GenericError> {
     append_to_metrics(
         source,
-        "aggregate(window: 10s, flush_interval: 10s, context_limit: 1000, counter_expiry: 5m, flush_open_windows: \
+        "aggregate(window: 1s, flush_interval: 1s, context_limit: 1000, counter_expiry: 5m, flush_open_windows: \
          false, histogram_aggregates: [\"max\", \"count\"], histogram_percentiles: [95], copy_to_distribution: false, \
-         copy_to_distribution_prefix: \"\")",
+         copy_to_distribution_prefix: \"\") as rollup",
     )
 }
 
-/// S5, the aggregation moved after enrichment: DogStatsD aggregation's stage moves to the end of `let metrics`, and
-/// what fed it feeds what it fed. It ends `let metrics` there, so it is the node `metrics` and the policy's tee keeps
-/// its ID; no node is named `dsd_agg` any more, which the editor warns about (`telemetry_contract`). The aggregation
-/// ends the `let` [`AGGREGATION_NODE`]; once it is gone, the stage before it ends the `let`, which takes that stage's
-/// ID as its name so that the stage keeps it, or, when the `let` has no other stage, the `let` goes and its uses read
-/// what it read. The program still has one aggregation, but the frame runs it only in its isolation slot, which
-/// enrichment has no exit to, so ADP refuses it when it places the plan.
+/// S5d, the aggregation moved after enrichment: DogStatsD aggregation's stage moves to the end of `let metrics`, and
+/// what fed it feeds what it fed. It ends `let metrics` there with an `as` clause that keeps its ID,
+/// [`AGGREGATION_NODE`], so the host's telemetry contract is met and the policy's tee reads it. The aggregation ends
+/// the `let` [`AGGREGATION_NODE`]; once it is gone, the stage before it ends the `let`, which takes that stage's ID as
+/// its name so that the stage keeps it, or, when the `let` has no other stage, the `let` goes and its uses read what it
+/// read. The program still has one aggregation, which ADP runs in a sub-region after enrichment: a moved state owner,
+/// which starts over at a cut.
 pub fn aggregation_after_enrichment(source: &str) -> Result<String, GenericError> {
     const OP: &str = "aggregate";
     let op = stage(source, OP).ok_or_else(|| generic_error!("The default program has no `{}` stage.", OP))?;
@@ -787,7 +790,7 @@ pub fn aggregation_after_enrichment(source: &str) -> Result<String, GenericError
             rename(&removed, AGGREGATION_NODE, &feeder)?
         }
     };
-    append_to_metrics(&edited, &moved)
+    append_to_metrics(&edited, &format!("{} as {}", moved, AGGREGATION_NODE))
 }
 
 #[cfg(test)]

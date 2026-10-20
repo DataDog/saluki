@@ -39,7 +39,8 @@ pub enum LaneRole {
     /// Producer lanes: the slot the DogStatsD source's metrics enter, one lane per decoder up to sixteen.
     Producer,
 
-    /// State lanes: an isolation slot, each lane owning a share of every aggregation lineage's contexts.
+    /// State lanes: a slot of the boot plan's state owners, each lane owning a share of every aggregation lineage's
+    /// contexts.
     State,
 
     /// Post-aggregation lanes: every other slot.

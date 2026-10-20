@@ -372,7 +372,8 @@ fn the_aggregation_moves_after_enrichment_and_its_feeder_feeds_what_it_fed() {
         edited
     );
     let moved =
-        "  let metrics = dsd_post_agg_filter\n    | aggregate(window: 1s, flush_interval: 1s, counter_expiry: 0s)\n";
+        "  let metrics = dsd_post_agg_filter\n    | aggregate(window: 1s, flush_interval: 1s, counter_expiry: 0s) as \
+                 dsd_agg\n";
     assert!(edited.contains(moved), "{}", edited);
 
     // A `let` with a stage before the aggregation keeps that stage, which names the `let` instead.
@@ -394,7 +395,7 @@ fn the_aggregation_moves_after_enrichment_and_its_feeder_feeds_what_it_fed() {
     );
     parses("S5d, with a feeder", &edited_filtered);
 
-    // The aggregation ends `let metrics`, so it is `metrics`, and the policy's tee reads it.
+    // The aggregation ends `let metrics` and keeps its ID, and the policy's tee reads it.
     let parsed = parses("S5d", &edited);
     let edges = parsed
         .edges
@@ -403,14 +404,14 @@ fn the_aggregation_moves_after_enrichment_and_its_feeder_feeds_what_it_fed() {
         .collect::<Vec<_>>();
     for edge in [
         "dsd_no_agg_split.default -> dsd_post_agg_filter_in.0",
-        "metrics.out -> metrics_fanout.in",
+        "dsd_agg.out -> dsd_agg_fanout.in",
     ] {
         assert!(edges.iter().any(|found| found == edge), "{} in {:?}", edge, edges);
     }
     assert!(parsed
         .nodes
         .iter()
-        .any(|node| node.id.as_str() == "metrics" && node.op.as_str() == "aggregate"));
+        .any(|node| node.id.as_str() == "dsd_agg" && node.op.as_str() == "aggregate"));
     assert_eq!(parsed.nodes.len(), parses("default", PRINTED).nodes.len());
 }
 

@@ -26,11 +26,13 @@
 //! - **S4**: the failover gateway mirrors only `demo.checkout.requests` (S4a), which shows once failover turns on
 //!   (S4b, `multi_region_failover.failover_metrics` in the configuration file, a signal the program reads live) and
 //!   stops when it turns off (S4c).
-//! - **S5**: guardrails, each published anyway and refused while S4's generation keeps running: a duplicate branch to
-//!   the main `emit`'s recipients, an `emit` to recipients of two delivery hosts, a second aggregation after enrichment
-//!   and the aggregation moved there (both refused by placement, which the editor does not run), a binding of a policy
-//!   setting, which ADP does not declare (policy settings are literals, never bindings), each rejected; and an `emit` to
-//!   a recipient ADP does not know, held `pending`.
+//! - **S5**: guardrails, each published anyway and refused while the active generation keeps running: a duplicate
+//!   branch to the main `emit`'s recipients and an `emit` to recipients of two delivery hosts (S5a, S5b), and a binding
+//!   of a policy setting, which ADP does not declare (policy settings are literals, never bindings, S5e), each
+//!   rejected; and an `emit` to a recipient ADP does not know, held `pending` (S5f). Between them, state owners after
+//!   enrichment, each in a region of its own made for it: a second aggregation (S5c), which ADP refuses when DogStatsD
+//!   aggregation, which feeds it, runs on several state lanes, then the aggregation moved there under its own name
+//!   (S5d), which starts over at a cut.
 //! - **S6**: revoking (an empty snapshot) brings the default program back, the boot plan again.
 //!
 //! Then destinations come and go while ADP runs ([`destinations`]): ADP re-reads its configuration file, which the demo
@@ -732,9 +734,6 @@ enum Compiled {
     /// telemetry contract warns.
     Warned { fragment: &'static str },
 
-    /// An artifact, with findings or without: what refuses it is ADP's placement, which the editor does not run.
-    Unplaced,
-
     /// A warning whose message has this fragment, and no plan diff: ADP holds the program pending, as for a recipient
     /// its directory does not name.
     Waiting { fragment: &'static str },
@@ -751,10 +750,9 @@ const TWO_HOSTS: &[&str] = &["more than one delivery host"];
 /// binding is one the host does not declare.
 const POLICY_BINDING: &[&str] = &["which is not a configuration binding the host declares"];
 
-/// The fragment of ADP's refusal of an aggregation after enrichment, the one moved there or a second one: placement
-/// refuses it with the capability it lacks, since a state owner runs only in an isolation slot, and none is behind
-/// enrichment.
-const AGGREGATION_OUTSIDE_ITS_SLOT: &[&str] = &["runs only in an isolation slot"];
+/// The fragment of ADP's refusal of a state owner fed by another that runs on several lanes, as a second aggregation
+/// after enrichment is when DogStatsD aggregation runs on several state lanes.
+const CHAINED_ON_LANES: &[&str] = &["a state owner fed by another on several lanes is not supported"];
 
 /// How long ADP may take to acknowledge a step's artifact.
 #[derive(Clone, Copy, Debug)]
@@ -1016,7 +1014,7 @@ impl Runner {
         )
         .await?;
 
-        let guardrails: [(_, _, _, &[&str]); 5] = [
+        let guardrails: [(_, _, _, &[&str]); 2] = [
             (
                 "S5a",
                 "guardrail: a duplicate branch to the main emit's recipients",
@@ -1029,35 +1027,75 @@ impl Runner {
                 edits::two_hosts(&source)?,
                 TWO_HOSTS,
             ),
-            (
-                "S5c",
-                "guardrail: a second aggregation after enrichment",
-                edits::second_aggregation(&source)?,
-                AGGREGATION_OUTSIDE_ITS_SLOT,
-            ),
-            (
-                "S5d",
-                "guardrail: the aggregation moved after enrichment",
-                edits::aggregation_after_enrichment(&source)?,
-                AGGREGATION_OUTSIDE_ITS_SLOT,
-            ),
-            (
-                "S5e",
-                "guardrail: a binding of a policy setting, which ADP does not declare",
-                edits::policy_binding(&source)?,
-                POLICY_BINDING,
-            ),
         ];
         for (id, title, source, fragments) in guardrails {
-            // The editor does not place plans, so it may not flag an aggregation after enrichment.
-            let compiled = if fragments == AGGREGATION_OUTSIDE_ITS_SLOT {
-                Compiled::Unplaced
-            } else {
-                Compiled::Flagged { fragment: fragments[0] }
-            };
+            let compiled = Compiled::Flagged { fragment: fragments[0] };
             self.step(id, title, source, compiled, Installed::Rejected { fragments })
                 .await?;
         }
+        // A state owner runs in a region of its own wherever placement puts it: after enrichment, in a sub-region made
+        // when the generation installs. The second aggregation is a new node, fed by `dsd_agg`; on several state lanes,
+        // which ADP's automatic lanes give a runtime of four workers or more, each lane stamps its own output, and ADP
+        // refuses it. The moved one keeps its name, `dsd_agg`: a state owner whose region and upstream points change,
+        // which starts over at a cut, and drops the second, whose sub-region, where S5c installed, retires with S5c's
+        // generation.
+        let (title, installed) = if lanes::state_lanes(&self.state().await?) > 1 {
+            (
+                "guardrail: a second aggregation after enrichment, fed by aggregation on several lanes",
+                Installed::Rejected {
+                    fragments: CHAINED_ON_LANES,
+                },
+            )
+        } else {
+            (
+                "a second aggregation after enrichment: a region made for it",
+                Installed::Active {
+                    new_generation: true,
+                    routing: Some(default_routing()),
+                },
+            )
+        };
+        self.step(
+            "S5c",
+            title,
+            edits::second_aggregation(&source)?,
+            Compiled::Clean { unchanged: false },
+            installed,
+        )
+        .await?;
+        let completed = lanes::cuts(&self.state().await?, "completed");
+        let published = Instant::now();
+        let title = "the aggregation moved after enrichment: a region made for it, at a cut";
+        self.step(
+            "S5d",
+            title,
+            edits::aggregation_after_enrichment(&source)?,
+            Compiled::Clean { unchanged: false },
+            Installed::Active {
+                new_generation: true,
+                routing: Some(default_routing()),
+            },
+        )
+        .await?;
+        let seen_s = self
+            .wait_cut(completed, published, ACK_TIMEOUT)
+            .await
+            .with_error_context(|| format!("S5d ({}) failed", title))?;
+        if let Some(step) = self.report.steps.last_mut() {
+            step.outcome = format!("{}; cut seen at {}", step.outcome, seen_s);
+        }
+        self.step(
+            "S5e",
+            "guardrail: a binding of a policy setting, which ADP does not declare",
+            edits::policy_binding(&source)?,
+            Compiled::Flagged {
+                fragment: POLICY_BINDING[0],
+            },
+            Installed::Rejected {
+                fragments: POLICY_BINDING,
+            },
+        )
+        .await?;
         self.step(
             "S5f",
             "guardrail: an emit to a recipient ADP does not know",
@@ -1070,7 +1108,7 @@ impl Runner {
             },
         )
         .await?;
-        // The previous generation keeps running: the endpoints still receive what S4 routes.
+        // The previous generation keeps running: the endpoints still receive what S5d routes.
         self.expect_routing("S5", &default_routing(), Instant::now()).await?;
 
         self.revoke_step("S6", "revoke: an empty snapshot", Some(&boot), &default_routing())
@@ -1235,8 +1273,6 @@ impl Runner {
                     ));
                 }
             }
-            // The editor validates without placing the plan: what it finds does not decide the step.
-            Compiled::Unplaced => {}
             Compiled::Waiting { fragment } => {
                 let waits = diagnostics.iter().any(|diagnostic| {
                     diagnostic["severity"] == "warning"
