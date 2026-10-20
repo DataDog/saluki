@@ -8,8 +8,8 @@
 //!
 //! - [`model`]: metric kinds, port types, fields, and [`EventView`][model::EventView], the read-only view of a metric
 //!   that predicates evaluate against.
-//! - [`ir`]: plans, nodes, edges, parameters, outputs, scopes, and policy artifacts, with versioning and a generated
-//!   JSON Schema.
+//! - [`ir`]: plans, nodes, edges, parameters, outputs, and policy artifacts, with versioning and a generated JSON
+//!   Schema.
 //! - [`canonical`]: RFC 8785 canonical JSON, and the content hashes computed over it.
 //! - [`predicate`]: the predicate language, its canonical form, and its evaluation.
 //! - [`limits`]: the resource and timing limits that plans are checked and run against.
@@ -23,10 +23,9 @@
 //! - [`install`]: plan diffs, the generation lifecycle, and the installer's decisions, without I/O.
 //! - [`channel`]: the artifact channel's snapshots, envelopes, and acknowledgments, and the in-process channel between
 //!   a transport and the installer.
-//! - [`export`]: the default program's policy scope exported as an artifact, with the catalog it is checked against.
-//! - [`compose`]: the checks an artifact passes on receipt, and its composition into the default program.
-//! - [`resources`]: resources artifacts, which declare recipients and outputs apart from native configuration, and
-//!   output fingerprints.
+//! - [`export`]: the default program exported as an artifact, with the catalog it is checked against.
+//! - [`compose`]: the checks an artifact passes on receipt, and its composition with the host's sources and outputs.
+//! - [`elaborate`]: the one pass from a program as written to the core program that installs (bodies in V6).
 //! - [`runtime`]: the region driver, which runs the region programs of every live generation in one slot.
 //!
 //! With the `test-util` feature, the `testing` module provides property-testing strategies for metrics and predicates.
@@ -37,6 +36,7 @@ pub mod canonical;
 pub mod channel;
 pub mod compile;
 pub mod compose;
+pub mod elaborate;
 pub mod equivalence;
 pub mod explain;
 pub mod export;
@@ -49,7 +49,6 @@ pub mod model;
 pub mod normalize;
 pub mod operators;
 pub mod predicate;
-pub mod resources;
 pub mod runtime;
 pub mod validate;
 

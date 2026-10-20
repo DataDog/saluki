@@ -551,8 +551,7 @@ fn grouped_plan(nodes: &[(&str, &str, Value)], edges: &[(&str, &str)]) -> Plan {
         "ir_version": 1,
         "nodes": all,
         "edges": edges,
-        "outputs": [{"id": "out", "accepts": {"kinds": "all", "timestamps": "mixed"},
-                     "fingerprint": format!("sha256:{}", "7".repeat(64))}],
+        "outputs": [{"id": "out", "accepts": {"kinds": "all", "timestamps": "mixed"}}],
     }))
     .unwrap()
 }
@@ -563,7 +562,6 @@ fn compiled(plan: &Plan) -> Result<crate::compile::CompiledPlan, CompileError> {
         OutputId::new("out").unwrap(),
         CatalogOutput {
             accepts: PortType::ANY,
-            fingerprint: format!("sha256:{}", "7".repeat(64)).parse().unwrap(),
             recipients: Vec::new(),
         },
     );

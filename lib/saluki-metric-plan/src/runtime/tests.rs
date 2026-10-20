@@ -33,7 +33,6 @@ use serde_json::{json, Value};
 
 use super::{harness::RecordingTelemetry, *};
 use crate::{
-    canonical::PlanHash,
     compile::{
         compile, CompiledPlan, EntryKey, Frame, FrameHosts, FrameTarget, KernelKey, LeaseTable, RegionProgram,
         SharedPredicate, SlotId,
@@ -194,10 +193,6 @@ fn allowlist(value: &str) -> Value {
     ]})
 }
 
-fn fingerprint(output: &str) -> PlanHash {
-    PlanHash::of_bytes(output.as_bytes())
-}
-
 fn plan(nodes: Vec<Value>, edges: &[(&str, &str)], outputs: &[&str]) -> Plan {
     let edges = edges
         .iter()
@@ -207,7 +202,7 @@ fn plan(nodes: Vec<Value>, edges: &[(&str, &str)], outputs: &[&str]) -> Plan {
         .iter()
         .map(|output| {
             json!({"id": output, "accepts": {"kinds": "all", "timestamps": "mixed"},
-                   "fingerprint": fingerprint(output).to_string(), "recipients": [format!("out/{}", output)]})
+                   "recipients": [format!("out/{}", output)]})
         })
         .collect::<Vec<_>>();
     Plan::from_value(json!({"ir_version": 1, "nodes": nodes, "edges": edges, "outputs": outputs})).unwrap()
@@ -221,7 +216,6 @@ fn catalog() -> MemoryCatalog {
                 OutputId::new(output).unwrap(),
                 CatalogOutput {
                     accepts: PortType::ANY,
-                    fingerprint: fingerprint(output),
                     recipients: vec![RecipientId::new(format!("out/{}", output)).unwrap()],
                 },
             )
@@ -518,9 +512,7 @@ fn exits_carry_the_batch_header_with_the_consumers_entry_set_only_between_slots(
 fn bound_detour_plan() -> (Plan, MemoryCatalog, FrameHosts) {
     let host = HostId::new("out_host").unwrap();
     let selector = Selector::Role(RoleName::new("main").unwrap());
-    let fingerprint = crate::resources::fingerprint(&host, PortType::ANY, &selector);
     let mut value = serde_json::to_value(detour_plan()).unwrap();
-    value["outputs"][0]["fingerprint"] = json!(fingerprint);
     value["outputs"][0]["binding"] = json!({
         "host": host, "selector": selector, "telemetry": "out",
     });
@@ -532,7 +524,6 @@ fn bound_detour_plan() -> (Plan, MemoryCatalog, FrameHosts) {
         OutputId::new("out").unwrap(),
         CatalogOutput {
             accepts: PortType::ANY,
-            fingerprint,
             recipients: vec![RecipientId::new("out/out").unwrap()],
         },
     );

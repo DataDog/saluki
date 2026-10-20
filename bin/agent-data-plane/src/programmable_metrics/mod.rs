@@ -1,7 +1,7 @@
 //! Programmable metric processing: ADP's side of the plan crate's contracts.
 //!
 //! The metrics path of the topology runs the default program, native configuration lowered into a plan, or a policy
-//! artifact composed into it. This module holds what the plan crate leaves to the host:
+//! artifact composed with its sources, outputs, and resources. This module holds what the plan crate leaves to the host:
 //!
 //! - [`host_facts`]: what lowering needs to know about the process, captured once at boot;
 //! - [`bindings`]: the closed registry of configuration bindings that plan parameters may name;

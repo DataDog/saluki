@@ -19,9 +19,7 @@
   const NO_EXPORT = "no-export";
   const SAMPLE = [
     "# ADP does not serve its export yet, so this is a sample program to try the editor with.",
-    "policy metrics {",
-    '  base "sha256:0000000000000000000000000000000000000000000000000000000000000000"',
-    "",
+    "policy {",
     "  dogstatsd",
     '    | where not (name starts_with "demo.debug.")',
     "    | emit output dd_metrics_encode",
@@ -431,9 +429,6 @@
       verdict = "structural checks passed";
     }
     const notes = [];
-    if (outcome.restored_fingerprints.length) {
-      notes.push(`${plural(outcome.restored_fingerprints.length, "output fingerprint")} from ADP's export.`);
-    }
     if (checked.reason) notes.push(checked.reason);
     notes.push(...(outcome.preview.notes || []).filter((note) => !note.includes(STATE_NOTE)));
     ui.status.className = tone ? `compile-status ${tone}` : "compile-status";
@@ -514,7 +509,6 @@
       return;
     }
     const base = el("span", { class: "against", text: ` against ${diffBase(preview.against)}` });
-    const stale = preview.stale_base ? " · stale base" : "";
     // Whether ADP has moved on since the compile: it runs this plan now, or another than the one diffed against.
     const latest = state && latestStatus(state);
     const active = latest && latest.status.active_plan_hash;
@@ -529,7 +523,7 @@
     if (preview.unchanged) {
       ui.diff.className = "plan-diff unchanged";
       ui.diffHead.replaceChildren(el("strong", { text: "✓ No change" }), base,
-        `: ADP keeps running it${stale}.`, since || "");
+        ": ADP keeps running it.", since || "");
       return;
     }
     // An edit that renames a state owner, such as the aggregation, loses its state: said beside the diff, with how
@@ -541,7 +535,7 @@
     }
     ui.diff.className = preview.valid ? "plan-diff" : "plan-diff invalid";
     const verdict = preview.valid ? "" : " · does not validate: ADP will reject it";
-    ui.diffHead.replaceChildren(el("strong", { text: "Plan diff" }), base, `: ${diffCounts(preview)}${stale}${verdict}`,
+    ui.diffHead.replaceChildren(el("strong", { text: "Plan diff" }), base, `: ${diffCounts(preview)}${verdict}`,
       since || "");
 
     const signs = { added: "+", removed: "−", changed: "~" };
@@ -647,8 +641,7 @@
   ui.format.addEventListener("click", () => {
     const fresh = freshCompile();
     if (!fresh) return;
-    // The canonical form parses to the same artifact against the same export (it keeps a base the source states, and
-    // leaves out one the export gave), so the compile stays valid, and the text is the user's.
+    // The canonical form parses to the same artifact, so the compile stays valid, and the text is the user's.
     fresh.source = fresh.outcome.canonical_source;
     setSource(fresh.outcome.canonical_source, "user", editor.base);
     saveDraft();
@@ -893,14 +886,11 @@
         + "revoked."
         + (differs.length ? ` Nodes of the default program whose native settings the program does not run as they `
           + `are now: ${differs.join(", ")}.` : "");
-      // Flags that ADP installed the artifact although it changed since the approval: a stale base or review.
-      const stale = [status.stale_base ? "stale base" : null, status.stale_review ? "stale review" : null]
-        .filter(Boolean);
-      if (stale.length) {
-        text = `${text} · ${stale.join(" · ")}`;
-        title = `${title}. ${stale.includes("stale review") ? "It was approved against another active plan than the "
-          + "one ADP installed it over. " : ""}${stale.includes("stale base") ? "Its base is not ADP's current "
-          + "default program. " : ""}ADP runs it anyway.`;
+      // Flags that ADP installed the artifact although the active plan changed since the approval: a stale review.
+      if (status.stale_review) {
+        text = `${text} · stale review`;
+        title = `${title}. It was approved against another active plan than the one ADP installed it over. ADP runs `
+          + "it anyway.";
       }
     } else {
       text = "Running: the default program";
@@ -957,8 +947,7 @@
     const rows = exported.map((output) => el("tr", {},
       el("td", { class: "mono", text: output.id, title: output.label || "" }),
       el("td", { text: kindOf(output) }),
-      el("td", { text: output.intake ? intakeLabel(output.intake) : output.recipients.join(", ") }),
-      el("td", { class: "mono", text: shortHash(output.fingerprint), title: output.fingerprint })));
+      el("td", { text: output.intake ? intakeLabel(output.intake) : output.recipients.join(", ") })));
     ui.outputs.hidden = rows.length === 0;
     const implied = exported.filter((output) => output.id.startsWith("implied_")).length;
     ui.outputsCount.textContent = rows.length ? `(${exported.length - implied} native, ${implied} implied)` : "";
@@ -1237,8 +1226,7 @@
         rows.push([when, "—", null, "refused", "—", entry.error, "err"]);
         continue;
       }
-      const notes = [restarted, status.degraded, status.stale_base ? "stale base" : null,
-        status.stale_review ? "stale review" : null, unreadable]
+      const notes = [restarted, status.degraded, status.stale_review ? "stale review" : null, unreadable]
         .filter(Boolean).join(" · ");
       const tone = unreadable ? "warn" : "";
       const own = entry.config_states.filter((cs) => productOf(cs) === product);
@@ -1294,15 +1282,9 @@
   function renderAcks(s) {
     renderAckRows(ui.acks, ackRows(s, "policy"), "ADP has not polled the artifact channel stub yet.");
     const current = s.channel.current;
-    const configs = s.channel.configs || [];
     const parts = [`${s.channel.polls_total} polls`];
     if (s.channel.last_poll) parts.push(`last ${ago(s.channel.last_poll.received_ms)}`);
-    if (configs.length > 1 || (configs.length === 1 && !current)) {
-      // One config per scope: name each scope's revision.
-      parts.push(`serving ${configs.map((config) => `rev ${config.revision} (${config.scope})`).join(", ")}`);
-    } else {
-      parts.push(current ? `serving rev ${current.revision}` : "serving an empty snapshot");
-    }
+    parts.push(current ? `serving rev ${current.revision}` : "serving an empty snapshot");
     ui.ackSummary.textContent = parts.join(" · ");
   }
 

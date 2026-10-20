@@ -8,7 +8,6 @@ use serde_json::{json, Value};
 
 use super::*;
 use crate::{
-    canonical::PlanHash,
     equivalence::{compare, OutputPoints},
     interpret::{InstallOutcome, Interpreter, Trace},
     testing::{default_program_catalog, DEFAULT_PROGRAM_JSON},
@@ -208,13 +207,13 @@ fn small_plan(nodes: Value, edges: &[&str]) -> Plan {
         "nodes": nodes,
         "edges": edges,
         "outputs": [{"id": "o0", "accepts": {"kinds": "all", "timestamps": "mixed"},
-                     "fingerprint": PlanHash::of_bytes(b"o0").to_string(), "recipients": ["out/o0"]}],
+                     "recipients": ["out/o0"]}],
     }))
     .unwrap()
 }
 
 #[test]
-fn a_merge_a_fold_leaves_with_one_input_goes_too_and_a_scope_port_stays() {
+fn a_merge_a_fold_leaves_with_one_input_goes_too() {
     let nodes = json!([
         {"id": "in", "op": "source", "params": {"binding": "otlp"}},
         {"id": "pick", "op": "split", "params": {"predicate": {"name": {"in": []}}}},
@@ -245,13 +244,6 @@ fn a_merge_a_fold_leaves_with_one_input_goes_too_and_a_scope_port_stays() {
             .collect::<Vec<_>>(),
         ["in.metrics -> out.in"]
     );
-
-    // A node a scope names is never left out: the scope's exit is the merge's input.
-    let mut scoped = serde_json::to_value(&plan).unwrap();
-    scoped["scopes"] = json!({"s": {"inputs": {"metrics": "in.metrics"}, "exits": {"rejoined": "rejoin.1"}}});
-    let scoped = Plan::from_value(scoped).unwrap();
-    let eliminated = eliminate(&scoped, &OperatorRegistry::native());
-    assert!(eliminated.plan.node(&id("rejoin")).is_some());
 }
 
 fn t(relative: u64) -> AdmissionTime {

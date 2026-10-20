@@ -110,9 +110,9 @@ pub(crate) struct Order {
 ///
 /// The order depends only on the graph, never on the order the nodes and edges are given in (apart from tie-breaks
 /// between nodes with the same ID, or edges with the same ends, which are invalid). It is a depth-first traversal from
-/// the scope inputs:
+/// the sources:
 ///
-/// 1. The edges that leave the scope inputs are taken in order of input name (then of target).
+/// 1. The edges that leave the sources are taken in order of input name (then of target).
 /// 2. Taking an edge appends it to the edge order. When it is the last edge into its target node to be taken, the
 ///    target is visited at once: it is appended to the node order, and its outgoing edges are taken in the order of
 ///    its operator's output ports.
@@ -131,7 +131,7 @@ pub(crate) fn canonical_order(nodes: &[ArtifactNode], edges: &[ArtifactEdge], sh
     }
     let node_of = |port: &ArtifactPortRef| match port {
         ArtifactPortRef::Node { node, .. } => index.get(node.as_str()).copied(),
-        ArtifactPortRef::Input(_) | ArtifactPortRef::Exit(_) => None,
+        ArtifactPortRef::Input(_) => None,
     };
 
     let mut remaining = vec![0usize; nodes.len()];
@@ -148,8 +148,6 @@ pub(crate) fn canonical_order(nodes: &[ArtifactNode], edges: &[ArtifactEdge], sh
                 Some(source) => leaving[source].push((i, port)),
                 None => dangling.push(i),
             },
-            // An edge never leaves an exit: such an edge is invalid, and kept with the other dangling ones.
-            ArtifactPortRef::Exit(_) => dangling.push(i),
         }
     }
     // Edges with the same ends are invalid; they keep their relative order.

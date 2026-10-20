@@ -1,7 +1,7 @@
 //! The edits of the scenarios, made to the default program's source as the editor shows it, the way a presenter
 //! types them.
 //!
-//! The default program is the whole metrics path, its one scope fed by every source. Enrichment ends in the stream
+//! The default program is the whole metrics path, fed by every source. Enrichment ends in the stream
 //! every destination reads, `let metrics = ...`, and each use of it, `metrics | ...`, is a branch of the policy: the
 //! first emits to the main output's recipients, `metrics | emit [primary, "http://127.0.0.1:17102",
 //! "http://127.0.0.1:17103"]`, the primary endpoint and every additional one. Where the export leaves enrichment out,

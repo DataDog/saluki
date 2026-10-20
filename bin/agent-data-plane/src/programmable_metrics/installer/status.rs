@@ -9,7 +9,6 @@ use std::{
 
 use saluki_components::forwarders::delivery::DeliveryHostStatus;
 use saluki_metric_plan::{
-    canonical::PlanHash,
     channel::ApplyStates,
     extension::DeliveryPolicy,
     install::{LeaseState, RecipientRef, RecipientState, ResourceTable, RetirementReport},
@@ -123,9 +122,6 @@ pub struct OutputView {
 
     /// The delivery host it is bound to, or `None` for a fixed destination.
     pub host: Option<String>,
-
-    /// Its fingerprint, version 2, which an artifact's base records.
-    pub fingerprint: PlanHash,
 
     /// The identities of its recipients, sorted.
     pub recipients: Vec<String>,
@@ -372,7 +368,6 @@ pub(super) fn resources_view(parts: Parts<'_>) -> ResourcesView {
                 id: decl.id.to_string(),
                 label: labels.get(&decl.id).cloned().unwrap_or_else(|| decl.id.to_string()),
                 host: decl.binding.as_ref().map(|binding| binding.host.to_string()),
-                fingerprint: decl.fingerprint,
                 recipients: decl.recipients.iter().map(ToString::to_string).collect(),
             }
         })

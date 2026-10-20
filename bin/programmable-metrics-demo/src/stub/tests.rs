@@ -9,7 +9,7 @@ use super::{
 };
 use crate::export::tests::DEMO_EXPORT;
 
-/// The default program's policy scope as an artifact document, which the demo publishes unchanged in these tests.
+/// The default program as an artifact document, which the demo publishes unchanged in these tests.
 fn artifact() -> Value {
     serde_json::from_str::<Value>(DEMO_EXPORT).unwrap()["artifact"].clone()
 }
@@ -73,11 +73,9 @@ impl FakeAdp {
                     revision: Some(*revision),
                     artifact_hash: Some(hash.clone()),
                 }),
-                stale_base: Some(false),
                 stale_review: Some(false),
                 degraded: None,
                 live_generations: Some(1),
-                scopes: Default::default(),
                 program: None,
             }),
         }
@@ -188,7 +186,7 @@ async fn an_empty_store_serves_an_empty_policy_snapshot() {
     let mut adp = FakeAdp::new("adp-1");
     let body = poll(&channel, &mut adp).await;
     let response: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(response, json!({"protocol_version": 1, "products": {"policy": []}}));
+    assert_eq!(response, json!({"protocol_version": 2, "products": {"policy": []}}));
     assert!(adp.active.is_none());
 
     let view = channel.view(10, None);
@@ -255,7 +253,7 @@ async fn revoking_empties_the_snapshot_and_adp_returns_to_the_default_program() 
     poll(&channel, &mut adp).await;
     assert!(adp.active.is_some());
 
-    assert!(channel.revoke(None, 2_000).unwrap());
+    assert!(channel.revoke(2_000).unwrap());
     let body = poll(&channel, &mut adp).await;
     let response: PollResponse = serde_json::from_slice(&body).unwrap();
     assert_eq!(response.products.get(POLICY_PRODUCT), Some(&Vec::new()));
@@ -283,8 +281,8 @@ async fn revoking_empties_the_snapshot_and_adp_returns_to_the_default_program() 
     );
 
     // Revoking an empty snapshot changes nothing and records nothing.
-    assert!(channel.revoke(None, 4_000).unwrap());
-    assert!(!channel.revoke(None, 5_000).unwrap());
+    assert!(channel.revoke(4_000).unwrap());
+    assert!(!channel.revoke(5_000).unwrap());
     let actions = channel
         .view(10, None)
         .history
@@ -362,16 +360,16 @@ async fn polls_in_another_protocol_version_or_not_json_are_refused_and_recorded(
     channel.publish(artifact(), None, None, 1_000).unwrap();
 
     let mut request = FakeAdp::new("adp-1").poll_request();
-    request.protocol_version = Some(2);
+    request.protocol_version = Some(1);
     let (status, body) = post_poll(&channel, serde_json::to_vec(&request).unwrap()).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let error: Value = serde_json::from_slice(&body).unwrap();
     assert!(error["error"]
         .as_str()
         .unwrap()
-        .contains("Unsupported stub protocol version 2"));
+        .contains("Unsupported stub protocol version 1"));
     let last = channel.view(10, None).last_poll.unwrap();
-    assert!(last.error.unwrap().contains("version 2"));
+    assert!(last.error.unwrap().contains("version 1"));
     // A refused poll's status does not count as ADP's status.
     assert!(channel.latest_status().is_none());
 
@@ -399,7 +397,7 @@ async fn polls_in_another_protocol_version_or_not_json_are_refused_and_recorded(
     assert_eq!(errors.len(), 3);
     assert!(errors[0].contains("not JSON"), "{}", errors[0]);
     assert!(errors[1].contains("no readable protocol_version"), "{}", errors[1]);
-    assert!(errors[2].contains("version 2"), "{}", errors[2]);
+    assert!(errors[2].contains("version 1"), "{}", errors[2]);
 }
 
 #[tokio::test]
@@ -410,7 +408,7 @@ async fn a_poll_with_mistyped_acknowledgments_still_gets_the_snapshot_and_is_rec
 
     // ADP's side gets a type wrong: `generation` as a string, `degraded` as an object, `state` as null.
     let poll = json!({
-        "protocol_version": 1,
+        "protocol_version": 2,
         "client": {"id": "adp-1", "version": "1.8.0"},
         "products": ["policy"],
         "config_states": [{"product": "policy", "id": "demo", "revision": 1, "artifact_hash": published.artifact_hash,
@@ -467,7 +465,7 @@ fn a_failed_store_write_changes_nothing_and_a_failed_history_line_does_not_undo_
     // The store file cannot be written: the publish fails and the store still serves revision 1.
     std::fs::create_dir(dir.path().join("store.json.tmp")).unwrap();
     assert!(store.publish(other_artifact(), None, None, 2_000).is_err());
-    assert!(store.revoke(None, 2_000).is_err());
+    assert!(store.revoke(2_000).is_err());
     assert_eq!(store.current(), Some(&first));
     assert_eq!(store.revision_counter(), 1);
     assert_eq!(store.snapshot(), vec![first.entry()]);
@@ -534,123 +532,32 @@ async fn the_acknowledgment_timeline_folds_polls_that_report_the_same_state() {
     assert!(view.timeline[0].first_ms <= view.timeline[0].last_ms);
 }
 
-/// An artifact of the pre-aggregation scope.
-fn pre_aggregation_artifact(prefix: &str) -> Value {
-    json!({
-        "ir_version": 1,
-        "scope": "other_scope",
-        "base": {"program_hash": format!("sha256:{}", "0".repeat(64))},
-        "nodes": [{"id": "keep", "op": "split", "params": {"predicate": {"name": {"prefix": prefix}}}}],
-        "edges": [{"from": "input.metrics", "to": "keep.in"}]
-    })
-}
-
-/// Returns the config IDs and revisions of the snapshot a poll gets.
-async fn served(channel: &StubChannel) -> Vec<(String, u64)> {
-    let (status, body) = post_poll(
-        channel,
-        serde_json::to_vec(&FakeAdp::new("adp-1").poll_request()).unwrap(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    let response: PollResponse = serde_json::from_slice(&body).unwrap();
-    response.products[POLICY_PRODUCT]
-        .iter()
-        .map(|config| {
-            let envelope: Envelope = serde_json::from_str(&config.payload).unwrap();
-            (config.id.clone(), envelope.revision)
-        })
-        .collect()
-}
-
-#[tokio::test]
-async fn each_scope_has_one_config_under_one_revision_counter() {
-    let dir = tempfile::tempdir().unwrap();
-    let channel = channel_in(dir.path());
-    channel.publish(artifact(), None, None, 1_000).unwrap();
-    let pre = channel
-        .publish(pre_aggregation_artifact("a."), None, None, 2_000)
-        .unwrap();
-    assert_eq!(
-        (pre.id.as_str(), pre.scope.as_str(), pre.revision),
-        ("demo-other_scope", "other_scope", 2)
-    );
-    // The snapshot holds one config per scope, in scope order.
-    assert_eq!(
-        served(&channel).await,
-        [("demo".to_string(), 1), ("demo-other_scope".to_string(), 2)]
-    );
-    // A publish replaces its own scope's config, under the next revision of the one counter.
-    channel.publish(other_artifact(), None, None, 3_000).unwrap();
-    assert_eq!(
-        served(&channel).await,
-        [("demo".to_string(), 3), ("demo-other_scope".to_string(), 2)]
-    );
-    let view = channel.view(10, None);
-    assert_eq!(view.current.as_ref().map(|current| current.revision), Some(3));
-    let configs = view
-        .configs
-        .iter()
-        .map(|config| (config.scope.as_str(), config.revision))
-        .collect::<Vec<_>>();
-    assert_eq!(configs, [("metrics", 3), ("other_scope", 2)]);
-
-    // Revoking one scope removes its config alone; revoking it again changes nothing.
-    assert!(channel.revoke(Some("other_scope"), 4_000).unwrap());
-    assert!(!channel.revoke(Some("other_scope"), 5_000).unwrap());
-    assert_eq!(served(&channel).await, [("demo".to_string(), 3)]);
-    // Revoking every scope empties the snapshot.
-    assert!(channel.revoke(None, 6_000).unwrap());
-    assert!(served(&channel).await.is_empty());
-    let history = channel
-        .view(10, None)
-        .history
-        .iter()
-        .map(|entry| (entry.action, entry.scope.clone(), entry.revision))
-        .collect::<Vec<_>>();
-    let scope = |scope: &str| Some(scope.to_string());
-    assert_eq!(
-        history,
-        [
-            (store::HistoryAction::Revoke, None, None),
-            (store::HistoryAction::Revoke, scope("other_scope"), None),
-            (store::HistoryAction::Publish, scope("metrics"), Some(3)),
-            (store::HistoryAction::Publish, scope("other_scope"), Some(2)),
-            (store::HistoryAction::Publish, scope("metrics"), Some(1)),
-        ]
-    );
-
-    // The store keeps every scope's config across a restart.
-    channel
-        .publish(pre_aggregation_artifact("b."), None, None, 7_000)
-        .unwrap();
-    let reopened = channel_in(dir.path());
-    assert_eq!(served(&reopened).await, [("demo-other_scope".to_string(), 4)]);
-}
-
 #[test]
-fn a_store_the_first_version_of_the_demo_wrote_still_reads() {
+fn a_store_of_an_earlier_format_is_refused_with_what_to_do() {
     let dir = tempfile::tempdir().unwrap();
     let config = {
         let mut store = ArtifactStore::open(dir.path()).unwrap();
         store.publish(artifact(), None, None, 1_000).unwrap()
     };
-    // The first version wrote one config, for the policy scope, without its scope.
-    let mut one_scope = serde_json::to_value(&config).unwrap();
-    one_scope.as_object_mut().unwrap().remove("scope");
-    let file = json!({"format": 1, "revision_counter": 5, "current": one_scope});
-    std::fs::write(dir.path().join("store.json"), file.to_string()).unwrap();
+    // The store reads back what it wrote.
     let store = ArtifactStore::open(dir.path()).unwrap();
     assert_eq!(store.current(), Some(&config));
-    assert_eq!(store.revision_counter(), 5);
     assert_eq!(store.snapshot(), vec![config.entry()]);
 
-    // Another format is refused, with what to do.
-    std::fs::write(dir.path().join("store.json"), json!({"format": 9}).to_string()).unwrap();
-    let error = ArtifactStore::open(dir.path()).err().unwrap().to_string();
-    assert!(
-        error.contains("it has format 9, but this demo reads formats 1 and 2. Use a new run directory."),
-        "{}",
-        error
-    );
+    // Earlier versions kept a config per scope (format 2), or one for the policy scope (format 1).
+    for file in [
+        json!({"format": 1, "revision_counter": 5, "current": null}),
+        json!({"format": 2, "revision_counter": 5, "configs": {}}),
+    ] {
+        std::fs::write(dir.path().join("store.json"), file.to_string()).unwrap();
+        let error = ArtifactStore::open(dir.path()).err().unwrap().to_string();
+        assert!(
+            error.contains(&format!(
+                "it has format {}, but this demo reads format 3. Use a new run directory.",
+                file["format"]
+            )),
+            "{}",
+            error
+        );
+    }
 }

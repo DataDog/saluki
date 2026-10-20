@@ -18,7 +18,6 @@ use serde_json::{json, Value};
 
 use super::harness::{FrameHarness, HarnessOptions};
 use crate::{
-    canonical::PlanHash,
     compile::{compile, Frame, FusionVerdict, Site},
     equivalence::{compare, compare_under_capacity, OutputPoints},
     interpret::{AdapterError, HostBatch, HostOutput, Interpreter, OpaqueHostAdapter, Trace},
@@ -607,10 +606,6 @@ impl Builder<'_> {
     }
 }
 
-fn fingerprint(output: &str) -> PlanHash {
-    PlanHash::of_bytes(output.as_bytes())
-}
-
 /// The catalog random plans validate against: outputs `o0` to `o127`, each with its own recipient.
 fn random_plan_catalog() -> MemoryCatalog {
     (0..128).fold(MemoryCatalog::new(), |catalog, index| {
@@ -619,7 +614,6 @@ fn random_plan_catalog() -> MemoryCatalog {
             out(&output),
             CatalogOutput {
                 accepts: PortType::ANY,
-                fingerprint: fingerprint(&output),
                 recipients: vec![RecipientId::new(format!("out/{}", output)).unwrap()],
             },
         )
@@ -654,7 +648,7 @@ fn random_plan(shape: &Shape, params: &PlanParams, plan: usize) -> (Plan, Vec<St
         .iter()
         .map(|output| {
             json!({"id": output, "accepts": {"kinds": "all", "timestamps": "mixed"},
-                   "fingerprint": fingerprint(output).to_string(), "recipients": [format!("out/{}", output)]})
+                   "recipients": [format!("out/{}", output)]})
         })
         .collect::<Vec<_>>();
     let plan =

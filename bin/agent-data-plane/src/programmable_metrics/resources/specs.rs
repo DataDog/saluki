@@ -387,7 +387,6 @@ mod tests {
         let output = OutputDecl {
             id: OutputId::new("dd_metrics_encode").unwrap(),
             accepts: PortType::ANY,
-            fingerprint: HASH.parse().unwrap(),
             recipients: vec![RecipientId::new(v3).unwrap(), RecipientId::new(v2).unwrap()],
             delivery: DeliveryPolicy::Native,
             binding: Some(OutputBinding {

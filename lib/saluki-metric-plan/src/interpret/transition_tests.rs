@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 use stringtheory::MetaString;
 
 use crate::{
-    canonical::{PlanHash, MAX_SAFE_INTEGER},
+    canonical::MAX_SAFE_INTEGER,
     interpret::{InstallOutcome, InstallRejection, InterpretErrorKind, Interpreter, RunOutput, Trace},
     ir::{NodeId, OutputId, ParamType, Plan, RecipientId},
     model::PortType,
@@ -49,17 +49,12 @@ pub(super) fn src() -> NodeId {
     id("src")
 }
 
-pub(super) fn fingerprint(output: &str) -> PlanHash {
-    PlanHash::of_bytes(output.as_bytes())
-}
-
 pub(super) fn catalog() -> MemoryCatalog {
     ["a", "b"].into_iter().fold(MemoryCatalog::new(), |catalog, output| {
         catalog.with_output(
             OutputId::new(output).unwrap(),
             CatalogOutput {
                 accepts: PortType::ANY,
-                fingerprint: fingerprint(output),
                 recipients: vec![RecipientId::new(format!("out/{}", output)).unwrap()],
             },
         )
@@ -93,7 +88,7 @@ pub(super) fn output_decls(outputs: &[&str]) -> Value {
             .iter()
             .map(|output| {
                 json!({"id": output, "accepts": {"kinds": "all", "timestamps": "mixed"},
-                       "fingerprint": fingerprint(output).to_string(), "recipients": [format!("out/{}", output)]})
+                       "recipients": [format!("out/{}", output)]})
             })
             .collect(),
     )

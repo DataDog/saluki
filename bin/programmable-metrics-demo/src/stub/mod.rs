@@ -1,12 +1,10 @@
 //! The artifact channel stub: the server side of the channel that ADP polls for programs.
 //!
-//! The stub implements the stub protocol (see [`protocol`]): every poll gets the complete current snapshot of each
-//! product it asks for. The `policy` product holds at most one config per scope of the default program: `demo` for the
-//! policy scope, and `demo-<scope>` for another (see [`protocol::config_id`]). The `resources` product holds at most
-//! one config, `demo-resources`, with revisions of its own. The snapshots are durable (see [`store`]); revoking empties
-//! one, or removes one scope's config. Every poll is recorded with its receive time, including polls that are refused
+//! The stub implements the stub protocol (see [`protocol`]): every poll gets the complete current snapshot of the
+//! product it asks for. The `policy` product holds at most one config, `demo` ([`protocol::DEMO_CONFIG_ID`]): the
+//! program. The snapshot is durable (see [`store`]); revoking empties it. Every poll is recorded with its receive time, including polls that are refused
 //! or partly unreadable, and consecutive polls that report the same thing are folded into one entry of the
-//! acknowledgment timeline, which holds the acknowledgments of both products.
+//! acknowledgment timeline.
 
 use std::{
     collections::VecDeque,
@@ -159,11 +157,8 @@ impl PollLog {
 /// What the stub knows, as the UI shows it.
 #[derive(Clone, Debug, Serialize)]
 pub struct ChannelView {
-    /// The config served for the policy scope, if any.
+    /// The config served, if any.
     pub current: Option<CurrentConfig>,
-
-    /// The config served for each scope, in scope order.
-    pub configs: Vec<CurrentConfig>,
 
     /// The highest revision issued.
     pub revision_counter: u64,
@@ -184,14 +179,11 @@ pub struct ChannelView {
     pub history: Vec<HistoryEntry>,
 }
 
-/// The config the stub serves for one scope, without its payload.
+/// The config the stub serves, without its payload.
 #[derive(Clone, Debug, Serialize)]
 pub struct CurrentConfig {
     /// The config ID.
     pub id: String,
-
-    /// The scope the config's artifact replaces.
-    pub scope: String,
 
     /// The artifact revision.
     pub revision: u64,
@@ -226,7 +218,7 @@ impl StubChannel {
 
     /// Answers a poll that arrived at `now_ms`, and records it with the notes from reading it.
     ///
-    /// Every poll that states protocol version 1 is answered with the snapshot, whatever else in it could not be read.
+    /// Every poll that states protocol version 2 is answered with the snapshot, whatever else in it could not be read.
     ///
     /// # Errors
     ///
@@ -261,8 +253,7 @@ impl StubChannel {
             protocol_version: PROTOCOL_VERSION,
             ..PollResponse::default()
         };
-        // A complete snapshot of the policy product, to a poll that asks for it or names no products, as the first
-        // version of the protocol did.
+        // A complete snapshot of the policy product, to a poll that asks for it or names no products.
         let asked = |name: &str| request.products.iter().any(|product| product == name);
         let store = self.lock_store();
         if request.products.is_empty() || asked(POLICY_PRODUCT) {
@@ -303,21 +294,16 @@ impl StubChannel {
             .map(|(received_ms, status)| (received_ms, status.clone()))
     }
 
-    /// Returns the config the stub serves for each scope, in scope order.
-    pub fn configs(&self) -> Vec<CurrentConfig> {
-        self.lock_store().configs().map(current_config).collect()
+    /// Returns the config the stub serves, if any.
+    pub fn current(&self) -> Option<CurrentConfig> {
+        self.lock_store().current().map(current_config)
     }
 
-    /// Returns the envelope of the config the stub serves for each scope, with the scope, in scope order: what ADP
-    /// receives for it. A payload that is not an envelope, which the stub never writes, is left out.
-    pub fn envelopes(&self) -> Vec<(String, Envelope)> {
-        self.lock_store()
-            .configs()
-            .filter_map(|config| {
-                let envelope = serde_json::from_str::<Envelope>(&config.payload).ok()?;
-                Some((config.scope.clone(), envelope))
-            })
-            .collect()
+    /// Returns the envelope of the config the stub serves, if any: what ADP receives. A payload that is not an
+    /// envelope, which the stub never writes, is none.
+    pub fn envelope(&self) -> Option<Envelope> {
+        let store = self.lock_store();
+        serde_json::from_str::<Envelope>(&store.current()?.payload).ok()
     }
 
     /// Publishes an artifact document as the next revision.
@@ -337,14 +323,13 @@ impl StubChannel {
             .publish(artifact, approved_against, high_water, now_ms)
     }
 
-    /// Removes the config of `scope` from the snapshot, or empties it when `scope` is `None`, revoking the artifacts.
-    /// Returns `false`, and changes nothing, if there is nothing to remove.
+    /// Empties the snapshot, revoking the artifact. Returns `false`, and changes nothing, if nothing is served.
     ///
     /// # Errors
     ///
     /// Returns an error if the store cannot be written.
-    pub fn revoke(&self, scope: Option<&str>, now_ms: u64) -> Result<bool, GenericError> {
-        self.lock_store().revoke(scope, now_ms)
+    pub fn revoke(&self, now_ms: u64) -> Result<bool, GenericError> {
+        self.lock_store().revoke(now_ms)
     }
 
     /// Returns the revision the next publish would use, counting `reported_high_water` as [`publish`][Self::publish]
@@ -359,11 +344,10 @@ impl StubChannel {
     /// The next revision counts `reported_high_water` as [`publish`][Self::publish] does.
     pub fn view(&self, timeline_limit: usize, reported_high_water: Option<u64>) -> ChannelView {
         let high_water = self.high_water(reported_high_water);
-        let (current, configs, revision_counter, next_revision, history) = {
+        let (current, revision_counter, next_revision, history) = {
             let store = self.lock_store();
             (
                 store.current().map(current_config),
-                store.configs().map(current_config).collect(),
                 store.revision_counter(),
                 store.next_revision(high_water),
                 store.history().iter().rev().take(20).cloned().collect(),
@@ -372,7 +356,6 @@ impl StubChannel {
         let polls = self.lock_polls();
         ChannelView {
             current,
-            configs,
             revision_counter,
             next_revision,
             polls_total: polls.polls_total,
@@ -401,7 +384,6 @@ impl StubChannel {
 fn current_config(config: &PublishedConfig) -> CurrentConfig {
     CurrentConfig {
         id: config.id.clone(),
-        scope: config.scope.clone(),
         revision: config.revision,
         artifact_hash: config.artifact_hash.clone(),
         sha256: config.sha256.clone(),

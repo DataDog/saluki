@@ -951,8 +951,8 @@ fn plan_status_describes_itself_for_the_logs() {
         last_error: Some("no".to_string()),
         overdue: vec![generation(1)],
         apply_states: ApplyStates::default(),
-        exports: BTreeMap::new(),
-        bound_exports: BTreeMap::new(),
+        export: Err("not exported".to_string()),
+        bound_export: Err("not exported".to_string()),
         default_program: Arc::new(Plan::from_json(saluki_metric_plan::testing::DEFAULT_PROGRAM_JSON).unwrap()),
         active: None,
         resources: Default::default(),
@@ -964,7 +964,7 @@ fn plan_status_describes_itself_for_the_logs() {
          no, draining past the deadline: 1"
     );
 
-    // An active artifact is named after the generation, and its stale flags follow.
+    // An active artifact is named after the generation, and a stale review follows.
     let mut with_artifact = status;
     with_artifact.degraded.clear();
     with_artifact.last_error = None;
@@ -975,12 +975,10 @@ fn plan_status_describes_itself_for_the_logs() {
         revision: 7,
         artifact_hash: saluki_metric_plan::canonical::PlanHash::of_bytes(b"artifact"),
     });
-    summary.stale_base = true;
     summary.stale_review = true;
     assert_eq!(
         with_artifact.to_string(),
-        "no generation active (artifact `demo` revision 7), 2 live, 3 configuration changes observed, stale base, \
-         stale review"
+        "no generation active (artifact `demo` revision 7), 2 live, 3 configuration changes observed, stale review"
     );
 
     // A cut in flight says how far it got.

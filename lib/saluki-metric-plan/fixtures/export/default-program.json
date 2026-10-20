@@ -1,17 +1,5 @@
 {
   "ir_version": 1,
-  "scope": "metrics",
-  "base": {
-    "program_hash": "sha256:d3a194ebfafba51779849f6b3a1eceff8df3b8c583ad6ae8576c381ba01515c7",
-    "outputs": {
-      "af_metrics_encode": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
-      "dd_metrics_encode": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-      "dsd_client_telemetry": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-      "metrics_routing_encode_0": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
-      "metrics_routing_encode_1": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
-      "mrf_metrics_encode": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
-    }
-  },
   "nodes": [
     {"id": "dsd_enrich", "op": "dogstatsd_mapper", "params": {"profiles": [{"name": "checkout", "prefix": "raw.", "mappings": [{"match": "raw.requests.*", "match_type": "wildcard", "name": "mapped.requests", "tags": [{"name": "route", "value": "$1"}]}]}], "cache_size": 1000, "string_interner_bytes": 65536}},
     {"id": "dsd_prefix_filter_blocklist_namespace_prefix", "op": "namespace_prefix", "params": {"namespace": "tenant", "exclusions": ["internal.", "system."]}},

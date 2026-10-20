@@ -24,6 +24,10 @@
   }},
   "nodes": [
     {"id": "dsd_in", "op": "source", "params": {"binding": "dogstatsd", "timestamps": "mixed"}},
+    {"id": "otlp_in", "op": "source", "params": {"binding": "otlp"}},
+    {"id": "checks_ipc_in", "op": "source", "params": {"binding": "checks"}},
+    {"id": "liveness_in", "op": "source", "params": {"binding": "liveness"}},
+    {"id": "trace_sampler", "op": "source", "params": {"binding": "trace_sampler"}},
     {"id": "dsd_enrich", "op": "dogstatsd_mapper", "params": {
        "profiles": [
          {"name": "checkout", "prefix": "raw.", "mappings": [
@@ -68,10 +72,6 @@
     {"id": "dsd_post_agg_filter_false", "op": "drop"},
     {"id": "dsd_post_agg_filter_fanout", "op": "tee", "params": {"ports": 2}},
     {"id": "dsd_post_agg_filter_fanout_0", "op": "emit", "params": {"output": "dsd_client_telemetry"}},
-    {"id": "otlp_in", "op": "source", "params": {"binding": "otlp"}},
-    {"id": "checks_ipc_in", "op": "source", "params": {"binding": "checks"}},
-    {"id": "liveness_in", "op": "source", "params": {"binding": "liveness"}},
-    {"id": "trace_sampler", "op": "source", "params": {"binding": "trace_sampler"}},
     {"id": "metrics_in", "op": "merge", "params": {"inputs": 5}},
     {"id": "metrics_host_enrichment", "op": "host_enrichment"},
     {"id": "metrics", "op": "host_tags", "params": {
@@ -139,33 +139,16 @@
     {"from": "af_metrics_gateway.false", "to": "af_metrics_gateway_false.in"}
   ],
   "outputs": [
-    {"id": "dsd_client_telemetry", "accepts": {"kinds": "all", "timestamps": "mixed"},
-     "fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000"},
+    {"id": "dsd_client_telemetry", "accepts": {"kinds": "all", "timestamps": "mixed"}},
     {"id": "dd_metrics_encode", "accepts": {"kinds": "all", "timestamps": "mixed"},
-     "fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
      "recipients": ["dd_out/primary/0/https://primary.example.com"]},
     {"id": "metrics_routing_encode_0", "accepts": {"kinds": "all", "timestamps": "mixed"},
-     "fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
      "recipients": ["dd_out/additional/0/https://c.example.com"]},
     {"id": "metrics_routing_encode_1", "accepts": {"kinds": "all", "timestamps": "mixed"},
-     "fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
      "recipients": ["dd_out/additional/0/https://b.example.com", "dd_out/additional/1/https://b.example.com"]},
     {"id": "mrf_metrics_encode", "accepts": {"kinds": "all", "timestamps": "mixed"},
-     "fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
      "recipients": ["mrf_dd_out/primary/0/https://mrf.example.com"]},
     {"id": "af_metrics_encode", "accepts": {"kinds": ["counter", "rate", "gauge", "set"], "timestamps": "mixed"},
-     "fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
      "recipients": ["cluster_agent_out/primary/0/https://cluster-agent.example.com:5005"]}
-  ],
-  "scopes": {
-    "metrics": {
-      "inputs": {
-        "checks": "checks_ipc_in.metrics",
-        "dogstatsd": "dsd_in.metrics",
-        "liveness": "liveness_in.metrics",
-        "otlp": "otlp_in.metrics",
-        "trace_sampler": "trace_sampler.metrics"
-      }
-    }
-  }
+  ]
 }

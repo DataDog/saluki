@@ -12,16 +12,16 @@
 //!   a space starts a tuple: the head of the next statement.
 //! - After `emit`, the word `output` always starts `emit output <output>`. A recipient named `output` or `as` is
 //!   quoted, as in `emit "output"`.
-//! - A word that could start a header (`ir_version`, `base`, `blobs`) or a `let` names a stream instead when `|` or `.`
+//! - A word that could start a header (`ir_version`, `blobs`, or the removed `base`) or a `let` names a stream instead when `|` or `.`
 //!   follows it.
 
-use std::{collections::BTreeMap, str::FromStr as _};
+use std::str::FromStr as _;
 
 use saluki_metric_plan::{
     canonical::{PlanHash, BINDING_MEMBER},
     ir::{
-        ArtifactNodeId, BindingName, ExitName, IdError, Operand, OperatorName, OutputId, ParamName, ParamSpec,
-        ParamType, Params, PortName, ScopeName, BLOB_MEMBER,
+        ArtifactNodeId, BindingName, IdError, Operand, OperatorName, OutputId, ParamName, ParamSpec, ParamType, Params,
+        PortName, BLOB_MEMBER,
     },
     model::{Kind, KindSet},
     operators::OperatorRegistry,
@@ -30,7 +30,7 @@ use saluki_metric_plan::{
 use serde_json::{Map, Value};
 
 use crate::{
-    ast::{Base, Head, Name, OpStage, Pipeline, Program, Ref, Sink, SinkKind, Stage, Statement, Tuple, WhereStage},
+    ast::{Head, Name, OpStage, Pipeline, Program, Ref, Sink, SinkKind, Stage, Statement, Tuple, WhereStage},
     diagnostic::{Error, LineIndex, Span},
     graph::param_specs,
     lexer::{Token, TokenKind},
@@ -278,14 +278,17 @@ impl<'s> Parser<'s> {
             return Err(self.expected("`policy`, which starts a policy artifact"));
         }
         let start = self.advance().span;
-        let (scope, scope_span) = self.ident("a scope name after `policy`", ScopeName::new)?;
+        if self.peek().kind == TokenKind::Ident {
+            return Err(Error::new(
+                self.peek().span,
+                "A program is whole: `policy` takes no scope name. Write `policy {`.",
+            ));
+        }
         let open = self.expect(TokenKind::LBrace, "`{` to open the policy")?.span;
 
         let mut program = Program {
-            head: start.to(scope_span),
-            scope,
+            head: start,
             ir_version: None,
-            base: None,
             blobs: None,
             statements: Vec::new(),
             close: open,
@@ -310,20 +313,22 @@ impl<'s> Parser<'s> {
                             ),
                         ));
                     }
-                    let repeated = match self.text(token) {
-                        "ir_version" => {
-                            let version = self.ir_version()?;
-                            program.ir_version.replace(version).is_some()
-                        }
-                        "base" => {
-                            let base = self.base()?;
-                            program.base.replace(base).is_some()
-                        }
-                        _ => {
-                            let blobs = self.blobs()?;
-                            program.blobs.replace(blobs).is_some()
-                        }
-                    };
+                    let repeated =
+                        match self.text(token) {
+                            "ir_version" => {
+                                let version = self.ir_version()?;
+                                program.ir_version.replace(version).is_some()
+                            }
+                            "base" => return Err(Error::new(
+                                token.span,
+                                "`base` was removed: a program records nothing of what it was written against. Remove \
+                                 the `base` statement.",
+                            )),
+                            _ => {
+                                let blobs = self.blobs()?;
+                                program.blobs.replace(blobs).is_some()
+                            }
+                        };
                     if repeated {
                         return Err(Error::new(
                             token.span,
@@ -348,38 +353,6 @@ impl<'s> Parser<'s> {
             }
         }
         Err(self.expected("an IR version, a whole number such as `1`"))
-    }
-
-    fn base(&mut self) -> Result<Base, Error> {
-        self.advance();
-        let program_hash = self.hash("the hash of the base program")?;
-        let mut outputs = BTreeMap::new();
-        if self.is_word(self.peek(), "outputs") && self.peek_is(1, &TokenKind::LBrace) {
-            self.advance();
-            let open = self.advance().span;
-            loop {
-                match self.peek().kind {
-                    TokenKind::RBrace => {
-                        self.advance();
-                        break;
-                    }
-                    TokenKind::Ident => {}
-                    _ => return Err(self.unclosed("an output ID, or `}` to close the outputs", open)),
-                }
-                let (output, span) = self.ident("an output ID", OutputId::new)?;
-                self.expect(TokenKind::Eq, "`=` and the output's fingerprint")?;
-                let fingerprint = self.hash("the output's fingerprint, such as \"sha256:<64 hexadecimal digits>\"")?;
-                if outputs.insert(output.clone(), fingerprint).is_some() {
-                    return Err(Error::new(span, format!("The output `{}` is listed twice.", output)));
-                }
-                match self.separator(&TokenKind::RBrace) {
-                    Some(true) => {}
-                    Some(false) => break,
-                    None => return Err(self.expected("`,` or `}` after the output's fingerprint")),
-                }
-            }
-        }
-        Ok(Base { program_hash, outputs })
     }
 
     fn blobs(&mut self) -> Result<Map<String, Value>, Error> {
@@ -429,7 +402,7 @@ impl<'s> Parser<'s> {
             self.missing_pipe(&pipeline)?;
             return Err(Error::new(
                 pipeline.span,
-                "This pipeline does not end: a statement without `let` ends in a sink (`emit`, `drop`, or `exit`). Name \
+                "This pipeline does not end: a statement without `let` ends in a sink (`emit` or `drop`). Name \
                  the stream with `let <name> = ...` to use it in later statements, or end it, as with `| drop`.",
             ));
         }
@@ -571,7 +544,7 @@ impl<'s> Parser<'s> {
                 if word == "input" && self.peek_is(1, &TokenKind::Dot) {
                     return Err(Error::new(
                         token.span.to(self.peek_at(2).span),
-                        "`input.` is retired: a pipeline names a scope input alone, as in `dogstatsd | ...`.",
+                        "`input.` is retired: a pipeline names a source alone, as in `dogstatsd | ...`.",
                     ));
                 }
                 let reference = self.reference("the start of a pipeline: a stream's name, such as `dogstatsd`")?;
@@ -659,8 +632,7 @@ impl<'s> Parser<'s> {
         let token = self.peek();
         if token.kind != TokenKind::Ident {
             return Err(self.expected(&format!(
-                "{}: an operator such as `aggregate(window: 10s)`, `where <predicate>`, or a sink: `emit`, `drop`, \
-                 or `exit`",
+                "{}: an operator such as `aggregate(window: 10s)`, `where <predicate>`, or a sink: `emit` or `drop`",
                 what
             )));
         }
@@ -868,8 +840,10 @@ impl<'s> Parser<'s> {
             "emit" => self.emit()?,
             "drop" => SinkKind::Drop,
             _ => {
-                let (name, span) = self.ident("a scope exit name after `exit`", ExitName::new)?;
-                SinkKind::Exit { name, span }
+                return Err(Error::new(
+                    keyword.span,
+                    "`exit` was removed: a program is whole, so every path ends in `emit` or `drop`.",
+                ))
             }
         };
         let id = self.as_clause()?;
@@ -1613,7 +1587,6 @@ fn sink_word(kind: &SinkKind) -> &'static str {
     match kind {
         SinkKind::Recipients { .. } | SinkKind::Output { .. } => "emit",
         SinkKind::Drop => "drop",
-        SinkKind::Exit { .. } => "exit",
     }
 }
 

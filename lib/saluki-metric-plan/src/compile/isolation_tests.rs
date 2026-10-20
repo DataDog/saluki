@@ -9,7 +9,6 @@ use serde_json::{json, Value};
 
 use super::*;
 use crate::{
-    canonical::PlanHash,
     ir::{NativeComponentId, NodeId, OutputId, Plan, PortRef, RecipientId},
     model::PortType,
     testing::{default_program_catalog, DEFAULT_PROGRAM_JSON},
@@ -180,7 +179,7 @@ fn plan_of(nodes: Value, edges: &[(&str, &str)]) -> Plan {
         "nodes": nodes,
         "edges": edges.iter().map(|(from, to)| json!({"from": from, "to": to})).collect::<Vec<_>>(),
         "outputs": [{"id": "out", "accepts": {"kinds": "all", "timestamps": "mixed"},
-                     "fingerprint": PlanHash::of_bytes(b"out").to_string(), "recipients": ["out/out"]}],
+                     "recipients": ["out/out"]}],
     }))
     .unwrap()
 }
@@ -190,7 +189,6 @@ fn catalog() -> MemoryCatalog {
         OutputId::new("out").unwrap(),
         CatalogOutput {
             accepts: PortType::ANY,
-            fingerprint: PlanHash::of_bytes(b"out"),
             recipients: vec![RecipientId::new("out/out").unwrap()],
         },
     )

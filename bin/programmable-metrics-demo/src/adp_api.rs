@@ -31,9 +31,8 @@ pub mod routes {
     /// ADP's programmable-metrics status: the poll status plus config states.
     pub const STATUS: &str = "/programmable-metrics/status";
 
-    /// The export bundle of the default program's one scope, `metrics` ([`POLICY_SCOPE`]
-    /// (crate::stub::protocol::POLICY_SCOPE)): the whole metrics path after the sources.
-    pub const EXPORT: &str = "/programmable-metrics/export?scope=metrics";
+    /// The export bundle of the default program: the whole metrics path after the sources.
+    pub const EXPORT: &str = "/programmable-metrics/export";
 
     /// The active composed logical plan.
     pub const PLAN: &str = "/programmable-metrics/plan";

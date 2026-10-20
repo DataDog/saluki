@@ -3,18 +3,16 @@ use super::*;
 /// Team B's URL, as the default program names its recipient.
 const TEAM_B: &str = "http://127.0.0.1:17102";
 
-/// The default program of the demo's configuration, detached, as the editor prints it, with its base: what does
+/// The default program of the demo's configuration, detached, as the editor prints it: what does
 /// nothing as configured left out and noted at the top, the aggregation's window and the demo's short flush and expiry,
 /// `let metrics` naming the stream enrichment would read (enrichment does nothing, so it is left out), the main `emit`
 /// naming the primary endpoint and teams B and C, and the failover gateway reading its two signals.
-const PRINTED: &str = r#"policy metrics {
+const PRINTED: &str = r#"policy {
   # Not shown, because they do nothing as configured: mapper (no profiles), namespace prefix (none),
   #   metric filterlist (empty), tag filterlist (empty), post-aggregation filter (empty), enrichment
   #   merge (one input), host enrichment (changes no metric)
 
-  base "sha256:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
-
-  # Sources: each one's metrics enter at an input of the scope: dogstatsd.
+  # Sources, where each one's metrics enter the program: dogstatsd.
 
   # Timestamped points skip aggregation (no-aggregation pipeline)
   let dsd_no_agg_split = dogstatsd | timestamp_split(1s)
@@ -434,13 +432,13 @@ fn the_width_change_sets_both_windows_to_the_literal() {
 
 #[test]
 fn an_edit_that_cannot_find_its_lines_says_what_it_looked_for() {
-    let error = drop_debug("policy metrics {\n}\n").unwrap_err().to_string();
+    let error = drop_debug("policy {\n}\n").unwrap_err().to_string();
     assert!(error.contains("let metrics = ..."), "{}", error);
-    let error = two_hosts("policy metrics {\n}\n").unwrap_err().to_string();
+    let error = two_hosts("policy {\n}\n").unwrap_err().to_string();
     assert!(error.contains("failover gateway"), "{}", error);
     let error = widen_team_b(PRINTED).unwrap_err().to_string();
     assert!(error.contains("route to team B"), "{}", error);
-    let error = width_change("policy metrics {\n}\n", "30s").unwrap_err().to_string();
+    let error = width_change("policy {\n}\n", "30s").unwrap_err().to_string();
     assert!(error.contains("timestamp_split"), "{}", error);
 }
 

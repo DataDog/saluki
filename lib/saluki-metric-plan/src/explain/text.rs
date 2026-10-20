@@ -33,12 +33,8 @@ fn write_document(explain: &Explain, out: &mut String) -> std::fmt::Result {
         if let Some(change) = provenance.config_change {
             writeln!(out, "  config_change {}", change)?;
         }
-        for artifact in &provenance.artifacts {
-            writeln!(
-                out,
-                "  artifact revision {} {} replaces scope {}",
-                artifact.revision, artifact.hash, artifact.scope
-            )?;
+        if let Some(artifact) = &provenance.artifact {
+            writeln!(out, "  artifact revision {} {}", artifact.revision, artifact.hash)?;
         }
     }
     let errors = explain.findings.iter().filter(|f| f.severity == "error").count();
@@ -114,7 +110,6 @@ fn write_document(explain: &Explain, out: &mut String) -> std::fmt::Result {
     for output in &graph.outputs {
         writeln!(out, "  {}", output.id)?;
         writeln!(out, "    accepts {}", describe_port_type(&output.accepts))?;
-        writeln!(out, "    fingerprint {}", output.fingerprint)?;
         let recipients = output.recipients.iter().map(ToString::to_string).collect::<Vec<_>>();
         writeln!(out, "    recipients {}", list(&recipients))?;
         let delivery = serde_json::to_value(output.delivery).unwrap_or(Value::Null);
@@ -125,26 +120,6 @@ fn write_document(explain: &Explain, out: &mut String) -> std::fmt::Result {
         )?;
         let emitters = output.emitted_by.iter().map(ToString::to_string).collect::<Vec<_>>();
         writeln!(out, "    emitted by {}", list(&emitters))?;
-    }
-
-    writeln!(out)?;
-    writeln!(out, "scopes ({})", graph.scopes.len())?;
-    for scope in &graph.scopes {
-        let inputs = scope
-            .inputs
-            .iter()
-            .map(|(input, port)| format!("{} = {}", input, port))
-            .collect::<Vec<_>>();
-        if scope.exits.is_empty() {
-            writeln!(out, "  {}: {}", scope.name, list(&inputs))?;
-        } else {
-            let exits = scope
-                .exits
-                .iter()
-                .map(|(exit, port)| format!("{} = {}", exit, port))
-                .collect::<Vec<_>>();
-            writeln!(out, "  {}: {}; exits {}", scope.name, list(&inputs), list(&exits))?;
-        }
     }
 
     if let Some(resources) = &explain.resources {

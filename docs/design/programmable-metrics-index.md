@@ -31,17 +31,19 @@ recipients are live resources (stage 7), declared by configuration. The path run
 | Docs | The status document and the stages 7 and 9 design | `2729a33271`, `d7316c474f` |
 | 7 | Outputs, recipients, and delivery settings change live (resource generations) | `b7e63f147b` |
 | 9 | Stage 9 foundations and first measurements; then partitioned lanes | `b523d9002b`, `8b44c153aa` |
-| After 9 | One editable scope, `metrics`, over the whole metrics path; at most one aggregation per program (amendments 168, 169) | `e9fd618187` |
+| After 9 | One editable scope, `metrics`, over the whole metrics path (scopes later removed by V4); at most one aggregation per program (amendments 168, 169) | `e9fd618187` |
 | Detached programs, phase 1 | Binding classes and host facts, the recipient directory, one aggregation's identity, editor annotations, version 1 fingerprints removed | `cfd4a28072` |
 | Detached programs, phase 2 | The detached export, composition by value, `program` in status, emits addressed to recipients with implied outputs, facts and signals only, no node provenance, adoption, the standalone configuration reload | `7f9d67a033` |
 | Detached programs, phase 3 | The demo: teams B and C as additional endpoints, destinations added and removed live, no resources artifacts, the scenarios reworked | `c9e27cea81` |
 | What does nothing | Detached programs leave out identity nodes and constant splits (amendment 191) | `b1be5f7b72` |
 | Version 2 plan | The premise shift (the program is the system), two modes not coexistence, ten simplification steps | `79555ebcb4` |
 | V2 | Resources artifacts removed (amendment 192) | `06e7301501` |
+| V3 | Native configuration lowers to literals; bindings are facts and signals (amendment 196) | `e6599d63f3` |
+| V4, V5 | Programs are whole and a snapshot holds one program document: scopes, `base`, staleness, fingerprints, and splicing removed (amendment 197) | (V4+V5 commit) |
 | Pipeline syntax | Programs written as streaming queries, a printer that writes any program as a person would, normalization and registry defaults (amendments 193, 194), and the demo moved to it | `0cbc6677d3` to `d35c5f8453` |
 
 Stage 8 (the production Remote Config channel) was skipped on purpose, and stage 10 (measured extensions) is not
-started. **Current work is version 2**, from step V3; a new session starts at its
+started. **Current work is version 2**, from step V6; a new session starts at its
 [handoff](programmable-metrics-v2.md#handing-off). Current state, in detail: [status: where things
 stand](programmable-metrics-status.md#where-things-stand).
 

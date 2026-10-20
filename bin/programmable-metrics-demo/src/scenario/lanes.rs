@@ -14,7 +14,7 @@
 //!   and flushed a second ago; with lanes, an empty lane's own last flush is windows old, so each probe must still
 //!   arrive as one point of 1 at its bucket and no zero before it, whichever lane holds it (the lanes share the
 //!   lineage's flush log). Every probe arriving exactly once is the conservation check of the probes over both lanes.
-//! - **S13a**: a width change, 10 s to 30 s, in the default program's one scope, the program the first launch edits
+//! - **S13a**: a width change, 10 s to 30 s, in the default program, the program the first launch edits
 //!   too: the artifact edits `window` of DogStatsD aggregation and of the timestamp split ahead of it, and installs at
 //!   a cut, at a multiple of 30 s (`plan_cuts_total{outcome="completed"}`). Every state
 //!   lane crosses on its own (`plan_lane_crossings_total{kind="cut"}`, with more than one state lane), and every count

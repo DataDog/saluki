@@ -12,7 +12,7 @@ use std::{
 
 use super::{graph::Graph, Catalog, Finding, Rule, ValidationReport};
 use crate::{
-    ir::{ComposedArtifact, NodeId, ParamValue},
+    ir::{ArtifactRevision, NodeId, ParamValue},
     operators::{names, ConfiguredOperator, KeyedState, StateContract, StateTime, DEFAULT_PORT},
 };
 
@@ -21,7 +21,7 @@ use crate::{
 const SHARED_WIDTH_LIMIT: Duration = Duration::from_secs(60);
 
 pub(super) fn check(
-    graph: &Graph<'_>, catalog: Option<&dyn Catalog>, programs: &[(ComposedArtifact, BTreeSet<NodeId>)],
+    graph: &Graph<'_>, catalog: Option<&dyn Catalog>, programs: &[(ArtifactRevision, BTreeSet<NodeId>)],
     report: &mut ValidationReport,
 ) {
     if catalog.is_some_and(|catalog| catalog.single_aggregation()) {

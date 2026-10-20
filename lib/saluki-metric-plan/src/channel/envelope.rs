@@ -110,7 +110,7 @@ mod tests {
     #[test]
     fn envelopes_that_are_not_documents_or_lack_members_are_refused() {
         let repeated = format!(
-            r#"{{"revision": 1, "artifact_hash": "{}", "artifact": {{"scope": "a", "scope": "b"}}}}"#,
+            r#"{{"revision": 1, "artifact_hash": "{}", "artifact": {{"ir_version": 1, "ir_version": 2}}}}"#,
             HASH
         );
         let cases = [

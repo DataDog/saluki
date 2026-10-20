@@ -69,7 +69,6 @@ fn catalog() -> MemoryCatalog {
         OutputId::new(OUTPUT).unwrap(),
         CatalogOutput {
             accepts: PortType::ANY,
-            fingerprint: PlanHash::of_bytes(OUTPUT.as_bytes()),
             recipients: vec![RecipientId::new(format!("out/{}", OUTPUT)).unwrap()],
         },
     )
@@ -95,8 +94,7 @@ fn plan_with(params: Value) -> Plan {
         ],
         "edges": [{"from": "src.metrics", "to": "dsd_agg.in"}, {"from": "dsd_agg.out", "to": "out.in"}],
         "outputs": [{"id": OUTPUT, "accepts": {"kinds": "all", "timestamps": "mixed"},
-                     "fingerprint": PlanHash::of_bytes(OUTPUT.as_bytes()).to_string(),
-                     "recipients": [format!("out/{}", OUTPUT)]}],
+                                          "recipients": [format!("out/{}", OUTPUT)]}],
     }))
     .unwrap()
 }
@@ -834,8 +832,7 @@ fn branched_plan(two: bool, second: &str) -> Plan {
         "nodes": nodes,
         "edges": edges,
         "outputs": [{"id": OUTPUT, "accepts": {"kinds": "all", "timestamps": "mixed"},
-                     "fingerprint": PlanHash::of_bytes(OUTPUT.as_bytes()).to_string(),
-                     "recipients": [format!("out/{}", OUTPUT)]}],
+                                          "recipients": [format!("out/{}", OUTPUT)]}],
     }))
     .unwrap()
 }
@@ -1647,8 +1644,7 @@ fn filtered_plan() -> Plan {
             {"from": "pick.false", "to": "pick_false.in"}, {"from": "dsd_agg.out", "to": "out.in"},
         ],
         "outputs": [{"id": OUTPUT, "accepts": {"kinds": "all", "timestamps": "mixed"},
-                     "fingerprint": PlanHash::of_bytes(OUTPUT.as_bytes()).to_string(),
-                     "recipients": [format!("out/{}", OUTPUT)]}],
+                                          "recipients": [format!("out/{}", OUTPUT)]}],
     }))
     .unwrap()
 }
@@ -1900,15 +1896,11 @@ fn an_artifacts_state_owner_at_the_native_context_limit_is_within_the_artifact_m
     for limit in [1_000_000u64, 10_000_000] {
         let mut params = aggregate_params("30s");
         params["context_limit"] = json!(limit);
-        // The program of an artifact that replaces the scope after the source.
+        // The program of an artifact: every node after the source.
         let mut value = serde_json::to_value(plan_with(params)).unwrap();
-        value["scopes"] = json!({"program": {"inputs": {"metrics": "src.metrics"}}});
-        value["provenance"] = json!({"artifacts": [
-            {"scope": "program", "revision": 7, "hash": PlanHash::of_bytes(b"artifact").to_string()}
-        ]});
+        value["provenance"] = json!({"artifact": {"revision": 7, "hash": PlanHash::of_bytes(b"artifact").to_string()}});
         let plan = Plan::from_value(value).unwrap();
-        let catalog = catalog().with_scope_input("program".parse().unwrap(), "metrics".parse().unwrap(), PortType::ANY);
-        let report = Validator::new(&OperatorRegistry::native(), &catalog).validate(&plan);
+        let report = Validator::new(&OperatorRegistry::native(), &catalog()).validate(&plan);
         assert!(
             report
                 .bounds()

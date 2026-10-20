@@ -4,7 +4,7 @@
 //! |---|---|
 //! | `GET /programmable-metrics/status` | the status summary and `config_states`, as the stub protocol writes them |
 //! | `GET /programmable-metrics/resources` | the delivery hosts, outputs, recipients, and resource budget |
-//! | `GET /programmable-metrics/export?scope=metrics` | the export bundle of the scope |
+//! | `GET /programmable-metrics/export` | the export bundle of the default program; `?form=bound` for its bound form |
 //! | `GET /programmable-metrics/plan` | the active composed logical plan, resolved values included |
 //! | `GET /programmable-metrics/default-program` | the default program last lowered, resolved values included |
 //! | `GET /programmable-metrics/explain` | the explain document of the active plan, as JSON; `?format=text` for text |
@@ -19,8 +19,8 @@
 //! declares, credentials by reference only.
 //!
 //! A request the routes cannot answer gets a plain-text error: `400 Bad Request` for a missing or unknown query
-//! parameter value, `404 Not Found` for a scope the default program does not declare, `500 Internal Server Error` for a
-//! scope that cannot be exported, and `503 Service Unavailable` while no generation is active.
+//! parameter value, `500 Internal Server Error` for a default program that cannot be exported, and `503 Service
+//! Unavailable` while no generation is active.
 
 use std::sync::Arc;
 
@@ -36,7 +36,6 @@ use saluki_api::{
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_core::runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture};
 use saluki_error::generic_error;
-use saluki_metric_plan::ir::ScopeName;
 use serde::{Deserialize, Serialize};
 
 use super::installer::{status::StatusDocument, PlanStatus};
@@ -49,13 +48,13 @@ pub mod routes {
     /// What the default program delivers through: hosts, outputs, recipients, and the resource budget.
     pub const RESOURCES: &str = "/programmable-metrics/resources";
 
-    /// The export bundle of a scope, named by the `scope` query parameter.
+    /// The export bundle of the default program, in the form the `form` query parameter names.
     pub const EXPORT: &str = "/programmable-metrics/export";
 
     /// The active composed logical plan.
     pub const PLAN: &str = "/programmable-metrics/plan";
 
-    /// The default program last lowered: the plan artifacts are composed into.
+    /// The default program last lowered: the plan whose sources, outputs, and resources artifacts are composed with.
     pub const DEFAULT_PROGRAM: &str = "/programmable-metrics/default-program";
 
     /// The explain document of the active plan; `format=text` for its text form.
@@ -71,9 +70,6 @@ pub struct ControlSurfaceState {
 /// The query parameters of the export route.
 #[derive(Deserialize)]
 struct ExportQuery {
-    /// The scope to export.
-    scope: Option<String>,
-
     /// The form to export it in: `detached`, the default, which leaves out what does nothing as configured and
     /// addresses emits to recipients, as a published program starts from, or `bound`, every node as the default program
     /// has it.
@@ -110,26 +106,9 @@ impl ControlSurfaceAPIHandler {
 
     async fn export_handler(State(state): State<ControlSurfaceState>, Query(query): Query<ExportQuery>) -> Response {
         let status = state.status.load();
-        let scopes = || {
-            status
-                .exports
-                .keys()
-                .map(|scope| format!("`{}`", scope))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        let Some(scope) = query.scope else {
-            return error(
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "The `scope` query parameter is required: name the scope of the default program to export ({}).",
-                    scopes()
-                ),
-            );
-        };
-        let exports = match query.form.as_deref() {
-            None | Some("detached") => &status.exports,
-            Some("bound") => &status.bound_exports,
+        let export = match query.form.as_deref() {
+            None | Some("detached") => &status.export,
+            Some("bound") => &status.bound_export,
             Some(other) => {
                 return error(
                     StatusCode::BAD_REQUEST,
@@ -140,23 +119,11 @@ impl ControlSurfaceAPIHandler {
                 )
             }
         };
-        let export = ScopeName::new(scope.as_str()).ok().and_then(|name| exports.get(&name));
         match export {
-            Some(Ok(bundle)) => json(&**bundle),
-            Some(Err(reason)) => error(
+            Ok(bundle) => json(&**bundle),
+            Err(reason) => error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!(
-                    "Scope `{}` of the default program cannot be exported: {}",
-                    scope, reason
-                ),
-            ),
-            None => error(
-                StatusCode::NOT_FOUND,
-                format!(
-                    "The default program declares no scope `{}`. The scopes it declares are {}.",
-                    scope,
-                    scopes()
-                ),
+                format!("The default program cannot be exported: {}", reason),
             ),
         }
     }

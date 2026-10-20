@@ -13,10 +13,7 @@ use saluki_metric_plan::{
 use serde_json::Value;
 
 use super::*;
-use crate::{
-    compile::{compile, default_program_source, CompileOutcome},
-    stub::protocol::{ActiveArtifact, ScopeState},
-};
+use crate::compile::{compile, default_program_source, CompileOutcome};
 
 /// Returns the host's catalog of a default program: the fixtures' catalog, with every binding the program resolves
 /// carrying the value it resolves to, as ADP's catalog carries the values lowering writes.
@@ -60,13 +57,7 @@ fn catalog_for(plan: &Plan) -> MemoryCatalog {
 /// The plan crate's default program, and its export bundle document as ADP serves it.
 pub(crate) fn fixture_documents() -> (Plan, Value) {
     let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
-    let bundle = export(
-        &plan,
-        &crate::stub::protocol::POLICY_SCOPE.parse().unwrap(),
-        &catalog_for(&plan),
-        &BTreeMap::new(),
-    )
-    .unwrap();
+    let bundle = export(&plan, &catalog_for(&plan), &BTreeMap::new()).unwrap();
     (plan, serde_json::to_value(bundle).unwrap())
 }
 
@@ -74,20 +65,6 @@ pub(crate) fn fixture_documents() -> (Plan, Value) {
 pub(crate) fn fixture() -> (Plan, ExportBundle) {
     let (plan, document) = fixture_documents();
     (plan, ExportBundle::from_value(document).unwrap())
-}
-
-/// The plan crate's default program with the two scopes it declared through stage 9, and the export of its policy
-/// scope, `post_enrich`, as the demo reads it: for the tests of artifacts of several scopes, which the preview composes
-/// as ADP's installer does, though ADP declares one scope today.
-pub(crate) fn two_scope_fixture() -> (Plan, ExportBundle) {
-    let plan = Plan::from_value(saluki_metric_plan::testing::with_two_scopes(
-        serde_json::from_str(DEFAULT_PROGRAM_JSON).unwrap(),
-    ))
-    .unwrap();
-    let catalog = saluki_metric_plan::testing::two_scopes_of(catalog_for(&plan));
-    let bundle = export(&plan, &"post_enrich".parse().unwrap(), &catalog, &BTreeMap::new()).unwrap();
-    let bundle = ExportBundle::from_value(serde_json::to_value(bundle).unwrap()).unwrap();
-    (plan, bundle)
 }
 
 /// Compiles `source` against the fixture, with the default program active (generation 3) and revision 7 next.
@@ -101,7 +78,6 @@ fn compile_against(source: &str, plan: &Plan, export: &ExportBundle) -> CompileO
             generation: Some(3),
             artifact_revision: None,
         }),
-        others: &[],
         revision: 7,
         labels: &crate::compile::RecipientLabels::default(),
         in_effect: None,
@@ -137,11 +113,10 @@ fn an_unmodified_export_composes_to_the_active_default_program_with_an_empty_dif
         preview
     );
     assert!(preview.nodes.is_empty() && preview.edges_added.is_empty() && preview.edges_removed.is_empty());
-    assert!(!preview.stale_base);
-    // The composed plan is the default program itself: the hash ADP reports active after installing it is the hash
-    // it already reports.
+    // The composed plan does what the default program does, so ADP adopts the running generation. It is not the same
+    // document: the detached export leaves out what does nothing, and the printed program orders its edges as written.
     let hash = plan.hash(ResolvedValues::Include).unwrap().to_string();
-    assert_eq!(preview.plan_hash.as_deref(), Some(hash.as_str()));
+    assert!(preview.plan_hash.is_some());
     assert_eq!(
         preview.against,
         Some(PreviewBase {
@@ -157,7 +132,6 @@ fn an_unmodified_export_composes_to_the_active_default_program_with_an_empty_dif
         export: &export,
         default_program: Some(&plan),
         active: None,
-        others: &[],
         revision: 1,
         labels: &crate::compile::RecipientLabels::default(),
         in_effect: None,
@@ -345,135 +319,6 @@ fn an_aggregation_composes_and_validation_places_its_findings_at_its_node() {
     assert!(outcome.preview.available && !outcome.preview.valid);
 }
 
-/// A pre-aggregation artifact that drops every DogStatsD metric before aggregation, under the default program's base.
-fn pre_aggregation_document(plan: &Plan) -> Value {
-    let base = saluki_metric_plan::export::base(plan, &PRE_AGGREGATION.parse().unwrap()).unwrap();
-    serde_json::json!({
-        "ir_version": 1,
-        "scope": PRE_AGGREGATION,
-        "base": base,
-        "nodes": [{"id": "none", "op": "drop"}],
-        "edges": [{"from": "input.metrics", "to": "none.in"}]
-    })
-}
-
-const PRE_AGGREGATION: &str = "dogstatsd_pre_aggregation";
-
-#[test]
-fn an_artifact_composes_with_the_artifacts_adp_runs_for_the_other_scopes() {
-    let (plan, export) = two_scope_fixture();
-    let registry = OperatorRegistry::native();
-    // ADP runs a pre-aggregation artifact, revision 5: its active plan composes it.
-    let other = ScopeArtifact {
-        artifact: receive_artifact(pre_aggregation_document(&plan)).unwrap(),
-        revision: 5,
-    };
-    let approval = Approval {
-        revision: 5,
-        approved_against: None,
-        active_plan_hash: None,
-        in_effect: true,
-    };
-    let active = compose_all(&plan, &[(&other.artifact, &approval)], &export.catalog, &registry)
-        .unwrap()
-        .plan;
-    let hash = active.hash(ResolvedValues::Include).unwrap();
-    let source = default_program_source(&export, &crate::compile::RecipientLabels::default());
-    let context = CompileContext {
-        export: &export,
-        default_program: Some(&plan),
-        active: Some(ActivePlan {
-            plan: &active,
-            hash,
-            generation: Some(4),
-            artifact_revision: Some(5),
-        }),
-        others: std::slice::from_ref(&other),
-        revision: 6,
-        labels: &crate::compile::RecipientLabels::default(),
-        in_effect: None,
-    };
-
-    // The unmodified policy scope export changes nothing: the pre-aggregation artifact stays, and the plan hash is the
-    // one ADP reports once it installs the edited artifact.
-    let (outcome, _) = compile(&source, Some(&context));
-    let preview = &outcome.preview;
-    assert!(preview.available && preview.unchanged, "{:#?}", preview);
-    assert_eq!(preview.plan_hash, Some(hash.to_string()));
-    assert!(
-        preview
-            .reason
-            .contains("with the artifacts ADP runs for `dogstatsd_pre_aggregation` (revision 5)"),
-        "{}",
-        preview.reason
-    );
-    assert!(preview.reason.contains("not placed"), "{}", preview.reason);
-
-    // Composed alone, the edited artifact would revert the pre-aggregation scope to the default program's region.
-    let alone = CompileContext { others: &[], ..context };
-    let (outcome, _) = compile(&source, Some(&alone));
-    assert!(!outcome.preview.unchanged);
-    assert_eq!(
-        outcome.preview.plan_hash,
-        Some(plan.hash(ResolvedValues::Include).unwrap().to_string())
-    );
-}
-
-#[test]
-fn the_artifacts_adp_runs_for_the_other_scopes_are_read_from_the_configs_the_stub_serves() {
-    // The policy scope's artifact, and one of another scope, as of the two scopes of stage 9.
-    let (plan, _) = two_scope_fixture();
-    let (_, export) = fixture();
-    let pre = pre_aggregation_document(&plan);
-    let post = serde_json::to_value(&export.artifact.artifact).unwrap();
-    let policy = crate::stub::protocol::POLICY_SCOPE;
-    let hash = |document: &Value| ReceivedArtifact::from_value(document.clone()).unwrap().hash.to_string();
-    let envelope = |revision, document: &Value| Envelope {
-        revision,
-        artifact_hash: hash(document),
-        approved_against: None,
-        artifact: document.clone(),
-    };
-    let active = |id: &str, revision, document: &Value| ActiveArtifact {
-        id: id.to_string(),
-        revision: Some(revision),
-        artifact_hash: Some(hash(document)),
-    };
-    let served = vec![
-        (PRE_AGGREGATION.to_string(), envelope(5, &pre)),
-        (policy.to_string(), envelope(6, &post)),
-    ];
-    let found = |status: &ChannelStatus, scope: &str| {
-        other_scope_artifacts(status, &served, scope)
-            .iter()
-            .map(|other| (other.artifact.artifact.scope.to_string(), other.revision))
-            .collect::<Vec<_>>()
-    };
-
-    // ADP names every scope's artifact in `scopes`.
-    let mut status = ChannelStatus {
-        active_artifact: Some(active("demo", 6, &post)),
-        ..ChannelStatus::default()
-    };
-    status.scopes.insert(
-        PRE_AGGREGATION.to_string(),
-        ScopeState {
-            active_artifact: Some(active("demo-dogstatsd_pre_aggregation", 5, &pre)),
-            ..ScopeState::default()
-        },
-    );
-    assert_eq!(found(&status, policy), [(PRE_AGGREGATION.to_string(), 5)]);
-    // The policy scope's artifact comes from the top-level member when `scopes` does not describe it.
-    assert_eq!(found(&status, PRE_AGGREGATION), [(policy.to_string(), 6)]);
-
-    // An artifact ADP runs that the stub no longer serves is left out, as ADP no longer composes it.
-    status.active_artifact = Some(ActiveArtifact {
-        artifact_hash: Some(format!("sha256:{}", "e".repeat(64))),
-        ..active("demo", 4, &post)
-    });
-    assert!(found(&status, PRE_AGGREGATION).is_empty());
-}
-
 #[test]
 fn composition_errors_are_one_finding_at_the_node_or_output_and_no_diff() {
     let (plan, export) = fixture();
@@ -512,31 +357,6 @@ fn composition_errors_are_one_finding_at_the_node_or_output_and_no_diff() {
     }
 }
 
-#[test]
-fn a_stale_base_is_a_warning_and_the_artifact_still_composes() {
-    let (plan, export) = fixture();
-    let source = default_program_source(&export, &crate::compile::RecipientLabels::default());
-    // The editor leaves the base out; a source that states one records it.
-    let stale = format!("policy metrics {{\n  base \"sha256:{}\"\n\n", "e".repeat(64));
-    let stated = source.replacen("policy metrics {\n", &stale, 1);
-    let outcome = compile_against(&stated, &plan, &export);
-    assert_eq!(outcome.diagnostics.len(), 1, "{:#?}", outcome.diagnostics);
-    let diagnostic = &outcome.diagnostics[0];
-    assert_eq!(
-        (diagnostic.severity, diagnostic.origin),
-        (Severity::Warning, Origin::Composition)
-    );
-    assert!(diagnostic.message.contains("is not the current default program"));
-    assert_eq!(diagnostic.range.line, 2);
-    // Unmodified otherwise: the same plan, reported stale.
-    assert!(outcome.preview.stale_base && outcome.preview.valid && outcome.preview.unchanged);
-    // Formatting keeps the base the source states, without an `outputs` block, whose fingerprints the export gave.
-    let canonical = outcome.canonical_source.unwrap();
-    assert!(canonical.starts_with(&stale), "{}", canonical);
-    assert!(!canonical.contains("outputs {"), "{}", canonical);
-    assert_eq!(compile_against(&canonical, &plan, &export).diagnostics.len(), 1);
-}
-
 /// The plan crate's default program, and its detached export, as ADP serves it by default.
 pub(crate) fn detached_fixture() -> (Plan, ExportBundle) {
     detached_fixture_with(|catalog| catalog)
@@ -548,7 +368,6 @@ pub(crate) fn detached_fixture_with(host: impl FnOnce(MemoryCatalog) -> MemoryCa
     let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
     let bundle = saluki_metric_plan::export::export_as(
         &plan,
-        &crate::stub::protocol::POLICY_SCOPE.parse().unwrap(),
         &host(catalog_for(&plan)),
         &BTreeMap::new(),
         saluki_metric_plan::export::ExportForm::Detached,
@@ -661,11 +480,10 @@ fn renaming_the_one_aggregation_of_a_program_keeps_its_id_and_gets_no_note() {
         .replace("\"dsd_agg\"", "\"agg\"")
         .replace("\"dsd_agg.", "\"agg.");
     assert_ne!(renamed, document);
-    let received = receive_artifact(serde_json::from_str(&renamed).unwrap()).unwrap();
+    let received = saluki_metric_plan::compose::receive_artifact(serde_json::from_str(&renamed).unwrap()).unwrap();
     let parsed = Parsed {
         artifact: received.artifact.clone(),
         spans: Default::default(),
-        base_given: true,
     };
     let labels = crate::compile::RecipientLabels::default();
     let context = CompileContext {
@@ -677,12 +495,11 @@ fn renaming_the_one_aggregation_of_a_program_keeps_its_id_and_gets_no_note() {
             generation: Some(3),
             artifact_revision: None,
         }),
-        others: &[],
         revision: 7,
         labels: &labels,
         in_effect: None,
     };
-    let (findings, preview) = compose_preview("", &parsed, &received, &context, &plan, &LineIndex::new(""));
+    let (findings, preview) = compose_preview(&parsed, &received, &context, &plan, &LineIndex::new(""));
     assert!(preview.available, "{:?}\n{:?}", preview, findings);
     assert!(
         !preview.notes.iter().any(|note| note.contains("renames")),
@@ -695,9 +512,7 @@ fn renaming_the_one_aggregation_of_a_program_keeps_its_id_and_gets_no_note() {
 fn nodes_normalization_renames_are_placed_where_they_are_written() {
     // A `split` that drops on `true` is normalized to one that drops on `false`, which swaps its terminals' derived
     // IDs: what composition calls `s_true` is the `emit` written on `s.false`, and `s_false` is the `drop`.
-    let source = r#"policy metrics {
-  base "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-
+    let source = r#"policy {
   let s = dogstatsd | split(name == "a")
 
   s.true | drop

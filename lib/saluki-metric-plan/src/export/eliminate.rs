@@ -24,20 +24,17 @@
 //!
 //! - **A constant `split`**: one whose predicate its literal operands decide ([`Predicate::literal_value`]), such as a
 //!   filterlist with nothing in it (`intake_name in []`), together with everything only its dead port feeds, by rewrite
-//!   R3's rules and obligations (no source, fence, stateful or dynamic operator, or node a scope names is removed; a
-//!   `merge` the dead subgraph feeds keeps its other inputs, renumbered in order; an `emit` that goes leaves its output
-//!   declared). A `flag` or `is_empty` of a bound fact or signal never decides one.
+//!   R3's rules and obligations (no source, fence, stateful or dynamic operator is removed; a `merge` the dead
+//!   subgraph feeds keeps its other inputs, renumbered in order; an `emit` that goes leaves its output declared).
+//!   A `flag` or `is_empty` of a bound fact or signal never decides one.
 //! - **An identity node**: a node with one input and one output whose operator says that, with these literal
 //!   parameters, it passes every record through unchanged ([`OperatorDef::is_identity`]); it is never a source, a
-//!   fence, a state owner, a dynamic operator, or a node a scope names. The edge into it is spliced to where its output
-//!   leads.
+//!   fence, a state owner, or a dynamic operator. The edge into it is spliced to where its output leads.
 //!
 //! Splits go first, in plan order, then identity nodes, in plan order, and the search starts again after each, since a
 //! fold can leave a `merge` with one input. A plan that does not validate structurally loses nothing.
 //!
 //! [`OperatorDef::is_identity`]: crate::operators::OperatorDef::is_identity
-
-use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
@@ -103,7 +100,7 @@ pub fn eliminate(plan: &Plan, registry: &OperatorRegistry) -> Eliminated {
             (decided, result) = (next_decided, next_result);
             continue;
         }
-        if let Some((node, inbound, outbound)) = identity_node(&graph, &decided) {
+        if let Some((node, inbound, outbound)) = identity_node(&graph) {
             decided = splice(&decided, &node, &inbound, &outbound);
             result = splice(&result, &node, &inbound, &outbound);
             omitted.push((node, Omission::Identity));
@@ -148,13 +145,7 @@ fn constant_split(
 
 /// Returns the first identity node, in plan order, that can be left out, with the port that feeds it and the port its
 /// output leads to.
-fn identity_node(graph: &Graph<'_>, plan: &Plan) -> Option<(NodeId, PortRef, PortRef)> {
-    let scoped = plan
-        .scopes
-        .values()
-        .flat_map(|scope| scope.inputs.values().chain(scope.exits.values()))
-        .map(|port| &port.node)
-        .collect::<BTreeSet<_>>();
+fn identity_node(graph: &Graph<'_>) -> Option<(NodeId, PortRef, PortRef)> {
     (0..graph.nodes.len()).find_map(|node| {
         let op = graph.op(node)?;
         let contract = op.contract();
@@ -165,8 +156,7 @@ fn identity_node(graph: &Graph<'_>, plan: &Plan) -> Option<(NodeId, PortRef, Por
             && contract.state == StateContract::None
             && !contract.is_dynamic()
             && !contract.boundary.is_fence()
-            && contract.cardinality != Cardinality::Source
-            && !scoped.contains(graph.id(node));
+            && contract.cardinality != Cardinality::Source;
         if !removable {
             return None;
         }

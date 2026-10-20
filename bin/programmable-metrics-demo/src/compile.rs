@@ -9,14 +9,12 @@
 //! diagnostic with a line, a column, and the span of the source it is about, so the editor can mark it.
 //!
 //! The editor shows programs printed with [`DISPLAY`]: at the syntax's own width, so a pipeline's stages and their `as`
-//! clauses stay on one line each, and without the `base` statement, whose program hash and output fingerprints are digests a reader does not edit. A source without
-//! a base gets the export's program hash when it is compiled, and the fingerprints of the outputs it emits to, as the
-//! syntax crate's documentation asks of tools that elide them.
+//! clauses stay on one line each.
 //!
 //! The default program is the whole metrics path, so the editor prints it with ADP's notes as comments ([`annotate`]):
 //! the note of each node, from lowering, which says what the node stands for, above the stage that runs it, and a line
-//! that names the sources' inputs, which ADP does not know. Comments are not part of the artifact, so they change neither it nor its hash. The printed
-//! form writes edges in the syntax's canonical order, the edges from the scope's inputs first, in input-name order,
+//! that names the sources the program reads. Comments are not part of the artifact, so they change neither it nor its
+//! hash. The printed form writes edges in the syntax's canonical order, the edges from the sources first, in name order,
 //! while the export lists them in the default program's order: the compiled document then differs from the export in
 //! the order of its edges, and its artifact hash with it, but composition puts edges in the default program's order, so
 //! an unmodified program composes to the default program, with its hash.
@@ -24,11 +22,11 @@
 use saluki_metric_plan::{
     canonical::PlanHash,
     compose::receive_artifact,
-    ir::{ArtifactBase, ArtifactPortRef, OutputId, PolicyArtifact, ReceivedArtifact},
+    ir::{ArtifactPortRef, OutputId, PolicyArtifact, ReceivedArtifact},
     operators::names,
     validate::{Catalog as _, CatalogRecipient},
 };
-use saluki_metric_plan_syntax::{parse_with, print, ParseOptions, PrintOptions, Span};
+use saluki_metric_plan_syntax::{parse, print, PrintOptions, Span};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -39,30 +37,9 @@ use crate::{
 };
 
 /// How the editor prints programs: lines of up to the syntax's default width, 120 characters, where the syntax can
-/// break them, and no `base` statement, which the export gives back. A narrower width would break most stages of the
-/// default program, whose `as` clauses keep its native node IDs, across lines.
-pub const DISPLAY: PrintOptions = PrintOptions {
-    elide_fingerprints: true,
-    elide_base: true,
-    width: DISPLAY_WIDTH,
-};
-
-/// The width the editor prints programs at.
-const DISPLAY_WIDTH: usize = 120;
-
-/// How the editor prints a program that lists its output fingerprints, which are kept with its base.
-const DISPLAY_WITH_FINGERPRINTS: PrintOptions = PrintOptions {
-    elide_fingerprints: false,
-    elide_base: false,
-    width: DISPLAY_WIDTH,
-};
-
-/// How the editor prints a program whose source states its base, which is kept.
-const DISPLAY_WITH_BASE: PrintOptions = PrintOptions {
-    elide_fingerprints: true,
-    elide_base: false,
-    width: DISPLAY_WIDTH,
-};
+/// break them. A narrower width would break most stages of the default program, whose `as` clauses keep its native
+/// node IDs, across lines.
+pub const DISPLAY: PrintOptions = PrintOptions { width: 120 };
 
 /// Where a diagnostic comes from.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -166,9 +143,6 @@ pub struct CompileOutcome {
     /// The artifact printed back in canonical form, as the editor prints it.
     pub canonical_source: Option<String>,
 
-    /// The outputs whose fingerprints the source did not list and the export supplied.
-    pub restored_fingerprints: Vec<String>,
-
     /// What the source was checked against.
     pub checked_against: CheckContext,
 
@@ -245,15 +219,15 @@ impl RecipientLabels {
     }
 }
 
-/// How the comment that names the scope's inputs, where each source's metrics enter the program, starts.
-const INPUTS_SECTION: &str = "Sources: each one's metrics enter at an input of the scope:";
+/// How the comment that names the sources, where each source's metrics enter the program, starts.
+const INPUTS_SECTION: &str = "Sources, where each one's metrics enter the program:";
 
 /// The policy's tee, which copies the stream every destination reads, `metrics`, to each of its uses: the recipient
 /// directory is listed above the first use.
 const POLICY_TEE: &str = "metrics_fanout";
 
 /// Returns a printed program with ADP's notes as comment lines: what the export leaves out because it does nothing as
-/// configured, and the scope inputs the program reads, at the top of the program, wrapped; each node's note from the
+/// configured, and the sources the program reads, at the top of the program, wrapped; each node's note from the
 /// export ([`ExportBundle::annotations`]) above the line its stage starts on; and the recipient directory above the
 /// first branch of the policy, the first use of `metrics` (what port `0` of the policy's tee feeds), above its whole
 /// statement, each recipient with its endpoint and the label `labels` gives it, said to be not addressed when no `emit`
@@ -289,17 +263,11 @@ pub fn annotate(
             lines.extend(wrapped(&format!("{} {}.", INPUTS_SECTION, names), COMMENT_WIDTH));
             lines.push(String::new());
         }
-        // Before the first statement, after the `base` statement and the other headers.
+        // Before the first statement, after the headers.
         marks.push((statements_start(printed, at), -1, "  ".to_string(), lines));
     }
     // The line each node's stage starts on, from the spans of the printed text parsed back.
-    let reparsed = parse_with(
-        printed,
-        &ParseOptions {
-            base: Some(artifact.base.clone()),
-        },
-    )
-    .ok();
+    let reparsed = parse(printed).ok();
     // A node a `let` names ends that `let`'s pipeline: its note goes above the `let`, which is where a reader looks
     // for it, rather than above its stage.
     let line_of = |node: &str| {
@@ -363,10 +331,8 @@ pub fn annotate(
     annotated
 }
 
-/// Returns where the statements of a printed program start: the first line from `at`, just past the program's opening
-/// brace, that is neither blank nor part of a header (`base`, its `outputs` block, `ir_version`, or `blobs`).
 /// Returns the offset and indentation of the line the statement containing the line at `at` starts on: the nearest
-/// line at or above it indented as a statement of the scope, two spaces, and not a continuation (`| ...` or a closing
+/// line at or above it indented as a statement of the program, two spaces, and not a continuation (`| ...` or a closing
 /// bracket).
 fn statement_line(printed: &str, at: usize) -> (usize, String) {
     let mut start = at;
@@ -381,6 +347,8 @@ fn statement_line(printed: &str, at: usize) -> (usize, String) {
     }
 }
 
+/// Returns where the statements of a printed program start: the first line from `at`, just past the program's opening
+/// brace, that is neither blank nor part of a header (`ir_version` or `blobs`).
 fn statements_start(printed: &str, at: usize) -> usize {
     let mut offset = at;
     let mut in_block = false;
@@ -389,11 +357,11 @@ fn statements_start(printed: &str, at: usize) -> usize {
         let header = if in_block {
             in_block = code != "}";
             true
-        } else if code.starts_with("outputs {") || code.starts_with("blobs {") {
+        } else if code.starts_with("blobs {") {
             in_block = !code.ends_with('}');
             true
         } else {
-            code.is_empty() || code.starts_with("base ") || code.starts_with("ir_version ")
+            code.is_empty() || code.starts_with("ir_version ")
         };
         if !header {
             break;
@@ -508,49 +476,9 @@ fn recipient_lines(artifact: &PolicyArtifact, export: &ExportBundle, labels: &Re
     lines
 }
 
-/// Gives an artifact that lists no output fingerprints the fingerprint of every output it emits to by ID, and returns
-/// those outputs, each once, in the order the artifact first emits to them.
-///
-/// The base of the export lists each output's fingerprint as of the default program; an output it does not list takes
-/// the catalog's. An output neither knows stays out, and composition reports the emit. An `emit` addressed to
-/// recipients records no fingerprint: the names are the reference.
-fn restore_fingerprints(artifact: &mut PolicyArtifact, export: &ExportBundle) -> Vec<String> {
-    let mut restored = Vec::new();
-    if !artifact.base.outputs.is_empty() {
-        return restored;
-    }
-    let mut emitted = Vec::new();
-    for output in artifact
-        .nodes
-        .iter()
-        .filter(|node| node.op.as_str() == names::EMIT)
-        .filter_map(|node| node.params.get("output")?.as_str()?.parse::<OutputId>().ok())
-    {
-        if !emitted.contains(&output) {
-            emitted.push(output);
-        }
-    }
-    for output in emitted {
-        let exported = export
-            .artifact
-            .artifact
-            .base
-            .outputs
-            .get(&output)
-            .or_else(|| export.catalog.output(&output).map(|declared| &declared.fingerprint));
-        if let Some(fingerprint) = exported {
-            restored.push(output.to_string());
-            artifact.base.outputs.insert(output, *fingerprint);
-        }
-    }
-    restored
-}
-
 /// Compiles a source, checking it against what ADP serves when `context` gives it.
 ///
-/// A source that lists no output fingerprints, as the editor prints programs, gets the export's fingerprint of each
-/// output it emits to by ID (see [`CompileOutcome::restored_fingerprints`]); without an export, it keeps none. With
-/// the default program too, the artifact is composed into it, the composed plan validated, and the plan diff computed,
+/// With the export and the default program, the artifact is composed into the default program, the composed plan validated, and the plan diff computed,
 /// as ADP will (see [`compose_preview`]); with the export alone, the structural checks run.
 ///
 /// Returns the outcome for the editor and, if the source produced an artifact, the artifact for publishing. Findings
@@ -565,7 +493,7 @@ pub fn compile(source: &str, context: Option<&CompileContext<'_>>) -> (CompileOu
             available: true,
             composed: true,
             reason: None,
-            default_program_hash: Some(export.program_hash().to_string()),
+            default_program_hash: Some(export.program_hash.to_string()),
         },
         (Some(export), None) => CheckContext {
             available: true,
@@ -575,7 +503,7 @@ pub fn compile(source: &str, context: Option<&CompileContext<'_>>) -> (CompileOu
                  the artifact needs, so only the structural checks against its export ran."
                     .to_string(),
             ),
-            default_program_hash: Some(export.program_hash().to_string()),
+            default_program_hash: Some(export.program_hash.to_string()),
         },
         (None, _) => CheckContext {
             available: false,
@@ -600,20 +528,11 @@ pub fn compile(source: &str, context: Option<&CompileContext<'_>>) -> (CompileOu
         artifact: None,
         artifact_hash: None,
         canonical_source: None,
-        restored_fingerprints: Vec::new(),
         checked_against,
         preview,
     };
 
-    // A source printed without its base, as the editor prints programs, records the export's program hash; the
-    // fingerprints are restored below.
-    let options = ParseOptions {
-        base: export.map(|export| ArtifactBase {
-            program_hash: *export.program_hash(),
-            outputs: Default::default(),
-        }),
-    };
-    let mut parsed = match parse_with(source, &options) {
+    let parsed = match parse(source) {
         Ok(parsed) => parsed,
         Err(diagnostics) => {
             outcome.diagnostics = diagnostics
@@ -631,10 +550,6 @@ pub fn compile(source: &str, context: Option<&CompileContext<'_>>) -> (CompileOu
             return (outcome, None);
         }
     };
-    if let Some(export) = export {
-        outcome.restored_fingerprints = restore_fingerprints(&mut parsed.artifact, export);
-    }
-
     let document = match serde_json::to_value(&parsed.artifact) {
         Ok(document) => document,
         Err(error) => {
@@ -683,7 +598,7 @@ pub fn compile(source: &str, context: Option<&CompileContext<'_>>) -> (CompileOu
         }
         (Ok(received), Some(context)) => match context.default_program {
             Some(default_program) => {
-                let (findings, preview) = compose_preview(source, &parsed, &received, context, default_program, &index);
+                let (findings, preview) = compose_preview(&parsed, &received, context, default_program, &index);
                 outcome.diagnostics = findings
                     .into_iter()
                     .map(|finding| CompileDiagnostic {
@@ -720,19 +635,9 @@ pub fn compile(source: &str, context: Option<&CompileContext<'_>>) -> (CompileOu
     outcome.warnings = outcome.diagnostics.len() - outcome.errors;
     outcome.ok = true;
     outcome.artifact_hash = Some(hash.to_string());
-    // Printed as it was written: without its base if the export gave it (it comes back on compiling), and with the base
-    // the source states otherwise, its fingerprints too if it lists them.
-    let supplied = !outcome.restored_fingerprints.is_empty();
-    let options = if parsed.base_given {
-        DISPLAY
-    } else if !supplied && !parsed.artifact.base.outputs.is_empty() {
-        DISPLAY_WITH_FINGERPRINTS
-    } else {
-        DISPLAY_WITH_BASE
-    };
     let labels = context.map(|context| context.labels).cloned().unwrap_or_default();
     outcome.canonical_source = Some(annotate(
-        &print(&parsed.artifact, &options),
+        &print(&parsed.artifact, &DISPLAY),
         &parsed.artifact,
         export,
         &labels,

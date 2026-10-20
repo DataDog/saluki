@@ -14,7 +14,7 @@ Request body:
 
 ```json
 {
-  "protocol_version": 1,
+  "protocol_version": 2,
   "client": { "id": "<random per ADP process>", "version": "<ADP version>" },
   "products": ["policy"],
   "config_states": [
@@ -36,17 +36,9 @@ Request body:
     "active_generation": 12,
     "active_plan_hash": "sha256:<hex>",
     "active_artifact": { "id": "demo", "revision": 7, "artifact_hash": "sha256:<hex>" },
-    "stale_base": false,
     "stale_review": false,
     "degraded": null,
-    "live_generations": 2,
-    "scopes": {
-      "metrics": {
-        "default_program_hash": "sha256:<hex>",
-        "active_artifact": { "id": "demo", "revision": 7, "artifact_hash": "sha256:<hex>" },
-        "stale_base": false
-      }
-    }
+    "live_generations": 2
   }
 }
 ```
@@ -54,11 +46,11 @@ Request body:
 - `config_states` lists the latest state per config ID ADP has seen (at most one per ID), each under its `product`,
   `policy`. `state` values are the specification's acknowledgment states plus `failed`
   (supervision exhausted). `error` is plain text, never secrets. On a `pending` state, `error` says what the config
-  waits for (an output its base records that the host does not declare yet, or a recipient the configuration does not
-  declare);
-  on an `active` state, it is what composition said beside the state, or `null`: the reasons the artifact runs
-  degraded, each naming an output and saying that its emits are dropped (the output was removed, or now delivers
-  elsewhere). Readers treat any other text there as a note that drops nothing.
+  waits for (a recipient the configuration does not declare, or an output for a set of recipients that the host has
+  not added yet); on an `active` state, it is what composition said beside the state, or `null`: the reasons the
+  artifact runs degraded, each naming an output, or the recipients an `emit` names, and saying that their emits are
+  dropped (the output was removed, or the recipients are gone). Readers treat any other text there as a note that drops
+  nothing.
 - `prepared` also means a cut installation waiting for its cut: an artifact that changes a state owner's time
   contract (such as an aggregation's window), or adds or removes one, installs at a bucket boundary rather than at once.
   While the cut is armed, `cut_at` is the admission time it takes effect at, in whole milliseconds since the Unix epoch;
@@ -91,33 +83,22 @@ Request body:
   from the active plan hash it was prepared against, or, for a delivery that acknowledged the current state, from the
   active plan hash when it was delivered. It was added after the first version of this contract, as an
   additive member: readers that do not know it ignore it.
-- `status.default_program_hash` equals `artifact.base.program_hash` of the current export bundle (section 3) for the
-  `metrics` scope, so a client refetches the export when its artifact changes: its nodes, edges, or the
-  fingerprints of the outputs it emits to. Catalog values (binding values, recipients, labels) can change without it,
-  so a client that shows them also refetches periodically.
-- The top-level `default_program_hash`, `active_artifact`, and `stale_base` describe the policy scope, `metrics`, the
-  default program's one scope: the whole metrics path after its sources (until the one-scope change, the policy scope
-  was `post_enrich`, the region after host tags, beside `dogstatsd_pre_aggregation`; see the [status
-  document](programmable-metrics-status.md#the-demo)). `stale_review` is `true` when any active artifact's review is
-  stale. `scopes` (additive) describes each replaceable scope of the default program by name: the base program hash of
-  its export, the artifact active for it (`null` while the default program's region runs there), and whether that
-  artifact's base is stale. ADP reports every scope's base, so it always writes `scopes`, today with the one entry
-  `metrics`; a host that reports only the policy scope's base writes it while an artifact is active in another scope,
-  and otherwise leaves it out, the first version's form. The protocol keeps several scopes, which the plan crate
-  supports, though ADP declares one.
+- `status.default_program_hash` is the program hash (the plan crate's `export::program_hash`, the hash of the
+  canonical document) of the current export bundle's `artifact` (section 3, the `detached` form), so a client
+  refetches the export when its artifact changes, and checks an export it holds against it. Catalog values (binding
+  values, recipients, labels) can change without it, so a client that shows them also refetches periodically.
+- A program is whole: it replaces the default program, the whole metrics path after its sources. Version 1 of this
+  protocol carried scopes (`status.scopes`, `stale_base`, one config per scope, and an artifact's `scope` and `base`);
+  version 2 removed them (version 2's steps V4 and V5).
 - `config_states` is bounded: ADP keeps the acknowledgment of every config of the latest snapshot, of every config
   whose artifact is still being installed, active, or kept to roll back to, and of the 16 configs most recently
   finished (`rejected`, `failed`, or `retired`) beyond those; older ones are forgotten.
-- `status.resources` (additive, stage 7) describes the `resources` product, which has its own revisions: its
-  `revision_high_water`, and the `active_artifact` whose declarations the active generation carries (`null` when it
-  carries none). It is left out until ADP has seen a resources config, so a poll of a host that uses only policy
-  artifacts is unchanged.
 
 Response body (`200`):
 
 ```json
 {
-  "protocol_version": 1,
+  "protocol_version": 2,
   "products": {
     "policy": [
       { "id": "demo", "version": 7, "sha256": "<hex of payload's UTF-8 bytes>", "payload": "<envelope JSON text>" }
@@ -128,19 +109,10 @@ Response body (`200`):
 
 - A complete snapshot per product, never a delta. An empty list (or a missing product) revokes: ADP installs the
   default program.
-- At most one config per scope: each artifact replaces one scope of the default program (its `scope` member), and ADP
-  composes the artifacts of every scope together. More than one config for one scope rejects all of them for that
-  scope (`state: rejected`, `revision: null`: their revisions are not seen); the other scopes' configs are handled as
-  usual. A config held unchanged since the previous snapshot keeps its acknowledgment, so a snapshot that changes one
-  scope's config leaves the other scopes' artifacts as they are; one rejected for what other configs of the previous
-  snapshot held (another config for its scope, or its revision) is handled anew. A config of the artifact in effect
-  for its scope, delivered again under its revision, acknowledges that artifact's state.
-- A snapshot that holds no config for a scope whose artifact is in effect revokes that scope's artifact (as long as
-  every config in the snapshot could be read), even if the config that delivered it now delivers another scope's: ADP
-  installs the default program's region there, and keeps the other scopes' artifacts.
-- New artifacts of several scopes in one snapshot install together. When the plan they compose to is rejected, ADP
-  checks each alone with the artifacts in effect for the other scopes: one rejected alone is `rejected` with its own
-  error, and the others install. Artifacts that each install alone but not together are all `rejected`.
+- At most one config: its artifact is the program. A snapshot of more than one config rejects all of them (`state:
+  rejected`, `revision: null`: their revisions are not seen), and whatever runs keeps running. A config held unchanged
+  since the previous snapshot keeps its acknowledgment. A config of the artifact in effect, delivered again under its
+  revision, acknowledges that artifact's state.
 - `payload` is a JSON **string** containing the envelope, so `sha256` covers exact bytes. ADP verifies it and reports
   `rejected` ("transport hash mismatch") on mismatch.
 - A transport failure (connection error, non-200, unparsable body) keeps ADP's current feed; it never revokes. ADP
@@ -171,15 +143,11 @@ Response body (`200`):
 - `artifact_hash` is the plan crate's hash of the artifact document exactly as received (`ReceivedArtifact`). ADP
   recomputes it; a mismatch is `rejected`.
 - `revision` must exceed ADP's `revision_high_water`; otherwise `rejected` ("stale revision"). There is one mark for
-  the whole product: a new revision for any scope must exceed every revision seen, whatever scope saw it, and the
-  configs of one snapshot are ordered against the mark as the snapshot found it. A payload whose `artifact_hash` equals
-  the active or preparing artifact of its scope acknowledges the current state (idempotent): a redelivery under that
-  artifact's own revision, whatever the mark (another scope's newer artifact may have moved it since), or the same
-  document approved again under a newer revision. Any other revision at or below the mark is stale. Two or more
-  configs of one snapshot under one revision above the mark are all `rejected` (`revision` reported, but not seen):
-  none is newer than the others. Each is handled anew in the next snapshot, even held unchanged. The mark moves for
-  every other config whose transport hash, envelope, receipt, and `artifact_hash` check out, even if it is then
-  rejected.
+  the whole product: a new revision must exceed every revision seen. A payload whose `artifact_hash` equals the active
+  or preparing artifact acknowledges the current state (idempotent): a redelivery under that artifact's own revision,
+  or the same document approved again under a newer revision. Any other revision at or below the mark is stale. The
+  mark moves for every config whose transport hash, envelope, receipt, and `artifact_hash` check out, even if it is
+  then rejected.
 - `approved_against` is optional. When present and different from ADP's `active_plan_hash` at prepare time, ADP still
   installs but flags the review as stale in status.
 
@@ -189,7 +157,7 @@ Response body (`200`):
 |---|---|
 | `GET /programmable-metrics/status` | the `status` object above plus `config_states`, and `recipients` (below) |
 | `GET /programmable-metrics/resources` | the resources view (below) |
-| `GET /programmable-metrics/export?scope=<scope>[&form=detached\|bound]` | export bundle (below) of a scope of the default program: `metrics`, its one scope; `detached` (the default) or `bound` |
+| `GET /programmable-metrics/export[?form=detached\|bound]` | export bundle (below) of the default program; `detached` (the default) or `bound` |
 | `GET /programmable-metrics/plan` | the active composed logical plan, resolved values included |
 | `GET /programmable-metrics/default-program` | the default program ADP last lowered, resolved values included: the plan artifacts are composed into |
 | `GET /programmable-metrics/explain` | the explain document (JSON) for the active plan; `?format=text` for text |
@@ -198,11 +166,10 @@ Export bundle:
 
 ```json
 {
-  "export_version": 1,
-  "scope": "metrics",
-  "artifact": { "...": "PolicyArtifact of the default program's scope, bindings unresolved, base filled in" },
+  "export_version": 2,
+  "artifact": { "...": "PolicyArtifact of the default program, bindings unresolved" },
   "ir_versions": { "current": 1, "accepted": [1, 1] },
-  "catalog": { "...": "the serialized plan-crate Catalog: scope inputs with port types, outputs with accepts, fingerprint, recipients; bindings with type, liveness, class, current value; the recipient directory" },
+  "catalog": { "...": "the serialized plan-crate Catalog: outputs with accepts and recipients; bindings with type, liveness, class, current value; the recipient directory" },
   "labels": { "<output id>": "<display label>" },
   "annotations": {
     "nodes": { "<node id>": "<note>" },
@@ -217,7 +184,7 @@ Export bundle:
 - `form` (additive, detached programs): `detached`, the default, writes every parameter bound to a `policy` binding as
   its current value, keeps `fact` and `signal` bindings bound, folds `flag` and `is_empty` over literals, and writes
   each `emit` to a native output whose recipients a set of directory names stands for exactly as an `emit` to those
-  names (`{"to": ["primary", "https://..."]}`); its base is the bound export's. `bound` writes the default program as
+  names (`{"to": ["primary", "https://..."]}`). `bound` writes the default program as
   lowered, bound to its native settings. ADP refuses an artifact that binds a `policy` binding, with a rejection
   message that names the binding, the value to write, and the facts and signals a program may bind, so `bound` is for
   tools that study lowering. The acknowledgment carries the message only: `policy_binding` names the error in the
@@ -226,8 +193,7 @@ Export bundle:
 - An `emit` names its output (`{"output": "<id>"}`) or recipients (`{"to": ["<name>", ...]}`), names from the
   catalog's directory on one delivery host. ADP resolves the names into the output with exactly those recipients,
   adding an implied output (`implied_<emit node>_<set digest>`, the digest's first eight hexadecimal digits) for a set
-  no output delivers to, so an artifact records no
-  fingerprint for an `emit` to recipients. A config whose `emit` names an unknown recipient, or recipients without an
+  no output delivers to. A config whose `emit` names an unknown recipient, or recipients without an
   output yet, is `pending` with the reason; one whose recipients lie on two hosts, or that the host adds no output for,
   is `rejected`. The catalog document's `detached_programs: true` says that a program binds facts and signals only.
 
@@ -241,39 +207,32 @@ Export bundle:
   `sha256:` and 16 hexadecimal digits of its digest for a URL status does not spell out), with the recipient
   identities it stands for, its delivery host, and its endpoint as status spells it. It never holds a credential.
   Readers ignore members of an entry they do not know, such as the `source` earlier versions wrote.
-- `explain` (the route below) is version 2 since detached programs, phase 2: nodes carry no provenance, and the plan's
-  `provenance.artifacts` names each composed artifact with the `scope` it replaces, whose nodes are its program. A
+- `explain` (the route below) is version 3 since version 2's step V4: nodes carry no provenance, and the plan's
+  `provenance.artifact` names the composed artifact, by revision and hash, whose nodes are the program. A
   default program's `provenance.native_components` maps a node to the native component it does the work of, for the
   cost model and the layout built at boot; a composed plan has none.
 - `annotations` (optional, additive): ADP's notes for tools, one line per exported node and per binding, which an
   editor prints as comments, and `omitted`, one line naming what the export left out, in words a reader knows, which
   an editor prints at the top. They are not part of the artifact. Readers ignore members they do not know.
-- `omitted` (optional, additive): the nodes of the scope a `detached` export leaves out because they do nothing as
+- `omitted` (optional, additive): the nodes of the default program a `detached` export leaves out because they do nothing as
   configured (amendment 191), by local ID, each with why: `identity` (a node that passes every record through
   unchanged with its literal parameters, such as a mapper with no profiles or a one-input `merge`), `constant_split`
   (a `split` its literal operands decide, such as an empty filterlist), or `unreachable` (a node only such a split's
   dead port reached, such as its `drop`). A program built from the export does not have them: published unmodified
   over the default program, it is a new generation that builds no kernel and makes no cut, acknowledged `active` on
   that generation. A `bound` export leaves nothing out.
-- The `metrics` scope has one input per metrics source the configuration enables, each named after its source's binding
-  and carrying what the source produces (`dogstatsd`, `otlp`, `checks`, `liveness`, `trace_sampler`), and no exits: its
-  artifact covers every node after the sources, aggregation included. The catalog document's `single_aggregation:
-  true` says that a program has at most one aggregation, which validation then checks (`single_aggregation`). A scope
-  with exits, which the plan crate supports and ADP no longer declares (`dogstatsd_pre_aggregation` had input
-  `metrics` and exits `aggregated` and `passthrough`), is exported up to its exits: the artifact's edges into an exit's
-  port are written as entering `exit.<name>`, and its base records no output when its records leave through exits
-  rather than `emit`s. An artifact reaches the exits the same way; an exit is only ever an edge's target.
+- The default program has one source per metrics source the configuration enables, each named after its source's
+  binding and carrying what the source produces (`dogstatsd`, `otlp`, `checks`, `liveness`, `trace_sampler`): its
+  artifact covers every node after the sources, aggregation included, and reads each source as `input.<name>`. The
+  catalog document's `single_aggregation: true` says that a program has at most one aggregation, which validation then
+  checks (`single_aggregation`).
 - The default program is served so that a client can compose an artifact the way ADP will (the plan crate's
-  `compose::compose_all` takes the default program, which neither the export, a region, nor `/plan`, possibly composed,
-  carries) and diff it against `/plan`. ADP composes an artifact with the artifacts in effect for the other scopes, so
-  a client composes it with those `status.scopes` (or, for the policy scope, the top-level `active_artifact`) names
-  active, under their revisions. Its base (the plan crate's `export::base` of a scope) is that scope's export's
-  `artifact.base.program_hash` when both come from the same lowering; a client that fetches them separately checks
-  that, and fetches both again when they differ (the configuration changed between the requests). It answers whether
-  or not a generation is active.
-- Errors are plain text: `400` for a missing `scope` or an unknown `format`, `404` for a scope the default program does
-  not declare (the body names the declared ones), `500` for a scope that cannot be exported (the body says why), and
-  `503` from `/plan` and `/explain` while no generation is active.
+  `compose::compose` takes the default program, which neither the export nor `/plan`, possibly composed, carries) and
+  diff it against `/plan`. A client that fetches the export and the default program separately checks the export
+  against `status.default_program_hash`, and fetches both again when they differ (the configuration changed between
+  the requests). It answers whether or not a generation is active.
+- Errors are plain text: `400` for an unknown `form` or `format`, `500` for a default program that cannot be exported
+  (the body says why), and `503` from `/plan` and `/explain` while no generation is active.
 
 Recipient incarnations, the status route's `recipients` member (stage 7; a poll's status does not carry it):
 
@@ -322,7 +281,6 @@ The resources view, `GET /programmable-metrics/resources`:
   "outputs": [
     {
       "id": "implied_to_team_b_true_e7b845f5", "label": "Implied output of emit to_team_b_true", "host": "dd_out",
-      "fingerprint": "sha256:<hex>",
       "recipients": ["dd_out/additional/0/http://127.0.0.1:17102"]
     }
   ],
@@ -392,13 +350,11 @@ Per-lane telemetry, each series tagged `component_id` (the slot) and `lane` (0 t
 
 ## 4. Demo server side
 
-- Holds the durable artifact store (on disk in its run directory): current snapshot, revision counter, history.
-- Serves one config per scope: `demo` for the policy scope, `metrics`, and `demo-<scope>` for any other scope, which
-  ADP refuses. A publish replaces the config of its artifact's scope; a revoke, from the UI or the demo's API, empties
-  the policy snapshot.
-- Next revision = `max(local counter, status.revision_high_water) + 1`, one counter for every scope.
-- Serves the `resources` product's one config as `demo-resources`, with a revision counter of its own, next revision
-  `max(local counter, status.resources.revision_high_water) + 1`.
+- Holds the durable artifact store (on disk in its run directory, format 3): current snapshot, revision counter,
+  history. A store an earlier version wrote, with one config per scope, does not read.
+- Serves at most one config, `demo`. A publish replaces it; a revoke, from the UI or the demo's API, empties the
+  policy snapshot.
+- Next revision = `max(local counter, status.revision_high_water) + 1`.
 - Records every poll's `config_states` and `status` with a receive timestamp for the acknowledgment timeline.
 
 ## 5. The `resources` product (removed)
@@ -406,5 +362,4 @@ Per-lane telemetry, each series tagged `component_id` (the slot) and `lane` (0 t
 Stage 7 had a second product, `resources`, whose one config declared recipients and outputs apart from native
 configuration. Version 2's step V2 removed it ([version 2 simplifications](programmable-metrics-v2.md)): destinations
 are the configuration's endpoints, which ADP applies live, and programs reach them by name or through implied outputs.
-ADP asks for `policy` only and ignores a `resources` member in an answer; the demo's stub serves `policy` only, and
-reads a store an earlier version wrote with resources, ignoring them.
+ADP asks for `policy` only and ignores a `resources` member in an answer; the demo's stub serves `policy` only.

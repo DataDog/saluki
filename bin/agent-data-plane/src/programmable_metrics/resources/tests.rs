@@ -472,10 +472,8 @@ async fn autoscaling_failover_accepts_only_scalar_series_on_its_own_host() {
     }
 }
 
-/// Fingerprints, version 2, are the SHA-256 digests of the canonical documents written out here by hand (members
-/// sorted, no whitespace), computed with `shasum -a 256`.
 #[tokio::test]
-async fn fingerprints_cover_what_each_output_declares_it_delivers_to() {
+async fn selectors_say_what_each_output_delivers_to() {
     let resolved = resolved(
         r#"
 additional_endpoints:
@@ -490,15 +488,10 @@ experimental:
 "#,
     )
     .await;
-    let fingerprint = |id: &str| resolved.outputs.get(id).unwrap().decl.fingerprint.to_string();
-    // {"accepts":{"kinds":"all","timestamps":"mixed"},"host":"dd_out","selector":{"role":"main"},"v":2}
-    assert_eq!(
-        fingerprint(DD_METRICS_ENCODE),
-        "sha256:35b6c7483c20787a99a97a2a2bb2684fd1a0a8f0315e5bf73fad5b48b74595f7"
-    );
-    // The group's selector is the digest of `["https://b.example.com","https://c.example.com"]`,
-    // sha256:e3488d4119bf8279f7bf3bafd9aa915e0f5d08a6764fb956c239445e53804ddd, and its fingerprint the digest of
-    // {"accepts":{"kinds":"all","timestamps":"mixed"},"host":"dd_out","selector":{"group":"sha256:e348...4ddd"},"v":2}
+    let role = |name: &str| Selector::Role(RoleName::new(name).unwrap());
+    assert_eq!(binding(&resolved.outputs, DD_METRICS_ENCODE).selector, role("main"));
+    // The group's selector is the SHA-256 digest of `["https://b.example.com","https://c.example.com"]`, computed with
+    // `shasum -a 256`.
     assert_eq!(
         binding(&resolved.outputs, "metrics_routing_encode_0").selector,
         Selector::Group(
@@ -508,28 +501,30 @@ experimental:
         )
     );
     assert_eq!(
-        fingerprint("metrics_routing_encode_0"),
-        "sha256:a1706b1d15cd085ae0e190a8c22dd5a4b48646ec64e8c5962950515c2a007657"
-    );
-    // {"accepts":{...},"host":"mrf_dd_out","selector":{"role":"multi_region_failover"},"v":2}
-    assert_eq!(
-        fingerprint(MRF_METRICS_ENCODE),
-        "sha256:0ff4cb7e0e1316c414965f9ca7858095cb8feff59bd696171455cbe959c77c08"
+        binding(&resolved.outputs, MRF_METRICS_ENCODE).selector,
+        role("multi_region_failover")
     );
     let mrf = recipient(&resolved, "mrf_dd_out/primary/0/https://mrf.example.com");
     assert_eq!(mrf.credential.as_str(), "native:multi_region_failover.api_key");
 }
 
 #[tokio::test]
-async fn a_dual_ship_endpoint_or_a_rotated_key_changes_no_fingerprint_and_a_renumbered_group_does() {
+async fn a_dual_ship_endpoint_or_a_rotated_key_changes_no_selector_and_a_renumbered_group_does() {
     let base = "dd_url: https://primary.example.com\nadditional_endpoints: {https://b.example.com: [key-b]}";
-    let fingerprints = |outputs: &NativeOutputs| {
+    let selectors = |outputs: &NativeOutputs| {
         outputs
             .iter()
-            .map(|output| (output.decl.id.to_string(), output.decl.fingerprint))
+            .map(|output| {
+                let binding = output.decl.binding.as_ref();
+                (
+                    output.decl.id.to_string(),
+                    output.decl.accepts,
+                    binding.map(|binding| (binding.host.clone(), binding.selector.clone())),
+                )
+            })
             .collect::<Vec<_>>()
     };
-    let before = fingerprints(&outputs(base).await);
+    let before = selectors(&outputs(base).await);
     for unchanged in [
         // Another key for an endpoint, another endpoint, and a new primary all stay under the main role.
         "dd_url: https://primary.example.com\nadditional_endpoints: {https://b.example.com: [key-b, key-b2]}",
@@ -539,11 +534,11 @@ async fn a_dual_ship_endpoint_or_a_rotated_key_changes_no_fingerprint_and_a_renu
         "dd_url: https://primary.example.com\nadditional_endpoints: {https://b.example.com: [key-b]}\napi_key: \
          rotated",
     ] {
-        assert_eq!(fingerprints(&outputs(unchanged).await), before, "{}", unchanged);
+        assert_eq!(selectors(&outputs(unchanged).await), before, "{}", unchanged);
     }
 
-    // A group's fingerprint is its endpoint set's: removing the first of two groups gives the second one's
-    // fingerprint to `metrics_routing_encode_0`.
+    // A group's selector is its endpoint set's: removing the first of two groups gives the second one's selector to
+    // `metrics_routing_encode_0`.
     let two = r#"
 additional_endpoints: {https://b.example.com: [key-b], https://c.example.com: [key-c]}
 experimental:
@@ -558,7 +553,7 @@ experimental:
 "#;
     let two = outputs(two).await;
     let one = outputs(one).await;
-    let group = |outputs: &NativeOutputs, id: &str| outputs.get(id).map(|output| output.decl.fingerprint);
+    let group = |outputs: &NativeOutputs, id: &str| outputs.get(id).map(|_| binding(outputs, id).selector.clone());
     assert_ne!(
         group(&two, "metrics_routing_encode_0"),
         group(&two, "metrics_routing_encode_1")
@@ -566,7 +561,7 @@ experimental:
     assert_eq!(
         group(&one, "metrics_routing_encode_0"),
         group(&two, "metrics_routing_encode_1"),
-        "the remaining group keeps its fingerprint under its new position"
+        "the remaining group keeps its selector under its new position"
     );
 }
 
@@ -727,7 +722,7 @@ fn recipient_ids(resolved: &NativeResources) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn a_key_rotated_to_a_blank_duplicate_or_invalid_value_keeps_every_recipient_output_and_fingerprint() {
+async fn a_key_rotated_to_a_blank_duplicate_or_invalid_value_keeps_every_recipient_and_output() {
     let before = resolved(KEYED).await;
     assert_eq!(
         recipient_ids(&before),

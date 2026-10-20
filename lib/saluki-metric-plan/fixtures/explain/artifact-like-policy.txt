@@ -1,10 +1,10 @@
-explain_version 2
+explain_version 3
 
 plan
   ir_version 1
-  hash sha256:eed9c3615395a86e6bbd56f3e0d43c8f0838f920473d6b875e85d0464a7b25a6
-  structural_hash sha256:805967de50da50cf6a568a6b450d19e0a30076be075feb2efdfaa9e82c27641c
-  artifact revision 1 sha256:00000000000000000000000000000000000000000000000000000000000000a1 replaces scope metrics
+  hash sha256:92ff8bdc7d73bf10d3acd5c9111a349b86c1ebadff1288cc4cd8345af7506cca
+  structural_hash sha256:6e10ca8712d6e31023e43fc3e2d5615872d050ea3043bf8db7bf298bad8e5f43
+  artifact revision 1 sha256:00000000000000000000000000000000000000000000000000000000000000a1
   valid: 0 errors, 0 warnings
 
 nodes (49)
@@ -12,6 +12,18 @@ nodes (49)
     param binding = "dogstatsd"
     param timestamps = "mixed"
     out metrics -> dsd_enrich.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
+  otlp_in: source [io_host, state none]
+    param binding = "otlp"
+    out metrics -> metrics_in.1, carries counter, rate, gauge, distribution (mixed timestamps)
+  checks_ipc_in: source [io_host, state none]
+    param binding = "checks"
+    out metrics -> metrics_in.2, carries counter, rate, gauge, histogram (mixed timestamps)
+  liveness_in: source [io_host, state none]
+    param binding = "liveness"
+    out metrics -> metrics_in.3, carries gauge (timestamped)
+  trace_sampler: source [io_host, state none]
+    param binding = "trace_sampler"
+    out metrics -> metrics_in.4, carries counter, gauge (untimestamped)
   dsd_enrich: dogstatsd_mapper [synchronous, state none]
     param cache_size = 1000
     param profiles = [{"mappings":[{"match":"raw.requests.*","match_type":"wildcard","name":"mapped.requests","tags":[{"name":"route","value":"$1"}]}],"name":"checkout","prefix":"raw."}]
@@ -77,18 +89,6 @@ nodes (49)
   dsd_post_agg_filter_fanout_0: emit [synchronous, state none]
     param output = "dsd_client_telemetry"
     in in <- dsd_post_agg_filter_fanout.0, accepts every kind (mixed timestamps)
-  otlp_in: source [io_host, state none]
-    param binding = "otlp"
-    out metrics -> metrics_in.1, carries counter, rate, gauge, distribution (mixed timestamps)
-  checks_ipc_in: source [io_host, state none]
-    param binding = "checks"
-    out metrics -> metrics_in.2, carries counter, rate, gauge, histogram (mixed timestamps)
-  liveness_in: source [io_host, state none]
-    param binding = "liveness"
-    out metrics -> metrics_in.3, carries gauge (timestamped)
-  trace_sampler: source [io_host, state none]
-    param binding = "trace_sampler"
-    out metrics -> metrics_in.4, carries counter, gauge (untimestamped)
   metrics_in: merge [synchronous, state none]
     param inputs = 5
     in 0 <- dsd_post_agg_filter_fanout.1, accepts every kind (mixed timestamps)
@@ -283,43 +283,34 @@ edges (49)
 outputs (6)
   dsd_client_telemetry
     accepts every kind (mixed timestamps)
-    fingerprint sha256:1111111111111111111111111111111111111111111111111111111111111111
     recipients none
     delivery native
     emitted by dsd_post_agg_filter_fanout_0
   dd_metrics_encode
     accepts every kind (mixed timestamps)
-    fingerprint sha256:2222222222222222222222222222222222222222222222222222222222222222
     recipients dd_out/primary/0
     delivery native
     emitted by metrics_fanout_0
   metrics_routing_encode_0
     accepts every kind (mixed timestamps)
-    fingerprint sha256:3333333333333333333333333333333333333333333333333333333333333333
     recipients dd_out/additional_0/0
     delivery native
     emitted by metrics_routing_filter_0_true
   metrics_routing_encode_1
     accepts every kind (mixed timestamps)
-    fingerprint sha256:4444444444444444444444444444444444444444444444444444444444444444
     recipients dd_out/additional_1/0, dd_out/additional_1/1
     delivery native
     emitted by metrics_routing_filter_1_true
   mrf_metrics_encode
     accepts every kind (mixed timestamps)
-    fingerprint sha256:5555555555555555555555555555555555555555555555555555555555555555
     recipients mrf_dd_out/primary/0
     delivery native
     emitted by mrf_metrics_gateway_true
   af_metrics_encode
     accepts counter, rate, gauge, set (mixed timestamps)
-    fingerprint sha256:6666666666666666666666666666666666666666666666666666666666666666
     recipients cluster_agent_out/primary/0
     delivery native
     emitted by af_metrics_gateway_true
-
-scopes (1)
-  metrics: checks = checks_ipc_in.metrics, dogstatsd = dsd_in.metrics, liveness = liveness_in.metrics, otlp = otlp_in.metrics, trace_sampler = trace_sampler.metrics
 
 bounds (8)
   plan artifact_nodes: 49 of 256 (within the limit, not enforced)
@@ -335,7 +326,7 @@ findings (0)
 
 rewrites (7)
   R3 applied: policy/canary, policy/canary_dropped
-    justification constant: the predicate of `policy/canary` is the constant `true`, so every record leaves by `true`, and `false` carries nothing; the split becomes an edge from `policy/no_debug_3.false` to `mrf_metrics_gateway.in`; unreachable: `policy/canary_dropped` receives records only through `policy/canary.false`, so nothing reaches it; exits stay: no source, fence, stateful or dynamic operator, scope port, or declared output is removed; capacity: not relied on; every port left carries what it carried, in the same order, so the plan delivers, and under any capacity bound refuses, exactly what it did
+    justification constant: the predicate of `policy/canary` is the constant `true`, so every record leaves by `true`, and `false` carries nothing; the split becomes an edge from `policy/no_debug_3.false` to `mrf_metrics_gateway.in`; unreachable: `policy/canary_dropped` receives records only through `policy/canary.false`, so nothing reaches it; exits stay: no source, fence, stateful or dynamic operator, or declared output is removed; capacity: not relied on; every port left carries what it carried, in the same order, so the plan delivers, and under any capacity bound refuses, exactly what it did
     telemetry removed policy/canary: `plan_node_events_total{component_id:policy/canary}` for ports `true` and `false`: the split is folded, and what its live port counted is counted at no node
     telemetry removed policy/canary_dropped: `plan_loss_total{component_id:policy/canary_dropped, class:policy}`, zero before: nothing reaches it
   R5a applied: policy/strip_user, policy/only_known, policy/only_known_dropped

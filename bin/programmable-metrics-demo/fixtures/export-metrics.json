@@ -1,18 +1,7 @@
 {
-  "export_version": 1,
-  "scope": "metrics",
+  "export_version": 2,
   "artifact": {
     "ir_version": 1,
-    "scope": "metrics",
-    "base": {
-      "program_hash": "sha256:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
-      "outputs": {
-        "dd_metrics_encode": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-        "metrics_routing_encode_0": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
-        "metrics_routing_encode_1": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
-        "mrf_metrics_encode": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
-      }
-    },
     "nodes": [
       { "id": "metrics_fanout", "op": "tee", "params": { "ports": 4 } },
       { "id": "metrics_fanout_0", "op": "emit", "params": { "output": "dd_metrics_encode" } },
@@ -68,22 +57,18 @@
     "outputs": {
       "dd_metrics_encode": {
         "accepts": { "kinds": "all", "timestamps": "mixed" },
-        "fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
         "recipients": ["dd_out/primary/0/http://127.0.0.1:17101"]
       },
       "metrics_routing_encode_0": {
         "accepts": { "kinds": "all", "timestamps": "mixed" },
-        "fingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
         "recipients": ["dd_out/additional/0/http://127.0.0.1:17102"]
       },
       "metrics_routing_encode_1": {
         "accepts": { "kinds": "all", "timestamps": "mixed" },
-        "fingerprint": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
         "recipients": ["dd_out/additional/0/http://127.0.0.1:17103"]
       },
       "mrf_metrics_encode": {
         "accepts": { "kinds": "all", "timestamps": "mixed" },
-        "fingerprint": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
         "recipients": ["mrf_dd_out/primary/0/http://127.0.0.1:17104"],
         "label": "Multi-region failover"
       }
@@ -100,11 +85,6 @@
         "liveness": "live",
         "class": "signal",
         "value": false
-      }
-    },
-    "scopes": {
-      "metrics": {
-        "dogstatsd": { "kinds": ["counter", "gauge", "set", "histogram", "distribution"], "timestamps": "mixed" }
       }
     },
     "single_aggregation": true,
@@ -143,5 +123,6 @@
       "multi_region_failover.metric_mirroring.enabled": "signal: Whether a regional failover mirrors metrics now."
     },
     "future_member": "ignored"
-  }
+  },
+  "form": "detached"
 }

@@ -6,7 +6,7 @@ use crate::{
     compile::rewrite::{
         harness::{
             arb_plan_params, arb_shape, arb_trace, drop, edges, emit, ids, node, plan, sample, sorted, source, split,
-            with_scope, Case, TEST_KEEP,
+            Case, TEST_KEEP,
         },
         r5a::R5a,
         Optimized, RewriteOutcome, RewriteRecord,
@@ -178,93 +178,6 @@ fn a_drop_some_port_does_not_apply_stays_below_the_tee() {
         assert!(optimized.records.is_empty(), "{}: {:?}", what, optimized.records);
         assert_eq!(optimized.plan, case.plan, "{}", what);
     }
-}
-
-#[test]
-fn a_drop_is_hoisted_within_its_scope_only() {
-    let scoped = |input: &str, exits: &[(&str, &str)]| {
-        let plan = guarded(
-            (
-                split("a", json!({"has_tag": "env"}), false),
-                drop("a_drop", false),
-                "false",
-            ),
-            (
-                split("b", json!({"has_tag": "env"}), false),
-                drop("b_drop", false),
-                "false",
-            ),
-        );
-        with_scope(plan, input, exits)
-    };
-    // The tee is the scope's first node: the hoisted filter takes its place. A scope that ends at what a filter's kept
-    // records enter still ends there.
-    for exits in [&[][..], &[("enriched", "policy/ea.in")][..]] {
-        let (case, optimized) = r6(scoped("src.metrics", exits));
-        assert_eq!(applied(&optimized).len(), 1, "{:?}: {:?}", exits, optimized.records);
-        case.check_structure(&optimized).unwrap();
-    }
-    // (case, the scope's input, its exits)
-    type Exits<'a> = &'a [(&'a str, &'a str)];
-    let cases: [(&str, &str, Exits<'_>); 3] = [
-        (
-            "the scope begins below the tee, at one of its ports: hoisting would move the filter out of it",
-            "policy/t.0",
-            &[],
-        ),
-        (
-            "the scope begins at a filter's kept port, which hoisting removes",
-            "policy/a.true",
-            &[],
-        ),
-        (
-            "the scope ends at a filter's drop, which hoisting removes",
-            "src.metrics",
-            &[("dropped", "policy/a_drop.in")],
-        ),
-    ];
-    for (what, input, exits) in cases {
-        let (_, optimized) = r6(scoped(input, exits));
-        assert!(optimized.records.is_empty(), "{}: {:?}", what, optimized.records);
-    }
-}
-
-#[test]
-fn a_rewritten_plan_whose_scope_names_a_removed_port_is_skipped() {
-    // Revalidation, which every application passes, checks the ports a scope names: without it, a hoist that removed
-    // the node a scope begins at would be accepted.
-    let scoped = with_scope(
-        guarded(
-            (
-                split("a", json!({"has_tag": "env"}), false),
-                drop("a_drop", false),
-                "false",
-            ),
-            (
-                split("b", json!({"has_tag": "env"}), false),
-                drop("b_drop", false),
-                "false",
-            ),
-        ),
-        "policy/a.true",
-        &[],
-    );
-    let mut removed = scoped.clone();
-    let a = id("policy/a");
-    removed.nodes.retain(|node| node.id != a);
-    removed.edges.retain(|edge| edge.from.node != a && edge.to.node != a);
-    let report = crate::validate::revalidate(
-        crate::compile::rewrite::harness::registry(),
-        &removed,
-        &Default::default(),
-    );
-    assert!(
-        report.errors().any(|finding| finding
-            .to_string()
-            .contains("refers to `policy/a.true`, which is not an output port")),
-        "{}",
-        report
-    );
 }
 
 #[test]

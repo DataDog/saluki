@@ -1,16 +1,11 @@
 //! Tests for formatting, which build trees by hand and compare the exact text.
 
-use std::{collections::BTreeMap, str::FromStr as _};
-
-use saluki_metric_plan::{
-    canonical::PlanHash,
-    ir::{ArtifactNodeId, ExitName, OperatorName, OutputId, ParamName, Params, PortName, ScopeName},
-};
+use saluki_metric_plan::ir::{ArtifactNodeId, OperatorName, OutputId, ParamName, Params, PortName};
 use serde_json::{json, Value};
 
 use super::format;
 use crate::{
-    ast::{Base, Head, Name, OpStage, Pipeline, Program, Ref, Sink, SinkKind, Stage, Statement, Tuple, WhereStage},
+    ast::{Head, Name, OpStage, Pipeline, Program, Ref, Sink, SinkKind, Stage, Statement, Tuple, WhereStage},
     diagnostic::Span,
 };
 
@@ -115,16 +110,6 @@ fn drop_sink(id: Option<&str>) -> Sink {
     sink(SinkKind::Drop, id)
 }
 
-fn exit(exit: &str, id: Option<&str>) -> Sink {
-    sink(
-        SinkKind::Exit {
-            name: ExitName::new(exit).unwrap(),
-            span: Span::default(),
-        },
-        id,
-    )
-}
-
 fn pipeline(head: Head, stages: Vec<Stage>, end: Option<Sink>) -> Pipeline {
     Pipeline {
         head,
@@ -152,9 +137,7 @@ fn run(pipeline: Pipeline) -> Statement {
 fn program(statements: Vec<Statement>) -> Program {
     Program {
         head: Span::default(),
-        scope: ScopeName::new("metrics").unwrap(),
         ir_version: None,
-        base: None,
         blobs: None,
         statements,
         close: Span::default(),
@@ -165,7 +148,7 @@ fn program(statements: Vec<Statement>) -> Program {
 fn statement_text(statement: Statement, width: usize) -> String {
     let text = format(&program(vec![statement]), width);
     let body = text
-        .strip_prefix("policy metrics {\n")
+        .strip_prefix("policy {\n")
         .and_then(|text| text.strip_suffix("\n}\n"))
         .unwrap();
     body.to_string()
@@ -185,28 +168,17 @@ fn predicate_text(predicate: Value) -> String {
         .to_string()
 }
 
-fn hash(digit: char) -> PlanHash {
-    PlanHash::from_str(&format!("sha256:{}", digit.to_string().repeat(64))).unwrap()
-}
-
 // Program sections.
 
 #[test]
 fn an_empty_program_is_an_empty_block() {
-    assert_eq!(format(&program(vec![]), 120), "policy metrics {\n}\n");
+    assert_eq!(format(&program(vec![]), 120), "policy {\n}\n");
 }
 
 #[test]
 fn the_headers_and_blobs_come_before_the_statements() {
     let mut program = program(vec![run(pipeline(head("x"), vec![], Some(drop_sink(None))))]);
     program.ir_version = Some(2);
-    program.base = Some(Base {
-        program_hash: hash('1'),
-        outputs: BTreeMap::from([
-            (OutputId::new("a_out").unwrap(), hash('2')),
-            (OutputId::new("b_out").unwrap(), hash('3')),
-        ]),
-    });
     let blob_hash = format!("sha256:{}", "4".repeat(64));
     program.blobs = Some(
         [(blob_hash.clone(), json!({"rules": ["a", "b"]}))]
@@ -215,13 +187,8 @@ fn the_headers_and_blobs_come_before_the_statements() {
     );
 
     let expected = format!(
-        r#"policy metrics {{
+        r#"policy {{
   ir_version 2
-  base "sha256:{one}"
-  outputs {{
-    a_out = "sha256:{two}",
-    b_out = "sha256:{three}",
-  }}
 
   blobs {{
     "{blob}" = {{ rules: ["a", "b"] }},
@@ -230,25 +197,9 @@ fn the_headers_and_blobs_come_before_the_statements() {
   x | drop
 }}
 "#,
-        one = "1".repeat(64),
-        two = "2".repeat(64),
-        three = "3".repeat(64),
         blob = blob_hash,
     );
     assert_eq!(format(&program, 120), expected);
-}
-
-#[test]
-fn a_base_without_outputs_is_one_line() {
-    let mut program = program(vec![]);
-    program.base = Some(Base {
-        program_hash: hash('1'),
-        outputs: BTreeMap::new(),
-    });
-    assert_eq!(
-        format(&program, 120),
-        format!("policy metrics {{\n  base \"sha256:{}\"\n}}\n", "1".repeat(64))
-    );
 }
 
 #[test]
@@ -260,7 +211,7 @@ fn statements_are_separated_by_blank_lines() {
     ];
     assert_eq!(
         format(&program(statements), 120),
-        "policy metrics {\n  let a = dogstatsd\n\n  let b = a\n\n  b | drop\n}\n"
+        "policy {\n  let a = dogstatsd\n\n  let b = a\n\n  b | drop\n}\n"
     );
 }
 
@@ -663,8 +614,6 @@ fn sinks_are_written_with_their_ids() {
         (emit_output("out", Some("s")), "  x | emit output out as s"),
         (drop_sink(None), "  x | drop"),
         (drop_sink(Some("s")), "  x | drop as s"),
-        (exit("aggregated", None), "  x | exit aggregated"),
-        (exit("aggregated", Some("s")), "  x | exit aggregated as s"),
     ];
     for (end, expected) in cases {
         let statement = run(pipeline(head("x"), vec![], Some(end)));
@@ -1015,7 +964,6 @@ fn default_program() -> Program {
     let predicate = |id: &str| node_params(id)["predicate"].clone();
     // The export is in normal form, so its `split` nodes drop their `false` port, as `where` does.
 
-    let base = &fixture["base"];
     let mut statements = vec![
         let_(
             "dsd_enrich",
@@ -1124,88 +1072,69 @@ fn default_program() -> Program {
         ));
         statements.push(run(pipeline(head(filter), vec![], Some(emit_output(output, None)))));
     }
-    let mut program = program(statements);
-    program.base = Some(Base {
-        program_hash: PlanHash::from_str(base["program_hash"].as_str().unwrap()).unwrap(),
-        outputs: base["outputs"]
-            .as_object()
-            .unwrap()
-            .iter()
-            .map(|(output, hash)| {
-                (
-                    OutputId::new(output.as_str()).unwrap(),
-                    PlanHash::from_str(hash.as_str().unwrap()).unwrap(),
-                )
-            })
-            .collect(),
-    });
-    program
+    program(statements)
 }
 
 #[test]
 fn the_default_program_reads_as_a_person_would_write_it() {
     let program = default_program();
-    let hash = program.base.as_ref().unwrap().program_hash;
-    let expected = format!(
-        r#"policy metrics {{
-  base "{hash}"
-  outputs {{
-    af_metrics_encode = "sha256:6666666666666666666666666666666666666666666666666666666666666666",
-    dd_metrics_encode = "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-    dsd_client_telemetry = "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-    metrics_routing_encode_0 = "sha256:3333333333333333333333333333333333333333333333333333333333333333",
-    metrics_routing_encode_1 = "sha256:4444444444444444444444444444444444444444444444444444444444444444",
-    mrf_metrics_encode = "sha256:5555555555555555555555555555555555555555555555555555555555555555",
-  }}
-
+    let expected = r#"policy {
   let dsd_enrich = dogstatsd
     | dogstatsd_mapper(
-        profiles: config.dogstatsd.mapper.profiles,
-        cache_size: config.dogstatsd.mapper.cache_size,
-        string_interner_bytes: config.dogstatsd.mapper.string_interner_size_bytes,
+        profiles: [
+          {
+            name: "checkout",
+            prefix: "raw.",
+            mappings: [
+              {
+                match: "raw.requests.*",
+                match_type: "wildcard",
+                name: "mapped.requests",
+                tags: [{ name: "route", value: "$1" }],
+              },
+            ],
+          },
+        ],
+        cache_size: 1000,
+        string_interner_bytes: 65536,
       )
 
   let dsd_prefix_filter_blocklist = dsd_enrich
-    | namespace_prefix(
-        config.dogstatsd.prefix_filter.metric_namespace,
-        exclusions: config.dogstatsd.prefix_filter.metric_namespace_blocklist,
-      )
-    | where not intake_name matches(
-        values: config.dogstatsd.metric_filter.values,
-        prefix: config.dogstatsd.metric_filter.match_prefix,
-      )
+    | namespace_prefix("tenant", exclusions: ["internal.", "system."])
+    | where intake_name != "tenant.raw.blocked"
 
-  let dsd_no_agg_split = dsd_prefix_filter_blocklist
-    | timestamp_split(config.dogstatsd.aggregation.window_duration_seconds)
+  let dsd_no_agg_split = dsd_prefix_filter_blocklist | timestamp_split(10s)
 
   let dsd_tag_filterlist = dsd_no_agg_split.default
     | tag_projection(
-        rules: config.dogstatsd.tag_filterlist,
-        value_rules: config.dogstatsd.tag_value_allowlist,
-        cache_capacity: config.dogstatsd.aggregation.aggregator_tag_filter_cache_capacity,
+        rules: [{ metric_name: "tenant.checkout.latency", action: "exclude", tags: ["user_id"] }],
+        value_rules: [
+          {
+            metric_prefix: "tenant.checkout.",
+            tag_name: "env",
+            values: ["prod", "staging"],
+            on_miss: "replace",
+            replacement: "other",
+          },
+        ],
+        cache_capacity: 100000,
       )
 
   let dsd_agg = dsd_tag_filterlist
     | aggregate(
-        window: config.dogstatsd.aggregation.window_duration_seconds,
-        flush_interval: config.dogstatsd.aggregation.flush_interval,
-        context_limit: config.dogstatsd.aggregation.context_limit,
-        counter_expiry: config.dogstatsd.aggregation.counter_expiry_seconds,
-        flush_open_windows: config.dogstatsd.aggregation.flush_open_windows,
-        histogram_aggregates: config.metrics_encoding.histogram.aggregates,
-        histogram_percentiles: config.metrics_encoding.histogram.percentiles,
-        copy_to_distribution: config.metrics_encoding.histogram.copy_to_distribution,
-        copy_to_distribution_prefix: config.metrics_encoding.histogram.copy_to_distribution_prefix,
+        window: 10s,
+        flush_interval: 15s,
+        context_limit: 1000000,
+        counter_expiry: 5m,
+        flush_open_windows: false,
+        histogram_aggregates: ["max", "median", "avg", "count"],
+        histogram_percentiles: [95],
+        copy_to_distribution: false,
+        copy_to_distribution_prefix: "",
       )
 
   let dsd_post_agg_filter = (dsd_agg, dsd_no_agg_split.passthrough)
-    | where not (
-        kind in [counter, rate, gauge, set]
-        and intake_name matches(
-          values: config.dogstatsd.post_aggregate_filter.values,
-          prefix: config.dogstatsd.metric_filter.match_prefix,
-        )
-      )
+    | where not (kind in [counter, rate, gauge, set] and intake_name == "tenant.checkout.latency.max")
 
   dsd_post_agg_filter | emit output dsd_client_telemetry
 
@@ -1216,36 +1145,25 @@ fn the_default_program_reads_as_a_person_would_write_it() {
   metrics | emit output dd_metrics_encode
 
   let metrics_routing_filter_0 = metrics
-    | where intake_name in config.metrics_endpoint_routing.group.0123456789abcdef.names
-        or intake_name starts_with config.metrics_endpoint_routing.group.0123456789abcdef.prefixes
+    | where intake_name == "checkout.requests" or intake_name starts_with "checkout."
 
   metrics_routing_filter_0 | emit output metrics_routing_encode_0
 
-  let metrics_routing_filter_1 = metrics
-    | where intake_name in config.metrics_endpoint_routing.group.fedcba9876543210.names
-        or intake_name starts_with config.metrics_endpoint_routing.group.fedcba9876543210.prefixes
+  let metrics_routing_filter_1 = metrics | where intake_name starts_with "catalog."
 
   metrics_routing_filter_1 | emit output metrics_routing_encode_1
 
   let mrf_metrics_gateway = metrics
-    | where config.multi_region_failover.enabled
-        and config.multi_region_failover.metric_mirroring.enabled
-        and (
-          is_empty(config.multi_region_failover.metric_mirroring.allowlist)
-          or name in config.multi_region_failover.metric_mirroring.allowlist
-        )
+    | where config.multi_region_failover.enabled and config.multi_region_failover.metric_mirroring.enabled
 
   mrf_metrics_gateway | emit output mrf_metrics_encode
 
   let af_metrics_gateway = metrics
-    | where kind in [counter, rate, gauge, set]
-        and config.autoscaling_failover.enabled
-        and name in config.autoscaling_failover.metrics
+    | where kind in [counter, rate, gauge, set] and config.autoscaling_failover.enabled and name == "requests.count"
 
   af_metrics_gateway | emit output af_metrics_encode
-}}
-"#
-    );
+}
+"#;
     let printed = format(&program, 120);
     assert_eq!(printed, expected);
     assert!(printed.lines().all(|line| line.chars().count() <= 120), "{}", printed);

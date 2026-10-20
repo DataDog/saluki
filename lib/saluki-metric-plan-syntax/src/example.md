@@ -1,9 +1,7 @@
 ```rust
 use saluki_metric_plan_syntax::{parse, print, PrintOptions};
 
-let source = r#"policy metrics {
-  base "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-
+let source = r#"policy {
   let metrics_in = (dogstatsd, otlp) | where not name starts_with "demo.debug."
 
   metrics_in | emit primary
@@ -14,7 +12,7 @@ let source = r#"policy metrics {
 
 let parsed = parse(source).expect("the example parses");
 let artifact = &parsed.artifact;
-assert_eq!(artifact.scope.as_str(), "metrics");
+assert_eq!(artifact.nodes.len(), 8);
 
 // Nodes take IDs derived from where they are written: the tuple's merge from the `let`, the filter's dropped metrics
 // from the filter, the `tee` that copies `metrics_in` to its two uses from the stream, and each use from the `tee`.

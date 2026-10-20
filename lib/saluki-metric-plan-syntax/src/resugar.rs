@@ -14,27 +14,27 @@
 //!      **`where`**;
 //!    - a `tee` with the derived ID [`ids::fanout`] of the stream before it, when that stream can be named, is an
 //!      **implicit tee**: the stream is used once per port, in port order;
-//!    - any other `tee` with the ID `<name>_fanout`, for a `<name>` that no node, scope input, or other `let` has, after
+//!    - any other `tee` with the ID `<name>_fanout`, for a `<name>` that no node, source, or other `let` has, after
 //!      a stream a reference can name (a port of an implicit tee or another alias included), is an **alias**: the
 //!      statement `let <name> = <stream>`, one use of the stream, then `<name>` used once per port, in port order;
 //!    - anything else is a **multi-output** node (a `let` of its own, whose ports are written `x.p`, as any other
 //!      `tee` is: `let t = x | tee(ports: 2)`, then `t.0 | ...` and `t.1 | ...`), a **plain** node with one output
 //!      port, or a **final** node without one (a `let` of its own too, since lowering exempts such a `let` from being
 //!      used).
-//! 2. **Streams.** A port is **named** when it must be written as a reference: a scope input, a port of a
+//! 2. **Streams.** A port is **named** when it must be written as a reference: a source, a port of a
 //!    multi-output node, or the output of a node that is used more than once (through an implicit tee) or feeds a
 //!    tuple. Every other port continues its pipeline into the one node it feeds.
 //! 3. **Chains.** Each use of a named stream starts a pipeline with a reference to it, and each tuple starts a pipeline
-//!    with the tuple. A pipeline follows its stream through plain nodes and `where`s until it reaches a sink or an exit
+//!    with the tuple. A pipeline follows its stream through plain nodes and `where`s until it reaches a sink
 //!    (a statement without `let`), or a named stream, multi-output node, or final node (a `let` named for its last
-//!    node). Nodes that no scope input reaches start pipelines of their own, from a reference to whatever feeds them,
+//!    node). Nodes that no source reaches start pipelines of their own, from a reference to whatever feeds them,
 //!    so that lowering reports the problem.
 //! 4. **Names.** A node whose ID is not the one lowering would derive where it is written is named by a `let`
 //!    wherever one can end at it: the pipeline is split into several `let`s, each named for its last node, the merge
 //!    of a tuple included (`let m = (a, b)`). Among the ways to split it in which no `let` but the last writes an `as`
 //!    that a `let` could replace, the one with the fewest `as` clauses wins, then the one with the fewest statements.
 //! 5. **`as`.** `as` is the last resort, for the nodes no `let` can name: a sink whose ID is not [`ids::terminal`] of
-//!    the node and port that feed it, and a node named like a scope input that the artifact reads, which a reference
+//!    the node and port that feed it, and a node named like a source that the artifact reads, which a reference
 //!    to the input would name instead (see `let_names` in [`Graph`]). Whether a stage needs one depends on the ID
 //!    lowering derives at its position: from the statement's anchor and the stage's ordinal (every stage of a
 //!    pipeline counts, a `where` as `split`), or the `let`'s name for its last stage.
@@ -55,18 +55,18 @@ use std::{
 
 use saluki_metric_plan::{
     ir::{
-        ArtifactEdge, ArtifactNode, ArtifactNodeId, ArtifactPortRef, ExitName, InputName, OutputId, ParamName,
-        ParamSpec, Params, PolicyArtifact, PortName, IR_VERSION, SCOPE_INPUT_NODE,
+        ArtifactEdge, ArtifactNode, ArtifactNodeId, ArtifactPortRef, InputName, OutputId, ParamName, ParamSpec, Params,
+        PolicyArtifact, PortName, IR_VERSION, SCOPE_INPUT_NODE,
     },
     operators::{names, EMIT_TO, FALSE_PORT, OUT, TRUE_PORT},
 };
 use serde_json::{Map, Value};
 
 use crate::{
-    ast::{Base, Head, Name, OpStage, Pipeline, Program, Ref, Sink, SinkKind, Stage, Statement, Tuple, WhereStage},
+    ast::{Head, Name, OpStage, Pipeline, Program, Ref, Sink, SinkKind, Stage, Statement, Tuple, WhereStage},
     diagnostic::Span,
     graph::{canonical_order, param_specs, NodeShape},
-    ids, PrintOptions,
+    ids,
 };
 
 /// The words that the parser reads as the start of a stage, not as a reference, where a pipeline starts and neither
@@ -76,8 +76,8 @@ const STAGE_HEADS: [&str; 6] = ["where", "emit", "drop", "exit", "fork", "as"];
 /// Returns the tree that describes `artifact`, with sugar wherever lowering it gives back exactly the same graph.
 ///
 /// Total: any artifact gives a tree. For a well-formed artifact in canonical order, lowering the tree gives back the
-/// artifact. `options` says whether the tree has a `base` statement, and whether it lists output fingerprints.
-pub(crate) fn resugar(artifact: &PolicyArtifact, options: &PrintOptions) -> Program {
+/// artifact.
+pub(crate) fn resugar(artifact: &PolicyArtifact) -> Program {
     let graph = Graph::new(artifact);
     let mut demoted = HashSet::new();
     let (plan, order) = loop {
@@ -105,16 +105,7 @@ pub(crate) fn resugar(artifact: &PolicyArtifact, options: &PrintOptions) -> Prog
 
     Program {
         head: Span::default(),
-        scope: artifact.scope.clone(),
         ir_version: (artifact.ir_version != IR_VERSION).then_some(artifact.ir_version),
-        base: (!options.elide_base).then(|| Base {
-            program_hash: artifact.base.program_hash,
-            outputs: if options.elide_fingerprints {
-                BTreeMap::new()
-            } else {
-                artifact.base.outputs.clone()
-            },
-        }),
         blobs: (!artifact.blobs.is_empty()).then(|| {
             artifact
                 .blobs
@@ -127,7 +118,7 @@ pub(crate) fn resugar(artifact: &PolicyArtifact, options: &PrintOptions) -> Prog
     }
 }
 
-/// An output port that edges leave: a scope input, or a port of a node, by position.
+/// An output port that edges leave: a source, or a port of a node, by position.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 enum Stream {
     Input(InputName),
@@ -137,7 +128,6 @@ enum Stream {
 /// What an edge enters.
 enum Target {
     Node(usize),
-    Exit(ExitName),
     /// A node the artifact does not have.
     Missing,
 }
@@ -166,9 +156,9 @@ struct Graph<'a> {
     entering: Vec<Vec<usize>>,
     /// The edges leaving each stream, in canonical order.
     leaving: HashMap<Stream, Vec<usize>>,
-    /// The names of the scope inputs that edges leave.
+    /// The names of the sources that edges leave.
     input_names: HashSet<&'a str>,
-    /// The name of the `let` each node ends, if it ends one: its ID, or for a node whose ID is the name of a scope input
+    /// The name of the `let` each node ends, if it ends one: its ID, or for a node whose ID is the name of a source
     /// that edges leave, which no `let` can take since references to the input would name it, a name of its own,
     /// `<id>_let`, numbered if another name has it. The `let`'s last stage then has an `as` with the node's ID.
     let_names: Vec<ArtifactNodeId>,
@@ -218,7 +208,6 @@ impl<'a> Graph<'a> {
                         leaving.entry(Stream::Port(source, port.clone())).or_default().push(e);
                     }
                 }
-                ArtifactPortRef::Exit(_) => {}
             }
         }
         let mut taken = nodes
@@ -278,7 +267,7 @@ impl<'a> Graph<'a> {
     }
 
     /// Returns the name a reference to a stream writes: the name of the `let` that ends at its node, or of the alias
-    /// its node is written as, or of the scope input.
+    /// its node is written as, or of the source.
     fn spelled(&self, roles: &[Role], head: &HeadRef) -> ArtifactNodeId {
         match &head.stream {
             Some(Stream::Port(node, _)) => match &roles[*node] {
@@ -300,7 +289,6 @@ impl<'a> Graph<'a> {
                 .index
                 .get(node.as_str())
                 .map(|&source| Stream::Port(source, port.clone())),
-            ArtifactPortRef::Exit(_) => None,
         }
     }
 
@@ -310,7 +298,6 @@ impl<'a> Graph<'a> {
                 Some(&target) => Target::Node(target),
                 None => Target::Missing,
             },
-            ArtifactPortRef::Exit(name) => Target::Exit(name.clone()),
             ArtifactPortRef::Input(_) => Target::Missing,
         }
     }
@@ -318,7 +305,7 @@ impl<'a> Graph<'a> {
     fn to_port(&self, edge: usize) -> Option<&PortName> {
         match &self.edges[edge].to {
             ArtifactPortRef::Node { port, .. } => Some(port),
-            ArtifactPortRef::Input(_) | ArtifactPortRef::Exit(_) => None,
+            ArtifactPortRef::Input(_) => None,
         }
     }
 
@@ -429,7 +416,7 @@ impl<'a> Graph<'a> {
     }
 
     /// Returns the name of the alias a `tee` is written as, `let <name> = <upstream>` used once per port, if it can be
-    /// one: its ID is `<name>_fanout`, as lowering derives it for the alias, `<name>` is free (no node, scope input, or
+    /// one: its ID is `<name>_fanout`, as lowering derives it for the alias, `<name>` is free (no node, source, or
     /// other `let` has it), and a reference can name the stream it copies.
     fn alias_name(&self, roles: &[Role], tee: usize, upstream: &Stream) -> Option<ArtifactNodeId> {
         if !self.unique[tee] {
@@ -485,7 +472,7 @@ impl<'a> Graph<'a> {
         }
     }
 
-    /// Returns whether a stream can be referred to by a `let` or scope input name that lowering resolves to it.
+    /// Returns whether a stream can be referred to by a `let` or source name that lowering resolves to it.
     fn nameable(&self, roles: &[Role], stream: &Stream) -> bool {
         match (stream, self.written(roles, stream)) {
             (_, None) => false,
@@ -769,10 +756,10 @@ impl ChainHead {
     }
 }
 
-/// How a chain ends, when it ends in a sink or an exit.
-enum ChainEnd {
-    Sink { node: usize, parent: Parent },
-    Exit(ExitName),
+/// How a chain ends, when it ends in a sink: the sink's node, and the port that feeds it.
+struct ChainEnd {
+    node: usize,
+    parent: Parent,
 }
 
 /// A pipeline found in the graph, before it is split into statements.
@@ -830,7 +817,6 @@ impl<'g, 'a> Builder<'g, 'a> {
     /// Returns whether a pipeline can continue into what the edge enters.
     fn enterable(&self, edge: usize) -> bool {
         match self.graph.target(edge) {
-            Target::Exit(_) => true,
             Target::Node(node) => !matches!(
                 self.roles[node],
                 Role::Tuple | Role::Implicit { .. } | Role::Alias { .. }
@@ -963,7 +949,7 @@ impl<'g, 'a> Builder<'g, 'a> {
                     };
                     Some((head, (node.to_string(), port.clone())))
                 }
-                ArtifactPortRef::Input(_) | ArtifactPortRef::Exit(_) => None,
+                ArtifactPortRef::Input(_) => None,
             },
         }
     }
@@ -1064,7 +1050,7 @@ impl<'g, 'a> Builder<'g, 'a> {
             });
         }
 
-        // A pipeline for each node no scope input reaches, from a reference to what feeds it, or to itself.
+        // A pipeline for each node no source reaches, from a reference to what feeds it, or to itself.
         for &node in &graph.node_order {
             if self.placed[node] {
                 continue;
@@ -1166,7 +1152,6 @@ impl<'g, 'a> Builder<'g, 'a> {
         };
         loop {
             let node = match target {
-                Target::Exit(name) => return (stages, Some(ChainEnd::Exit(name)), false),
                 Target::Missing => return (stages, None, false),
                 Target::Node(node) => node,
             };
@@ -1177,7 +1162,7 @@ impl<'g, 'a> Builder<'g, 'a> {
                 Role::Tuple | Role::Implicit { .. } | Role::Alias { .. } => return (stages, None, false),
                 Role::Sink(_) => {
                     self.placed[node] = true;
-                    return (stages, Some(ChainEnd::Sink { node, parent }), false);
+                    return (stages, Some(ChainEnd { node, parent }), false);
                 }
                 Role::Multi | Role::Final => {
                     self.placed[node] = true;
@@ -1250,10 +1235,10 @@ impl Emitter<'_, '_, '_> {
 
     /// Returns, for each unit `j` of a chain, the units `i < j` a `let` from `i` to `j` can start at: those whose ID
     /// is the first one a `let` named for unit `j` derives (the merge `<name>_in`, or the stage `<name>_<operator>`),
-    /// and those named like a scope input, which take an `as` wherever they are.
+    /// and those named like a source, which take an `as` wherever they are.
     ///
     /// An ID that is not shortened is the first derived ID of at most one name, so this takes time proportional to the
-    /// chain's length, apart from shortened IDs and nodes named like scope inputs, each compared with every later unit.
+    /// chain's length, apart from shortened IDs and nodes named like sources, each compared with every later unit.
     fn starts(&self, chain: &Chain, units: &[usize], tuple: bool) -> Vec<Vec<usize>> {
         let graph = self.graph;
         let ends = (0..units.len())
@@ -1345,7 +1330,7 @@ impl Emitter<'_, '_, '_> {
             (head, &units[i.max(usize::from(merge.is_some()))..k])
         };
 
-        // A node named like a scope input the artifact reads, which a `let` cannot be named for.
+        // A node named like a source the artifact reads, which a `let` cannot be named for.
         let unnameable = |node: usize| graph.input_names.contains(graph.id(node).as_str());
         // reach[k]: the fewest `as` clauses, then `let`s, that write the first k units in `let`s that write an `as`
         // only for an unnameable node, and where the last of them starts.
@@ -1504,10 +1489,9 @@ impl Emitter<'_, '_, '_> {
 
     /// Adds a sink whose ID is not the one derived from the node and port that feed it to `aliased`.
     fn decide_end(&self, end: &ChainEnd, aliased: &mut HashSet<usize>) {
-        if let ChainEnd::Sink { node, parent } = end {
-            if &ids::terminal(&parent.0, &parent.1) != self.graph.id(*node) {
-                aliased.insert(*node);
-            }
+        let ChainEnd { node, parent } = end;
+        if &ids::terminal(&parent.0, &parent.1) != self.graph.id(*node) {
+            aliased.insert(*node);
         }
     }
 
@@ -1582,23 +1566,13 @@ impl Emitter<'_, '_, '_> {
     }
 
     fn end(&self, end: &ChainEnd, aliased: &HashSet<usize>) -> Sink {
-        match end {
-            ChainEnd::Sink { node, .. } => Sink {
-                kind: match &self.roles[*node] {
-                    Role::Sink(kind) => kind.clone(),
-                    _ => SinkKind::Drop,
-                },
-                id: self.alias(*node, aliased),
-                span: Span::default(),
+        Sink {
+            kind: match &self.roles[end.node] {
+                Role::Sink(kind) => kind.clone(),
+                _ => SinkKind::Drop,
             },
-            ChainEnd::Exit(name) => Sink {
-                kind: SinkKind::Exit {
-                    name: name.clone(),
-                    span: Span::default(),
-                },
-                id: None,
-                span: Span::default(),
-            },
+            id: self.alias(end.node, aliased),
+            span: Span::default(),
         }
     }
 }

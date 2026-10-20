@@ -6,13 +6,13 @@ use saluki_core::{accounting::ComponentRegistry, support::SubsystemIdentifier};
 
 use super::{graph::Graph, BoundMeasure, BoundScope, Finding, Location, Rule, ValidationReport};
 use crate::{
-    ir::{ComposedArtifact, NodeId, ParamValue, Plan, ScopeName},
+    ir::{ArtifactRevision, NodeId, ParamValue, Plan},
     limits::{values, LimitSpec, ARTIFACT_NODES, PREDICATE_LEAVES, TEE_FAN_OUT, WORK_PER_INPUT},
     operators::{Cardinality, ConfiguredOperator, OperatorRegistry, PortRelation},
 };
 
-/// What the default program has in a scope a program replaces: a program's limit rises to it where it is more than
-/// the limit, and never above it.
+/// What the default program has, every node but its sources: a program's limit rises to it where it is more than the
+/// limit, and never above it.
 ///
 /// The limits bound what an artifact makes the host do beyond what native configuration sized it for. The default
 /// program's own measures are native configuration's, so a program may keep them, unmodified or not, but not grow
@@ -24,7 +24,7 @@ pub(crate) struct Baseline {
     memory: u64,
     /// The ports of each copying node, by node.
     fan_out: BTreeMap<NodeId, u64>,
-    /// The node visits one record entering the scope at each entry node causes, by node.
+    /// The node visits one record entering the program at each entry node causes, by node.
     work: BTreeMap<NodeId, u64>,
 }
 
@@ -40,48 +40,40 @@ impl Baseline {
     }
 }
 
-/// Measures the default program `default` in each of `scopes`.
-pub(super) fn baselines(
-    default: &Plan, registry: &OperatorRegistry, scopes: &[ScopeName],
-) -> BTreeMap<ScopeName, Baseline> {
+/// Measures the default program `default`, every node but its sources.
+pub(super) fn baseline(default: &Plan, registry: &OperatorRegistry) -> Baseline {
     // The default program's own findings are not the program's: they are reported when it is validated.
     let mut scratch = ValidationReport::default();
     let graph = Graph::build(default, registry, &mut scratch);
-    scopes
-        .iter()
-        .map(|scope| {
-            let nodes = crate::export::scope_members(default, scope);
-            let members = (0..graph.nodes.len())
-                .map(|node| nodes.contains(graph.id(node)))
-                .collect::<Vec<_>>();
-            let member_ops = || {
-                (0..graph.nodes.len())
-                    .filter(|&node| members[node])
-                    .filter_map(|node| graph.op(node).map(|op| (node, op)))
-            };
-            let fan_out = member_ops()
-                .filter(|(_, op)| op.contract().ports == PortRelation::Copies)
-                .map(|(node, op)| (graph.id(node).clone(), op.ports().outputs.len() as u64))
-                .collect();
-            let work = visits(&graph, &members)
-                .map(|visits| {
-                    entry_nodes(&graph, &members)
-                        .map(|node| (graph.id(node).clone(), visits[node]))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let baseline = Baseline {
-                nodes: members.iter().filter(|member| **member).count() as u64,
-                leaves: member_ops()
-                    .flat_map(|(_, op)| op.params().iter().map(|(_, value)| predicate_leaves(value)))
-                    .sum(),
-                memory: member_ops().fold(0u64, |total, (_, op)| total.saturating_add(declared_memory(op))),
-                fan_out,
-                work,
-            };
-            (scope.clone(), baseline)
+    let nodes = crate::export::non_source_nodes(default);
+    let members = (0..graph.nodes.len())
+        .map(|node| nodes.contains(graph.id(node)))
+        .collect::<Vec<_>>();
+    let member_ops = || {
+        (0..graph.nodes.len())
+            .filter(|&node| members[node])
+            .filter_map(|node| graph.op(node).map(|op| (node, op)))
+    };
+    let fan_out = member_ops()
+        .filter(|(_, op)| op.contract().ports == PortRelation::Copies)
+        .map(|(node, op)| (graph.id(node).clone(), op.ports().outputs.len() as u64))
+        .collect();
+    let work = visits(&graph, &members)
+        .map(|visits| {
+            entry_nodes(&graph, &members)
+                .map(|node| (graph.id(node).clone(), visits[node]))
+                .collect()
         })
-        .collect()
+        .unwrap_or_default();
+    Baseline {
+        nodes: members.iter().filter(|member| **member).count() as u64,
+        leaves: member_ops()
+            .flat_map(|(_, op)| op.params().iter().map(|(_, value)| predicate_leaves(value)))
+            .sum(),
+        memory: member_ops().fold(0u64, |total, (_, op)| total.saturating_add(declared_memory(op))),
+        fan_out,
+        work,
+    }
 }
 
 /// Returns the limit `limit`, raised to the default program's `baseline` if that is more, and how to name it.
@@ -111,7 +103,7 @@ pub(crate) fn predicate_leaves(value: &ParamValue) -> u64 {
 }
 
 pub(super) fn check(
-    graph: &Graph<'_>, programs: &[(ComposedArtifact, BTreeSet<NodeId>)], baselines: &BTreeMap<ScopeName, Baseline>,
+    graph: &Graph<'_>, programs: &[(ArtifactRevision, BTreeSet<NodeId>)], baseline: Option<&Baseline>,
     report: &mut ValidationReport,
 ) {
     check_programs(graph, programs, report);
@@ -122,8 +114,7 @@ pub(super) fn check(
     measure(graph, &everything, BoundScope::Plan, None, report);
 
     for (artifact, nodes) in programs {
-        let baseline = baselines.get(&artifact.scope);
-        let revision = artifact.revision();
+        let revision = artifact.clone();
         let members = (0..graph.nodes.len())
             .map(|node| nodes.contains(graph.id(node)))
             .collect::<Vec<_>>();
@@ -376,10 +367,9 @@ fn check_work_per_input(
 
 /// Reports every node of a program whose operator a program may not hold (`trusted_host`).
 ///
-/// A program is every node of the scope its artifact replaces, kept as the default program has it or not: what a node
-/// may be does not depend on whether the author changed it. So an artifact cannot hold a source or an opaque host even
-/// unmodified, and a scope that holds one cannot be replaced, which no host's default program does.
-fn check_programs(graph: &Graph<'_>, programs: &[(ComposedArtifact, BTreeSet<NodeId>)], report: &mut ValidationReport) {
+/// A program is every node of the plan but its sources, kept as the default program has it or not: what a node may be
+/// does not depend on whether the author changed it. So an artifact cannot hold an opaque host even unmodified.
+fn check_programs(graph: &Graph<'_>, programs: &[(ArtifactRevision, BTreeSet<NodeId>)], report: &mut ValidationReport) {
     let program = programs.iter().flat_map(|(_, nodes)| nodes).collect::<BTreeSet<_>>();
     for (node, entry) in graph.nodes.iter().enumerate() {
         let Some(op) = &entry.op else { continue };

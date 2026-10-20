@@ -12,7 +12,6 @@ fn structural(export: &ExportBundle) -> CompileContext<'_> {
         export,
         default_program: None,
         active: None,
-        others: &[],
         revision: 1,
         labels: &NO_LABELS,
         in_effect: None,
@@ -23,10 +22,10 @@ fn structural(export: &ExportBundle) -> CompileContext<'_> {
 static NO_LABELS: std::sync::LazyLock<RecipientLabels> = std::sync::LazyLock::new(RecipientLabels::default);
 
 /// The demo export's artifact, as the editor prints it: hand-written, so it also pins the printed form the editor
-/// starts from, without its base, and with the export's notes and recipient directory as comments. No line is longer
+/// starts from, with the export's notes and recipient directory as comments. No line is longer
 /// than the editor's width.
-const DEFAULT_SOURCE: &str = r#"policy metrics {
-  # Sources: each one's metrics enter at an input of the scope: dogstatsd.
+const DEFAULT_SOURCE: &str = r#"policy {
+  # Sources, where each one's metrics enter the program: dogstatsd.
 
   # Policy: one branch per output; route here
   let metrics = dogstatsd
@@ -56,43 +55,9 @@ const DEFAULT_SOURCE: &str = r#"policy metrics {
 }
 "#;
 
-/// The failover gateway's branch of the policy, with the comment above it and the blank line before.
-const MRF_BRANCH: &str =
-    "\n  # Multi-Region Failover: mirrors listed, or all, metrics while failing over\n  let mrf_metrics_gateway = \
-                          metrics\n";
-
-/// Returns `source` without the failover gateway's branch.
-fn without_mrf(source: &str) -> String {
-    let start = source.find(MRF_BRANCH).expect("the source has the failover gateway");
-    let end_text = "  mrf_metrics_gateway | emit output mrf_metrics_encode\n";
-    let end = start + source[start..].find(end_text).unwrap() + end_text.len();
-    format!("{}{}", &source[..start], &source[end..])
-}
-
-/// The demo export's base, with its `outputs` block, which the editor leaves out.
-const BASE: &str = r#"  base "sha256:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
-  outputs {
-    dd_metrics_encode = "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-    metrics_routing_encode_0 = "sha256:3333333333333333333333333333333333333333333333333333333333333333",
-    metrics_routing_encode_1 = "sha256:4444444444444444444444444444444444444444444444444444444444444444",
-    mrf_metrics_encode = "sha256:5555555555555555555555555555555555555555555555555555555555555555",
-  }
-"#;
-
-/// The default source with its base and output fingerprints written out.
-fn with_fingerprints() -> String {
-    let head = "policy metrics {\n";
-    format!("{}{}\n{}", head, BASE, &DEFAULT_SOURCE[head.len()..])
-}
-
 fn replaced(from: &str, to: &str) -> String {
     assert!(DEFAULT_SOURCE.contains(from), "{}", from);
     DEFAULT_SOURCE.replacen(from, to, 1)
-}
-
-fn replaced_in(source: &str, from: &str, to: &str) -> String {
-    assert!(source.contains(from), "{}", from);
-    source.replacen(from, to, 1)
 }
 
 #[test]
@@ -108,19 +73,9 @@ fn the_default_program_prints_compiles_without_findings_and_keeps_its_hash() {
     assert!(outcome.checked_against.available);
     assert_eq!(
         outcome.checked_against.default_program_hash.as_deref(),
-        Some("sha256:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f")
+        Some(export.program_hash.to_string().as_str())
     );
-    // The fingerprints the editor leaves out come back from the export, so an unmodified export compiles to the
-    // export's own document, and its hash is the export's.
-    assert_eq!(
-        outcome.restored_fingerprints,
-        [
-            "dd_metrics_encode",
-            "metrics_routing_encode_0",
-            "metrics_routing_encode_1",
-            "mrf_metrics_encode"
-        ]
-    );
+    // An unmodified export compiles to the export's own document, and its hash is the export's.
     let compiled = compiled.unwrap();
     assert_eq!(compiled.hash, export.artifact.hash);
     assert_eq!(outcome.artifact_hash, Some(export.artifact.hash.to_string()));
@@ -137,14 +92,6 @@ fn the_default_program_prints_compiles_without_findings_and_keeps_its_hash() {
         "{}",
         outcome.preview.reason
     );
-
-    // Written out, the fingerprints are kept as written, and printing keeps them.
-    let written = with_fingerprints();
-    let (outcome, compiled) = compile(&written, Some(&structural(&export)));
-    assert!(outcome.diagnostics.is_empty(), "{:#?}", outcome.diagnostics);
-    assert!(outcome.restored_fingerprints.is_empty());
-    assert_eq!(compiled.unwrap().hash, export.artifact.hash);
-    assert_eq!(outcome.canonical_source.as_deref(), Some(written.as_str()));
 }
 
 #[test]
@@ -163,33 +110,6 @@ fn edits_change_the_hash_and_reformatting_does_not() {
     let hash = compiled.unwrap().hash;
     assert_ne!(hash, export.artifact.hash);
     assert_eq!(outcome.artifact_hash, Some(hash.to_string()));
-
-    // Removing a route removes its output from the restored fingerprints: an artifact lists what it refers to.
-    let (outcome, _) = compile(&without_mrf(DEFAULT_SOURCE), Some(&structural(&export)));
-    assert!(outcome.diagnostics.is_empty(), "{:#?}", outcome.diagnostics);
-    assert!(!outcome
-        .restored_fingerprints
-        .contains(&"mrf_metrics_encode".to_string()));
-    assert_eq!(outcome.restored_fingerprints.len(), 3);
-
-    // An output emitted to twice is restored once.
-    let twice = replaced(
-        "  metrics | emit output dd_metrics_encode\n",
-        "  metrics | emit output dd_metrics_encode\n\n  metrics | where name starts_with \"demo.copy.\" | emit output \
-         dd_metrics_encode\n",
-    );
-    let (outcome, _) = compile(&twice, Some(&structural(&export)));
-    assert_eq!(
-        outcome.restored_fingerprints,
-        [
-            "dd_metrics_encode",
-            "metrics_routing_encode_0",
-            "metrics_routing_encode_1",
-            "mrf_metrics_encode"
-        ],
-        "{:#?}",
-        outcome.diagnostics
-    );
 }
 
 #[test]
@@ -226,7 +146,7 @@ fn syntax_errors_are_placed_by_line_and_column() {
 
 #[test]
 fn documents_the_plan_crate_cannot_read_are_reported_at_the_start() {
-    let source = replaced("policy metrics {\n", "policy metrics {\n  ir_version 99\n");
+    let source = replaced("policy {\n", "policy {\n  ir_version 99\n");
     let (outcome, compiled) = compile(&source, Some(&structural(&demo_export())));
     assert!(!outcome.ok);
     assert!(compiled.is_none());
@@ -246,10 +166,6 @@ type Expected<'a> = (Severity, usize, &'a str);
 
 #[test]
 fn structural_findings_are_placed_where_the_problem_is() {
-    let fingerprint_4 = "sha256:4444444444444444444444444444444444444444444444444444444444444444";
-    let fingerprint_5 = "sha256:5555555555555555555555555555555555555555555555555555555555555555";
-    let mrf_output_line = format!("    mrf_metrics_encode = \"{}\",\n", fingerprint_5);
-    let mrf_output_fix = format!("Add `mrf_metrics_encode = \"{}\"`", fingerprint_5);
     let cases: Vec<(&str, String, Vec<Expected<'_>>)> = vec![
         (
             "an emit to an output ADP does not declare",
@@ -263,22 +179,6 @@ fn structural_findings_are_placed_where_the_problem_is() {
                 "`metrics_routing_encode_9`, which ADP does not declare",
             )],
         ),
-        // Fingerprints written out are taken as written: an `outputs` list that leaves one out, or has a stale one,
-        // is reported rather than completed from the export.
-        (
-            "an emit to an output the artifact does not list",
-            replaced_in(&with_fingerprints(), &mrf_output_line, ""),
-            vec![(Severity::Error, 35, mrf_output_fix.as_str())],
-        ),
-        (
-            "an output whose fingerprint changed",
-            replaced_in(
-                &with_fingerprints(),
-                fingerprint_4,
-                "sha256:4444444444444444444444444444444444444444444444444444444444444445",
-            ),
-            vec![(Severity::Error, 6, "has fingerprint sha256:4444")],
-        ),
         (
             "a binding ADP does not declare",
             replaced(
@@ -290,11 +190,6 @@ fn structural_findings_are_placed_where_the_problem_is() {
                 26,
                 "`multi_region_failover.metric_mirroring.allowlist`, which ADP does not declare",
             )],
-        ),
-        (
-            "a base that is not the current default program",
-            replaced_in(&with_fingerprints(), "base \"sha256:0f0f", "base \"sha256:0e0f"),
-            vec![(Severity::Warning, 2, "is not the current default program")],
         ),
         (
             "a parameter the operator does not have",
@@ -311,12 +206,9 @@ fn structural_findings_are_placed_where_the_problem_is() {
             vec![(Severity::Error, 6, "`frobnicate` is not a registered operator")],
         ),
         (
-            "another scope",
-            replaced("policy metrics {", "policy dogstatsd {"),
-            vec![
-                (Severity::Error, 1, "ADP exports the scope `metrics`"),
-                (Severity::Error, 5, "has no input `dogstatsd`"),
-            ],
+            "a source the default program does not read",
+            replaced("  let metrics = dogstatsd\n", "  let metrics = otlp\n"),
+            vec![(Severity::Error, 5, "has no source `otlp`")],
         ),
     ];
 
@@ -360,20 +252,7 @@ fn structural_findings_are_placed_where_the_problem_is() {
 
 #[test]
 fn without_an_export_sources_are_parsed_but_not_checked() {
-    // Without an export to give the base back, a source states its own.
-    let with_base = replaced(
-        "policy metrics {\n",
-        "policy metrics {\n  base \"sha256:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\"\n\n",
-    );
-    let (outcome, _) = compile(DEFAULT_SOURCE, None);
-    assert!(!outcome.ok);
-    assert!(
-        outcome.diagnostics[0].message.contains("Expected `base"),
-        "{:#?}",
-        outcome.diagnostics
-    );
-    let source = replaced_in(
-        &with_base,
+    let source = replaced(
         "emit output metrics_routing_encode_1",
         "emit output metrics_routing_encode_9",
     );
@@ -383,9 +262,6 @@ fn without_an_export_sources_are_parsed_but_not_checked() {
     assert!(outcome.diagnostics.is_empty());
     assert!(!outcome.checked_against.available);
     assert!(outcome.checked_against.reason.unwrap().contains("not available"));
-    // With no export to take them from, left-out fingerprints stay out.
-    assert!(outcome.restored_fingerprints.is_empty());
-    assert_eq!(outcome.artifact.unwrap()["base"].get("outputs"), None);
 }
 
 #[test]
@@ -442,19 +318,6 @@ fn what_adp_installs_unchecked_is_not_reported() {
     let source = default_program_source(&export, &NO_LABELS);
     assert!(source.contains("opaque_host"), "{}", source);
     let (outcome, _) = compile(&source, Some(&structural(&export)));
-    assert!(outcome.diagnostics.is_empty(), "{:#?}", outcome.diagnostics);
-
-    // ADP checks the fingerprints of the outputs an artifact emits to; one the base still records, but that nothing
-    // emits to any more, cannot be removed under the artifact, whatever its fingerprint.
-    let stale = "sha256:5555555555555555555555555555555555555555555555555555555555555556";
-    let source = replaced_in(
-        &with_fingerprints(),
-        "sha256:5555555555555555555555555555555555555555555555555555555555555555",
-        stale,
-    );
-    let source = without_mrf(&source);
-    assert!(source.contains(stale));
-    let (outcome, _) = compile(&source, Some(&structural(&demo_export())));
     assert!(outcome.diagnostics.is_empty(), "{:#?}", outcome.diagnostics);
 }
 
@@ -520,14 +383,7 @@ fn the_recipient_directory_names_the_demos_labels_and_what_the_program_addresses
         .filter(|line| !line.trim_start().starts_with('#'))
         .map(|line| format!("{}\n", line))
         .collect::<String>();
-    let artifact = saluki_metric_plan_syntax::parse_with(
-        &unrouted,
-        &ParseOptions {
-            base: Some(export.artifact.artifact.base.clone()),
-        },
-    )
-    .unwrap()
-    .artifact;
+    let artifact = saluki_metric_plan_syntax::parse(&unrouted).unwrap().artifact;
     let annotated = annotate(&unrouted, &artifact, Some(&export), &labels);
     assert!(
         annotated
@@ -537,16 +393,7 @@ fn the_recipient_directory_names_the_demos_labels_and_what_the_program_addresses
         annotated
     );
     // The comments are not part of the artifact.
-    let parse = |text: &str| {
-        saluki_metric_plan_syntax::parse_with(
-            text,
-            &ParseOptions {
-                base: Some(export.artifact.artifact.base.clone()),
-            },
-        )
-        .unwrap()
-        .artifact
-    };
+    let parse = |text: &str| saluki_metric_plan_syntax::parse(text).unwrap().artifact;
     assert_eq!(parse(&source), parse(&default_program_source(&export, &NO_LABELS)));
 }
 
@@ -560,7 +407,7 @@ fn what_the_export_leaves_out_is_one_comment_at_the_top_wrapped_to_the_editors_w
     let export = ExportBundle::from_value(document).unwrap();
     let source = default_program_source(&export, &NO_LABELS);
     let lines = source.lines().collect::<Vec<_>>();
-    assert_eq!(lines[0], "policy metrics {");
+    assert_eq!(lines[0], "policy {");
     let comment = lines[1..]
         .iter()
         .take_while(|line| !line.is_empty())
@@ -577,24 +424,15 @@ fn what_the_export_leaves_out_is_one_comment_at_the_top_wrapped_to_the_editors_w
         source
     );
     assert!(comment.iter().all(|line| line.chars().count() <= 100), "{}", source);
-    // A blank line, then the line that names the inputs.
+    // A blank line, then the line that names the sources.
     assert_eq!(
         lines[1 + comment.len() + 1],
-        "  # Sources: each one's metrics enter at an input of the scope: dogstatsd.",
+        "  # Sources, where each one's metrics enter the program: dogstatsd.",
         "{}",
         source
     );
     // The comment is not part of the artifact.
-    let parse = |text: &str| {
-        saluki_metric_plan_syntax::parse_with(
-            text,
-            &ParseOptions {
-                base: Some(export.artifact.artifact.base.clone()),
-            },
-        )
-        .unwrap()
-        .artifact
-    };
+    let parse = |text: &str| saluki_metric_plan_syntax::parse(text).unwrap().artifact;
     let plain = source
         .lines()
         .filter(|line| !line.trim_start().starts_with('#'))
@@ -619,14 +457,7 @@ fn the_recipient_directory_goes_above_the_first_use_whole_when_it_runs_over_seve
         .filter(|line| !line.trim_start().starts_with('#'))
         .map(|line| format!("{}\n", line))
         .collect::<String>();
-    let artifact = saluki_metric_plan_syntax::parse_with(
-        &plain,
-        &ParseOptions {
-            base: Some(export.artifact.artifact.base.clone()),
-        },
-    )
-    .unwrap()
-    .artifact;
+    let artifact = saluki_metric_plan_syntax::parse(&plain).unwrap().artifact;
     let annotated = annotate(&plain, &artifact, Some(&export), &NO_LABELS);
     let lines = annotated.lines().collect::<Vec<_>>();
     let statement = lines

@@ -3,7 +3,6 @@ use serde_json::{json, Value};
 
 use super::*;
 use crate::{
-    canonical::PlanHash,
     compile::{
         compile, place_unvalidated,
         rewrite::{
@@ -63,7 +62,7 @@ fn opaque(id: &str) -> Value {
 }
 
 /// Builds a plan from nodes, edges written as `from.port -> to.port`, and the outputs it declares, from `o0` up.
-fn plan_with(nodes: Vec<Value>, edges: &[&str], outputs: usize, extra: Value) -> Plan {
+fn plan(nodes: Vec<Value>, edges: &[&str], outputs: usize) -> Plan {
     let edges = edges
         .iter()
         .map(|edge| {
@@ -75,19 +74,10 @@ fn plan_with(nodes: Vec<Value>, edges: &[&str], outputs: usize, extra: Value) ->
         .map(|index| {
             let output = format!("o{}", index);
             json!({"id": output, "accepts": {"kinds": "all", "timestamps": "mixed"},
-                   "fingerprint": PlanHash::of_bytes(output.as_bytes()).to_string(),
                    "recipients": [format!("out/{}", output)]})
         })
         .collect::<Vec<_>>();
-    let mut plan = json!({"ir_version": 1, "nodes": nodes, "edges": edges, "outputs": outputs});
-    if let (Value::Object(plan), Value::Object(extra)) = (&mut plan, extra) {
-        plan.extend(extra);
-    }
-    Plan::from_value(plan).unwrap()
-}
-
-fn plan(nodes: Vec<Value>, edges: &[&str], outputs: usize) -> Plan {
-    plan_with(nodes, edges, outputs, json!({}))
+    Plan::from_value(json!({"ir_version": 1, "nodes": nodes, "edges": edges, "outputs": outputs})).unwrap()
 }
 
 fn namer(nodes: &[NodeId]) -> Result<NativeComponentId, String> {
@@ -442,129 +432,6 @@ fn a_dead_branch_that_reaches_a_fence_is_not_removed() {
 }
 
 #[test]
-fn a_split_that_a_scope_names_is_not_folded() {
-    let nodes = vec![
-        source("src", "otlp"),
-        kernel("k"),
-        split("s", json!({"const": true})),
-        emit("yes", "o0"),
-        drop_node("no"),
-    ];
-    let edges = [
-        "src.metrics -> k.in",
-        "k.out -> s.in",
-        "s.true -> yes.in",
-        "s.false -> no.in",
-    ];
-    let unscoped = plan(nodes.clone(), &edges, 1);
-    let registry = OperatorRegistry::native();
-    let port_type = Validator::new(&registry, &catalog())
-        .validate(&unscoped)
-        .port_type(&"s.true".parse().unwrap())
-        .unwrap();
-    let scoped = plan_with(
-        nodes,
-        &edges,
-        1,
-        json!({"scopes": {"after_split": {"inputs": {"matched": "s.true"}}}}),
-    );
-    let catalog = catalog().with_scope_input("after_split".parse().unwrap(), "matched".parse().unwrap(), port_type);
-    let fixture = Fixture::with_catalog(scoped, &catalog);
-    assert!(fixture.apply().is_none());
-}
-
-/// Returns the type validation gives `port` in `plan`, which is valid without scopes.
-fn port_type_in(plan: &Plan, port: &str) -> crate::model::PortType {
-    let registry = OperatorRegistry::native();
-    Validator::new(&registry, &catalog())
-        .validate(plan)
-        .port_type(&port.parse().unwrap())
-        .unwrap()
-}
-
-#[test]
-fn nodes_and_ports_that_a_scope_names_keep_r3_from_folding() {
-    // (nodes, edges, the scope, its input, the port feeding the input): each plan folds without its scope.
-    let cases = [
-        // A node in the dead subgraph: `x`, which the scope's input names, would be removed.
-        (
-            vec![
-                source("src", "otlp"),
-                kernel("k"),
-                split("s", json!({"const": true})),
-                emit("yes", "o0"),
-                kernel("x"),
-                drop_node("no"),
-            ],
-            vec![
-                "src.metrics -> k.in",
-                "k.out -> s.in",
-                "s.true -> yes.in",
-                "s.false -> x.in",
-                "x.out -> no.in",
-            ],
-            json!({"inputs": {"after": "x.out"}}),
-            "x.out",
-        ),
-        // A merge that would keep its other input, renumbered: the scope's input names it.
-        (
-            vec![
-                source("src", "otlp"),
-                kernel("k"),
-                split("s", json!({"const": true})),
-                kernel("x"),
-                node("m", "merge", json!({"inputs": 2})),
-                emit("e", "o0"),
-            ],
-            vec![
-                "src.metrics -> k.in",
-                "k.out -> s.in",
-                "s.true -> x.in",
-                "x.out -> m.0",
-                "s.false -> m.1",
-                "m.out -> e.in",
-            ],
-            json!({"inputs": {"after": "m.out"}}),
-            "m.out",
-        ),
-        // The port the live port leads to: a scope exit enters it, and the fold would feed it from outside the scope.
-        (
-            vec![
-                source("src", "otlp"),
-                kernel("k"),
-                split("s", json!({"const": true})),
-                emit("yes", "o0"),
-                drop_node("no"),
-            ],
-            vec![
-                "src.metrics -> k.in",
-                "k.out -> s.in",
-                "s.true -> yes.in",
-                "s.false -> no.in",
-            ],
-            json!({"inputs": {"after": "k.out"}, "exits": {"done": "yes.in"}}),
-            "k.out",
-        ),
-    ];
-    for (nodes, edges, scope, input) in cases {
-        let unscoped = plan(nodes.clone(), &edges, 1);
-        assert!(
-            Fixture::new(unscoped.clone()).apply().is_some(),
-            "{} folds without its scope",
-            scope
-        );
-        let scoped = plan_with(nodes, &edges, 1, json!({"scopes": {"policy": scope}}));
-        let catalog = catalog().with_scope_input(
-            "policy".parse().unwrap(),
-            "after".parse().unwrap(),
-            port_type_in(&unscoped, input),
-        );
-        let fixture = Fixture::with_catalog(scoped, &catalog);
-        assert!(fixture.apply().is_none(), "{} must keep R3 from folding", scope);
-    }
-}
-
-#[test]
 fn a_dead_branch_that_reaches_a_state_owner_or_a_signal_reader_is_not_removed() {
     // A state owner may produce records without input, and a signal reader may change what it does at any time. Neither
     // runs in a region before stages 6 and 10, so these plans have no frame of their own: R3 proposes without looking
@@ -804,7 +671,7 @@ fn explain_lists_an_applied_fold_with_its_justification_and_telemetry() {
          \x20   justification constant: the predicate of `s` is the constant `true`, so every record leaves by `true`, \
          and `false` carries nothing; the split becomes an edge from `k.out` to `yes.in`; unreachable: `no` receives \
          records only through `s.false`, so nothing reaches it; exits stay: no source, fence, stateful or dynamic \
-         operator, scope port, or declared output is removed; capacity: not relied on; every port left carries what it \
+         operator, or declared output is removed; capacity: not relied on; every port left carries what it \
          carried, in the same order, so the plan delivers, and under any capacity bound refuses, exactly what it did\n\
          \x20   telemetry removed s: `plan_node_events_total{component_id:s}` for ports `true` and `false`: the split \
          is folded, and what its live port counted is counted at no node\n\
@@ -835,9 +702,8 @@ fn check_obligations(case: &Case, optimized: &crate::compile::Optimized) -> Resu
         place_unvalidated(&case.plan, registry, &case.frame).map_err(|error| TestCaseError::fail(error.to_string()))?;
     let (report, _) = check(&ctx, &placement, rewritten).map_err(TestCaseError::fail)?;
 
-    // Outputs and scopes never change; sources and fences stay as they were.
+    // Outputs never change; sources and fences stay as they were.
     prop_assert_eq!(&rewritten.outputs, &case.plan.outputs);
-    prop_assert_eq!(&rewritten.scopes, &case.plan.scopes);
     for node in &case.plan.nodes {
         let op = registry.configure(node.op.as_str(), &node.params).unwrap();
         if op.contract().boundary.is_fence() {

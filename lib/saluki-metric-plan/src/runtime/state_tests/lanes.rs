@@ -37,8 +37,7 @@ fn lane_plan(window: &str, op: &str) -> Plan {
             {"from": "dsd_agg.out", "to": "out.in"},
         ],
         "outputs": [{"id": OUTPUT, "accepts": {"kinds": "all", "timestamps": "mixed"},
-                     "fingerprint": PlanHash::of_bytes(OUTPUT.as_bytes()).to_string(),
-                     "recipients": [format!("out/{}", OUTPUT)]}],
+                                          "recipients": [format!("out/{}", OUTPUT)]}],
     }))
     .unwrap()
 }

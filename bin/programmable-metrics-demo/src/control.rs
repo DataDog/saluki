@@ -5,22 +5,21 @@
 //! the export in hand was fetched, when what its catalog declares may have changed while that hash stays as it is (the
 //! active generation, or the recipients the status
 //! [`EXPORT_MAX_AGE`] otherwise, so the editor's checks and the recipient directory follow configuration changes. The
-//! watcher compares the reported values with their own earlier values, never with the export's `base.program_hash`,
-//! since the protocol does not say that the two are computed alike.
+//! watcher compares the reported values with their own earlier values.
 //!
 //! The recipients every status lists go into the Recipients panel's record ([`RecipientLog`]).
 //!
 //! The default program (`GET /programmable-metrics/default-program`), which the editor composes artifacts into, is
-//! fetched with every export, and kept only if it is the program the export was taken from: its base program hash is
-//! the export's. One that is not (the configuration changed between the two requests) makes the watcher fetch both
-//! again. The active plan (`GET /programmable-metrics/plan`), which the editor diffs against, is fetched when the
+//! fetched with every export, and kept only if the export in hand was taken from it: exported in the export's form
+//! with the export's catalog, it has the export's program hash, which is also the `default_program_hash` ADP's status
+//! reports. One that is not (the configuration changed between the requests) makes the watcher fetch both again. The active plan (`GET /programmable-metrics/plan`), which the editor diffs against, is fetched when the
 //! active plan hash the status reports changes.
 //!
 //! The status is read field by field (see [`AdpStatus::read`]), and the status in hand is kept, with when it was
 //! received, when a later request fails, so that the UI can show it as last known.
 //!
-//! The default program has one scope, `metrics`, the whole metrics path after its sources: its export is the only one
-//! the watcher fetches, and the editor checks every artifact against it.
+//! The default program is the whole metrics path after its sources: the editor checks every program against its
+//! export.
 //!
 //! The lanes ADP's metrics path was laid out on at boot, which the Lanes panel shows, are read from the physical
 //! sections of the explain document (`GET /programmable-metrics/explain`) whenever the active generation ADP reports
@@ -28,14 +27,16 @@
 //! ([`ControlSurface::lane_layout`]).
 
 use std::{
+    collections::BTreeMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use saluki_metric_plan::{
     canonical::{PlanHash, ResolvedValues},
-    export::base,
-    ir::{Plan, ScopeName},
+    export::{export_as, program_hash},
+    ir::Plan,
+    operators::OperatorRegistry,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -255,7 +256,7 @@ impl ControlSurface {
             export_state: state.export_state.unwrap_or(SurfaceState::Unknown),
             export_error: state.export_error.clone(),
             export_fetched_ms: state.export_fetched_ms,
-            export_program_hash: state.export.as_ref().map(|export| export.program_hash().to_string()),
+            export_program_hash: state.export.as_ref().map(|export| export.program_hash.to_string()),
             default_program_state: state.default_program_state.unwrap_or(SurfaceState::Unknown),
             default_program_error: state.default_program_error.clone(),
             active_plan_hash: state.active_plan.as_ref().map(|(hash, _)| hash.to_string()),
@@ -315,24 +316,27 @@ impl ControlSurface {
     }
 
     /// Records the answer of the default program route, keeping the program only if the export in hand was taken from
-    /// it, and returns whether it was kept.
+    /// it, and is of the default program ADP's status reports, if it reports one; returns whether it was kept.
     ///
-    /// A program whose base differs from the export's was lowered from another configuration than the export (the
-    /// configuration changed between the two requests): it is refused, and the export is marked to be fetched again.
+    /// A program whose export is not the one in hand, or an export whose program hash is not the one the status
+    /// reports, was lowered from another configuration (the configuration changed between the requests): the program
+    /// is refused, and the export is marked to be fetched again.
     pub fn record_default_program(&self, answer: Surface<Value>) -> SurfaceState {
         let mut state = self.lock();
         let answer = answer.map(|value| {
             Plan::from_value(value).map_err(|error| format!("ADP's default program cannot be read: {}", error))
         });
         let answer = match (answer, state.export.clone()) {
-            (Surface::Available(plan), Some(export)) => match matching_base(&plan, &export) {
-                Ok(()) => Surface::Available(plan),
-                Err(error) => {
-                    // Fetched again on the next tick, with the export.
-                    state.export_reported_hash = None;
-                    Surface::Failed(error)
+            (Surface::Available(plan), Some(export)) => {
+                match matching_export(&plan, &export, state.reported_hash().as_deref()) {
+                    Ok(()) => Surface::Available(plan),
+                    Err(error) => {
+                        // Fetched again on the next tick, with the export.
+                        state.export_reported_hash = None;
+                        Surface::Failed(error)
+                    }
                 }
-            },
+            }
             (Surface::Available(_), None) => {
                 Surface::Failed("There is no export in hand to match the default program with.".to_string())
             }
@@ -506,28 +510,41 @@ impl ControlSurface {
     }
 }
 
-/// Checks that `plan` is the default program `export` was taken from: its base program hash is the export's.
-fn matching_base(plan: &Plan, export: &ExportBundle) -> Result<(), String> {
-    let scope = ScopeName::new(export.scope.as_str())
-        .map_err(|error| format!("The export's scope `{}` is not a scope name: {}", export.scope, error))?;
-    let base = base(plan, &scope)
-        .map_err(|error| format!("ADP's default program cannot be checked against its export: {}", error))?;
-    if &base.program_hash == export.program_hash() {
-        Ok(())
-    } else {
-        Err(format!(
-            "ADP's default program has base {}, but the export in hand was taken from {}: the configuration changed \
-             between the two requests. Both are fetched again.",
-            base.program_hash,
-            export.program_hash()
-        ))
+/// Checks that `export` was taken from `plan`, the default program: exported in the export's form with its catalog, the
+/// plan has the export's program hash. Checks too that it is of the default program ADP's status reports, `reported`,
+/// if it reports one.
+fn matching_export(plan: &Plan, export: &ExportBundle, reported: Option<&str>) -> Result<(), String> {
+    let unchecked = |error: String| format!("ADP's default program cannot be checked against its export: {}", error);
+    let bundle = export_as(
+        plan,
+        &export.catalog,
+        &BTreeMap::new(),
+        export.form,
+        &OperatorRegistry::native(),
+    )
+    .map_err(|error| unchecked(error.to_string()))?;
+    let exported = program_hash(&bundle.artifact).map_err(|error| unchecked(error.to_string()))?;
+    if exported != export.program_hash {
+        return Err(format!(
+            "ADP's default program exports as {}, but the export in hand is of {}: the configuration changed between \
+             the two requests. Both are fetched again.",
+            exported, export.program_hash
+        ));
+    }
+    match reported {
+        Some(reported) if reported != export.program_hash.to_string() => Err(format!(
+            "ADP's status reports the default program {}, but the export in hand is of {}: the configuration changed \
+             since it was fetched. Both are fetched again.",
+            reported, export.program_hash
+        )),
+        _ => Ok(()),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{export::tests::DEMO_EXPORT, stub::protocol::POLICY_SCOPE};
+    use crate::export::tests::DEMO_EXPORT;
 
     fn status(default_program_hash: &str) -> Value {
         serde_json::json!({ "default_program_hash": default_program_hash })
@@ -587,6 +604,23 @@ mod tests {
         assert_eq!(control.record_default_program(program()), SurfaceState::Failed);
         assert!(control.export_with_default_program().is_none());
 
+        // An export of another default program than the one ADP's status reports was taken from another
+        // configuration: the program is refused, and both are fetched again.
+        let Surface::Available(read) = control.record_export(Surface::Available(export.clone()), 1_000) else {
+            panic!("the fixture's export reads");
+        };
+        let other = format!("sha256:{}", "e".repeat(64));
+        control.record_status(Surface::Available(status(&other)), 1_000);
+        assert_eq!(control.record_default_program(program()), SurfaceState::Failed);
+        assert!(control
+            .view()
+            .default_program_error
+            .unwrap()
+            .contains("the configuration changed"));
+        assert!(control.export_wanted(1_000));
+
+        // The export of the default program the status reports: the program is kept.
+        control.record_status(Surface::Available(status(&read.program_hash.to_string())), 1_000);
         control.record_export(Surface::Available(export), 1_000);
         assert_eq!(control.record_default_program(program()), SurfaceState::Available);
         let (_, default_program) = control.export_with_default_program().unwrap();
@@ -625,15 +659,15 @@ mod tests {
         assert!(!control.export_wanted(10_000 + EXPORT_RETRY - 1));
         assert!(control.export_wanted(10_000 + EXPORT_RETRY));
 
-        // ADP reports a default program hash computed otherwise than the export's base hash: that alone is no reason
-        // to fetch again, only a change of the reported hash is.
+        // ADP reports another default program hash than the export's: that alone is no reason to fetch again, only a
+        // change of the reported hash is.
         let reported = format!("sha256:{}", "b".repeat(64));
         control.record_status(Surface::Available(status(&reported)), 19_500);
         let exported = control.record_export(Surface::Available(serde_json::from_str(DEMO_EXPORT).unwrap()), 20_000);
         let Surface::Available(export) = exported else {
             panic!("the demo export reads: {:?}", exported.state());
         };
-        assert_ne!(export.program_hash().to_string(), reported);
+        assert_ne!(export.program_hash.to_string(), reported);
         control.record_status(Surface::Available(status(&reported)), 20_500);
         assert!(!control.export_wanted(21_000));
         assert!(control.export_wanted(20_000 + EXPORT_MAX_AGE));
@@ -708,15 +742,6 @@ mod tests {
             (view.recipients[0].state.as_str(), view.recipients[0].queue_bytes),
             ("active", Some(512))
         );
-    }
-
-    #[test]
-    fn the_export_route_names_the_default_programs_one_scope() {
-        assert_eq!(
-            routes::EXPORT,
-            format!("/programmable-metrics/export?scope={}", POLICY_SCOPE)
-        );
-        assert_eq!(POLICY_SCOPE, "metrics");
     }
 
     #[test]

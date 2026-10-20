@@ -51,8 +51,8 @@ use super::*;
 use crate::{
     internal::ConfigUpdatesWorker,
     programmable_metrics::{
-        catalog::METRICS_SCOPE,
-        channel_stub::{ClientInfo, StubChannelConfig, StubChannelWorker, POLL_PATH},
+        channel_stub::{ClientInfo, StubChannelConfig, StubChannelWorker, POLL_PATH, PROTOCOL_VERSION},
+        resources::DSD_CLIENT_TELEMETRY,
         test_support::{connected_configuration_system, facts},
         test_topology::{Aggregation, Delivery, MetricsPath, Options, TestTopology, PATIENCE},
     },
@@ -71,7 +71,8 @@ const MAIN: &str = "dd_metrics_encode";
 /// The routing group's output, which the default program sends `orders.total` to.
 const ROUTED: &str = "metrics_routing_encode_0";
 
-/// The DogStatsD client telemetry tap, which receives every DogStatsD metric ahead of the policy region.
+/// The DogStatsD client telemetry tap, which receives every DogStatsD metric after the post-aggregation filter, ahead of
+/// the policy.
 const TAP: &str = "dsd_client_telemetry_out";
 
 /// A family no artifact in these tests touches: under every policy, it reaches the main output and the tap, and no
@@ -509,13 +510,19 @@ impl Finished {
             .collect()
     }
 
-    /// Checks every batch but those in `lost` against what the policy of the generation that processed it delivers,
-    /// `routing(generation)`: at every output, each point of the batch it includes arrived exactly once, with that
-    /// generation, and no point it excludes arrived.
+    /// Checks every batch against what the policy of the generation that processed it delivers, `routing(generation)`:
+    /// at every output, each point of the batch it includes arrived exactly once, with that generation, and no point it
+    /// excludes arrived.
+    fn check(&self, routing: impl Fn(u64) -> Routing) {
+        self.check_lost(&BTreeSet::new(), false, routing);
+    }
+
+    /// Checks every batch but those in `lost` as [`check`][Self::check] does.
     ///
-    /// A batch in `lost` was lost to a panic in the policy region: only the tap, which a region of its own feeds ahead
-    /// of the policy region, received it, each point exactly once.
-    fn check(&self, lost: &BTreeSet<usize>, routing: impl Fn(u64) -> Routing) {
+    /// A batch in `lost` was lost to a panic in a region of the program: the region discards everything the call that
+    /// panicked wrote, so no output received it, but the tap if `tapped`, when the tap's `emit` runs in another region,
+    /// ahead of the one that panicked ([`tap_apart_from`]): the tap then received each point exactly once.
+    fn check_lost(&self, lost: &BTreeSet<usize>, tapped: bool, routing: impl Fn(u64) -> Routing) {
         let outputs = self
             .arrivals
             .keys()
@@ -531,8 +538,14 @@ impl Finished {
                     .collect::<Vec<_>>();
                 assert!(arrived.is_empty(), "batch {} was lost, but arrived: {:?}", seq, arrived);
                 for name in names {
-                    let tapped = self.arrivals.get(&(TAP.to_string(), name.to_string(), seq));
-                    assert_eq!(tapped.map(Vec::len), Some(1), "batch {}: `{}` at the tap", seq, name);
+                    let at_tap = self.arrivals.get(&(TAP.to_string(), name.to_string(), seq));
+                    assert_eq!(
+                        at_tap.map(Vec::len),
+                        tapped.then_some(1),
+                        "batch {}: `{}` at the tap",
+                        seq,
+                        name
+                    );
                 }
                 continue;
             }
@@ -670,8 +683,7 @@ impl Lifecycle {
         })
         .await;
         let status = topology.status().expect("the plan-driven path has an installer");
-        let scope = ScopeName::new(METRICS_SCOPE).unwrap();
-        let bundle = status.load().exports[&scope].clone().expect("the scope exports");
+        let bundle = status.load().export.clone().expect("the default program exports");
         let export = serde_json::to_value(&bundle.artifact).unwrap();
         let transport = connected.lock().unwrap().take();
         Self {
@@ -802,6 +814,39 @@ async fn routing_catalog() -> AdpCatalog {
 }
 
 // Reading the status.
+
+/// Returns whether the active generation of `status` runs every `emit` to the tap in another region than `node`: only
+/// then does the tap still receive a batch that `node` panics on. Which nodes share a region is the frame's choice,
+/// which R1's cost model makes at boot: a cheap enough post-aggregation filter, which feeds the tap, fuses with
+/// enrichment and the policy, and so does the tap's `emit`.
+fn tap_apart_from(status: &PlanStatus, node: &str) -> bool {
+    let active = status.active.as_ref().expect("a generation is active");
+    let physical = active
+        .explain
+        .physical
+        .as_ref()
+        .expect("the active generation is placed");
+    let region_of = |id: &str| {
+        physical
+            .slots
+            .iter()
+            .find(|slot| slot.nodes.iter().any(|node| node.to_string() == id))
+            .map(|slot| slot.name.clone())
+            .unwrap_or_else(|| panic!("node `{}` runs in no region", id))
+    };
+    let tap = active
+        .explain
+        .graph
+        .outputs
+        .iter()
+        .find(|output| output.id.to_string() == DSD_CLIENT_TELEMETRY)
+        .expect("the plan declares the tap");
+    assert!(!tap.emitted_by.is_empty(), "nothing emits to the tap");
+    let panics_in = region_of(node);
+    tap.emitted_by
+        .iter()
+        .all(|emit| region_of(&emit.to_string()) != panics_in)
+}
 
 fn active(status: &PlanStatus) -> Option<u64> {
     status.installer.active.as_ref().map(|active| active.id.get())
@@ -958,7 +1003,7 @@ async fn continuous_input_across_a_series_of_real_artifacts_delivers_every_point
     let mut order = finished.generations();
     order.dedup();
     assert_eq!(order, [1, 2, 3, 4, 5, 6]);
-    finished.check(&BTreeSet::new(), |generation| match generation {
+    finished.check(|generation| match generation {
         1 | 2 | 5 => default_routing(),
         3 | 6 => routing(&FAMILIES, &[APP]),
         4 => routing(&[KEPT, ORDERS, APP], &[APP]),
@@ -974,10 +1019,7 @@ async fn after_a_restart_the_default_program_runs_until_the_channel_delivers_aga
     first.deliver(snapshot.clone());
     let installed = first.status_where(|status| active(status) == Some(2)).await;
     assert_eq!(first.send().await, Some(2));
-    first
-        .finish()
-        .await
-        .check(&BTreeSet::new(), |_| routing(&FAMILIES, &[APP]));
+    first.finish().await.check(|_| routing(&FAMILIES, &[APP]));
 
     // A new process starts with new installer state: until the channel delivers, nothing has been seen, which is what
     // it reports, and the default program runs.
@@ -1011,7 +1053,7 @@ async fn after_a_restart_the_default_program_runs_until_the_channel_delivers_aga
     let mut order = finished.generations();
     order.dedup();
     assert_eq!(order, [1, 2]);
-    finished.check(&BTreeSet::new(), |generation| match generation {
+    finished.check(|generation| match generation {
         1 => default_routing(),
         _ => routing(&FAMILIES, &[APP]),
     });
@@ -1078,7 +1120,7 @@ async fn a_restarted_installer_worker_keeps_the_high_water_mark_and_the_acknowle
     coordinator.shutdown();
     tokio::time::timeout(PATIENCE, second).await.unwrap().unwrap();
     let finished = harness.finish().await;
-    finished.check(&BTreeSet::new(), |generation| match generation {
+    finished.check(|generation| match generation {
         2 => routing(&FAMILIES, &[APP]),
         3 => routing(&[KEPT, ORDERS, APP], &[ORDERS]),
         other => panic!("generation {} processed a batch", other),
@@ -1178,52 +1220,38 @@ async fn stale_revisions_are_rejected_and_a_redelivery_or_a_reapproval_acknowled
         assert_eq!(harness.send().await, Some(2));
     }
     let finished = harness.finish().await;
-    finished.check(&BTreeSet::new(), |_| routing(&FAMILIES, &[APP]));
+    finished.check(|_| routing(&FAMILIES, &[APP]));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_artifact_on_a_stale_base_or_review_runs_and_is_reported_stale() {
+async fn an_artifact_approved_against_another_plan_runs_and_is_reported_a_stale_review() {
     let mut harness = Lifecycle::start().await;
     let route_change = route(&harness.export, "app.");
     let family_drop = drop_family(&harness.export, "drop_debug", "debug.");
 
-    // An artifact whose base program hash is not the current export's, as one derived from an earlier export: it
-    // installs, and runs reported stale.
-    let mut stale_base = route_change.clone();
-    stale_base["base"]["program_hash"] = json!(PlanHash::of_bytes(b"an earlier default program"));
-    harness.deliver(vec![config(1, &stale_base)]);
-    let installed = harness.status_where(|status| active(status) == Some(2)).await;
-    let summary = &installed.apply_states.status;
-    assert_eq!((summary.stale_base, summary.stale_review), (true, false));
-    assert_eq!(
-        ack_of(&installed, CONFIG_ID),
-        Some((ApplyState::Active, Some(1), Some(2)))
-    );
-    assert!(installed.to_string().contains(", stale base"), "{}", installed);
+    // An artifact approved against the plan that runs: its review is not stale.
+    let running = harness.status.load().installer.active.as_ref().unwrap().plan_hash;
+    harness.deliver(vec![config_with(CONFIG_ID, 1, &family_drop, Some(running))]);
+    let fresh = harness.status_where(|status| active(status) == Some(2)).await;
+    assert!(!fresh.apply_states.status.stale_review);
+    assert_eq!(ack_of(&fresh, CONFIG_ID), Some((ApplyState::Active, Some(1), Some(2))));
+    assert!(!fresh.to_string().contains("stale"), "{}", fresh);
     assert_eq!(harness.send().await, Some(2));
-
-    // An artifact on the current base, approved against the plan that runs: neither is stale.
-    let running = installed.installer.active.as_ref().unwrap().plan_hash;
-    harness.deliver(vec![config_with(CONFIG_ID, 2, &family_drop, Some(running))]);
-    let fresh = harness.status_where(|status| active(status) == Some(3)).await;
-    let summary = &fresh.apply_states.status;
-    assert_eq!((summary.stale_base, summary.stale_review), (false, false));
-    assert_eq!(harness.send().await, Some(3));
 
     // An artifact approved against another plan than the one that ran when it arrived: it installs, with its review
     // reported stale.
     let elsewhere = PlanHash::of_bytes(b"a plan the approver saw elsewhere");
-    harness.deliver(vec![config_with(CONFIG_ID, 3, &route_change, Some(elsewhere))]);
-    let reviewed = harness.status_where(|status| active(status) == Some(4)).await;
+    harness.deliver(vec![config_with(CONFIG_ID, 2, &route_change, Some(elsewhere))]);
+    let reviewed = harness.status_where(|status| active(status) == Some(3)).await;
     let summary = &reviewed.apply_states.status;
-    assert_eq!((summary.stale_base, summary.stale_review), (false, true));
+    assert!(summary.stale_review);
     assert_eq!(summary.degraded, None);
     assert!(reviewed.to_string().contains(", stale review"), "{}", reviewed);
-    assert_eq!(harness.send().await, Some(4));
+    assert_eq!(harness.send().await, Some(3));
     let finished = harness.finish().await;
-    finished.check(&BTreeSet::new(), |generation| match generation {
-        2 | 4 => routing(&FAMILIES, &[APP]),
-        3 => routing(&[KEPT, ORDERS, APP], &[ORDERS]),
+    finished.check(|generation| match generation {
+        2 => routing(&[KEPT, ORDERS, APP], &[ORDERS]),
+        3 => routing(&FAMILIES, &[APP]),
         other => panic!("generation {} processed a batch", other),
     });
 }
@@ -1244,21 +1272,6 @@ struct Refused {
 
     /// Whether it is authentic, so that its revision moves the high-water mark although it is refused.
     authentic: bool,
-}
-
-/// Returns `artifact` with the base's fingerprint of `output` set to `fingerprint`, or removed.
-fn with_fingerprint(artifact: &Value, output: &str, fingerprint: Option<PlanHash>) -> Value {
-    // The detached export addresses native outputs to their recipients, which records no fingerprint: the emit to
-    // `output` names it, as an artifact written against the output does.
-    let mut artifact = addressed_to_output(artifact, output);
-    let outputs = artifact["base"]["outputs"]
-        .as_object_mut()
-        .expect("the base records outputs");
-    match fingerprint {
-        Some(fingerprint) => outputs.insert(output.to_string(), json!(fingerprint)),
-        None => outputs.remove(output),
-    };
-    artifact
 }
 
 /// Returns `artifact` with its `emit` to the output `output` addressed to the output by its ID, rather than to its
@@ -1284,25 +1297,38 @@ fn addressed_to_output(artifact: &Value, output: &str) -> Value {
 fn refused() -> Vec<Refused> {
     vec![
         Refused {
-            what: "an output whose fingerprint is not the one the host declares",
+            what: "an emit to an output the host does not declare",
             configs: |export, revision| {
-                let other = PlanHash::of_bytes(b"the output as bound elsewhere");
-                vec![config(revision, &with_fingerprint(export, MAIN, Some(other)))]
+                let mut artifact = addressed_to_output(export, ROUTED);
+                let emit = nodes(&mut artifact)
+                    .iter_mut()
+                    .find(|node| node["id"] == "metrics_routing_filter_0_true")
+                    .expect("the routing group's emit");
+                emit["params"] = json!({"output": "gone_encode"});
+                vec![config(revision, &artifact)]
             },
             error: |_, _| {
-                "The artifact emits to output `dd_metrics_encode`, which now delivers elsewhere than the artifact's \
-                 base records. Rebase the artifact on the current export."
+                "Artifact node `metrics_routing_filter_0_true` emits to output `gone_encode`, which the host does not \
+                 declare. Emit to one of the outputs it declares: `dsd_client_telemetry`, `dd_metrics_encode`, \
+                 `metrics_routing_encode_0`."
                     .to_string()
             },
             read: true,
             authentic: true,
         },
         Refused {
-            what: "an output the base does not record",
-            configs: |export, revision| vec![config(revision, &with_fingerprint(export, ROUTED, None))],
+            what: "an edge from a source the host does not have",
+            configs: |export, revision| {
+                let mut artifact = export.clone();
+                edges(&mut artifact)
+                    .iter_mut()
+                    .find(|edge| edge["from"] == "input.dogstatsd")
+                    .expect("the export reads DogStatsD's source")["from"] = json!("input.statsd");
+                vec![config(revision, &artifact)]
+            },
             error: |_, _| {
-                "Artifact node `metrics_routing_filter_0_true` emits to output `metrics_routing_encode_0`, which the \
-                 artifact's base does not record. Add the output's fingerprint from the export to `base.outputs`."
+                "The artifact reads `input.statsd`, and the host has no source `statsd`. Read one of its sources: \
+                 `input.dogstatsd`."
                     .to_string()
             },
             read: true,
@@ -1435,22 +1461,6 @@ fn refused() -> Vec<Refused> {
             read: true,
             authentic: false,
         },
-        Refused {
-            what: "a snapshot of two configs for one scope",
-            configs: |export, revision| {
-                vec![
-                    config(revision, export),
-                    config_with("other", revision, &route(export, "app."), None),
-                ]
-            },
-            error: |_, _| {
-                "the policy snapshot holds 2 configs (`demo`, `other`) for scope `metrics`, but one artifact \
-                 replaces a scope: every config for it is rejected until the snapshot holds one"
-                    .to_string()
-            },
-            read: false,
-            authentic: false,
-        },
     ]
 }
 
@@ -1531,61 +1541,11 @@ async fn deliveries_the_core_refuses_are_acknowledged_with_the_reason_and_leave_
             assert_eq!(harness.send().await, Some(running), "{}", context);
         }
     }
-    // Both configs of the snapshot of two were rejected, the last time while the artifact ran.
-    let last = harness.status.load_full();
-    assert_eq!(ack(&last, "other").map(|ack| ack.state), Some(ApplyState::Rejected));
     let finished = harness.finish().await;
-    finished.check(&BTreeSet::new(), |generation| match generation {
+    finished.check(|generation| match generation {
         1 => default_routing(),
         _ => routing(&FAMILIES, &[APP]),
     });
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_delivery_whose_recorded_output_is_not_declared_waits_for_it_and_leaves_what_runs() {
-    let mut harness = Lifecycle::start().await;
-    let mut artifact = with_fingerprint(&harness.export, "gone_encode", Some(PlanHash::of_bytes(b"gone")));
-    let emit = nodes(&mut artifact)
-        .iter_mut()
-        .find(|node| node["id"] == "metrics_routing_filter_0_true")
-        .expect("the routing group's emit");
-    emit["params"] = json!({"output": "gone_encode"});
-    harness.deliver(vec![config(1, &artifact)]);
-    // A new artifact whose base records an output the host does not declare waits for it: its revision is seen, and
-    // what runs keeps running.
-    let waiting = harness
-        .status_where(|status| {
-            ack(status, CONFIG_ID).is_some_and(|ack| ack.version == 1 && ack.state == ApplyState::Pending)
-        })
-        .await;
-    let acknowledged = ack(&waiting, CONFIG_ID).unwrap();
-    assert_eq!(
-        (
-            acknowledged.revision,
-            acknowledged.generation,
-            acknowledged.error.as_deref()
-        ),
-        (
-            Some(1),
-            None,
-            Some(
-                "waiting for output `gone_encode`: the artifact's base records it, and the host does not declare \
-                 it; the artifact is installed once the output is declared"
-            )
-        )
-    );
-    assert_eq!(
-        (
-            active(&waiting),
-            active_revision(&waiting),
-            waiting.installer.revision_high_water
-        ),
-        (Some(1), None, Some(1))
-    );
-    assert!(waiting.installer.preparing.is_none() && record(&waiting, 2).is_none());
-    assert_eq!(harness.send().await, Some(1));
-    let finished = harness.finish().await;
-    finished.check(&BTreeSet::new(), |_| default_routing());
 }
 
 /// How an in-process stub server answers a poll: a status and a body.
@@ -1644,7 +1604,7 @@ impl Stub {
             .collect::<Vec<_>>();
         self.answer(
             200,
-            json!({"protocol_version": 1, "products": {"policy": configs}}).to_string(),
+            json!({"protocol_version": PROTOCOL_VERSION, "products": {"policy": configs}}).to_string(),
         );
     }
 
@@ -1713,10 +1673,10 @@ async fn the_stub_worker_installs_what_the_stub_serves_and_keeps_it_through_tran
     let failures: [StubAnswer; 4] = [
         (500, "the stub failed".to_string()),
         (200, "not JSON".to_string()),
-        (200, json!({"protocol_version": 1}).to_string()),
+        (200, json!({"protocol_version": PROTOCOL_VERSION}).to_string()),
         (
             200,
-            json!({"protocol_version": 2, "products": {"policy": []}}).to_string(),
+            json!({"protocol_version": PROTOCOL_VERSION + 1, "products": {"policy": []}}).to_string(),
         ),
     ];
     for (status, body) in failures {
@@ -1746,7 +1706,7 @@ async fn the_stub_worker_installs_what_the_stub_serves_and_keeps_it_through_tran
     assert!(matches!(active_origin(&revoked), Some(Origin::DefaultProgram { .. })));
     assert_eq!(harness.send().await, Some(3));
     let finished = harness.finish().await;
-    finished.check(&BTreeSet::new(), |generation| match generation {
+    finished.check(|generation| match generation {
         2 => routing(&FAMILIES, &[APP]),
         _ => default_routing(),
     });
@@ -1813,9 +1773,9 @@ impl ArtifactPaths for NativeFault {
     }
 
     fn apply_states(
-        &self, core: &InstallerCore, bases: &BTreeMap<ScopeName, PlanHash>, degraded: Option<String>,
+        &self, core: &InstallerCore, default_program_hash: Option<PlanHash>, degraded: Option<String>,
     ) -> ApplyStates {
-        core.apply_states_with_bases(bases, degraded)
+        core.apply_states(default_program_hash, degraded)
     }
 }
 
@@ -1842,6 +1802,9 @@ async fn an_artifact_that_panics_falls_back_to_last_known_good_and_then_to_the_d
     );
     assert_eq!(harness.send().await, Some(3));
     let mut lost = BTreeSet::new();
+    // Whether a batch lost to a panic in the artifact's node still reaches the tap; the first artifact, which differs
+    // only in what it panics on, runs where the second does.
+    let tapped = tap_apart_from(&installed, "policy/faulty");
 
     // Within its panic budget, the second artifact's generation survives each panic: the region loses the batch that
     // panicked, as a native component's restart would, rebuilds its kernels, and processes the next batch.
@@ -1868,6 +1831,7 @@ async fn an_artifact_that_panics_falls_back_to_last_known_good_and_then_to_the_d
         (active_revision(&rolled_back), rolled_back.installer.revision_high_water),
         (Some(1), Some(2))
     );
+    assert_eq!(tap_apart_from(&rolled_back, "policy/faulty"), tapped);
     // The first artifact passes what the second panicked on.
     assert_eq!(harness.send_names(&[KEPT, PANIC_B]).await, Some(2));
 
@@ -1924,10 +1888,10 @@ async fn an_artifact_that_panics_falls_back_to_last_known_good_and_then_to_the_d
     assert!(reached.is_empty(), "the fatal batch reached {:?}", reached);
     finished.sent.truncate(fatal);
 
-    // Every batch before the fatal one arrived exactly once, but those lost to the panics, which only the tap, ahead of
-    // the policy region, received.
+    // Every batch before the fatal one arrived exactly once, but those lost to the panics, which no output received but
+    // the tap, if it runs apart from the region that panicked.
     let everything = [KEPT, ORDERS, APP, DEBUG, PANIC_A, PANIC_B];
-    finished.check(&lost, |_| {
+    finished.check_lost(&lost, tapped, |_| {
         BTreeMap::from([
             (MAIN, everything.into_iter().collect()),
             (ROUTED, BTreeSet::from([ORDERS])),
@@ -1953,8 +1917,8 @@ struct WithNativeFault<'a> {
 }
 
 impl Composer for WithNativeFault<'_> {
-    fn compose_all(&self, artifacts: &[(&ReceivedArtifact, &Approval)]) -> Result<Composed, ComposeError> {
-        let composed = self.composer.compose_all(artifacts)?;
+    fn compose(&self, artifact: &ReceivedArtifact, approval: &Approval) -> Result<Composed, ComposeError> {
+        let composed = self.composer.compose(artifact, approval)?;
         let mut plan = serde_json::to_value(&composed.plan).unwrap();
         let node = json!({
             "id": "native_fault", "op": "test_panic", "params": {"on": PANIC_NATIVE}
@@ -1992,9 +1956,9 @@ impl ArtifactPaths for NativeFaultBesideArtifacts {
     }
 
     fn apply_states(
-        &self, core: &InstallerCore, bases: &BTreeMap<ScopeName, PlanHash>, degraded: Option<String>,
+        &self, core: &InstallerCore, default_program_hash: Option<PlanHash>, degraded: Option<String>,
     ) -> ApplyStates {
-        core.apply_states_with_bases(bases, degraded)
+        core.apply_states(default_program_hash, degraded)
     }
 }
 
@@ -2029,12 +1993,15 @@ async fn a_native_node_that_panics_beside_an_artifact_is_the_programs_and_charge
         ack_of(&running, CONFIG_ID),
         Some((ApplyState::Active, Some(1), Some(2)))
     );
+    // Both nodes run in one region, so the tap runs apart from both or from neither.
+    let tapped = tap_apart_from(&running, "policy/faulty");
+    assert_eq!(tap_apart_from(&running, "native_fault"), tapped);
 
-    // Every batch arrived exactly once, as the artifact delivers it, but the two lost to panics, which only the tap,
-    // ahead of the policy region, received.
+    // Every batch arrived exactly once, as the artifact delivers it, but the two lost to panics, which no output
+    // received but the tap, if it runs apart from the region that panicked.
     let finished = harness.finish().await;
     let everything = [KEPT, ORDERS, APP, DEBUG, PANIC_NATIVE, PANIC_A];
-    finished.check(&lost, |generation| match generation {
+    finished.check_lost(&lost, tapped, |generation| match generation {
         2 => BTreeMap::from([
             (MAIN, BTreeSet::from([KEPT, ORDERS, APP])),
             (ROUTED, BTreeSet::from([ORDERS])),
@@ -2163,7 +2130,7 @@ async fn a_hundred_installs_leave_health_accounting_metric_series_and_acknowledg
         Some(2.0)
     );
     let finished = harness.finish().await;
-    finished.check(&BTreeSet::new(), |generation| match generation % 2 {
+    finished.check(|generation| match generation % 2 {
         // Generation `install + 1` runs install `install`: odd installs drop `debug.noise`, even ones `app.requests`.
         0 => routing(&[KEPT, ORDERS, APP], &[ORDERS]),
         _ => routing(&[KEPT, ORDERS, DEBUG], &[ORDERS]),
@@ -2230,11 +2197,10 @@ async fn start_clocked_on(mut options: Options, config: &'static str) -> (Lifecy
     (lifecycle, clock)
 }
 
-/// Returns the export of the `metrics` scope with aggregation over `window`, and the timestamp split before it with the
-/// same window, as validation requires; it flushes only at the end of input, as clocked aggregation does.
+/// Returns the export of the default program with aggregation over `window`, and the timestamp split before it with
+/// the same window, as validation requires; it flushes only at the end of input, as clocked aggregation does.
 fn aggregation_over(status: &PlanStatus, window: &str) -> Value {
-    let scope = ScopeName::new(METRICS_SCOPE).unwrap();
-    let bundle = status.exports[&scope].clone().expect("the scope exports");
+    let bundle = status.export.clone().expect("the default program exports");
     let mut artifact = serde_json::to_value(&bundle.artifact).unwrap();
     for node in nodes(&mut artifact) {
         match node["id"].as_str() {
@@ -2373,30 +2339,11 @@ async fn an_artifact_that_changes_aggregations_window_installs_at_a_cut_and_ever
         .status_where(|status| active(status) == Some(2) && status.installer.cut.is_none())
         .await;
 
-    // The status names the scope's base program hash, that of its export, and the artifact active in it, which the
-    // top-level members describe too.
-    let scopes = &installed.apply_states.status.scopes;
-    for (scope, bundle) in &installed.exports {
-        let bundle = bundle.as_ref().expect("every scope exports");
-        assert_eq!(
-            scopes.get(scope).and_then(|status| status.default_program_hash),
-            Some(bundle.artifact.base.program_hash),
-            "{}",
-            scope
-        );
-    }
-    let active_in = |scope: &str| {
-        let scope = ScopeName::new(scope).unwrap();
-        scopes[&scope]
-            .active_artifact
-            .as_ref()
-            .map(|artifact| artifact.revision)
-    };
-    assert_eq!(active_in(METRICS_SCOPE), Some(1));
-    assert_eq!(scopes.len(), 1);
+    // The status names the program hash of the default program's export, and the artifact active.
+    let bundle = installed.export.as_ref().expect("the default program exports");
     assert_eq!(
         installed.apply_states.status.default_program_hash,
-        scopes[&ScopeName::new(METRICS_SCOPE).unwrap()].default_program_hash
+        Some(saluki_metric_plan::export::program_hash(&bundle.artifact).unwrap())
     );
     assert_eq!(
         installed
@@ -2754,10 +2701,9 @@ fn native_fault_before_aggregation(plan: &mut Value) {
     in_front_of(plan, "dsd_no_agg_split.in", node, "out");
 }
 
-/// Returns the export of the `metrics` scope, as the status serves it.
+/// Returns the export of the default program, as the status serves it.
 fn metrics_export(status: &PlanStatus) -> Value {
-    let scope = ScopeName::new(METRICS_SCOPE).unwrap();
-    let bundle = status.exports[&scope].clone().expect("the scope exports");
+    let bundle = status.export.clone().expect("the default program exports");
     serde_json::to_value(&bundle.artifact).unwrap()
 }
 
@@ -2819,7 +2765,7 @@ async fn on_producer_lanes_a_native_nodes_panic_in_one_lane_ends_it_and_fails_it
     assert!(reached.is_empty(), "the fatal batch reached {:?}", reached);
     // Every batch before it arrived exactly once, as the default program delivers it, from every lane.
     finished.sent.truncate(fatal);
-    finished.check(&BTreeSet::new(), |_| default_routing());
+    finished.check(|_| default_routing());
     let generations = finished.generations();
     assert!(generations[first..].iter().all(|generation| *generation == 2));
 }
@@ -3046,11 +2992,10 @@ async fn on_two_state_lanes_a_state_owner_panic_under_an_artifact_loses_only_its
     );
 }
 
-/// Returns the export of the `metrics` scope with aggregation over `window`, and the timestamp split before it with the
-/// same window, flushing on its interval, for a run that keeps flushing.
+/// Returns the export of the default program with aggregation over `window`, and the timestamp split before it with
+/// the same window, flushing on its interval, for a run that keeps flushing.
 fn aggregation_flushing_over(status: &PlanStatus, window: &str) -> Value {
-    let scope = ScopeName::new(METRICS_SCOPE).unwrap();
-    let bundle = status.exports[&scope].clone().expect("the scope exports");
+    let bundle = status.export.clone().expect("the default program exports");
     let mut artifact = serde_json::to_value(&bundle.artifact).unwrap();
     for node in nodes(&mut artifact) {
         if matches!(node["id"].as_str(), Some("dsd_agg" | "dsd_no_agg_split")) {

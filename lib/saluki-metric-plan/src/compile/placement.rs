@@ -529,8 +529,8 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
             } else {
                 "its host component keeps receiving records straight from another host"
             };
-            // A composed candidate leaves a host component out because an artifact replaced the scope holding it; a
-            // default program, because native configuration no longer has it.
+            // A composed candidate leaves a host component out because the program does not hold it; a default
+            // program, because native configuration no longer has it.
             let asked = if plan
                 .provenance
                 .as_ref()

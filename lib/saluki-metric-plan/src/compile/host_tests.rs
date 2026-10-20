@@ -155,13 +155,9 @@ fn an_idle_host_gets_its_exits_so_an_output_bound_to_it_later_places_without_a_r
     assert!(exits(&frame, "dsd_agg").iter().all(|(name, _)| name != "spare_encode"));
 
     // The autoscaling failover output bound to the spare host later places, as a lease there.
-    let spare = HostId::new("spare_out").unwrap();
     let moved = bound(|value| {
         let output = output_mut(value, "af_metrics_encode");
         output["binding"]["host"] = json!("spare_out");
-        let selector = serde_json::from_value(output["binding"]["selector"].clone()).unwrap();
-        let accepts = serde_json::from_value(output["accepts"].clone()).unwrap();
-        output["fingerprint"] = json!(crate::resources::fingerprint(&spare, accepts, &selector));
         output["recipients"] = json!(["spare_out/primary/0"]);
         value["resources"]["recipients"].as_array_mut().unwrap().push(json!({
             "id": "spare_out/primary/0", "host": "spare_out", "endpoint": "https://spare.example.com",
@@ -173,7 +169,6 @@ fn an_idle_host_gets_its_exits_so_an_output_bound_to_it_later_places_without_a_r
         af.id.clone(),
         crate::validate::CatalogOutput {
             accepts: af.accepts,
-            fingerprint: af.fingerprint,
             recipients: af.recipients.clone(),
         },
     );
@@ -276,7 +271,6 @@ fn a_new_or_rebound_output_on_a_frame_host_places_as_a_lease_with_no_new_structu
         OutputId::new("dd_metrics_encode").unwrap(),
         crate::validate::CatalogOutput {
             accepts: crate::model::PortType::ANY,
-            fingerprint: rebound.outputs[1].fingerprint,
             recipients: rebound.outputs[1].recipients.clone(),
         },
     );
@@ -287,13 +281,11 @@ fn a_new_or_rebound_output_on_a_frame_host_places_as_a_lease_with_no_new_structu
     // of `dd_out`'s encode host, by the enrichment slot's exit to it, which writes the implied output's lease.
     let recipient = "dd_out/additional_3/0";
     let selector = crate::ir::Selector::Recipients(vec![recipient.parse().unwrap()]);
-    let fingerprint =
-        crate::resources::fingerprint(&HostId::new("dd_out").unwrap(), crate::model::PortType::ANY, &selector);
     let routed = bound(|value| {
         node_mut(value, "metrics_fanout_0")["params"]["output"] = json!("implied_to_own");
         value["outputs"].as_array_mut().unwrap().push(json!({
             "id": "implied_to_own", "accepts": {"kinds": "all", "timestamps": "mixed"},
-            "fingerprint": fingerprint, "recipients": [recipient],
+            "recipients": [recipient],
             "binding": {"host": "dd_out", "selector": selector, "telemetry": "implied_to_own"},
         }));
         value["resources"]["recipients"].as_array_mut().unwrap().push(json!({
@@ -305,7 +297,6 @@ fn a_new_or_rebound_output_on_a_frame_host_places_as_a_lease_with_no_new_structu
         OutputId::new("implied_to_own").unwrap(),
         crate::validate::CatalogOutput {
             accepts: crate::model::PortType::ANY,
-            fingerprint,
             recipients: vec![recipient.parse().unwrap()],
         },
     );
@@ -346,16 +337,9 @@ fn a_new_or_rebound_output_on_a_frame_host_places_as_a_lease_with_no_new_structu
 
 #[test]
 fn an_output_bound_to_a_delivery_host_the_frame_lacks_needs_a_restart() {
-    let elsewhere = HostId::new("elsewhere_out").unwrap();
     let plan = bound(|value| {
         let main = output_mut(value, "dd_metrics_encode");
         main["binding"]["host"] = json!("elsewhere_out");
-        let selector = serde_json::from_value(main["binding"]["selector"].clone()).unwrap();
-        main["fingerprint"] = json!(crate::resources::fingerprint(
-            &elsewhere,
-            crate::model::PortType::ANY,
-            &selector
-        ));
         main["recipients"] = json!(["elsewhere_out/primary/0"]);
         value["resources"]["recipients"].as_array_mut().unwrap().push(json!({
             "id": "elsewhere_out/primary/0", "host": "elsewhere_out", "endpoint": "https://elsewhere.example.com",
@@ -367,7 +351,6 @@ fn an_output_bound_to_a_delivery_host_the_frame_lacks_needs_a_restart() {
         main.id.clone(),
         crate::validate::CatalogOutput {
             accepts: main.accepts,
-            fingerprint: main.fingerprint,
             recipients: main.recipients.clone(),
         },
     );
@@ -390,7 +373,7 @@ fn structure_only_an_artifact_asks_for_is_unsupported_until_stage_10() {
     // one, since the frame is built from the default program.
     let hash = "sha256:00000000000000000000000000000000000000000000000000000000000000a7";
     let plan = bound(|value| {
-        value["provenance"] = json!({"artifacts": [{"scope": "metrics", "revision": 7, "hash": hash}]});
+        value["provenance"] = json!({"artifact": {"revision": 7, "hash": hash}});
         let mut aggregate = node_mut(value, "dsd_agg").clone();
         aggregate["id"] = json!("policy/agg");
         value["nodes"].as_array_mut().unwrap().push(aggregate);

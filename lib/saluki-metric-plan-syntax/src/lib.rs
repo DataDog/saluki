@@ -24,15 +24,14 @@
 //! `as` starts a statement only at the start of a line (elsewhere, `as |` is an `as` missing its name).
 //!
 //! ```text
-//! policy <scope> {
-//!   [base "<program hash>" [outputs { <output> = "<fingerprint>", ... }]]
+//! policy {
 //!   let <name> = <head> | <stage> | ...           # a named stream
 //!   let <name> = <stream>                         # another name for a stream
 //!   <head> | <stage> | ... | <sink>               # a pipeline that ends in a sink
 //! }
 //! ```
 //!
-//! - A **head** is a stream: a scope input (`dogstatsd`), a `let` (`checkout`), one output port of a node with several
+//! - A **head** is a stream: a source (`dogstatsd`), a `let` (`checkout`), one output port of a node with several
 //!   (`ts.passthrough`), or a tuple of streams, which merges them (`(a, b, c)`).
 //! - A **stage** is any registered operator, `op` or `op(<positional>, <parameter>: <value>, ...)`, or `where
 //!   <predicate>`, which keeps what matches. An operator's positional parameter may be written first without its name,
@@ -40,7 +39,7 @@
 //!   `emit` whose parameters no sink writes is `emit(to: [...], output: "o")`; an operator named like a sink,
 //!   `where`, the retired `fork`, or `as` is written with parentheses even without arguments, as in `drop()`.
 //! - A **sink** ends a pipeline: `emit primary`, `emit [primary, "https://b.example.com"]`, `emit output <output>`,
-//!   `drop`, or `exit <name>` where the pipeline leaves a scope that ends early.
+//!   or `drop`.
 //! - A **stream used more than once** is copied to each use. Copying is how a stream reaches several places, so a sink
 //!   in the middle of a pipeline is an error: name the stream with `let` and use it once per place it goes. (A `tee`
 //!   written as an operator copies it too, as in `let t = s | tee(ports: 2)`, its copies used as `t.0` and `t.1`.)
@@ -53,9 +52,8 @@
 //!   copied to each use by a `tee` of its own, `x_fanout`. (`let x = (a, b)` names the merge, a node, as before.)
 //! - **`as <id>`** after any stage, tuple, or sink also gives its node an ID of its own, where no `let` can, such as on
 //!   a sink.
-//! - **`base`** records the hash of the program the artifact was derived from and, under `outputs`, the fingerprint of
-//!   every output it refers to. It is required, unless the tool that parses the text gives the base instead
-//!   ([`ParseOptions::base`]). `ir_version <n>` and `blobs { "<hash>" = <value>, ... }` are optional headers.
+//! - `ir_version <n>` and `blobs { "<hash>" = <value>, ... }` are optional headers. `base`, a scope name after
+//!   `policy`, and the `exit` sink were removed: a program is whole.
 //!
 //! The syntax enforces what can be checked where it is written: a `let` is used only after it is defined, so a program
 //! cannot loop; every stream and every output port is used; a node with several output ports is always used through one
@@ -114,22 +112,22 @@
 //!
 //! [`print`](fn@print) recognizes sugar in the artifact's graph and writes it wherever parsing it back gives exactly the
 //! same graph, and the core form anywhere else. Output is deterministic: it depends only on the graph. Parsing writes
-//! nodes and edges in a canonical order, a depth-first traversal from the scope inputs in which a node comes right after
+//! nodes and edges in a canonical order, a depth-first traversal from the sources in which a node comes right after
 //! the edge that completes its inputs and a node's edges follow its operator's port order, whatever order the text gives
 //! them in, so the artifact, and its hash, change only when its graph does. As a result:
 //!
 //! - `parse(print(a))` is `a` for every well-formed artifact in canonical order, apart from its parameters equal to
 //!   their registry default, which printing leaves out. A well-formed artifact is one whose node IDs are unique and
 //!   whose edges name nodes and ports that exist, with one edge into each input port and at most one out of each output
-//!   port and each scope input, no cycles, every node reached from a scope input, and every output port used (a node
+//!   port and each source, no cycles, every node reached from a source, and every output port used (a node
 //!   whose operator is not registered, or whose parameters do not configure it, takes the input `in` and whatever output
 //!   ports its edges leave, at least one). An artifact in another order, as a tool writing JSON might give it, parses
 //!   back with its nodes and edges reordered.
 //! - Any other artifact still prints, as well as it can, and its text never parses back to it, since parsing makes only
 //!   well-formed artifacts. Parsing reports most problems; the text cannot write an edge into an input port other than
-//!   a node's only one (or the numbered ones of a merge), out of an exit, into a scope input, or between nodes the artifact
-//!   does not have, so printing moves such an edge or leaves it out, and a node that no edge enters reads from the scope
-//!   input of its name.
+//!   a node's only one (or the numbered ones of a merge), into a source, or between nodes the artifact
+//!   does not have, so printing moves such an edge or leaves it out, and a node that no edge enters reads from the source
+//!   of its name.
 //! - `print(parse(s))` is a fixed point: printing what it parses to gives it back.
 //!
 //! A node whose ID is not the one derived where it is written is named by a `let` wherever one can end at it, so a
@@ -137,7 +135,7 @@
 //! (`let m = (a, b)`). A `tee` whose ID is not `<stream>_fanout` for the stream before it is printed as an alias,
 //! `let x = s`, used once per port, when its ID is `x_fanout` for a name `x` that nothing else has, and in the core
 //! form, `let t = s | tee(ports: n)`, otherwise. `as` is the last resort, for a node no `let` can name: a sink, and a
-//! node whose ID is the name of a scope input the artifact reads, which a reference to the input would name instead.
+//! node whose ID is the name of a source the artifact reads, which a reference to the source would name instead.
 //! Such a node's `let` is named `<id>_let`, and its last stage has `as <id>`. Among the ways to print a pipeline with
 //! the fewest `as` clauses, the one with the fewest statements wins. An alias used once makes no node, so printing
 //! never writes one.
@@ -147,11 +145,6 @@
 //! default, so the text of an artifact in normal form, as the default program and its export are, parses to the same
 //! artifact once normalized again.
 //!
-//! With [`PrintOptions::elide_fingerprints`], the `outputs` of `base` are left out, for display; the text then parses
-//! to the artifact without them. With [`PrintOptions::elide_base`], the whole `base` statement is left out, as a tool
-//! that keeps the base apart from the text does; the text then parses with the base the tool gives
-//! ([`parse_with`]).
-//!
 //! # Limits
 //!
 //! [`parse`] rejects, with a diagnostic and without exhausting the stack, a source longer than [`MAX_SOURCE_SIZE`]
@@ -160,17 +153,14 @@
 //! proportional to the length of the source, apart from sorting each node's edges into port order.
 //!
 //! The text of an artifact within the size limit always parses back. Text is usually shorter than JSON (the default
-//! program's policy scope prints in about 60% of its compact JSON, since inline terminals take no definitions), and
+//! default program prints in about 60% of its compact JSON, since inline terminals take no definitions), and
 //! has fewer tokens than its JSON has bytes. Breaking lines can make it longer: printing puts each element of a long
 //! list on its own line, indented as deeply as the list is nested. When that would make the text longer than parsing
 //! accepts, every value is printed on one line instead, which takes at most six times the bytes of its JSON.
 #![deny(warnings)]
 #![deny(missing_docs)]
 
-use saluki_metric_plan::{
-    ir::{ArtifactBase, PolicyArtifact},
-    limits::values::ARTIFACT_SIZE,
-};
+use saluki_metric_plan::{ir::PolicyArtifact, limits::values::ARTIFACT_SIZE};
 
 mod ast;
 mod diagnostic;
@@ -211,36 +201,11 @@ pub struct Parsed {
 
     /// Where each node, parameter value, and edge of the artifact is in the source.
     pub spans: SpanMap,
-
-    /// Whether the artifact's base came from the caller ([`ParseOptions::base`]), the source having no `base`
-    /// statement, rather than from the source.
-    ///
-    /// A tool that hides the base when printing the source back ([`PrintOptions::elide_base`]) hides it only then, so
-    /// that a base the author wrote stays in the text.
-    pub base_given: bool,
 }
 
 /// How [`print`](fn@print) writes an artifact.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PrintOptions {
-    /// Whether to leave out the fingerprints of the outputs in `base`.
-    ///
-    /// Fingerprints are long digests that matter to the installer, not to a reader. Text printed without them parses
-    /// to an artifact without them, so a tool that elides them for display restores them before submitting an edited
-    /// artifact.
-    ///
-    /// Defaults to `false`: fingerprints are printed.
-    pub elide_fingerprints: bool,
-
-    /// Whether to leave out the `base` statement, fingerprints included.
-    ///
-    /// A detached program's base only tells its host whether the program it was written against has changed since:
-    /// a tool that keeps it apart from the text, as an editor does with the export it loaded, hides it from a reader,
-    /// and gives it back when it parses the text ([`ParseOptions::base`]).
-    ///
-    /// Defaults to `false`: the base is printed.
-    pub elide_base: bool,
-
     /// The line width, in characters, beyond which node headers, predicates, and values are broken across lines.
     ///
     /// Width is a target, not a limit: a single string or identifier longer than the width is never broken, and an
@@ -253,22 +218,8 @@ pub struct PrintOptions {
 
 impl Default for PrintOptions {
     fn default() -> Self {
-        Self {
-            elide_fingerprints: false,
-            elide_base: false,
-            width: 120,
-        }
+        Self { width: 120 }
     }
-}
-
-/// How [`parse_with`] reads a source.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ParseOptions {
-    /// The base an artifact whose text has no `base` statement records, as a tool that printed the text without it
-    /// ([`PrintOptions::elide_base`]) gives it back.
-    ///
-    /// A source with a `base` statement records that one. Defaults to `None`: a source must have a `base` statement.
-    pub base: Option<ArtifactBase>,
 }
 
 /// Parses a policy artifact from its surface syntax.
@@ -291,16 +242,6 @@ pub struct ParseOptions {
 /// parsing, so it is reported alone, after a note naming the operator when it is in the arguments of an operator that
 /// is not registered, which are read without a schema; the other problems are all reported together.
 pub fn parse(source: &str) -> Result<Parsed, Diagnostics> {
-    parse_with(source, &ParseOptions::default())
-}
-
-/// Parses a policy artifact from its surface syntax, as [`parse`] does, with `options`: a source without a `base`
-/// statement records the base `options` gives, if it gives one.
-///
-/// # Errors
-///
-/// As for [`parse`].
-pub fn parse_with(source: &str, options: &ParseOptions) -> Result<Parsed, Diagnostics> {
     if source.len() > MAX_SOURCE_SIZE {
         let mut start = MAX_SOURCE_SIZE;
         while !source.is_char_boundary(start) {
@@ -318,24 +259,17 @@ pub fn parse_with(source: &str, options: &ParseOptions) -> Result<Parsed, Diagno
     }
     let tokens = lexer::lex(source).map_err(|error| diagnostic::diagnostics(source, vec![error]))?;
     let program = parser::parse_program(source, &tokens).map_err(|errors| diagnostic::diagnostics(source, errors))?;
-    let base_given = program.base.is_none() && options.base.is_some();
-    let (artifact, spans) = lower::lower(source, program, options.base.as_ref())
-        .map_err(|errors| diagnostic::diagnostics(source, errors))?;
-    Ok(Parsed {
-        artifact,
-        spans,
-        base_given,
-    })
+    let (artifact, spans) = lower::lower(source, program).map_err(|errors| diagnostic::diagnostics(source, errors))?;
+    Ok(Parsed { artifact, spans })
 }
 
 /// Prints a policy artifact in its surface syntax.
 ///
 /// The output of a well-formed artifact parses back to the same artifact, with its nodes and edges in canonical order
-/// and without the parameters equal to their default (see [Printing](crate#printing)), unless `options` elides
-/// fingerprints or the base. Printing never fails: an artifact that is not well-formed, such as one with an edge to a
+/// and without the parameters equal to their default (see [Printing](crate#printing)). Printing never fails: an artifact that is not well-formed, such as one with an edge to a
 /// node it does not have, prints as well as it can, and its text never parses back to it.
 pub fn print(artifact: &PolicyArtifact, options: &PrintOptions) -> String {
-    let program = resugar::resugar(artifact, options);
+    let program = resugar::resugar(artifact);
     let text = format::format(&program, options.width);
     // Every token takes at least one byte, so only a long text can have too many.
     if text.len() <= MAX_SOURCE_SIZE && (text.len() <= MAX_TOKENS || lexer::lex(&text).is_ok()) {

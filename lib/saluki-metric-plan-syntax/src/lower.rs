@@ -6,7 +6,7 @@
 //!
 //! # What each form becomes
 //!
-//! - A name that no `let` defines is a scope input, and a reference to it is an edge from `input.<name>`.
+//! - A name that no `let` defines is a source, and a reference to it is an edge from `input.<name>`.
 //! - `e | op(args)` is a node running `op`, with an edge from `e` into its only input port.
 //! - `x.port` is output port `port` of the node that ends `x`, which must have several output ports.
 //! - `(a, b, ...)` is a `merge(inputs: n)`, with item `i` at its input port `i`.
@@ -17,8 +17,8 @@
 //!   no node; used `n > 1` times, it is followed by a `tee(ports: n)` as any stream is, fed by that use of `y`.
 //! - `e | where p` is a `split(predicate: p)` whose `false` port leads to a `drop` terminal; the pipeline continues
 //!   from its `true` port.
-//! - `emit <recipients>` and `emit output <output>` are `emit` nodes with the `to` or `output` parameter, `drop` is a
-//!   `drop` node, and `exit <name>` is an edge to the scope's exit `exit.<name>`, which makes no node.
+//! - `emit <recipients>` and `emit output <output>` are `emit` nodes with the `to` or `output` parameter, and `drop` is a
+//!   `drop` node.
 //!
 //! # Node IDs
 //!
@@ -28,17 +28,16 @@
 //! - In `let x = s1 | ... | sn`, the last stage's node is `x`, and each earlier stage `si` is
 //!   [`ids::stage`]`(x, <operator>, <ordinal>)`. A tuple head is [`ids::merge`]`(x)`, or `x` itself when the pipeline
 //!   has no stages.
-//! - In a statement without `let`, the anchor is the port the pipeline starts from: [`ids::input_anchor`] for a scope
-//!   input, [`ids::port_anchor`] for a `let` (with its port, if written), or [`ids::tee_port`] of the implicit tee and
+//! - In a statement without `let`, the anchor is the port the pipeline starts from: [`ids::input_anchor`] for a source, [`ids::port_anchor`] for a `let` (with its port, if written), or [`ids::tee_port`] of the implicit tee and
 //!   the use's port when the stream is used more than once. A tuple head's merge is [`ids::merge`]`(<anchor of its
 //!   first item>)`, and the ID of the merge, written or derived, is then the anchor. Each stage is
 //!   [`ids::stage`]`(anchor, <operator>, <ordinal>)`.
 //! - The implicit tee after a stream used more than once is [`ids::fanout`]`(<node>, <port>)`, where the node is the
-//!   one that ends the `let` (whatever its ID) and the port is the one the references write, if any. After a scope
+//!   one that ends the `let` (whatever its ID) and the port is the one the references write, if any. After a source
 //!   input `i`, it is [`ids::fanout`]`(input, i)`, that is `input_<i>_fanout`, and after an alias `x`, which ends at no
 //!   node, [`ids::fanout`]`(x)`, that is `x_fanout`.
 //! - A sink is [`ids::terminal`]`(<parent>, <port>)`, named after the node and output port the edge into it leaves
-//!   (`input` and the input's name for a scope input).
+//!   (`input` and the input's name for a source).
 //!
 //! Ordinals count the stages of one pipeline by operator, from 1, in pipeline order. Every stage counts, including
 //! those named with `as` and the last stage of a `let`, so naming one stage never changes the ID of another. A `where`
@@ -48,7 +47,7 @@
 //!
 //! Lowering enforces the syntax's rules, and reports every problem it finds together: a name used before its `let`
 //! (or by its own `let`), two names that collide (two `let`s, a `let` and an `as`, two `as` clauses, or a derived ID
-//! and any other node's ID), a port written on an alias, an `as` on an `exit`, an unused `let` or output port, a bare
+//! and any other node's ID), a port written on an alias, an unused `let` or output port, a bare
 //! reference to a node with several output ports, a reference to a port that does not exist, and a pipeline that
 //! continues from a node with several output ports, or none.
 
@@ -59,8 +58,8 @@ use std::{
 
 use saluki_metric_plan::{
     ir::{
-        ArtifactBase, ArtifactEdge, ArtifactNode, ArtifactNodeId, ArtifactPortRef, Blobs, InputName, OperatorName,
-        ParamName, Params, PolicyArtifact, PortName, IR_VERSION, SCOPE_INPUT_NODE,
+        ArtifactEdge, ArtifactNode, ArtifactNodeId, ArtifactPortRef, Blobs, InputName, OperatorName, ParamName, Params,
+        PolicyArtifact, PortName, IR_VERSION, SCOPE_INPUT_NODE,
     },
     limits::values::ARTIFACT_SIZE,
     operators::{names, EMIT_TO, FALSE_PORT, TRUE_PORT},
@@ -77,21 +76,17 @@ use crate::{
 
 /// Lowers a program to its artifact, in canonical order, with the span of every node, parameter value, and edge.
 ///
-/// A program without a `base` statement records `default_base`, if given.
-///
 /// Spans: a node's span is its stage, tuple, or sink; a `where`'s drop terminal has the `where`'s span; an implicit tee
-/// has the span of the `let`'s name, or for a scope input, of its first use. An edge's span is that of the element it
+/// has the span of the `let`'s name, or for a source, of its first use. An edge's span is that of the element it
 /// enters: a stage, a sink, a tuple item, or for the edge into an implicit tee, the tee's.
 ///
 /// # Errors
 ///
-/// Returns every problem found: a missing `base` without a default, a name defined twice or used before it is
+/// Returns every problem found: a name defined twice or used before it is
 /// defined, an unused stream or port, a node with several output ports used without a port, a derived ID that collides
 /// with another node's, and any reference to a port a node does not have. If there are none, returns an error if the
 /// artifact's JSON is longer than the artifact size limit.
-pub(crate) fn lower(
-    source: &str, program: Program, default_base: Option<&ArtifactBase>,
-) -> Result<(PolicyArtifact, SpanMap), Vec<Error>> {
+pub(crate) fn lower(source: &str, program: Program) -> Result<(PolicyArtifact, SpanMap), Vec<Error>> {
     let mut lowering = Lowering {
         source,
         lines: LineIndex::new(source),
@@ -109,22 +104,6 @@ pub(crate) fn lower(
         errors: Vec::new(),
     };
 
-    let base = match (program.base, default_base) {
-        (Some(base), _) => Some(ArtifactBase {
-            program_hash: base.program_hash,
-            outputs: base.outputs,
-        }),
-        (None, Some(base)) => Some(base.clone()),
-        (None, None) => {
-            lowering.errors.push(Error::new(
-                program.close,
-                "Expected `base \"<program hash>\"` in the policy: an artifact records the hash of the program it was \
-                 written against.",
-            ));
-            None
-        }
-    };
-
     lowering.scan(&program.statements);
     // Every port index a stream's copies or a tuple's items take must be a valid port name, so a program wider than
     // that stops here, before any node is made.
@@ -136,9 +115,6 @@ pub(crate) fn lower(
     }
     lowering.check_unused(&program.statements);
 
-    let Some(base) = base else {
-        return Err(lowering.errors);
-    };
     if !lowering.errors.is_empty() {
         return Err(lowering.errors);
     }
@@ -172,8 +148,6 @@ pub(crate) fn lower(
 
     let artifact = PolicyArtifact {
         ir_version: program.ir_version.unwrap_or(IR_VERSION),
-        scope: program.scope,
-        base,
         nodes: order.nodes.iter().map(|&index| nodes[index].clone()).collect(),
         edges: order.edges.iter().map(|&index| edges[index].clone()).collect(),
         blobs,
@@ -431,14 +405,7 @@ impl Lowering<'_> {
             return;
         };
         if let Some(id) = &sink.id {
-            if matches!(sink.kind, SinkKind::Exit { .. }) {
-                self.error(
-                    id.span,
-                    "An `exit` leaves the scope and makes no node, so it cannot be named with `as`.",
-                );
-            } else {
-                self.define(id, NameKind::As);
-            }
+            self.define(id, NameKind::As);
         }
     }
 
@@ -614,18 +581,6 @@ impl Lowering<'_> {
     /// Lowers a sink, entered from `input`.
     fn sink(&mut self, sink: &Sink, input: Option<Source>) {
         let (op, params, param_spans) = match &sink.kind {
-            SinkKind::Exit { name, .. } => {
-                if let Some(input) = input {
-                    self.edges.push((
-                        ArtifactEdge {
-                            from: input.from,
-                            to: ArtifactPortRef::Exit(name.clone()),
-                        },
-                        sink.span,
-                    ));
-                }
-                return;
-            }
             SinkKind::Recipients { names, span } => (
                 names::EMIT,
                 single_param(
@@ -867,7 +822,7 @@ impl Lowering<'_> {
                 if port.is_some() {
                     self.error(
                         port_span,
-                        format!("`{}` is a scope input, which has no ports; write `{}`.", name, name),
+                        format!("`{}` is a source, which has no ports; write `{}`.", name, name),
                     );
                     return None;
                 }
@@ -1184,7 +1139,7 @@ fn fanout_id(target: &Target, node: Option<&str>, port: Option<&PortName>) -> Ar
     match target {
         Target::Let(name) => ids::fanout(node.unwrap_or(name), port),
         Target::Input(input) => {
-            let input = PortName::new(input.as_str()).expect("scope input names are port names");
+            let input = PortName::new(input.as_str()).expect("source names are port names");
             ids::fanout(SCOPE_INPUT_NODE, Some(&input))
         }
     }

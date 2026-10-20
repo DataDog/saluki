@@ -1,72 +1,37 @@
-//! The export bundle: a scope of the default program as an artifact, with the catalog it is checked against.
+//! The export bundle: the default program as an artifact, with the catalog it is checked against.
 //!
-//! Authors edit the default program rather than start from nothing: the host exports the scope an artifact may
-//! replace as a [`PolicyArtifact`], which an author edits and the channel delivers back. The bundle carries what is
-//! needed to check and preview an artifact away from the host:
+//! Authors edit the default program rather than start from nothing: the host exports it as a [`PolicyArtifact`], a
+//! whole program, which an author edits and the channel delivers back. The bundle carries what is needed to check and
+//! preview an artifact away from the host:
 //!
 //! - `export_version`: [`EXPORT_VERSION`];
-//! - `scope`: the scope exported;
-//! - `artifact`: the scope as a policy artifact, with its configuration bindings unresolved (an export never carries
-//!   resolved values) and its [base](ArtifactBase) filled in: the base program hash and the fingerprint of every output
-//!   the scope emits to. Its nodes and edges are in the order the plan lists them. Lowering writes nodes in the
-//!   surface syntax's canonical order, but not every edge: the canonical order writes the edges from the scope's
-//!   inputs first, in input-name order, and each node's edges with the node. So printing the export of a scope with
-//!   several inputs and parsing the text gives back a document whose edges are in another order, with another hash,
-//!   which composes to the same plan, with the same hash, since composition puts an artifact's edges in the default
-//!   program's order;
+//! - `artifact`: the default program as a policy artifact, every node but its sources, with its configuration
+//!   bindings unresolved (an export never carries resolved values). Its nodes and edges are in the order the plan
+//!   lists them; an edge from a source leaves `input.<binding>`;
 //! - `ir_versions`: the IR version written, and the range of IR versions accepted;
-//! - `catalog`: the host's [`MemoryCatalog`] document: scope inputs with their port types, outputs with what they
-//!   accept, their fingerprints, and their recipients, and bindings with their types, liveness, and current values.
-//!   Outputs a resources artifact declares are listed like native ones; delivery hosts and their settings are not;
-//! - `labels`: display labels of outputs, by output ID, such as those a resources artifact gives its outputs, left
-//!   out when there are none;
-//! - `annotations`: notes for tools, left out when there are none: one line per node of the exported artifact and per
-//!   binding, saying what it is and where it comes from, which a tool shows beside the program
-//!   ([`Annotations`]). They are not part of the artifact;
+//! - `catalog`: the host's [`MemoryCatalog`] document: outputs with what they accept and their recipients, and
+//!   bindings with their types, liveness, and current values. Delivery hosts and their settings are not listed;
+//! - `labels`: display labels of outputs, by output ID, left out when there are none;
+//! - `annotations`: notes for tools, left out when there are none ([`Annotations`]). They are not part of the artifact;
 //! - `form`: how the artifact writes the default program ([`ExportForm`]): `bound`, every node as the default program
 //!   has it, or `detached`, as a published program starts from it. A reader of a bundle without `form` reads `bound`;
-//! - `omitted`: the nodes of the scope a detached export leaves out because they do nothing as configured, by local
-//!   ID, each with why (`identity`, `constant_split`, or `unreachable`), left out when there are none.
+//! - `omitted`: the nodes a detached export leaves out because they do nothing as configured, by local ID, each with
+//!   why (`identity`, `constant_split`, or `unreachable`), left out when there are none.
 //!
-//! Readers ignore members they do not know.
-//!
-//! # The scope as an artifact
-//!
-//! A scope's **region** is every node reachable from the output ports its inputs name, without entering a port one of
-//! its exits names. The exported artifact has:
-//!
-//! - one node per region node, in plan order, whose local ID is the node's local ID (a reserved ID, for the default
-//!   program), with the node's operator and its parameters without resolved values;
-//! - every edge that enters a region node or an exit's port, in plan order, with an edge from a scope input's port
-//!   written as leaving `input.<name>`, and an edge into an exit's port as entering `exit.<name>`;
-//! - a base whose `outputs` hold the fingerprint the plan declares for every output a region `emit` delivers to, and
-//!   whose `program_hash` is the hash of the artifact document itself without its `base.program_hash` member (see
-//!   [`base`]).
-//!
-//! Composing an unmodified bound export back into the plan it came from gives that plan again (see
-//! [`compose`](crate::compose::compose)), and an unmodified detached one a plan that does what it does.
+//! Readers ignore members they do not know. The hash of the exported artifact is its [program hash](program_hash),
+//! which the host's status reports as `default_program_hash`.
 //!
 //! # The detached form
 //!
 //! A published program owns its policy: it writes what to do with metrics as literals, and binds only facts and
-//! signals, which describe the host and its state rather than choose anything. The default program is written so too:
-//! native lowering writes every policy setting as its value. The detached form is the export a published program starts
-//! from ([`export_as`] with [`ExportForm::Detached`]). It differs from the bound form in two ways:
+//! signals. The detached form is the export a published program starts from ([`export_as`] with
+//! [`ExportForm::Detached`]). It differs from the bound form in two ways:
 //!
-//! - It is only what happens: a node that does nothing as configured, such as a metric filterlist with nothing in it, a
-//!   mapper with no profiles, or a `merge` of one input, is left out, with what only it reached, and listed in
-//!   `omitted` with why ([`eliminate`]), and the artifact is written in [normal form](crate::normalize) again, since
-//!   leaving a node out can leave a filter that keeps what leaves its `false` port. A node bound to a fact or signal is
-//!   never left out for its value. The default program itself keeps every node.
+//! - It is only what happens: a node that does nothing as configured is left out, with what only it reached, and
+//!   listed in `omitted` with why ([`eliminate`]), and the artifact is written in [normal form](crate::normalize)
+//!   again. A node bound to a fact or signal is never left out for its value.
 //! - Every `emit` to an output whose recipients the catalog's recipient directory names exactly is written as an `emit`
-//!   to those names, such as `emit to [primary]`, as a published program addresses destinations: by the recipients it
-//!   sends to, never by the native output that encodes for them.
-//!
-//! The detached artifact records the same base as the bound one, so composing the detached export is no stale base. It
-//! composes to a plan that does what the default program does, without the nodes it leaves out. Over the default
-//! program it is therefore a generation of its own, which builds no kernel and keeps aggregation's state: plans are
-//! compared as written ([`operation_hash`]), so that the plan running is always the plan its generation was built from.
-//! When it leaves out nothing, it adopts the running generation.
+//!   to those names, such as `emit to [primary]`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -76,10 +41,11 @@ use snafu::Snafu;
 
 use crate::{
     canonical::{strip_resolved_values, CanonicalError, PlanHash, BINDING_MEMBER},
+    compose::sources,
     ir::{
-        is_identifier, ArtifactBase, ArtifactEdge, ArtifactNode, ArtifactNodeId, ArtifactPortRef, BindingName, Blobs,
-        ComposedArtifact, ExitName, InputName, NodeId, OperatorName, OutputId, Params, Plan, PolicyArtifact, PortRef,
-        ScopeName, ACCEPTED_IR_VERSIONS, IR_VERSION,
+        is_identifier, ArtifactEdge, ArtifactNode, ArtifactNodeId, ArtifactPortRef, ArtifactRevision, BindingName,
+        Blobs, InputName, NodeId, OperatorName, OutputId, Params, Plan, PolicyArtifact, PortRef, ACCEPTED_IR_VERSIONS,
+        IR_VERSION,
     },
     normalize::{normalize_artifact, normalize_params},
     operators::{names, OperatorRegistry, EMIT_TO},
@@ -90,7 +56,7 @@ mod eliminate;
 pub use self::eliminate::{eliminate, Eliminated, Omission};
 
 /// The version of the export bundle's format.
-pub const EXPORT_VERSION: u32 = 1;
+pub const EXPORT_VERSION: u32 = 2;
 
 /// The IR versions a host writes and accepts.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -112,7 +78,7 @@ impl IrVersions {
     }
 }
 
-/// An export bundle: one scope of the default program as an artifact, with the catalog it is checked against.
+/// An export bundle: the default program as an artifact, with the catalog it is checked against.
 ///
 /// Reading a bundle ignores the members it does not know, in the bundle and in its catalog's outputs and bindings, so
 /// that the bundle can gain members without breaking its readers; the catalog document itself, and the artifact, are
@@ -124,10 +90,7 @@ pub struct ExportBundle {
     /// The bundle's format version, [`EXPORT_VERSION`].
     pub export_version: u32,
 
-    /// The scope exported.
-    pub scope: ScopeName,
-
-    /// The scope as a policy artifact, with its bindings unresolved and its base filled in.
+    /// The default program as a policy artifact, with its bindings unresolved.
     pub artifact: PolicyArtifact,
 
     /// The IR versions the host writes and accepts.
@@ -149,7 +112,7 @@ pub struct ExportBundle {
     #[serde(default)]
     pub form: ExportForm,
 
-    /// The nodes of the scope's region the artifact leaves out because they do nothing as configured, by local ID, with
+    /// The nodes of the default program the artifact leaves out because they do nothing as configured, by local ID, with
     /// why ([`eliminate`]): only a detached export leaves any out. A host names them for a reader in
     /// [`Annotations::omitted`].
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -208,7 +171,6 @@ impl Annotations {
 #[derive(Deserialize)]
 struct BundleDocument {
     export_version: u32,
-    scope: ScopeName,
     artifact: Value,
     ir_versions: IrVersions,
     catalog: Value,
@@ -226,14 +188,13 @@ struct BundleDocument {
 const CATALOG_MEMBERS: &[&str] = &[
     "outputs",
     "bindings",
-    "scopes",
     "state_budget",
     "single_aggregation",
     "recipients",
 ];
 
 /// The members of a catalog output that [`MemoryCatalog`] reads.
-const CATALOG_OUTPUT_MEMBERS: &[&str] = &["accepts", "fingerprint", "recipients"];
+const CATALOG_OUTPUT_MEMBERS: &[&str] = &["accepts", "recipients"];
 
 /// The members of an entry of a catalog's recipient directory that [`MemoryCatalog`] reads.
 const CATALOG_RECIPIENT_MEMBERS: &[&str] = &["recipients", "host", "endpoint"];
@@ -250,7 +211,6 @@ impl TryFrom<BundleDocument> for ExportBundle {
     fn try_from(document: BundleDocument) -> Result<Self, Self::Error> {
         let BundleDocument {
             export_version,
-            scope,
             artifact,
             ir_versions,
             catalog,
@@ -264,7 +224,6 @@ impl TryFrom<BundleDocument> for ExportBundle {
         let catalog = serde_json::from_value(catalog).map_err(|error| format!("invalid catalog: {}", error))?;
         Ok(Self {
             export_version,
-            scope,
             artifact,
             ir_versions,
             catalog,
@@ -319,7 +278,7 @@ fn known_catalog_members(catalog: Value, labels: &mut BTreeMap<OutputId, String>
     Value::Object(catalog)
 }
 
-/// Exports one scope of a lowered plan as an artifact, with the host's catalog and output labels.
+/// Exports a lowered plan, the default program, as an artifact, with the host's catalog and output labels.
 ///
 /// `plan` is the default program as lowered, with its bindings resolved; the export strips the resolved values, and
 /// writes reserved node IDs as the artifact's local IDs, so that composing the unmodified
@@ -328,43 +287,34 @@ fn known_catalog_members(catalog: Value, labels: &mut BTreeMap<OutputId, String>
 ///
 /// # Errors
 ///
-/// Returns an error if the plan does not declare the scope, the scope cannot be written as an artifact (see
-/// [`ExportError::NotExportable`]), or the scope has no canonical form.
+/// Returns an error if the plan cannot be written as an artifact (see [`ExportError::NotExportable`]).
 pub fn export(
-    plan: &Plan, scope: &ScopeName, catalog: &MemoryCatalog, labels: &BTreeMap<OutputId, String>,
+    plan: &Plan, catalog: &MemoryCatalog, labels: &BTreeMap<OutputId, String>,
 ) -> Result<ExportBundle, ExportError> {
     // The bound form leaves nothing out, so no operator's identity is asked for.
-    export_as(
-        plan,
-        scope,
-        catalog,
-        labels,
-        ExportForm::Bound,
-        &OperatorRegistry::native(),
-    )
+    export_as(plan, catalog, labels, ExportForm::Bound, &OperatorRegistry::native())
 }
 
-/// Exports one scope of a lowered plan as an artifact in the form `form`, with the host's catalog and output labels.
+/// Exports a lowered plan as an artifact in the form `form`, with the host's catalog and output labels.
 ///
 /// This is [`export`] for [`ExportForm::Bound`]. For [`ExportForm::Detached`], the nodes that do nothing as configured
 /// are left out and listed in [`ExportBundle::omitted`], emits are addressed to recipients where the catalog names them
 /// exactly, and the artifact is written in [normal form](crate::normalize) (see [the detached
-/// form](self#the-detached-form)); the base is the bound export's. The bound
-/// form is the plan's scope as the plan writes it, which is in normal form for a lowered default program.
+/// form](self#the-detached-form)). The bound form is the plan as the plan writes it, which is in normal form for a
+/// lowered default program.
 /// `registry` is the host's operator registry, which says which nodes do nothing.
 ///
 /// # Errors
 ///
 /// As for [`export`].
 pub fn export_as(
-    plan: &Plan, scope: &ScopeName, catalog: &MemoryCatalog, labels: &BTreeMap<OutputId, String>, form: ExportForm,
+    plan: &Plan, catalog: &MemoryCatalog, labels: &BTreeMap<OutputId, String>, form: ExportForm,
     registry: &OperatorRegistry,
 ) -> Result<ExportBundle, ExportError> {
     if form == ExportForm::Unknown {
         return Err(ExportError::UnknownForm);
     }
-    let region = ScopeRegion::of(plan, scope)?;
-    let base = region.base(plan, scope)?;
+    let region = ScopeRegion::of(plan)?;
     // The detached form is only what happens: what does nothing as configured is left out.
     let (eliminated, omitted) = match form {
         ExportForm::Detached => {
@@ -380,7 +330,7 @@ pub fn export_as(
         ExportForm::Bound | ExportForm::Unknown => (None, BTreeMap::new()),
     };
     let ScopeRegion { mut nodes, edges, .. } = match &eliminated {
-        Some(eliminated) => ScopeRegion::of(eliminated, scope)?,
+        Some(eliminated) => ScopeRegion::of(eliminated)?,
         None => region,
     };
     if let Some(plan) = &eliminated {
@@ -395,20 +345,17 @@ pub fn export_as(
     }
     let mut artifact = PolicyArtifact {
         ir_version: plan.ir_version,
-        scope: scope.clone(),
-        base,
         nodes,
         edges,
         blobs: Blobs::default(),
     };
     // Leaving nodes out can leave a filter that keeps what leaves its `false` port, which normal form turns. The bound
-    // form is written as the plan writes it, so that its document hashes to its base program hash.
+    // form is written as the plan writes it.
     if eliminated.is_some() {
         artifact = normalize_artifact(&artifact);
     }
     Ok(ExportBundle {
         export_version: EXPORT_VERSION,
-        scope: scope.clone(),
         artifact,
         ir_versions: IrVersions::supported(),
         catalog: catalog.clone(),
@@ -543,54 +490,31 @@ pub fn operation_hash(plan: &Plan, registry: &OperatorRegistry) -> Result<PlanHa
     plan.hash(crate::canonical::ResolvedValues::Include)
 }
 
-/// Returns the base an artifact derived from one scope of a plan records: the base program hash, and the fingerprint
-/// of every output the scope emits to.
+/// Returns the program hash of an artifact: the RFC 8785 digest of its normalized form, which is what an unmodified
+/// export hashes to when it is received ([`ReceivedArtifact`](crate::ir::ReceivedArtifact)).
 ///
-/// The **program hash** is the hash of the scope's export: the RFC 8785 digest of the exported artifact document
-/// without its `base.program_hash` member, that is, of its `ir_version`, `scope`, `nodes`, `edges`, and the output
-/// fingerprints of its base. It covers the scope's structure, operators, literal parameters, binding names, and the
-/// outputs it delivers to, but neither resolved values (an export has none) nor anything outside the scope. So a change
-/// of native configuration values never changes it, while a structural change inside the scope, or another binding of
-/// an output the scope emits to, always does, and a change outside the scope never does: the base program hash changes
-/// exactly when the export's artifact does, so a client that keeps an export knows to fetch it again when the hash it
-/// last saw changes. An author's tool can tell whether an artifact is an unmodified export by comparing the hash of its
-/// document without `base.program_hash` with its `base.program_hash`.
-///
-/// [`export`] fills the exported artifact's base with this, and composition compares an artifact's base with this
-/// for the current default program: a different program hash is a stale base, and a different or missing output
-/// fingerprint of an output the artifact emits to is a removed output. The host's status reports the program hash as
-/// `default_program_hash`.
+/// The host's status reports the program hash of the default program's export as `default_program_hash`, so a client
+/// that keeps an export knows to fetch it again when the hash it last saw changes.
 ///
 /// # Errors
 ///
-/// Returns an error if the plan does not declare the scope, the scope cannot be written as an artifact, or the scope
-/// has no canonical form.
-pub fn base(plan: &Plan, scope: &ScopeName) -> Result<ArtifactBase, ExportError> {
-    ScopeRegion::of(plan, scope)?.base(plan, scope)
+/// Returns an error if the artifact has no canonical form.
+pub fn program_hash(artifact: &PolicyArtifact) -> Result<PlanHash, CanonicalError> {
+    PlanHash::of_serializable(artifact)
 }
 
-/// A scope that cannot be exported.
+/// A default program that cannot be exported.
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
 pub enum ExportError {
-    /// The plan does not declare the scope.
-    #[snafu(display("The default program declares no scope `{}`.", scope))]
-    UnknownScope {
-        /// The scope.
-        scope: ScopeName,
-    },
-
-    /// The scope's region cannot be written as an artifact.
-    #[snafu(display("Scope `{}` cannot be exported as an artifact: {}", scope, message))]
+    /// The default program cannot be written as an artifact.
+    #[snafu(display("The default program cannot be exported as an artifact: {}", message))]
     NotExportable {
-        /// The scope.
-        scope: ScopeName,
-
         /// Why.
         message: String,
     },
 
-    /// The scope has no canonical form, so it has no hash.
+    /// The default program has no canonical form, so it has no hash.
     #[snafu(display("The default program has no canonical form: {}", source))]
     Unhashable {
         /// The underlying error.
@@ -602,116 +526,54 @@ pub enum ExportError {
     UnknownForm,
 }
 
-/// Returns the nodes of the region of `scope` in `plan`: every node reachable from the ports its inputs name, without
-/// entering a port one of its exits names. A scope the plan does not declare has none.
+/// Returns the program a plan composed from an artifact runs: the artifact's revision, and every node of the plan but
+/// its sources. A default program has none.
 ///
-/// In a plan composed from artifacts, the region of a scope an artifact replaced is the artifact's nodes: what the
-/// program running there consists of ([`program_nodes`]).
-pub fn scope_members(plan: &Plan, scope: &ScopeName) -> BTreeSet<NodeId> {
-    let Some(declaration) = plan.scopes.get(scope) else {
-        return BTreeSet::new();
-    };
-    let inputs = declaration.inputs.values().collect::<BTreeSet<_>>();
-    let exits = declaration.exits.values().collect::<BTreeSet<_>>();
-    let mut members = BTreeSet::new();
-    let mut frontier = plan
-        .edges
-        .iter()
-        .filter(|edge| inputs.contains(&edge.from) && !exits.contains(&edge.to))
-        .map(|edge| &edge.to.node)
-        .collect::<Vec<_>>();
-    while let Some(node) = frontier.pop() {
-        if members.insert(node.clone()) {
-            frontier.extend(
-                plan.edges
-                    .iter()
-                    .filter(|edge| &edge.from.node == node && !exits.contains(&edge.to))
-                    .map(|edge| &edge.to.node),
-            );
-        }
-    }
-    members
-}
-
-/// Returns the nodes of the program each artifact composed into `plan` runs, by artifact, in the order the plan's
-/// provenance lists them: the region of the scope it replaced ([`scope_members`]). A default program has none.
-///
-/// What a plan runs is a property of the plan, not of its nodes: every node of a scope an artifact replaced is the
+/// What a plan runs is a property of the plan, not of its nodes: every node of a composed plan but its sources is the
 /// artifact's, whether the author changed it or kept it as the default program has it. This is what the artifact limits
 /// and placement's attributions apply to.
-pub fn program_nodes(plan: &Plan) -> Vec<(ComposedArtifact, BTreeSet<NodeId>)> {
-    plan.provenance
+pub fn program_nodes(plan: &Plan) -> Option<(ArtifactRevision, BTreeSet<NodeId>)> {
+    let artifact = plan.provenance.as_ref()?.artifact.clone()?;
+    Some((artifact, non_source_nodes(plan)))
+}
+
+/// Returns every node of `plan` but its `source` nodes.
+pub(crate) fn non_source_nodes(plan: &Plan) -> BTreeSet<NodeId> {
+    plan.nodes
         .iter()
-        .flat_map(|provenance| &provenance.artifacts)
-        .map(|artifact| (artifact.clone(), scope_members(plan, &artifact.scope)))
+        .filter(|node| node.op.as_str() != names::SOURCE)
+        .map(|node| node.id.clone())
         .collect()
 }
 
-/// One scope of a plan, as the parts of the artifact that replaces it.
+/// A default program, as the parts of the artifact that exports it.
 ///
-/// This is what [`export`] writes, what [`base`] hashes, and what composition replaces: the region's nodes and the
-/// edges that enter them.
+/// This is what [`export`] writes: every node but the sources, and the edges that enter them.
 pub(crate) struct ScopeRegion {
-    /// The region's nodes as artifact nodes, in plan order: local IDs, no resolved values.
+    /// The program's nodes as artifact nodes, in plan order: local IDs, no resolved values.
     pub(crate) nodes: Vec<ArtifactNode>,
 
-    /// Every edge that enters a region node or an exit's port, in plan order, with edges from a scope input leaving
-    /// `input.<name>`, and edges into an exit's port entering `exit.<name>`.
+    /// Every edge that enters a program node, in plan order, with edges from a source leaving `input.<binding>`.
     pub(crate) edges: Vec<ArtifactEdge>,
 
-    /// The fingerprint of every output a region `emit` delivers to, as the plan declares it.
-    pub(crate) outputs: BTreeMap<OutputId, PlanHash>,
-
-    /// The IDs of the region's nodes.
+    /// The IDs of the program's nodes.
     pub(crate) members: BTreeSet<NodeId>,
 }
 
 impl ScopeRegion {
-    /// Finds the region of `scope` in `plan`, and writes it as an artifact's nodes and edges.
-    ///
-    /// The region is every node reachable from the ports the scope's inputs name, without entering a port one of its
-    /// exits names: an edge into an exit's port is the region's edge to `exit.<name>`.
+    /// Writes the default program `plan` as an artifact's nodes and edges.
     ///
     /// # Errors
     ///
-    /// Returns an error if the plan does not declare the scope, or the region cannot be written as an artifact: two
-    /// inputs, or two exits, name one port, an edge enters a node the plan does not have, a region node is fed from
-    /// outside the region other than through an input, two region nodes have the same local ID or one's is `input` or
-    /// `exit`, or an `emit` delivers to an output the plan does not declare.
-    pub(crate) fn of(plan: &Plan, scope: &ScopeName) -> Result<Self, ExportError> {
-        let declaration = plan
-            .scopes
-            .get(scope)
-            .ok_or_else(|| ExportError::UnknownScope { scope: scope.clone() })?;
-        let not_exportable = |message: String| ExportError::NotExportable {
-            scope: scope.clone(),
-            message,
-        };
-
-        let mut inputs: BTreeMap<&PortRef, &InputName> = BTreeMap::new();
-        for (name, port) in &declaration.inputs {
-            if let Some(other) = inputs.insert(port, name) {
-                return Err(not_exportable(format!(
-                    "its inputs `{}` and `{}` both name `{}`; an artifact edge leaves one input",
-                    other, name, port
-                )));
-            }
-        }
-        let mut exits: BTreeMap<&PortRef, &ExitName> = BTreeMap::new();
-        for (name, port) in &declaration.exits {
-            if let Some(other) = exits.insert(port, name) {
-                return Err(not_exportable(format!(
-                    "its exits `{}` and `{}` both name `{}`; an artifact edge enters one exit",
-                    other, name, port
-                )));
-            }
-        }
-
-        let members = scope_members(plan, scope);
+    /// Returns an error if the program cannot be written as an artifact: two of its nodes have the same local ID or
+    /// one's is `input`, or a program node is fed from a node that is neither a source nor the program's.
+    pub(crate) fn of(plan: &Plan) -> Result<Self, ExportError> {
+        let not_exportable = |message: String| ExportError::NotExportable { message };
+        let inputs: BTreeMap<PortRef, InputName> = sources(plan).into_iter().map(|(name, port)| (port, name)).collect();
+        let members = non_source_nodes(plan);
 
         let mut nodes = Vec::new();
         let mut locals = BTreeSet::new();
-        let mut found = BTreeSet::new();
         for node in plan.nodes.iter().filter(|node| members.contains(&node.id)) {
             let local = ArtifactNodeId::new(node.id.local().as_str()).map_err(|error| {
                 not_exportable(format!(
@@ -725,109 +587,37 @@ impl ScopeRegion {
                     local
                 )));
             }
-            found.insert(&node.id);
             nodes.push(ArtifactNode {
                 id: local,
                 op: node.op.clone(),
                 params: unresolved(&node.params),
             });
         }
-        if let Some(missing) = members.iter().find(|member| !found.contains(member)) {
-            return Err(not_exportable(format!(
-                "an edge enters `{}`, which is not a node of the plan",
-                missing
-            )));
-        }
 
         let local = |id: &NodeId| ArtifactNodeId::new(id.local().as_str()).ok();
         let mut edges = Vec::new();
-        for edge in &plan.edges {
-            let source = if let Some(input) = inputs.get(&edge.from) {
-                Some(ArtifactPortRef::Input((*input).clone()))
+        for edge in plan.edges.iter().filter(|edge| members.contains(&edge.to.node)) {
+            let from = if let Some(input) = inputs.get(&edge.from) {
+                ArtifactPortRef::Input(input.clone())
             } else if members.contains(&edge.from.node) {
-                Some(ArtifactPortRef::Node {
-                    node: local(&edge.from.node).expect("region nodes have artifact node IDs"),
-                    port: edge.from.port.clone(),
-                })
-            } else {
-                None
-            };
-            let to = if let Some(exit) = exits.get(&edge.to) {
-                // An edge into an exit's port from outside the region is not the region's.
-                if source.is_none() {
-                    continue;
-                }
-                ArtifactPortRef::Exit((*exit).clone())
-            } else if members.contains(&edge.to.node) {
                 ArtifactPortRef::Node {
-                    node: local(&edge.to.node).expect("region nodes have artifact node IDs"),
-                    port: edge.to.port.clone(),
+                    node: local(&edge.from.node).expect("program nodes have artifact node IDs"),
+                    port: edge.from.port.clone(),
                 }
             } else {
-                // The region holds every node a region node's edge enters, but through an exit: this edge is not the
-                // region's.
-                continue;
-            };
-            let Some(from) = source else {
                 return Err(not_exportable(format!(
-                    "`{}` is inside the scope, but is fed from `{}`, outside it; a scope is fed only through its \
-                     inputs",
+                    "`{}` is fed from `{}`, which is neither a source nor a node of the program",
                     edge.to, edge.from
                 )));
+            };
+            let to = ArtifactPortRef::Node {
+                node: local(&edge.to.node).expect("program nodes have artifact node IDs"),
+                port: edge.to.port.clone(),
             };
             edges.push(ArtifactEdge { from, to });
         }
 
-        let mut outputs = BTreeMap::new();
-        for node in nodes.iter().filter(|node| node.op.as_str() == names::EMIT) {
-            let output = emitted_output(&node.params)
-                .ok_or_else(|| not_exportable(format!("`emit` node `{}` names no valid output", node.id)))?;
-            let declared = plan.output(&output).ok_or_else(|| {
-                not_exportable(format!(
-                    "`emit` node `{}` delivers to `{}`, which the plan does not declare",
-                    node.id, output
-                ))
-            })?;
-            outputs.insert(output, declared.fingerprint);
-        }
-
-        Ok(Self {
-            nodes,
-            edges,
-            outputs,
-            members,
-        })
-    }
-
-    /// Returns the base of an artifact of this region: the hash of the artifact document without its base program
-    /// hash, and the output fingerprints.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the region has no canonical form.
-    pub(crate) fn base(&self, plan: &Plan, scope: &ScopeName) -> Result<ArtifactBase, ExportError> {
-        let artifact = PolicyArtifact {
-            ir_version: plan.ir_version,
-            scope: scope.clone(),
-            base: ArtifactBase {
-                program_hash: PlanHash::from_digest([0; 32]),
-                outputs: self.outputs.clone(),
-            },
-            nodes: self.nodes.clone(),
-            edges: self.edges.clone(),
-            blobs: Blobs::default(),
-        };
-        let mut document = serde_json::to_value(&artifact).map_err(|source| ExportError::Unhashable {
-            source: CanonicalError::ToJson { source },
-        })?;
-        if let Some(Value::Object(base)) = document.get_mut("base") {
-            base.remove("program_hash");
-        }
-        let program_hash = PlanHash::of_value(&document).map_err(|source| ExportError::Unhashable { source })?;
-        Ok(ArtifactBase {
-            program_hash,
-            outputs: self.outputs.clone(),
-        })
+        Ok(Self { nodes, edges, members })
     }
 }
 

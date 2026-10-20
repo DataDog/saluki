@@ -1,31 +1,21 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "PolicyArtifact",
-  "description": "A policy artifact: a replacement for one scope of a plan, written against a recorded base.\n\nAn artifact is typically derived by editing the export of the default program's scope. It records the hash of that base program and the fingerprints of the outputs it refers to, so that a structural change to the default program or to an output is detected rather than silently merged. One artifact replaces exactly one scope.\n\nArtifact nodes have local identifiers: composing the artifact into a plan assigns their plan IDs. Artifact edges refer to the scope's inputs as `input.<name>`. Artifacts refer to configuration by binding only, never with resolved values, and may write any parameter value as a reference to a blob in their blob table, which composition replaces with the blob's content (see [`Blobs::inline`]).\n\nSerializing an artifact writes its normalized form, as for a [plan](Plan#normalized-form). Approval binds to the hash of the document as it was received, which [`ReceivedArtifact`] keeps.",
+  "description": "A policy artifact: a whole program, which runs in place of the default program.\n\nAn artifact is typically derived by editing the export of the default program. It is complete: every node after the host's sources is the artifact's, and nothing of the default program runs beside it. It records nothing of what it was written against.\n\nArtifact nodes have local identifiers: composing the artifact into a plan assigns their plan IDs. Artifact edges refer to the host's sources as `input.<name>`, by the `binding` of their `source` nodes. Artifacts refer to configuration by binding only, never with resolved values, and may write any parameter value as a reference to a blob in their blob table, which composition replaces with the blob's content (see [`Blobs::inline`]).\n\nSerializing an artifact writes its normalized form, as for a [plan](Plan#normalized-form). Approval binds to the hash of the document as it was received, which [`ReceivedArtifact`] keeps.",
   "type": "object",
   "required": [
-    "base",
     "edges",
     "ir_version",
-    "nodes",
-    "scope"
+    "nodes"
   ],
   "properties": {
-    "base": {
-      "description": "What the artifact was written against.",
-      "allOf": [
-        {
-          "$ref": "#/definitions/ArtifactBase"
-        }
-      ]
-    },
     "blobs": {
       "description": "Content-addressed values that parameters refer to.",
       "type": "object",
       "additionalProperties": true
     },
     "edges": {
-      "description": "The edges between the scope's inputs, the artifact's node ports, and the scope's exits.",
+      "description": "The edges between the host's sources and the artifact's node ports.",
       "type": "array",
       "items": {
         "$ref": "#/definitions/ArtifactEdge"
@@ -43,43 +33,10 @@
       "items": {
         "$ref": "#/definitions/ArtifactNode"
       }
-    },
-    "scope": {
-      "description": "The scope the artifact replaces.",
-      "allOf": [
-        {
-          "$ref": "#/definitions/ScopeName"
-        }
-      ]
     }
   },
   "additionalProperties": false,
   "definitions": {
-    "ArtifactBase": {
-      "description": "What a policy artifact was written against.",
-      "type": "object",
-      "required": [
-        "program_hash"
-      ],
-      "properties": {
-        "outputs": {
-          "description": "The fingerprint of every output the artifact refers to, as of its base.",
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/definitions/PlanHash"
-          }
-        },
-        "program_hash": {
-          "description": "The hash of the exported program the artifact was derived from, without resolved values.\n\nWhen the current default program's export has a different hash, the artifact is reported as stale.",
-          "allOf": [
-            {
-              "$ref": "#/definitions/PlanHash"
-            }
-          ]
-        }
-      },
-      "additionalProperties": false
-    },
     "ArtifactEdge": {
       "description": "An edge within a policy artifact.",
       "type": "object",
@@ -89,7 +46,7 @@
       ],
       "properties": {
         "from": {
-          "description": "The port the edge leaves: a scope input, or an output port of an artifact node.",
+          "description": "The port the edge leaves: a source, or an output port of an artifact node.",
           "allOf": [
             {
               "$ref": "#/definitions/ArtifactPortRef"
@@ -97,7 +54,7 @@
           ]
         },
         "to": {
-          "description": "The port the edge enters: an input port of an artifact node, or a scope exit.",
+          "description": "The port the edge enters: an input port of an artifact node.",
           "allOf": [
             {
               "$ref": "#/definitions/ArtifactPortRef"
@@ -150,7 +107,7 @@
       "pattern": "^[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}$"
     },
     "ArtifactPortRef": {
-      "description": "A port reference within a policy artifact: `input.<name>` (a scope input, only as an edge's source), `exit.<name>` (a scope exit, only as an edge's target), or `<node>.<port>`.",
+      "description": "A port reference within a policy artifact: `input.<name>` (one of the host's sources, only as an edge's source), or `<node>.<port>`.",
       "type": "string",
       "maxLength": 127,
       "minLength": 1,
@@ -176,18 +133,6 @@
       "propertyNames": {
         "$ref": "#/definitions/ParamName"
       }
-    },
-    "PlanHash": {
-      "description": "A SHA-256 digest: `sha256:` followed by 64 lowercase hexadecimal digits.",
-      "type": "string",
-      "pattern": "^sha256:[0-9a-f]{64}$"
-    },
-    "ScopeName": {
-      "description": "A scope name.",
-      "type": "string",
-      "maxLength": 63,
-      "minLength": 1,
-      "pattern": "^[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}$"
     }
   }
 }

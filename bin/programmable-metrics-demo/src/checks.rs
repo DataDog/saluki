@@ -1,9 +1,8 @@
 //! Structural checks of an artifact against ADP's export bundle, with the plan crate's operator registry and catalog.
 //!
-//! These checks are what can be said about an artifact before it is composed into a plan: that it replaces the
-//! exported scope, was written against the current default program, refers only to outputs, configuration bindings,
-//! and scope inputs the catalog declares (with matching fingerprints), and gives every node parameters its operator
-//! accepts. They are not validation: whether the composed plan is valid (types, duplicate contributions, bounds,
+//! These checks are what can be said about an artifact before it is composed into a plan: that it has an IR version
+//! ADP accepts, refers only to outputs and configuration bindings the catalog declares and to sources the exported
+//! program reads, and gives every node parameters its operator accepts. They are not validation: whether the composed plan is valid (types, duplicate contributions, bounds,
 //! authority) is the validator's to say, on the composed plan, and whether ADP can run its state owners where the
 //! artifact puts them is placement's, so an artifact that passes them can still be rejected.
 //!
@@ -53,14 +52,6 @@ impl Finding {
     fn error(message: String, span: Option<Span>) -> Self {
         Self {
             severity: Severity::Error,
-            message,
-            span,
-        }
-    }
-
-    fn warning(message: String, span: Option<Span>) -> Self {
-        Self {
-            severity: Severity::Warning,
             message,
             span,
         }
@@ -117,17 +108,6 @@ pub fn check_against_export(source: &str, parsed: &Parsed, export: &ExportBundle
     let catalog = &export.catalog;
     let mut findings = Vec::new();
 
-    if artifact.scope.as_str() != export.scope {
-        findings.push(Finding::error(
-            format!(
-                "This artifact replaces the scope `{}`, but ADP exports the scope `{}`, which is the one artifacts may \
-                 replace. Write `policy {} {{ ... }}`.",
-                artifact.scope, export.scope, export.scope
-            ),
-            find(source, artifact.scope.as_str()),
-        ));
-    }
-
     if let Some(versions) = &export.ir_versions {
         let (lowest, highest) = versions.accepted;
         if !(lowest..=highest).contains(&artifact.ir_version) {
@@ -138,56 +118,6 @@ pub fn check_against_export(source: &str, parsed: &Parsed, export: &ExportBundle
                 ),
                 find(source, "ir_version"),
             ));
-        }
-    }
-
-    let base = artifact.base.program_hash.to_string();
-    if &artifact.base.program_hash != export.program_hash() {
-        findings.push(Finding::warning(
-            format!(
-                "The base {} is not the current default program, {}. ADP installs the artifact but reports it as \
-                 stale: the default program changed since this artifact was derived from it. Load the default program \
-                 again and reapply your change to rebase it.",
-                base,
-                export.program_hash()
-            ),
-            find(source, &base),
-        ));
-    }
-
-    // ADP checks the fingerprint of every output an `emit` of the artifact delivers to, and ignores the others its base
-    // records: an output the artifact no longer emits to cannot be removed under it.
-    let emitted = artifact
-        .nodes
-        .iter()
-        .filter(|node| node.op.as_str() == names::EMIT)
-        .filter_map(|node| node.params.get("output")?.as_str()?.parse::<OutputId>().ok())
-        .collect::<BTreeSet<_>>();
-    for (output, fingerprint) in artifact
-        .base
-        .outputs
-        .iter()
-        .filter(|(output, _)| emitted.contains(*output))
-    {
-        let span = find(source, &fingerprint.to_string()).or_else(|| find(source, output.as_str()));
-        match catalog.output(output) {
-            None => findings.push(Finding::error(
-                format!(
-                    "ADP does not declare the output `{}`. An artifact that refers to a removed output makes the plan \
-                     invalid, and the current generation keeps running.",
-                    output
-                ),
-                span,
-            )),
-            Some(declared) if &declared.fingerprint != fingerprint => findings.push(Finding::error(
-                format!(
-                    "The output `{}` has fingerprint {} in ADP, not {}: its binding changed since this artifact was \
-                     derived, and ADP treats it as a removed output. Write `{} = \"{}\"` after rebasing.",
-                    output, declared.fingerprint, fingerprint, output, declared.fingerprint
-                ),
-                span,
-            )),
-            Some(_) => {}
         }
     }
 
@@ -218,10 +148,8 @@ pub fn check_against_export(source: &str, parsed: &Parsed, export: &ExportBundle
                 let span = parsed.spans.param(node.id.as_str(), "output").or(node_span);
                 // A malformed output ID is reported by the registry above.
                 if let Ok(id) = output.parse::<OutputId>() {
-                    match catalog.output(&id) {
-                        // The check of the base's outputs above reports it.
-                        None if artifact.base.outputs.contains_key(&id) => {}
-                        None => findings.push(Finding::error(
+                    if catalog.output(&id).is_none() {
+                        findings.push(Finding::error(
                             format!(
                                 "Node `{}` emits to `{}`, which ADP does not declare. Declared outputs: {}.",
                                 node.id,
@@ -229,16 +157,7 @@ pub fn check_against_export(source: &str, parsed: &Parsed, export: &ExportBundle
                                 some_names(export.output_ids.iter().map(String::as_str))
                             ),
                             span,
-                        )),
-                        Some(declared) if !artifact.base.outputs.contains_key(&id) => findings.push(Finding::error(
-                            format!(
-                                "Node `{}` emits to `{}`, which the artifact's `outputs` does not list. Add `{} = \
-                                 \"{}\"` to `outputs`.",
-                                node.id, output, output, declared.fingerprint
-                            ),
-                            span,
-                        )),
-                        Some(_) => {}
+                        ));
                     }
                 }
             }
@@ -268,14 +187,25 @@ pub fn check_against_export(source: &str, parsed: &Parsed, export: &ExportBundle
         }
     }
 
+    // Without the default program at hand, the sources are those the exported program reads.
+    let sources = export
+        .artifact
+        .artifact
+        .edges
+        .iter()
+        .filter_map(|edge| match &edge.from {
+            ArtifactPortRef::Input(input) => Some(input.as_str()),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
     for (index, edge) in artifact.edges.iter().enumerate() {
         if let ArtifactPortRef::Input(input) = &edge.from {
-            if catalog.scope_input(&artifact.scope, input).is_none() {
+            if !sources.contains(input.as_str()) {
                 findings.push(Finding::error(
                     format!(
-                        "The scope `{}` has no input `{}` in ADP's catalog. Edges leave the scope's inputs as \
-                         `input.<name>`.",
-                        artifact.scope, input
+                        "The default program has no source `{}`. Edges leave the sources as `input.<name>`: {}.",
+                        input,
+                        some_names(sources.iter().copied())
                     ),
                     parsed.spans.edge(index),
                 ));

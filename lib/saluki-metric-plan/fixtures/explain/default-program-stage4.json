@@ -1,9 +1,9 @@
 {
-  "explain_version": 2,
+  "explain_version": 3,
   "plan": {
     "ir_version": 1,
-    "hash": "sha256:036de4ef28c3bcf78686e81175b61a6ee24510acbf3bdb8b36c5aa51252e9596",
-    "structural_hash": "sha256:1c612fa220c7d5fcdddf9d8504ee670347e9f620d90835e064b947addfb2f496",
+    "hash": "sha256:455d2601087cab001098b8f80c6ba659c27936e06685a350bf5bc80dca93fbe1",
+    "structural_hash": "sha256:4ab94cf6b8128a47ce9188abc5339316b77eae899ba0a8c2330d35570f3d8a64",
     "provenance": {
       "native_components": {
         "af_metrics_gateway_false": "af_metrics_gateway",
@@ -58,6 +58,109 @@
               "timestamps": "mixed"
             },
             "to": "dsd_enrich.in"
+          }
+        ]
+      },
+      {
+        "id": "otlp_in",
+        "op": "source",
+        "boundary": "io_host",
+        "state": "none",
+        "loss": [],
+        "params": {
+          "binding": "otlp"
+        },
+        "bindings": [],
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "metrics",
+            "port_type": {
+              "kinds": [
+                "counter",
+                "rate",
+                "gauge",
+                "distribution"
+              ],
+              "timestamps": "mixed"
+            },
+            "to": "metrics_in.1"
+          }
+        ]
+      },
+      {
+        "id": "checks_ipc_in",
+        "op": "source",
+        "boundary": "io_host",
+        "state": "none",
+        "loss": [],
+        "params": {
+          "binding": "checks"
+        },
+        "bindings": [],
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "metrics",
+            "port_type": {
+              "kinds": [
+                "counter",
+                "rate",
+                "gauge",
+                "histogram"
+              ],
+              "timestamps": "mixed"
+            },
+            "to": "metrics_in.2"
+          }
+        ]
+      },
+      {
+        "id": "liveness_in",
+        "op": "source",
+        "boundary": "io_host",
+        "state": "none",
+        "loss": [],
+        "params": {
+          "binding": "liveness"
+        },
+        "bindings": [],
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "metrics",
+            "port_type": {
+              "kinds": [
+                "gauge"
+              ],
+              "timestamps": "timestamped"
+            },
+            "to": "metrics_in.3"
+          }
+        ]
+      },
+      {
+        "id": "trace_sampler",
+        "op": "source",
+        "boundary": "io_host",
+        "state": "none",
+        "loss": [],
+        "params": {
+          "binding": "trace_sampler"
+        },
+        "bindings": [],
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "metrics",
+            "port_type": {
+              "kinds": [
+                "counter",
+                "gauge"
+              ],
+              "timestamps": "untimestamped"
+            },
+            "to": "metrics_in.4"
           }
         ]
       },
@@ -610,109 +713,6 @@
           }
         ],
         "outputs": []
-      },
-      {
-        "id": "otlp_in",
-        "op": "source",
-        "boundary": "io_host",
-        "state": "none",
-        "loss": [],
-        "params": {
-          "binding": "otlp"
-        },
-        "bindings": [],
-        "inputs": [],
-        "outputs": [
-          {
-            "name": "metrics",
-            "port_type": {
-              "kinds": [
-                "counter",
-                "rate",
-                "gauge",
-                "distribution"
-              ],
-              "timestamps": "mixed"
-            },
-            "to": "metrics_in.1"
-          }
-        ]
-      },
-      {
-        "id": "checks_ipc_in",
-        "op": "source",
-        "boundary": "io_host",
-        "state": "none",
-        "loss": [],
-        "params": {
-          "binding": "checks"
-        },
-        "bindings": [],
-        "inputs": [],
-        "outputs": [
-          {
-            "name": "metrics",
-            "port_type": {
-              "kinds": [
-                "counter",
-                "rate",
-                "gauge",
-                "histogram"
-              ],
-              "timestamps": "mixed"
-            },
-            "to": "metrics_in.2"
-          }
-        ]
-      },
-      {
-        "id": "liveness_in",
-        "op": "source",
-        "boundary": "io_host",
-        "state": "none",
-        "loss": [],
-        "params": {
-          "binding": "liveness"
-        },
-        "bindings": [],
-        "inputs": [],
-        "outputs": [
-          {
-            "name": "metrics",
-            "port_type": {
-              "kinds": [
-                "gauge"
-              ],
-              "timestamps": "timestamped"
-            },
-            "to": "metrics_in.3"
-          }
-        ]
-      },
-      {
-        "id": "trace_sampler",
-        "op": "source",
-        "boundary": "io_host",
-        "state": "none",
-        "loss": [],
-        "params": {
-          "binding": "trace_sampler"
-        },
-        "bindings": [],
-        "inputs": [],
-        "outputs": [
-          {
-            "name": "metrics",
-            "port_type": {
-              "kinds": [
-                "counter",
-                "gauge"
-              ],
-              "timestamps": "untimestamped"
-            },
-            "to": "metrics_in.4"
-          }
-        ]
       },
       {
         "id": "metrics_in",
@@ -1737,7 +1737,6 @@
           "kinds": "all",
           "timestamps": "mixed"
         },
-        "fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
         "recipients": [],
         "delivery": "native",
         "emitted_by": [
@@ -1750,7 +1749,6 @@
           "kinds": "all",
           "timestamps": "mixed"
         },
-        "fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
         "recipients": [
           "dd_out/primary/0"
         ],
@@ -1765,7 +1763,6 @@
           "kinds": "all",
           "timestamps": "mixed"
         },
-        "fingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
         "recipients": [
           "dd_out/additional_0/0"
         ],
@@ -1780,7 +1777,6 @@
           "kinds": "all",
           "timestamps": "mixed"
         },
-        "fingerprint": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
         "recipients": [
           "dd_out/additional_1/0",
           "dd_out/additional_1/1"
@@ -1796,7 +1792,6 @@
           "kinds": "all",
           "timestamps": "mixed"
         },
-        "fingerprint": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
         "recipients": [
           "mrf_dd_out/primary/0"
         ],
@@ -1816,7 +1811,6 @@
           ],
           "timestamps": "mixed"
         },
-        "fingerprint": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
         "recipients": [
           "cluster_agent_out/primary/0"
         ],
@@ -1824,18 +1818,6 @@
         "emitted_by": [
           "af_metrics_gateway_true"
         ]
-      }
-    ],
-    "scopes": [
-      {
-        "name": "metrics",
-        "inputs": {
-          "checks": "checks_ipc_in.metrics",
-          "dogstatsd": "dsd_in.metrics",
-          "liveness": "liveness_in.metrics",
-          "otlp": "otlp_in.metrics",
-          "trace_sampler": "trace_sampler.metrics"
-        }
       }
     ]
   },

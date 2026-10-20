@@ -1,9 +1,9 @@
-explain_version 2
+explain_version 3
 
 plan
   ir_version 1
-  hash sha256:036de4ef28c3bcf78686e81175b61a6ee24510acbf3bdb8b36c5aa51252e9596
-  structural_hash sha256:1c612fa220c7d5fcdddf9d8504ee670347e9f620d90835e064b947addfb2f496
+  hash sha256:455d2601087cab001098b8f80c6ba659c27936e06685a350bf5bc80dca93fbe1
+  structural_hash sha256:4ab94cf6b8128a47ce9188abc5339316b77eae899ba0a8c2330d35570f3d8a64
   valid: 0 errors, 0 warnings
 
 nodes (34)
@@ -11,6 +11,18 @@ nodes (34)
     param binding = "dogstatsd"
     param timestamps = "mixed"
     out metrics -> dsd_enrich.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
+  otlp_in: source [io_host, state none]
+    param binding = "otlp"
+    out metrics -> metrics_in.1, carries counter, rate, gauge, distribution (mixed timestamps)
+  checks_ipc_in: source [io_host, state none]
+    param binding = "checks"
+    out metrics -> metrics_in.2, carries counter, rate, gauge, histogram (mixed timestamps)
+  liveness_in: source [io_host, state none]
+    param binding = "liveness"
+    out metrics -> metrics_in.3, carries gauge (timestamped)
+  trace_sampler: source [io_host, state none]
+    param binding = "trace_sampler"
+    out metrics -> metrics_in.4, carries counter, gauge (untimestamped)
   dsd_enrich: dogstatsd_mapper [synchronous, state none]
     param cache_size = 1000
     param profiles = [{"mappings":[{"match":"raw.requests.*","match_type":"wildcard","name":"mapped.requests","tags":[{"name":"route","value":"$1"}]}],"name":"checkout","prefix":"raw."}]
@@ -76,18 +88,6 @@ nodes (34)
   dsd_post_agg_filter_fanout_0: emit [synchronous, state none]
     param output = "dsd_client_telemetry"
     in in <- dsd_post_agg_filter_fanout.0, accepts every kind (mixed timestamps)
-  otlp_in: source [io_host, state none]
-    param binding = "otlp"
-    out metrics -> metrics_in.1, carries counter, rate, gauge, distribution (mixed timestamps)
-  checks_ipc_in: source [io_host, state none]
-    param binding = "checks"
-    out metrics -> metrics_in.2, carries counter, rate, gauge, histogram (mixed timestamps)
-  liveness_in: source [io_host, state none]
-    param binding = "liveness"
-    out metrics -> metrics_in.3, carries gauge (timestamped)
-  trace_sampler: source [io_host, state none]
-    param binding = "trace_sampler"
-    out metrics -> metrics_in.4, carries counter, gauge (untimestamped)
   metrics_in: merge [synchronous, state none]
     param inputs = 5
     in 0 <- dsd_post_agg_filter_fanout.1, accepts every kind (mixed timestamps)
@@ -204,43 +204,34 @@ edges (34)
 outputs (6)
   dsd_client_telemetry
     accepts every kind (mixed timestamps)
-    fingerprint sha256:1111111111111111111111111111111111111111111111111111111111111111
     recipients none
     delivery native
     emitted by dsd_post_agg_filter_fanout_0
   dd_metrics_encode
     accepts every kind (mixed timestamps)
-    fingerprint sha256:2222222222222222222222222222222222222222222222222222222222222222
     recipients dd_out/primary/0
     delivery native
     emitted by metrics_fanout_0
   metrics_routing_encode_0
     accepts every kind (mixed timestamps)
-    fingerprint sha256:3333333333333333333333333333333333333333333333333333333333333333
     recipients dd_out/additional_0/0
     delivery native
     emitted by metrics_routing_filter_0_true
   metrics_routing_encode_1
     accepts every kind (mixed timestamps)
-    fingerprint sha256:4444444444444444444444444444444444444444444444444444444444444444
     recipients dd_out/additional_1/0, dd_out/additional_1/1
     delivery native
     emitted by metrics_routing_filter_1_true
   mrf_metrics_encode
     accepts every kind (mixed timestamps)
-    fingerprint sha256:5555555555555555555555555555555555555555555555555555555555555555
     recipients mrf_dd_out/primary/0
     delivery native
     emitted by mrf_metrics_gateway_true
   af_metrics_encode
     accepts counter, rate, gauge, set (mixed timestamps)
-    fingerprint sha256:6666666666666666666666666666666666666666666666666666666666666666
     recipients cluster_agent_out/primary/0
     delivery native
     emitted by af_metrics_gateway_true
-
-scopes (1)
-  metrics: checks = checks_ipc_in.metrics, dogstatsd = dsd_in.metrics, liveness = liveness_in.metrics, otlp = otlp_in.metrics, trace_sampler = trace_sampler.metrics
 
 bounds (4)
   plan artifact_nodes: 34 of 256 (within the limit, not enforced)

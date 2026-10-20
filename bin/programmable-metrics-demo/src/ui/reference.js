@@ -24,7 +24,7 @@ const tag = (text, kind = "") => `<span class="tag ${kind}">${esc(text)}</span>`
 
 // The ideas of the language, each with a line of it.
 const CONCEPTS = [
-  ["Streams", "dogstatsd", "Each source's metrics enter as an input of the scope: a stream a pipeline starts from."],
+  ["Streams", "dogstatsd", "Each source's metrics enter the program by its name: a stream a pipeline starts from."],
   ["Stages", "dogstatsd | namespace_prefix(\"demo\", exclusions: [])",
     "`|` feeds a stream to an operator. Each stage is a node of the plan, and its output a new stream."],
   ["Sinks", "... | emit primary\n... | emit output dsd_client_telemetry\n... | drop",
@@ -43,20 +43,19 @@ const CONCEPTS = [
     "Merge streams: the first into the merge's port 0, the next into port 1, and so on."],
 ];
 
-const GRAMMAR = `program    = "policy" scope "{" header* statement* "}"
-header     = "ir_version" int | "base" hash [ "outputs" "{" (output "=" hash ","?)* "}" ] | "blobs" "{" ... "}"
+const GRAMMAR = `program    = "policy" "{" header* statement* "}"
+header     = "ir_version" int | "blobs" "{" ... "}"
 statement  = "let" ident "=" pipeline                   # a named stream
            | pipeline                                   # must end in a sink
 pipeline   = head ("|" stage)* ["|" sink]
 head       = ref | tuple
-ref        = ident ["." port]                           # a let, or a scope input; ".port" picks an output port
+ref        = ident ["." port]                           # a let, or a source; ".port" picks an output port
 tuple      = "(" ref ("," ref)* ","? ")" ["as" ident]   # a merge, its input ports in order
 stage      = operator ["(" args ")"] ["as" ident]       # any registered operator
            | "where" predicate ["as" ident]             # shorthand
 sink       = "emit" recipients ["as" ident]             # emit primary, emit [primary, "https://b.example.com"]
            | "emit" "output" output ["as" ident]
            | "drop" ["as" ident]
-           | "exit" exit-name ["as" ident]              # leaves a scope that ends early
 args       = [positional ","] (param ":" value ","?)*`;
 
 function renderConcepts() {
@@ -90,10 +89,10 @@ function renderHost(host, missing) {
     .join("");
   const head = "<thead><tr><th>Binding</th><th>Kind</th><th>Type</th><th>Now</th></tr></thead>";
   return `
-    <p>The program replaces the scope ${code(host.scope)}.
+    <p>The program replaces the default program whole.
       ${host.single_aggregation ? "It may hold at most one <code>aggregate</code>." : ""}</p>
-    <h3>Inputs</h3>
-    <p>${inputs}. Each is a stream a pipeline may start from, as <code>dogstatsd | ...</code>; an input no pipeline
+    <h3>Sources</h3>
+    <p>${inputs}. Each is a stream a pipeline may start from, as <code>dogstatsd | ...</code>; a source no pipeline
       reads receives nothing.</p>
     <h3>Recipients</h3>
     <p>The names <code>emit</code> takes: one bare, as <code>emit primary</code>, or several in brackets, as

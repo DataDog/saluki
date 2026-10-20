@@ -1,11 +1,10 @@
-//! The export bundle: the default program's one scope, the whole metrics path after its sources, as an artifact, with
-//! the catalog it is checked against.
+//! The export bundle: the default program, the whole metrics path after its sources, as an artifact, with the catalog
+//! it is checked against.
 //!
-//! ADP serves the bundle at `GET /programmable-metrics/export?scope=metrics`, as a JSON object with these members:
+//! ADP serves the bundle at `GET /programmable-metrics/export`, as a JSON object with these members:
 //!
-//! - `export_version`: `1`;
-//! - `scope`: the scope the export covers, `metrics`;
-//! - `artifact`: the default program's scope as a policy artifact, with its bindings unresolved and its base filled in;
+//! - `export_version`: `2`;
+//! - `artifact`: the default program as a policy artifact, with its bindings unresolved;
 //! - `ir_versions`: `{"current": <version>, "accepted": [<lowest>, <highest>]}`;
 //! - `catalog`: the plan crate's `MemoryCatalog` document, with the recipient directory under `recipients`;
 //! - `labels` (optional): display labels, by output ID;
@@ -19,7 +18,7 @@ use std::collections::BTreeMap;
 
 use saluki_metric_plan::{
     canonical::PlanHash,
-    export::Annotations,
+    export::{program_hash, Annotations, ExportForm},
     ir::{BindingName, OutputId, ReceivedArtifact, RecipientName},
     validate::{Catalog as _, CatalogRecipient, Liveness, MemoryCatalog},
 };
@@ -29,7 +28,7 @@ use serde_json::{Map, Value};
 use crate::settings::Recipient;
 
 /// The export bundle versions this demo reads.
-pub const EXPORT_VERSION: u64 = 1;
+pub const EXPORT_VERSION: u64 = 2;
 
 /// The IR versions an ADP accepts, as its export bundle states them.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -44,16 +43,19 @@ pub struct IrVersions {
 /// An export bundle, read.
 #[derive(Clone, Debug)]
 pub struct ExportBundle {
-    /// The scope the export covers.
-    pub scope: String,
-
-    /// The default program's scope as an artifact, with the hash of its document.
+    /// The default program as an artifact, with the hash of its document.
     pub artifact: ReceivedArtifact,
+
+    /// The program hash of the artifact ([`program_hash`]): what ADP's status reports as its `default_program_hash`.
+    pub program_hash: PlanHash,
+
+    /// How the artifact writes the default program: `bound`, if the bundle does not say.
+    pub form: ExportForm,
 
     /// The IR versions ADP accepts, if the bundle states them.
     pub ir_versions: Option<IrVersions>,
 
-    /// The catalog of outputs, bindings, and scope inputs.
+    /// The catalog of outputs, bindings, and recipients.
     pub catalog: MemoryCatalog,
 
     /// Display labels of outputs.
@@ -70,11 +72,6 @@ pub struct ExportBundle {
 }
 
 impl ExportBundle {
-    /// Returns the base program hash the export carries: what an artifact derived from it records as its base.
-    pub fn program_hash(&self) -> &PlanHash {
-        &self.artifact.artifact.base.program_hash
-    }
-
     /// Reads an export bundle from its JSON document.
     ///
     /// # Errors
@@ -95,16 +92,18 @@ impl ExportBundle {
                 ))
             }
         }
-        let scope = object
-            .get("scope")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "The export bundle has no `scope`.".to_string())?
-            .to_string();
         let artifact = object
             .remove("artifact")
             .ok_or_else(|| "The export bundle has no `artifact`.".to_string())?;
         let artifact = ReceivedArtifact::from_value(artifact)
             .map_err(|error| format!("The export bundle's artifact cannot be read: {}", error))?;
+        let program_hash = program_hash(&artifact.artifact)
+            .map_err(|error| format!("The export bundle's artifact cannot be hashed: {}", error))?;
+        let form = match object.remove("form") {
+            Some(form) => serde_json::from_value(form)
+                .map_err(|error| format!("The export bundle's `form` cannot be read: {}", error))?,
+            None => ExportForm::default(),
+        };
         let ir_versions = match object.remove("ir_versions") {
             Some(versions) => Some(
                 serde_json::from_value(versions)
@@ -142,8 +141,9 @@ impl ExportBundle {
             .map_err(|error| format!("The export bundle's catalog cannot be read: {}", error))?;
 
         Ok(Self {
-            scope,
             artifact,
+            program_hash,
+            form,
             ir_versions,
             catalog,
             labels,
@@ -202,7 +202,6 @@ impl ExportBundle {
                 Some(LegendOutput {
                     id: id.clone(),
                     label,
-                    fingerprint: declared.fingerprint.to_string(),
                     recipients,
                     intake,
                     emit,
@@ -243,9 +242,6 @@ pub struct LegendOutput {
 
     /// The output's display label, if the export gives one.
     pub label: Option<String>,
-
-    /// The output's fingerprint, which an artifact that emits to it records in its base.
-    pub fingerprint: String,
 
     /// The output's physical recipients.
     pub recipients: Vec<String>,
@@ -327,7 +323,7 @@ fn known_catalog_members(catalog: Value, labels: &mut BTreeMap<OutputId, String>
                         {
                             labels.entry(output_id).or_insert_with(|| label.to_string());
                         }
-                        let output = keep_members(output, &["accepts", "fingerprint", "recipients"]);
+                        let output = keep_members(output, &["accepts", "recipients"]);
                         (id, output)
                     })
                     .collect();
@@ -353,7 +349,7 @@ fn known_catalog_members(catalog: Value, labels: &mut BTreeMap<OutputId, String>
             }
             // Whether ADP runs at most one aggregation per program, which validation then checks, and whether a
             // published program may bind only facts and signals, which composition then checks.
-            ("scopes", value) | ("single_aggregation", value) | ("detached_programs", value) => {
+            ("single_aggregation", value) | ("detached_programs", value) => {
                 kept.insert(member, value);
             }
             _ => {}
@@ -381,7 +377,7 @@ pub(crate) mod tests {
     use super::*;
 
     /// A hand-written export bundle for the demo's configuration, trimmed to the policy region, fed straight from the
-    /// scope's `dogstatsd` input: the primary endpoint, two additional endpoints routed by prefix, and the multi-region
+    /// `dogstatsd` source: the primary endpoint, two additional endpoints routed by prefix, and the multi-region
     /// failover gateway with mirroring off.
     pub(crate) const DEMO_EXPORT: &str = include_str!("../fixtures/export-metrics.json");
 
@@ -392,8 +388,6 @@ pub(crate) mod tests {
     #[test]
     fn the_demo_export_reads_with_its_catalog_and_labels() {
         let export = demo_export();
-        assert_eq!(export.scope, "metrics");
-        assert_eq!(export.artifact.artifact.scope.as_str(), "metrics");
         assert!(export.catalog.single_aggregation());
         assert_eq!(
             export.ir_versions,
@@ -430,10 +424,8 @@ pub(crate) mod tests {
             ]
         );
         assert_eq!(export.binding_names.len(), 2);
-        assert_eq!(
-            export.program_hash().to_string(),
-            "sha256:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
-        );
+        // The program hash is that of the artifact, which ADP's status reports as its default program's.
+        assert_eq!(export.program_hash, program_hash(&export.artifact.artifact).unwrap());
     }
 
     #[test]
@@ -486,7 +478,6 @@ pub(crate) mod tests {
         let mut bundle = serde_json::from_str::<Value>(DEMO_EXPORT).unwrap();
         bundle["catalog"]["outputs"]["implied_to_d_true_0a1b2c3d"] = serde_json::json!({
             "accepts": {"kinds": "all", "timestamps": "mixed"},
-            "fingerprint": "sha256:078861188ff436606d2e89dae13fb835b363b844df9d556384fcd72127f85045",
             "recipients": ["dd_out/additional/0/http://127.0.0.1:17105"]
         });
         bundle["labels"]["implied_to_d_true_0a1b2c3d"] = "Implied output of emit to_d_true".into();
@@ -508,15 +499,6 @@ pub(crate) mod tests {
             outputs.contains(&("implied_to_d_true_0a1b2c3d", Some("dest-d"))),
             "{:?}",
             outputs
-        );
-        let implied = legend
-            .outputs
-            .iter()
-            .find(|output| output.id == "implied_to_d_true_0a1b2c3d")
-            .unwrap();
-        assert_eq!(
-            implied.fingerprint,
-            "sha256:078861188ff436606d2e89dae13fb835b363b844df9d556384fcd72127f85045"
         );
     }
 
@@ -545,7 +527,7 @@ pub(crate) mod tests {
         let bundle = || serde_json::from_str::<Value>(DEMO_EXPORT).unwrap();
         type Mutation = fn(&mut Value);
         let cases: [(&str, Mutation); 4] = [
-            ("export_version 2", |v| v["export_version"] = 2.into()),
+            ("export_version 1", |v| v["export_version"] = 1.into()),
             ("has no `artifact`", |v| {
                 v.as_object_mut().unwrap().remove("artifact");
             }),

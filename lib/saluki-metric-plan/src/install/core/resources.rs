@@ -473,15 +473,31 @@ fn instance_bytes(plan: &Plan, registry: &OperatorRegistry, built: &[KernelKey])
         .fold(0, u64::saturating_add)
 }
 
+/// Returns what decides where an output delivers: what it accepts, and its delivery host and selector, if it is bound.
+fn delivers(
+    output: &crate::ir::OutputDecl,
+) -> (
+    crate::model::PortType,
+    Option<(&crate::ir::HostId, &crate::ir::Selector)>,
+) {
+    (
+        output.accepts,
+        output
+            .binding
+            .as_ref()
+            .map(|binding| (&binding.host, &binding.selector)),
+    )
+}
+
 /// Returns `true` if a plan the core keeps, to roll back to or to install again after a failed cut, may stay kept
-/// under the latest lowering: every output it declares is declared there with an equal fingerprint, and every recipient
-/// it declares is declared there with the same protocol.
+/// under the latest lowering: every output it declares is declared there accepting the same records, on the same
+/// delivery host with the same selector, and every recipient it declares is declared there with the same protocol.
 pub(in crate::install) fn keeps(latest: &Plan, kept: &Plan) -> bool {
     let outputs = kept.outputs.iter().all(|output| {
         latest
             .outputs
             .iter()
-            .any(|declared| declared.id == output.id && declared.fingerprint == output.fingerprint)
+            .any(|declared| declared.id == output.id && delivers(declared) == delivers(output))
     });
     let recipients = kept.resources.recipients.iter().all(|recipient| {
         latest
@@ -494,7 +510,7 @@ pub(in crate::install) fn keeps(latest: &Plan, kept: &Plan) -> bool {
 
 impl InstallerCore {
     /// Releases the generation kept to roll back to, and drops the plan a cut replaced, if the latest lowering no
-    /// longer declares an output either declares with its fingerprint, or a recipient either declares with its
+    /// longer declares an output either declares as it does ([`keeps`]), or a recipient either declares with its
     /// protocol.
     pub(super) fn enforce_keep_rule(&mut self, actions: &mut Vec<Action>) {
         let Some(latest) = self.default_program.clone() else {

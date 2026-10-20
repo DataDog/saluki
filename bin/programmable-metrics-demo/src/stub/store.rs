@@ -4,20 +4,16 @@
 //! the run directory, so restarting the demo with the same run directory serves the same snapshot, and the revision
 //! counter never goes back:
 //!
-//! - `store.json`: the revision counter and the current config of each scope, if any: one config per scope, under the
-//!   config ID [`config_id`] names. Every change writes a new file, flushes it to disk, and renames it over the old one, so the file always holds one
+//! - `store.json`: the revision counter and the current config, if any, under the config ID [`DEMO_CONFIG_ID`]. Every
+//!   change writes a new file, flushes it to disk, and renames it over the old one, so the file always holds one
 //!   complete state. A publish or revoke takes effect exactly when this file is replaced: if writing it fails, nothing
-//!   changes. A store written by an earlier version of the demo (one config for the policy scope, or with
-//!   resources artifacts) still reads; its resources are ignored.
+//!   changes. A store written by an earlier version of the demo, which kept one config per scope, does not read: use a
+//!   new run directory.
 //! - `history.jsonl`: one line per publish or revoke, appended after the change. It is a log, not part of the state: a
 //!   line that cannot be written is logged and the change stands. The store also reads the highest revision from it,
 //!   so that the counter keeps increasing if `store.json` is moved aside.
-//!
-//! The revision counter is one for the whole product, whatever scope a revision is for: ADP orders revisions across
-//! scopes.
 
 use std::{
-    collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::Write as _,
     path::{Path, PathBuf},
@@ -28,30 +24,19 @@ use saluki_metric_plan::{canonical::PlanHash, ir::ReceivedArtifact};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::protocol::{config_id, transport_hash, ApprovedAgainst, ConfigEntry, Envelope, POLICY_SCOPE};
-
-/// The product name earlier versions of the demo wrote for history entries of resources artifacts, which no longer
-/// exist: such entries are skipped.
-const RESOURCES_PRODUCT: &str = "resources";
+use super::protocol::{transport_hash, ApprovedAgainst, ConfigEntry, Envelope, DEMO_CONFIG_ID};
 
 /// The format version of `store.json`.
-const STORE_FORMAT: u32 = 2;
-
-/// The format version of `store.json` the first version of the demo wrote: one config, for the policy scope.
-const STORE_FORMAT_ONE_SCOPE: u32 = 1;
+const STORE_FORMAT: u32 = 3;
 
 /// How many history entries the store keeps in memory (the file keeps every one).
 const HISTORY_IN_MEMORY: usize = 200;
 
-/// The config the stub currently serves for one scope.
+/// The config the stub currently serves.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PublishedConfig {
     /// The config ID.
     pub id: String,
-
-    /// The scope the config's artifact replaces.
-    #[serde(default = "policy_scope")]
-    pub scope: String,
 
     /// The config version, equal to the revision.
     pub version: u64,
@@ -70,10 +55,6 @@ pub struct PublishedConfig {
 
     /// When the config was published, in milliseconds since the Unix epoch.
     pub published_ms: u64,
-}
-
-fn policy_scope() -> String {
-    POLICY_SCOPE.to_string()
 }
 
 impl PublishedConfig {
@@ -95,7 +76,7 @@ pub enum HistoryAction {
     /// An artifact was published.
     Publish,
 
-    /// The snapshot was emptied, or one scope's config removed from it, revoking the artifact.
+    /// The snapshot was emptied, revoking the artifact.
     Revoke,
 }
 
@@ -105,16 +86,8 @@ pub struct HistoryEntry {
     /// When the change was made, in milliseconds since the Unix epoch.
     pub at_ms: u64,
 
-    /// The product changed: `None` for the policy product; earlier versions of the demo also wrote `resources`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub product: Option<String>,
-
     /// What was done.
     pub action: HistoryAction,
-
-    /// The scope a publish was for, or the one scope a revoke removed; `None` for a revoke of every scope.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scope: Option<String>,
 
     /// The revision published, for a publish.
     pub revision: Option<u64>,
@@ -123,33 +96,19 @@ pub struct HistoryEntry {
     pub artifact_hash: Option<String>,
 }
 
-impl HistoryEntry {
-    /// Returns `true` if the entry records a change of resources artifacts, which earlier versions of the demo wrote.
-    pub fn is_resources(&self) -> bool {
-        self.product.as_deref() == Some(RESOURCES_PRODUCT)
-    }
-}
-
 #[derive(Debug, Deserialize, Serialize)]
 struct StoreFile {
     format: u32,
     revision_counter: u64,
-    configs: BTreeMap<String, PublishedConfig>,
-}
-
-/// The store file as the first version of the demo wrote it.
-#[derive(Debug, Deserialize)]
-struct OneScopeStoreFile {
-    revision_counter: u64,
-    current: Option<PublishedConfig>,
+    config: Option<PublishedConfig>,
 }
 
 /// The durable artifact store.
 pub struct ArtifactStore {
     dir: PathBuf,
     revision_counter: u64,
-    /// The config served for each scope, by scope.
-    configs: BTreeMap<String, PublishedConfig>,
+    /// The config served, if any.
+    config: Option<PublishedConfig>,
     history: Vec<HistoryEntry>,
 }
 
@@ -166,7 +125,7 @@ impl ArtifactStore {
             .with_error_context(|| format!("Failed to create the artifact store directory '{}'.", dir.display()))?;
 
         let store_path = dir.join("store.json");
-        let (revision_counter, configs) = match fs::read_to_string(&store_path) {
+        let (revision_counter, config) = match fs::read_to_string(&store_path) {
             Ok(text) => read_store_file(&text).map_err(|error| {
                 generic_error!(
                     "Failed to read the artifact store '{}': {} Move it aside to start with an empty store; the \
@@ -175,7 +134,7 @@ impl ArtifactStore {
                     error
                 )
             })?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (0, BTreeMap::new()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (0, None),
             Err(error) => {
                 return Err(generic_error!(
                     "Failed to read the artifact store '{}': {}",
@@ -191,7 +150,6 @@ impl ArtifactStore {
                 .lines()
                 .filter(|line| !line.trim().is_empty())
                 .filter_map(|line| serde_json::from_str::<HistoryEntry>(line).ok())
-                .filter(|entry| !entry.is_resources())
                 .collect::<Vec<_>>(),
             Err(_) => Vec::new(),
         };
@@ -203,19 +161,14 @@ impl ArtifactStore {
         Ok(Self {
             dir: dir.to_path_buf(),
             revision_counter: revision_counter.max(high_water),
-            configs,
+            config,
             history,
         })
     }
 
-    /// Returns the config the stub serves for the policy scope, if any.
+    /// Returns the config the stub serves, if any.
     pub fn current(&self) -> Option<&PublishedConfig> {
-        self.configs.get(POLICY_SCOPE)
-    }
-
-    /// Returns the config the stub serves for each scope, in scope order.
-    pub fn configs(&self) -> impl Iterator<Item = &PublishedConfig> {
-        self.configs.values()
+        self.config.as_ref()
     }
 
     /// Returns the highest revision the store has issued.
@@ -234,13 +187,12 @@ impl ArtifactStore {
         self.revision_counter.max(high_water.unwrap_or(0)) + 1
     }
 
-    /// Returns the snapshot of the policy product: the current config of each scope, in scope order, or nothing.
+    /// Returns the snapshot of the policy product: the current config, or nothing.
     pub fn snapshot(&self) -> Vec<ConfigEntry> {
-        self.configs.values().map(PublishedConfig::entry).collect()
+        self.config.iter().map(PublishedConfig::entry).collect()
     }
 
-    /// Publishes an artifact document as the next revision, replacing the current config of the scope the artifact
-    /// replaces.
+    /// Publishes an artifact document as the next revision, replacing the current config.
     ///
     /// The envelope's `artifact_hash` is computed here, from the document, with the plan crate's
     /// [`ReceivedArtifact`], exactly as ADP recomputes it on receipt.
@@ -254,77 +206,50 @@ impl ArtifactStore {
     ) -> Result<PublishedConfig, GenericError> {
         let received = ReceivedArtifact::from_value(artifact.clone())
             .map_err(|error| generic_error!("The artifact cannot be published: {}", error))?;
-        let scope = received.artifact.scope.to_string();
         let revision = self.next_revision(high_water);
-        let config = build_config(&scope, revision, &received.hash, approved_against, artifact, now_ms)?;
+        let config = build_config(revision, &received.hash, approved_against, artifact, now_ms)?;
 
-        let mut configs = self.configs.clone();
-        configs.insert(scope.clone(), config.clone());
-        self.write(revision, &configs)?;
+        self.write(revision, Some(&config))?;
         self.revision_counter = revision;
-        self.configs = configs;
+        self.config = Some(config.clone());
         self.append_history(HistoryEntry {
             at_ms: now_ms,
-            product: None,
             action: HistoryAction::Publish,
-            scope: Some(scope),
             revision: Some(revision),
             artifact_hash: Some(config.artifact_hash.clone()),
         });
         Ok(config)
     }
 
-    /// Removes the config of `scope` from the snapshot, or every config when `scope` is `None`, which revokes the
-    /// artifacts: ADP installs the default program's region in their scopes.
+    /// Empties the snapshot, which revokes the artifact: ADP runs the default program. The revision counter stays.
     ///
-    /// Returns `false`, and changes nothing, if there is nothing to remove.
+    /// Returns `false`, and changes nothing, if nothing is served.
     ///
     /// # Errors
     ///
     /// Returns an error if the store file cannot be written. A failed revoke changes nothing.
-    pub fn revoke(&mut self, scope: Option<&str>, now_ms: u64) -> Result<bool, GenericError> {
-        let mut configs = self.configs.clone();
-        match scope {
-            Some(scope) => {
-                if configs.remove(scope).is_none() {
-                    return Ok(false);
-                }
-            }
-            None if configs.is_empty() => return Ok(false),
-            None => configs.clear(),
+    pub fn revoke(&mut self, now_ms: u64) -> Result<bool, GenericError> {
+        if self.config.is_none() {
+            return Ok(false);
         }
-        self.write(self.revision_counter, &configs)?;
-        self.configs = configs;
+        self.write(self.revision_counter, None)?;
+        self.config = None;
         self.append_history(HistoryEntry {
             at_ms: now_ms,
-            product: None,
             action: HistoryAction::Revoke,
-            scope: scope.map(str::to_string),
             revision: None,
             artifact_hash: None,
         });
         Ok(true)
     }
 
-    /// Revokes every config, so that ADP runs the default program: what a check starts from. The revision counter
-    /// stays.
-    ///
-    /// Returns `false`, and changes nothing, if nothing is served.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the store file cannot be written.
-    pub fn revoke_all(&mut self, now_ms: u64) -> Result<bool, GenericError> {
-        self.revoke(None, now_ms)
-    }
-
     /// Replaces `store.json`: writes the new state to a temporary file, flushes it to disk, renames it over the store
     /// file, and flushes the directory, so that a crash leaves either the old state or the new one.
-    fn write(&self, revision_counter: u64, configs: &BTreeMap<String, PublishedConfig>) -> Result<(), GenericError> {
+    fn write(&self, revision_counter: u64, config: Option<&PublishedConfig>) -> Result<(), GenericError> {
         let file = StoreFile {
             format: STORE_FORMAT,
             revision_counter,
-            configs: configs.clone(),
+            config: config.cloned(),
         };
         let text = serde_json::to_string_pretty(&file).error_context("Failed to serialize the artifact store.")?;
         let path = self.dir.join("store.json");
@@ -374,45 +299,29 @@ impl ArtifactStore {
     }
 }
 
-/// A store's state as read from its file: the policy revision counter, the config of each scope, and the resources
-/// product's state.
-type StoreState = (u64, BTreeMap<String, PublishedConfig>);
-
-/// Reads a store file of either format.
-fn read_store_file(text: &str) -> Result<StoreState, String> {
+/// Reads a store file: the revision counter and the current config.
+fn read_store_file(text: &str) -> Result<(u64, Option<PublishedConfig>), String> {
     let value: Value = serde_json::from_str(text).map_err(|error| error.to_string())?;
     match value.get("format").and_then(Value::as_u64) {
         Some(format) if format == u64::from(STORE_FORMAT) => {
             let file: StoreFile = serde_json::from_value(value).map_err(|error| error.to_string())?;
-            Ok((file.revision_counter, file.configs))
-        }
-        Some(format) if format == u64::from(STORE_FORMAT_ONE_SCOPE) => {
-            let file: OneScopeStoreFile = serde_json::from_value(value).map_err(|error| error.to_string())?;
-            let configs = file
-                .current
-                .map(|config| (config.scope.clone(), config))
-                .into_iter()
-                .collect();
-            Ok((file.revision_counter, configs))
+            Ok((file.revision_counter, file.config))
         }
         other => Err(format!(
-            "it has format {}, but this demo reads formats {} and {}. Use a new run directory.",
+            "it has format {}, but this demo reads format {}. Use a new run directory.",
             other.map_or_else(|| "(missing)".to_string(), |format| format.to_string()),
-            STORE_FORMAT_ONE_SCOPE,
             STORE_FORMAT
         )),
     }
 }
 
-/// Builds the config for an artifact of `scope`: its envelope as JSON text, and that text's transport hash.
+/// Builds the config for an artifact: its envelope as JSON text, and that text's transport hash.
 fn build_config(
-    scope: &str, revision: u64, artifact_hash: &PlanHash, approved_against: Option<ApprovedAgainst>, artifact: Value,
-    now_ms: u64,
+    revision: u64, artifact_hash: &PlanHash, approved_against: Option<ApprovedAgainst>, artifact: Value, now_ms: u64,
 ) -> Result<PublishedConfig, GenericError> {
     let (artifact_hash, payload, sha256) = envelope_payload(revision, artifact_hash, approved_against, artifact)?;
     Ok(PublishedConfig {
-        id: config_id(scope),
-        scope: scope.to_string(),
+        id: DEMO_CONFIG_ID.to_string(),
         version: revision,
         revision,
         artifact_hash,

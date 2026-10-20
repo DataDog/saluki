@@ -9,9 +9,9 @@ use serde_json::{json, Value};
 use super::*;
 use crate::{MAX_DEPTH, MAX_SOURCE_SIZE, MAX_TOKENS};
 
-/// Returns a policy with [`BASE`] and the given items, the base on line 2 and the items from line 3.
+/// Returns a policy with a comment on line 2 and the given items from line 3.
 fn lines(items: &str) -> String {
-    format!("policy p {{\n  base \"{}\"\n{}\n}}\n", BASE, items)
+    format!("policy {{\n  # The items follow.\n{}\n}}\n", items)
 }
 
 /// One expected diagnostic: where it is, what it covers, and part of its message.
@@ -57,7 +57,7 @@ fn common_mistakes_are_reported_at_the_offending_text() {
             3,
             3,
             "input.dogstatsd",
-            "`input.` is retired: a pipeline names a scope input alone, as in `dogstatsd | ...`.",
+            "`input.` is retired: a pipeline names a source alone, as in `dogstatsd | ...`.",
         ),
         case(
             lines(r#"  dogstatsd | host_tags(tags: config("host.tags")) | drop"#),
@@ -267,7 +267,7 @@ fn common_mistakes_are_reported_at_the_offending_text() {
             3,
             13,
             "x",
-            "`dogstatsd` is a scope input, which has no ports; write `dogstatsd`.",
+            "`dogstatsd` is a source, which has no ports; write `dogstatsd`.",
         ),
         case(
             lines("  dogstatsd | merge(inputs: 2) | drop"),
@@ -349,25 +349,32 @@ fn common_mistakes_are_reported_at_the_offending_text() {
             "Expected `and`, `or`, or `)` to close the parenthesis opened at line 3, column 21, found `|`.",
         ),
         case(
-            format!("policy p {{\n  base \"{}\"\n  dogstatsd | drop\n", BASE),
+            lines("  dogstatsd | drop").replace("\n}\n", "\n"),
             4,
             1,
             "",
-            "Expected `}` to close the policy opened at line 1, column 10, found the end of the input.",
+            "Expected `}` to close the policy opened at line 1, column 8, found the end of the input.",
         ),
         case(
-            "policy p {\n}\n".to_string(),
-            2,
+            "policy metrics {\n}\n".to_string(),
             1,
-            "}",
-            "Expected `base \"<program hash>\"` in the policy",
+            8,
+            "metrics",
+            "A program is whole: `policy` takes no scope name. Write `policy {`.",
         ),
         case(
-            "policy p {\n  base \"sha256:xyz\"\n}\n".to_string(),
+            "policy {\n  base \"sha256:xyz\"\n}\n".to_string(),
             2,
-            8,
-            "\"sha256:xyz\"",
-            "Invalid hash `sha256:xyz`",
+            3,
+            "base",
+            "`base` was removed: a program records nothing of what it was written against.",
+        ),
+        case(
+            lines("  dogstatsd | exit aggregated"),
+            3,
+            15,
+            "exit",
+            "`exit` was removed: a program is whole, so every path ends in `emit` or `drop`.",
         ),
         case(
             "dogstatsd | drop".to_string(),
@@ -377,8 +384,8 @@ fn common_mistakes_are_reported_at_the_offending_text() {
             "Expected `policy`, which starts a policy artifact, found `dogstatsd`.",
         ),
         case(
-            format!("policy p {{\n  base \"{}\"\n}}\nextra\n", BASE),
-            4,
+            "policy {\n}\nextra\n".to_string(),
+            3,
             1,
             "extra",
             "Expected the end of the input after the policy's closing `}`, found `extra`.",
@@ -446,7 +453,7 @@ fn every_reference_problem_is_reported_in_source_order() {
          6:5: `s` is a `split`, which has no output port `maybe`; pick one of `s.true` or `s.false`.\n\
          7:7: `unused` is never used; use it, write `unused | drop` to discard it, or remove the `let`.\n\
          9:3: `t` is a `split`, which has several output ports, so pick a port: `t.true` or `t.false`.\n\
-         10:11: `nowhere` is a scope input, which has no ports; write `nowhere`."
+         10:11: `nowhere` is a source, which has no ports; write `nowhere`."
     );
 }
 
@@ -560,7 +567,7 @@ fn artifacts_over_the_artifact_size_limit_are_rejected() {
     let over = source_with(&"x".repeat(limit - base + 1));
     let diagnostics = parse_err(&over);
     assert_eq!(diagnostics.len(), 1);
-    assert_eq!(text(&over, diagnostics[0].span), "policy p");
+    assert_eq!(text(&over, diagnostics[0].span), "policy");
     assert_eq!(
         diagnostics[0].message,
         format!(
@@ -654,7 +661,7 @@ fn wide_nodes_parse_and_print_in_time_proportional_to_their_edges() {
     let artifact_of = |nodes: Vec<Value>, mut edges: Vec<Value>| {
         edges.reverse();
         raw_artifact(json!({
-            "ir_version": 1, "scope": "p", "base": {"program_hash": BASE}, "nodes": nodes, "edges": edges,
+            "ir_version": 1, "nodes": nodes, "edges": edges,
         }))
     };
     let mut nodes = vec![json!({"id": "t", "op": "tee", "params": {"ports": width}})];
@@ -737,8 +744,6 @@ fn wide_nodes_parse_and_print_in_time_proportional_to_their_edges() {
 fn split_artifact(predicate: Value) -> PolicyArtifact {
     artifact(json!({
         "ir_version": 1,
-        "scope": "post_enrich",
-        "base": {"program_hash": BASE},
         "nodes": [
             {"id": "s", "op": "split", "params": {"predicate": predicate}},
             {"id": "s_true", "op": "drop"},
@@ -825,8 +830,6 @@ fn artifacts_within_the_size_limit_print_to_text_that_parses_back() {
     // would put the text over the token limit, so it is printed on one line.
     let dense = raw_artifact(json!({
         "ir_version": 1,
-        "scope": "post_enrich",
-        "base": {"program_hash": BASE},
         "nodes": [
             {"id": "input_dogstatsd_frobnicate", "op": "frobnicate", "params": {"v": vec![[0]; 60_000]}},
             {"id": "input_dogstatsd_frobnicate_out", "op": "drop"},
@@ -836,10 +839,7 @@ fn artifacts_within_the_size_limit_print_to_text_that_parses_back() {
             {"from": "input_dogstatsd_frobnicate.out", "to": "input_dogstatsd_frobnicate_out.in"},
         ],
     }));
-    let narrow = PrintOptions {
-        width: 0,
-        ..PrintOptions::default()
-    };
+    let narrow = PrintOptions { width: 0 };
     let printed = assert_large_round_trip(&dense, &narrow);
     assert!(printed.contains("| frobnicate(v: [[0], [0], "));
 }
@@ -902,7 +902,7 @@ const NESTING_FORMS: &[NestingForm] = &[
         ))
     }),
     ("a blob", |levels| {
-        policy(&format!("  blobs {{ \"{}\" = {} }}", BASE, nest(levels, "[", "", "]")))
+        policy(&format!("  blobs {{ \"{}\" = {} }}", HASH, nest(levels, "[", "", "]")))
     }),
     ("parentheses", |levels| nested_predicate(levels, "(", "true", ")")),
     ("`not`", |levels| nested_predicate(levels, "not ", "true", "")),

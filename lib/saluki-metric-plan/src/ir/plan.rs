@@ -8,12 +8,12 @@ use snafu::{ResultExt as _, Snafu};
 use super::{
     document::parse_document,
     id::{
-        ArtifactNodeId, ArtifactPortRef, ExitName, HostId, InputName, NativeComponentId, NodeId, OperatorName,
-        OutputId, PortRef, RecipientId, ScopeName,
+        ArtifactNodeId, ArtifactPortRef, HostId, NativeComponentId, NodeId, OperatorName, OutputId, PortRef,
+        RecipientId,
     },
     params::Params,
     resources::{OutputBinding, Resources},
-    version::{migrate, BlobTable, EdgeFromExit, Invalid, IrError, Parse, ResolvedInArtifact, Unhashable},
+    version::{migrate, BlobTable, Invalid, IrError, Parse, RemovedMember, ResolvedInArtifact, Unhashable},
 };
 use crate::{
     canonical::{contains_resolved_values, strip_resolved_values, CanonicalError, PlanHash, ResolvedValues},
@@ -58,10 +58,6 @@ pub struct Plan {
     /// The declared outputs that `emit` nodes deliver to.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outputs: Vec<OutputDecl>,
-
-    /// The replaceable regions of the plan, by name.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub scopes: Scopes,
 
     /// The resources the plan's outputs deliver through: each delivery host's settings, and every recipient.
     ///
@@ -161,7 +157,7 @@ impl Plan {
 /// Removes the resolved values of configuration bindings from the parameters of every node of a serialized plan.
 ///
 /// Bindings occur only in node parameters, so nothing else is touched: a map elsewhere in the plan may have members
-/// named `config` and `resolved`, such as outputs or scope inputs with those names.
+/// named `config` and `resolved`.
 fn strip_node_params(document: &mut serde_json::Map<String, Value>) {
     let Some(Value::Array(nodes)) = document.get_mut("nodes") else {
         return;
@@ -181,10 +177,10 @@ pub struct PlanProvenance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_change: Option<u64>,
 
-    /// The artifact revisions composed into the plan, each with the scope it replaces, in scope order: the program the
-    /// plan runs. A plan without them is the default program.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub artifacts: Vec<ComposedArtifact>,
+    /// The artifact revision the plan runs: every node of the plan but its sources is the artifact's. A plan without
+    /// one is the default program.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<ArtifactRevision>,
 
     /// Which native component each node of a lowered default program does the work of, as lowering writes it.
     ///
@@ -200,7 +196,7 @@ pub struct PlanProvenance {
 impl PlanProvenance {
     /// Returns `true` if the plan runs a program composed from artifacts, rather than the default program.
     pub fn is_composed(&self) -> bool {
-        !self.artifacts.is_empty()
+        self.artifact.is_some()
     }
 }
 
@@ -213,30 +209,6 @@ pub struct ArtifactRevision {
 
     /// The hash of the artifact.
     pub hash: PlanHash,
-}
-
-/// An artifact revision composed into a plan, and the scope it replaces.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ComposedArtifact {
-    /// The scope the artifact replaces: every node of the scope's region in the plan is the artifact's.
-    pub scope: ScopeName,
-
-    /// The artifact's revision number.
-    pub revision: u64,
-
-    /// The hash of the artifact.
-    pub hash: PlanHash,
-}
-
-impl ComposedArtifact {
-    /// Returns the artifact's revision and hash.
-    pub fn revision(&self) -> ArtifactRevision {
-        ArtifactRevision {
-            revision: self.revision,
-            hash: self.hash,
-        }
-    }
 }
 
 /// One operator node.
@@ -277,14 +249,6 @@ pub struct OutputDecl {
 
     /// The type of the records the output accepts.
     pub accepts: PortType,
-
-    /// A digest of what the output's declaration says it delivers to.
-    ///
-    /// An artifact records the fingerprint of every output it was written against, so that it is never silently
-    /// applied to an output that now delivers elsewhere. A bound output's fingerprint is version 2
-    /// ([`resources::fingerprint`][crate::resources::fingerprint]): its delivery host, what it accepts, and its
-    /// [selector](super::Selector), so that recipients added or removed under a role change nothing.
-    pub fingerprint: PlanHash,
 
     /// The physical recipients the output delivers to, sorted and without repeats. Outputs that share a recipient
     /// feed the same delivery queue.
@@ -336,41 +300,14 @@ struct BindingIdentity<'a> {
     recipients: Vec<Option<(&'a HostId, &'a Params)>>,
 }
 
-/// The replaceable regions of a plan, by name.
-pub type Scopes = BTreeMap<ScopeName, ScopeDecl>;
-
-/// A replaceable region of a plan.
+/// A policy artifact: a whole program, which runs in place of the default program.
 ///
-/// A scope is the region between its inputs and its exits: every node reachable from the ports its inputs name,
-/// without entering one of the ports its exits name. A policy artifact replaces that region. A scope without exits
-/// extends to the `emit` and `drop` nodes that end its paths, as one whose inputs are a plan's sources then covers the
-/// whole plan after them.
+/// An artifact is typically derived by editing the export of the default program. It is complete: every node after the
+/// host's sources is the artifact's, and nothing of the default program runs beside it. It records nothing of what it
+/// was written against.
 ///
-/// Validation checks that a scope is closed, so that replacing it changes nothing outside it: nothing outside the
-/// region feeds a node inside it except through the scope's inputs, each exit is fed from inside the region and leads
-/// out of it, and no two scopes share a node.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ScopeDecl {
-    /// The scope's named inputs, each mapped to the output port that feeds it.
-    pub inputs: BTreeMap<InputName, PortRef>,
-
-    /// The scope's named exits, each mapped to the input port outside the scope that it feeds.
-    ///
-    /// Exits let a scope end before the end of its paths, such as a region of processing before aggregation. Artifact
-    /// edges reach them as `exit.<name>`, so the artifact node ID `exit` is reserved.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub exits: BTreeMap<ExitName, PortRef>,
-}
-
-/// A policy artifact: a replacement for one scope of a plan, written against a recorded base.
-///
-/// An artifact is typically derived by editing the export of the default program's scope. It records the hash of that
-/// base program and the fingerprints of the outputs it refers to, so that a structural change to the default program
-/// or to an output is detected rather than silently merged. One artifact replaces exactly one scope.
-///
-/// Artifact nodes have local identifiers: composing the artifact into a plan assigns their plan IDs. Artifact
-/// edges refer to the scope's inputs as `input.<name>`. Artifacts refer to configuration by binding only, never with
+/// Artifact nodes have local identifiers: composing the artifact into a plan assigns their plan IDs. Artifact edges
+/// refer to the host's sources as `input.<name>`, by the `binding` of their `source` nodes. Artifacts refer to configuration by binding only, never with
 /// resolved values, and may write any parameter value as a reference to a blob in their blob table, which composition
 /// replaces with the blob's content (see [`Blobs::inline`]).
 ///
@@ -382,16 +319,10 @@ pub struct PolicyArtifact {
     /// The IR version the artifact is written in.
     pub ir_version: u32,
 
-    /// The scope the artifact replaces.
-    pub scope: ScopeName,
-
-    /// What the artifact was written against.
-    pub base: ArtifactBase,
-
     /// The artifact's nodes.
     pub nodes: Vec<ArtifactNode>,
 
-    /// The edges between the scope's inputs, the artifact's node ports, and the scope's exits.
+    /// The edges between the host's sources and the artifact's node ports.
     pub edges: Vec<ArtifactEdge>,
 
     /// Content-addressed values that parameters refer to.
@@ -414,27 +345,23 @@ impl PolicyArtifact {
     ///
     /// # Errors
     ///
-    /// Returns an error if its IR version is not accepted, it does not match the artifact's structure, an edge leaves
-    /// one of the scope's exits, a node's parameters carry a resolved configuration value, or its blob table is
-    /// inconsistent: a blob stored under a hash other than its content's, or a reference to a blob the table does not
-    /// hold. Whether the scope declares the exits the edges enter is checked when the artifact is composed.
+    /// Returns an error if its IR version is not accepted, it does not match the artifact's structure, a node's
+    /// parameters carry a resolved configuration value, it has a member artifacts no longer have (`scope` or `base`,
+    /// refused by name), or its blob table is inconsistent: a blob stored under a hash other than its content's, or a
+    /// reference to a blob the table does not hold. Whether the host has the sources the edges leave is checked when the
+    /// artifact is composed.
     pub fn from_value(mut value: Value) -> Result<Self, IrError> {
         migrate(&mut value)?;
+        // An artifact of one scope is refused with what replaced it, rather than as a document of unknown members.
+        if let Some(member) = REMOVED_ARTIFACT_MEMBERS
+            .iter()
+            .find(|member| value.get(**member).is_some())
+        {
+            return RemovedMember { member: *member }.fail();
+        }
         let artifact: Self = serde_json::from_value(value).context(Invalid {
             what: "policy artifact",
         })?;
-        if let Some((index, edge)) = artifact
-            .edges
-            .iter()
-            .enumerate()
-            .find(|(_, edge)| matches!(edge.from, ArtifactPortRef::Exit(_)))
-        {
-            return EdgeFromExit {
-                index,
-                exit: edge.from.clone(),
-            }
-            .fail();
-        }
         for node in &artifact.nodes {
             if node.params.iter().any(|(_, value)| contains_resolved_values(value)) {
                 return ResolvedInArtifact { node: node.id.clone() }.fail();
@@ -447,6 +374,9 @@ impl PolicyArtifact {
         Ok(artifact)
     }
 }
+
+/// The members an artifact had when it replaced one scope of the default program, which reading one refuses by name.
+const REMOVED_ARTIFACT_MEMBERS: [&str; 2] = ["scope", "base"];
 
 /// A policy artifact as it was received, with the hash that approval binds to.
 ///
@@ -486,20 +416,6 @@ impl ReceivedArtifact {
     }
 }
 
-/// What a policy artifact was written against.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ArtifactBase {
-    /// The hash of the exported program the artifact was derived from, without resolved values.
-    ///
-    /// When the current default program's export has a different hash, the artifact is reported as stale.
-    pub program_hash: PlanHash,
-
-    /// The fingerprint of every output the artifact refers to, as of its base.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub outputs: BTreeMap<OutputId, PlanHash>,
-}
-
 /// One node of a policy artifact.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -519,10 +435,10 @@ pub struct ArtifactNode {
 #[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactEdge {
-    /// The port the edge leaves: a scope input, or an output port of an artifact node.
+    /// The port the edge leaves: a source, or an output port of an artifact node.
     pub from: ArtifactPortRef,
 
-    /// The port the edge enters: an input port of an artifact node, or a scope exit.
+    /// The port the edge enters: an input port of an artifact node.
     pub to: ArtifactPortRef,
 }
 
@@ -696,7 +612,7 @@ mod tests {
 
     const ZERO_HASH: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
 
-    /// The IR example from the implementation design, with a concrete fingerprint and the edges it implies.
+    /// The IR example from the implementation design, with the edges it implies.
     fn design_example() -> Value {
         json!({
             "ir_version": 1,
@@ -710,10 +626,9 @@ mod tests {
             ],
             "edges": [{"from": "dsd_in.metrics", "to": "dsd_enrich.in"}],
             "outputs": [{"id": "dd_metrics_encode", "accepts": {"kinds": "all", "timestamps": "mixed"},
-                         "fingerprint": ZERO_HASH, "recipients": ["dd_out/primary"], "delivery": "native"}],
-            "scopes": {"post_enrich": {"inputs": {"metrics": "metrics_enrich_host_tags.out"}}},
+                         "recipients": ["dd_out/primary"], "delivery": "native"}],
             "provenance": {
-                "artifacts": [{"scope": "post_enrich", "revision": 3, "hash": ZERO_HASH}],
+                "artifact": {"revision": 3, "hash": ZERO_HASH},
                 "native_components": {"dsd_in": "dsd_in"}
             }
         })
@@ -722,14 +637,12 @@ mod tests {
     fn artifact_example() -> Value {
         json!({
             "ir_version": 1,
-            "scope": "post_enrich",
-            "base": {"program_hash": ZERO_HASH, "outputs": {"dd_metrics_encode": ZERO_HASH}},
             "nodes": [
                 {"id": "metrics_policy", "op": "tee", "params": {"ports": 2}},
                 {"id": "drop_debug", "op": "split", "params": {"predicate": {"name": {"prefix": "demo.debug."}}}}
             ],
             "edges": [
-                {"from": "input.metrics", "to": "metrics_policy.in"},
+                {"from": "input.dogstatsd", "to": "metrics_policy.in"},
                 {"from": "metrics_policy.1", "to": "drop_debug.in"}
             ]
         })
@@ -744,7 +657,7 @@ mod tests {
         assert_eq!(plan.nodes.len(), 3);
         let provenance = plan.provenance.as_ref().unwrap();
         assert!(provenance.is_composed());
-        assert_eq!(provenance.artifacts[0].revision().revision, 3);
+        assert_eq!(provenance.artifact.as_ref().unwrap().revision, 3);
         assert_eq!(
             provenance
                 .native_components
@@ -757,7 +670,6 @@ mod tests {
         assert_eq!(output.accepts.kinds, KindSet::ALL);
         assert_eq!(output.accepts.timestamps, TimestampForm::Mixed);
         assert_eq!(output.delivery, DeliveryPolicy::Native);
-        assert_eq!(plan.scopes.len(), 1);
         assert!(plan.node(&NodeId::reserved(LocalId::new("dsd_in").unwrap())).is_some());
 
         // Serialization writes the normalized form, which leaves out the default delivery policy.
@@ -771,7 +683,7 @@ mod tests {
     /// Two small documents in normalized form, with their canonical forms and digests computed independently of this
     /// implementation, with Python: `json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False)`,
     /// then `hashlib.sha256`. Both leave out members at their defaults: the plan's output has no `recipients` and no
-    /// `delivery`, and the artifact's base has no `outputs`.
+    /// `delivery`, and the artifact has no `blobs`.
     #[test]
     fn hashes_are_rfc_8785_digests_of_the_normalized_form() {
         let plan_document = json!({
@@ -782,12 +694,12 @@ mod tests {
             ],
             "edges": [{"from": "src.metrics", "to": "e.in"}],
             "outputs": [
-                {"id": "internal", "accepts": {"kinds": "all", "timestamps": "mixed"}, "fingerprint": ZERO_HASH}
+                {"id": "internal", "accepts": {"kinds": "all", "timestamps": "mixed"}}
             ]
         });
         let plan = Plan::from_value(plan_document.clone()).unwrap();
         assert_eq!(serde_json::to_value(&plan).unwrap(), plan_document);
-        let expected = "sha256:36dfd124297bfdf914a5963390f56f8e705f8f1ee90a541e12c70e75af441be5";
+        let expected = "sha256:1850cdb08ade8efcaf497bb2dc04ff2d609d785d73f0ca40f913a480a55ae1b6";
         assert_eq!(plan.hash(ResolvedValues::Include).unwrap().to_string(), expected);
         assert_eq!(PlanHash::of_value(&plan_document).unwrap().to_string(), expected);
 
@@ -806,15 +718,13 @@ mod tests {
 
         let artifact_document = json!({
             "ir_version": 1,
-            "scope": "post_enrich",
-            "base": {"program_hash": ZERO_HASH},
             "nodes": [{"id": "metrics_policy", "op": "tee", "params": {"ports": 1}}],
             "edges": [{"from": "input.metrics", "to": "metrics_policy.in"}]
         });
         let received = ReceivedArtifact::from_value(artifact_document.clone()).unwrap();
         assert_eq!(
             received.hash.to_string(),
-            "sha256:daaba618367b175c73b633082844b3b30304ff427a64d9cc64e3abeeb409846e"
+            "sha256:de6aaed372e290d44d1eebcee14e57f340f6ccd38e7c42df130298e87f90c254"
         );
         assert_eq!(serde_json::to_value(&received.artifact).unwrap(), artifact_document);
         assert_eq!(
@@ -826,61 +736,36 @@ mod tests {
         // Approval binds to the document as received: writing a default explicitly makes a different document, with a
         // different hash, although it reads as the same artifact.
         let mut explicit = artifact_document;
-        explicit["base"]["outputs"] = json!({});
+        explicit["blobs"] = json!({});
         let explicit = ReceivedArtifact::from_json(&explicit.to_string()).unwrap();
         assert_eq!(
             explicit.hash.to_string(),
-            "sha256:80a9db687504a7b20b9ec492c6b106d163d2fc74c83f1d061859db6a016193c1"
+            "sha256:b919dbc51a5406ec7d368666b40fe670cd006d4aeed3c78a2e551be3ea55016b"
         );
         assert_eq!(explicit.artifact, received.artifact);
     }
 
     #[test]
-    fn resolved_values_are_stripped_only_from_node_parameters() {
-        // Scopes named `config` and `resolved` are not configuration bindings: a hash without resolved values still
-        // covers every scope.
-        let scoped = |port: &str| {
-            let mut value = design_example();
-            value["scopes"] = json!({
-                "config": {"inputs": {"metrics": "dsd_in.metrics"}},
-                "resolved": {"inputs": {"metrics": port}}
-            });
-            Plan::from_value(value).unwrap()
-        };
-        assert_ne!(
-            scoped("dsd_in.metrics").hash(ResolvedValues::Exclude).unwrap(),
-            scoped("dsd_prefix_filter_blocklist.false")
-                .hash(ResolvedValues::Exclude)
-                .unwrap()
-        );
-    }
-
-    #[test]
-    fn artifact_edges_enter_a_scopes_exits_and_never_leave_them() {
-        let mut value = artifact_example();
-        value["scope"] = json!("dogstatsd_pre_aggregation");
-        value["edges"][1] = json!({"from": "metrics_policy.1", "to": "exit.aggregated"});
-        let artifact = PolicyArtifact::from_value(value.clone()).unwrap();
-        assert_eq!(
-            artifact.edges[1].to,
-            ArtifactPortRef::Exit(ExitName::new("aggregated").unwrap())
-        );
-        assert_eq!(
-            serde_json::to_value(&artifact).unwrap()["edges"][1]["to"],
-            json!("exit.aggregated")
-        );
-
-        value["edges"][1] = json!({"from": "exit.aggregated", "to": "drop_debug.in"});
-        let error = PolicyArtifact::from_value(value.clone()).unwrap_err();
-        assert!(matches!(error, IrError::EdgeFromExit { index: 1, .. }), "{}", error);
-        assert!(
-            error
-                .to_string()
-                .starts_with("Artifact edge 1 leaves `exit.aggregated`, a scope exit."),
-            "{}",
-            error
-        );
-        assert!(ReceivedArtifact::from_value(value).is_err());
+    fn an_artifact_of_one_scope_is_refused_with_what_replaced_it() {
+        for (member, value) in [
+            ("scope", json!("post_enrich")),
+            ("base", json!({"program_hash": ZERO_HASH})),
+        ] {
+            let mut document = artifact_example();
+            document[member] = value;
+            let error = PolicyArtifact::from_value(document.clone()).unwrap_err();
+            assert!(matches!(error, IrError::RemovedMember { member: removed } if removed == member));
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "The artifact has `{}`, which was removed: an artifact is a whole program, which runs in place of \
+                     the default program, and records nothing of what it was written against. Remove `scope` and \
+                     `base`.",
+                    member
+                )
+            );
+            assert!(ReceivedArtifact::from_value(document).is_err());
+        }
     }
 
     #[test]
@@ -900,11 +785,6 @@ mod tests {
         value["nodes"][1]["params"]["predicate"]["name"]["matches"]["values"] =
             json!({"config": "dogstatsd.metric_filter.values"});
         assert!(PolicyArtifact::from_value(value).is_ok());
-
-        // Outputs named `config` and `resolved` are outputs, not a binding.
-        let mut value = artifact_example();
-        value["base"]["outputs"] = json!({"config": ZERO_HASH, "resolved": ZERO_HASH});
-        assert!(PolicyArtifact::from_value(value).is_ok());
     }
 
     #[test]
@@ -919,8 +799,7 @@ mod tests {
         );
 
         // At any depth, including inside parameters, which the IR's own types never see as objects.
-        let artifact = r#"{"ir_version": 1, "scope": "post_enrich",
-            "base": {"program_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"},
+        let artifact = r#"{"ir_version": 1,
             "nodes": [{"id": "s", "op": "split",
                        "params": {"predicate": {"const": true}, "predicate": {"const": false}}}],
             "edges": []}"#;
@@ -993,11 +872,9 @@ mod tests {
     fn artifacts_round_trip_through_json() {
         let value = artifact_example();
         let artifact = PolicyArtifact::from_value(value.clone()).unwrap();
-        assert_eq!(artifact.scope.as_str(), "post_enrich");
-        assert_eq!(artifact.base.outputs.len(), 1);
         assert_eq!(
             artifact.edges[0].from,
-            ArtifactPortRef::Input(InputName::new("metrics").unwrap())
+            ArtifactPortRef::Input(crate::ir::InputName::new("dogstatsd").unwrap())
         );
         assert_eq!(serde_json::to_value(&artifact).unwrap(), value);
     }
@@ -1010,10 +887,7 @@ mod tests {
             ("edge", |v| v["edges"][0]["extra"] = json!(1)),
             ("output", |v| v["outputs"][0]["extra"] = json!(1)),
             ("port type", |v| v["outputs"][0]["accepts"]["extra"] = json!(1)),
-            ("scope", |v| v["scopes"]["post_enrich"]["extra"] = json!(1)),
-            ("plan provenance", |v| {
-                v["provenance"]["artifacts"][0]["extra"] = json!(1)
-            }),
+            ("plan provenance", |v| v["provenance"]["artifact"]["extra"] = json!(1)),
             // Nodes have no provenance: what a plan runs is a property of the plan.
             ("node provenance", |v| {
                 v["nodes"][0]["provenance"] = json!({"native": "dsd_in"})
@@ -1033,7 +907,6 @@ mod tests {
 
         let artifact_cases: Vec<(&str, Mutation)> = vec![
             ("artifact", |v| v["extra"] = json!(1)),
-            ("base", |v| v["base"]["extra"] = json!(1)),
             // Artifact nodes have no provenance either.
             ("node provenance", |v| {
                 v["nodes"][0]["provenance"] = json!({"native": "dsd_in"})
@@ -1069,7 +942,7 @@ mod tests {
             ),
             (
                 "hash",
-                |v| v["outputs"][0]["fingerprint"] = json!("sha256:abc"),
+                |v| v["provenance"]["artifact"]["hash"] = json!("sha256:abc"),
                 "Invalid hash",
             ),
             (

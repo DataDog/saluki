@@ -20,8 +20,8 @@ use crate::{
     canonical::{PlanHash, ResolvedValues},
     channel::{ApplyState, ArtifactConfig, ArtifactConfigId, ArtifactProduct, ArtifactSnapshot, ConfigAcknowledgment},
     compile::SlotId,
-    compose::{Approval, ComposeError, ComposeOutcome, Composed, Composer, DropReason, DroppedEmits, ScopeComposition},
-    ir::{OutputId, Plan, ReceivedArtifact},
+    compose::{Approval, ComposeError, ComposeOutcome, Composed, Composer, DropReason, DroppedEmits},
+    ir::{OutputId, Plan, ReceivedArtifact, RecipientName},
     operators::OperatorRegistry,
     runtime::PanicBudget,
     testing::default_program_catalog,
@@ -38,7 +38,8 @@ pub(super) const BOOT_POST_AGGREGATION: &str = "tenant.checkout.latency.max";
 const PANICS: &str = "3 panics in 60 seconds";
 
 /// The default program with its listener filterlist and post-aggregation filter set to one value each. In these tests,
-/// an artifact's policy is its listener filterlist, and configuration changes set the post-aggregation filter.
+/// an artifact's program is the default program with its own listener filterlist, and configuration changes set the
+/// post-aggregation filter.
 pub(super) fn program(listener: &str, post_aggregation: &str) -> Plan {
     edited(|value| {
         node_mut(value, "dsd_prefix_filter_blocklist")["params"]["predicate"] =
@@ -52,8 +53,6 @@ pub(super) fn program(listener: &str, post_aggregation: &str) -> Plan {
 fn artifact_document(marker: &str) -> Value {
     json!({
         "ir_version": 1,
-        "scope": "metrics",
-        "base": {"program_hash": format!("sha256:{}", "0".repeat(64))},
         "nodes": [{"id": "metrics_policy", "op": "split", "params": {"predicate": {"name": {"prefix": marker}}}}],
         "edges": [{"from": "input.dogstatsd", "to": "metrics_policy.in"}]
     })
@@ -76,18 +75,15 @@ fn marker_of(artifact: &ReceivedArtifact) -> String {
 ///
 /// An artifact composes to the default program with its marker as the listener filterlist, except for these markers:
 /// `unmodified` composes to the default program itself, as an unmodified export does; `invalid` composes to a plan
-/// that does not validate; `uncomposable` cannot be composed; and `fragile` cannot be composed once the configuration
-/// changed, as an artifact whose output was removed.
+/// that does not validate; `uncomposable` cannot be composed; and `fragile` emits to a recipient that only the boot
+/// configuration declares, so that it waits for it under any other, and cannot be composed again under one.
 ///
-/// One marker stands for the outcomes of stage 7: `degradable` (or any marker it starts) records `af_metrics_encode`,
-/// which a changed configuration no longer declares, so that a new artifact waits for it and the artifact in effect
-/// composes with its emits dropped.
+/// One marker stands for the outcomes of stage 7: `degradable` (or any marker it starts) emits to `af_metrics_encode`,
+/// which a changed configuration no longer declares, so that a new artifact is refused for it and the artifact in
+/// effect composes with its emits dropped.
 pub(super) struct TestComposer {
     /// The post-aggregation filter of the default program the host last lowered.
     pub(super) configuration: Cell<&'static str>,
-
-    /// Whether the default program changed structurally since the artifacts' export.
-    structural: Cell<bool>,
 
     /// The approval of every composition, by the artifact's marker, in order.
     approvals: RefCell<Vec<(String, Approval)>>,
@@ -97,22 +93,17 @@ impl TestComposer {
     pub(super) fn new() -> Self {
         Self {
             configuration: Cell::new(BOOT_POST_AGGREGATION),
-            structural: Cell::new(false),
             approvals: RefCell::new(Vec::new()),
         }
     }
 }
 
 impl Composer for TestComposer {
-    fn compose_all(&self, artifacts: &[(&ReceivedArtifact, &Approval)]) -> Result<Composed, ComposeError> {
-        let [(artifact, approval)] = artifacts else {
-            return Err(ComposeError::Malformed {
-                message: format!("the test composes one artifact, not {}", artifacts.len()),
-            });
-        };
+    fn compose(&self, artifact: &ReceivedArtifact, approval: &Approval) -> Result<Composed, ComposeError> {
         let configuration = self.configuration.get();
         let marker = marker_of(artifact);
-        self.approvals.borrow_mut().push((marker.clone(), (*approval).clone()));
+        self.approvals.borrow_mut().push((marker.clone(), approval.clone()));
+        let node = "metrics_policy".parse().unwrap();
         let removed = OutputId::new("af_metrics_encode").unwrap();
         let mut outcome = ComposeOutcome::Composed;
         let degradable = marker.starts_with("degradable");
@@ -125,7 +116,11 @@ impl Composer for TestComposer {
                 }]);
             }
             _ if degradable && configuration != BOOT_POST_AGGREGATION => {
-                return Err(ComposeError::PendingOutput { output: removed });
+                return Err(ComposeError::UndeclaredOutput {
+                    node,
+                    output: removed,
+                    declared: Vec::new(),
+                });
             }
             _ => {}
         }
@@ -136,8 +131,9 @@ impl Composer for TestComposer {
                 })
             }
             "fragile" if configuration != BOOT_POST_AGGREGATION => {
-                return Err(ComposeError::PendingOutput {
-                    output: OutputId::new("af_metrics_encode").unwrap(),
+                return Err(ComposeError::UnknownRecipient {
+                    node,
+                    recipient: RecipientName::new("team_b").unwrap(),
                 })
             }
             "unmodified" => (program(BOOT_LISTENER, configuration), default_program_catalog()),
@@ -145,23 +141,15 @@ impl Composer for TestComposer {
             listener => (program(listener, configuration), default_program_catalog()),
         };
         let report = Validator::new(&OperatorRegistry::native(), &catalog).validate(&plan);
-        let stale_base = self.structural.get();
         let stale_review = approval
             .approved_against
             .is_some_and(|approved| Some(approved) != approval.active_plan_hash);
-        let scope = ScopeComposition {
-            correspondence: Correspondence::new(),
-            stale_base,
-            stale_review,
-            outcome,
-        };
         Ok(Composed {
             plan,
             report,
-            correspondence: Correspondence::new(),
-            stale_base,
+            ids: BTreeMap::new(),
             stale_review,
-            scopes: BTreeMap::from([(artifact.artifact.scope.clone(), scope)]),
+            outcome,
         })
     }
 }
@@ -291,9 +279,6 @@ enum Step {
     /// The configuration changes the post-aggregation filter.
     Configure(&'static str),
 
-    /// The configuration changes the default program structurally.
-    Restructure,
-
     /// Every region acknowledges the preparation.
     Acknowledge,
 
@@ -399,10 +384,7 @@ impl Host {
                 self.composer.configuration.set(*post_aggregation);
                 self.lower()
             }
-            Step::Restructure => {
-                self.composer.structural.set(true);
-                self.lower()
-            }
+
             Step::Acknowledge => {
                 let generation = self.preparing();
                 let mut actions = Vec::new();
@@ -531,7 +513,6 @@ impl Host {
             write!(line, " kept g{}", kept.id).unwrap();
         }
         for (flag, name) in [
-            (summary.stale_base, " stale-base"),
             (summary.stale_review, " stale-review"),
             (summary.degraded.is_some(), " degraded"),
         ] {
@@ -577,7 +558,8 @@ fn error_kind(error: &str) -> &str {
         ("test refuses", "compose"),
         ("no longer declares", "removed"),
         ("replaced it before", "superseded"),
-        ("waiting for output", "waiting"),
+        ("waiting for recipient", "waiting"),
+        ("does not declare", "undeclared"),
     ];
     KINDS
         .iter()
@@ -596,13 +578,13 @@ struct Case {
 fn cases() -> Vec<Case> {
     vec![
         Case {
-            name: "a new artifact whose base records an output the host does not declare waits for it, holding \
-                   nothing, and installs once a lowering declares the output",
+            name: "a new artifact that emits to a recipient the host does not declare waits for it, holding nothing, \
+                   and installs once a lowering declares the recipient",
             steps: vec![
                 (Configure("other"), "g1 default hw- preparing g2"),
                 (Acknowledge, "g2 default hw-"),
-                // The test composer composes `fragile` only under the boot configuration, as an artifact whose
-                // recorded output only that configuration declares.
+                // The test composer composes `fragile` only under the boot configuration, as an artifact that emits to
+                // a recipient only that configuration declares.
                 (
                     Deliver(vec![policy(7, "fragile")]),
                     "g2 default hw7 | demo v7 r7 pending g- (waiting)",
@@ -616,8 +598,7 @@ fn cases() -> Vec<Case> {
             ],
         },
         Case {
-            name: "a newer artifact for its scope replaces the artifact that waits for an output, which never \
-                   installs",
+            name: "a newer artifact replaces the artifact that waits for a recipient, which never installs",
             steps: vec![
                 (Configure("other"), "g1 default hw- preparing g2"),
                 (Acknowledge, "g2 default hw-"),
@@ -638,8 +619,8 @@ fn cases() -> Vec<Case> {
             ],
         },
         Case {
-            name: "a newer artifact for its scope replaces the artifact that waits for an output even when it is \
-                   rejected, so the older one never installs",
+            name: "a newer artifact replaces the artifact that waits for a recipient even when it is rejected, so the \
+                   older one never installs",
             steps: vec![
                 (Configure("other"), "g1 default hw- preparing g2"),
                 (Acknowledge, "g2 default hw-"),
@@ -659,7 +640,7 @@ fn cases() -> Vec<Case> {
             ],
         },
         Case {
-            name: "a snapshot with more than one config for its scope drops the artifact that waits for an output",
+            name: "a snapshot with more than one config drops the artifact that waits for a recipient",
             steps: vec![
                 (Configure("other"), "g1 default hw- preparing g2"),
                 (Acknowledge, "g2 default hw-"),
@@ -683,8 +664,8 @@ fn cases() -> Vec<Case> {
             ],
         },
         Case {
-            name: "the artifact that waits for an output, delivered again by its config under its own revision, keeps \
-                   waiting, and a stale delivery leaves it waiting",
+            name: "the artifact that waits for a recipient, delivered again by its config under its own revision, \
+                   keeps waiting, and a stale delivery leaves it waiting",
             steps: vec![
                 (Configure("other"), "g1 default hw- preparing g2"),
                 (Acknowledge, "g2 default hw-"),
@@ -709,7 +690,7 @@ fn cases() -> Vec<Case> {
             ],
         },
         Case {
-            name: "a revocation removes the artifact that waits for an output",
+            name: "a revocation removes the artifact that waits for a recipient",
             steps: vec![
                 (Configure("other"), "g1 default hw- preparing g2"),
                 (Acknowledge, "g2 default hw-"),
@@ -1182,7 +1163,7 @@ fn cases() -> Vec<Case> {
             ],
         },
         Case {
-            name: "a stale review and a stale base are reported in status, and the artifact still installs",
+            name: "a stale review is reported in status, and the artifact still installs",
             steps: vec![
                 (
                     Deliver(vec![policy(7, "a").approved_against(boot_hash())]),
@@ -1194,10 +1175,6 @@ fn cases() -> Vec<Case> {
                     "g2 demo@7 hw8 preparing g3 kept g1 | demo v8 r8 pending g3",
                 ),
                 (Acknowledge, "g3 demo@8 hw8 kept g2 stale-review | demo v8 r8 active g3"),
-                (
-                    Restructure,
-                    "g3 demo@8 hw8 kept g2 stale-base stale-review | demo v8 r8 active g3",
-                ),
             ],
         },
         Case {
@@ -1709,7 +1686,7 @@ fn a_revoked_policy_leaves_effect_at_once_while_its_generation_runs_until_replac
 #[test]
 fn the_artifact_in_effect_composes_with_its_emits_to_a_removed_output_dropped_and_is_acknowledged_degraded() {
     // Plan 4.5 and 4.14: a re-composition of the artifact in effect, after its output was removed, drops its emits to
-    // it and runs, `active` with the reason; a new artifact recording the same output waits for it instead. The
+    // it and runs, `active` with the reason; a new artifact that emits to the same output is refused instead. The
     // output returning restores the emits, and the reason goes.
     let mut host = Host::new();
     host.step(&Deliver(vec![policy(7, "degradable")]));
@@ -1729,10 +1706,10 @@ fn the_artifact_in_effect_composes_with_its_emits_to_a_removed_output_dropped_an
     assert_eq!((marker.as_str(), approval.in_effect), ("degradable", true));
     drop(approvals);
 
-    // A newer artifact recording the same output is new: it waits for the output, and the one in effect keeps running.
+    // A newer artifact that emits to the same output is new: it is refused, and the one in effect keeps running.
     host.step(&Deliver(vec![policy(8, "degradable-b")]));
     let ack = &host.core().config_states()[0];
-    assert_eq!((ack.revision, ack.state), (Some(8), ApplyState::Pending));
+    assert_eq!((ack.revision, ack.state), (Some(8), ApplyState::Rejected));
     assert!(
         ack.error.as_deref().unwrap().contains("af_metrics_encode"),
         "{:?}",
@@ -1740,46 +1717,17 @@ fn the_artifact_in_effect_composes_with_its_emits_to_a_removed_output_dropped_an
     );
     assert_eq!(host.core().policy_in_effect().unwrap().revision, 7);
 
-    // The output returns: the waiting revision installs, composed with every emit.
+    // The output returns: the artifact in effect is composed again with every emit, and runs undegraded.
     host.step(&Configure(BOOT_POST_AGGREGATION));
     while host.core().status().preparing.is_some() {
         host.step(&Acknowledge);
     }
+    let summary = host.core().status_summary(None, None);
+    assert_eq!(summary.active_artifact.map(|artifact| artifact.revision), Some(7));
+    assert_eq!(summary.degraded, None);
+    // Its config's latest delivery stays refused.
     let ack = &host.core().config_states()[0];
-    assert_eq!(
-        (ack.revision, ack.state, ack.error.as_deref()),
-        (Some(8), ApplyState::Active, None)
-    );
-}
-
-#[test]
-fn a_config_held_unchanged_beside_a_damaged_twin_of_its_id_still_counts_for_its_scope() {
-    // Found by `property_test_the_high_water_mark_never_decreases_and_only_accepted_plans_run`: the core tracks configs
-    // by ID, so the damaged twin's refusal replaced what was tracked for `other`, and the next snapshot's unchanged
-    // `other` was not counted for the scope, which let `demo` install beside it.
-    let other = policy(1, "b").id("other");
-    let mut host = Host::new();
-    host.step(&Deliver(vec![other.clone()]));
-    host.step(&Deliver(vec![
-        other.clone(),
-        policy(1, "a").id("other").damaged(Damage::TransportHash),
-    ]));
-    host.step(&Deliver(vec![policy(2, "a"), other]));
-
-    // Two configs for one scope: both are rejected, and the high-water mark stays at the revision accepted.
-    assert_eq!(host.core().status().revision_high_water, Some(1));
-    let demo = host
-        .core()
-        .config_states()
-        .into_iter()
-        .find(|ack| ack.id.as_str() == "demo")
-        .unwrap();
-    assert_eq!(demo.state, ApplyState::Rejected);
-    assert!(
-        demo.error.as_deref().unwrap().contains("one artifact replaces a scope"),
-        "{:?}",
-        demo.error
-    );
+    assert_eq!((ack.revision, ack.state), (Some(8), ApplyState::Rejected));
 }
 
 #[test]
@@ -1812,6 +1760,88 @@ fn a_kept_generation_that_fails_takes_its_document_out_of_effect_under_every_rev
         ack.error.as_deref().unwrap().contains("failed under supervision"),
         "{:?}",
         ack.error
+    );
+}
+
+/// Returns the name a plan's filter node `node` matches, at `pointer` into its predicate.
+fn filter_name(plan: &Plan, node: &str, pointer: &str) -> String {
+    plan.node(&node.parse().unwrap())
+        .and_then(|node| node.params.get("predicate"))
+        .and_then(|predicate| predicate.pointer(pointer))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+#[test]
+fn a_cut_serving_an_artifact_of_a_failed_generation_is_dropped_as_a_preparation_is() {
+    // A candidate whose listener filterlist starts with `cut`, and whose post-aggregation filter differs from the
+    // active plan's, is a cut installation: a re-composition of the artifact `cut-a` after a configuration change.
+    let run = |phase: &str| {
+        let mut host = Host::new();
+        host.harness.core.classify_cuts_with(|active: &Plan, candidate: &Plan| {
+            let post_aggregation = |plan: &Plan| filter_name(plan, "dsd_post_agg_filter", "/not/all/1/intake_name/eq");
+            let listener = filter_name(candidate, "dsd_prefix_filter_blocklist", "/not/intake_name/eq");
+            if post_aggregation(active) == post_aggregation(candidate) || !listener.starts_with("cut") {
+                return None;
+            }
+            let plan = CutPlan {
+                owners: vec!["dsd_agg".parse().unwrap()],
+                widths: vec![Duration::from_secs(10)],
+                unknown_widths: Vec::new(),
+            };
+            Some((plan, vec![saluki_core::execution::AdmissionPointId::new(0)]))
+        });
+        host.step(&Deliver(vec![policy(1, "cut-a")]));
+        host.step(&Acknowledge);
+        // Generation 3 composes the artifact in effect again after the configuration changed, through a cut.
+        host.step(&Configure("x"));
+        host.step(&Acknowledge);
+        if phase == "armed" {
+            let actions = host.harness.core.cut_armed(
+                GenerationId::new(3),
+                saluki_core::execution::AdmissionTime::from_unix_secs(100),
+            );
+            host.perform(actions);
+        }
+        host
+    };
+    let failed = "candidate 3 generation 3: rejected (artifact revision 1 failed under supervision: 3 panics in 60 \
+                  seconds)";
+
+    // Not armed yet: the cut is aborted, and the failed generation rolls back to the default program it replaced,
+    // which predates the configuration change, so the default program is asked for. The failure, reported after the
+    // abort, is the config's latest news.
+    let mut host = run("barrier");
+    // The cut serves the artifact the active generation does, which is acknowledged active.
+    assert_eq!(
+        host.core().status().cut.map(|cut| cut.generation),
+        Some(GenerationId::new(3))
+    );
+    assert_eq!(host.summary(), "g2 demo@1 hw1 kept g1 | demo v1 r1 active g2");
+    let performed = host.step(&Panic);
+    assert_eq!(performed[..2], ["abort 3 in 6 slots".to_string(), failed.to_string()]);
+    assert!(performed.contains(&"commit 1".to_string()), "{:?}", performed);
+    assert_eq!(
+        host.summary(),
+        "g1 default hw1 preparing g4 | demo v1 r1 failed g2 (panic)"
+    );
+
+    // Armed: the cancellation the failure asks for rejects the cut instead of preparing it again. The rejection comes
+    // last, so it is the config's latest news.
+    let mut host = run("armed");
+    let performed = host.step(&Panic);
+    assert_eq!(
+        performed,
+        ["candidate 2 generation 2: failed", "cancel the cut of 3"].map(String::from)
+    );
+    let actions = host.harness.core.cut_cancelled(GenerationId::new(3));
+    let performed = host.perform(actions);
+    assert_eq!(performed[..2], ["abort 3 in 6 slots".to_string(), failed.to_string()]);
+    assert!(performed.contains(&"commit 1".to_string()), "{:?}", performed);
+    assert_eq!(
+        host.summary(),
+        "g1 default hw1 preparing g4 | demo v1 r1 rejected g3 (supervision)"
     );
 }
 
@@ -1905,8 +1935,8 @@ fn a_snapshot_with_many_configs_is_rejected_with_a_message_that_names_a_few() {
     let states = host.core().config_states();
     assert_eq!(states.len(), 30);
     let expected = "the policy snapshot holds 30 configs (`config-00`, `config-01`, `config-02`, `config-03`, \
-                    `config-04`, `config-05`, `config-06`, `config-07`, `config-08`, `config-09`, and 20 more) for \
-                    scope `metrics`, but one artifact replaces a scope: every config for it is rejected until the \
+                    `config-04`, `config-05`, `config-06`, `config-07`, `config-08`, `config-09`, and 20 more), but a \
+                    snapshot holds one program: every config is rejected, and what runs keeps running, until the \
                     snapshot holds one";
     for ack in &states {
         assert_eq!(
@@ -1973,7 +2003,7 @@ fn arb_step() -> impl Strategy<Value = Draft> {
         1 => Just(Redeliver),
         1 => (0..6usize).prop_map(RedeliverEarlier),
         2 => prop::sample::select(vec!["x", "y", BOOT_POST_AGGREGATION]).prop_map(Configure),
-        1 => Just(Restructure),
+
         8 => Just(Acknowledge),
         1 => Just(RefusePrepare),
         1 => Just(TimeOut),
@@ -2009,33 +2039,21 @@ struct Model {
 
     /// The generations supervision failed while they were active or kept.
     failed_generations: BTreeSet<GenerationId>,
-
-    /// The configs of the snapshot the core handled last.
-    last: Vec<Policy>,
 }
 
 impl Model {
-    /// Records a delivery the core handles, while `active` is the active generation.
+    /// Records a delivery the core handles, other than one of the snapshot it handled last, while `active` is the
+    /// active generation.
     ///
-    /// Every test artifact replaces the policy scope. The configs that pass their integrity checks are counted for it:
-    /// one is handled, unless it was handled alone in the last snapshot and is held unchanged, and more are all
-    /// rejected.
+    /// A snapshot holds one program: its one config is handled if it passes its integrity checks, and more are all
+    /// rejected unread.
     fn deliver(&mut self, policies: &[Policy], active: GenerationId) {
-        let last = std::mem::replace(&mut self.last, policies.to_vec());
-        let checked = |policies: &[Policy]| {
-            policies
-                .iter()
-                .filter(|policy| policy.damage.is_none())
-                .cloned()
-                .collect::<Vec<_>>()
-        };
-        let crowded = checked(&last).len() > 1;
-        match (policies, checked(policies).as_slice()) {
-            ([], _) => {
+        match policies {
+            [] => {
                 self.revoked.extend(self.accepted.iter().map(|(_, hash)| *hash));
                 self.revoked_running = Some(active);
             }
-            (_, [policy]) if crowded || !last.iter().any(|earlier| earlier.config() == policy.config()) => {
+            [policy] if policy.damage.is_none() => {
                 let hash = artifact_hash(policy.marker);
                 if self.high_water.is_none_or(|high_water| policy.revision > high_water) {
                     self.accepted.insert((policy.revision, hash));

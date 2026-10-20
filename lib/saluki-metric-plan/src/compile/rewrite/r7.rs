@@ -139,7 +139,6 @@ impl Rewrite for R7 {
                     nodes,
                     edges: plan.edges.clone(),
                     outputs: plan.outputs.clone(),
-                    scopes: plan.scopes.clone(),
                     resources: plan.resources.clone(),
                 },
                 nodes: vec![node.id.clone()],

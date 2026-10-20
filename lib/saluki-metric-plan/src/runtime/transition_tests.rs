@@ -39,7 +39,6 @@ use super::harness::{
     DeliveredRecord, DeliverySchedule, FrameHarness, HarnessOptions, LaneTimeEvent, LanedFrameHarness,
 };
 use crate::{
-    canonical::PlanHash,
     compile::{KeyGroups, LanePolicy},
     install::diff,
     interpret::{replay::LaneObservation, InstallOutcome, Interpreter, RunOutput, Trace, TraceEvent},
@@ -71,17 +70,12 @@ fn src() -> NodeId {
     id("src")
 }
 
-fn fingerprint(output: &str) -> PlanHash {
-    PlanHash::of_bytes(output.as_bytes())
-}
-
 pub(super) fn catalog() -> MemoryCatalog {
     ["a", "b"].into_iter().fold(MemoryCatalog::new(), |catalog, output| {
         catalog.with_output(
             OutputId::new(output).unwrap(),
             CatalogOutput {
                 accepts: PortType::ANY,
-                fingerprint: fingerprint(output),
                 recipients: vec![RecipientId::new(format!("out/{}", output)).unwrap()],
             },
         )
@@ -114,7 +108,7 @@ pub(super) fn plan(nodes: Vec<Value>, edges: &[&str], outputs: &[&str]) -> Plan 
         .iter()
         .map(|output| {
             json!({"id": output, "accepts": {"kinds": "all", "timestamps": "mixed"},
-                   "fingerprint": fingerprint(output).to_string(), "recipients": [format!("out/{}", output)]})
+                   "recipients": [format!("out/{}", output)]})
         })
         .collect::<Vec<_>>();
     let plan = Plan::from_value(json!({"ir_version": 1, "nodes": nodes, "edges": edges, "outputs": outputs})).unwrap();

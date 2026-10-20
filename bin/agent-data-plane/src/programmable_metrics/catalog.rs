@@ -4,12 +4,8 @@ use std::collections::BTreeMap;
 
 use saluki_components::forwarders::delivery::RecipientProtocol;
 use saluki_metric_plan::{
-    ir::{
-        BindingName, HostId, InputName, OutputDecl, OutputId, RecipientDecl, RecipientId, RecipientName, ScopeName,
-        ValueType,
-    },
+    ir::{BindingName, HostId, OutputDecl, OutputId, RecipientDecl, RecipientId, RecipientName, ValueType},
     model::{Kind, PortType},
-    operators::SourceBinding,
     validate::{Catalog, CatalogBinding, CatalogOutput, CatalogRecipient, HostSchema, MemoryCatalog},
 };
 
@@ -22,35 +18,22 @@ use super::{
 };
 use crate::config::DataPlaneConfiguration;
 
-/// The name of the one scope of the default program, which artifacts replace: the whole metrics path after its
-/// sources, from DogStatsD's processing through aggregation, enrichment, and the policy region to the outputs.
-pub const METRICS_SCOPE: &str = "metrics";
-
-/// Returns the name of the input of the [`METRICS_SCOPE`] that a source of `binding` feeds: the binding's own name,
-/// such as `dogstatsd` for the DogStatsD source's metrics.
-pub fn scope_input_name(binding: SourceBinding) -> InputName {
-    InputName::new(binding.as_str()).expect("source binding names are identifiers")
-}
-
 /// ADP's catalog: the outputs, native and declared, every configuration binding of the registry with its class and
-/// current value, the recipient directory, the inputs of the `metrics` scope, the budget of state every state owner
-/// shares, that a program runs at most one aggregation, and the delivery hosts with the schemas of their parameters.
+/// current value, the recipient directory, the budget of state every state owner shares, that a program runs at most one aggregation, and the delivery hosts with the schemas of their parameters.
 ///
 /// Bindings are resolved when the catalog is built, `Startup` bindings from the startup configuration and `Live` ones
 /// from the current configuration, so the catalog carries the same values lowering writes into plans. A binding the
 /// configuration has no valid value for is declared without one. Keyed bindings are declared for every key the
 /// configuration they resolve from has.
 ///
-/// It declares one input of the `metrics` scope for each source the lowered program has
-/// ([`with_scope_inputs`](Self::with_scope_inputs)), carrying what the source produces: so an artifact is checked
-/// against the kinds and timestamps each input can carry. It declares a host only if the process has it:
-/// `cluster_agent_out` only when a Cluster Agent endpoint resolved at boot.
+/// It declares no sources: those are the default program's `source` nodes, which a program's `input.<name>` edges
+/// leave. It declares a host only if the process has it: `cluster_agent_out` only when a Cluster Agent endpoint
+/// resolved at boot.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AdpCatalog {
     outputs: BTreeMap<OutputId, CatalogOutput>,
     bindings: BTreeMap<BindingName, CatalogBinding>,
     directory: Directory,
-    scope_inputs: BTreeMap<InputName, PortType>,
     state_budget: Option<u64>,
     hosts: FixedHosts,
     /// The sets of recipients lowering added no implied output for, each with why.
@@ -69,7 +52,6 @@ impl AdpCatalog {
                     output.decl.id.clone(),
                     CatalogOutput {
                         accepts: output.decl.accepts,
-                        fingerprint: output.decl.fingerprint,
                         recipients: output.decl.recipients.clone(),
                     },
                 )
@@ -102,18 +84,10 @@ impl AdpCatalog {
             outputs,
             bindings,
             directory: resources.directory.clone(),
-            scope_inputs: BTreeMap::new(),
             state_budget,
             hosts,
             refused_demand: resources.refused_demand.clone(),
         }
-    }
-
-    /// Declares the inputs of the `metrics` scope, each with the port type of what it carries: those lowering wrote
-    /// into the default program, one per source it has.
-    pub fn with_scope_inputs(mut self, inputs: impl IntoIterator<Item = (InputName, PortType)>) -> Self {
-        self.scope_inputs = inputs.into_iter().collect();
-        self
     }
 
     /// Returns how many contexts the state owners of every generation hold together at most: native DogStatsD
@@ -134,10 +108,6 @@ impl AdpCatalog {
         for (name, recipient) in &self.directory {
             catalog = catalog.with_recipient(name.clone(), recipient.clone());
         }
-        let scope = ScopeName::new(METRICS_SCOPE).expect("scope names are identifiers");
-        for (input, port_type) in &self.scope_inputs {
-            catalog = catalog.with_scope_input(scope.clone(), input.clone(), *port_type);
-        }
         if Catalog::single_aggregation(self) {
             catalog = catalog.with_single_aggregation();
         }
@@ -155,13 +125,6 @@ impl Catalog for AdpCatalog {
 
     fn binding(&self, name: &BindingName) -> Option<&CatalogBinding> {
         self.bindings.get(name)
-    }
-
-    fn scope_input(&self, scope: &ScopeName, input: &InputName) -> Option<PortType> {
-        if scope.as_str() != METRICS_SCOPE {
-            return None;
-        }
-        self.scope_inputs.get(input).copied()
     }
 
     fn state_budget(&self) -> Option<u64> {

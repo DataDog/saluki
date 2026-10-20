@@ -182,8 +182,7 @@ pub trait OperatorDef: Send + Sync {
     /// [`specify_bounds`][Self::specify_bounds] declares. The default declares nothing.
     fn specify_state_bounds(&self, _params: &DecodedParams, _builder: &mut MemoryBoundsBuilder) {}
 
-    /// Returns `true` if a program may contain a node of the operator: an artifact's author may write it, and a scope
-    /// an artifact replaces may hold it.
+    /// Returns `true` if a program may contain a node of the operator: an artifact's author may write it.
     ///
     /// Operators that run in a host component of their own, such as sources and opaque hosts, are the host's: only
     /// native configuration places them, since the host builds their components at boot and a program cannot build,

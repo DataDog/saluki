@@ -2,9 +2,8 @@
 //!
 //! - `GET /` (and `/app.js`, `/app.css`): the UI, embedded in the binary.
 //! - `GET /api/state`: everything the UI shows, polled about once per second, the Lanes panel's `lanes` included.
-//! - `POST /api/compile` `{source}`: parses a program, composes it into ADP's default program, with the artifacts ADP
-//!   runs for the other scopes, and validates the composed plan as ADP will, against the export of the scope it
-//!   replaces; returns diagnostics, the artifact, its hash, its canonical source, and the plan diff against the active
+//! - `POST /api/compile` `{source}`: parses a program, composes it into ADP's default program, and validates the
+//!   composed plan as ADP will, against ADP's export; returns diagnostics, the artifact, its hash, its canonical source, and the plan diff against the active
 //!   plan.
 //! - `POST /api/publish` `{artifact_hash}`: publishes the last compiled artifact as the next revision, if
 //!   `artifact_hash` is its hash. An approval is used once: publishing again needs another compile.
@@ -17,7 +16,7 @@
 //!   retires its recipient (see [`Destinations::remove`]).
 //! - `POST /api/native` `{metric_filterlist?, failover_metrics?}`: changes the native settings the demo writes in ADP's
 //!   configuration file: the metric filterlist, a native policy setting, and the failover signal.
-//! - `GET /api/default-program`: the export bundle's artifact, the default program's one scope, printed as source with
+//! - `GET /api/default-program`: the export bundle's artifact, the default program, printed as source with
 //!   ADP's notes as comments, with its legend, or why there is none.
 //! - `POST /api/traffic` `{running?, rate?, mix?}`: starts, pauses, or changes the rate of the traffic generator, or
 //!   the lines its datagrams carry (`mix`: `full`, or `canary_only`).
@@ -57,11 +56,11 @@ use crate::{
     export::{ExportBundle, Legend},
     intake::IntakeSummary,
     launcher::{Launch, LaunchView, Phase},
-    preview::{other_scope_artifacts, ActivePlan, CompileContext},
+    preview::{ActivePlan, CompileContext},
     recipients::RecipientsView,
     settings::{DemoPorts, Recipient, RecipientKind, RunSettings},
     stub::{
-        protocol::{ApprovedAgainst, ChannelStatus, POLICY_PRODUCT, POLICY_SCOPE},
+        protocol::{ApprovedAgainst, ChannelStatus, POLICY_PRODUCT},
         ChannelView, StubChannel,
     },
     telemetry::{
@@ -183,21 +182,19 @@ impl App {
         RecipientLabels::new(self.destinations.labels())
     }
 
-    /// Notes, as served at `now_ms`, the bucket widths that the artifacts the stub serves set (see
+    /// Notes, as served at `now_ms`, the bucket widths that the artifact the stub serves sets (see
     /// [`canary::artifact_widths`]).
     fn note_served_widths(&self, now_ms: u64) {
         let served = self
             .channel
-            .envelopes()
-            .into_iter()
-            .filter(|(scope, _)| scope == POLICY_SCOPE)
-            .map(|(_, envelope)| (envelope.revision, canary::artifact_widths(&envelope.artifact)))
+            .envelope()
+            .map(|envelope| (envelope.revision, canary::artifact_widths(&envelope.artifact)))
             .filter(|(_, widths)| !widths.is_empty());
-        let mut noted = self
-            .served_widths
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        for (revision, widths) in served {
+        if let Some((revision, widths)) = served {
+            let mut noted = self
+                .served_widths
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             noted.insert(
                 revision,
                 ServedWidths {
@@ -222,12 +219,11 @@ impl App {
     }
 
     /// Returns the bucket widths, besides the configured aggregation window, that the canary check aligns its ranges
-    /// to at `now_ms`, in increasing order: those set by every artifact of the default program's scope that the stub
-    /// served within the last [`CANARY_HISTORY_SECS`], unless ADP refused it.
+    /// to at `now_ms`, in increasing order: those set by every artifact that the stub served within the last
+    /// [`CANARY_HISTORY_SECS`], unless ADP refused it.
     ///
     /// A width stays for that long after its artifact is revoked or replaced: its buckets stay in the history the
-    /// check reads, and the cut back to another width takes effect only at a common multiple of the two. An artifact of
-    /// another scope never sets a width, since ADP declares no other scope and refuses it.
+    /// check reads, and the cut back to another width takes effect only at a common multiple of the two.
     fn canary_widths(&self, now_ms: u64) -> Vec<u64> {
         self.note_served_widths(now_ms);
         let refused = self.refused_revisions();
@@ -512,29 +508,12 @@ async fn compile_source(State(app): State<App>, Json(request): Json<CompileReque
             .map(|plan| (hash, plan)),
         None => None,
     };
-    // The source is checked against the export of the default program's one scope, which every artifact replaces; one
-    // that names another scope is refused by composition, which names the scope ADP declares. ADP composes it with the
-    // artifacts it runs for any other scope, which, with one scope declared, are none.
-    // The editor prints programs without their base, which only the scope's name is read past here.
-    let any_base = saluki_metric_plan_syntax::ParseOptions {
-        base: Some(saluki_metric_plan::ir::ArtifactBase {
-            program_hash: PlanHash::from_digest([0; 32]),
-            outputs: Default::default(),
-        }),
-    };
-    let scope = saluki_metric_plan_syntax::parse_with(&request.source, &any_base)
-        .map(|parsed| parsed.artifact.scope.to_string())
-        .unwrap_or_else(|_| POLICY_SCOPE.to_string());
+    // The source is checked against ADP's export of the default program, which every program replaces whole.
     let exported = app.control.export_with_default_program();
-    let others = status
-        .as_ref()
-        .map(|status| other_scope_artifacts(status, &app.channel.envelopes(), &scope))
-        .unwrap_or_default();
     let labels = app.labels();
     let context = exported.as_ref().map(|(export, default_program)| CompileContext {
         export,
         default_program: default_program.as_deref(),
-        others: &others,
         active: active_plan.as_ref().map(|(hash, plan)| ActivePlan {
             plan,
             hash: *hash,
@@ -589,9 +568,8 @@ async fn publish(State(app): State<App>, Json(request): Json<PublishRequest>) ->
     let Some(compiled) = taken else {
         let served = app
             .channel
-            .configs()
-            .into_iter()
-            .find(|config| config.artifact_hash == request.artifact_hash);
+            .current()
+            .filter(|config| config.artifact_hash == request.artifact_hash);
         let message = match served {
             Some(current) => format!(
                 "This approval was already used: the stub serves {} as revision {}. Compile again to publish it as \
@@ -640,7 +618,7 @@ async fn publish(State(app): State<App>, Json(request): Json<PublishRequest>) ->
 async fn revoke(State(app): State<App>) -> Response {
     // What the stub served until now was served until the revoke.
     app.note_served_widths(unix_millis());
-    match app.channel.revoke(None, unix_millis()) {
+    match app.channel.revoke(unix_millis()) {
         Ok(true) => Json(json!({ "revoked": true })).into_response(),
         Ok(false) => Json(json!({
             "revoked": false,
@@ -700,8 +678,7 @@ async fn default_program(State(app): State<App>) -> Json<Value> {
         Surface::Available(export) => json!({
             "available": true,
             "source": default_program_source(&export, &app.labels()),
-            "scope": export.scope,
-            "program_hash": export.program_hash().to_string(),
+            "program_hash": export.program_hash.to_string(),
             "legend": export.legend(&app.recipients()),
         }),
         Surface::NotExposed => json!({ "available": false, "message": EXPORT_NOT_EXPOSED_MESSAGE }),

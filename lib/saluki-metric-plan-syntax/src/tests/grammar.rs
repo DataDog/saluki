@@ -8,9 +8,6 @@ use serde_json::{json, Value};
 
 use super::*;
 
-const FP2: &str = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
-const FP3: &str = "sha256:3333333333333333333333333333333333333333333333333333333333333333";
-
 /// Returns a blob table document holding one blob.
 fn blob_table(hash: &str, blob: Value) -> Value {
     let mut table = serde_json::Map::new();
@@ -18,34 +15,22 @@ fn blob_table(hash: &str, blob: Value) -> Value {
     Value::Object(table)
 }
 
-/// The routing example: a scope input used twice, a `where`, and inline terminals.
+/// The routing example: a source used twice, a `where`, and inline terminals.
 fn routing_source() -> String {
-    format!(
-        r#"policy post_enrich {{
-  base "{BASE}"
-  outputs {{
-    dd_metrics_encode = "{FP2}",
-    metrics_routing_encode_0 = "{FP3}",
-  }}
-
+    r#"policy {
   metrics | emit output dd_metrics_encode
 
   let metrics_routing_filter_0 = metrics | where intake_name starts_with ["demo.checkout."]
 
   metrics_routing_filter_0 | emit output metrics_routing_encode_0
-}}
+}
 "#
-    )
+    .to_string()
 }
 
 fn routing_artifact() -> PolicyArtifact {
     artifact(json!({
         "ir_version": 1,
-        "scope": "post_enrich",
-        "base": {
-            "program_hash": BASE,
-            "outputs": {"dd_metrics_encode": FP2, "metrics_routing_encode_0": FP3},
-        },
         "nodes": [
             {"id": "input_metrics_fanout", "op": "tee", "params": {"ports": 2}},
             {"id": "input_metrics_fanout_0", "op": "emit", "params": {"output": "dd_metrics_encode"}},
@@ -65,16 +50,14 @@ fn routing_artifact() -> PolicyArtifact {
 }
 
 #[test]
-fn a_policy_needs_only_its_base() {
-    let source = format!("policy post_enrich {{\n  base \"{}\"\n}}\n", BASE);
+fn an_empty_policy_is_a_program() {
+    let source = "policy {\n}\n";
     let expected = artifact(json!({
         "ir_version": 1,
-        "scope": "post_enrich",
-        "base": {"program_hash": BASE},
         "nodes": [],
         "edges": [],
     }));
-    assert_round_trip(&source, &expected);
+    assert_round_trip(source, &expected);
 }
 
 #[test]
@@ -86,51 +69,41 @@ fn sugar_and_inline_terminals_build_the_routing_example() {
 fn the_core_forms_build_the_same_artifact_as_the_sugar() {
     // The routing example in the core: an explicit `tee` and `split`, ports picked by `.0`, `.true`, and `.false`, a
     // `drop` written out, and the statements in another order, some of them on one line.
-    let source = format!(
-        r#"policy post_enrich {{
+    let source = r#"policy {
   # The routing example in the core forms, in another order, on fewer lines.
-  base "{BASE}" outputs {{ metrics_routing_encode_0 = "{FP3}", dd_metrics_encode = "{FP2}", }}
   let input_metrics_fanout = metrics | tee(ports: 2)
   let metrics_routing_filter_0 = input_metrics_fanout.1 | split(predicate: intake_name starts_with ["demo.checkout."])
   metrics_routing_filter_0.false | drop
   metrics_routing_filter_0.true | emit output metrics_routing_encode_0
   input_metrics_fanout.0 | emit output dd_metrics_encode
-}}"#
-    );
+}"#
+    .to_string();
     let parsed = parse_ok(&source);
     assert_eq!(parsed.artifact, routing_artifact());
     // The sugar is used where it applies, and the terminals named by the derived-ID rule print inline.
     assert_eq!(print_default(&parsed.artifact), routing_source());
 
     // Reuse: a stream used twice is followed by a `tee` named `<stream>_fanout`, whose ports feed the uses in order.
-    let reuse = format!(
-        r#"policy post_enrich {{
-  base "{BASE}"
-
+    let reuse = r#"policy {
   let enriched = metrics | host_enrichment
 
   enriched | emit output dd_metrics_encode
 
   enriched | emit output dsd_client_telemetry
-}}
+}
 "#
-    );
-    let explicit = format!(
-        r#"policy post_enrich {{
-  base "{BASE}"
-
+    .to_string();
+    let explicit = r#"policy {
   let enriched = metrics | host_enrichment
   let enriched_fanout = enriched | tee(ports: 2)
 
   enriched_fanout.0 | emit output dd_metrics_encode
   enriched_fanout.1 | emit output dsd_client_telemetry
-}}
+}
 "#
-    );
+    .to_string();
     let expected = artifact(json!({
         "ir_version": 1,
-        "scope": "post_enrich",
-        "base": {"program_hash": BASE},
         "nodes": [
             {"id": "enriched", "op": "host_enrichment"},
             {"id": "enriched_fanout", "op": "tee", "params": {"ports": 2}},
@@ -154,10 +127,7 @@ fn the_core_forms_build_the_same_artifact_as_the_sugar() {
         .unwrap()
         .replace("enriched_fanout", "copies");
     let renamed = PolicyArtifact::from_json(&renamed).unwrap();
-    let printed = format!(
-        r#"policy post_enrich {{
-  base "{BASE}"
-
+    let printed = r#"policy {
   let enriched = metrics | host_enrichment
 
   let copies = enriched | tee(ports: 2)
@@ -165,9 +135,9 @@ fn the_core_forms_build_the_same_artifact_as_the_sugar() {
   copies.0 | emit output dd_metrics_encode
 
   copies.1 | emit output dsd_client_telemetry
-}}
+}
 "#
-    );
+    .to_string();
     assert_round_trip(&printed, &renamed);
 }
 
@@ -176,7 +146,7 @@ fn spans_lead_back_to_nodes_parameters_and_edges() {
     let source = routing_source();
     let spans = parse_ok(&source).spans;
 
-    // The implicit tee after a scope input has the span of the input's first use; a `where`'s node is the `where`.
+    // The implicit tee after a source has the span of the input's first use; a `where`'s node is the `where`.
     let node = spans.node("input_metrics_fanout").unwrap();
     assert_eq!(text(&source, node), "metrics");
     assert_eq!(node.start, source.find("  metrics | emit").unwrap() + 2);
@@ -269,9 +239,7 @@ fn values_convert_to_their_json_shapes_and_print_back() {
     // Escapes, multi-byte characters, and characters that do not print.
     let tags = r#"["quote\" back\\ tab\t nl\n", "é ✓ 😀", "\u{1}\u{202e}"]"#;
     let source = format!(
-        r#"policy post_enrich {{
-  base "{BASE}"
-
+        r#"policy {{
   blobs {{
     "{hash}" = ["a", "b"],
   }}
@@ -311,8 +279,6 @@ fn values_convert_to_their_json_shapes_and_print_back() {
     );
     let expected = artifact(json!({
         "ir_version": 1,
-        "scope": "post_enrich",
-        "base": {"program_hash": BASE},
         "nodes": [
             {"id": "scrub", "op": "tag_projection", "params": {
                 "rules": [{"metric_name": "a.b", "action": "exclude", "tags": ["user_id"]}],
@@ -389,44 +355,38 @@ fn other_spellings_of_values_convert_the_same_way() {
 #[test]
 fn printing_breaks_long_headers_lists_and_predicates() {
     // One line, as an author might write it.
-    let compact = format!(
-        concat!(
-            r#"policy post_enrich {{ base "{}" let ts = metrics | timestamp_split(window: 10s) let gateway = "#,
-            r#"ts.default | tag_projection(rules: [{{ "#,
-            r#"metric_name: "checkout.requests.latency", action: "exclude", tags: ["user_id", "session_id", "#,
-            r#""request_id"] }}, {{ tags: ["env", "service", "version", "region", "availability_zone", "#,
-            r#""cluster_name", "team"], action: "include", metric_name: "checkout.requests.count" }}], value_rules: "#,
-            r#"config.dogstatsd.tag_value_allowlist, cache_capacity: 50000) as scrub | "#,
-            r#"split(config.multi_region_failover.enabled and (is_empty(config."#,
-            r#"multi_region_failover.metric_mirroring.allowlist) or name matches(values: config."#,
-            r#"multi_region_failover.metric_mirroring.allowlist, prefix: false)) and not host in ["#,
-            r#""web-01.example.com", "web-02.example.com", "web-03.example.com", "web-04.example.com"]) "#,
-            r#"gateway.true | emit output mrf_metrics_encode gateway.false | where intake_name in ["#,
-            r#""checkout.requests.count", "checkout.requests.latency.p99", "checkout.errors.count", "#,
-            r#""checkout.cart.items.added", "checkout.cart.items.removed"] as routing | emit output "#,
-            r#"metrics_routing_encode_0 ts.passthrough | emit output dd_metrics_encode }}"#
-        ),
-        BASE
+    let compact = concat!(
+        r#"policy { let ts = metrics | timestamp_split(window: 10s) let gateway = "#,
+        r#"ts.default | tag_projection(rules: [{ "#,
+        r#"metric_name: "checkout.requests.latency", action: "exclude", tags: ["user_id", "session_id", "#,
+        r#""request_id"] }, { tags: ["env", "service", "version", "region", "availability_zone", "#,
+        r#""cluster_name", "team"], action: "include", metric_name: "checkout.requests.count" }], value_rules: "#,
+        r#"config.dogstatsd.tag_value_allowlist, cache_capacity: 50000) as scrub | "#,
+        r#"split(config.multi_region_failover.enabled and (is_empty(config."#,
+        r#"multi_region_failover.metric_mirroring.allowlist) or name matches(values: config."#,
+        r#"multi_region_failover.metric_mirroring.allowlist, prefix: false)) and not host in ["#,
+        r#""web-01.example.com", "web-02.example.com", "web-03.example.com", "web-04.example.com"]) "#,
+        r#"gateway.true | emit output mrf_metrics_encode gateway.false | where intake_name in ["#,
+        r#""checkout.requests.count", "checkout.requests.latency.p99", "checkout.errors.count", "#,
+        r#""checkout.cart.items.added", "checkout.cart.items.removed"] as routing | emit output "#,
+        r#"metrics_routing_encode_0 ts.passthrough | emit output dd_metrics_encode }"#
     );
-    let expected = format!(
-        r#"policy post_enrich {{
-  base "{BASE}"
-
+    let expected = r#"policy {
   let ts = metrics | timestamp_split(10s)
 
   let scrub = ts.default
     | tag_projection(
         rules: [
-          {{
+          {
             metric_name: "checkout.requests.latency",
             action: "exclude",
             tags: ["user_id", "session_id", "request_id"],
-          }},
-          {{
+          },
+          {
             metric_name: "checkout.requests.count",
             action: "include",
             tags: ["env", "service", "version", "region", "availability_zone", "cluster_name", "team"],
-          }},
+          },
         ],
         value_rules: config.dogstatsd.tag_value_allowlist,
         cache_capacity: 50000,
@@ -456,31 +416,22 @@ fn printing_breaks_long_headers_lists_and_predicates() {
   routing | emit output metrics_routing_encode_0
 
   ts.passthrough | emit output dd_metrics_encode
-}}
+}
 "#
-    );
-    let printed = print_default(&parse_ok(&compact).artifact);
+    .to_string();
+    let printed = print_default(&parse_ok(compact).artifact);
     assert_eq!(printed, expected);
     assert!(printed.lines().all(|line| line.chars().count() <= 120));
 
     // A narrower width breaks more, and still parses back to the same artifact.
-    let narrow = print(
-        &parse_ok(&compact).artifact,
-        &PrintOptions {
-            width: 40,
-            ..PrintOptions::default()
-        },
-    );
+    let narrow = print(&parse_ok(compact).artifact, &PrintOptions { width: 40 });
     assert!(narrow.lines().count() > expected.lines().count());
-    assert_eq!(parse_ok(&narrow).artifact, parse_ok(&compact).artifact);
+    assert_eq!(parse_ok(&narrow).artifact, parse_ok(compact).artifact);
 }
 
 #[test]
 fn nodes_are_ordered_by_the_graph_not_by_the_text() {
-    let forward = format!(
-        r#"policy post_enrich {{
-  base "{BASE}"
-
+    let forward = r#"policy {
   let fork = metrics | split(tags.env is set)
 
   let tagged = fork.true | host_enrichment
@@ -488,13 +439,11 @@ fn nodes_are_ordered_by_the_graph_not_by_the_text() {
   let joined = (tagged, fork.false)
 
   joined | emit output dd_metrics_encode
-}}
+}
 "#
-    );
+    .to_string();
     let expected = artifact(json!({
         "ir_version": 1,
-        "scope": "post_enrich",
-        "base": {"program_hash": BASE},
         "nodes": [
             {"id": "fork", "op": "split", "params": {"predicate": {"has_tag": "env"}}},
             {"id": "tagged", "op": "host_enrichment"},
@@ -514,27 +463,20 @@ fn nodes_are_ordered_by_the_graph_not_by_the_text() {
 
     // Statements that do not depend on each other may come in any order: the artifact lists its nodes and edges from
     // the inputs in name order, and the text prints the same way.
-    let two = format!(
-        r#"policy post_enrich {{
-  base "{BASE}"
-
+    let two = r#"policy {
   metrics | host_enrichment | emit output dd_metrics_encode
 
   otlp | host_enrichment | drop
-}}
+}
 "#
-    );
-    let swapped = format!(
-        r#"policy post_enrich {{
-  base "{BASE}"
+    .to_string();
+    let swapped = r#"policy {
   otlp | host_enrichment | drop
   metrics | host_enrichment | emit output dd_metrics_encode
-}}"#
-    );
+}"#
+    .to_string();
     let expected = artifact(json!({
         "ir_version": 1,
-        "scope": "post_enrich",
-        "base": {"program_hash": BASE},
         "nodes": [
             {"id": "input_metrics_host_enrichment", "op": "host_enrichment"},
             {"id": "input_metrics_host_enrichment_out", "op": "emit", "params": {"output": "dd_metrics_encode"}},
@@ -582,8 +524,6 @@ fn a_let_with_no_stages_names_a_stream() {
     );
     let expected = artifact(json!({
         "ir_version": 1,
-        "scope": "post_enrich",
-        "base": {"program_hash": BASE},
         "nodes": [
             {"id": "ts", "op": "timestamp_split", "params": {"window": "10s"}},
             {"id": "ts_default", "op": "drop"},
@@ -604,10 +544,7 @@ fn a_let_with_no_stages_names_a_stream() {
 
 #[test]
 fn keywords_can_be_names_and_terminals_can_be_named() {
-    let source = format!(
-        r#"policy post_enrich {{
-  base "{BASE}"
-
+    let source = r#"policy {
   let fork = metrics | split(true)
 
   let drop = fork.true | host_enrichment
@@ -615,13 +552,11 @@ fn keywords_can_be_names_and_terminals_can_be_named() {
   drop | emit output dd_metrics_encode
 
   fork.false | drop as sink
-}}
+}
 "#
-    );
+    .to_string();
     let expected = artifact(json!({
         "ir_version": 1,
-        "scope": "post_enrich",
-        "base": {"program_hash": BASE},
         "nodes": [
             {"id": "fork", "op": "split", "params": {"predicate": {"const": true}}},
             {"id": "drop", "op": "host_enrichment"},
@@ -644,9 +579,7 @@ fn inline_terminals_of_scope_inputs_and_long_parents_use_the_derived_id() {
     // The derived IDs were computed independently with Python, as the plan crate's own test of the rule does.
     let long = format!("a{}", "b".repeat(62));
     let source = format!(
-        r#"policy post_enrich {{
-  base "{BASE}"
-
+        r#"policy {{
   first | drop
 
   let {long} = second | where false
@@ -657,8 +590,6 @@ fn inline_terminals_of_scope_inputs_and_long_parents_use_the_derived_id() {
     );
     let expected = artifact(json!({
         "ir_version": 1,
-        "scope": "post_enrich",
-        "base": {"program_hash": BASE},
         "nodes": [
             {"id": "input_first", "op": "drop"},
             {"id": long, "op": "split", "params": {"predicate": {"const": false}}},
@@ -676,86 +607,15 @@ fn inline_terminals_of_scope_inputs_and_long_parents_use_the_derived_id() {
 }
 
 #[test]
-fn elided_fingerprints_print_without_outputs() {
-    let printed = print(
-        &routing_artifact(),
-        &PrintOptions {
-            elide_fingerprints: true,
-            ..PrintOptions::default()
-        },
-    );
-    let expected = routing_source().replace(
-        &format!(
-            "\n  outputs {{\n    dd_metrics_encode = \"{}\",\n    metrics_routing_encode_0 = \"{}\",\n  }}",
-            FP2, FP3
-        ),
-        "",
-    );
-    assert_eq!(printed, expected);
-    assert!(!printed.contains("outputs"));
-
-    let mut without = routing_artifact();
-    without.base.outputs.clear();
-    assert_eq!(parse_ok(&printed).artifact, without);
-}
-
-#[test]
-fn an_elided_base_prints_no_base_statement_and_parses_with_the_base_the_caller_gives() {
-    let artifact = routing_artifact();
-    let printed = print(
-        &artifact,
-        &PrintOptions {
-            elide_base: true,
-            ..PrintOptions::default()
-        },
-    );
-    assert!(!printed.contains("base") && !printed.contains("outputs"), "{}", printed);
-    assert!(
-        printed.starts_with("policy post_enrich {\n  metrics | emit output dd_metrics_encode\n"),
-        "{}",
-        printed
-    );
-
-    // Given the base, the text parses to the artifact; without it, the base is missing, as for any text.
-    let options = ParseOptions {
-        base: Some(artifact.base.clone()),
-    };
-    let parsed = parse_with(&printed, &options).unwrap();
-    assert_eq!(parsed.artifact, artifact);
-    assert!(parsed.base_given);
-    let error = parse(&printed).unwrap_err().to_string();
-    assert!(error.contains("Expected `base"), "{}", error);
-    // The node lines are where they are in the text, so diagnostics placed by the span map point at them.
-    let span = parsed.spans.node("metrics_routing_filter_0").unwrap();
-    assert!(
-        printed[span.start..].starts_with("where intake_name starts_with"),
-        "{:?}",
-        span
-    );
-
-    // A source with its own base records that one, whatever the caller gives.
-    let mut other = artifact.base.clone();
-    other.outputs.clear();
-    let own = parse_with(&routing_source(), &ParseOptions { base: Some(other) }).unwrap();
-    assert_eq!(own.artifact, artifact);
-    assert!(!own.base_given);
-    assert!(!parse_ok(&routing_source()).base_given);
-}
-
-#[test]
 fn other_ir_versions_are_written_out() {
     let mut old = routing_artifact();
     old.ir_version = 0;
     let printed = print_default(&old);
-    assert!(
-        printed.starts_with("policy post_enrich {\n  ir_version 0\n  base"),
-        "{}",
-        printed
-    );
+    assert!(printed.starts_with("policy {\n  ir_version 0\n"), "{}", printed);
     assert_eq!(parse_ok(&printed).artifact, old);
 
     // The current version may be written, and is left out when printing.
-    let explicit = routing_source().replace("  base", "  ir_version 1\n  base");
+    let explicit = routing_source().replace("policy {\n", "policy {\n  ir_version 1\n");
     let parsed = parse_ok(&explicit);
     assert_eq!(parsed.artifact, routing_artifact());
     assert_eq!(print_default(&parsed.artifact), routing_source());
@@ -767,8 +627,6 @@ fn invalid_artifacts_print_and_parse_back_or_report_why() {
     // are then not known and are written in order of name.
     let representable = raw_artifact(json!({
         "ir_version": 1,
-        "scope": "post_enrich",
-        "base": {"program_hash": BASE},
         "nodes": [
             {"id": "e", "op": "tee"},
             {"id": "s", "op": "split", "params": {"predicate": {"const": true}, "extra": 1}},
@@ -790,12 +648,10 @@ fn invalid_artifacts_print_and_parse_back_or_report_why() {
     assert!(printed.contains("\n  s.false | drop\n"), "{}", printed);
     assert_eq!(parse_ok(&printed).artifact, representable);
 
-    // Not representable: an edge back to a scope input, which text cannot write, and an edge to a node the artifact
+    // Not representable: an edge back to a source, which text cannot write, and an edge to a node the artifact
     // does not have. They print as streams that go nowhere, and parsing the text reports it.
     let back = raw_artifact(json!({
         "ir_version": 1,
-        "scope": "post_enrich",
-        "base": {"program_hash": BASE},
         "nodes": [{"id": "t", "op": "tee", "params": {"ports": 2}}, {"id": "d", "op": "drop"}],
         "edges": [
             {"from": "input.metrics", "to": "t.in"},
@@ -805,8 +661,6 @@ fn invalid_artifacts_print_and_parse_back_or_report_why() {
     }));
     let dangling = raw_artifact(json!({
         "ir_version": 1,
-        "scope": "post_enrich",
-        "base": {"program_hash": BASE},
         "nodes": [],
         "edges": [{"from": "input.metrics", "to": "ghost.in"}, {"from": "phantom.out", "to": "ghost.in"}],
     }));
@@ -825,71 +679,6 @@ fn invalid_artifacts_print_and_parse_back_or_report_why() {
 }
 
 #[test]
-fn edges_leave_a_scope_that_ends_before_its_paths_do_by_its_exits() {
-    // A scope with exits, as the DogStatsD pre-aggregation scope is: an edge into an exit is written as its target,
-    // in a node's block or as a statement of its own, and never makes a node.
-    let source = format!(
-        r#"policy dogstatsd_pre_aggregation {{
-  base "{BASE}"
-
-  let blocklist = metrics | split(name starts_with "blocked.")
-
-  blocklist.true | drop
-
-  blocklist.false | exit aggregated
-}}
-"#
-    );
-    let expected = artifact(json!({
-        "ir_version": 1,
-        "scope": "dogstatsd_pre_aggregation",
-        "base": {"program_hash": BASE},
-        "nodes": [
-            {"id": "blocklist", "op": "split", "params": {"predicate": {"name": {"prefix": "blocked."}}}},
-            {"id": "blocklist_true", "op": "drop"},
-        ],
-        "edges": [
-            {"from": "input.metrics", "to": "blocklist.in"},
-            {"from": "blocklist.true", "to": "blocklist_true.in"},
-            {"from": "blocklist.false", "to": "exit.aggregated"},
-        ],
-    }));
-    assert_round_trip(&source, &expected);
-    let parsed = parse_ok(&source);
-    assert_eq!(text(&source, parsed.spans.edge(2).unwrap()), "exit aggregated");
-
-    // A scope input may lead straight to an exit, and so may a node with one port.
-    let source = format!(
-        r#"policy dogstatsd_pre_aggregation {{
-  base "{BASE}"
-
-  metrics | exit passthrough
-}}
-"#
-    );
-    let expected = artifact(json!({
-        "ir_version": 1,
-        "scope": "dogstatsd_pre_aggregation",
-        "base": {"program_hash": BASE},
-        "nodes": [],
-        "edges": [{"from": "input.metrics", "to": "exit.passthrough"}],
-    }));
-    assert_round_trip(&source, &expected);
-    let statement = source.replace(
-        "metrics | exit passthrough",
-        "let keep = metrics | tee(ports: 1)\n\n  keep | exit passthrough",
-    );
-    let parsed = parse_ok(&statement);
-    assert_eq!(
-        serde_json::to_value(&parsed.artifact.edges).unwrap(),
-        json!([
-            {"from": "input.metrics", "to": "keep.in"},
-            {"from": "keep.0", "to": "exit.passthrough"},
-        ])
-    );
-}
-
-#[test]
 fn comments_and_whitespace_do_not_matter() {
     let spaced = routing_source()
         .replace('\n', "\n\n   # a comment line\n")
@@ -899,20 +688,15 @@ fn comments_and_whitespace_do_not_matter() {
 
 #[test]
 fn emits_to_recipients_name_them_bare_or_quoted_and_print_back() {
-    let source = format!(
-        r#"policy metrics {{
-  base "{BASE}"
-
+    let source = r#"policy {
   metrics | emit [primary, "https://127.0.0.1:17102"]
 
   metrics | emit output dsd_client_telemetry
-}}
+}
 "#
-    );
+    .to_string();
     let expected = artifact(json!({
         "ir_version": 1,
-        "scope": "metrics",
-        "base": {"program_hash": BASE},
         "nodes": [
             {"id": "input_metrics_fanout", "op": "tee", "params": {"ports": 2}},
             {"id": "input_metrics_fanout_0", "op": "emit", "params": {"to": ["primary", "https://127.0.0.1:17102"]}},

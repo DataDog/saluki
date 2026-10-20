@@ -21,11 +21,8 @@ pub const MAX_IDENTIFIER_LEN: usize = 63;
 /// The identifier grammar, as a regular expression.
 pub const IDENTIFIER_PATTERN: &str = "^[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}$";
 
-/// The local identifier that artifact edges use to refer to their scope's inputs, as in `input.metrics`.
+/// The local identifier that artifact edges use to refer to the host's sources, as in `input.dogstatsd`.
 pub const SCOPE_INPUT_NODE: &str = "input";
-
-/// The local identifier reserved for artifact edges that reach their scope's exits, as in `exit.aggregated`.
-pub const SCOPE_EXIT_NODE: &str = "exit";
 
 const IDENTIFIER_RULE: &str = "identifiers start with a lowercase ASCII letter and contain only lowercase letters, \
                                digits, and single underscores between them, up to 63 characters";
@@ -134,11 +131,10 @@ fn no_extra_rule(_value: &str) -> Option<&'static str> {
     None
 }
 
-/// An extra identifier rule that rejects [`SCOPE_INPUT_NODE`] and [`SCOPE_EXIT_NODE`].
-fn not_scope_boundary(value: &str) -> Option<&'static str> {
+/// An extra identifier rule that rejects [`SCOPE_INPUT_NODE`].
+fn not_input(value: &str) -> Option<&'static str> {
     match value {
-        SCOPE_INPUT_NODE => Some("`input` is reserved for the scope's inputs"),
-        SCOPE_EXIT_NODE => Some("`exit` is reserved for the scope's exits"),
+        SCOPE_INPUT_NODE => Some("`input` is reserved for the host's sources"),
         _ => None,
     }
 }
@@ -244,15 +240,10 @@ identifier!(
 );
 
 identifier!(
-    /// The name of a scope: a replaceable region of a plan.
-    ScopeName,
-    "A" "scope name"
-);
-
-identifier!(
-    /// The name of one of a scope's inputs.
+    /// The name of one of the host's sources, as an artifact edge leaving `input.<name>` names it: the `binding` of a
+    /// `source` node.
     InputName,
-    "A" "scope input name"
+    "A" "source name"
 );
 
 identifier!(
@@ -268,19 +259,12 @@ identifier!(
 );
 
 identifier!(
-    /// The name of one of a scope's exits.
-    ExitName,
-    "A" "scope exit name"
-);
-
-identifier!(
     /// The local identifier of a node in a policy artifact.
     ///
-    /// This is a [`LocalId`] other than [`SCOPE_INPUT_NODE`] and [`SCOPE_EXIT_NODE`], which artifact edges reserve for
-    /// the scope's inputs and exits.
+    /// This is a [`LocalId`] other than [`SCOPE_INPUT_NODE`], which artifact edges reserve for the host's sources.
     ArtifactNodeId,
     "An" "artifact node ID",
-    not_scope_boundary
+    not_input
 );
 
 impl ArtifactNodeId {
@@ -517,20 +501,15 @@ string_serde!(
 const ARTIFACT_PORT_REF_PATTERN: &str =
     "^[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}\\.(?:[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}|0|[1-9][0-9]{0,3})$";
 
-/// A reference to a port within a policy artifact, serialized as `input.<name>`, `exit.<name>`, or `<node>.<port>`.
+/// A reference to a port within a policy artifact, serialized as `input.<name>` or `<node>.<port>`.
 ///
 /// Artifact nodes are named by local identifiers, because composing the artifact into a plan decides their namespace.
-/// A scope's inputs and exits are named by the scope: an edge leaves a scope input, as `input.metrics`, and an edge
-/// that leaves the scope before the end of its paths enters one of its exits, as `exit.aggregated`. Which end of an
-/// edge each may be is checked when an artifact is read ([`PolicyArtifact::from_value`][super::PolicyArtifact]), and
-/// whether the scope declares the name when the artifact is composed into a plan.
+/// The host's sources are named by the `binding` of their `source` nodes: an edge leaves a source as
+/// `input.dogstatsd`. Whether the host has the source is checked when the artifact is composed into a plan.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ArtifactPortRef {
-    /// One of the scope's named inputs.
+    /// One of the host's sources, by name.
     Input(InputName),
-
-    /// One of the scope's named exits: where an edge leaves the scope. Only an edge's target can be an exit.
-    Exit(ExitName),
 
     /// A port of one of the artifact's nodes.
     Node {
@@ -546,7 +525,6 @@ impl fmt::Display for ArtifactPortRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Input(name) => write!(f, "{}.{}", SCOPE_INPUT_NODE, name),
-            Self::Exit(name) => write!(f, "{}.{}", SCOPE_EXIT_NODE, name),
             Self::Node { node, port } => write!(f, "{}.{}", node, port),
         }
     }
@@ -560,14 +538,11 @@ impl FromStr for ArtifactPortRef {
             invalid(
                 "artifact port reference",
                 value,
-                "artifact port references are `input.<name>`, `exit.<name>`, or a node ID and a port name separated by \
-                 a period",
+                "artifact port references are `input.<name>`, or a node ID and a port name separated by a period",
             )
         })?;
         if node == SCOPE_INPUT_NODE {
             Ok(Self::Input(port.parse()?))
-        } else if node == SCOPE_EXIT_NODE {
-            Ok(Self::Exit(port.parse()?))
         } else {
             Ok(Self::Node {
                 node: node.parse()?,
@@ -581,8 +556,8 @@ string_serde!(
     ArtifactPortRef,
     ARTIFACT_PORT_REF_PATTERN,
     (MAX_IDENTIFIER_LEN + 1 + MAX_IDENTIFIER_LEN) as u32,
-    "A port reference within a policy artifact: `input.<name>` (a scope input, only as an edge's source), \
-     `exit.<name>` (a scope exit, only as an edge's target), or `<node>.<port>`."
+    "A port reference within a policy artifact: `input.<name>` (one of the host's sources, only as an \
+     edge's source), or `<node>.<port>`."
 );
 
 const BINDING_NAME_PATTERN: &str = "^[a-z0-9_]+(?:\\.[a-z0-9_]+)*$";
@@ -945,7 +920,7 @@ mod tests {
     }
 
     #[test]
-    fn artifact_port_refs_distinguish_scope_inputs() {
+    fn artifact_port_refs_distinguish_sources() {
         assert_eq!(
             "input.metrics".parse::<ArtifactPortRef>().unwrap(),
             ArtifactPortRef::Input(InputName::new("metrics").unwrap())
@@ -959,25 +934,17 @@ mod tests {
         );
         // Artifact nodes are local: a namespace prefix is not allowed.
         assert!("policy/x.in".parse::<ArtifactPortRef>().is_err());
-        // The scope input is named, never numbered.
+        // A source is named, never numbered.
         assert!("input.0".parse::<ArtifactPortRef>().is_err());
-        // An artifact node cannot be called `input`, nor `exit`, which edges to a scope's exits will use.
+        // An artifact node cannot be called `input`, which names the host's sources.
         let error = ArtifactNodeId::new("input").unwrap_err().to_string();
         assert!(error.contains("`input` is reserved"), "{}", error);
-        let error = ArtifactNodeId::new("exit").unwrap_err().to_string();
-        assert!(error.contains("`exit` is reserved"), "{}", error);
-        // A scope's exits are named, as its inputs are, and print as they parse.
-        let exit = "exit.aggregated".parse::<ArtifactPortRef>().unwrap();
-        assert_eq!(exit, ArtifactPortRef::Exit(ExitName::new("aggregated").unwrap()));
-        assert_eq!(exit.to_string(), "exit.aggregated");
-        assert!("exit.0".parse::<ArtifactPortRef>().is_err());
-        assert!("exit.Aggregated".parse::<ArtifactPortRef>().is_err());
-        assert!(ArtifactNodeId::new("exits").is_ok());
+        // `exit` is a node ID like any other: a program is whole, and ends in its own `emit`s and `drop`s.
         assert_eq!(
-            "exits.in".parse::<ArtifactPortRef>().unwrap(),
+            "exit.aggregated".parse::<ArtifactPortRef>().unwrap(),
             ArtifactPortRef::Node {
-                node: ArtifactNodeId::new("exits").unwrap(),
-                port: PortName::new("in").unwrap(),
+                node: ArtifactNodeId::new("exit").unwrap(),
+                port: PortName::new("aggregated").unwrap(),
             }
         );
     }

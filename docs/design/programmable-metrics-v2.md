@@ -201,15 +201,22 @@ for N5's shedding.
 
 **Left by V3, for later:** the export keeps two forms, `bound` and `detached`, which now differ only in leaving out
 what does nothing and in addressing emits to recipients; V6's elaboration may make one of them the only form.
-`program.differs` names default-program nodes; V4, which makes programs whole, decides whether it stays.
+`program.differs` names default-program nodes; V4 kept it.
+
+**Left by V4 and V5, for later:** an unmodified printed export composes with an empty diff and is adopted, but its
+`Plan::hash` differs from the default program's, because the detached export leaves out what does nothing and writes
+edges as written; the installer adopts on the operation hash. V6's single hash resolves it. Node IDs in an artifact
+are still `policy/<local>` and a node named `dsd_agg` still adopts the reserved ID, until V10. Scope declarations,
+`base`, and `scope` are gone (a document that has one is refused by name), and `exit` stays a reserved word with no
+use.
 
 | Step | State | Commit |
 |---|---|---|
 | V1 | not started (V2 went first: opaque hosts carry about 50 tests of the frame and the interpreter's re-admission, which V7 and V8 rework anyway) | |
 | V2 | done: amendment 192 | `06e7301501` |
-| V3 | done: amendment 196 | (V3 commit) |
-| V4 | not started | |
-| V5 | not started | |
+| V3 | done: amendment 196 | `e6599d63f3` |
+| V4 | done: amendment 197 | (V4+V5 commit) |
+| V5 | done: amendment 197 | (V4+V5 commit) |
 | V6 | not started | |
 | V7a | not started | |
 | V7b | not started | |
@@ -229,7 +236,7 @@ How a new session continues this work. The state is the branch's last commit; th
 - Commit locally with `git commit --no-gpg-sign`, one commit per step (code), then one for documents if needed. Do not
   push unless the owner asks for that push.
 - Do not edit the [specification](programmable-metrics.md); propose changes as numbered amendments. The next amendment
-  is **196**: add it to the [stages 7 and 9
+  is **198**: add it to the [stages 7 and 9
   amendments](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments) and to the [status amendments
   index](programmable-metrics-status.md#spec-amendments-index).
 - Do not touch `architecture-experiment/` or `.claude/`, and add no CI jobs.
@@ -266,30 +273,31 @@ document's [changes users can see](programmable-metrics-status.md#changes-users-
 and a section of the [log](programmable-metrics-log.md) saying what went, what replaced it, how the tests moved, and
 the results.
 
-### The next step: V3
+### The next step: V6
 
-**Native configuration lowers to literals.** Today the default program reads native policy settings (filterlists,
-endpoint routing, failover) through live policy bindings, so a Remote Config change reaches the running program with no
-new generation, and the detached export converts those bindings into literals. After V3 the default program holds the
-literals itself; a native policy change lowers a new default program, which installs as a generation. Bindings remain
-for facts and signals only.
-
-The one behavior to keep is **precise updates**: a filterlist change must give a generation that rebuilds only the
-kernels whose settings changed, with no cut and no rebuild where nothing changed. Prove that with a test before
-removing the live path; the installer's semantic diff and kernel reuse should already give it.
+**Elaboration as a phase.** After V4 and V5 a composed program is whole, but its meaning is still computed in two
+places: `Plan::hash(ResolvedValues)` (the explain document's `structural_hash` is the second form) and `export::operation_hash`,
+which the installer's `does` uses to decide that a candidate is the same program. V6 makes one pass from the program as
+written to the core program, with bindings resolved to values and parameters in operation form, and has explain,
+comparison, hashing, and adoption read its result. `Plan::hash` then takes no argument and the two hashes are one.
 
 Where to start:
 
-- `bin/agent-data-plane/src/programmable_metrics/bindings.rs`: the policy bindings (`BindingClass::Policy`) and the
-  keyed bindings per routing group (`metrics_endpoint_routing.group.<key>.*`).
-- `bin/agent-data-plane/src/programmable_metrics/lowering/mod.rs`: `lower` and `lower_after`, which would write the
-  values; and the code that reacts to a native configuration change, which would lower again and install.
-- `lib/saluki-metric-plan/src/export.rs` and `export/eliminate.rs`: the detached conversion, which should shrink to
-  nothing once the default program is already detached.
-- `lib/saluki-metric-plan/src/compose.rs` (refusing policy bindings in an artifact), `validate/catalog.rs`
-  (`detached_programs`, the binding classes), `validate/references.rs` (`LiveBindingOnHost`), and the keyed bindings
-  in `testing/fixtures.rs`.
-- The demo: its default program and editor should show the same program, with nothing to convert.
+- `lib/saluki-metric-plan/src/compose.rs`: the body of `compose` moves to a new `elaborate.rs` as passes (receipt stays
+  in `compose.rs`); `elaborate_default` runs the last passes on a lowered plan.
+- `lib/saluki-metric-plan/src/canonical.rs` (`ResolvedValues`) and `ir/plan.rs` (`Plan::hash`, `strip_node_params`):
+  deleted or simplified.
+- `lib/saluki-metric-plan/src/export.rs` (`operation_hash`, `operation_params`, `write_bindings_as_values`), and
+  `install/core.rs` (`Installed.does`, `Queued.does`, `submit`, `adopt`): compare `plan_hash`.
+- `install/diff.rs` and `compile/program.rs` (`KernelKey::of`): compare and hash the parameters directly.
+- `explain/mod.rs` and `explain/text.rs`: show the core plan with `BindingUses` as annotations; `EXPLAIN_VERSION` 3 to 4.
+- `bin/agent-data-plane/src/programmable_metrics/lowering/mod.rs` (`normalize_plan` becomes `elaborate_default`),
+  `installer.rs` (`active_plan`), and `telemetry.rs` (binding names read from parameters).
+- The demo's `preview.rs` (`plan_hash`), and the S0 and S1 hash checks.
+
+Tests: a binding and the same literal elaborate to one hash, as do a parameter left out and its default; the unmodified
+export and the default program elaborate to one plan, so `default_program_hash` equals `active_plan_hash` exactly when
+either runs.
 
 ### Also deferred by the owner
 

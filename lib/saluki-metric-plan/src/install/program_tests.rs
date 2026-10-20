@@ -1,12 +1,10 @@
-//! One scope over the whole metrics path: the default program's one scope, `metrics`, fed by every source and with no
-//! exits, so that one artifact edits pre-aggregation, aggregation, and the policy region together, and its host's
-//! restriction to one aggregation per program.
+//! Whole programs over the default program: one artifact edits pre-aggregation, aggregation, and the policy region
+//! together, and its host's restriction to one aggregation per program.
 //!
-//! The plan is the default-program fixture (`fixtures/default-program.json`); where a test compares with the two scopes
-//! the default program declared through stage 9, it is the same fixture with only its `scopes` member changed
-//! ([`with_two_scopes`]). Artifacts are edits of the scope's export, written by hand as changes to its JSON document,
-//! composed with the real composer ([`compose_all`]), classified with the real plan diff, and installed through the
-//! installer core on the frame computed from the boot plan. Expected results are written by hand from the fixture.
+//! The plan is the default-program fixture (`fixtures/default-program.json`). Artifacts are edits of its export,
+//! written by hand as changes to its JSON document, composed with the real composer ([`compose`]), classified with the
+//! real plan diff, and installed through the installer core on the frame computed from the boot plan. Expected results
+//! are written by hand from the fixture.
 
 use std::{
     collections::BTreeMap,
@@ -21,7 +19,6 @@ use saluki_core::{
 use serde_json::{json, Value};
 
 use super::{
-    correspondence::CorrespondenceKind,
     diff::NodeChange,
     tests::{describe, node_mut},
     *,
@@ -30,35 +27,18 @@ use crate::{
     canonical::ResolvedValues,
     channel::{ArtifactConfig, ArtifactConfigId, ArtifactProduct, ArtifactSnapshot},
     compile::{compile, place, Frame, SlotId},
-    compose::{
-        compose_all,
-        tests::{approval, catalog_for},
-        Approval, ComposeError, Composed, Composer,
-    },
+    compose::{compose, tests::approval, Approval, ComposeError, Composed, Composer},
     export::export,
     extension::TransitionClass,
-    ir::{NodeId, OutputId, Plan, ReceivedArtifact, ScopeName},
+    ir::{NodeId, OutputId, Plan, ReceivedArtifact},
     operators::OperatorRegistry,
     runtime::harness::FrameHarness,
-    testing::{
-        default_program_slot_name, with_two_scopes, DEFAULT_PROGRAM_JSON, DEFAULT_PROGRAM_SCOPE,
-        DEFAULT_PROGRAM_SCOPE_INPUTS,
-    },
+    testing::{catalog_for, default_program_slot_name, DEFAULT_PROGRAM_JSON, DEFAULT_PROGRAM_SOURCES},
     validate::{Location, MemoryCatalog, Rule, ValidationReport, Validator},
 };
 
-/// The one scope.
-const SCOPE: &str = DEFAULT_PROGRAM_SCOPE;
-
-/// The scope's inputs, each the `metrics` port of one source of the fixture.
-const INPUTS: [(&str, &str, crate::operators::SourceBinding); 5] = DEFAULT_PROGRAM_SCOPE_INPUTS;
-
 fn id(id: &str) -> NodeId {
     id.parse().unwrap()
-}
-
-fn scope() -> ScopeName {
-    SCOPE.parse().unwrap()
 }
 
 fn registry() -> OperatorRegistry {
@@ -69,12 +49,7 @@ fn strings(list: &[&str]) -> Vec<String> {
     list.iter().map(|item| item.to_string()).collect()
 }
 
-/// The default-program fixture with the two scopes it declared through stage 9.
-fn two_scope_plan() -> Plan {
-    Plan::from_value(with_two_scopes(serde_json::from_str(DEFAULT_PROGRAM_JSON).unwrap())).unwrap()
-}
-
-/// The default-program fixture, with its one scope, editable with `edit` first.
+/// The default-program fixture, editable with `edit` first.
 fn unified_with(edit: impl FnOnce(&mut Value)) -> Plan {
     let mut value = serde_json::from_str::<Value>(DEFAULT_PROGRAM_JSON).unwrap();
     edit(&mut value);
@@ -86,9 +61,8 @@ fn unified_plan() -> Plan {
     unified_with(|_| {})
 }
 
-/// The host's catalog for the default program: the fixtures' catalog, which declares the one scope's inputs, each
-/// carrying what its source produces, and one aggregation per program, with every binding's value, as composition
-/// needs.
+/// The host's catalog for the default program: the fixtures' catalog, which declares one aggregation per program, with
+/// every binding's value, as composition needs.
 fn unified_catalog(plan: &Plan) -> MemoryCatalog {
     catalog_for(plan)
 }
@@ -101,10 +75,10 @@ fn frame(plan: &Plan) -> Frame {
     Frame::compute(plan, &registry(), &default_program_slot_name).unwrap()
 }
 
-/// The export of the one scope of the re-scoped boot plan, as an artifact document.
+/// The export of the boot plan, as an artifact document.
 fn exported() -> Value {
     let plan = unified_plan();
-    let bundle = export(&plan, &scope(), &unified_catalog(&plan), &BTreeMap::new()).unwrap();
+    let bundle = export(&plan, &unified_catalog(&plan), &BTreeMap::new()).unwrap();
     serde_json::to_value(&bundle.artifact).unwrap()
 }
 
@@ -113,12 +87,13 @@ fn received(document: Value) -> ReceivedArtifact {
     ReceivedArtifact::from_value(document).unwrap()
 }
 
-/// Composes an artifact document into the re-scoped boot plan.
+/// Composes an artifact document with the boot plan.
 fn composed(document: Value) -> Result<Composed, ComposeError> {
     let plan = unified_plan();
-    compose_all(
+    compose(
         &plan,
-        &[(&received(document), &approval(1))],
+        &received(document),
+        &approval(1),
         &unified_catalog(&plan),
         &registry(),
     )
@@ -180,19 +155,48 @@ fn edited(edit: impl FnOnce(&mut Value)) -> Value {
     document
 }
 
-// 1. The re-scoped plan validates.
+/// Returns the plan ID each artifact node of a composition takes, by its local ID.
+fn plan_id(composed: &Composed, node: &str) -> String {
+    composed.ids[&node.parse::<crate::ir::ArtifactNodeId>().unwrap()].to_string()
+}
+
+/// Returns every node the diff of a composition against the boot plan lists as changed, with how it lists it.
+fn changes(composed: &Composed) -> Vec<(String, String)> {
+    diff(&unified_plan(), &composed.plan, &registry())
+        .changes()
+        .map(|node| match node.change {
+            NodeChange::Changed {
+                operator,
+                params,
+                edges,
+            } => {
+                let parts = [(operator, "operator"), (params, "params"), (edges, "edges")];
+                let parts = parts.iter().filter(|(changed, _)| *changed).map(|(_, what)| *what);
+                (
+                    node.id.to_string(),
+                    format!("changed {}", parts.collect::<Vec<_>>().join(" ")),
+                )
+            }
+            ref change => (node.id.to_string(), format!("{:?}", change).to_lowercase()),
+        })
+        .collect()
+}
+
+// 1. The default program validates, and its export is every node but its sources.
 
 #[test]
-fn the_default_program_rescoped_to_one_scope_validates_with_no_findings() {
+fn the_default_program_validates_with_no_findings_and_exports_every_node_but_its_sources() {
     let plan = unified_plan();
     let validated = report(&plan);
     assert!(validated.findings().is_empty(), "{}", validated);
 
-    // The scope's region is the whole metrics path: every node but the sources, which feed it.
-    let bundle = export(&plan, &scope(), &unified_catalog(&plan), &BTreeMap::new()).unwrap();
-    let sources = ["dsd_in", "otlp_in", "checks_ipc_in", "liveness_in", "trace_sampler"];
+    let bundle = export(&plan, &unified_catalog(&plan), &BTreeMap::new()).unwrap();
+    let sources = DEFAULT_PROGRAM_SOURCES
+        .iter()
+        .map(|(_, port, _)| port.split('.').next().unwrap())
+        .collect::<Vec<_>>();
     assert_eq!(bundle.artifact.nodes.len(), plan.nodes.len() - sources.len());
-    let region = bundle
+    let program = bundle
         .artifact
         .nodes
         .iter()
@@ -204,8 +208,8 @@ fn the_default_program_rescoped_to_one_scope_validates_with_no_findings() {
         .map(|node| node.id.local().to_string())
         .filter(|node| !sources.contains(&node.as_str()))
         .collect::<Vec<_>>();
-    assert_eq!(region, expected);
-    // Every edge is the region's: the sources' edges leave the scope's inputs.
+    assert_eq!(program, expected);
+    // Every edge is the program's: the sources' edges leave `input.<binding>`.
     assert_eq!(bundle.artifact.edges.len(), plan.edges.len());
     let inputs = bundle
         .artifact
@@ -214,132 +218,60 @@ fn the_default_program_rescoped_to_one_scope_validates_with_no_findings() {
         .map(|edge| edge.from.to_string())
         .filter(|from| from.starts_with("input."))
         .collect::<Vec<_>>();
-    assert_eq!(
-        inputs,
-        [
-            "input.dogstatsd",
-            "input.otlp",
-            "input.checks",
-            "input.liveness",
-            "input.trace_sampler"
-        ]
-    );
-
-    // Closedness is checked: an input left out leaves its source's records entering the scope from outside it.
-    let without_otlp = unified_with(|value| {
-        value["scopes"][SCOPE]["inputs"].as_object_mut().unwrap().remove("otlp");
-    });
-    let rescoped = report(&without_otlp);
-    let closed = rescoped
-        .findings()
+    let expected = DEFAULT_PROGRAM_SOURCES
         .iter()
-        .filter(|finding| finding.rule == crate::validate::Rule::ScopeClosed)
-        .map(|finding| finding.message.clone())
+        .map(|(name, _, _)| format!("input.{}", name))
         .collect::<Vec<_>>();
-    assert_eq!(
-        closed,
-        [
-            "`metrics_in.1` is inside the scope, but is fed from `otlp_in.metrics`, outside it; feed the scope \
-          only through its inputs, or declare that port as one of them"
-        ]
-    );
+    assert_eq!(inputs, expected);
 }
 
 // 2. The unmodified export composes back to the same plan.
 
 #[test]
-fn the_unmodified_export_of_the_one_scope_composes_back_to_the_same_plan_and_diffs_as_no_change() {
+fn the_unmodified_export_composes_back_to_the_same_plan_and_diffs_as_no_change() {
     let plan = unified_plan();
     let composed = composed(exported()).unwrap();
+    assert_eq!(composed.plan.nodes, plan.nodes);
+    assert_eq!(composed.plan.edges, plan.edges);
     assert_eq!(
         composed.plan.hash(ResolvedValues::Include).unwrap(),
         plan.hash(ResolvedValues::Include).unwrap()
     );
     assert!(composed.report.findings().is_empty(), "{}", composed.report);
-    assert!(!composed.stale_base && !composed.stale_review);
+    assert!(!composed.stale_review);
 
-    // Every node of the region, aggregation included, is the default program's own.
-    let region = plan.nodes.len() - INPUTS.len();
-    assert_eq!(composed.correspondence.iter().count(), region);
-    assert!(composed.correspondence.removed().is_empty());
-    for (artifact_node, correspondence) in composed.correspondence.iter() {
+    assert_eq!(diff(&plan, &composed.plan, &registry()).nodes.len(), plan.nodes.len());
+
+    // Every node of the program, aggregation included, keeps its reserved ID.
+    assert_eq!(composed.ids.len(), plan.nodes.len() - DEFAULT_PROGRAM_SOURCES.len());
+    for (artifact_node, node) in &composed.ids {
         assert_eq!(
-            correspondence.kind,
-            CorrespondenceKind::Unmodified,
+            *node,
+            NodeId::reserved(artifact_node.to_local_id()),
             "`{}`",
             artifact_node
         );
-        assert_eq!(correspondence.node.local().as_str(), artifact_node.as_str());
     }
     assert_eq!(composed.plan.node(&id("dsd_agg")), plan.node(&id("dsd_agg")));
 
-    // The diff is empty: no node changed, aggregation keeps its lineage, and nothing is a cut.
-    let changes = diff_with_correspondence(&plan, &composed.plan, &composed.correspondence, &registry());
-    assert!(changes.diff.is_empty(), "{:?}", changes.diff);
-    assert_eq!(changes.diff.nodes.len(), plan.nodes.len());
-    assert!(changes
-        .diff
-        .nodes
-        .iter()
-        .all(|node| node.change == NodeChange::Unchanged));
-    assert_eq!(changes.artifact_nodes.len(), region);
-    let owners = &changes.diff.state_owners;
-    assert_eq!(owners.len(), 1);
-    assert_eq!(owners[0].node, id("dsd_agg"));
-    assert_eq!(
-        (owners[0].class, owners[0].change),
-        (TransitionClass::Retain, StateOwnerChange::Kept)
-    );
-    assert_eq!(owners[0].lineage.0, owners[0].lineage.1);
-    assert_eq!(changes.diff.cut(), None);
-}
-
-#[test]
-fn an_artifact_whose_edges_are_in_another_order_composes_as_it_does_in_the_exports_order() {
-    let plan = unified_plan();
-    let hash = |composed: &Composed| composed.plan.hash(ResolvedValues::Include).unwrap();
-    // The order of edges means nothing to how a plan runs, and the plan's hash covers it: composition puts an
-    // artifact's edges in the default program's order, so the unmodified export composes to the default program
-    // whatever order its edges are in, as a printed and parsed export writes them.
-    type Shuffle = fn(&mut Vec<Value>);
-    let shuffles: [(&str, Shuffle); 3] = [
-        ("reversed", |edges| edges.reverse()),
-        ("rotated", |edges| edges.rotate_left(7)),
-        ("the inputs' edges first", |edges| {
-            edges.sort_by_key(|edge| !edge["from"].as_str().unwrap().starts_with("input."))
-        }),
-    ];
-    for (what, shuffle) in shuffles {
-        let mut document = exported();
-        shuffle(document["edges"].as_array_mut().unwrap());
-        assert_ne!(document["edges"], exported()["edges"], "{}", what);
-        let composed = composed(document).unwrap();
-        assert_eq!(composed.plan.edges, plan.edges, "{}", what);
-        assert_eq!(hash(&composed), plan.hash(ResolvedValues::Include).unwrap(), "{}", what);
-
-        // An edit composes to the same plan when the default program's edges are shuffled: they take their places, and
-        // each new edge follows the edge listed before it, the new ones in the order they are listed. (Its nodes name
-        // the artifact's hash, which covers the document's order, so the edges are compared.)
-        let in_order = composed_edges(edited(route));
-        let listed = edited(route)["edges"].as_array().unwrap().clone();
-        let is_new = |edge: &Value| edge.to_string().contains("drop_debug");
-        let new = listed.iter().filter(|edge| is_new(edge)).cloned().collect::<Vec<_>>();
-        let first_new = listed.iter().position(is_new).unwrap();
-        let before = listed[first_new - 1].clone();
-        let mut document = edited(route);
-        let edges = document["edges"].as_array_mut().unwrap();
-        edges.retain(|edge| !is_new(edge));
-        shuffle(edges);
-        let at = edges.iter().position(|edge| *edge == before).unwrap();
-        for (offset, edge) in new.into_iter().enumerate() {
-            edges.insert(at + 1 + offset, edge);
-        }
-        assert_eq!(composed_edges(document), in_order, "{}", what);
+    // The diff is empty: no node changed, aggregation keeps its lineage, and nothing is a cut. As the installer
+    // compares them, by what they do, the two plans are one.
+    for changes in [
+        diff(&plan, &composed.plan, &registry()),
+        diff_operations(&plan, &composed.plan, &registry()),
+    ] {
+        assert!(changes.is_empty(), "{:?}", changes);
+        assert!(changes.nodes.iter().all(|node| node.change == NodeChange::Unchanged));
+        let owners = &changes.state_owners;
+        assert_eq!(owners.len(), 1);
+        assert_eq!(owners[0].node, id("dsd_agg"));
+        assert_eq!(
+            (owners[0].class, owners[0].change),
+            (TransitionClass::Retain, StateOwnerChange::Kept)
+        );
+        assert_eq!(owners[0].lineage.0, owners[0].lineage.1);
+        assert_eq!(changes.cut(), None);
     }
-}
-
-fn composed_edges(document: Value) -> Vec<crate::ir::Edge> {
-    composed(document).unwrap().plan.edges
 }
 
 // 3. The composed plan places as the boot plan does.
@@ -348,8 +280,6 @@ fn composed_edges(document: Value) -> Vec<crate::ir::Edge> {
 fn the_composed_plan_places_onto_the_boot_frame_exactly_as_the_boot_plan_does() {
     let plan = unified_plan();
     let frame = frame(&plan);
-    // The scopes do not shape the frame: it is the two-scope fixture's frame.
-    assert_eq!(frame.slots(), frame_of_two_scopes().slots());
     assert_eq!(frame.slots().iter().filter(|slot| slot.is_isolation()).count(), 1);
 
     let composed = composed(exported()).unwrap();
@@ -371,10 +301,6 @@ fn the_composed_plan_places_onto_the_boot_frame_exactly_as_the_boot_plan_does() 
         .all(|slot| slot.unchanged && slot.build.is_empty() && slot.release.is_empty()));
 }
 
-fn frame_of_two_scopes() -> Frame {
-    frame(&two_scope_plan())
-}
-
 // 4. A routing-only edit.
 
 #[test]
@@ -382,11 +308,8 @@ fn a_routing_only_edit_composes_validates_places_and_retains_aggregation_with_no
     let plan = unified_plan();
     let composed = composed(edited(route)).unwrap();
     assert!(composed.report.findings().is_empty(), "{}", composed.report);
-    let correspondence = |node: &str| composed.correspondence.get(&node.parse().unwrap()).unwrap().clone();
-    assert_eq!(correspondence("drop_debug").node, id("policy/drop_debug"));
-    assert_eq!(correspondence("drop_debug").kind, CorrespondenceKind::Added);
-    assert_eq!(correspondence("dsd_agg").kind, CorrespondenceKind::Unmodified);
-    // Everything ahead of the new split is the default program's own.
+    assert_eq!(plan_id(&composed, "drop_debug"), "policy/drop_debug");
+    // Everything ahead of the new split is the default program's node, unchanged.
     for node in [
         "dsd_enrich",
         "dsd_no_agg_split",
@@ -394,15 +317,15 @@ fn a_routing_only_edit_composes_validates_places_and_retains_aggregation_with_no
         "metrics_host_enrichment",
         "metrics",
     ] {
-        assert_eq!(correspondence(node).kind, CorrespondenceKind::Unmodified, "`{}`", node);
+        assert_eq!(plan_id(&composed, node), node);
+        assert_eq!(composed.plan.node(&id(node)), plan.node(&id(node)), "`{}`", node);
     }
 
     let frame = frame(&plan);
     compile(&composed.plan, &composed.report, &registry(), &frame).unwrap();
 
-    let changes = diff_with_correspondence(&plan, &composed.plan, &composed.correspondence, &registry());
+    let changes = diff(&plan, &composed.plan, &registry());
     let aggregation = changes
-        .diff
         .state_owners
         .iter()
         .find(|owner| owner.node == id("dsd_agg"))
@@ -412,54 +335,23 @@ fn a_routing_only_edit_composes_validates_places_and_retains_aggregation_with_no
         (TransitionClass::Retain, StateOwnerChange::Kept)
     );
     assert_eq!(aggregation.lineage.0, aggregation.lineage.1);
-    assert_eq!(changes.diff.cut(), None);
-    let changed = changes
-        .diff
-        .changes()
-        .map(|node| node.id.to_string())
-        .collect::<Vec<_>>();
+    assert_eq!(changes.cut(), None);
+    let changed = changes.changes().map(|node| node.id.to_string()).collect::<Vec<_>>();
     assert!(changed.contains(&"policy/drop_debug".to_string()), "{:?}", changed);
     assert!(!changed.iter().any(|node| node.starts_with("dsd_")), "{:?}", changed);
 }
 
-/// Returns the artifact nodes a composition does not keep as the default program's own, with how they relate to it.
-fn not_unmodified(composed: &Composed) -> Vec<(String, CorrespondenceKind)> {
-    composed
-        .correspondence
-        .iter()
-        .filter(|(_, correspondence)| correspondence.kind != CorrespondenceKind::Unmodified)
-        .map(|(node, correspondence)| (node.to_string(), correspondence.kind))
-        .collect()
-}
-
 #[test]
 fn a_width_only_edit_modifies_only_the_nodes_whose_parameters_it_changes() {
-    use CorrespondenceKind::Modified;
-
     // A node is what it does, whatever feeds it: the nodes downstream of the widened aggregation do what they did,
-    // so only the aggregation and the timestamp split, whose windows change, are the artifact's as written.
-    let unified = composed(edited(widen)).unwrap();
-    assert!(unified.report.findings().is_empty(), "{}", unified.report);
+    // so only the aggregation and the timestamp split, whose windows change, differ.
+    let widened = composed(edited(widen)).unwrap();
+    assert!(widened.report.findings().is_empty(), "{}", widened.report);
     assert_eq!(
-        not_unmodified(&unified),
+        changes(&widened),
         [
-            ("dsd_agg".to_string(), Modified),
-            ("dsd_no_agg_split".to_string(), Modified),
-        ]
-    );
-
-    // The same edit of the two-scope program's pre-aggregation scope.
-    let plan = two_scope_plan();
-    let pre = "dogstatsd_pre_aggregation".parse().unwrap();
-    let catalog = catalog_for(&plan);
-    let mut document = serde_json::to_value(export(&plan, &pre, &catalog, &BTreeMap::new()).unwrap().artifact).unwrap();
-    widen(&mut document);
-    let two_scopes = compose_all(&plan, &[(&received(document), &approval(1))], &catalog, &registry()).unwrap();
-    assert_eq!(
-        not_unmodified(&two_scopes),
-        [
-            ("dsd_agg".to_string(), Modified),
-            ("dsd_no_agg_split".to_string(), Modified),
+            ("dsd_no_agg_split".to_string(), "changed params".to_string()),
+            ("dsd_agg".to_string(), "changed params".to_string()),
         ]
     );
 }
@@ -480,32 +372,21 @@ fn rename_node(document: &mut Value, from: &str, to: &str) {
 #[test]
 fn the_one_aggregation_keeps_the_default_programs_id_and_lineage_whatever_the_artifact_calls_it() {
     let plan = unified_plan();
-    let correspondence = |composed: &Composed, node: &str| {
-        let found = composed.correspondence.get(&node.parse().unwrap()).unwrap();
-        (found.node.to_string(), found.kind)
-    };
     let aggregation = |composed: &Composed| {
-        let changes = diff_with_correspondence(&plan, &composed.plan, &composed.correspondence, &registry());
+        let changes = diff(&plan, &composed.plan, &registry());
         let owner = changes
-            .diff
             .state_owners
             .iter()
             .find(|owner| owner.node == id("dsd_agg"))
             .cloned();
-        (
-            owner.map(|owner| (owner.class, owner.change)),
-            changes.diff.cut().is_some(),
-        )
+        (owner.map(|owner| (owner.class, owner.change)), changes.cut().is_some())
     };
 
-    // Renamed and otherwise unmodified, the aggregation is the default program's own: the composed plan is the default
-    // program, and the diff keeps aggregation's lineage with no cut. The correspondence speaks of `agg`.
+    // Renamed and otherwise unmodified, the aggregation is the default program's node: the composed plan is the
+    // default program, and the diff keeps aggregation's lineage with no cut.
     let renamed = composed(edited(|document| rename_node(document, "dsd_agg", "agg"))).unwrap();
     assert!(renamed.report.findings().is_empty(), "{}", renamed.report);
-    assert_eq!(
-        correspondence(&renamed, "agg"),
-        ("dsd_agg".to_string(), CorrespondenceKind::Unmodified)
-    );
+    assert_eq!(plan_id(&renamed, "agg"), "dsd_agg");
     assert_eq!(
         renamed.plan.hash(ResolvedValues::Include).unwrap(),
         plan.hash(ResolvedValues::Include).unwrap()
@@ -515,24 +396,20 @@ fn the_one_aggregation_keeps_the_default_programs_id_and_lineage_whatever_the_ar
         (Some((TransitionClass::Retain, StateOwnerChange::Kept)), false)
     );
 
-    // Renamed and widened: still `dsd_agg`, now the artifact's, and a new width is a cut, as without the rename.
+    // Renamed and widened: still `dsd_agg`, and a new width is a cut, as without the rename.
     let widened = composed(edited(|document| {
         widen(document);
         rename_node(document, "dsd_agg", "agg");
     }))
     .unwrap();
     assert!(widened.report.findings().is_empty(), "{}", widened.report);
-    assert_eq!(
-        correspondence(&widened, "agg"),
-        ("dsd_agg".to_string(), CorrespondenceKind::Modified)
-    );
+    assert_eq!(plan_id(&widened, "agg"), "dsd_agg");
     let plain = composed(edited(widen)).unwrap();
     assert_eq!(aggregation(&widened), aggregation(&plain));
     assert!(aggregation(&widened).1, "a new width is a cut");
 
-    // Renamed and fed otherwise, through a new split ahead of it: still `dsd_agg`, and still the default program's
-    // node, since it does what that node does, whatever feeds it; its lineage parameters are unchanged, so it keeps
-    // its state, with no cut.
+    // Renamed and fed otherwise, through a new split ahead of it: still `dsd_agg`, doing what the default program's
+    // node does, whatever feeds it; its lineage parameters are unchanged, so it keeps its state, with no cut.
     let refed = composed(edited(|document| {
         rename_node(document, "dsd_agg", "agg");
         add_nodes(
@@ -556,10 +433,8 @@ fn the_one_aggregation_keeps_the_default_programs_id_and_lineage_whatever_the_ar
     }))
     .unwrap();
     assert!(refed.report.findings().is_empty(), "{}", refed.report);
-    assert_eq!(
-        correspondence(&refed, "agg"),
-        ("dsd_agg".to_string(), CorrespondenceKind::Unmodified)
-    );
+    assert_eq!(plan_id(&refed, "agg"), "dsd_agg");
+    assert_eq!(refed.plan.node(&id("dsd_agg")), plan.node(&id("dsd_agg")));
     assert_eq!(
         aggregation(&refed),
         (Some((TransitionClass::Retain, StateOwnerChange::Kept)), false)
@@ -571,11 +446,8 @@ fn the_one_aggregation_keeps_the_default_programs_id_and_lineage_whatever_the_ar
     document.as_object_mut().unwrap().remove("single_aggregation");
     let catalog = serde_json::from_value::<MemoryCatalog>(document).unwrap();
     let artifact = received(edited(|document| rename_node(document, "dsd_agg", "agg")));
-    let unrestricted = compose_all(&plan, &[(&artifact, &approval(1))], &catalog, &registry()).unwrap();
-    assert_eq!(
-        correspondence(&unrestricted, "agg"),
-        ("policy/agg".to_string(), CorrespondenceKind::Added)
-    );
+    let unrestricted = compose(&plan, &artifact, &approval(1), &catalog, &registry()).unwrap();
+    assert_eq!(plan_id(&unrestricted, "agg"), "policy/agg");
 
     // With two aggregations, neither takes the reserved ID in place of its own, and validation refuses the second.
     let two = composed(edited(|document| {
@@ -591,8 +463,8 @@ fn the_one_aggregation_keeps_the_default_programs_id_and_lineage_whatever_the_ar
         );
     }))
     .unwrap();
-    assert_eq!(correspondence(&two, "agg").0, "policy/agg");
-    assert_eq!(correspondence(&two, "late_agg").0, "policy/late_agg");
+    assert_eq!(plan_id(&two, "agg"), "policy/agg");
+    assert_eq!(plan_id(&two, "late_agg"), "policy/late_agg");
     assert!(
         two.report.errors().any(|error| error.rule == Rule::SingleAggregation),
         "{}",
@@ -602,19 +474,19 @@ fn the_one_aggregation_keeps_the_default_programs_id_and_lineage_whatever_the_ar
 
 // 5 and 6. Installation through the installer core.
 
-/// The host's composer: [`compose_all`] over the re-scoped boot plan and its catalog.
+/// The host's composer: [`compose`] over the boot plan and its catalog.
 struct UnifiedComposer {
     plan: Plan,
     catalog: MemoryCatalog,
 }
 
 impl Composer for UnifiedComposer {
-    fn compose_all(&self, artifacts: &[(&ReceivedArtifact, &Approval)]) -> Result<Composed, ComposeError> {
-        compose_all(&self.plan, artifacts, &self.catalog, &registry())
+    fn compose(&self, artifact: &ReceivedArtifact, approval: &Approval) -> Result<Composed, ComposeError> {
+        compose(&self.plan, artifact, approval, &self.catalog, &registry())
     }
 }
 
-/// An installer core on the frame of the re-scoped boot plan, booted with it, with the real composer and the real
+/// An installer core on the frame of the boot plan, booted with it, with the real composer and the real
 /// cut classification, and the host around it: it performs commits and cut finalizations on its schedule.
 struct Host {
     core: InstallerCore,
@@ -655,7 +527,7 @@ impl Host {
         }
     }
 
-    /// The channel delivers the one scope's artifact `document` in config `demo` at version and revision `revision`.
+    /// The channel delivers the artifact `document` in config `demo` at version and revision `revision`.
     fn deliver(&mut self, revision: u64, document: Value) -> Vec<String> {
         let payload = json!({
             "revision": revision,
@@ -806,7 +678,7 @@ fn an_unmodified_export_of_the_one_scope_adopts_the_running_generation() {
     // The plan the generation holds is the composition's: the same hash, and a provenance that names the program.
     let plan = host.active_plan();
     assert_eq!(plan.hash(ResolvedValues::Include).unwrap(), boot_hash);
-    assert_eq!(plan.provenance.as_ref().unwrap().artifacts[0].revision().revision, 1);
+    assert_eq!(plan.provenance.as_ref().unwrap().artifact.as_ref().unwrap().revision, 1);
 
     // Another document that composes to the same plan, its edges in another order, adopts it again, as its revision.
     let mut document = exported();
@@ -1266,15 +1138,8 @@ fn a_second_aggregation_beside_a_widened_one_is_the_one_reported_wherever_it_is_
         );
     }))
     .unwrap();
-    let kind = |node: &str| {
-        composed
-            .correspondence
-            .artifact_node(&id(node))
-            .and_then(|local| composed.correspondence.get(local))
-            .map(|correspondence| correspondence.kind)
-    };
-    assert_eq!(kind("dsd_agg"), Some(CorrespondenceKind::Modified));
-    assert_eq!(kind("policy/early_agg"), Some(CorrespondenceKind::Added));
+    assert_eq!(plan_id(&composed, "dsd_agg"), "dsd_agg");
+    assert_eq!(plan_id(&composed, "early_agg"), "policy/early_agg");
     let position = |node: &str| {
         composed
             .plan
@@ -1318,7 +1183,7 @@ fn placement_alone_would_run_a_second_aggregation_on_the_other_branch_of_the_tim
     ];
     for ((what, (from, to)), expected) in SECOND_AGGREGATIONS.into_iter().zip(expected) {
         let document = second_aggregation("late_agg", from, to);
-        let composed = compose_all(&plan, &[(&received(document), &approval(1))], &catalog, &registry());
+        let composed = compose(&plan, &received(document), &approval(1), &catalog, &registry());
         assert!(
             composed.as_ref().is_ok_and(|composed| composed.report.is_valid()),
             "{}",
@@ -1437,11 +1302,10 @@ fn unconfigured_plan() -> Plan {
     })
 }
 
-/// The detached export of the one scope of `plan`, as an artifact document, and what it leaves out.
+/// The detached export of `plan`, as an artifact document, and what it leaves out.
 fn detached(plan: &Plan) -> (Value, Vec<String>) {
     let bundle = crate::export::export_as(
         plan,
-        &scope(),
         &unified_catalog(plan),
         &BTreeMap::new(),
         crate::export::ExportForm::Detached,
@@ -1452,7 +1316,7 @@ fn detached(plan: &Plan) -> (Value, Vec<String>) {
     (serde_json::to_value(&bundle.artifact).unwrap(), omitted)
 }
 
-/// Puts the metric filterlist back into a detached export that left it out, between the scope's DogStatsD input and the
+/// Puts the metric filterlist back into a detached export that left it out, between the DogStatsD source and the
 /// timestamp split, matching `values` exactly.
 fn with_filterlist(document: &mut Value, values: &[&str]) {
     add_nodes(
@@ -1610,13 +1474,7 @@ fn a_published_program_without_a_node_that_does_nothing_follows_no_setting_until
     let plan = unconfigured_plan();
     let catalog = unified_catalog(&plan);
     let (document, _) = detached(&plan);
-    let composed = compose_all(
-        &plan,
-        &[(&received(document.clone()), &approval(1))],
-        &catalog,
-        &registry,
-    )
-    .unwrap();
+    let composed = compose(&plan, &received(document.clone()), &approval(1), &catalog, &registry).unwrap();
     // The nodes with parameters, as lowering writes them from native settings.
     let every = |plan: &Plan| {
         plan.nodes
@@ -1634,13 +1492,7 @@ fn a_published_program_without_a_node_that_does_nothing_follows_no_setting_until
             json!({"not": {"intake_name": {"eq": "tenant.raw.blocked"}}});
     });
     let changed_catalog = unified_catalog(&changed);
-    let recomposed = compose_all(
-        &changed,
-        &[(&received(document), &approval(1))],
-        &changed_catalog,
-        &registry,
-    )
-    .unwrap();
+    let recomposed = compose(&changed, &received(document), &approval(1), &changed_catalog, &registry).unwrap();
     assert_eq!(
         crate::export::node_differences(&changed, &recomposed.plan, &every(&changed), &registry),
         ["dsd_prefix_filter_blocklist".parse::<NodeId>().unwrap()]

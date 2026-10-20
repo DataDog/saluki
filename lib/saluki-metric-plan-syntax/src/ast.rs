@@ -8,38 +8,23 @@
 //! Spans locate each part in the source the parser read. A tree that resugaring made has no source, and every span in
 //! it is [`Span::default`]; formatting never reads spans.
 
-use std::collections::BTreeMap;
-
-use saluki_metric_plan::{
-    canonical::PlanHash,
-    ir::{ArtifactNodeId, ExitName, OperatorName, OutputId, ParamName, Params, PortName, ScopeName},
-};
+use saluki_metric_plan::ir::{ArtifactNodeId, OperatorName, OutputId, ParamName, Params, PortName};
 use serde_json::{Map, Value};
 
 use crate::diagnostic::Span;
 
-/// A whole program: `policy <scope> { <header>* <statement>* }`.
+/// A whole program: `policy { <header>* <statement>* }`.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Program {
-    /// `policy <scope>`.
+    /// `policy`.
     pub(crate) head: Span,
-    pub(crate) scope: ScopeName,
     /// `ir_version <n>`, when written.
     pub(crate) ir_version: Option<u32>,
-    /// `base "<hash>" [outputs { ... }]`, when written.
-    pub(crate) base: Option<Base>,
     /// `blobs { "<hash>" = <value>, ... }`, when written.
     pub(crate) blobs: Option<Map<String, Value>>,
     pub(crate) statements: Vec<Statement>,
     /// The closing brace.
     pub(crate) close: Span,
-}
-
-/// The `base` statement.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Base {
-    pub(crate) program_hash: PlanHash,
-    pub(crate) outputs: BTreeMap<OutputId, PlanHash>,
 }
 
 /// A statement: a named stream, or a pipeline that ends in a sink.
@@ -70,13 +55,13 @@ pub(crate) struct Pipeline {
 /// Where a pipeline starts.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Head {
-    /// A `let` or a scope input, perhaps with a port.
+    /// A `let` or a source, perhaps with a port.
     Ref(Ref),
     /// `(<ref>, ...)`: a merge.
     Tuple(Tuple),
 }
 
-/// `<name>` or `<name>.<port>`: a `let`, or a scope input, which the name alone cannot tell apart until lowering looks
+/// `<name>` or `<name>.<port>`: a `let`, or a source, which the name alone cannot tell apart until lowering looks
 /// it up.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Ref {
@@ -129,7 +114,7 @@ pub(crate) struct WhereStage {
     pub(crate) span: Span,
 }
 
-/// An inline terminal: `emit ...`, `drop`, or `exit <name>`, with an optional `as`.
+/// An inline terminal: `emit ...`, or `drop`, with an optional `as`.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Sink {
     pub(crate) kind: SinkKind,
@@ -148,6 +133,4 @@ pub(crate) enum SinkKind {
     Output { output: OutputId, span: Span },
     /// `drop`.
     Drop,
-    /// `exit <name>`: an edge to one of the scope's exits, which makes no node.
-    Exit { name: ExitName, span: Span },
 }

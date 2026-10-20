@@ -1305,3 +1305,32 @@ export fixture carry literals; explain golden files were regenerated. Tests of p
 literals, or deleted where the behavior is gone (the refusal, keyed lookups, value-versus-binding equality, now tested
 the other way). Targeted runs: the plan crate's non-property suite, ADP's bindings, lowering, export, telemetry,
 telemetry profile, API, installer, live, and differential tests, and the demo crate.
+
+## Version 2: V4 and V5 (programs are whole, one program document)
+
+**What went** (amendment 197): scopes as replaceable parts (`PolicyArtifact.scope` and `.base`, `ArtifactBase`,
+`Plan.scopes`, scope declarations, the catalog's scope inputs and exits, `ArtifactPortRef::Exit`, the validation rules
+`ScopeInputs` and `ScopeClosed`, `ScopeName`); output fingerprints and the stale-base check (`stale_base` in status and
+in the stub's source); splicing and correspondence (`ScopeRegion`, `in_default_order`, `compose_all`,
+`install/correspondence.rs`); the `resources` module; for V5, the per-scope tables, the cross-scope revision mark and
+`reject_shared_revisions`, configs moving between scopes, and the "each alone" retry. The syntax lost the scope name,
+`base`, and exit declarations.
+
+**What replaced it:** composition is one pass: the default program's sources, then the artifact's nodes and edges in
+artifact order; a name no `let` defines is a source. New refusals cover an unknown source, a source's ID reused, two
+sources sharing a binding, and an emit to an undeclared output; an unmodified node with no binding value is refused
+rather than taking the default program's node. The installer core takes one program document: no config revokes, one
+installs, several reject every config and keep what runs, with one revision mark. Versions moved: export 2, explain 3,
+store format 3, stub protocol 2. `diff_operations` moved to `install/diff.rs`, `resources::keeps` compares accepts, host,
+and selector in place of fingerprints, and ADP's lowering writes sources first. The demo's editor, store, and checks
+use one program; S0 compares `program_hash` with `default_program_hash`.
+
+**Tests.** Tests of scopes, partial composition, splicing, staleness, fingerprints, several configs, and configs moving
+between scopes were deleted, and the fixtures of stage 9's two scopes with them; the rest were ported to whole programs,
+and tests of the new refusals, the one-document rule, and the removal errors were added. Targeted runs passed in the plan
+crate, the syntax crate, ADP's `programmable_metrics` tests, and the demo crate; the full run, the release property
+tests, and the demo check come at the end of version 2, not here.
+
+**Results.** An unmodified printed export composes with an empty diff and is adopted, but its `Plan::hash` differs from
+the default program's (the detached export leaves out what does nothing, and writes edges as written); V6's single hash
+resolves that. `policy/<local>` node IDs and the `dsd_agg` adoption stay until V10, and `program.differs` stays.

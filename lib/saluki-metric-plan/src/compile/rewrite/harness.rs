@@ -36,7 +36,6 @@ use serde_json::{json, Value};
 
 use super::{run_pipeline, Optimized, Rewrite, RewriteContext, RewriteId, TelemetryChange};
 use crate::{
-    canonical::PlanHash,
     compile::{compile, compile_unvalidated, Frame},
     equivalence::{compare, compare_under_capacity, CapacityOutcome, OutputPoints},
     extension::{SignalDecl, SignalType},
@@ -44,10 +43,7 @@ use crate::{
         AdapterError, HostBatch, HostOutput, InstallOutcome, Interpreter, OpaqueHostAdapter, RunOutput, Trace,
         TraceEvent,
     },
-    ir::{
-        DecodedParams, ExitName, InputName, NativeComponentId, NodeId, OutputId, ParamSpec, ParamType, Plan,
-        RecipientId, ScopeDecl, ScopeName,
-    },
+    ir::{DecodedParams, NativeComponentId, NodeId, OutputId, ParamSpec, ParamType, Plan, RecipientId},
     model::{EventView, Field, FieldSet, Kind, PortType},
     operators::{
         names, Cardinality, ConfiguredOperator, EffectContract, KernelSpec, Loss, LossDecl, OperatorDef,
@@ -290,7 +286,7 @@ pub(crate) fn plan_of(nodes: Vec<Value>, edges: &[(String, String)], outputs: &[
         .iter()
         .map(|output| {
             json!({"id": output, "accepts": {"kinds": "all", "timestamps": "mixed"},
-                   "fingerprint": fingerprint(output).to_string(), "recipients": [format!("out/{}", output)]})
+                   "recipients": [format!("out/{}", output)]})
         })
         .collect::<Vec<_>>();
     Plan::from_value(json!({
@@ -302,32 +298,21 @@ pub(crate) fn plan_of(nodes: Vec<Value>, edges: &[(String, String)], outputs: &[
     .expect("harness plans are well formed")
 }
 
-fn fingerprint(output: &str) -> PlanHash {
-    PlanHash::of_bytes(output.as_bytes())
-}
-
-/// The catalog random plans validate against: outputs `o0` to `o127`, each with its own recipient, the binding
-/// `test.names`, a list of strings, and the scope `post_enrich`, whose input `metrics` carries anything.
+/// The catalog random plans validate against: outputs `o0` to `o127`, each with its own recipient, and the
+/// `test.names`, a list of strings.
 pub(crate) fn catalog() -> MemoryCatalog {
     (0..128).fold(
-        MemoryCatalog::new()
-            .with_binding(
-                "test.names".parse().expect("valid binding name"),
-                ParamType::List(&ParamType::String),
-                crate::validate::Liveness::Live,
-            )
-            .with_scope_input(
-                ScopeName::new("post_enrich").expect("valid scope name"),
-                InputName::new("metrics").expect("valid input name"),
-                PortType::ANY,
-            ),
+        MemoryCatalog::new().with_binding(
+            "test.names".parse().expect("valid binding name"),
+            ParamType::List(&ParamType::String),
+            crate::validate::Liveness::Live,
+        ),
         |catalog, index| {
             let output = format!("o{}", index);
             catalog.with_output(
                 OutputId::new(output.as_str()).expect("valid output ID"),
                 CatalogOutput {
                     accepts: PortType::ANY,
-                    fingerprint: fingerprint(&output),
                     recipients: vec![RecipientId::new(format!("out/{}", output)).expect("valid recipient")],
                 },
             )
@@ -346,32 +331,6 @@ pub(crate) fn plan(nodes: Vec<Value>, edges: &[&str], outputs: &[&str]) -> Plan 
         .collect::<Vec<_>>();
     let outputs = outputs.iter().map(|output| output.to_string()).collect::<Vec<_>>();
     plan_of(nodes, &edges, &outputs)
-}
-
-/// Returns `plan` with the scope `post_enrich`, whose input `metrics` is the output port `input`, and whose exits are
-/// `exits`, each a name and the input port it enters.
-pub(crate) fn with_scope(mut plan: Plan, input: &str, exits: &[(&str, &str)]) -> Plan {
-    let exits = exits
-        .iter()
-        .map(|(name, port)| {
-            (
-                ExitName::new(*name).expect("valid exit name"),
-                port.parse().expect("valid port reference"),
-            )
-        })
-        .collect();
-    plan.scopes.insert(
-        ScopeName::new("post_enrich").expect("valid scope name"),
-        ScopeDecl {
-            inputs: [(
-                InputName::new("metrics").expect("valid input name"),
-                input.parse().expect("valid port reference"),
-            )]
-            .into(),
-            exits,
-        },
-    );
-    plan
 }
 
 /// Returns a plan's edges as `from -> to`, sorted.

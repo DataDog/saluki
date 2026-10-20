@@ -35,12 +35,11 @@ ADP's artifact channel and given its headless check in stage 5, and extended in 
   prepare barrier and one schedule store, aggregation changes whose bucket width changes at a cut.
 - DogStatsD aggregation runs as a stateful kernel in the `dsd_agg` isolation slot, bucketing by admission time and
   closing buckets by watermark.
-- Policy artifacts arrive through a local development stub of the artifact channel, for one scope, `metrics`: the whole
-  metrics path after its sources, from DogStatsD processing through aggregation and enrichment to the policy region,
-  fed by one input per metrics source and with no exits (since the one-scope change after stage 9, amendment 168,
-  which replaced the `post_enrich` and `dogstatsd_pre_aggregation` scopes). A program has at most one aggregation
-  (`single_aggregation`, amendment 169). The privileged API serves the status, export, plan, explain, and default
-  program.
+- Policy artifacts arrive through a local development stub of the artifact channel, one program document at a time:
+  a whole program over the metrics path after its sources (DogStatsD processing, aggregation, enrichment, and the policy
+  region), with one source for each metrics source and no scopes (amendment 197; stage 9's two scopes became one in
+  amendment 168). A snapshot holds one config. A program has at most one aggregation (`single_aggregation`, amendment
+  169, until V10). The privileged API serves the status, export, plan, explain, and default program.
 - Outputs and recipients are resources of hosts fixed at boot (stage 7): one encode host and one delivery host per
   fixed delivery host, `dd_out`'s, the failover pair (idle until failover is enabled), and the Cluster Agent pair when
   its endpoint resolves at boot. Each output runs as a lease of its encode host and each recipient as an I/O loop of
@@ -64,7 +63,8 @@ ADP's artifact channel and given its headless check in stage 5, and extended in 
   language reference page, recipes, and scenarios use it.
 - **Version 2 is under way** ([version 2 simplifications](programmable-metrics-v2.md)): the premise is now that native
   configuration is a front end and the program is the system, and the machinery of coexistence is being removed step
-  by step. V2 (resources artifacts) is done; V3 (native configuration lowers to literals) is next. The plan's
+  by step. V2 (resources artifacts), V3 (native configuration lowers to literals), V4 (programs are whole), and V5 (one program
+  document) are done; V6 (elaboration as a phase) is next. The plan's
   [handoff](programmable-metrics-v2.md#handing-off) says how to continue.
 - DogStatsD processing runs on **lanes** (stage 9), tasks inside one component, fixed at boot: `dsd_pre_aggregation`
   runs a producer lane per decoder, each the only stamper of its own admission point; `dsd_agg` runs state lanes, each
@@ -123,8 +123,10 @@ since the repository sets `commit.gpgsign=true`). No CI pipeline has run on the 
 | `b1be5f7b72` | detached | What does nothing, left out of detached programs (amendment 191). |
 | `771bd7e320`, `79555ebcb4` | docs | N2 and N3 (one region from decode to encode) in the next steps, and the version 2 plan. |
 | `06e7301501`, `6973a3e8d8` | V2 | Resources artifacts removed (amendment 192). |
+| `e6599d63f3` | V3 | Native configuration lowers to literals; bindings are facts and signals (amendment 196). |
+| (V4+V5 commit) | V4, V5 | Programs are whole and a snapshot holds one program document: scopes, `base`, staleness, fingerprints, and splicing removed (amendment 197). |
 
-**Next.** The [version 2 simplifications](programmable-metrics-v2.md), from V3, come first. Beside them, the stage 9
+**Next.** The [version 2 simplifications](programmable-metrics-v2.md), from V6, come first. Beside them, the stage 9
 gate on a Linux host with at least 20 homogeneous cores (plan 8.5,
 [Q2](programmable-metrics-stages-7-and-9.md#12-open-questions)): its items 1 to 4, with the per-buffer cost of lanes as
 the risk to watch (plan 8.6), M2's rerun for O4's choice, M4 at P = 8, and the allocator setting measured beside it
@@ -275,7 +277,7 @@ program (`bin/programmable-metrics-demo/src/reference.rs`), so the page cannot s
 **A visible change in about 30 seconds:**
 
 1. The editor loads the default program, detached, once ADP serves its export (**Load default program** reloads it):
-   the whole metrics path, the one scope `metrics`, from the input edge (`input.dogstatsd -> dsd_no_agg_split`)
+   the whole metrics path, from the input edge (`input.dogstatsd -> dsd_no_agg_split`)
    through aggregation (`dsd_agg`) and the client telemetry tap to the policy `tee`. Native policy settings are written
    as literals, and what does nothing as configured is left out: a comment at the top names it ("Not shown, because
    they do nothing as configured: mapper (no profiles), namespace prefix (none), metric filterlist (empty), and so
@@ -642,8 +644,8 @@ and gives the dependency direction. This section is the orientation that layout 
 7. Panic budgets cover artifact nodes only. A panic under the default program fails the component, as natively.
 8. Rewrites never increase capacity loss under the interpreter's delivery order, which is the oracle (one pass per
    trace event, in topological order). Native filters move only whole (R5a, R6); R5b is emission suppression.
-9. Artifacts emit only to outputs the base declares, with matching fingerprints; host components never come from
-   artifacts; only composition writes provenance; revisions strictly increase across scopes.
+9. Artifacts emit only to outputs they declare; host components never come from artifacts; only composition writes
+   provenance; revisions strictly increase (one mark for the one program document).
 10. A region's input holds as many buffers as the queues it replaces and their in-flight buffers did.
 11. Dead legacy code goes behind `cfg(test)`, never `#[allow(dead_code)]`.
 
@@ -660,9 +662,7 @@ in [`limits.rs`](../../lib/saluki-metric-plan/src/limits.rs). In method syntax, 
 `header_mut` (returning `&mut BatchHeader`) shadows the trait method `Dispatchable::header_mut` (returning an `Option`).
 
 **Fixtures and tests.** The hand-written default programs are in `lib/saluki-metric-plan/fixtures/`, with the exports
-in `fixtures/export/` (`default-program-metrics.json` for the one scope; the `post_enrich` and
-`dogstatsd_pre_aggregation` exports for the two scopes of stage 9, which `testing::with_two_scopes` restores for the
-plan crate's tests of partial scopes, exits, and several scopes) and the explain golden files in `fixtures/explain/` (`default-program-stage3*` keep the stage 3
+in `fixtures/export/` (`default-program.json`; the exports of stage 9's two scopes and their tests went with V4) and the explain golden files in `fixtures/explain/` (`default-program-stage3*` keep the stage 3
 form, whose gateways are opaque hosts); the checked-in JSON schemas are in `lib/saluki-metric-plan/schema/`. ADP's
 lowering matrix is `programmable_metrics/lowering/matrix.rs` (`MATRIX`), with `lowering/fixtures/every-branch.json`;
 the demo's export fixture is `bin/programmable-metrics-demo/fixtures/export-metrics.json`, trimmed to the policy region. The ADP test topology
@@ -748,10 +748,11 @@ caches, counted in the bounds; the resolver task leak fixed. **Not release-noted
 the source's output keeps the name `metrics`; the `dogstatsd_receiver_lock_wait` measurement probe is gone
 (`measurement` builds only).
 
-**One scope** (after stage 9, amendments 168 and 169; release-noted in the stage 5 and 6 notes unless marked): the
+**One scope** (after stage 9, amendments 168 and 169; release-noted in the stage 5 and 6 notes unless marked; scopes
+themselves are gone after V4, below): the
 default program has one scope, `metrics`, fed by one input per metrics source the configuration enables (`dogstatsd`,
 `otlp`, `checks`, `liveness`, `trace_sampler`, each declared with the kinds and timestamps its source produces), with
-no exits, in place of `post_enrich` and `dogstatsd_pre_aggregation`; the export route takes `?scope=metrics`; one
+no exits, in place of `post_enrich` and `dogstatsd_pre_aggregation`; the export route took `?scope=metrics` (removed in V4); one
 artifact changes routing and aggregation together, and an artifact that changes both installs as one change at the
 width change's cut; a program has at most one aggregation (`single_aggregation`, at the second one's node).
 **Not release-noted:** an artifact of either former scope is rejected as of an unknown scope; a combined artifact's
@@ -874,6 +875,31 @@ built](programmable-metrics-detached-programs.md#107-what-does-nothing-as-built)
   no longer pushes an empty post-aggregation filter into aggregation. The native counters of its ports, such as
   `dogstatsd.listener_filtered_points` and `aggregator.dogstatsd_filtered_metrics`, are registered at zero as natively.
 - `filterlist.size` counts each name once: the native gauge counted each listing of a repeated name.
+
+**Version 2's steps V4 and V5: programs are whole, and one program document** (not committed; **not release-noted**;
+amendment 197):
+
+- Scopes, `base`, and staleness are gone. An artifact is a complete program; `policy {` takes no scope name, and a
+  document with `scope` or `base`, or source with `base`, a scope name, or `exit`, is refused with a message that says
+  it was removed (`exit` stays reserved, so a node named `exit` prints quoted). "Scope input" is "source" throughout.
+- The protocol is version 2 and the demo's store format 3: formats 1 and 2 are refused ("Use a new run directory").
+  The export is version 2 (`program_hash` and `form`, no `scope` or `base`; the catalog has no scope inputs, exits, or
+  output fingerprints) and the explain document version 3 (`provenance.artifact`). `GET
+  /programmable-metrics/export[?form=bound]` has no `scope` parameter, and `?scope=metrics` is no longer read.
+- Status drops `stale_base`, `scopes`, and output fingerprints; `waiting` lists recipients only.
+  `default_program_hash` is the program hash of the detached export, which the demo's S0 compares with the export's.
+- A snapshot holds one config, served by the stub as `demo`. Two or more reject every config and keep what runs: "the
+  policy snapshot holds N configs (ids), but a snapshot holds one program: every config is rejected, and what runs
+  keeps running, until the snapshot holds one". None revokes. A config does not move between scopes, and there is no
+  "each alone" retry.
+- New composition refusals: an unknown source (`UnknownSource`), a local ID equal to a source's (`ReservedSource`), two
+  sources sharing a binding (`DefaultProgram`), and an emit to an output the artifact does not declare
+  (`UndeclaredOutput`). For the program already running, an emit to a removed output is a counted drop
+  (`DropReason::Removed`), as for a removed recipient.
+- An unmodified node bound to a binding the host has no value for is refused (`UnresolvedBinding`); it used to take
+  the default program's node.
+- An unmodified printed export is adopted (the operation hash matches), but its plan hash differs from the default
+  program's until V6.
 
 **Telemetry** (all release-noted): the fused components' and gateways' component, health, and task series are gone;
 `metrics_enrich` and `dsd_agg` report sent counts per output instead of `_default`; accounting paths nest under the
@@ -1118,14 +1144,14 @@ the shutdown row, the expiry row, and the timestamped row.
 
 Totals: kinds C 49, D 26, N 9, L 3; themes STA 20, ART 16, NAT 12, INS 9, IR 8, VER 8, FRM 7, TEL 4, EXE 3.
 
-Amendments 88 to 192 and 195 are in [the stages 7 and 9 plan's section
+Amendments 88 to 192 and 195 to 197 are in [the stages 7 and 9 plan's section
 10](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments): 88 to 107 from its stage 7 design, 108 to 128
 from its stage 9 design, 129 to 138 from stage 7's parts and integration, 139 and 140 from stage 9's foundations (P9.F),
 141 to 162 from stage 9's parts and integration, 163 to 167 from stage 9's review, 168 and 169 from the one-scope
 change after stage 9, 170 to 182 from the detached-programs design, 183 to 188 from its phase 2, 189 and 190 from its
-phase 3, 191 from leaving out what does nothing, 192 from version 2's step V2, and 195 from version 2's design for
-many aggregations. 193 and 194 come from the [pipeline syntax](programmable-metrics-pipeline-syntax.md) and are indexed
-below only. The next is 196.
+phase 3, 191 from leaving out what does nothing, 192 from version 2's step V2, 195 from version 2's design for
+many aggregations, 196 from its step V3, and 197 from its steps V4 and V5. 193 and 194 come from the [pipeline
+syntax](programmable-metrics-pipeline-syntax.md) and are indexed below only. The next is 198.
 Stage 7's:
 
 | # | Short title | Theme | Kind | Owner |
@@ -1280,6 +1306,12 @@ After version 2's step V3 (built, not committed):
 | # | Short title | Theme | Kind | Owner |
 |---|---|---|---|---|
 | 196 | Native policy settings are literals of the default program; bindings are facts and signals | CFG | D | version 2, decided by the owner (2026-10-15) |
+
+After version 2's steps V4 and V5 (built, not committed):
+
+| # | Short title | Theme | Kind | Owner |
+|---|---|---|---|---|
+| 197 | A program is whole, and a snapshot holds one program document | ART | D | version 2, decided by the owner (2026-10-19) |
 
 Wording proposed for adoption: amendment 49 ("under the reference interpreter's delivery order"), 51 ("a maximal
 group of `split` and `tee` operators joined directly by edges within one region"), and 52 ("operator parameters,

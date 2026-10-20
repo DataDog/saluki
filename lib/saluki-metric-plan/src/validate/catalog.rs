@@ -1,16 +1,15 @@
-//! The catalog of what the host declares: outputs, configuration bindings, scope inputs and exits, its state budget,
-//! and whether it runs at most one aggregation per program.
+//! The catalog of what the host declares: outputs, configuration bindings, its state budget, and whether it runs at
+//! most one aggregation per program.
 
 use std::collections::BTreeMap;
 
-use serde::{de::Error as _, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    canonical::PlanHash,
     ir::{
-        BindingName, ExitName, HostId, InputName, OutputDecl, OutputId, ParamSpec, ParamType, RecipientDecl,
-        RecipientId, RecipientName, ScopeName, ValueType,
+        BindingName, HostId, OutputDecl, OutputId, ParamSpec, ParamType, RecipientDecl, RecipientId, RecipientName,
+        ValueType,
     },
     model::PortType,
     predicate::BindingResolver,
@@ -22,10 +21,6 @@ use crate::{
 pub struct CatalogOutput {
     /// The records the output accepts.
     pub accepts: PortType,
-
-    /// The output's fingerprint: what its declaration says it delivers to (for a bound output, version 2, see
-    /// [`resources::fingerprint`][crate::resources::fingerprint]).
-    pub fingerprint: PlanHash,
 
     /// The output's physical recipients.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -126,8 +121,8 @@ pub struct HostSchema {
 
 /// What the host declares, which plans may refer to.
 ///
-/// The validator checks every output a plan declares, every configuration binding its parameters use, and every input
-/// of every scope it declares against the catalog. The host implements it from its own registry of outputs and
+/// The validator checks every output a plan declares and every configuration binding its parameters use against the
+/// catalog. The host implements it from its own registry of outputs and
 /// bindings; off the host, an exported [`MemoryCatalog`] document implements the same.
 ///
 /// Every catalog also resolves the bindings whose values it carries: `dyn Catalog` is a [`BindingResolver`].
@@ -137,20 +132,6 @@ pub trait Catalog {
 
     /// Returns the configuration binding with the given name, if the host declares it.
     fn binding(&self, name: &BindingName) -> Option<&CatalogBinding>;
-
-    /// Returns the port type of the given input of the given scope, if the host declares it.
-    fn scope_input(&self, scope: &ScopeName, input: &InputName) -> Option<PortType>;
-
-    /// Returns the port type of what leaves the given scope by the given exit in the host's default program, if the
-    /// host declares it.
-    ///
-    /// An exit's type is informational, for tools that show an artifact's ends: validation checks the plan an artifact
-    /// is composed into as a whole, so what reaches an exit is typed from the scope's inputs. The default declares no
-    /// exit.
-    fn scope_exit(&self, scope: &ScopeName, exit: &ExitName) -> Option<PortType> {
-        let _ = (scope, exit);
-        None
-    }
 
     /// Returns the host's state budget: the most contexts its state owners hold together, every lineage of every
     /// state owner included, or `None` if the host does not bound them together.
@@ -248,14 +229,11 @@ impl BindingResolver for dyn Catalog + '_ {
 /// A catalog held in memory, which is also the catalog's document form.
 ///
 /// Serialized as an object with these members, each of which may be left out when empty: `outputs`, from output ID to
-/// the output's `accepts`, `fingerprint`, and `recipients`; `bindings`, from binding name to the binding's `type` (a
-/// [`ValueType`]), `liveness` (`live` or `startup`), `class` (`fact` or `signal`), and optional
-/// `value`; `scopes`, from scope name to the scope's `inputs` and `exits`, each a map
-/// from name to port type; `recipients`, the host's recipient directory, from recipient name to the entry's
-/// `recipients`, `host`, `endpoint`, and `source`; `state_budget`, the host's state budget; and `single_aggregation`,
-/// `true` when the host runs at most one aggregation per program. A scope without exits is written as the map of its
-/// inputs alone, as documents written before scopes had exits are, and either form is read. A host exports its catalog
-/// in this form, so that plans can be validated and previewed away from it. It declares no delivery host: an export
+/// the output's `accepts` and `recipients`; `bindings`, from binding name to the binding's `type` (a [`ValueType`]),
+/// `liveness` (`live` or `startup`), `class` (`fact` or `signal`), and optional `value`; `recipients`, the host's
+/// recipient directory, from recipient name to the entry's `recipients`, `host`, `endpoint`, and `source`;
+/// `state_budget`, the host's state budget; and `single_aggregation`, `true` when the host runs at most one aggregation
+/// per program. A host exports its catalog in this form, so that plans can be validated and previewed away from it. It declares no delivery host: an export
 /// leaves host settings out.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -266,13 +244,6 @@ pub struct MemoryCatalog {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     bindings: BTreeMap<BindingName, CatalogBinding>,
 
-    #[serde(
-        default,
-        skip_serializing_if = "BTreeMap::is_empty",
-        deserialize_with = "deserialize_scopes"
-    )]
-    scopes: BTreeMap<ScopeName, CatalogScope>,
-
     #[serde(default, skip_serializing_if = "Option::is_none")]
     state_budget: Option<u64>,
 
@@ -281,82 +252,6 @@ pub struct MemoryCatalog {
 
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     recipients: BTreeMap<RecipientName, CatalogRecipient>,
-}
-
-/// What a catalog declares about one scope: the port types of its inputs and of its exits.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-struct CatalogScope {
-    inputs: BTreeMap<InputName, PortType>,
-    exits: BTreeMap<ExitName, PortType>,
-}
-
-/// The two forms a scope's document takes, for errors that say how to correct one.
-const SCOPE_FORMS: &str = "a scope is written either as a map from input name to port type, or as an object with an \
-                           `inputs` map and an optional `exits` map, each from name to port type";
-
-/// A scope written with both its ends.
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct ScopeEnds {
-    inputs: BTreeMap<InputName, PortType>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    exits: BTreeMap<ExitName, PortType>,
-}
-
-impl Serialize for CatalogScope {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if self.exits.is_empty() {
-            self.inputs.serialize(serializer)
-        } else {
-            ScopeEnds {
-                inputs: self.inputs.clone(),
-                exits: self.exits.clone(),
-            }
-            .serialize(serializer)
-        }
-    }
-}
-
-impl CatalogScope {
-    /// Reads a scope from its document: in the form with both ends if it has an `inputs` or `exits` member, and as the
-    /// map of its inputs otherwise, or if that form does not read and the map of its inputs, so named, does.
-    ///
-    /// The form is chosen by its members, rather than by trying each, so that an error says what is wrong in the form
-    /// the document is written in.
-    fn from_document(document: &Value) -> Result<Self, serde_json::Error> {
-        let inputs_only = |document| {
-            BTreeMap::<InputName, PortType>::deserialize(document).map(|inputs| Self {
-                inputs,
-                exits: BTreeMap::new(),
-            })
-        };
-        let has_ends = document
-            .as_object()
-            .is_some_and(|members| members.contains_key("inputs") || members.contains_key("exits"));
-        if !has_ends {
-            return inputs_only(document);
-        }
-        match ScopeEnds::deserialize(document) {
-            Ok(ScopeEnds { inputs, exits }) => Ok(Self { inputs, exits }),
-            Err(error) => inputs_only(document).map_err(|_| error),
-        }
-    }
-}
-
-/// Reads the `scopes` member of a catalog document: each scope in either of its forms, with an error that names the
-/// scope and says what is wrong in it.
-fn deserialize_scopes<'de, D>(deserializer: D) -> Result<BTreeMap<ScopeName, CatalogScope>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    BTreeMap::<ScopeName, Value>::deserialize(deserializer)?
-        .into_iter()
-        .map(|(name, document)| {
-            let scope = CatalogScope::from_document(&document)
-                .map_err(|error| D::Error::custom(format!("scope `{}`: {}; {}", name, error, SCOPE_FORMS)))?;
-            Ok((name, scope))
-        })
-        .collect()
 }
 
 impl MemoryCatalog {
@@ -397,18 +292,6 @@ impl MemoryCatalog {
         self
     }
 
-    /// Declares one input of a scope.
-    pub fn with_scope_input(mut self, scope: ScopeName, input: InputName, port_type: PortType) -> Self {
-        self.scopes.entry(scope).or_default().inputs.insert(input, port_type);
-        self
-    }
-
-    /// Declares one exit of a scope, with the port type of what leaves the scope by it in the default program.
-    pub fn with_scope_exit(mut self, scope: ScopeName, exit: ExitName, port_type: PortType) -> Self {
-        self.scopes.entry(scope).or_default().exits.insert(exit, port_type);
-        self
-    }
-
     /// Declares the host's state budget: the most contexts its state owners hold together.
     pub fn with_state_budget(mut self, capacity: u64) -> Self {
         self.state_budget = Some(capacity);
@@ -431,14 +314,6 @@ impl MemoryCatalog {
         self.recipients.iter()
     }
 
-    /// Returns every input the catalog declares for `scope`, with its port type, in name order.
-    pub fn scope_inputs(&self, scope: &ScopeName) -> impl Iterator<Item = (&InputName, PortType)> {
-        self.scopes
-            .get(scope)
-            .into_iter()
-            .flat_map(|scope| scope.inputs.iter().map(|(name, port_type)| (name, *port_type)))
-    }
-
     /// Declares an entry of the recipient directory.
     pub fn with_recipient(mut self, name: RecipientName, recipient: CatalogRecipient) -> Self {
         self.recipients.insert(name, recipient);
@@ -453,14 +328,6 @@ impl Catalog for MemoryCatalog {
 
     fn binding(&self, name: &BindingName) -> Option<&CatalogBinding> {
         self.bindings.get(name)
-    }
-
-    fn scope_input(&self, scope: &ScopeName, input: &InputName) -> Option<PortType> {
-        self.scopes.get(scope)?.inputs.get(input).copied()
-    }
-
-    fn scope_exit(&self, scope: &ScopeName, exit: &ExitName) -> Option<PortType> {
-        self.scopes.get(scope)?.exits.get(exit).copied()
     }
 
     fn state_budget(&self) -> Option<u64> {
@@ -488,12 +355,10 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::model::{KindSet, TimestampForm};
 
     fn document() -> Value {
         json!({
-            "outputs": {"internal": {"accepts": {"kinds": "all", "timestamps": "mixed"},
-                                     "fingerprint": format!("sha256:{}", "0".repeat(64))}},
+            "outputs": {"internal": {"accepts": {"kinds": "all", "timestamps": "mixed"}}},
             "bindings": {
                 "test.names": {"type": {"type": "list", "element": {"type": "string"}}, "liveness": "live",
                                "class": "fact", "value": ["a.b", "c.d"]},
@@ -506,8 +371,7 @@ mod tests {
                 "https://b.example.com": {"recipients": ["out/additional/0/https://b.example.com",
                                                          "out/additional/1/https://b.example.com"],
                                           "host": "out", "endpoint": "https://b.example.com"}
-            },
-            "scopes": {"post_enrich": {"metrics": {"kinds": ["gauge"], "timestamps": "untimestamped"}}}
+            }
         })
     }
 
@@ -519,13 +383,6 @@ mod tests {
         let names = catalog.binding(&"test.names".parse().unwrap()).unwrap();
         assert_eq!(names.liveness, Liveness::Live);
         assert!(ValueType::from(ParamType::List(&ParamType::String)).admits(&names.ty));
-        assert_eq!(
-            catalog.scope_input(&"post_enrich".parse().unwrap(), &"metrics".parse().unwrap()),
-            Some(PortType {
-                kinds: KindSet::of(&[crate::model::Kind::Gauge]),
-                timestamps: TimestampForm::Untimestamped,
-            })
-        );
         assert!(catalog
             .output(&"internal".parse().unwrap())
             .unwrap()
@@ -551,91 +408,22 @@ mod tests {
         unknown["bindings"]["test.flag"]["default"] = json!(false);
         assert!(serde_json::from_value::<MemoryCatalog>(unknown).is_err());
         assert!(serde_json::from_value::<MemoryCatalog>(json!({"labels": {}})).is_err());
-    }
 
-    #[test]
-    fn scopes_with_exits_and_the_state_budget_round_trip_and_older_documents_still_read() {
-        let mut document = document();
-        document["scopes"]["dogstatsd_pre_aggregation"] = json!({
-            "inputs": {"metrics": {"kinds": "all", "timestamps": "mixed"}},
-            "exits": {"aggregated": {"kinds": ["rate", "gauge"], "timestamps": "timestamped"}},
-        });
-        document["state_budget"] = json!(1000);
-        let catalog: MemoryCatalog = serde_json::from_value(document.clone()).unwrap();
-        // A scope without exits keeps the older form; one with exits writes both ends.
-        assert_eq!(serde_json::to_value(&catalog).unwrap(), document);
-
-        let scope = "dogstatsd_pre_aggregation".parse::<ScopeName>().unwrap();
-        assert_eq!(
-            catalog.scope_input(&scope, &"metrics".parse().unwrap()),
-            Some(PortType::ANY)
-        );
-        assert_eq!(
-            catalog.scope_exit(&scope, &"aggregated".parse().unwrap()),
-            Some(PortType {
-                kinds: KindSet::of(&[crate::model::Kind::Rate, crate::model::Kind::Gauge]),
-                timestamps: TimestampForm::Timestamped,
-            })
-        );
-        assert_eq!(catalog.scope_exit(&scope, &"passthrough".parse().unwrap()), None);
+        // The state budget round-trips; a catalog has no scopes.
+        let mut budgeted = document();
+        budgeted["state_budget"] = json!(1000);
+        let catalog: MemoryCatalog = serde_json::from_value(budgeted.clone()).unwrap();
         assert_eq!(catalog.state_budget(), Some(1000));
-
-        // Built in memory, the same catalog.
-        let built = serde_json::from_value::<MemoryCatalog>(super::tests::document())
-            .unwrap()
-            .with_scope_input(scope.clone(), "metrics".parse().unwrap(), PortType::ANY)
-            .with_scope_exit(
-                scope.clone(),
-                "aggregated".parse().unwrap(),
-                catalog.scope_exit(&scope, &"aggregated".parse().unwrap()).unwrap(),
-            )
-            .with_state_budget(1000);
-        assert_eq!(built, catalog);
-
-        // A scope written with both ends, but no exits, reads too, and is written in the older form.
-        let mut both = super::tests::document();
-        both["scopes"]["post_enrich"] =
-            json!({"inputs": {"metrics": {"kinds": ["gauge"], "timestamps": "untimestamped"}}});
-        let read: MemoryCatalog = serde_json::from_value(both).unwrap();
-        assert_eq!(serde_json::to_value(&read).unwrap(), super::tests::document());
-
-        // Members of a scope's ends are checked.
-        let mut unknown = super::tests::document();
-        unknown["scopes"]["post_enrich"] = json!({"inputs": {}, "entries": {}});
-        assert!(serde_json::from_value::<MemoryCatalog>(unknown).is_err());
-
-        // A scope in the older form may have inputs named like the members of the newer one.
-        let mut named = super::tests::document();
-        named["scopes"]["post_enrich"] = json!({"inputs": {"kinds": "all", "timestamps": "mixed"}});
-        let read: MemoryCatalog = serde_json::from_value(named.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&catalog).unwrap(), budgeted);
         assert_eq!(
-            read.scope_input(&"post_enrich".parse().unwrap(), &"inputs".parse().unwrap()),
-            Some(PortType::ANY)
+            serde_json::from_value::<MemoryCatalog>(document())
+                .unwrap()
+                .with_state_budget(1000),
+            catalog
         );
-        assert_eq!(serde_json::to_value(&read).unwrap(), named);
-    }
-
-    #[test]
-    fn a_scope_that_does_not_read_is_reported_with_its_name_and_what_is_wrong_in_it() {
-        let misspelled = json!({"kinds": "all", "timestamps": "untimestampd"});
-        let older = json!({"metrics": misspelled});
-        let newer = json!({
-            "inputs": {"metrics": {"kinds": "all", "timestamps": "mixed"}},
-            "exits": {"aggregated": misspelled},
-        });
-        for scope in [older, newer] {
-            let mut document = super::tests::document();
-            document["scopes"]["post_enrich"] = scope;
-            let error = serde_json::from_value::<MemoryCatalog>(document)
-                .unwrap_err()
-                .to_string();
-            assert!(
-                error.starts_with("scope `post_enrich`: unknown variant `untimestampd`"),
-                "{}",
-                error
-            );
-            assert!(error.ends_with(SCOPE_FORMS), "{}", error);
-        }
+        let mut scoped = document();
+        scoped["scopes"] = json!({"post_enrich": {"metrics": {"kinds": "all", "timestamps": "mixed"}}});
+        assert!(serde_json::from_value::<MemoryCatalog>(scoped).is_err());
     }
 
     #[test]

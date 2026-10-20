@@ -70,7 +70,7 @@
 //!
 //! With an artifact channel [connected](ProgrammableMetrics::connect_artifact_channel), the worker also wakes on every
 //! snapshot the channel delivers, and hands it to the core ([`InstallerCore::on_snapshot`]), which revokes, rejects,
-//! acknowledges, or proposes the artifact it holds, composed into the default program ADP last lowered, with its
+//! acknowledges, or proposes the artifact it holds, composed with the default program ADP last lowered, with its
 //! catalog. While an artifact is in effect, each configuration change composes it again against the new default
 //! program ([`InstallerCore::on_default_program`]), so native configuration still reaches it through the facts and
 //! signals it binds, and the resources it delivers through. Its policy is its own: native policy settings reach only the
@@ -86,7 +86,7 @@
 //! same way when the program is revoked.
 //!
 //! After every event, the worker reports the core's acknowledgments and its status summary back through the channel
-//! ([`InstallerCore::apply_states`]), with the base program hash of the default program's export and whether ADP is
+//! ([`InstallerCore::apply_states`]), with the program hash of the default program's export and whether ADP is
 //! degraded.
 //!
 //! # Resources
@@ -107,7 +107,7 @@
 //! `plan_installs_total{outcome}`, and the native metrics that telemetry profiles say the installer records from
 //! bindings (see [`InstallerTelemetry`]). It keeps a [`PlanStatus`] current in an
 //! [`ArcSwap`], with everything the [control surface](super::api) serves: the acknowledgments and status summary, the
-//! export of every scope of the default program, and the active plan with its explain document.
+//! export of the default program, and the active plan with its explain document.
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -148,15 +148,15 @@ use saluki_metric_plan::{
         artifact_channel, ApplyStates, ArtifactProduct, ArtifactSnapshot, InstallerEnd, ProgramRuns, TransportEnd,
     },
     compile::{compile, compile_unvalidated, Frame, LeaseTable, RegionProgram, SlotId},
-    compose::{compose_all, demanded_outputs, Approval, ComposeError, Composed, Composer, Demand},
+    compose::{compose, demanded_outputs, Approval, ComposeError, Composed, Composer, Demand},
     explain::Explain,
-    export::{base, export_as, node_differences, Annotations, ExportBundle, ExportForm, Omission},
+    export::{export_as, node_differences, program_hash, Annotations, ExportBundle, ExportForm, Omission},
     install::{
         Action, ArmCut, Candidate, CandidateId, CreditKey, CutDeferReason, CutPhase, GenerationState, InstallerConfig,
         InstallerCore, InstallerStatus, LeaseRef, Origin, Outcome, PendingReason, Prepare, PrepareOutcome, PrepareSite,
         RecipientRef, Report, ResourcesRevision, RetirementReport, SlotPrepare, StateBinding,
     },
-    ir::{HostId, NodeId, OutputId, Plan, ReceivedArtifact, ScopeName},
+    ir::{HostId, NodeId, OutputId, Plan, ReceivedArtifact},
     limits,
     operators::{LaneBinding, LaneCell, OperatorRegistry},
     runtime::{
@@ -670,16 +670,15 @@ pub struct PlanStatus {
     /// when one is connected.
     pub apply_states: ApplyStates,
 
-    /// The export of every scope of the default program last lowered, by scope, or why the scope cannot be exported,
-    /// in the detached form a published program starts from: without what does nothing as configured, and with emits
-    /// addressed to recipients.
-    pub exports: BTreeMap<ScopeName, Result<Arc<ExportBundle>, String>>,
+    /// The export of the default program last lowered, or why it cannot be exported, in the detached form a published
+    /// program starts from: without what does nothing as configured, and with emits addressed to recipients.
+    pub export: Result<Arc<ExportBundle>, String>,
 
-    /// The same exports in the bound form, every node as the default program has it, for tools that study lowering.
-    pub bound_exports: BTreeMap<ScopeName, Result<Arc<ExportBundle>, String>>,
+    /// The same export in the bound form, every node as the default program has it, for tools that study lowering.
+    pub bound_export: Result<Arc<ExportBundle>, String>,
 
-    /// The default program last lowered, with every configuration binding resolved: the plan artifacts are composed
-    /// into, and the exports are taken from.
+    /// The default program last lowered, with every configuration binding resolved: the plan whose sources, outputs,
+    /// and resources artifacts are composed with, and the exports are taken from.
     pub default_program: Arc<Plan>,
 
     /// The active generation's plan and explain document.
@@ -758,9 +757,6 @@ impl fmt::Display for PlanStatus {
         }
         if self.installer.pending.is_some() {
             f.write_str(", a candidate pending")?;
-        }
-        if self.apply_states.status.stale_base {
-            f.write_str(", stale base")?;
         }
         if self.apply_states.status.stale_review {
             f.write_str(", stale review")?;
@@ -862,16 +858,16 @@ pub(super) trait ArtifactPaths: Send {
         &mut self, core: &mut InstallerCore, candidate: Candidate, composer: &dyn Composer,
     ) -> (CandidateId, Vec<Action>);
 
-    /// Returns every config's acknowledgment and the status summary, with the base program hash of each scope of the
-    /// default program and why the host is degraded, if it is: what the installer reports, and the artifacts in effect
-    /// it reports.
+    /// Returns every config's acknowledgment and the status summary, with the program hash of the default program's
+    /// export and why the host is degraded, if it is: what the installer reports, and the artifact in effect it
+    /// reports.
     fn apply_states(
-        &self, core: &InstallerCore, bases: &BTreeMap<ScopeName, PlanHash>, degraded: Option<String>,
+        &self, core: &InstallerCore, default_program_hash: Option<PlanHash>, degraded: Option<String>,
     ) -> ApplyStates;
 }
 
 /// The core's own artifact paths: [`InstallerCore::on_snapshot`], [`InstallerCore::on_default_program`], and
-/// [`InstallerCore::apply_states_with_bases`].
+/// [`InstallerCore::apply_states`].
 struct CoreArtifactPaths;
 
 impl ArtifactPaths for CoreArtifactPaths {
@@ -888,9 +884,9 @@ impl ArtifactPaths for CoreArtifactPaths {
     }
 
     fn apply_states(
-        &self, core: &InstallerCore, bases: &BTreeMap<ScopeName, PlanHash>, degraded: Option<String>,
+        &self, core: &InstallerCore, default_program_hash: Option<PlanHash>, degraded: Option<String>,
     ) -> ApplyStates {
-        core.apply_states_with_bases(bases, degraded)
+        core.apply_states(default_program_hash, degraded)
     }
 }
 
@@ -990,7 +986,7 @@ impl ResourcePaths for CoreResourcePaths {
     }
 }
 
-/// Composes artifacts into the default program ADP last lowered, with the catalog it was lowered with.
+/// Composes artifacts with the default program ADP last lowered, with the catalog it was lowered with.
 struct DefaultProgramComposer<'a> {
     plan: &'a Plan,
     catalog: &'a AdpCatalog,
@@ -998,8 +994,8 @@ struct DefaultProgramComposer<'a> {
 }
 
 impl Composer for DefaultProgramComposer<'_> {
-    fn compose_all(&self, artifacts: &[(&ReceivedArtifact, &Approval)]) -> Result<Composed, ComposeError> {
-        compose_all(self.plan, artifacts, self.catalog, self.registry)
+    fn compose(&self, artifact: &ReceivedArtifact, approval: &Approval) -> Result<Composed, ComposeError> {
+        compose(self.plan, artifact, approval, self.catalog, self.registry)
     }
 }
 
@@ -1033,15 +1029,14 @@ impl ChannelEnd {
 struct DefaultProgramView {
     /// The catalog the default program was lowered and validated with.
     catalog: AdpCatalog,
-    /// The export of every scope of the default program, or why the scope cannot be exported, detached.
-    exports: BTreeMap<ScopeName, Result<Arc<ExportBundle>, String>>,
-    /// The same exports, bound.
-    bound_exports: BTreeMap<ScopeName, Result<Arc<ExportBundle>, String>>,
+    /// The export of the default program, or why it cannot be exported, detached.
+    export: Result<Arc<ExportBundle>, String>,
+    /// The same export, bound.
+    bound_export: Result<Arc<ExportBundle>, String>,
     /// The nodes whose parameters lowering writes from native policy settings.
     policy_nodes: BTreeSet<NodeId>,
-    /// The base program hash an artifact derived from the export of each scope records, for every scope whose base can
-    /// be computed.
-    bases: BTreeMap<ScopeName, PlanHash>,
+    /// The program hash of the detached export's artifact, which status reports, if it can be computed.
+    default_program_hash: Option<PlanHash>,
 }
 
 impl DefaultProgramView {
@@ -1054,42 +1049,31 @@ impl DefaultProgramView {
         policy_nodes: BTreeSet<NodeId>, registry: &OperatorRegistry,
     ) -> Self {
         let document = catalog.to_document();
-        let exports_as = |form: ExportForm| {
-            plan.scopes
-                .keys()
-                .map(|scope| {
-                    let bundle = export_as(plan, scope, &document, labels, form, registry)
-                        .map(|mut bundle| {
-                            bundle.annotations = export_annotations(&bundle, annotations);
-                            Arc::new(bundle)
-                        })
-                        .map_err(|error| error.to_string());
-                    (scope.clone(), bundle)
+        let export_in = |form: ExportForm| {
+            export_as(plan, &document, labels, form, registry)
+                .map(|mut bundle| {
+                    bundle.annotations = export_annotations(&bundle, annotations);
+                    Arc::new(bundle)
                 })
-                .collect()
+                .map_err(|error| error.to_string())
         };
-        let exports = exports_as(ExportForm::Detached);
-        let bound_exports = exports_as(ExportForm::Bound);
-        let bases = plan
-            .scopes
-            .keys()
-            .filter_map(|scope| match base(plan, scope) {
-                Ok(base) => Some((scope.clone(), base.program_hash)),
+        let export = export_in(ExportForm::Detached);
+        let bound_export = export_in(ExportForm::Bound);
+        let default_program_hash = match &export {
+            Ok(bundle) => match program_hash(&bundle.artifact) {
+                Ok(hash) => Some(hash),
                 Err(error) => {
-                    debug!(
-                        scope = %scope,
-                        error = %error,
-                        "The base program hash of a scope of the default program cannot be computed."
-                    );
+                    debug!(error = %error, "The program hash of the default program's export cannot be computed.");
                     None
                 }
-            })
-            .collect();
+            },
+            Err(_) => None,
+        };
         Self {
             catalog,
-            exports,
-            bound_exports,
-            bases,
+            export,
+            bound_export,
+            default_program_hash,
             policy_nodes,
         }
     }
@@ -1309,7 +1293,7 @@ struct Installer {
     /// The last default program lowered, against which a change's binding changes are counted, and into which
     /// artifacts are composed.
     last_lowered: Arc<Plan>,
-    /// What is derived from the last default program lowered: its catalog, exports, and base program hash.
+    /// What is derived from the last default program lowered: its catalog, exports, and their program hash.
     default_program: DefaultProgramView,
     /// The display label of every output, by output ID.
     labels: BTreeMap<OutputId, String>,
@@ -2386,7 +2370,7 @@ impl Installer {
             .collect::<BTreeMap<_, _>>();
         let mut apply_states = self.artifact_paths.apply_states(
             &self.core,
-            &self.default_program.bases,
+            self.default_program.default_program_hash,
             self.degraded_reason(&host_status),
         );
         // A published program owns its policy: status names the native settings it does not run as they are now.
@@ -2429,8 +2413,8 @@ impl Installer {
             last_error: self.last_error.clone(),
             overdue,
             apply_states,
-            exports: self.default_program.exports.clone(),
-            bound_exports: self.default_program.bound_exports.clone(),
+            export: self.default_program.export.clone(),
+            bound_export: self.default_program.bound_export.clone(),
             default_program: Arc::clone(&self.last_lowered),
             resources,
             recipients: status::recipient_entries(self.core.resource_table(), &host_status, &self.retired_recipients),

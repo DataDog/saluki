@@ -1,7 +1,7 @@
-//! The artifact channel stub protocol, version 1: the messages ADP and the stub exchange.
+//! The artifact channel stub protocol, version 2: the messages ADP and the stub exchange.
 //!
 //! ADP polls `POST {stub_url}/v1/artifacts/poll` with its acknowledgments and a status summary, and receives a complete
-//! snapshot of the product it asks for, `policy`. Each config's `payload` is a JSON
+//! snapshot of the product it asks for, `policy`: at most one config, the program. Each config's `payload` is a JSON
 //! **string** holding the envelope, so that the transport hash (`sha256`, lowercase hexadecimal of the payload's UTF-8
 //! bytes) covers exact bytes.
 //!
@@ -21,26 +21,13 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// The protocol version this stub speaks.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// The product policy artifacts are delivered in.
 pub const POLICY_PRODUCT: &str = "policy";
 
-/// The config ID the demo publishes its artifact for the policy scope under.
+/// The config ID the demo publishes its program under.
 pub const DEMO_CONFIG_ID: &str = "demo";
-
-/// The scope whose artifact the top-level status members describe, and which the demo's config `demo` replaces.
-pub const POLICY_SCOPE: &str = saluki_metric_plan::channel::POLICY_SCOPE;
-
-/// Returns the config ID the demo publishes an artifact for `scope` under: one config per scope, `demo` for the policy
-/// scope, as the first version of the demo published it, and `demo-<scope>` for any other.
-pub fn config_id(scope: &str) -> String {
-    if scope == POLICY_SCOPE {
-        DEMO_CONFIG_ID.to_string()
-    } else {
-        format!("{}-{}", DEMO_CONFIG_ID, scope)
-    }
-}
 
 /// The path ADP polls.
 pub const POLL_PATH: &str = "/v1/artifacts/poll";
@@ -183,7 +170,7 @@ impl ConfigState {
 const DROPPED_OUTPUT_NOTE: &str = "output `";
 
 /// What each reason an `active` acknowledgment gives for a degraded artifact says: composition replaced the emits to
-/// an output that is no longer declared, or now delivers elsewhere, with counted drops.
+/// an output that is no longer declared with counted drops.
 const EMITS_DROPPED: &str = "its emits are dropped";
 
 /// How each reason for an artifact's `emit`s addressed to recipients that are no longer available starts, followed by
@@ -253,9 +240,6 @@ pub struct ChannelStatus {
     /// The active artifact, or `None` when the default program runs.
     pub active_artifact: Option<ActiveArtifact>,
 
-    /// Whether the active artifact's base no longer matches the default program.
-    pub stale_base: Option<bool>,
-
     /// Whether the active artifact was approved against another active plan than the one it was prepared against.
     pub stale_review: Option<bool>,
 
@@ -264,9 +248,6 @@ pub struct ChannelStatus {
 
     /// How many generations are alive.
     pub live_generations: Option<u64>,
-
-    /// The status of each scope, by scope, when ADP reports them: the top-level members describe the policy scope.
-    pub scopes: BTreeMap<String, ScopeState>,
 
     /// Which program the active generation runs, and whether native policy settings apply to it, when ADP says.
     pub program: Option<ProgramStatus>,
@@ -290,36 +271,7 @@ pub struct ProgramStatus {
     pub differs: Vec<String>,
 }
 
-/// The status of one scope of ADP's default program.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-pub struct ScopeState {
-    /// The base program hash of the scope's export.
-    pub default_program_hash: Option<String>,
-
-    /// The artifact active for the scope, or `None` when the default program's region runs there.
-    pub active_artifact: Option<ActiveArtifact>,
-
-    /// Whether the scope's active artifact's base no longer matches the default program.
-    pub stale_base: Option<bool>,
-}
-
 impl ChannelStatus {
-    /// Returns the artifact ADP reports active in each scope, by scope: those `scopes` names, and the top-level
-    /// `active_artifact` for the policy scope when `scopes` does not describe it.
-    pub fn active_artifacts(&self) -> BTreeMap<String, ActiveArtifact> {
-        let mut active = self
-            .scopes
-            .iter()
-            .filter_map(|(scope, state)| Some((scope.clone(), state.active_artifact.clone()?)))
-            .collect::<BTreeMap<_, _>>();
-        if !self.scopes.contains_key(POLICY_SCOPE) {
-            if let Some(artifact) = &self.active_artifact {
-                active.insert(POLICY_SCOPE.to_string(), artifact.clone());
-            }
-        }
-        active
-    }
-
     /// Reads a status summary, noting the fields that cannot be read. `null` is no status.
     fn read(value: &Value, path: &str, notes: &mut Vec<String>) -> Option<Self> {
         if value.is_null() {
@@ -336,42 +288,11 @@ impl ChannelStatus {
             active_generation: member(status, path, "active_generation", notes).flatten(),
             active_plan_hash: member(status, path, "active_plan_hash", notes).flatten(),
             active_artifact: ActiveArtifact::read(status, path, notes),
-            stale_base: member(status, path, "stale_base", notes).flatten(),
             stale_review: member(status, path, "stale_review", notes).flatten(),
             degraded: member(status, path, "degraded", notes).flatten(),
             live_generations: member(status, path, "live_generations", notes).flatten(),
-            scopes: ScopeState::read_all(status, path, notes),
             program: member::<Option<ProgramStatus>>(status, path, "program", notes).flatten(),
         }
-    }
-}
-
-impl ScopeState {
-    /// Reads the `scopes` member of a status, noting the scopes and fields that cannot be read. A missing or `null`
-    /// member is no scope.
-    fn read_all(status: &Map<String, Value>, path: &str, notes: &mut Vec<String>) -> BTreeMap<String, Self> {
-        let scopes_path = format!("{}scopes", path);
-        let Some(scopes) = status
-            .get("scopes")
-            .filter(|scopes| !scopes.is_null())
-            .and_then(|scopes| object(scopes, &scopes_path, notes))
-        else {
-            return BTreeMap::new();
-        };
-        scopes
-            .iter()
-            .filter_map(|(name, scope)| {
-                let path = format!("{}.{}", scopes_path, name);
-                let scope = object(scope, &path, notes)?;
-                let path = format!("{}.", path);
-                let state = Self {
-                    default_program_hash: member(scope, &path, "default_program_hash", notes).flatten(),
-                    active_artifact: ActiveArtifact::read(scope, &path, notes),
-                    stale_base: member(scope, &path, "stale_base", notes).flatten(),
-                };
-                Some((name.clone(), state))
-            })
-            .collect()
     }
 }
 
@@ -389,7 +310,7 @@ pub struct ActiveArtifact {
 }
 
 impl ActiveArtifact {
-    /// Reads the `active_artifact` member of a status or of a scope's status, noting the fields that cannot be read.
+    /// Reads the `active_artifact` member of a status, noting the fields that cannot be read.
     /// `null` is no artifact.
     fn read(status: &Map<String, Value>, path: &str, notes: &mut Vec<String>) -> Option<Self> {
         let artifact_path = format!("{}active_artifact", path);
@@ -674,7 +595,7 @@ mod tests {
     #[test]
     fn polls_with_unknown_and_missing_fields_are_read() {
         let (poll, notes) = PollRequest::read(&json!({
-            "protocol_version": 1, "client": {"id": "a1", "version": "1.8.0", "build": "x"},
+            "protocol_version": 2, "client": {"id": "a1", "version": "1.8.0", "build": "x"},
             "products": ["policy"], "future_field": [1, 2],
             "config_states": [{"product": "policy", "id": "demo", "version": 7, "revision": 7,
                                "artifact_hash": "sha256:00", "state": "active", "generation": 12,
@@ -683,7 +604,7 @@ mod tests {
                        "new_status_field": true}
         }));
         assert!(notes.is_empty(), "{:?}", notes);
-        assert_eq!(poll.protocol_version, Some(1));
+        assert_eq!(poll.protocol_version, Some(2));
         assert_eq!(poll.client.id, "a1");
         assert_eq!(poll.products, ["policy"]);
         assert_eq!(poll.config_states[0].state, "active");
@@ -702,7 +623,7 @@ mod tests {
     #[test]
     fn mistyped_fields_are_noted_and_left_out_while_the_rest_of_the_poll_reads() {
         let (poll, notes) = PollRequest::read(&json!({
-            "protocol_version": 1,
+            "protocol_version": 2,
             "client": {"id": null, "version": "1.8.0"},
             "products": "policy",
             "config_states": [
@@ -713,7 +634,7 @@ mod tests {
                        "active_artifact": {"id": "demo", "revision": "3"}}
         }));
         // What could be read is kept.
-        assert_eq!(poll.protocol_version, Some(1));
+        assert_eq!(poll.protocol_version, Some(2));
         assert_eq!(poll.client.version, "1.8.0");
         assert_eq!(poll.config_states.len(), 1);
         assert_eq!(poll.config_states[0].revision, Some(3));
@@ -738,7 +659,7 @@ mod tests {
         assert_eq!(notes, expected);
 
         // A protocol version of the wrong type is unreadable, not version 0.
-        let (poll, notes) = PollRequest::read(&json!({"protocol_version": "1"}));
+        let (poll, notes) = PollRequest::read(&json!({"protocol_version": "2"}));
         assert_eq!(poll.protocol_version, None);
         assert_eq!(notes.len(), 1);
         let (_, notes) = PollRequest::read(&json!([1]));
@@ -746,62 +667,25 @@ mod tests {
     }
 
     #[test]
-    fn each_scopes_status_is_read_field_by_field() {
-        let (status, notes) = AdpStatus::read(&json!({
-            "active_artifact": {"id": "demo", "revision": 3, "artifact_hash": "sha256:03"},
-            "scopes": {
-                "other_scope": {"default_program_hash": "sha256:11", "stale_base": true,
-                    "active_artifact": {"id": "demo-other_scope", "revision": 4,
-                                        "artifact_hash": "sha256:04"}},
-                "metrics": {"default_program_hash": "sha256:22", "active_artifact": null, "stale_base": "no",
-                                "future_field": 1},
-                "broken": 7
-            }
-        }));
-        let scopes = &status.status.scopes;
-        assert_eq!(scopes.keys().collect::<Vec<_>>(), ["metrics", "other_scope"]);
-        let pre = &scopes["other_scope"];
-        assert_eq!(pre.default_program_hash.as_deref(), Some("sha256:11"));
-        assert_eq!(pre.stale_base, Some(true));
-        assert_eq!(pre.active_artifact.as_ref().unwrap().revision, Some(4));
-        let post = &scopes["metrics"];
-        assert_eq!((post.active_artifact.as_ref(), post.stale_base), (None, None));
-        assert_eq!(
-            notes,
-            [
-                "scopes.broken: expected an object (got 7)",
-                "scopes.metrics.stale_base: invalid type: string \"no\", expected a boolean (got \"no\")",
-            ]
-        );
-        // A status without scopes, as the first version of the protocol writes it, has none.
-        let (status, notes) = AdpStatus::read(&json!({"revision_high_water": 1}));
-        assert!(status.status.scopes.is_empty() && notes.is_empty());
-        assert_eq!(config_id(POLICY_SCOPE), DEMO_CONFIG_ID);
-        assert_eq!(config_id("other_scope"), "demo-other_scope");
-    }
-
-    #[test]
     fn an_active_acknowledgment_is_degraded_only_by_reasons_that_drop_emits() {
         // The reasons and the note as the plan crate writes them, joined as ADP joins them.
         let removed = "output `implied_team_d` is no longer declared; its emits are dropped until it returns";
-        let rebound = "output `b` now delivers elsewhere; its emits are dropped; rebase";
-        let renumbered = "output `metrics_routing_encode_0` renumbered: the recorded output is now \
-                          `metrics_routing_encode_1`; its emits are dropped; rebase";
+        let other = "output `b` is no longer declared; its emits are dropped until it returns";
         let rebase = "a note about `dd_metrics_encode` and `metrics_routing_encode_0` that drops nothing";
         assert_eq!(dropped_outputs(removed), ["implied_team_d"]);
         assert_eq!(dropped_outputs(rebase), Vec::<&str>::new());
         assert_eq!(
-            dropped_outputs(&[rebound, renumbered, rebase, removed].join("; ")),
-            ["b", "metrics_routing_encode_0", "implied_team_d"]
+            dropped_outputs(&[other, rebase, removed].join("; ")),
+            ["b", "implied_team_d"]
         );
-        assert_eq!(dropped_outputs(&[rebase, rebound, rebound].join("; ")), ["b"]);
+        assert_eq!(dropped_outputs(&[rebase, other, other].join("; ")), ["b"]);
         // An output named inside a note does not start one, and a refusal drops nothing.
         assert_eq!(
             dropped_outputs("waiting for output `implied_team_d`"),
             Vec::<&str>::new()
         );
         assert_eq!(
-            dropped_outputs("output `b` now delivers elsewhere; rebase"),
+            dropped_outputs("output `b` is not declared by the default program"),
             Vec::<&str>::new()
         );
         // Emits addressed to recipients that are gone are named by their recipients, as the program writes them.
@@ -817,7 +701,7 @@ mod tests {
         let (status, notes) = AdpStatus::read(&json!({"config_states": [
             {"id": "demo", "revision": 4, "state": "active", "error": format!("{}; {}", removed, rebase)},
             {"id": "demo-2", "revision": 5, "state": "active", "error": rebase},
-            {"id": "demo-3", "revision": 6, "state": "rejected", "error": rebound},
+            {"id": "demo-3", "revision": 6, "state": "rejected", "error": other},
         ]}));
         assert!(notes.is_empty(), "{:?}", notes);
         let dropped = status
@@ -902,12 +786,12 @@ mod tests {
         assert_eq!(status.status.revision_high_water, Some(3));
         assert_eq!(status.config_states[0].error.as_deref(), Some("stale revision"));
 
-        let (status, notes) = AdpStatus::read(&json!({"stale_base": "yes", "config_states": {}}));
+        let (status, notes) = AdpStatus::read(&json!({"stale_review": "yes", "config_states": {}}));
         assert_eq!(status, AdpStatus::default());
         assert_eq!(
             notes,
             [
-                "stale_base: invalid type: string \"yes\", expected a boolean (got \"yes\")",
+                "stale_review: invalid type: string \"yes\", expected a boolean (got \"yes\")",
                 "config_states: expected a list (got {})"
             ]
         );

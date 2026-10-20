@@ -76,7 +76,7 @@ pub fn normalize_artifact_with_renames(
         .collect::<Vec<_>>();
     let end = |port: &ArtifactPortRef| match port {
         ArtifactPortRef::Node { node, port } => Some(PortRef::new(NodeId::reserved(node.to_local_id()), port.clone())),
-        ArtifactPortRef::Input(_) | ArtifactPortRef::Exit(_) => None,
+        ArtifactPortRef::Input(_) => None,
     };
     let edges = normalized
         .edges
@@ -136,7 +136,7 @@ pub fn normalize_artifact_with_renames(
 /// Returns the normal form of a plan.
 ///
 /// See the [module documentation](self) for the rules. A renamed terminal is renamed everywhere the plan names it: in
-/// its edges, in the scope exits that enter it, and in the native components of the plan's provenance.
+/// its edges, and in the native components of the plan's provenance.
 pub fn normalize_plan(plan: &Plan) -> Plan {
     let mut normalized = plan.clone();
     for node in &mut normalized.nodes {
@@ -177,11 +177,6 @@ pub fn normalize_plan(plan: &Plan) -> Plan {
     for edge in &mut normalized.edges {
         rename(&mut edge.from.node);
         rename(&mut edge.to.node);
-    }
-    for scope in normalized.scopes.values_mut() {
-        for port in scope.inputs.values_mut().chain(scope.exits.values_mut()) {
-            rename(&mut port.node);
-        }
     }
     if let Some(provenance) = &mut normalized.provenance {
         provenance.native_components = std::mem::take(&mut provenance.native_components)
@@ -370,7 +365,7 @@ struct Graph<'a> {
     /// Each node's ID, operator, and, for a `split` whose predicate reads, its predicate in normal form, in node order.
     nodes: Vec<(&'a NodeId, &'a OperatorName, Option<Predicate>)>,
 
-    /// Each edge's ends, in edge order: `None` for a scope input or exit.
+    /// Each edge's ends, in edge order: `None` for a source of an artifact.
     edges: &'a [(Option<PortRef>, Option<PortRef>)],
 }
 

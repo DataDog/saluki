@@ -29,7 +29,6 @@ use crate::{
     compose::{Approval, ComposeError, Composed, Composer},
     ir::{HostBinding, HostId, NativeComponentId, OutputDecl, Plan, ReceivedArtifact, RecipientDecl, RecipientId},
     operators::OperatorRegistry,
-    resources::fingerprint,
     testing::{default_program_catalog, default_program_slot_name, DEFAULT_PROGRAM_JSON},
     validate::{CatalogOutput, Validator},
 };
@@ -190,14 +189,7 @@ fn lowered(config: &Config) -> Plan {
         "hosts": [{"host": "dd_out", "settings": {}}, {"host": "mrf_dd_out", "settings": {}}],
         "recipients": recipients,
     });
-    let mut plan = Plan::from_value(value).unwrap();
-    // A bound output's fingerprint is the version 2 digest of its binding, as validation requires.
-    for output in &mut plan.outputs {
-        if let Some(binding) = &output.binding {
-            output.fingerprint = fingerprint(&binding.host, output.accepts, &binding.selector);
-        }
-    }
-    plan
+    Plan::from_value(value).unwrap()
 }
 
 /// The frame's delivery hosts, each with its encode host.
@@ -215,7 +207,6 @@ fn candidate(plan: Plan, origin: Origin) -> Candidate {
             output.id.clone(),
             CatalogOutput {
                 accepts: output.accepts,
-                fingerprint: output.fingerprint,
                 recipients: output.recipients.clone(),
             },
         );
@@ -232,7 +223,7 @@ fn candidate(plan: Plan, origin: Origin) -> Candidate {
 struct NoComposer;
 
 impl Composer for NoComposer {
-    fn compose_all(&self, _: &[(&ReceivedArtifact, &Approval)]) -> Result<Composed, ComposeError> {
+    fn compose(&self, _: &ReceivedArtifact, _: &Approval) -> Result<Composed, ComposeError> {
         Err(ComposeError::Malformed {
             message: "the world composes no artifact".to_string(),
         })

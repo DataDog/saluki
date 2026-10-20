@@ -5,16 +5,15 @@ use serde_json::{json, Value};
 
 use super::*;
 use crate::{
-    canonical::PlanHash,
     compile::{
         rewrite::harness::{self, arb_plan_params, arb_shape, arb_trace, Case},
         KernelKey, LineageKey,
     },
     export::{export_as, ExportForm},
-    ir::{decode_params, ArtifactBase, ArtifactEdge, ArtifactNode, Node, ParamValue, ScopeName, IR_VERSION},
+    ir::{decode_params, ArtifactEdge, ArtifactNode, Node, ParamValue, IR_VERSION},
     model::EventView,
     predicate::NoBindings,
-    testing::{arb_metric, arb_predicate, default_program_catalog, DEFAULT_PROGRAM_JSON, DEFAULT_PROGRAM_SCOPE},
+    testing::{arb_metric, arb_predicate, default_program_catalog, DEFAULT_PROGRAM_JSON},
 };
 
 fn predicate(value: Value) -> Predicate {
@@ -446,7 +445,7 @@ fn splits_already_in_where_form_or_dropping_both_ports_are_left_alone() {
 }
 
 #[test]
-fn renamed_terminals_are_renamed_in_scopes_and_provenance() {
+fn renamed_terminals_are_renamed_in_provenance() {
     let mut plan = harness::plan(
         vec![
             harness::node(
@@ -462,7 +461,6 @@ fn renamed_terminals_are_renamed_in_scopes_and_provenance() {
         &["dsd.metrics -> s.in", "s.true -> s_true.in", "s.false -> s_false.in"],
         &["o0"],
     );
-    plan = harness::with_scope(plan, "dsd.metrics", &[("dropped", "s_true.in")]);
     plan.provenance = Some(crate::ir::PlanProvenance {
         native_components: [("s_true", "dsd_filter"), ("s_false", "dsd_out")]
             .into_iter()
@@ -471,8 +469,6 @@ fn renamed_terminals_are_renamed_in_scopes_and_provenance() {
         ..Default::default()
     });
     let normal = normalize_plan(&plan);
-    let scope = &normal.scopes[&ScopeName::new("post_enrich").unwrap()];
-    assert_eq!(scope.exits.values().next().unwrap().to_string(), "s_false.in");
     let components = &normal.provenance.as_ref().unwrap().native_components;
     let components = components
         .iter()
@@ -492,11 +488,6 @@ fn renamed_terminals_are_renamed_in_scopes_and_provenance() {
 fn artifact_of(nodes: Vec<(&str, &str, Value)>, edges: &[&str], blobs: Blobs) -> PolicyArtifact {
     PolicyArtifact {
         ir_version: IR_VERSION,
-        scope: ScopeName::new("metrics").unwrap(),
-        base: ArtifactBase {
-            program_hash: PlanHash::of_bytes(b"base"),
-            outputs: Default::default(),
-        },
         nodes: nodes
             .into_iter()
             .map(|(id, op, params)| ArtifactNode {
@@ -652,10 +643,8 @@ fn the_default_program_fixtures_are_in_normal_form() {
 #[test]
 fn the_detached_export_of_the_default_program_is_in_normal_form() {
     let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
-    let scope = ScopeName::new(DEFAULT_PROGRAM_SCOPE).unwrap();
     let bundle = export_as(
         &plan,
-        &scope,
         &default_program_catalog(),
         &BTreeMap::new(),
         ExportForm::Detached,
@@ -793,11 +782,6 @@ fn as_artifact(plan: &Plan) -> PolicyArtifact {
     let local = |id: &NodeId| id.local().as_str().to_string();
     PolicyArtifact {
         ir_version: plan.ir_version,
-        scope: ScopeName::new("metrics").unwrap(),
-        base: ArtifactBase {
-            program_hash: PlanHash::of_bytes(b"base"),
-            outputs: Default::default(),
-        },
         nodes: plan
             .nodes
             .iter()

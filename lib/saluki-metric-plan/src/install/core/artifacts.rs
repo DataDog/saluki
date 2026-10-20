@@ -1,49 +1,47 @@
 //! The installer core's artifact paths: snapshots from the channel, acknowledgments, and the status summary.
 //!
-//! # The policy in effect
+//! # The program in effect
 //!
-//! Each artifact replaces one scope of the default program, and the channel delivers at most one config per scope. The
-//! core keeps, per scope, the artifact it installs instead of the default program's region, the **policy in effect**:
-//! the latest artifact for the scope it accepted, until a newer one replaces it, the channel revokes it, it is
-//! rejected, or it fails under supervision. The artifacts in effect are composed together, each into its scope, so
-//! each candidate composed from artifacts remembers the artifacts it serves, one per scope. When an installation of the
-//! policy ends without it running (it is rejected, or it fails), the policy in effect becomes the artifacts of what the
-//! schedule will hold again: those of the generation rolled back to, older artifacts still running, or none, for the
+//! An artifact is a whole program, which runs instead of the default program, and the channel delivers at most one
+//! config at a time. The core keeps the artifact it installs, the **program in effect**: the latest artifact it
+//! accepted, until a newer one replaces it, the channel revokes it, it is rejected, or it fails under supervision. Each
+//! candidate composed from an artifact remembers the artifact it serves. When an installation of the program in effect
+//! ends without it running (it is rejected, or it fails), the program in effect becomes the artifact of what the
+//! schedule will hold again: that of the generation rolled back to, an older artifact still running, or none, for the
 //! default program.
 //!
-//! A revocation revokes every artifact of the scopes it revokes accepted before it: none becomes the policy in effect
-//! again, is composed again, or is kept to roll back to, unless the channel delivers it anew and the core accepts it
-//! again. A revoked artifact's generation keeps running until the default program, or a newer composition, replaces
-//! it.
+//! A revocation revokes every artifact accepted before it: none becomes the program in effect again, is composed again,
+//! or is kept to roll back to, unless the channel delivers it anew and the core accepts it again. A revoked artifact's
+//! generation keeps running until the default program, or a newer composition, replaces it.
 //!
-//! A configuration change while a policy is in effect composes the policy again against the new default program
-//! ([`InstallerCore::on_default_program`]), every artifact under its own revision; like a default program, the
-//! re-composition waits for a preparation in flight instead of cancelling it. An artifact that composes to the plan
-//! already running or being prepared, such as an unmodified export of the default program, creates no generation: the
-//! generation that holds its plan serves it.
+//! A configuration change while a program is in effect composes it again against the new default program
+//! ([`InstallerCore::on_default_program`]), under its own revision; like a default program, the re-composition waits for
+//! a preparation in flight instead of cancelling it. An artifact that composes to the plan already running or being
+//! prepared, such as an unmodified export of the default program, creates no generation: the generation that holds its
+//! plan serves it.
 //!
-//! # Artifacts that wait for an output
+//! # Artifacts that wait for a recipient
 //!
-//! A new artifact whose base records an output the host does not declare, such as a policy published before the
-//! resources artifact that declares its output, is neither rejected nor installed: it **waits** for the output. It
-//! holds nothing and counts against no overlap budget; its revision counts as seen; its config is acknowledged
-//! `pending` with the output it waits for; and whatever runs keeps running. Every lowering composes it again, and once
-//! it composes it proceeds as a new installation. At most one artifact waits per scope, the newest: a newer artifact
-//! for the scope replaces it, whether that one installs, waits, or is rejected; a revocation of the scope removes it,
-//! and so does a snapshot that no longer names the scope, or names it in more than one config. A delivery of it again
-//! by its config under its own revision keeps it waiting, while a stale or unreadable delivery changes nothing for it,
-//! as for an installation in flight. A re-composition of the artifact in effect after its output was removed is the
-//! composer's to make, with that output's emits dropped.
+//! A new artifact that emits to a recipient the host does not declare yet, such as a program published before the
+//! configuration that declares its recipient, or to recipients whose output the host has not lowered yet, is neither
+//! rejected nor installed: it **waits** for the recipient. It
+//! holds nothing and counts against no overlap budget; its revision counts as seen; its config is acknowledged `pending`
+//! with what it waits for; and whatever runs keeps running. Every lowering composes it again, and once it composes it
+//! proceeds as a new installation. At most one artifact waits, the newest: a newer artifact replaces it, whether that
+//! one installs, waits, or is rejected; a revocation removes it, and so does a snapshot that holds more than one config.
+//! A delivery of it again by its config under its own revision keeps it waiting, while a stale or unreadable delivery
+//! changes nothing for it, as for an installation in flight. A re-composition of the artifact in effect after an output
+//! it emits to was removed is the composer's to make, with that output's emits dropped.
 //!
 //! # Acknowledgments
 //!
 //! Every config the channel delivered has an acknowledgment, kept per config ID. A config refused on receipt is
-//! `rejected` with the reason. A config whose artifact was accepted, or whose artifact equals the policy in effect for
-//! its scope, follows the installation of that artifact: `pending` while it waits or is prepared, `prepared` while a
-//! cut installation of it waits for its cut, or while it is kept to roll back to, `active` while a generation serving
-//! it is active, and then how its installation ended: `rejected`, `failed`, or `retired`. A generation that stops
-//! serving it without ending it (superseded and draining, released from last-known-good, or taken over by the default
-//! program after a revocation) leaves the acknowledgment as it was until the generation retires.
+//! `rejected` with the reason. A config whose artifact was accepted, or whose artifact equals the program in effect,
+//! follows the installation of that artifact: `pending` while it waits or is prepared, `prepared` while a cut
+//! installation of it waits for its cut, or while it is kept to roll back to, `active` while a generation serving it is
+//! active, and then how its installation ended: `rejected`, `failed`, or `retired`. A generation that stops serving it
+//! without ending it (superseded and draining, released from last-known-good, or taken over by the default program
+//! after a revocation) leaves the acknowledgment as it was until the generation retires.
 //!
 //! A refused or rejected delivery does not hide what becomes of the artifact an earlier delivery of the same config
 //! installed: while that artifact runs, and the latest delivery's artifact does not, a change of its installation (a
@@ -71,19 +69,18 @@ use crate::{
     canonical::PlanHash,
     channel::{
         ActiveArtifact, ApplyState, ApplyStates, ArtifactConfig, ArtifactConfigId, ArtifactProduct, ArtifactSnapshot,
-        ConfigAcknowledgment, Envelope, NativePolicy, ProgramRuns, ProgramStatus, ScopeStatus, StatusSummary,
-        POLICY_SCOPE,
+        ConfigAcknowledgment, Envelope, NativePolicy, ProgramRuns, ProgramStatus, StatusSummary,
     },
     compose::{receive_artifact, Approval, ComposeError, Composed, Composer},
     install::lifecycle::{GenerationState, LifecycleEvent},
-    ir::{Plan, PolicyArtifact, ReceivedArtifact, ScopeName},
+    ir::{Plan, PolicyArtifact, ReceivedArtifact},
 };
 
 /// The most configs absent from the latest snapshot whose final acknowledgment the core keeps.
 const CONFIG_HISTORY: usize = 16;
 
-/// The most config IDs the rejection of a scope's configs, when a snapshot holds more than one for it, names, so that
-/// its acknowledgments stay linear in the number of configs.
+/// The most config IDs the rejection of a snapshot that holds more than one config names, so that its acknowledgments
+/// stay linear in the number of configs.
 const LISTED_CONFIGS: usize = 10;
 
 /// Why a candidate's installation ended when a newer candidate replaced it before it was prepared.
@@ -107,7 +104,7 @@ pub(super) enum Settle {
 
     /// A preparation failed or timed out, or supervision failed a generation: when nothing in flight will replace the
     /// active generation, and it failed, or it predates the latest configuration change after a rollback or a rejected
-    /// policy, the core asks for the default program.
+    /// program, the core asks for the default program.
     AfterFailure {
         /// Whether the event rolled back to last-known-good.
         rolled_back: bool,
@@ -120,9 +117,6 @@ pub(super) enum Settle {
 struct Accepted {
     /// The config it was delivered in.
     config: ArtifactConfigId,
-
-    /// The scope it replaces.
-    scope: ScopeName,
 
     /// Its revision.
     revision: u64,
@@ -140,19 +134,32 @@ struct Accepted {
     /// artifact again after a configuration change does not make its review stale.
     composed_against: Option<PlanHash>,
 
-    /// The number of revocations before it was accepted: the next one of its scope revokes it.
+    /// The number of revocations before it was accepted: the next one revokes it.
     epoch: u64,
 }
 
 impl Accepted {
-    /// Returns the approval it composes with: as the artifact in effect for its scope, whose emits to an output
-    /// removed or rebound since are dropped, or as a new one, which such an output keeps from installing.
+    /// Returns the approval it composes with: as the artifact in effect, whose emits to an output removed since are
+    /// dropped, or as a new one, which such an output keeps from installing.
     fn approval(&self, in_effect: bool) -> Approval {
         Approval {
             revision: self.revision,
             approved_against: self.approved_against,
             active_plan_hash: self.composed_against,
             in_effect,
+        }
+    }
+
+    /// Composes the artifact through the host's composer: as the artifact in effect if `in_effect`, else as a new one.
+    fn compose(&self, composer: &dyn Composer, in_effect: bool) -> Result<Composed, ComposeError> {
+        composer.compose(&self.artifact, &self.approval(in_effect))
+    }
+
+    /// Returns the origin of a candidate composed from it.
+    fn origin(&self) -> Origin {
+        Origin::Artifact {
+            revision: self.revision,
+            hash: self.hash,
         }
     }
 
@@ -165,95 +172,55 @@ impl Accepted {
     }
 }
 
-/// Artifacts by the scope each replaces: the policy in effect, or what a candidate serves.
-type Policy = BTreeMap<ScopeName, Arc<Accepted>>;
-
-/// Returns the origin of a candidate composed from a policy: the artifact with the newest revision's, the latest
-/// approval among them.
-fn origin_of(policy: &Policy) -> Origin {
-    policy.values().max_by_key(|artifact| artifact.revision).map_or(
-        Origin::DefaultProgram { config_change: 0 },
-        |artifact| Origin::Artifact {
-            revision: artifact.revision,
-            hash: artifact.hash,
-        },
-    )
-}
-
-/// Returns `true` if two policies hold the same accepted artifacts, scope by scope.
-fn same_policy(first: &Policy, second: &Policy) -> bool {
-    first.len() == second.len()
-        && first
-            .iter()
-            .zip(second)
-            .all(|((first_scope, first), (second_scope, second))| {
-                first_scope == second_scope && Arc::ptr_eq(first, second)
-            })
-}
-
-/// Says which artifacts a policy holds, for messages, such as `artifact revision 7` or `artifact revisions 7 and 9`.
-fn describe_revisions(policy: &Policy) -> String {
-    let revisions = policy
-        .values()
-        .map(|artifact| artifact.revision.to_string())
-        .collect::<Vec<_>>();
-    match revisions.as_slice() {
-        [only] => format!("artifact revision {}", only),
-        [init @ .., last] => format!("artifact revisions {} and {}", init.join(", "), last),
-        [] => "no artifact".to_string(),
+/// Returns `true` if two programs, each in effect or served, are the same accepted artifact, or both the default
+/// program.
+fn same_program(first: Option<&Arc<Accepted>>, second: Option<&Arc<Accepted>>) -> bool {
+    match (first, second) {
+        (Some(first), Some(second)) => Arc::ptr_eq(first, second),
+        (None, None) => true,
+        _ => false,
     }
 }
 
-/// The artifacts a candidate serves.
+/// The artifact a candidate serves.
 #[derive(Clone, Debug)]
 struct Source {
-    /// One artifact per scope the candidate's plan replaces.
-    artifacts: Policy,
+    /// The artifact the candidate's plan runs.
+    artifact: Arc<Accepted>,
 
-    /// The scopes whose composition had a stale base.
-    stale_base: BTreeSet<ScopeName>,
+    /// Whether its composition had a stale review.
+    stale_review: bool,
 
-    /// The scopes whose composition had a stale review.
-    stale_review: BTreeSet<ScopeName>,
-
-    /// Whether the candidate composes again artifacts that were running when the configuration changed, or is a
+    /// Whether the candidate composes again an artifact that was running when the configuration changed, or is a
     /// rollback. Its preparation is tried again after a failure, as a default-program candidate's is, so that
     /// configuration changes are applied eventually.
     retried: bool,
 
-    /// Whether the candidate was created for another plan that the artifacts composed to: it serves them without having
-    /// been composed from them.
+    /// Whether the candidate was created for another plan that the artifact composed to: it serves the artifact
+    /// without having been composed from it.
     attributed: bool,
 
-    /// What each scope's composition says beside its state ([`ScopeComposition::notes`]): why the artifact runs
-    /// degraded, and which outputs to rebase for. Its acknowledgment carries them while the candidate is active.
-    notes: BTreeMap<ScopeName, String>,
+    /// What the composition says beside its state ([`Composed::notes`]): why the artifact runs degraded. Its
+    /// acknowledgment carries it while the candidate is active.
+    notes: Option<String>,
 }
 
 impl Source {
     /// Returns `true` if the candidate serves the artifact.
     fn serves(&self, artifact: &Arc<Accepted>) -> bool {
-        self.artifacts.values().any(|served| Arc::ptr_eq(served, artifact))
-    }
-
-    /// Returns the hash of the document of each scope's artifact.
-    fn documents(&self) -> BTreeMap<&ScopeName, PlanHash> {
-        self.artifacts
-            .iter()
-            .map(|(scope, artifact)| (scope, artifact.hash))
-            .collect()
+        Arc::ptr_eq(&self.artifact, artifact)
     }
 }
 
-/// Whether a composed policy is a re-composition of the policy in effect after a configuration change.
+/// Whether a composed program is a re-composition of the program in effect after a configuration change.
 #[derive(Clone, Copy, Debug)]
 enum Recomposition {
-    /// A new acceptance, or a change of the policy in effect by the channel.
+    /// A new acceptance, or a change of the program in effect by the channel.
     No,
 
     /// A re-composition.
     Of {
-        /// Whether the policy was running when the configuration changed: its preparation is then tried again after a
+        /// Whether the program was running when the configuration changed: its preparation is then tried again after a
         /// failure.
         running: bool,
     },
@@ -267,7 +234,7 @@ struct Ended {
     generation: Option<GenerationId>,
 }
 
-/// The installation of an artifact a config's delivery started: the artifact it was accepted as, or the policy in
+/// The installation of an artifact a config's delivery started: the artifact it was accepted as, or the program in
 /// effect it equalled.
 #[derive(Debug)]
 struct Followed {
@@ -286,13 +253,6 @@ struct Tracked {
     /// The acknowledgment reported: the latest delivery's refusal, or the latest change of an installation the config's
     /// deliveries started.
     ack: ConfigAcknowledgment,
-
-    /// The scope the latest delivery's artifact replaces, once it was received.
-    scope: Option<ScopeName>,
-
-    /// Whether the latest delivery was rejected for what the other configs of its snapshot held, another config for
-    /// its scope or another new revision equal to its own: held unchanged in the next snapshot, it is handled anew.
-    reread: bool,
 
     /// The installation the latest delivery started. `None` for a delivery refused on receipt.
     latest: Option<Followed>,
@@ -353,7 +313,7 @@ impl From<&ConfigRef> for ConfigRef {
     }
 }
 
-/// A delivery accepted as a new artifact for its scope, not composed or installed yet.
+/// A delivery accepted as a new artifact, not composed or installed yet.
 #[derive(Clone, Debug)]
 struct Acceptance {
     config: ConfigRef,
@@ -361,9 +321,9 @@ struct Acceptance {
     artifact: Arc<Accepted>,
 }
 
-/// An artifact that waits for an output its base records and the host does not declare yet: it holds nothing, counts
-/// against no overlap budget, and is composed again at every lowering, until it composes, a newer artifact for its
-/// scope replaces it, or a revocation removes it.
+/// An artifact that waits for a recipient the host does not declare yet: it holds nothing, counts against no overlap
+/// budget, and is composed again at every lowering, until it composes, a newer artifact replaces it, or a revocation
+/// removes it.
 #[derive(Clone, Debug)]
 struct Waiting {
     acceptance: Acceptance,
@@ -372,17 +332,11 @@ struct Waiting {
     reason: String,
 }
 
-/// Returns why a new artifact waits, if its composition's error says that something it delivers to is not there yet:
-/// an output its base records that the host does not declare, a recipient the host's directory does not name, or an
-/// output for the recipients an `emit` names, which the host adds once it lowers with the artifact's demand. The
-/// artifact then waits rather than being rejected.
+/// Returns why a new artifact waits, if its composition's error says that something it delivers to is not there yet: a
+/// recipient the host's directory does not name, or an output for the recipients an `emit` names, which the host adds
+/// once it lowers with the artifact's demand. The artifact then waits rather than being rejected.
 fn waiting_reason(error: &ComposeError) -> Option<String> {
     match error {
-        ComposeError::PendingOutput { output } => Some(format!(
-            "waiting for output `{}`: the artifact's base records it, and the host does not declare it; the artifact is \
-             installed once the output is declared",
-            output
-        )),
         ComposeError::UnknownRecipient { recipient, .. } => Some(format!(
             "waiting for recipient `{}`: the artifact emits to it, and the host's recipient directory does not name it; \
              the artifact is installed once the recipient is declared",
@@ -399,28 +353,20 @@ pub(super) struct ArtifactState {
     /// Every config seen, by config ID.
     configs: BTreeMap<ArtifactConfigId, Tracked>,
 
-    /// The artifacts each candidate the core holds serves, for candidates composed from artifacts or attributed to
-    /// them: pending, preparing, cut, active, kept as last-known-good, rolled back to, or with a generation still
-    /// alive.
+    /// The artifact each candidate the core holds serves, for candidates composed from an artifact or attributed to
+    /// one: pending, preparing, cut, active, kept as last-known-good, rolled back to, or with a generation still alive.
     sources: BTreeMap<CandidateId, Source>,
 
-    /// The policy in effect, by scope.
-    policy: Policy,
+    /// The program in effect, or `None` for the default program.
+    policy: Option<Arc<Accepted>>,
 
-    /// Why the policy could not be composed again after the latest configuration change, if it could not, with the
-    /// policy: the host reports it degraded while one of its artifacts is in effect or the active generation serves
-    /// one, until a re-composition of it succeeds.
-    policy_error: Option<(Policy, String)>,
+    /// Why the program in effect could not be composed again after the latest configuration change, if it could not,
+    /// with the artifact: the host reports it degraded while the artifact is in effect or the active generation serves
+    /// it, until a re-composition of it succeeds.
+    policy_error: Option<(Arc<Accepted>, String)>,
 
-    /// The number of revocations so far.
+    /// The number of revocations so far: every artifact accepted before the latest one is revoked.
     revocations: u64,
-
-    /// The number of revocations when every scope was last revoked: every artifact accepted before is revoked.
-    revoked_all_at: u64,
-
-    /// The number of revocations when each scope was last revoked on its own: every artifact of the scope accepted
-    /// before is revoked.
-    revoked_at: BTreeMap<ScopeName, u64>,
 
     /// The latest snapshot handled. A redelivery of it, such as after a worker restart, changes nothing, and a config
     /// it holds unchanged in the next snapshot keeps its acknowledgment.
@@ -434,8 +380,8 @@ pub(super) struct ArtifactState {
     /// revoked artifact that stays active meanwhile says so.
     default_rejected: Option<String>,
 
-    /// The artifacts that wait for an output, by scope: the newest per scope.
-    waiting: BTreeMap<ScopeName, Waiting>,
+    /// The artifact that waits for a recipient, the newest, if any.
+    waiting: Option<Waiting>,
 
     /// The number of acknowledgment changes so far.
     changes: u64,
@@ -444,49 +390,41 @@ pub(super) struct ArtifactState {
 impl InstallerCore {
     /// Handles a complete snapshot of the policy product from the artifact channel, returning what to do.
     ///
-    /// The snapshot replaces the previous one: it revokes, rejects, acknowledges the current state, or proposes the
-    /// artifacts it holds, at most one per scope, composed together through `composer`. Every config it holds gets an
-    /// acknowledgment, which [`config_states`][Self::config_states] returns; reports of the generations created follow
-    /// as [`Action::Report`]s, as for any candidate.
+    /// The snapshot replaces the previous one: it revokes, rejects, acknowledges the current state, or proposes the one
+    /// artifact it holds, composed through `composer`. Every config it holds gets an acknowledgment, which
+    /// [`config_states`][Self::config_states] returns; reports of the generations created follow as
+    /// [`Action::Report`]s, as for any candidate.
     ///
     /// # Rules
     ///
-    /// - **Snapshots** are complete. A snapshot equal to the latest one handled, such as a redelivery after a worker
-    ///   restart, changes nothing, and a config it holds unchanged keeps its acknowledgment. An empty snapshot revokes
-    ///   every artifact accepted so far: the policy is no longer in effect, an artifact in flight is dropped, an
-    ///   artifact kept to roll back to is released, and the core asks for the default program
-    ///   ([`Action::InstallDefaultProgram`]) if an artifact was in effect or running. A snapshot that holds no config
-    ///   for a scope whose artifact is in effect, and whose every config was read, revokes that scope's artifacts, even
-    ///   if the config that delivered the artifact now delivers another scope's: the other scopes' artifacts in effect
-    ///   are composed and installed again without it. A revoked artifact is never in effect, composed, or kept again
-    ///   unless it is accepted anew. A snapshot with more than one config for a scope rejects all of them, and changes
-    ///   nothing for the scope. A transport failure delivers no snapshot, so nothing changes.
+    /// - **Snapshots** are complete, and hold one program. A snapshot equal to the latest one handled, such as a
+    ///   redelivery after a worker restart, changes nothing, and its configs keep their acknowledgments. An empty
+    ///   snapshot revokes every artifact accepted so far: the program is no longer in effect, an artifact in flight is
+    ///   dropped, an artifact kept to roll back to is released, and the core asks for the default program
+    ///   ([`Action::InstallDefaultProgram`]) if an artifact was in effect or running. A revoked artifact is never in
+    ///   effect, composed, or kept again unless it is accepted anew. A snapshot with more than one config rejects all of
+    ///   them without reading them, and changes nothing else: what runs keeps running. A transport failure delivers no
+    ///   snapshot, so nothing changes.
     /// - **Receipt.** A config whose `sha256` is not its payload's transport hash, whose payload is not an envelope,
     ///   whose artifact fails the [receipt checks](crate::compose::receive_artifact), or whose envelope's
     ///   `artifact_hash` is not the hash of the artifact as received, is rejected. Its revision is not seen: it does
-    ///   not move the high-water mark.
-    /// - **Idempotency.** A delivery of the policy in effect for its scope, which is active or being installed,
-    ///   acknowledges the current state: the same artifact under the same revision, whatever the high-water mark (the
-    ///   other scope may have moved it since), or the same artifact under a revision above the mark, which moves the
-    ///   mark (an approval of the same artifact under a newer revision). Nothing is composed again, but the delivery
-    ///   becomes the policy in effect: the status summary reports its config and revision, and its review is checked
-    ///   against the active plan, as a new acceptance's is.
-    /// - **Ordering.** Revisions strictly increase across scopes: any other revision at or below the high-water mark is
-    ///   stale and rejected. The configs of one snapshot are ordered against the mark as the snapshot found it, so
-    ///   two scopes' new revisions in one snapshot are both newer; two equal new revisions are neither, and both are
-    ///   rejected, without their revision being seen. Any other revision above the mark moves it, even if the artifact
-    ///   is then rejected. A newer artifact cancels a preparation that has not committed. A failure never changes the
+    ///   not move the high-water mark. What runs keeps running.
+    /// - **Idempotency.** A delivery of the program in effect, which is active or being installed, acknowledges the
+    ///   current state: the same artifact under the same revision, or the same artifact under a revision above the
+    ///   mark, which moves the mark (an approval of the same artifact under a newer revision). Nothing is composed
+    ///   again, but the delivery becomes the program in effect: the status summary reports its config and revision,
+    ///   and its review is checked against the active plan, as a new acceptance's is.
+    /// - **Ordering.** Revisions strictly increase: any other revision at or below the high-water mark is stale and
+    ///   rejected, and what runs keeps running. Any other revision above the mark moves it, even if the artifact is
+    ///   then rejected. A newer artifact cancels a preparation that has not committed. A failure never changes the
     ///   high-water mark, which lives in the core, outside the restartable worker.
-    /// - **Composition** goes through the host's [`Composer`], with the artifacts in effect for the other scopes. A
-    ///   stale base or a stale review still installs, flagged in status; an artifact that cannot be composed, or whose
-    ///   composed plan is invalid, is rejected, and what runs keeps running. New artifacts of several scopes in one
-    ///   snapshot install together; when their plan is rejected, each is checked alone with the artifacts in effect
-    ///   for the other scopes, and those rejected alone are rejected with their own reasons while the others install.
-    /// - **Configuration changes** while artifacts are in effect re-compose them against the new default program, each
-    ///   under its own revision ([`on_default_program`][Self::on_default_program]).
+    /// - **Composition** goes through the host's [`Composer`]. A stale review still installs, flagged in status; an
+    ///   artifact that cannot be composed, or whose composed plan is invalid, is rejected, and what runs keeps running.
+    /// - **Configuration changes** while an artifact is in effect re-compose it against the new default program, under
+    ///   its own revision ([`on_default_program`][Self::on_default_program]).
     /// - **Supervision failures** arrive through [`generation_failed`][Self::generation_failed]: a failed artifact
-    ///   generation's artifacts are acknowledged `failed`, and the core rolls back to last-known-good, or to the
-    ///   default program.
+    ///   generation's artifact is acknowledged `failed`, and the core rolls back to last-known-good, or to the default
+    ///   program.
     pub fn on_snapshot(&mut self, snapshot: &ArtifactSnapshot, composer: &dyn Composer) -> Vec<Action> {
         if snapshot.product != ArtifactProduct::Policy || self.artifacts.last_snapshot.as_ref() == Some(snapshot) {
             return Vec::new();
@@ -494,7 +432,8 @@ impl InstallerCore {
         let mut actions = Vec::new();
         match snapshot.configs.as_slice() {
             [] => self.revoke_all(&mut actions),
-            configs => self.receive_all(configs, composer, &mut actions),
+            [config] => self.receive_one(config, composer, &mut actions),
+            configs => self.reject_snapshot(configs),
         }
         self.artifacts.last_snapshot = Some(snapshot.clone());
         self.settle(actions, Settle::Quiet)
@@ -503,18 +442,18 @@ impl InstallerCore {
     /// Proposes the default program lowered after a configuration change, returning its candidate's identifier and
     /// what to do.
     ///
-    /// While no artifact is in effect, this is [`propose`][Self::propose]. While some are, they are composed again
-    /// through `composer`, against the new default program, and proposed under the newest revision among them instead,
-    /// so that parameter changes in native configuration reach the artifacts through their configuration bindings;
-    /// `candidate` is then not used, and the composer must already compose against it. An artifact that failed under
-    /// supervision, or was revoked, is not in effect.
+    /// While no artifact is in effect, this is [`propose`][Self::propose]. While one is, it is composed again through
+    /// `composer`, against the new default program, and proposed under its revision instead, so that parameter changes
+    /// in native configuration reach the artifact through its configuration bindings; `candidate` is then not used, and
+    /// the composer must already compose against it. An artifact that failed under supervision, or was revoked, is not
+    /// in effect.
     ///
-    /// A re-composition that fails, or whose plan is invalid, leaves the artifacts as they were composed before, and
-    /// the status summary reports the host degraded while one of them is in effect or runs, until a later
-    /// re-composition succeeds or a new artifact replaces them; an artifact that is rejected resolves nothing. The
-    /// re-composition of artifacts that were running is tried again after a failed preparation, as a default program
-    /// is. Like a default program, a re-composition waits for a preparation in flight, replacing any candidate
-    /// waiting, instead of cancelling it, so that a stream of configuration changes always commits.
+    /// A re-composition that fails, or whose plan is invalid, leaves the artifact as it was composed before, and the
+    /// status summary reports the host degraded while it is in effect or runs, until a later re-composition succeeds
+    /// or a new artifact replaces it; an artifact that is rejected resolves nothing. The re-composition of an artifact
+    /// that was running is tried again after a failed preparation, as a default program is. Like a default program, a
+    /// re-composition waits for a preparation in flight, replacing any candidate waiting, instead of cancelling it, so
+    /// that a stream of configuration changes always commits.
     pub fn on_default_program(&mut self, candidate: Candidate, composer: &dyn Composer) -> (CandidateId, Vec<Action>) {
         if candidate.origin.can_roll_back() {
             // Not a default program: proposed as any artifact candidate is, with its revision checked.
@@ -522,58 +461,54 @@ impl InstallerCore {
         }
         let mut actions = Vec::new();
         self.lowered(Arc::clone(&candidate.plan), &mut actions);
-        let id = if self.artifacts.policy.is_empty() {
-            let id = self.candidate_id();
-            let origin = candidate.origin;
-            let plan = Arc::clone(&candidate.plan);
-            if self.submit(id, candidate, Arrival::Queue, &mut actions) {
-                // The generation that holds the default program's plan serves the default program.
-                if let Some(target) = self.target_candidate() {
-                    self.serve_unchanged(id, origin, &plan, target, &mut actions);
+        let id = match self.artifacts.policy.clone() {
+            None => {
+                let id = self.candidate_id();
+                let origin = candidate.origin;
+                let plan = Arc::clone(&candidate.plan);
+                if self.submit(id, candidate, Arrival::Queue, &mut actions) {
+                    // The generation that holds the default program's plan serves the default program.
+                    if let Some(target) = self.target_candidate() {
+                        self.serve_unchanged(id, origin, &plan, target, &mut actions);
+                    }
                 }
+                id
             }
-            id
-        } else {
-            let policy = self.artifacts.policy.clone();
-            self.compose_again(&policy, composer, &mut actions)
+            Some(artifact) => self.compose_again(&artifact, composer, &mut actions),
         };
         self.artifacts.lowered = Some(id);
-        // An artifact that waited for an output may compose now: it proceeds as a new installation.
+        // An artifact that waited for a recipient may compose now: it proceeds as a new installation.
         self.compose_waiting(composer, &mut actions);
         (id, self.settle(actions, Settle::Quiet))
     }
 
-    /// Composes the policy in effect again after a configuration change and proposes it, recording why it was not
+    /// Composes the program in effect again after a configuration change and proposes it, recording why it was not
     /// installed again if it was not.
-    fn compose_again(&mut self, policy: &Policy, composer: &dyn Composer, actions: &mut Vec<Action>) -> CandidateId {
-        match compose_policy(composer, policy, &self.artifacts.policy) {
+    fn compose_again(
+        &mut self, artifact: &Arc<Accepted>, composer: &dyn Composer, actions: &mut Vec<Action>,
+    ) -> CandidateId {
+        match artifact.compose(composer, true) {
             Ok(composed) => {
-                let running = self
-                    .active_source()
-                    .is_some_and(|source| same_policy(&source.artifacts, policy));
+                let running = self.active_source().is_some_and(|source| source.serves(artifact));
                 // A re-composition waits for a preparation in flight, as a default program does, so that a stream of
                 // configuration changes always commits.
-                let id = self.install(policy, composed, Recomposition::Of { running }, actions);
+                let id = self.install(artifact, composed, Recomposition::Of { running }, actions);
                 match rejection_of(actions, id) {
                     Some(rejection) => {
                         let message = format!(
-                            "{} {} not installed again after the configuration changed, and {} as {} composed \
-                             before: {}",
-                            describe_revisions(policy),
-                            if policy.len() == 1 { "was" } else { "were" },
-                            if policy.len() == 1 { "stays" } else { "stay" },
-                            if policy.len() == 1 { "it was" } else { "they were" },
-                            rejection
+                            "artifact revision {} was not installed again after the configuration changed, and stays \
+                             as it was composed before: {}",
+                            artifact.revision, rejection
                         );
-                        self.artifacts.policy_error = Some((policy.clone(), message));
+                        self.artifacts.policy_error = Some((Arc::clone(artifact), message));
                     }
-                    // The policy is composed against the current configuration again.
+                    // The program is composed against the current configuration again.
                     None => {
                         if self
                             .artifacts
                             .policy_error
                             .as_ref()
-                            .is_some_and(|(failed, _)| same_policy(failed, policy))
+                            .is_some_and(|(failed, _)| Arc::ptr_eq(failed, artifact))
                         {
                             self.artifacts.policy_error = None;
                         }
@@ -584,28 +519,26 @@ impl InstallerCore {
             Err(error) => {
                 let id = self.candidate_id();
                 let message = format!(
-                    "{} cannot be composed with the changed default program, and {} as {} composed before: {}",
-                    describe_revisions(policy),
-                    if policy.len() == 1 { "stays" } else { "stay" },
-                    if policy.len() == 1 { "it was" } else { "they were" },
-                    error
+                    "artifact revision {} cannot be composed with the changed default program, and stays as it was \
+                     composed before: {}",
+                    artifact.revision, error
                 );
                 actions.push(Action::Report(Report {
                     candidate: id,
-                    origin: origin_of(policy),
+                    origin: artifact.origin(),
                     generation: None,
                     outcome: Outcome::Rejected(Rejection::Refused {
                         message: message.clone(),
                     }),
                 }));
-                self.artifacts.policy_error = Some((policy.clone(), message));
+                self.artifacts.policy_error = Some((Arc::clone(artifact), message));
                 id
             }
         }
     }
 
-    /// Returns every policy artifact the core holds, once each, in no particular order: the policy in effect, those
-    /// the candidates it holds serve (installing, active, or kept to roll back to), and those that wait.
+    /// Returns every policy artifact the core holds, once each, in no particular order: the program in effect, those
+    /// the candidates it holds serve (installing, active, or kept to roll back to), and the one that waits.
     ///
     /// These are what a host's lowering must keep outputs for: the implied outputs their `emit`s addressed to
     /// recipients need ([`demanded_outputs`][crate::compose::demanded_outputs]), so that none of them, composed again,
@@ -614,17 +547,12 @@ impl InstallerCore {
         let mut seen = BTreeSet::new();
         self.artifacts
             .policy
-            .values()
-            .chain(
-                self.artifacts
-                    .sources
-                    .values()
-                    .flat_map(|source| source.artifacts.values()),
-            )
+            .iter()
+            .chain(self.artifacts.sources.values().map(|source| &source.artifact))
             .chain(
                 self.artifacts
                     .waiting
-                    .values()
+                    .iter()
                     .map(|waiting| &waiting.acceptance.artifact),
             )
             .filter(|accepted| seen.insert(accepted.hash))
@@ -641,37 +569,15 @@ impl InstallerCore {
             .collect()
     }
 
-    /// Returns the status summary the host reports with its acknowledgments, given the base program hash of the
-    /// default program's policy scope (see [`POLICY_SCOPE`]).
+    /// Returns the status summary the host reports with its acknowledgments, given the program hash of the default
+    /// program's export.
     ///
-    /// This is [`status_summary_with_bases`][Self::status_summary_with_bases] with the policy scope's base alone: the
-    /// summary's `scopes` are written only once an artifact is active in another scope.
+    /// The core knows everything in it but the program hash, which the host computes from its export, and whether the
+    /// host is degraded, which the host decides; the core adds why the program in effect, or the one running, could not
+    /// be composed again, if it could not. The active artifact is the one the active generation serves, unless the
+    /// generation failed; its stale review is that of the composition that generation runs. A revoked artifact is
+    /// active until a generation replaces its own.
     pub fn status_summary(&self, default_program_hash: Option<PlanHash>, degraded: Option<String>) -> StatusSummary {
-        let bases = policy_scope_base(default_program_hash);
-        let mut summary = self.status_summary_with_bases(&bases, degraded);
-        let other_scope_active = summary
-            .scopes
-            .iter()
-            .any(|(scope, status)| scope.as_str() != POLICY_SCOPE && status.active_artifact.is_some());
-        if !other_scope_active {
-            summary.scopes.clear();
-        }
-        summary
-    }
-
-    /// Returns the status summary the host reports with its acknowledgments, given the base program hash of each scope
-    /// of the default program, by scope.
-    ///
-    /// The core knows everything in it but the base program hashes, which the host computes from its exports, and
-    /// whether the host is degraded, which the host decides; the core adds why the policy in effect, or the one
-    /// running, could not be composed again, if it could not. The active artifacts are those the active generation
-    /// serves, unless the generation failed; their stale flags are those of the composition that generation runs. A
-    /// revoked artifact is active until a generation replaces its own. The top-level members describe the policy scope
-    /// ([`POLICY_SCOPE`]), and `scopes` every scope with a base or an active artifact; `stale_review` is set if any
-    /// active artifact's review is stale.
-    pub fn status_summary_with_bases(
-        &self, bases: &BTreeMap<ScopeName, PlanHash>, degraded: Option<String>,
-    ) -> StatusSummary {
         let active = self.active.as_ref();
         let source = self.active_source();
         let policy_error = self.artifacts.policy_error.as_ref().map(|(_, message)| message.clone());
@@ -679,33 +585,15 @@ impl InstallerCore {
             .into_iter()
             .flatten()
             .reduce(|reported, more| format!("{}; {}", reported, more));
-        let mut scopes = bases.keys().collect::<BTreeSet<_>>();
-        scopes.extend(source.iter().flat_map(|source| source.artifacts.keys()));
-        let scopes = scopes
-            .into_iter()
-            .map(|scope| {
-                let status = ScopeStatus {
-                    default_program_hash: bases.get(scope).copied(),
-                    active_artifact: source
-                        .and_then(|source| source.artifacts.get(scope))
-                        .map(|artifact| artifact.active()),
-                    stale_base: source.is_some_and(|source| source.stale_base.contains(scope)),
-                };
-                (scope.clone(), status)
-            })
-            .collect::<BTreeMap<_, _>>();
-        let policy_scope = scopes.iter().find(|(scope, _)| scope.as_str() == POLICY_SCOPE);
         StatusSummary {
-            default_program_hash: policy_scope.and_then(|(_, status)| status.default_program_hash),
+            default_program_hash,
             revision_high_water: self.high_water,
             active_generation: active.map(|active| active.generation.id().get()),
             active_plan_hash: active.map(|active| active.plan_hash),
-            active_artifact: policy_scope.and_then(|(_, status)| status.active_artifact.clone()),
-            stale_base: policy_scope.is_some_and(|(_, status)| status.stale_base),
-            stale_review: source.is_some_and(|source| !source.stale_review.is_empty()),
+            active_artifact: source.map(|source| source.artifact.active()),
+            stale_review: source.is_some_and(|source| source.stale_review),
             degraded,
             live_generations: u64::try_from(self.live.len()).unwrap_or(u64::MAX),
-            scopes,
             program: active.map(|active| {
                 let published = active.origin.can_roll_back();
                 ProgramStatus {
@@ -726,7 +614,7 @@ impl InstallerCore {
     }
 
     /// Returns everything the host reports through the channel: the status summary and every config's acknowledgment,
-    /// given the base program hash of the default program's policy scope.
+    /// given the program hash of the default program's export.
     pub fn apply_states(&self, default_program_hash: Option<PlanHash>, degraded: Option<String>) -> ApplyStates {
         ApplyStates {
             status: self.status_summary(default_program_hash, degraded),
@@ -734,297 +622,69 @@ impl InstallerCore {
         }
     }
 
-    /// Returns everything the host reports through the channel, given the base program hash of each scope of the
-    /// default program: the status summary, with every scope's status, and every config's acknowledgment.
-    pub fn apply_states_with_bases(
-        &self, bases: &BTreeMap<ScopeName, PlanHash>, degraded: Option<String>,
-    ) -> ApplyStates {
-        ApplyStates {
-            status: self.status_summary_with_bases(bases, degraded),
-            config_states: self.config_states(),
-        }
-    }
-
-    /// Handles the configs of a non-empty policy snapshot.
+    /// Handles the one config of a policy snapshot: reads it, then acknowledges it as a delivery of the program in
+    /// effect, refuses it, makes it wait, or installs its artifact as the program in effect.
     ///
-    /// Configs held unchanged since the latest snapshot keep their acknowledgment. Every other config is read; those
-    /// read are grouped by scope, and a scope with more than one rejects them all. Then the scopes the snapshot no
-    /// longer delivers are revoked, new revisions shared by several configs are rejected, and each scope's one config
-    /// is handled; the artifacts accepted are installed with the policy in effect for the other scopes.
-    fn receive_all(&mut self, configs: &[ArtifactConfig], composer: &dyn Composer, actions: &mut Vec<Action>) {
-        let previous = self
-            .artifacts
-            .last_snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.configs.clone())
-            .unwrap_or_default();
-        let mut unread = false;
-        let mut present = BTreeSet::new();
-        let mut by_scope: BTreeMap<ScopeName, Vec<Delivery<'_>>> = BTreeMap::new();
-        let mut unchanged: BTreeMap<ScopeName, Vec<&ArtifactConfig>> = BTreeMap::new();
-        // Which configs to handle anew is decided as the snapshot arrives, so that reading one config cannot change
-        // how another of the same snapshot is handled, even one under the same ID.
-        let reread = self
-            .artifacts
-            .configs
-            .iter()
-            .filter(|(_, tracked)| tracked.reread)
-            .map(|(id, _)| id.clone())
-            .collect::<BTreeSet<_>>();
-        // Configs are tracked by ID, so when the previous snapshot held several configs under one ID, what is tracked
-        // for it is the last of them read, which may not be the config held unchanged: such a config is read anew, so
-        // that its scope counts, and a damaged twin cannot hide it from the rule of one config per scope.
-        let mut seen = BTreeSet::new();
-        let shared_ids = previous
-            .iter()
-            .filter(|config| !seen.insert(&config.id))
-            .map(|config| config.id.clone())
-            .collect::<BTreeSet<_>>();
-        for config in configs {
-            // A config held unchanged keeps its acknowledgment, unless it was rejected for what the other configs of
-            // its snapshot held, or shared its ID with another: then it is handled anew.
-            if previous.contains(config) && !reread.contains(&config.id) && !shared_ids.contains(&config.id) {
-                match self
-                    .artifacts
-                    .configs
-                    .get(&config.id)
-                    .and_then(|tracked| tracked.scope.clone())
-                {
-                    Some(scope) => {
-                        present.insert(scope.clone());
-                        unchanged.entry(scope).or_default().push(config);
-                    }
-                    None => unread = true,
-                }
-                continue;
-            }
-            match self.read(config, actions) {
-                Some(delivery) => {
-                    let scope = delivery.received.artifact.scope.clone();
-                    present.insert(scope.clone());
-                    by_scope.entry(scope).or_default().push(delivery);
-                }
-                None => unread = true,
-            }
-        }
-
-        // A scope no config of the snapshot names is revoked, unless a config it holds could not be read: the config
-        // that delivered the scope's artifact no longer delivers it once it names another scope.
-        let absent = self
-            .artifacts
-            .policy
-            .keys()
-            .filter(|scope| !present.contains(*scope))
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        let revocation = (!unread && !absent.is_empty()).then(|| self.revoke_scopes(Some(&absent), actions));
-        let changed = revocation.is_some_and(|revocation| revocation.changed());
-        // An artifact that waited for an output in a scope the snapshot no longer names is no longer delivered.
-        let gone = self
-            .artifacts
-            .waiting
-            .keys()
-            .filter(|scope| !present.contains(*scope))
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        if !unread && !gone.is_empty() {
-            self.drop_waiting(Some(&gone), REVOKED);
-        }
-
-        // A scope with one config is handled; one with more, held unchanged or not, rejects them all. Every config of
-        // the snapshot is ordered against the mark as the snapshot found it, whatever scope comes first.
-        let mark = self.high_water;
-        let mut lone = Vec::new();
-        for (scope, deliveries) in by_scope {
-            let kept = unchanged.remove(&scope).unwrap_or_default();
-            if deliveries.len() + kept.len() > 1 {
-                let all = deliveries
-                    .iter()
-                    .map(|delivery| delivery.config)
-                    .chain(kept)
-                    .collect::<Vec<_>>();
-                self.reject_scope(&scope, &all);
-                continue;
-            }
-            lone.extend(deliveries);
-        }
-        for (scope, kept) in unchanged.into_iter().filter(|(_, kept)| kept.len() > 1) {
-            self.reject_scope(&scope, &kept);
-        }
-        let mut scopes = Vec::new();
-        let mut accepted = Vec::new();
-        for delivery in self.reject_shared_revisions(lone, mark, actions) {
-            scopes.push((delivery.config.id.clone(), delivery.received.artifact.scope.clone()));
-            accepted.extend(self.receive(delivery, mark, actions));
-        }
-        let installed = self.accept(accepted, composer, actions);
-        for (id, scope) in &scopes {
-            self.set_scope(id, scope);
-        }
-        match installed {
-            true => {}
-            false if changed && !self.artifacts.policy.is_empty() => {
-                // What the revoked scopes leave in effect is installed again without them.
-                let policy = self.artifacts.policy.clone();
-                match compose_policy(composer, &policy, &policy) {
-                    Ok(composed) => {
-                        self.install(&policy, composed, Recomposition::No, actions);
-                    }
-                    Err(error) => {
-                        let message = format!(
-                            "{} cannot be composed without the scopes the channel revoked, and {} as {} composed \
-                             before: {}",
-                            describe_revisions(&policy),
-                            if policy.len() == 1 { "stays" } else { "stay" },
-                            if policy.len() == 1 { "it was" } else { "they were" },
-                            error
-                        );
-                        self.artifacts.policy_error = Some((policy, message));
-                    }
-                }
-            }
-            false => {
-                if let Some(revocation) = revocation {
-                    self.ask_after_revocation(revocation.changed() || revocation.artifact_running, actions);
-                }
-            }
-        }
-    }
-
-    /// Rejects the configs of a snapshot that share a revision above the high-water mark the snapshot found, and
-    /// returns the others.
-    ///
-    /// Revisions strictly increase across scopes, so none of several new artifacts under one revision is newer than
-    /// the others: all are rejected, their revision is not seen, and each is handled anew in the next snapshot, where
-    /// it may have a revision of its own. A delivery of the policy in effect under its own revision is not new,
-    /// whatever the mark.
-    fn reject_shared_revisions<'a>(
-        &mut self, deliveries: Vec<Delivery<'a>>, mark: Option<u64>, actions: &mut Vec<Action>,
-    ) -> Vec<Delivery<'a>> {
-        let mut by_revision = BTreeMap::<u64, Vec<&ArtifactConfigId>>::new();
-        for delivery in &deliveries {
-            if mark.is_none_or(|mark| delivery.revision > mark) {
-                by_revision
-                    .entry(delivery.revision)
-                    .or_default()
-                    .push(&delivery.config.id);
-            }
-        }
-        let shared = by_revision
-            .into_iter()
-            .filter(|(_, ids)| ids.len() > 1)
-            .map(|(revision, mut ids)| {
-                ids.sort_unstable();
-                let ids = ids.iter().map(|id| format!("`{}`", id)).collect::<Vec<_>>();
-                (revision, ids.join(", "))
-            })
-            .collect::<BTreeMap<_, _>>();
-        let mut kept = Vec::new();
-        for delivery in deliveries {
-            let Some(ids) = shared.get(&delivery.revision) else {
-                kept.push(delivery);
-                continue;
-            };
-            let message = format!(
-                "revision {} is the revision of every config of ({}) in one snapshot, but revisions increase across \
-                 scopes: none of them is newer than the others, so each is rejected until it has a revision of its own",
-                delivery.revision, ids
-            );
-            let config = delivery.config;
-            self.refuse_reported(config, delivery.declared(), Rejection::Refused { message }, actions);
-            if let Some(tracked) = self.artifacts.configs.get_mut(&config.id) {
-                tracked.scope = Some(delivery.received.artifact.scope.clone());
-                tracked.reread = true;
-            }
-        }
-        kept
-    }
-
-    /// Installs the artifacts a snapshot accepted with the policy in effect for the other scopes, and returns `true` if
-    /// it proposed a candidate.
-    ///
-    /// Artifacts of several scopes are installed together. When the plan they compose to is rejected, each is checked
-    /// alone with the policy in effect, so that each config is acknowledged with its own artifact's outcome: those
-    /// rejected alone are rejected with their own reasons, and the others are installed together. Artifacts that each
-    /// install alone, but not together, are rejected together.
-    ///
-    /// An artifact whose base records an output the host does not declare waits for it ([`Waiting`]) instead of being
-    /// rejected: whatever runs keeps running, and it is composed again at every lowering.
-    fn accept(&mut self, acceptances: Vec<Acceptance>, composer: &dyn Composer, actions: &mut Vec<Action>) -> bool {
-        if acceptances.is_empty() {
-            return false;
-        }
-        let policy = with_accepted(&self.artifacts.policy, &acceptances);
-        let composed = compose_policy(composer, &policy, &self.artifacts.policy);
-        if let (Err(error), [acceptance]) = (&composed, acceptances.as_slice()) {
-            if let Some(reason) = waiting_reason(error) {
-                self.wait_for_output(acceptance.clone(), reason);
-                return false;
-            }
-        }
-        // One artifact is checked when it is prepared; several are checked together first.
-        let rejection = match &composed {
-            Ok(composed) if acceptances.len() > 1 => self.check_composed(composed, &policy).err(),
-            Ok(_) => None,
-            Err(error) => Some(Rejection::Refused {
-                message: error.to_string(),
-            }),
+    /// A config that cannot be read, or whose artifact is refused, revokes nothing: what runs keeps running, as when a
+    /// transport failure delivers nothing.
+    fn receive_one(&mut self, config: &ArtifactConfig, composer: &dyn Composer, actions: &mut Vec<Action>) {
+        let Some(delivery) = self.read(config, actions) else {
+            return;
         };
-        if let Some(rejection) = rejection {
-            if acceptances.len() > 1 {
-                // Each artifact alone with the policy in effect, so that one rejected alone does not take the others
-                // down with it.
-                let mut passing = Vec::new();
-                let mut failing = false;
-                for acceptance in acceptances {
-                    let alone = with_accepted(&self.artifacts.policy, std::slice::from_ref(&acceptance));
-                    let checked = match compose_policy(composer, &alone, &self.artifacts.policy) {
-                        Ok(composed) => self.check_composed(&composed, &alone),
-                        Err(error) => match waiting_reason(&error) {
-                            Some(reason) => {
-                                failing = true;
-                                self.wait_for_output(acceptance, reason);
-                                continue;
-                            }
-                            None => Err(Rejection::Refused {
-                                message: error.to_string(),
-                            }),
-                        },
-                    };
-                    match checked {
-                        Ok(()) => passing.push(acceptance),
-                        Err(own) => {
-                            failing = true;
-                            self.refuse_reported(&acceptance.config, acceptance.declared, own, actions);
-                        }
-                    }
-                }
-                if failing {
-                    return self.accept(passing, composer, actions);
-                }
-                if composed.is_ok() {
-                    // Each installs alone, but not with the others: they are installed, and rejected, together.
-                    return self.install_accepted(passing, policy, composed, actions);
-                }
-                // Each composes alone, but not with the others.
-                for acceptance in &passing {
-                    self.refuse_reported(&acceptance.config, acceptance.declared, rejection.clone(), actions);
-                }
-            } else {
-                for acceptance in &acceptances {
-                    self.refuse_reported(&acceptance.config, acceptance.declared, rejection.clone(), actions);
-                }
-            }
-            return false;
+        if let Some(acceptance) = self.receive(delivery, actions) {
+            self.accept(acceptance, composer, actions);
         }
-        self.install_accepted(acceptances, policy, composed, actions)
     }
 
-    /// Makes an accepted artifact wait for an output its base records: its config is acknowledged `pending` with the
-    /// reason, and it replaces any artifact of its scope that waited before it. Its revision counts as seen.
-    fn wait_for_output(&mut self, acceptance: Acceptance, reason: String) {
-        let scope = acceptance.artifact.scope.clone();
-        self.supersede_waiting(&scope);
+    /// Rejects every config of a snapshot that holds more than one, without reading them: their revisions are not
+    /// seen. What runs keeps running, but nothing new is installed: the artifact that waited for a recipient is no
+    /// longer delivered on its own.
+    fn reject_snapshot(&mut self, configs: &[ArtifactConfig]) {
+        // The message names a few configs, since every config's acknowledgment carries it.
+        let mut ids = configs
+            .iter()
+            .take(LISTED_CONFIGS)
+            .map(|config| format!("`{}`", config.id))
+            .collect::<Vec<_>>();
+        if configs.len() > LISTED_CONFIGS {
+            ids.push(format!("and {} more", configs.len() - LISTED_CONFIGS));
+        }
+        let message = format!(
+            "the policy snapshot holds {} configs ({}), but a snapshot holds one program: every config is rejected, \
+             and what runs keeps running, until the snapshot holds one",
+            configs.len(),
+            ids.join(", ")
+        );
+        for config in configs {
+            self.refuse(config, None, message.clone());
+        }
+        self.drop_waiting(&message);
+    }
+
+    /// Composes a new artifact and installs it as the program in effect.
+    ///
+    /// An artifact that emits to a recipient the host does not declare yet waits for it ([`Waiting`]) instead of being
+    /// rejected: whatever runs keeps running, and it is composed again at every lowering. One that cannot be composed
+    /// otherwise is rejected; one whose composed plan is invalid is rejected when it is prepared.
+    fn accept(&mut self, acceptance: Acceptance, composer: &dyn Composer, actions: &mut Vec<Action>) {
+        match acceptance.artifact.compose(composer, false) {
+            Ok(composed) => self.install_accepted(acceptance, composed, actions),
+            Err(error) => match waiting_reason(&error) {
+                Some(reason) => self.wait_for_recipient(acceptance, reason),
+                None => {
+                    let rejection = Rejection::Refused {
+                        message: error.to_string(),
+                    };
+                    self.refuse_reported(&acceptance.config, acceptance.declared, rejection, actions);
+                }
+            },
+        }
+    }
+
+    /// Makes an accepted artifact wait for a recipient: its config is acknowledged `pending` with the reason, and it
+    /// replaces any artifact that waited before it. Its revision counts as seen.
+    fn wait_for_recipient(&mut self, acceptance: Acceptance, reason: String) {
+        self.supersede_waiting();
         self.track(
             &acceptance.config,
             Some(acceptance.declared),
@@ -1032,125 +692,80 @@ impl InstallerCore {
             Some(reason.clone()),
             None,
         );
-        self.set_scope(&acceptance.config.id, &scope);
-        self.artifacts.waiting.insert(scope, Waiting { acceptance, reason });
+        self.artifacts.waiting = Some(Waiting { acceptance, reason });
     }
 
-    /// Removes the artifact of a scope that waits for an output, if any, because a newer artifact for the scope
-    /// replaces it: its config is acknowledged `rejected`, unless it delivers the newer one.
-    fn supersede_waiting(&mut self, scope: &ScopeName) {
-        let Some(waiting) = self.artifacts.waiting.remove(scope) else {
+    /// Removes the artifact that waits for a recipient, if any, because a newer artifact replaces it: its config is
+    /// acknowledged `rejected`, unless it delivers the newer one.
+    fn supersede_waiting(&mut self) {
+        self.drop_waiting(SUPERSEDED);
+    }
+
+    /// Removes the artifact that waits for a recipient, if any: a newer artifact replaces it, or the channel revoked it
+    /// or no longer delivers it on its own. Its config is acknowledged `rejected` with `message`, unless the config's
+    /// latest delivery is another artifact.
+    fn drop_waiting(&mut self, message: &str) {
+        let Some(waiting) = self.artifacts.waiting.take() else {
             return;
         };
         let config = &waiting.acceptance.config;
-        let replaced = self
+        let current = self
             .artifacts
             .configs
             .get(&config.id)
             .is_some_and(|tracked| tracked.ack.revision == Some(waiting.acceptance.declared.0));
-        if replaced {
-            self.refuse(config, Some(waiting.acceptance.declared), SUPERSEDED.to_string());
+        if current {
+            self.refuse(config, Some(waiting.acceptance.declared), message.to_string());
         }
     }
 
-    /// Removes the artifacts that wait for an output in the given scopes, or in every scope: the channel revoked them,
-    /// or no longer delivers them. Each one's config is acknowledged `rejected` with `message`.
-    fn drop_waiting(&mut self, scopes: Option<&BTreeSet<ScopeName>>, message: &str) {
-        let dropped = self
-            .artifacts
-            .waiting
-            .keys()
-            .filter(|scope| scopes.is_none_or(|scopes| scopes.contains(*scope)))
-            .cloned()
-            .collect::<Vec<_>>();
-        for scope in dropped {
-            let Some(waiting) = self.artifacts.waiting.remove(&scope) else {
-                continue;
-            };
-            let config = &waiting.acceptance.config;
-            let current = self
-                .artifacts
-                .configs
-                .get(&config.id)
-                .is_some_and(|tracked| tracked.ack.revision == Some(waiting.acceptance.declared.0));
-            if current {
-                self.refuse(config, Some(waiting.acceptance.declared), message.to_string());
-            }
-        }
-    }
-
-    /// Composes again every artifact that waits for an output, after a lowering: one that now composes proceeds as a
-    /// new installation, one that still waits keeps waiting, and one that now fails otherwise is rejected.
+    /// Composes again the artifact that waits for a recipient, after a lowering: if it now composes, it proceeds as a
+    /// new installation; if it still waits, it keeps waiting; and if it now fails otherwise, it is rejected.
     fn compose_waiting(&mut self, composer: &dyn Composer, actions: &mut Vec<Action>) {
-        if self.artifacts.waiting.is_empty() {
+        let Some(waiting) = self.artifacts.waiting.take() else {
             return;
-        }
-        let waiting = std::mem::take(&mut self.artifacts.waiting);
-        let mut ready = Vec::new();
-        for (scope, waiting) in waiting {
-            let alone = with_accepted(&self.artifacts.policy, std::slice::from_ref(&waiting.acceptance));
-            match compose_policy(composer, &alone, &self.artifacts.policy) {
-                Ok(_) => ready.push(waiting.acceptance),
-                Err(error) => match waiting_reason(&error) {
-                    Some(reason) => {
-                        if reason != waiting.reason {
-                            let acceptance = waiting.acceptance.clone();
-                            self.track(
-                                &acceptance.config,
-                                Some(acceptance.declared),
-                                ApplyState::Pending,
-                                Some(reason.clone()),
-                                None,
-                            );
-                        }
-                        self.artifacts.waiting.insert(
-                            scope,
-                            Waiting {
-                                acceptance: waiting.acceptance,
-                                reason,
-                            },
+        };
+        match waiting.acceptance.artifact.compose(composer, false) {
+            Ok(composed) => self.install_accepted(waiting.acceptance, composed, actions),
+            Err(error) => match waiting_reason(&error) {
+                Some(reason) => {
+                    if reason != waiting.reason {
+                        let acceptance = &waiting.acceptance;
+                        self.track(
+                            &acceptance.config,
+                            Some(acceptance.declared),
+                            ApplyState::Pending,
+                            Some(reason.clone()),
+                            None,
                         );
                     }
-                    None => {
-                        let rejection = Rejection::Refused {
-                            message: error.to_string(),
-                        };
-                        let acceptance = waiting.acceptance;
-                        self.refuse_reported(&acceptance.config, acceptance.declared, rejection, actions);
-                    }
-                },
-            }
+                    self.artifacts.waiting = Some(Waiting {
+                        acceptance: waiting.acceptance,
+                        reason,
+                    });
+                }
+                None => {
+                    let rejection = Rejection::Refused {
+                        message: error.to_string(),
+                    };
+                    let acceptance = waiting.acceptance;
+                    self.refuse_reported(&acceptance.config, acceptance.declared, rejection, actions);
+                }
+            },
         }
-        self.accept(ready, composer, actions);
     }
 
-    /// Makes accepted artifacts, composed with the policy in effect for the other scopes into `policy`, the policy in
-    /// effect, and installs their composition, returning `true` if there was one to install.
-    fn install_accepted(
-        &mut self, acceptances: Vec<Acceptance>, policy: Policy, composed: Result<Composed, ComposeError>,
-        actions: &mut Vec<Action>,
-    ) -> bool {
-        let Ok(composed) = composed else { return false };
-        for acceptance in acceptances {
-            // A newer artifact for a scope replaces the one that waited for an output there.
-            self.supersede_waiting(&acceptance.artifact.scope);
-            self.follow(&acceptance.config, acceptance.declared, acceptance.artifact);
-        }
-        // The artifacts are the policy in effect for their scopes from now on, unless they are rejected: settling then
-        // makes the policy what the schedule holds again. A re-composition failure of the artifacts running stays
-        // reported until these replace them.
-        self.artifacts.policy = policy.clone();
-        self.install(&policy, composed, Recomposition::No, actions);
-        true
-    }
-
-    /// Checks a composed policy as its preparation would check it, without preparing it: see [`InstallerCore::check`].
-    fn check_composed(&self, composed: &Composed, policy: &Policy) -> Result<(), Rejection> {
-        self.check(Candidate {
-            plan: Arc::new(composed.plan.clone()),
-            report: composed.report.clone(),
-            origin: origin_of(policy),
-        })
+    /// Makes an accepted artifact, composed, the program in effect, and installs its composition.
+    fn install_accepted(&mut self, acceptance: Acceptance, composed: Composed, actions: &mut Vec<Action>) {
+        // A newer artifact replaces the one that waited for a recipient.
+        self.supersede_waiting();
+        let artifact = Arc::clone(&acceptance.artifact);
+        self.follow(&acceptance.config, acceptance.declared, acceptance.artifact);
+        // The artifact is the program in effect from now on, unless it is rejected: settling then makes the program
+        // in effect what the schedule holds again. A re-composition failure of the artifact running stays reported
+        // until this one replaces it.
+        self.artifacts.policy = Some(Arc::clone(&artifact));
+        self.install(&artifact, composed, Recomposition::No, actions);
     }
 
     /// Reads one config: checks its transport hash, envelope, artifact receipt, and artifact hash, refusing it if any
@@ -1200,12 +815,9 @@ impl InstallerCore {
         })
     }
 
-    /// Handles the one config of a scope that was read: acknowledges it as a delivery of the policy in effect, refuses
-    /// it, or returns it accepted as a new artifact for its scope, for [`accept`][Self::accept] to compose with the
-    /// policy in effect for the other scopes and install.
-    ///
-    /// The config is ordered against `mark`, the high-water mark when its snapshot arrived.
-    fn receive(&mut self, delivery: Delivery<'_>, mark: Option<u64>, actions: &mut Vec<Action>) -> Option<Acceptance> {
+    /// Handles a config that was read: acknowledges it as a delivery of the program in effect, refuses it, or returns
+    /// it accepted as a new artifact, for [`accept`][Self::accept] to compose and install.
+    fn receive(&mut self, delivery: Delivery<'_>, actions: &mut Vec<Action>) -> Option<Acceptance> {
         let declared = delivery.declared();
         let Delivery {
             config,
@@ -1214,51 +826,45 @@ impl InstallerCore {
             approved_against,
             received,
         } = delivery;
-        let scope = received.artifact.scope.clone();
 
-        // The policy in effect for the scope, delivered again under its own revision, or under a newer revision,
-        // changes nothing. Under its own revision it is the scope's current state whatever the mark, which another
-        // scope's newer artifact may have moved since; under any other revision at or below the mark it is stale.
-        let newer = mark.is_none_or(|high_water| revision > high_water);
+        // The program in effect, delivered again under its own revision, or under a newer revision, changes nothing.
+        // Under any other revision at or below the mark it is stale.
+        let newer = self.high_water.is_none_or(|high_water| revision > high_water);
         if let Some(policy) = self
             .artifacts
             .policy
-            .get(&scope)
-            .cloned()
+            .clone()
             .filter(|policy| policy.hash == artifact_hash && (newer || policy.revision == revision))
         {
             self.see_revision(revision);
-            // The scope's one config delivers the policy in effect: an artifact that waited there is no longer
-            // delivered.
-            self.supersede_waiting(&scope);
+            // The one config delivers the program in effect: an artifact that waited is no longer delivered.
+            self.supersede_waiting();
             let accepted = self.reapprove(&policy, config, revision, approved_against, received);
             self.follow(config, declared, accepted);
             return None;
         }
-        // The artifact that waits for an output there, delivered again by its config under its own revision, such as
-        // under a newer config version, keeps waiting.
-        if let Some(waiting) = self.artifacts.waiting.get_mut(&scope).filter(|waiting| {
+        // The artifact that waits for a recipient, delivered again by its config under its own revision, such as under
+        // a newer config version, keeps waiting.
+        if let Some(waiting) = self.artifacts.waiting.as_mut().filter(|waiting| {
             waiting.acceptance.config.id == config.id && waiting.acceptance.declared == (revision, artifact_hash)
         }) {
             waiting.acceptance.config = config.into();
             let reason = waiting.reason.clone();
             self.track(config, Some(declared), ApplyState::Pending, Some(reason), None);
-            self.set_scope(&config.id, &scope);
             return None;
         }
-        if let Some(high_water) = mark.filter(|high_water| revision <= *high_water) {
+        if let Some(high_water) = self.high_water.filter(|high_water| revision <= *high_water) {
             self.refuse_reported(config, declared, Rejection::Stale { revision, high_water }, actions);
             return None;
         }
         self.see_revision(revision);
-        // A newer artifact for the scope replaces the one that waited for an output there, whatever becomes of it:
-        // installed, waiting itself, or rejected, as one that cannot be composed is.
-        self.supersede_waiting(&scope);
+        // A newer artifact replaces the one that waited for a recipient, whatever becomes of it: installed, waiting
+        // itself, or rejected, as one that cannot be composed is.
+        self.supersede_waiting();
 
         let composed_against = self.active.as_ref().map(|active| active.plan_hash);
         let artifact = Arc::new(Accepted {
             config: config.id.clone(),
-            scope,
             revision,
             hash: artifact_hash,
             artifact: received,
@@ -1273,14 +879,15 @@ impl InstallerCore {
         })
     }
 
-    /// Makes a delivery of the policy in effect for its scope, its own redelivery or an approval of the same document
-    /// under a newer revision or in another config, the policy in effect for the scope, and returns it.
+    /// Makes a delivery of the program in effect, its own redelivery or an approval of the same document under a newer
+    /// revision or in another config, the program in effect, and returns it.
     ///
-    /// Nothing is composed or installed again, since the document is the same: the candidates that serve the policy
+    /// Nothing is composed or installed again, since the document is the same: the candidates that serve the program
     /// serve the delivery instead, as an attribution to a generation composed from the same document does, so the
     /// status summary reports its config and revision, and its review is checked against the active plan as a new
-    /// acceptance's is. Every acknowledgment that followed the policy follows the delivery, and re-compositions after
-    /// later configuration changes compose under its revision. A redelivery that changes none of this keeps the policy.
+    /// acceptance's is. Every acknowledgment that followed the program follows the delivery, and re-compositions after
+    /// later configuration changes compose under its revision. A redelivery that changes none of this keeps the
+    /// program.
     fn reapprove(
         &mut self, policy: &Arc<Accepted>, config: &ArtifactConfig, revision: u64, approved_against: Option<PlanHash>,
         artifact: ReceivedArtifact,
@@ -1295,7 +902,6 @@ impl InstallerCore {
         }
         let accepted = Arc::new(Accepted {
             config: config.id.clone(),
-            scope: policy.scope.clone(),
             revision,
             hash: policy.hash,
             artifact,
@@ -1305,15 +911,9 @@ impl InstallerCore {
         });
         let stale_review = approved_against.is_some_and(|approved| composed_against != Some(approved));
         for source in self.artifacts.sources.values_mut() {
-            for (scope, served) in source.artifacts.iter_mut() {
-                if Arc::ptr_eq(served, policy) {
-                    *served = Arc::clone(&accepted);
-                    if stale_review {
-                        source.stale_review.insert(scope.clone());
-                    } else {
-                        source.stale_review.remove(scope);
-                    }
-                }
+            if source.serves(policy) {
+                source.artifact = Arc::clone(&accepted);
+                source.stale_review = stale_review;
             }
         }
         let followers = self
@@ -1327,15 +927,11 @@ impl InstallerCore {
             followed.artifact = Arc::clone(&accepted);
         }
         if let Some((failed, _)) = &mut self.artifacts.policy_error {
-            for served in failed.values_mut() {
-                if Arc::ptr_eq(served, policy) {
-                    *served = Arc::clone(&accepted);
-                }
+            if Arc::ptr_eq(failed, policy) {
+                *failed = Arc::clone(&accepted);
             }
         }
-        self.artifacts
-            .policy
-            .insert(policy.scope.clone(), Arc::clone(&accepted));
+        self.artifacts.policy = Some(Arc::clone(&accepted));
         accepted
     }
 
@@ -1346,48 +942,34 @@ impl InstallerCore {
         }
     }
 
-    /// Proposes a composed policy, returning its candidate's identifier.
+    /// Proposes a composed artifact, returning its candidate's identifier.
     ///
     /// A new acceptance cancels a preparation in flight; a re-composition waits for it.
     fn install(
-        &mut self, policy: &Policy, composed: Composed, recomposition: Recomposition, actions: &mut Vec<Action>,
+        &mut self, artifact: &Arc<Accepted>, composed: Composed, recomposition: Recomposition,
+        actions: &mut Vec<Action>,
     ) -> CandidateId {
+        let notes = composed.notes();
         let Composed {
             plan,
             report,
-            stale_base,
             stale_review,
-            scopes,
             ..
         } = composed;
-        // A composer that composes one artifact may report its flags only once, for every scope.
-        let flagged = |flag: fn(&crate::compose::ScopeComposition) -> bool, all: bool| {
-            policy
-                .keys()
-                .filter(|scope| scopes.get(*scope).map_or(all, flag))
-                .cloned()
-                .collect::<BTreeSet<_>>()
-        };
         let id = self.candidate_id();
         let (arrival, retried) = match recomposition {
             Recomposition::No => (Arrival::Cancel, false),
             Recomposition::Of { running } => (Arrival::Queue, running),
         };
-        let notes = scopes
-            .iter()
-            .filter(|(scope, _)| policy.contains_key(*scope))
-            .filter_map(|(scope, composition)| Some((scope.clone(), composition.notes()?)))
-            .collect();
         let source = Source {
-            artifacts: policy.clone(),
-            stale_base: flagged(|scope| scope.stale_base, stale_base),
-            stale_review: flagged(|scope| scope.stale_review, stale_review),
+            artifact: Arc::clone(artifact),
+            stale_review,
             retried,
             attributed: false,
             notes,
         };
         self.artifacts.sources.insert(id, source);
-        let origin = origin_of(policy);
+        let origin = artifact.origin();
         let plan = Arc::new(plan);
         let candidate = Candidate {
             plan: Arc::clone(&plan),
@@ -1395,7 +977,7 @@ impl InstallerCore {
             origin,
         };
         if self.submit(id, candidate, arrival, actions) {
-            // The candidate equals what the schedule will hold: the generation that holds it serves the policy.
+            // The candidate equals what the schedule will hold: the generation that holds it serves the artifact.
             if let Some(target) = self.target_candidate() {
                 self.serve_unchanged(id, origin, &plan, target, actions);
             }
@@ -1404,7 +986,7 @@ impl InstallerCore {
     }
 
     /// Makes the candidate `target`, whose plan a candidate reported unchanged equals, serve what that candidate was
-    /// created for: the artifacts it serves, or, for a default program while no artifact is in effect, the default
+    /// created for: the artifact it serves, or, for a default program while no artifact is in effect, the default
     /// program, even if `target` was created for a revoked artifact that composed to the same plan; and the resources
     /// revision it was lowered with. Its generation then runs the program of the candidate's origin: it is adopted
     /// ([`adopt`][Self::adopt]).
@@ -1413,7 +995,7 @@ impl InstallerCore {
         actions: &mut Vec<Action>,
     ) {
         let Some(source) = self.artifacts.sources.get(&candidate).cloned() else {
-            if matches!(origin, Origin::DefaultProgram { .. }) && self.artifacts.policy.is_empty() {
+            if matches!(origin, Origin::DefaultProgram { .. }) && self.artifacts.policy.is_none() {
                 self.artifacts.sources.remove(&target);
                 self.adopt(target, origin, plan, actions);
             }
@@ -1421,11 +1003,10 @@ impl InstallerCore {
         };
         self.adopt(target, origin, plan, actions);
         match self.artifacts.sources.get_mut(&target) {
-            // The same documents: the generation that holds their composition serves their latest acceptance, such as
-            // an approval under a newer revision, or a delivery after a revocation.
-            Some(existing) if existing.documents() == source.documents() => {
-                existing.artifacts = source.artifacts;
-                existing.stale_base = source.stale_base;
+            // The same document: the generation that holds its composition serves its latest acceptance, such as an
+            // approval under a newer revision, or a delivery after a revocation.
+            Some(existing) if existing.artifact.hash == source.artifact.hash => {
+                existing.artifact = source.artifact;
                 existing.stale_review = source.stale_review;
                 existing.notes = source.notes;
             }
@@ -1440,54 +1021,32 @@ impl InstallerCore {
         }
     }
 
-    /// Revokes every artifact accepted so far: the default program runs.
+    /// Revokes every artifact accepted so far, and asks for the default program if the revocation changed anything or
+    /// an artifact runs, and nothing in flight installs the default program already.
     fn revoke_all(&mut self, actions: &mut Vec<Action>) {
-        let revocation = self.revoke_scopes(None, actions);
-        self.ask_after_revocation(revocation.changed() || revocation.artifact_running, actions);
-    }
-
-    /// Asks for the default program after a revocation that leaves no artifact in effect, if the revocation changed
-    /// anything and nothing in flight installs the default program already.
-    fn ask_after_revocation(&mut self, changed: bool, actions: &mut Vec<Action>) {
+        let revocation = self.revoke(actions);
         let cancelling = self
             .cut
             .as_ref()
             .is_some_and(|cut| cut.after_cancel == Some(AfterCancel::InstallDefaultProgram));
+        let changed = revocation.revoked || revocation.dropped || revocation.artifact_running;
         if changed && !self.default_in_flight() && !cancelling {
             actions.push(Action::InstallDefaultProgram);
         }
     }
 
-    /// Revokes the artifacts of the given scopes, or of every scope, accepted so far: they leave effect, their
-    /// installations in flight are dropped, a generation serving them is no longer kept to roll back to, and a cut
-    /// installing them is aborted or cancelled, or, once irrevocable, waits for its finalization.
-    fn revoke_scopes(&mut self, scopes: Option<&BTreeSet<ScopeName>>, actions: &mut Vec<Action>) -> Revocation {
-        self.drop_waiting(scopes, REVOKED);
+    /// Revokes every artifact accepted so far: it leaves effect, its installations in flight are dropped, a generation
+    /// serving it is no longer kept to roll back to, and a cut installing it is aborted or cancelled, or, once
+    /// irrevocable, waits for its finalization.
+    fn revoke(&mut self, actions: &mut Vec<Action>) -> Revocation {
+        self.drop_waiting(REVOKED);
         self.artifacts.revocations += 1;
-        let at = self.artifacts.revocations;
-        let revoked = match scopes {
-            None => {
-                self.artifacts.revoked_all_at = at;
-                std::mem::take(&mut self.artifacts.policy)
-            }
-            Some(scopes) => {
-                for scope in scopes {
-                    self.artifacts.revoked_at.insert(scope.clone(), at);
-                }
-                let (revoked, kept) = std::mem::take(&mut self.artifacts.policy)
-                    .into_iter()
-                    .partition(|(scope, _)| scopes.contains(scope));
-                self.artifacts.policy = kept;
-                revoked
-            }
-        };
-        let full = scopes.is_none();
-        let revoked_artifacts = |core: &Self, source: &Source| source.artifacts.values().any(|a| core.is_revoked(a));
+        let revoked = self.artifacts.policy.take();
         let attributions = self
             .artifacts
             .sources
             .iter()
-            .filter(|(_, source)| source.attributed && revoked_artifacts(self, source))
+            .filter(|(_, source)| source.attributed && self.is_revoked(&source.artifact))
             .map(|(candidate, _)| *candidate)
             .collect::<Vec<_>>();
         for candidate in attributions {
@@ -1497,13 +1056,12 @@ impl InstallerCore {
             .artifacts
             .sources
             .iter()
-            .filter(|(_, source)| revoked_artifacts(self, source))
+            .filter(|(_, source)| self.is_revoked(&source.artifact))
             .map(|(candidate, _)| *candidate)
             .collect::<BTreeSet<_>>();
-        // A full revocation drops every artifact in flight, whether or not it came from the channel.
-        let drops = |candidate: CandidateId, origin: &Origin| {
-            (full && origin.can_roll_back()) || serving_revoked.contains(&candidate)
-        };
+        // A revocation drops every artifact in flight, whether or not it came from the channel.
+        let drops =
+            |candidate: CandidateId, origin: &Origin| origin.can_roll_back() || serving_revoked.contains(&candidate);
         let mut dropped = self.drop_in_flight(drops, REVOKED, actions);
 
         // The cut in flight of a revoked artifact: one not armed yet is aborted, one that is armed is cancelled, after
@@ -1544,16 +1102,10 @@ impl InstallerCore {
             }
         }
         // A revoked artifact's plan is not rolled back to either.
-        if self
-            .rollback
-            .as_ref()
-            .is_some_and(|rollback| full || serving_revoked.contains(&rollback.from))
-        {
-            self.rollback = None;
-        }
+        self.rollback = None;
         self.try_start(actions);
         Revocation {
-            revoked: !revoked.is_empty(),
+            revoked: revoked.is_some(),
             dropped,
             artifact_running: self
                 .active
@@ -1562,47 +1114,15 @@ impl InstallerCore {
         }
     }
 
-    /// Rejects every config of a scope when a snapshot holds more than one for it. Their revisions are not seen.
-    fn reject_scope(&mut self, scope: &ScopeName, configs: &[&ArtifactConfig]) {
-        // The message names a few configs, since every config's acknowledgment carries it.
-        let mut ids = configs
-            .iter()
-            .take(LISTED_CONFIGS)
-            .map(|config| format!("`{}`", config.id))
-            .collect::<Vec<_>>();
-        if configs.len() > LISTED_CONFIGS {
-            ids.push(format!("and {} more", configs.len() - LISTED_CONFIGS));
-        }
-        let message = format!(
-            "the policy snapshot holds {} configs ({}) for scope `{}`, but one artifact replaces a scope: every config \
-             for it is rejected until the snapshot holds one",
-            configs.len(),
-            ids.join(", "),
-            scope
-        );
-        for config in configs {
-            self.refuse(*config, None, message.clone());
-            if let Some(tracked) = self.artifacts.configs.get_mut(&config.id) {
-                tracked.scope = Some(scope.clone());
-                tracked.reread = true;
-            }
-        }
-        // What runs for the scope keeps running, but nothing new is installed for it: the artifact that waited for an
-        // output there is no longer delivered on its own.
-        self.drop_waiting(Some(&BTreeSet::from([scope.clone()])), &message);
-    }
-
-    /// Takes the artifacts of a failing active or kept generation out of effect, before the failure is handled: their
-    /// compositions in flight, under any revision that approved the same documents, are dropped rather than prepared
-    /// again against the generation rolled back to, and no other generation serves them any more. A delivery after the
-    /// failure is accepted anew. The failure is the documents' whichever generation runs or keeps them: a kept
-    /// generation that fails takes them out of effect as the active one does, though nothing rolls back.
+    /// Takes the artifact of a failing active or kept generation out of effect, before the failure is handled: its
+    /// compositions in flight, under any revision that approved the same document, are dropped rather than prepared
+    /// again against the generation rolled back to, and no other generation serves it any more. A delivery after the
+    /// failure is accepted anew. The failure is the document's whichever generation runs or keeps it: a kept
+    /// generation that fails takes it out of effect as the active one does, though nothing rolls back.
     ///
-    /// A cut in flight that serves one of them is dropped as a preparation is: aborted if it is not armed yet, and, if
-    /// it is armed, rejected rather than prepared again once the cancellation the failure asks for succeeds. One that
-    /// is irrevocable runs already.
-    ///
-    /// A generation composing several artifacts fails as a whole: each of its artifacts is taken out of effect.
+    /// A cut in flight that serves it is dropped as a preparation is: aborted if it is not armed yet, and, if it is
+    /// armed, rejected rather than prepared again once the cancellation the failure asks for succeeds. One that is
+    /// irrevocable runs already.
     pub(super) fn withdraw_failing(&mut self, generation: GenerationId, reason: &str, actions: &mut Vec<Action>) {
         let Some(installed) = [self.active.as_ref(), self.last_known_good.as_ref()]
             .into_iter()
@@ -1615,29 +1135,24 @@ impl InstallerCore {
             return;
         }
         let failing = installed.candidate;
-        let Some(artifacts) = self
+        let Some(artifact) = self
             .artifacts
             .sources
             .get(&failing)
-            .map(|source| source.artifacts.clone())
+            .map(|source| Arc::clone(&source.artifact))
         else {
             return;
         };
-        let documents = artifacts
-            .values()
-            .map(|artifact| artifact.hash)
-            .collect::<BTreeSet<_>>();
-        let serves_document = |source: &Source| source.artifacts.values().any(|a| documents.contains(&a.hash));
-        // The failure is the documents', whichever revisions approved them: candidates of the same artifacts accepted
+        let serves_document = |source: &Source| source.artifact.hash == artifact.hash;
+        // The failure is the document's, whichever revisions approved it: candidates of the same artifact accepted
         // under another revision are dropped too. The failing generation keeps its own source, even an attribution, so
         // that its failure is acknowledged.
         self.artifacts
             .sources
             .retain(|candidate, source| *candidate == failing || !(source.attributed && serves_document(source)));
         let message = format!(
-            "{} failed under supervision: {}",
-            describe_revisions(&artifacts),
-            reason
+            "artifact revision {} failed under supervision: {}",
+            artifact.revision, reason
         );
         let serving = self
             .artifacts
@@ -1707,11 +1222,10 @@ impl InstallerCore {
         dropped
     }
 
-    /// Returns `true` if two candidates serve the same artifact documents, scope by scope, whichever revisions approved
-    /// them.
+    /// Returns `true` if two candidates serve the same artifact document, whichever revisions approved it.
     pub(super) fn serve_same_artifact(&self, first: CandidateId, second: CandidateId) -> bool {
         match (self.artifacts.sources.get(&first), self.artifacts.sources.get(&second)) {
-            (Some(first), Some(second)) => first.documents() == second.documents(),
+            (Some(first), Some(second)) => first.artifact.hash == second.artifact.hash,
             _ => false,
         }
     }
@@ -1721,17 +1235,16 @@ impl InstallerCore {
         self.artifacts
             .sources
             .get(&candidate)
-            .is_some_and(|source| source.artifacts.values().any(|artifact| self.is_revoked(artifact)))
+            .is_some_and(|source| self.is_revoked(&source.artifact))
     }
 
-    /// Returns `true` if a revocation of every scope, or of the artifact's own, came after the artifact was accepted.
+    /// Returns `true` if a revocation came after the artifact was accepted.
     fn is_revoked(&self, artifact: &Accepted) -> bool {
-        let scope = self.artifacts.revoked_at.get(&artifact.scope).copied().unwrap_or(0);
-        artifact.epoch < self.artifacts.revoked_all_at.max(scope)
+        artifact.epoch < self.artifacts.revocations
     }
 
     /// Returns `true` if a candidate's failed preparation is tried again although it is an artifact's: it composes
-    /// again artifacts that were running when the configuration changed, or it is a rollback.
+    /// again an artifact that was running when the configuration changed, or it is a rollback.
     pub(super) fn is_retried(&self, candidate: CandidateId) -> bool {
         self.artifacts
             .sources
@@ -1743,8 +1256,8 @@ impl InstallerCore {
     /// settling adds.
     ///
     /// Every public event of the core ends here: it records how the installations reported on ended, forgets the
-    /// sources of candidates the core no longer holds, makes the policy in effect what the schedule will hold if the
-    /// policy's installation ended, forgets a re-composition failure whose artifacts neither are in effect nor run,
+    /// sources of candidates the core no longer holds, makes the program in effect what the schedule will hold if the
+    /// program's installation ended, forgets a re-composition failure whose artifact neither is in effect nor runs,
     /// asks for the default program if an event leaves the active generation behind, and refreshes every
     /// acknowledgment.
     pub(super) fn settle(&mut self, mut actions: Vec<Action>, event: Settle) -> Vec<Action> {
@@ -1782,20 +1295,16 @@ impl InstallerCore {
         self.prune_sources();
 
         let mut reverted = false;
-        if !self.artifacts.policy.is_empty() {
+        if self.artifacts.policy.is_some() {
             let serving = self.serving();
-            if !same_policy(&serving, &self.artifacts.policy) {
+            if !same_program(serving.as_ref(), self.artifacts.policy.as_ref()) {
                 self.artifacts.policy = serving;
                 reverted = true;
             }
         }
         if let Some((failed, _)) = &self.artifacts.policy_error {
-            let in_effect = failed
-                .values()
-                .any(|failed| self.artifacts.policy.values().any(|policy| Arc::ptr_eq(policy, failed)));
-            let runs = self
-                .active_source()
-                .is_some_and(|source| failed.values().any(|failed| source.serves(failed)));
+            let in_effect = same_program(Some(failed), self.artifacts.policy.as_ref());
+            let runs = self.active_source().is_some_and(|source| source.serves(failed));
             if !in_effect && !runs {
                 self.artifacts.policy_error = None;
             }
@@ -1810,7 +1319,7 @@ impl InstallerCore {
         actions
     }
 
-    /// Records how the installation of the artifacts a report concerns ended, if the report ends it.
+    /// Records how the installation of the artifact a report concerns ended, if the report ends it.
     fn record_end(&mut self, report: &Report) {
         let Some(source) = self.artifacts.sources.get(&report.candidate) else {
             return;
@@ -1841,18 +1350,14 @@ impl InstallerCore {
             },
             _ => return,
         };
-        let artifacts = source.artifacts.values().cloned().collect::<Vec<_>>();
+        let artifact = Arc::clone(&source.artifact);
         let followers = self
             .artifacts
             .configs
             .values_mut()
             .flat_map(|tracked| [tracked.latest.as_mut(), tracked.earlier.as_mut()])
             .flatten()
-            .filter(|followed| {
-                artifacts
-                    .iter()
-                    .any(|artifact| Arc::ptr_eq(&followed.artifact, artifact))
-            });
+            .filter(|followed| Arc::ptr_eq(&followed.artifact, &artifact));
         for followed in followers {
             // A preparation that supervision failed is also reported rejected: the failure is what the
             // acknowledgment reports.
@@ -1872,8 +1377,8 @@ impl InstallerCore {
         self.artifacts.sources.retain(|candidate, _| held.contains(candidate));
     }
 
-    /// Makes a rollback candidate serve the artifacts of the candidate whose plan it installs again, if that one serves
-    /// any. Its preparation is tried again after a failure, so that the rollback installs eventually.
+    /// Makes a rollback candidate serve the artifact of the candidate whose plan it installs again, if that one serves
+    /// one. Its preparation is tried again after a failure, so that the rollback installs eventually.
     pub(super) fn adopt_source(&mut self, candidate: CandidateId, from: CandidateId) {
         if let Some(source) = self.artifacts.sources.get(&from).cloned() {
             let adopted = Source {
@@ -1893,7 +1398,7 @@ impl InstallerCore {
 
     /// Asks for the default program if the event changed something, nothing in flight will replace the active
     /// generation, and the active generation is an artifact's that failed, or, when `revisited` (the event rolled back,
-    /// or the policy's installation ended without running), it predates the latest configuration change.
+    /// or the program's installation ended without running), it predates the latest configuration change.
     ///
     /// A failed default-program generation is not replaced: its component failed, as a native component does. An event
     /// that changed nothing, such as a failure reported twice, asks for nothing.
@@ -1996,7 +1501,7 @@ impl InstallerCore {
                         .as_deref()
                         .is_some_and(|error| error.starts_with(REVOKED_ACTIVE)));
             // An active artifact's acknowledgment says what its composition says beside its state: why it runs
-            // degraded, with its emits to an output that was removed or rebound dropped, and what to rebase for.
+            // degraded, with its emits to an output that was removed dropped.
             let notes = (state == ApplyState::Active)
                 .then(|| self.active_notes(&followed.artifact))
                 .flatten();
@@ -2043,11 +1548,7 @@ impl InstallerCore {
     /// Returns what the active candidate's composition says about an artifact it serves beside its state, if anything.
     fn active_notes(&self, artifact: &Arc<Accepted>) -> Option<String> {
         let source = self.artifacts.sources.get(&self.active.as_ref()?.candidate)?;
-        let (scope, _) = source
-            .artifacts
-            .iter()
-            .find(|(_, served)| Arc::ptr_eq(served, artifact))?;
-        source.notes.get(scope).cloned()
+        source.serves(artifact).then(|| source.notes.clone()).flatten()
     }
 
     /// Forgets the oldest configs that are absent from the latest snapshot and whose acknowledgment is final, beyond
@@ -2134,20 +1635,14 @@ impl InstallerCore {
             })
     }
 
-    /// Returns the artifacts the schedule will hold, without the revoked ones: a revoked artifact's generation runs
-    /// only until it is replaced, and the default program's region is in effect for its scope meanwhile.
-    fn serving(&self) -> Policy {
+    /// Returns the artifact the schedule will hold, unless it was revoked: a revoked artifact's generation runs only
+    /// until it is replaced, and the default program is in effect meanwhile.
+    fn serving(&self) -> Option<Arc<Accepted>> {
         self.target_candidate()
             .and_then(|candidate| self.artifacts.sources.get(&candidate))
-            .map(|source| {
-                source
-                    .artifacts
-                    .iter()
-                    .filter(|(_, artifact)| !self.is_revoked(artifact))
-                    .map(|(scope, artifact)| (scope.clone(), Arc::clone(artifact)))
-                    .collect()
-            })
-            .unwrap_or_default()
+            .map(|source| &source.artifact)
+            .filter(|artifact| !self.is_revoked(artifact))
+            .cloned()
     }
 
     /// Returns the source of the active generation, unless it failed.
@@ -2189,13 +1684,6 @@ impl InstallerCore {
         }));
     }
 
-    /// Records the scope of a config's latest delivery.
-    fn set_scope(&mut self, config: &ArtifactConfigId, scope: &ScopeName) {
-        if let Some(tracked) = self.artifacts.configs.get_mut(config) {
-            tracked.scope = Some(scope.clone());
-        }
-    }
-
     /// Replaces a config's acknowledgment with its latest delivery's, which follows the installation of `follows`, if
     /// given.
     ///
@@ -2218,7 +1706,6 @@ impl InstallerCore {
             cut_at: None,
             error,
         };
-        let scope = follows.as_ref().map(|artifact| artifact.scope.clone());
         let earlier = self.artifacts.configs.remove(&config.id).and_then(|previous| {
             [previous.latest, previous.earlier]
                 .into_iter()
@@ -2245,8 +1732,6 @@ impl InstallerCore {
             config.id.clone(),
             Tracked {
                 ack,
-                scope,
-                reread: false,
                 latest,
                 earlier,
                 changed: self.artifacts.changes,
@@ -2258,7 +1743,7 @@ impl InstallerCore {
 /// What a revocation changed.
 #[derive(Clone, Copy, Debug)]
 struct Revocation {
-    /// Whether an artifact was in effect for a revoked scope.
+    /// Whether an artifact was in effect.
     revoked: bool,
 
     /// Whether an installation in flight was dropped.
@@ -2266,13 +1751,6 @@ struct Revocation {
 
     /// Whether the active generation serves a revoked artifact.
     artifact_running: bool,
-}
-
-impl Revocation {
-    /// Returns `true` if the revocation took an artifact out of effect, or dropped an installation in flight.
-    fn changed(&self) -> bool {
-        self.revoked || self.dropped
-    }
 }
 
 impl Followed {
@@ -2290,68 +1768,23 @@ impl Followed {
     }
 }
 
-/// Returns the policy `base` with the accepted artifacts in effect for their scopes.
-fn with_accepted(base: &Policy, acceptances: &[Acceptance]) -> Policy {
-    let mut policy = base.clone();
-    for acceptance in acceptances {
-        policy.insert(acceptance.artifact.scope.clone(), Arc::clone(&acceptance.artifact));
-    }
-    policy
-}
-
-/// Composes a policy through the host's composer, every artifact with its own approval: an artifact of the policy in
-/// effect, `in_effect`, composes as the one in effect for its scope, any other as a new one.
-fn compose_policy(composer: &dyn Composer, policy: &Policy, in_effect: &Policy) -> Result<Composed, ComposeError> {
-    let approvals = policy
-        .iter()
-        .map(|(scope, artifact)| {
-            let in_effect = in_effect
-                .get(scope)
-                .is_some_and(|effective| Arc::ptr_eq(effective, artifact));
-            artifact.approval(in_effect)
-        })
-        .collect::<Vec<_>>();
-    let artifacts = policy
-        .values()
-        .zip(&approvals)
-        .map(|(artifact, approval)| (&artifact.artifact, approval))
-        .collect::<Vec<_>>();
-    composer.compose_all(&artifacts)
-}
-
-/// Returns the bases of a host that reports only the policy scope's.
-fn policy_scope_base(default_program_hash: Option<PlanHash>) -> BTreeMap<ScopeName, PlanHash> {
-    ScopeName::new(POLICY_SCOPE)
-        .ok()
-        .zip(default_program_hash)
-        .into_iter()
-        .collect()
-}
-
 #[cfg(test)]
 impl InstallerCore {
-    /// Returns the policy in effect: of the artifacts the core runs or installs instead of the default program's
-    /// regions, the one with the newest revision, if any.
+    /// Returns the program in effect: the artifact the core runs or installs instead of the default program, if any.
     ///
-    /// While one is in effect, [`on_default_program`][Self::on_default_program] composes the policy again rather than
-    /// proposing the default program. The status summary reports the artifacts the active generation serves instead.
+    /// While one is in effect, [`on_default_program`][Self::on_default_program] composes it again rather than proposing
+    /// the default program. The status summary reports the artifact the active generation serves instead.
     pub(in crate::install) fn policy_in_effect(&self) -> Option<ActiveArtifact> {
-        self.artifacts
-            .policy
-            .values()
-            .max_by_key(|artifact| artifact.revision)
-            .map(|artifact| artifact.active())
+        self.artifacts.policy.as_ref().map(|artifact| artifact.active())
     }
 
-    /// Returns the revision and hash of the artifact with the newest revision a generation the core remembers serves,
-    /// if it serves one.
+    /// Returns the revision and hash of the artifact a generation the core remembers serves, if it serves one.
     pub(in crate::install) fn served_by(&self, generation: GenerationId) -> Option<(u64, PlanHash)> {
         let candidate = self.records.get(&generation)?.candidate;
         self.artifacts
             .sources
             .get(&candidate)
-            .and_then(|source| source.artifacts.values().max_by_key(|artifact| artifact.revision))
-            .map(|artifact| (artifact.revision, artifact.hash))
+            .map(|source| (source.artifact.revision, source.artifact.hash))
     }
 }
 

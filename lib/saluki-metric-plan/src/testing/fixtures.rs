@@ -1,14 +1,16 @@
 //! Hand-written default-program fixtures and the catalog they validate against.
 
+use std::collections::BTreeMap;
+
 use serde_json::{json, Value};
 
 use crate::{
-    canonical::PlanHash,
+    canonical::{BINDING_MEMBER, RESOLVED_MEMBER},
     compile::FrameHosts,
-    ir::{BindingName, HostId, InputName, NativeComponentId, NodeId, OutputDecl, OutputId, ParamType, RecipientId},
+    ir::{BindingName, HostId, NativeComponentId, NodeId, OutputDecl, OutputId, ParamType, Plan, RecipientId},
     model::{Kind, KindSet, PortType, TimestampForm},
     operators::SourceBinding,
-    validate::{BindingClass, CatalogOutput, Liveness, MemoryCatalog},
+    validate::{BindingClass, Catalog, CatalogBinding, CatalogOutput, Liveness, MemoryCatalog},
 };
 
 /// The default program with every optional branch wired (host tags, two endpoint routing groups, multi-region
@@ -115,7 +117,6 @@ pub fn default_program_resources_catalog() -> MemoryCatalog {
             output.id,
             CatalogOutput {
                 accepts: output.accepts,
-                fingerprint: output.fingerprint,
                 recipients: output.recipients,
             },
         )
@@ -198,19 +199,9 @@ pub fn with_opaque_gateways(plan_json: &str) -> Value {
 
 const STRINGS: ParamType = ParamType::List(&ParamType::String);
 
-/// Returns the hash whose 64 hexadecimal digits are all `digit`.
-fn hash(digit: char) -> PlanHash {
-    format!("sha256:{}", digit.to_string().repeat(64))
-        .parse()
-        .expect("64 hexadecimal digits form a hash")
-}
-
-/// The one scope of the default-program fixtures, which an artifact replaces: the whole metrics path after the sources.
-pub const DEFAULT_PROGRAM_SCOPE: &str = "metrics";
-
-/// The inputs of the default-program fixtures' scope ([`DEFAULT_PROGRAM_SCOPE`]): for each, its name, the port it names
-/// (the `metrics` port of one source), and the source's binding.
-pub const DEFAULT_PROGRAM_SCOPE_INPUTS: [(&str, &str, SourceBinding); 5] = [
+/// The sources of the default-program fixtures: for each, the name an artifact edge reads it by (`input.<name>`), the
+/// port it names (the `metrics` port of its `source` node), and the source's binding.
+pub const DEFAULT_PROGRAM_SOURCES: [(&str, &str, SourceBinding); 5] = [
     ("dogstatsd", "dsd_in.metrics", SourceBinding::Dogstatsd),
     ("otlp", "otlp_in.metrics", SourceBinding::Otlp),
     ("checks", "checks_ipc_in.metrics", SourceBinding::Checks),
@@ -219,79 +210,50 @@ pub const DEFAULT_PROGRAM_SCOPE_INPUTS: [(&str, &str, SourceBinding); 5] = [
 ];
 
 /// Returns the catalog the host would declare for the default program: its outputs, the configuration bindings that
-/// lowering uses with their types and liveness, the inputs of the `metrics` scope, each carrying what its source
-/// produces (DogStatsD with client timestamps, as the no-aggregation pipeline parses them), and that the host runs at
-/// most one aggregation per program.
+/// lowering uses with their types and liveness, and that the host runs at most one aggregation per program.
 ///
 /// Binding names, types, and liveness are those of the host's binding registry, whose tests check that they agree.
-///
-/// Output fingerprints are placeholder hashes whose digits are all the same: `1` for `dsd_client_telemetry` through
-/// `6` for `af_metrics_encode`, in the order the fixtures declare the outputs.
 pub fn default_program_catalog() -> MemoryCatalog {
-    DEFAULT_PROGRAM_SCOPE_INPUTS
-        .iter()
-        .fold(catalog_without_scopes(), |catalog, (input, _, binding)| {
-            catalog.with_scope_input(
-                DEFAULT_PROGRAM_SCOPE.parse().unwrap(),
-                InputName::new(*input).unwrap(),
-                binding.port_type(TimestampForm::Mixed),
-            )
-        })
-        .with_single_aggregation()
+    catalog_outputs_and_bindings().with_single_aggregation()
 }
 
-/// The two scopes the default program declared through stage 9, before its one `metrics` scope: `post_enrich`, the
-/// policy region after host tags, and `dogstatsd_pre_aggregation`, DogStatsD's processing up to and including
-/// aggregation, which ends at exits.
-///
-/// The host no longer declares them. Tests of what the plan crate supports in general, but the default program no
-/// longer uses, keep them: a scope that covers part of a plan, a scope's exits, and artifacts of several scopes composed
-/// together.
-pub const TWO_SCOPES: [&str; 2] = ["dogstatsd_pre_aggregation", "post_enrich"];
+/// Returns the host's catalog of a default program: the fixtures' catalog, with every binding the program resolves
+/// carrying the value it resolves to, as a host's catalog carries the values lowering writes.
+pub fn catalog_for(plan: &Plan) -> MemoryCatalog {
+    fn collect(value: &Value, found: &mut BTreeMap<BindingName, Value>) {
+        match value {
+            Value::Object(members) => {
+                if let (Some(Value::String(name)), Some(resolved)) =
+                    (members.get(BINDING_MEMBER), members.get(RESOLVED_MEMBER))
+                {
+                    found.insert(name.parse().expect("bindings are named validly"), resolved.clone());
+                }
+                members.values().for_each(|member| collect(member, found));
+            }
+            Value::Array(values) => values.iter().for_each(|value| collect(value, found)),
+            _ => {}
+        }
+    }
 
-/// Returns a default-program fixture with its scope replaced by the [two scopes it declared through stage
-/// 9](TWO_SCOPES): it validates with no findings against [`two_scope_catalog`].
-///
-/// `dogstatsd_pre_aggregation`'s exits are the inputs of the post-aggregation filter: of the merge in front of it with
-/// the no-aggregation pipeline (`aggregated` and `passthrough`), of the filter itself without (`aggregated`).
-pub fn with_two_scopes(mut value: Value) -> Value {
-    let has_passthrough = value["nodes"]
-        .as_array()
-        .expect("plans have nodes")
-        .iter()
-        .any(|node| node["id"] == "dsd_post_agg_filter_in");
-    let exits = if has_passthrough {
-        json!({"aggregated": "dsd_post_agg_filter_in.0", "passthrough": "dsd_post_agg_filter_in.1"})
-    } else {
-        json!({"aggregated": "dsd_post_agg_filter.in"})
-    };
-    value["scopes"] = json!({
-        "dogstatsd_pre_aggregation": {"inputs": {"metrics": "dsd_in.metrics"}, "exits": exits},
-        "post_enrich": {"inputs": {"metrics": "metrics.out"}}
-    });
-    value
-}
-
-/// Returns the catalog of a default-program fixture with [two scopes](with_two_scopes): [`default_program_catalog`]
-/// as [`two_scopes_of`] declares it.
-pub fn two_scope_catalog() -> MemoryCatalog {
-    two_scopes_of(default_program_catalog())
-}
-
-/// Returns `catalog` with the input `metrics` of each of the [two scopes](TWO_SCOPES), carrying anything, instead of
-/// the scopes it declares, and without the restriction to one aggregation, as the host declared it through stage 9.
-pub fn two_scopes_of(catalog: MemoryCatalog) -> MemoryCatalog {
-    let mut document = serde_json::to_value(without_single_aggregation(catalog)).expect("catalogs are written");
-    let members = document.as_object_mut().expect("a catalog document is an object");
-    let inputs = json!({"metrics": {"kinds": "all", "timestamps": "mixed"}});
-    members.insert(
-        "scopes".to_string(),
-        TWO_SCOPES
-            .iter()
-            .map(|scope| (scope.to_string(), inputs.clone()))
-            .collect(),
-    );
-    serde_json::from_value(document).expect("the catalog document reads back")
+    let mut found = BTreeMap::new();
+    for node in &plan.nodes {
+        node.params.iter().for_each(|(_, value)| collect(value, &mut found));
+    }
+    let mut catalog = default_program_catalog();
+    for (name, value) in found {
+        let declared = catalog
+            .binding(&name)
+            .expect("the catalog declares every binding")
+            .clone();
+        catalog = catalog.with_catalog_binding(
+            name,
+            CatalogBinding {
+                value: Some(value),
+                ..declared
+            },
+        );
+    }
+    catalog
 }
 
 /// Returns `catalog` without the restriction to one aggregation per program, for tests of what placement and the
@@ -304,25 +266,24 @@ pub fn without_single_aggregation(catalog: MemoryCatalog) -> MemoryCatalog {
     serde_json::from_value(document).expect("the catalog document reads back")
 }
 
-/// The outputs and bindings of [`default_program_catalog`], without scopes.
-fn catalog_without_scopes() -> MemoryCatalog {
+/// The outputs and bindings of [`default_program_catalog`].
+fn catalog_outputs_and_bindings() -> MemoryCatalog {
     let all = PortType::ANY;
     let counters = PortType {
         kinds: KindSet::of(&[Kind::Counter, Kind::Rate, Kind::Gauge, Kind::Set]),
         timestamps: TimestampForm::Mixed,
     };
-    let outputs: [(&str, PortType, char, &[&str]); 6] = [
-        ("dsd_client_telemetry", all, '1', &[]),
-        ("dd_metrics_encode", all, '2', &["dd_out/primary/0"]),
-        ("metrics_routing_encode_0", all, '3', &["dd_out/additional_0/0"]),
+    let outputs: [(&str, PortType, &[&str]); 6] = [
+        ("dsd_client_telemetry", all, &[]),
+        ("dd_metrics_encode", all, &["dd_out/primary/0"]),
+        ("metrics_routing_encode_0", all, &["dd_out/additional_0/0"]),
         (
             "metrics_routing_encode_1",
             all,
-            '4',
             &["dd_out/additional_1/0", "dd_out/additional_1/1"],
         ),
-        ("mrf_metrics_encode", all, '5', &["mrf_dd_out/primary/0"]),
-        ("af_metrics_encode", counters, '6', &["cluster_agent_out/primary/0"]),
+        ("mrf_metrics_encode", all, &["mrf_dd_out/primary/0"]),
+        ("af_metrics_encode", counters, &["cluster_agent_out/primary/0"]),
     ];
 
     // The facts and signals the default program binds, as the host classifies them: the host's tags and whether
@@ -356,12 +317,11 @@ fn catalog_without_scopes() -> MemoryCatalog {
     ];
 
     let mut catalog = MemoryCatalog::new();
-    for (id, accepts, digit, recipients) in outputs {
+    for (id, accepts, recipients) in outputs {
         catalog = catalog.with_output(
             OutputId::new(id).unwrap(),
             CatalogOutput {
                 accepts,
-                fingerprint: hash(digit),
                 recipients: recipients.iter().map(|r| RecipientId::new(*r).unwrap()).collect(),
             },
         );

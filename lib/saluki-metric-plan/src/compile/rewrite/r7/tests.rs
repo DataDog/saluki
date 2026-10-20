@@ -3,7 +3,6 @@ use serde_json::{json, Value};
 
 use super::*;
 use crate::{
-    canonical::PlanHash,
     compile::{
         compile, place_unvalidated,
         rewrite::{
@@ -258,7 +257,6 @@ fn namer(nodes: &[NodeId]) -> Result<NativeComponentId, String> {
 /// A plan from an OTLP source through a kernel to a split on `predicate`, with an output on its `true` port and a
 /// drop on its `false` port; validated, with its frame.
 fn split_plan(predicate: Value) -> (Plan, ValidationReport, Frame, OperatorRegistry) {
-    let fingerprint = PlanHash::of_bytes(b"o0").to_string();
     let plan = Plan::from_value(json!({
         "ir_version": 1,
         "nodes": [
@@ -274,8 +272,7 @@ fn split_plan(predicate: Value) -> (Plan, ValidationReport, Frame, OperatorRegis
             {"from": "s.true", "to": "yes.in"},
             {"from": "s.false", "to": "no.in"},
         ],
-        "outputs": [{"id": "o0", "accepts": {"kinds": "all", "timestamps": "mixed"}, "fingerprint": fingerprint,
-                     "recipients": ["out/o0"]}],
+        "outputs": [{"id": "o0", "accepts": {"kinds": "all", "timestamps": "mixed"}, "recipients": ["out/o0"]}],
     }))
     .unwrap();
     let registry = OperatorRegistry::native();

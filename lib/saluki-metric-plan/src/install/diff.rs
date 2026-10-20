@@ -458,6 +458,20 @@ pub fn diff(active: &Plan, candidate: &Plan, registry: &OperatorRegistry) -> Pla
     result
 }
 
+/// Diffs a composed candidate plan against the active one by what they do: as [`diff`], over both plans without the
+/// nodes that do nothing as configured ([`eliminate`](crate::export::eliminate), as the detached export leaves them
+/// out).
+///
+/// So a program written from the detached export, which leaves out an empty filterlist, diffs as no change in what it
+/// does against the default program, which has it, and an edit of it lists only what it changes. This is the diff a
+/// tool shows before publishing; [`Composed::ids`](crate::compose::Composed::ids) leads from a plan node back to the
+/// artifact node it came from.
+pub fn diff_operations(active: &Plan, candidate: &Plan, registry: &OperatorRegistry) -> PlanDiff {
+    let active = crate::export::eliminate(active, registry).plan;
+    let candidate = crate::export::eliminate(candidate, registry).plan;
+    diff(&active, &candidate, registry)
+}
+
 /// Returns how every recipient, and every delivery host's settings, differ between the active plan and a candidate:
 /// the candidate's in its order, then those only the active plan declares, in its order.
 ///

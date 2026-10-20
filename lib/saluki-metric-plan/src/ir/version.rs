@@ -3,10 +3,7 @@ use std::ops::RangeInclusive;
 use serde_json::{Map, Value};
 use snafu::Snafu;
 
-use super::{
-    id::{ArtifactNodeId, ArtifactPortRef},
-    plan::BlobError,
-};
+use super::{id::ArtifactNodeId, plan::BlobError};
 use crate::canonical::CanonicalError;
 
 /// The IR version this crate reads and writes.
@@ -97,19 +94,16 @@ pub enum IrError {
         node: ArtifactNodeId,
     },
 
-    /// An artifact edge leaves one of its scope's exits.
+    /// An artifact document has a member that artifacts had when they replaced one scope of the default program, which
+    /// a whole program has no use for.
     #[snafu(display(
-        "Artifact edge {} leaves `{}`, a scope exit. Exits are where edges leave the scope, so an exit is only ever an \
-         edge's target: write the edge from the port that feeds the exit.",
-        index,
-        exit
+        "The artifact has `{}`, which was removed: an artifact is a whole program, which runs in place of the default \
+         program, and records nothing of what it was written against. Remove `scope` and `base`.",
+        member
     ))]
-    EdgeFromExit {
-        /// The edge's position in the artifact's edge list, counting from zero.
-        index: usize,
-
-        /// The exit, as written.
-        exit: ArtifactPortRef,
+    RemovedMember {
+        /// The member, `scope` or `base`.
+        member: &'static str,
     },
 
     /// An artifact's blob table does not match its content or its references.

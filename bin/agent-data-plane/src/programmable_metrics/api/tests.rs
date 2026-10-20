@@ -45,19 +45,16 @@ async fn booted_status() -> PlanStatus {
     PlanStatus::clone(&metrics.status().load())
 }
 
-/// An export bundle of the `metrics` scope, written by hand.
+/// An export bundle, written by hand.
 fn bundle() -> ExportBundle {
     let artifact: PolicyArtifact = serde_json::from_value(json!({
         "ir_version": 1,
-        "scope": "metrics",
-        "base": {"program_hash": format!("sha256:{}", "ab".repeat(32))},
         "nodes": [{"id": "metrics_policy_0", "op": "emit", "params": {"output": "dd_metrics_encode"}}],
         "edges": [{"from": "input.dogstatsd", "to": "metrics_policy_0.in"}]
     }))
     .expect("the artifact is a policy artifact");
     ExportBundle {
         export_version: EXPORT_VERSION,
-        scope: "metrics".parse().unwrap(),
         artifact,
         ir_versions: IrVersions::supported(),
         catalog: MemoryCatalog::new(),
@@ -221,84 +218,70 @@ async fn the_resources_route_serves_the_hosts_outputs_and_recipients_with_creden
 }
 
 #[tokio::test]
-async fn the_export_route_serves_the_export_of_the_scope_named_by_the_query() {
+async fn the_export_route_serves_the_default_programs_export_in_the_form_the_query_names() {
     let mut status = booted_status().await;
-    let metrics: ScopeName = "metrics".parse().unwrap();
-    // The installer exports every scope of the default program it lowered: its one scope, `metrics`, which covers the
-    // whole metrics path after the sources, aggregation included, and has no exits.
-    assert_eq!(status.exports.keys().collect::<Vec<_>>(), [&metrics]);
-    let export = status.exports[&metrics].as_ref().expect("the scope exports");
-    assert!(export.artifact.nodes.iter().any(|node| node.id.as_str() == "dsd_agg"));
-    assert!(!export
+    // The installer exports the default program it lowered, whole: the metrics path after the sources, aggregation
+    // included, and no source.
+    let exported = Arc::clone(status.export.as_ref().expect("the default program exports"));
+    assert!(exported.artifact.nodes.iter().any(|node| node.id.as_str() == "dsd_agg"));
+    assert!(!exported.artifact.nodes.iter().any(|node| node.op.as_str() == "source"));
+    assert!(exported
         .artifact
         .edges
         .iter()
-        .any(|edge| edge.to.to_string().starts_with("exit.")));
+        .any(|edge| edge.from.to_string() == "input.dogstatsd"));
 
-    // The route serves the published export, whose artifact records the default program's base program hash.
-    let exported = Arc::clone(status.exports[&metrics].as_ref().expect("the scope exports"));
-    let (code, content_type, body) = get(status.clone(), "/programmable-metrics/export?scope=metrics").await;
-    assert_eq!((code, content_type), (StatusCode::OK, json_type()));
-    let body: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(body, serde_json::to_value(&*exported).unwrap());
+    // The route serves the published export, detached by default, whose program hash the status reports.
+    for uri in [
+        "/programmable-metrics/export",
+        "/programmable-metrics/export?form=detached",
+    ] {
+        let (code, content_type, body) = get(status.clone(), uri).await;
+        assert_eq!((code, content_type), (StatusCode::OK, json_type()), "{}", uri);
+        let body: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(body, serde_json::to_value(&*exported).unwrap(), "{}", uri);
+        assert_eq!(body["form"], "detached", "{}", uri);
+        assert_eq!(body["labels"]["dd_metrics_encode"], "Main metrics output");
+    }
     assert_eq!(
         status.apply_states.status.default_program_hash,
-        Some(exported.artifact.base.program_hash)
+        Some(saluki_metric_plan::export::program_hash(&exported.artifact).unwrap())
     );
-    assert_eq!(body["artifact"]["scope"], "metrics");
-    assert_eq!(body["labels"]["dd_metrics_encode"], "Main metrics output");
+    let bound = Arc::clone(status.bound_export.as_ref().expect("the default program exports"));
+    let (code, content_type, body) = get(status.clone(), "/programmable-metrics/export?form=bound").await;
+    assert_eq!((code, content_type), (StatusCode::OK, json_type()));
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(body, serde_json::to_value(&*bound).unwrap());
+    assert_eq!(body["form"], "bound");
 
     // Whatever the status publishes, as it publishes it.
-    status.exports.insert(metrics.clone(), Ok(Arc::new(bundle())));
-
-    let (code, content_type, body) = get(status.clone(), "/programmable-metrics/export?scope=metrics").await;
+    status.export = Ok(Arc::new(bundle()));
+    let (code, content_type, body) = get(status.clone(), "/programmable-metrics/export").await;
     assert_eq!((code, content_type), (StatusCode::OK, json_type()));
     let body: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(body, serde_json::to_value(bundle()).unwrap());
-    assert_eq!(body["export_version"], 1);
-    assert_eq!(body["labels"]["dd_metrics_encode"], "Main metrics output");
+    assert_eq!(body["export_version"], 2);
+    assert!(body["artifact"].get("scope").is_none() && body["artifact"].get("base").is_none());
 
-    let refused = [
+    let (code, content_type, body) = get(status.clone(), "/programmable-metrics/export?form=whole").await;
+    assert_eq!(
+        (code, content_type, body.as_str()),
         (
-            "/programmable-metrics/export",
             StatusCode::BAD_REQUEST,
-            "The `scope` query parameter is required: name the scope of the default program to export \
-             (`metrics`).",
-        ),
-        (
-            "/programmable-metrics/export?scope=pre_aggregation",
-            StatusCode::NOT_FOUND,
-            "The default program declares no scope `pre_aggregation`. The scopes it declares are \
-             `metrics`.",
-        ),
-        (
-            "/programmable-metrics/export?scope=Not%20A%20Scope",
-            StatusCode::NOT_FOUND,
-            "The default program declares no scope `Not A Scope`. The scopes it declares are \
-             `metrics`.",
-        ),
-    ];
-    for (uri, expected_code, expected_body) in refused {
-        let (code, content_type, body) = get(status.clone(), uri).await;
-        assert_eq!(
-            (code, content_type, body.as_str()),
-            (expected_code, text_type(), expected_body),
-            "{}",
-            uri
-        );
-    }
+            text_type(),
+            "The `form` query parameter is `detached`, the default, or `bound`, not `whole`."
+        )
+    );
 
-    // A scope the installer could not export says why.
-    status
-        .exports
-        .insert(metrics, Err("the plan has no canonical form".to_string()));
-    let (code, content_type, body) = get(status, "/programmable-metrics/export?scope=metrics").await;
+    // A default program the installer could not export says why.
+    status.export = Err("the plan has no canonical form".to_string());
+    let (code, content_type, body) = get(status, "/programmable-metrics/export").await;
     assert_eq!(
         (code, content_type, body.as_str()),
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             text_type(),
-            "Scope `metrics` of the default program cannot be exported: the plan has no canonical form"
+            "The default program cannot be exported: the plan has no canonical form"
         )
     );
 }
@@ -334,21 +317,26 @@ async fn the_plan_route_serves_the_active_composed_plan_with_its_resolved_values
 }
 
 #[tokio::test]
-async fn the_default_program_route_serves_the_plan_artifacts_are_composed_into() {
+async fn the_default_program_route_serves_the_plan_artifacts_are_composed_with() {
     let status = booted_status().await;
     let (code, content_type, body) = get(status.clone(), "/programmable-metrics/default-program").await;
     assert_eq!((code, content_type), (StatusCode::OK, json_type()));
     let served = Plan::from_value(serde_json::from_str(&body).unwrap()).expect("the body is a plan");
     assert_eq!(served, *status.default_program);
-    // It is the program the export was taken from: its base is the default program hash the status reports, so a
-    // client can tell that an export and a default program it fetched separately belong together.
-    let metrics: ScopeName = "metrics".parse().unwrap();
+    // It is the program the export was taken from: exported with the export's catalog and labels, it hashes to the
+    // default program hash the status reports, so a client can tell that an export and a default program it fetched
+    // separately belong together.
+    let export = status.export.as_ref().expect("the default program exports");
+    let again = saluki_metric_plan::export::export_as(
+        &served,
+        &export.catalog,
+        &export.labels,
+        saluki_metric_plan::export::ExportForm::Detached,
+        &saluki_metric_plan::operators::OperatorRegistry::native(),
+    )
+    .unwrap();
     assert_eq!(
-        Some(
-            saluki_metric_plan::export::base(&served, &metrics)
-                .unwrap()
-                .program_hash
-        ),
+        Some(saluki_metric_plan::export::program_hash(&again.artifact).unwrap()),
         status.apply_states.status.default_program_hash
     );
     // With the resolved values of any fact or signal it binds, as composition needs them: at boot, it is the plan the
@@ -390,7 +378,8 @@ async fn the_explain_route_serves_the_active_plans_explain_document_as_json_or_t
     let (code, content_type, body) = get(status.clone(), "/programmable-metrics/explain?format=text").await;
     assert_eq!((code, content_type), (StatusCode::OK, text_type()));
     assert_eq!(body, active.explain.to_text());
-    assert!(body.starts_with("explain_version 2"), "{}", body);
+    let version = format!("explain_version {}", saluki_metric_plan::explain::EXPLAIN_VERSION);
+    assert!(body.starts_with(&version), "{}", body);
 
     let (code, content_type, body) = get(status.clone(), "/programmable-metrics/explain?format=yaml").await;
     assert_eq!(

@@ -1,4 +1,5 @@
 use saluki_metric_plan::canonical::ResolvedValues;
+use saluki_metric_plan_syntax::parse;
 
 use super::*;
 use crate::{
@@ -20,7 +21,6 @@ fn compile_against_default(source: &str) -> CompileOutcome {
             generation: Some(3),
             artifact_revision: None,
         }),
-        others: &[],
         revision: 7,
         labels: &labels,
         in_effect: None,
@@ -66,7 +66,7 @@ fn bindings_read(text: &str) -> Vec<&str> {
 /// Parses an example, wrapped in a program, or panics with the diagnostics.
 fn parse_example(what: &str, example: &str) -> saluki_metric_plan::ir::PolicyArtifact {
     let wrapper = example_wrapper(example);
-    match parse_with(&wrapper, &ParseOptions::default()) {
+    match parse(&wrapper) {
         Ok(parsed) => parsed.artifact,
         Err(diagnostics) => panic!("{} does not parse: {:?}\n{}", what, diagnostics, wrapper),
     }
@@ -239,12 +239,7 @@ fn each_piece_of_shorthand_describes_the_same_graph_as_its_long_form() {
 
 #[test]
 fn the_example_program_parses_and_its_nodes_are_listed() {
-    if let Err(diagnostics) = parse_with(
-        EXAMPLE_PROGRAM,
-        &ParseOptions {
-            base: Some(named_fixture().1.artifact.artifact.base.clone()),
-        },
-    ) {
+    if let Err(diagnostics) = parse(EXAMPLE_PROGRAM) {
         panic!("{:?}", diagnostics);
     }
     let nodes = reference(None, &RecipientLabels::default(), None).example_nodes;
@@ -323,7 +318,6 @@ fn the_host_side_lists_the_inputs_the_directory_and_which_bindings_a_program_may
     let reference = reference(Some(&export), &labels, Some("unused".to_string()));
     assert_eq!(reference.host_missing, None);
     let host = reference.host.unwrap();
-    assert_eq!(host.scope, "metrics");
     assert!(
         host.inputs.iter().any(|input| input == "dogstatsd"),
         "{:?}",

@@ -536,6 +536,16 @@ async fn repeated_installs_leave_everything_as_it_was(yaml: &str, feed: fn(usize
             count(deliveries, "dd_metrics_encode", "kept") == 1
         })
         .await;
+    // One install first, so that the listener filterlist blocks something before the count starts: with nothing in
+    // it, its split keeps every metric, which records no events of its ports.
+    block(&stream, &["blocked.0"]).await;
+    status_where(&status, |status| active(status) == Some(2) && live(status) == [2]).await;
+    topology.feed(&feed(0), vec![counter("kept", 1_000)]);
+    topology
+        .wait_for("the batch after the first install", |deliveries| {
+            count(deliveries, "dd_metrics_encode", "kept") == 2
+        })
+        .await;
     let registrations = |health: &HealthRegistry| {
         health_components(health)
             .into_iter()
@@ -555,7 +565,7 @@ async fn repeated_installs_leave_everything_as_it_was(yaml: &str, feed: fn(usize
     for install in 1..=INSTALLS {
         let blocked = format!("blocked.{}", install);
         block(&stream, &[blocked.as_str()]).await;
-        let generation = install as u64 + 1;
+        let generation = install as u64 + 2;
         status_where(&status, |status| {
             active(status) == Some(generation) && live(status) == [generation]
         })
@@ -563,7 +573,7 @@ async fn repeated_installs_leave_everything_as_it_was(yaml: &str, feed: fn(usize
         topology.feed(&feed(install), vec![counter("kept", install)]);
         topology
             .wait_for("the batch", |deliveries| {
-                count(deliveries, "dd_metrics_encode", "kept") == install + 1
+                count(deliveries, "dd_metrics_encode", "kept") == install + 2
             })
             .await;
     }

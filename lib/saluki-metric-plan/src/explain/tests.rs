@@ -84,7 +84,7 @@ fn explain_is_deterministic() {
 #[test]
 fn the_default_programs_explain_describes_its_graph() {
     let explain = default_program();
-    assert_eq!(explain.explain_version, 2);
+    assert_eq!(explain.explain_version, 3);
     assert!(explain.plan.valid);
     assert!(explain.findings.is_empty());
 
@@ -187,29 +187,6 @@ fn the_default_programs_explain_describes_its_graph() {
         .find(|output| output.id.as_str() == "dd_metrics_encode")
         .unwrap();
     assert_eq!(output.emitted_by, vec!["metrics_fanout_0".parse::<NodeId>().unwrap()]);
-    let scopes = explain
-        .graph
-        .scopes
-        .iter()
-        .map(|scope| scope.name.as_str())
-        .collect::<Vec<_>>();
-    assert_eq!(scopes, ["metrics"]);
-    let inputs = explain.graph.scopes[0]
-        .inputs
-        .iter()
-        .map(|(input, port)| format!("{} = {}", input, port))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        inputs,
-        [
-            "checks = checks_ipc_in.metrics",
-            "dogstatsd = dsd_in.metrics",
-            "liveness = liveness_in.metrics",
-            "otlp = otlp_in.metrics",
-            "trace_sampler = trace_sampler.metrics"
-        ]
-    );
-    assert!(explain.graph.scopes[0].exits.is_empty());
 }
 
 #[test]
@@ -224,6 +201,10 @@ fn the_default_programs_explain_summarizes_every_nodes_contract() {
     const POLICY: &[&str] = &["policy"];
     let expected: &[(&str, &str, &str, &str, &[&str])] = &[
         ("dsd_in", "source", "io_host", "none", NONE),
+        ("otlp_in", "source", "io_host", "none", NONE),
+        ("checks_ipc_in", "source", "io_host", "none", NONE),
+        ("liveness_in", "source", "io_host", "none", NONE),
+        ("trace_sampler", "source", "io_host", "none", NONE),
         ("dsd_enrich", "dogstatsd_mapper", SYNC, "none", NONE),
         (
             "dsd_prefix_filter_blocklist_namespace_prefix",
@@ -248,10 +229,6 @@ fn the_default_programs_explain_summarizes_every_nodes_contract() {
         ("dsd_post_agg_filter_false", "drop", SYNC, "none", POLICY),
         ("dsd_post_agg_filter_fanout", "tee", SYNC, "none", NONE),
         ("dsd_post_agg_filter_fanout_0", "emit", SYNC, "none", NONE),
-        ("otlp_in", "source", "io_host", "none", NONE),
-        ("checks_ipc_in", "source", "io_host", "none", NONE),
-        ("liveness_in", "source", "io_host", "none", NONE),
-        ("trace_sampler", "source", "io_host", "none", NONE),
         ("metrics_in", "merge", SYNC, "none", NONE),
         ("metrics_host_enrichment", "host_enrichment", SYNC, "none", NONE),
         ("metrics", "host_tags", SYNC, "none", NONE),
@@ -380,10 +357,10 @@ fn explain_describes_invalid_plans_with_their_findings() {
 #[test]
 fn artifact_bounds_are_enforced_and_reported_per_revision() {
     let hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
-    // The program of artifact revision 7, which replaces the scope `program`: every node after the source.
+    // The program of artifact revision 7: every node but the source.
     let plan = Plan::from_value(json!({
         "ir_version": 1,
-        "provenance": {"artifacts": [{"scope": "program", "revision": 7, "hash": hash}]},
+        "provenance": {"artifact": {"revision": 7, "hash": hash}},
         "nodes": [
             {"id": "src", "op": "source", "params": {"binding": "otlp"}},
             {"id": "policy/t", "op": "tee", "params": {"ports": 2}},
@@ -400,17 +377,11 @@ fn artifact_bounds_are_enforced_and_reported_per_revision() {
             {"from": "policy/s.false", "to": "policy/d1.in"}
         ],
         "outputs": [{"id": "dd_metrics_encode", "accepts": {"kinds": "all", "timestamps": "mixed"},
-                     "fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-                     "recipients": ["dd_out/primary/0"], "delivery": "native"}],
-        "scopes": {"program": {"inputs": {"metrics": "src.metrics"}}}
+                     "recipients": ["dd_out/primary/0"], "delivery": "native"}]
     }))
     .unwrap();
     let registry = OperatorRegistry::native();
-    let catalog = default_program_catalog().with_scope_input(
-        "program".parse().unwrap(),
-        "metrics".parse().unwrap(),
-        crate::model::PortType::ANY,
-    );
+    let catalog = default_program_catalog();
     let report = Validator::new(&registry, &catalog).validate(&plan);
     assert!(report.is_valid(), "{}", report);
     let explain = Explain::of(&plan, &registry, &report);
@@ -585,8 +556,8 @@ mod physical {
     fn artifact_like_plan() -> Plan {
         let hash = "sha256:00000000000000000000000000000000000000000000000000000000000000a1";
         let mut value = serde_json::from_str::<serde_json::Value>(DEFAULT_PROGRAM_JSON).unwrap();
-        // An artifact replacing the one scope composed it: every node of the scope is its program's.
-        value["provenance"] = json!({"artifacts": [{"scope": "metrics", "revision": 1, "hash": hash}]});
+        // An artifact composed it: every node but the sources is its program's.
+        value["provenance"] = json!({"artifact": {"revision": 1, "hash": hash}});
         let node = |id: &str, op: &str, params: serde_json::Value| json!({"id": id, "op": op, "params": params});
         let edge = |from: String, to: String| json!({"from": from, "to": to});
 
@@ -1135,7 +1106,6 @@ mod resources {
                     output.id.clone(),
                     crate::validate::CatalogOutput {
                         accepts: output.accepts,
-                        fingerprint: output.fingerprint,
                         recipients: output.recipients.clone(),
                     },
                 )
@@ -1208,14 +1178,6 @@ mod resources {
 
         fn binding(&self, name: &crate::ir::BindingName) -> Option<&crate::validate::CatalogBinding> {
             self.0.binding(name)
-        }
-
-        fn scope_input(&self, scope: &crate::ir::ScopeName, input: &crate::ir::InputName) -> Option<PortType> {
-            self.0.scope_input(scope, input)
-        }
-
-        fn scope_exit(&self, scope: &crate::ir::ScopeName, exit: &crate::ir::ExitName) -> Option<PortType> {
-            self.0.scope_exit(scope, exit)
         }
 
         fn state_budget(&self) -> Option<u64> {

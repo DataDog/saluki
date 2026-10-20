@@ -155,10 +155,8 @@ pub struct TransportHashMismatch {
 /// A complete snapshot of one product's configs: never a delta.
 ///
 /// Each snapshot replaces the previous one of its product. An empty snapshot revokes: for policy, the default program
-/// runs. A snapshot of the policy product with more than one config for one scope rejects all of them, since one policy
-/// replaces one scope; a snapshot with
-/// more than one config rejects all of them. A transport failure delivers no snapshot, so the current one stays in
-/// effect.
+/// runs. A snapshot holds at most one config, one program document: a snapshot with more than one config rejects all of
+/// them, and what runs keeps running. A transport failure delivers no snapshot, so the current one stays in effect.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ArtifactSnapshot {
     /// The product.

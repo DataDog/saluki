@@ -1,4 +1,4 @@
-//! Receiving a policy artifact, and composing it into the default program.
+//! Receiving a policy artifact, and composing it with the host's sources and outputs.
 //!
 //! An artifact from the channel goes through two steps before it becomes a candidate plan:
 //!
@@ -7,48 +7,21 @@
 //!    supported IR version and migrated to the current one, and refused if any node or blob carries a resolved
 //!    configuration value or its blob table is inconsistent. The result is a [`ReceivedArtifact`], with the hash of the
 //!    document as received, which approval binds to.
-//! 2. **Composition** ([`compose`], or [`compose_all`] for one artifact per scope): each artifact, in [normal
-//!    form](crate::normalize), replaces its scope in the current default program, reaching the scope's inputs as
-//!    `input.<name>` and its exits as `exit.<name>`. Each artifact node gets its plan ID by correspondence (see
-//!    [`Correspondence`]): a reserved node the artifact keeps unmodified is the default program's node exactly, and
-//!    every other node is the artifact's as written. Bindings
-//!    resolve from the catalog, and the composed plan is validated, with the artifact limits applied to the program's
-//!    nodes, every node of the scope the artifact replaces. The plan's provenance names each artifact and its scope:
-//!    what a plan runs is a property of the plan, not of its nodes. Composition also reports whether each artifact's
-//!    base no longer matches the default program (a stale base: it still installs) and whether it was approved against
-//!    another active plan (a stale review: it still installs).
-//!
-//! Artifacts reference outputs by ID only, native ones and those a resources artifact declares, never declaring one.
-//! An artifact may hold state owners, such as `aggregate`: whether the frame can run them where the artifact puts them
-//! is placement's to decide, and installing a change to one is a cut.
+//! 2. **Composition** ([`compose`]): the artifact is a whole program. Composition resolves its names and builds the
+//!    plan: the default program's `source` nodes, then the artifact's nodes, with every edge from `input.<name>`
+//!    leaving the source whose `binding` is `<name>` ([`sources`]); `emit`s to recipients addressed to the outputs
+//!    that deliver to them; configuration bindings resolved from the catalog; and the default program's outputs and
+//!    resources. Nothing of the default program but its sources runs beside the artifact. The plan's provenance names
+//!    the artifact's revision, and the plan is validated. Composition also reports whether the artifact was approved
+//!    against another active plan (a stale review: it still installs).
 //!
 //! # Outputs that change under an artifact
 //!
-//! An artifact records the fingerprint of every output it emits to. Composition compares each with the host's
-//! catalog, and what it does when they differ depends on whether the artifact is new or the one in effect, composed
-//! again after the default program changed ([`Approval::in_effect`]):
-//!
-//! - **Declared with the recorded fingerprint:** it composes.
-//! - **Declared with another fingerprint**, or, for a routing group, whose output IDs are positional, another routing
-//!   group's output carries the recorded one (the groups were renumbered): a new artifact is refused
-//!   ([`ComposeError::ReboundOutput`]); the artifact in effect composes with every `emit` to the output a counted drop
-//!   ([`ComposeOutcome::Degraded`]).
-//! - **Not declared:** a new artifact waits for it, a held state ([`ComposeError::PendingOutput`]); the artifact in
-//!   effect composes with its `emit`s dropped, as above. Renumbering is for routing groups only: a declared output's
-//!   fingerprint covers its recipient list, not its name, so another declared output with the same recipients carries
-//!   the same fingerprint, and an artifact waiting for the first still waits.
-//! - **Emitted to but not recorded**, and declared or named `resources_<name>`: refused
-//!   ([`ComposeError::UnrecordedOutput`]); the artifact in effect cannot have such an `emit`, since it composed before.
-//! - **Neither recorded nor declared:** refused ([`ComposeError::UndeclaredOutput`]).
-//!
-//! Removal by the resource authority fails closed: the artifact in effect keeps running, but nothing it sends an output
-//! that was removed or rebound reaches that output, and nothing else it does is undone. A dropped `emit` keeps its node
-//! ID and becomes a `drop`, so its loss is the program's policy loss at that node. When the output returns with the
-//! recorded fingerprint, the next composition restores the `emit`.
-//!
-//! An artifact that records an output's fingerprint as an earlier fingerprint version computed it, such as one kept in
-//! an old run directory, is an artifact whose output now delivers elsewhere: a new one is refused, asking for a rebase,
-//! and one in effect runs degraded until it is republished.
+//! An `emit` that names an output by ID must name one the host declares. A new artifact naming one it does not declare
+//! is refused ([`ComposeError::UndeclaredOutput`]). The artifact in effect, composed again after the host's
+//! configuration changed ([`Approval::in_effect`]), keeps running with every `emit` to an output that is gone turned
+//! into a counted drop under its ID ([`ComposeOutcome::Degraded`]), until the output returns. Recipients an `emit`
+//! addresses by name are followed by name: a new artifact waits for those the host does not have yet.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -57,20 +30,15 @@ use snafu::Snafu;
 
 use crate::{
     canonical::{contains_resolved_values, to_canonical_string, PlanHash, BINDING_MEMBER, RESOLVED_MEMBER},
-    export::{compared_params, emitted_output, unresolved, ScopeRegion},
-    install::{
-        correspondence::{CorrespondenceKind, NodeCorrespondence},
-        Correspondence,
-    },
+    export::{emitted_output, non_source_nodes},
     ir::{
-        decode_params, ArtifactBase, ArtifactNodeId, ArtifactPortRef, BindingName, BlobError, Blobs, ComposedArtifact,
-        Edge, HostId, IrError, LocalId, Node, NodeId, OperatorName, OutputId, Params, Plan, PlanProvenance,
-        PolicyArtifact, PortRef, ReceivedArtifact, RecipientId, RecipientName, ScopeDecl, ScopeName, Selector,
-        BLOB_MEMBER,
+        decode_params, ArtifactNodeId, ArtifactPortRef, ArtifactRevision, BindingName, BlobError, Blobs, Edge, HostId,
+        InputName, IrError, LocalId, Node, NodeId, OperatorName, OutputId, Params, Plan, PlanProvenance,
+        PolicyArtifact, PortName, PortRef, ReceivedArtifact, RecipientId, RecipientName, BLOB_MEMBER,
     },
     limits::values::{ARTIFACT_NODES, ARTIFACT_SIZE, BLOB_SIZE, PREDICATE_LEAVES},
     normalize::normalize_artifact,
-    operators::{names, OperatorRegistry, StateContract, EMIT_TO},
+    operators::{names, OperatorRegistry, StateContract, EMIT_TO, METRICS_PORT},
     validate::{predicate_leaves, Catalog, ValidationReport, Validator},
 };
 
@@ -332,56 +300,35 @@ pub struct Approval {
     /// Whether the artifact is in effect, composed again because the default program changed, rather than composed to
     /// be installed for the first time.
     ///
-    /// The artifact in effect composes with every `emit` to an output that was removed, or now delivers elsewhere,
-    /// replaced by a counted drop, and runs degraded; a new artifact is refused instead, pending while its output is
-    /// not declared (see [Outputs that change under an artifact](self#outputs-that-change-under-an-artifact)).
+    /// The artifact in effect composes with every `emit` to an output that was removed replaced by a counted drop, and
+    /// runs degraded; a new artifact is refused instead (see [Outputs that change under an
+    /// artifact](self#outputs-that-change-under-an-artifact)).
     pub in_effect: bool,
 }
 
-/// Artifacts composed into the default program, one per scope.
+/// An artifact composed with the host's sources and outputs.
 #[derive(Clone, Debug)]
 pub struct Composed {
-    /// The composed plan, with every configuration binding resolved, and the artifacts it composes in its provenance.
+    /// The composed plan, with every configuration binding resolved, and the artifact it runs in its provenance.
     pub plan: Plan,
 
     /// The composed plan's validation report. An artifact whose report has errors is rejected.
     pub report: ValidationReport,
 
-    /// Which plan node each artifact node became, and which reserved nodes of the scope the artifact left out, when
-    /// one artifact was composed. When several were, it is empty: each artifact's is in [`scopes`][Self::scopes], since
-    /// artifacts of different scopes can name their nodes alike.
-    pub correspondence: Correspondence,
+    /// Which plan node each artifact node became: its reserved ID, the policy namespace, or the default program's one
+    /// aggregation's ID (amendment 182). A node composition adds, such as the nodes of a partly available `emit`, has
+    /// none.
+    pub ids: BTreeMap<ArtifactNodeId, NodeId>,
 
-    /// Whether an artifact's `base.program_hash` differs from the default program's current base of its scope: the
-    /// scope changed structurally, or an output it emits to was rebound, since the artifact's export. The artifact
-    /// still installs, reported stale.
-    pub stale_base: bool,
-
-    /// Whether an artifact was approved against an active plan other than the one it is composed against. The artifact
+    /// Whether the artifact was approved against an active plan other than the one it is composed against. The artifact
     /// still installs, with its review reported stale.
-    pub stale_review: bool,
-
-    /// How each scope was composed, by scope: one entry per artifact.
-    pub scopes: BTreeMap<ScopeName, ScopeComposition>,
-}
-
-/// How one artifact was composed into its scope.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ScopeComposition {
-    /// Which plan node each artifact node became, and which reserved nodes of the scope the artifact left out.
-    pub correspondence: Correspondence,
-
-    /// Whether the artifact's `base.program_hash` differs from the default program's current base of the scope.
-    pub stale_base: bool,
-
-    /// Whether the artifact was approved against an active plan other than the one it is composed against.
     pub stale_review: bool,
 
     /// Whether the artifact's `emit`s were composed as written, or, for the artifact in effect, some were dropped.
     pub outcome: ComposeOutcome,
 }
 
-impl ScopeComposition {
+impl Composed {
     /// Returns what the artifact's acknowledgment says about its composition beside its state, in plain text: why it
     /// runs degraded, or `None` if there is nothing to say.
     pub fn notes(&self) -> Option<String> {
@@ -397,13 +344,13 @@ impl ScopeComposition {
 /// Whether an artifact's `emit`s were composed as written.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum ComposeOutcome {
-    /// Every `emit` delivers to the output the artifact's base records.
+    /// Every `emit` delivers to what the artifact names.
     #[default]
     Composed,
 
-    /// The artifact is in effect, and some outputs it records were removed or now deliver elsewhere: every `emit` to
-    /// them was replaced by a counted drop. The artifact runs degraded, and its acknowledgment is `active` with the
-    /// reasons, until the outputs return or it is rebased.
+    /// The artifact is in effect, and some outputs or recipients it names are gone: every `emit` to them was replaced by
+    /// a counted drop. The artifact runs degraded, and its acknowledgment is `active` with the reasons, until they
+    /// return or the artifact is replaced.
     Degraded(Vec<DroppedEmits>),
 }
 
@@ -417,7 +364,7 @@ impl ComposeOutcome {
 /// What dropped `emit`s delivered to: an output, by its ID, or recipients, by the names the artifact gives them.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum DropTarget {
-    /// An output the artifact's base records.
+    /// An output the artifact names by ID.
     Output(OutputId),
 
     /// The recipients an `emit` names.
@@ -449,16 +396,6 @@ impl std::fmt::Display for DroppedEmits {
                 "output `{}` is no longer declared; its emits are dropped until it returns",
                 output
             ),
-            DropReason::Rebound { renumbered: None } => write!(
-                f,
-                "output `{}` now delivers elsewhere; its emits are dropped; rebase",
-                output
-            ),
-            DropReason::Rebound { renumbered: Some(now) } => write!(
-                f,
-                "output `{}` renumbered: the recorded output is now `{}`; its emits are dropped; rebase",
-                output, now
-            ),
             DropReason::Unavailable(why) => write!(
                 f,
                 "the emits {} are dropped until they are available again: {}",
@@ -471,15 +408,8 @@ impl std::fmt::Display for DroppedEmits {
 /// Why composition dropped the `emit`s to an output.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DropReason {
-    /// The host no longer declares the output, and no routing group's output carries the fingerprint the base records.
+    /// The host no longer declares the output.
     Removed,
-
-    /// The host declares the output with another fingerprint, so that it now delivers elsewhere; or another routing
-    /// group's output carries the fingerprint the base records, as after the groups are renumbered.
-    Rebound {
-        /// The output that now carries the recorded fingerprint, if one does.
-        renumbered: Option<OutputId>,
-    },
 
     /// The recipients an `emit` names are no longer available, as the plain-text reason says: a name the directory no
     /// longer has, names of recipients on more than one delivery host, or no output for their recipients.
@@ -502,202 +432,47 @@ fn describe_names(names: &[RecipientName]) -> String {
     format!("[{}]", names.join(", "))
 }
 
-/// Composes a received artifact into the default program, replacing the artifact's scope.
+/// Composes a received artifact, a whole program, with the host's sources and outputs.
 ///
-/// This is [`compose_all`] of one artifact; see there.
+/// `default_plan` is the default program as lowered, with its bindings resolved, and `catalog` the host's catalog of
+/// the same configuration. Of the default program, only its `source` nodes, its outputs, and its resources are used.
+///
+/// - The artifact composes in [normal form](crate::normalize), as native lowering writes the default program.
+/// - Each artifact node's plan ID is the reserved ID of the default program's non-source node with the same local ID,
+///   or its local ID in the policy namespace; where the catalog runs at most one aggregation per program
+///   ([`Catalog::single_aggregation`]), the artifact's one state owner takes the reserved ID of the default program's
+///   one state owner, whatever the artifact calls it (amendment 182, until V10). A local ID equal to a source node's
+///   is refused ([`ComposeError::ReservedSource`]).
+/// - An edge from `input.<name>` leaves the port of the source whose `binding` is `<name>` ([`sources`]); a name no
+///   source has is refused ([`ComposeError::UnknownSource`]).
+/// - Blob references are replaced with their content, and configuration bindings resolve from `catalog`.
+/// - An `emit` to recipients is addressed to the output with exactly their recipients; an `emit` to an output must name
+///   one the catalog declares (see [Outputs that change under an artifact](self#outputs-that-change-under-an-artifact)).
+/// - The plan is the default program's `source` nodes, in its order, then the artifact's nodes, in artifact order; its
+///   edges are the artifact's, in artifact order; its outputs and resources are the default program's; and its
+///   provenance names the artifact's revision. It is validated with `registry` and `catalog`; the report is returned,
+///   not judged.
 ///
 /// # Errors
 ///
 /// Returns an error if the artifact cannot be composed at all; see [`ComposeError`].
 pub fn compose(
-    default_plan: &Plan, artifact: &ReceivedArtifact, approval: &Approval, catalog: &dyn Catalog,
-    registry: &OperatorRegistry,
-) -> Result<Composed, ComposeError> {
-    compose_all(default_plan, &[(artifact, approval)], catalog, registry)
-}
-
-/// Composes received artifacts, at most one per scope, each with its approval, into the default program, each
-/// replacing its scope.
-///
-/// `default_plan` is the default program as lowered, with its bindings resolved, and `catalog` the host's catalog of
-/// the same configuration. Each scope is composed on its own, against the default program, with its own correspondence
-/// and base check; scopes never share a node, so the order does not matter, and they are composed in scope order. Then
-/// the plan is validated once.
-///
-/// - Each artifact composes in [normal form](crate::normalize), as native lowering writes the default program: its
-///   parameters left out written with their defaults, its predicates normalized, and its filters turned to keep what
-///   leaves their `true` port, with their derived terminals renamed. So an artifact that differs from the default
-///   program only in how it is written composes as one that writes it as the default program does. Everything below
-///   reads the normal form.
-/// - An artifact must replace a scope the default program declares, and reach its inputs as `input.<name>` and its
-///   exits as `exit.<name>` (only as an edge's target). Its nodes replace the scope's region (every node reachable from
-///   the scope's inputs without entering one of its exits' ports), and its edges replace the edges that enter the
-///   region and those that leave it into an exit; the rest of the default program, its outputs, and its scopes stay as
-///   they are.
-/// - An artifact node whose local ID equals a reserved ID inside the scope keeps that ID. If its operator and
-///   parameters are the default program's (parameters compared without resolved values, as their operator decodes
-///   them, so that a set written in another order is the same set), the node is the default program's node exactly,
-///   with its resolved values. Otherwise it is the artifact's node as written. Every other artifact node is placed as
-///   `policy/<local>`. A local ID equal to a reserved ID outside the scope is rejected. Every node of the scope is the
-///   program's either way: what a node may do, and who answers for its loss, never depends on whether the author kept
-///   it, so keeping a node unmodified only spares the installer rebuilding it.
-/// - Where the catalog runs at most one aggregation per program ([`Catalog::single_aggregation`]), an artifact's one
-///   state owner takes the reserved ID of the region's one state owner, whatever the artifact calls it, unless another
-///   artifact node has that ID: one aggregation is the aggregation. It is then composed as any node with that ID is.
-/// - Blob references are replaced with their content, and the configuration bindings of the nodes the artifact modifies
-///   or adds resolve from `catalog`. A binding the catalog does not declare is left unresolved, for validation to
-///   report; one it declares without a value is rejected.
-/// - Every output an `emit` of an artifact delivers to must be recorded in the artifact's base, and declared by the
-///   catalog with the fingerprint the base records. One that is not declared, or declared with another fingerprint,
-///   refuses a new artifact (pending, or rebound), and turns the `emit`s of the artifact in effect into counted drops
-///   ([`ComposeOutcome::Degraded`]); see [Outputs that change under an
-///   artifact](self#outputs-that-change-under-an-artifact).
-/// - State owners, such as `aggregate`, compose like any node: placement decides whether the frame can run them where
-///   the artifact puts them, and validation rejects host components in artifacts.
-/// - The composed plan's provenance lists every artifact's revision and scope, in scope order, and its nodes and edges
-///   are in the default program's order, each artifact's taking the places of its region's in order (any left over
-///   follow the last of them). An artifact's nodes and edges are first put in the default program's order: a node or
-///   an edge the region has takes its place, and a new one follows the region's node or edge the artifact lists before
-///   it. So composing an unmodified export gives the default program again, with the same hash, whatever order its
-///   nodes and edges are written in, as a printed and parsed export writes them.
-/// - The composed plan is validated with `registry` and `catalog`; the report is returned, not judged, so the caller
-///   rejects an artifact with errors as it does any candidate.
-///
-/// # Errors
-///
-/// Returns an error if no artifact, or more than one for a scope, is given, or if an artifact cannot be composed at
-/// all; see [`ComposeError`].
-pub fn compose_all(
-    default_plan: &Plan, artifacts: &[(&ReceivedArtifact, &Approval)], catalog: &dyn Catalog,
-    registry: &OperatorRegistry,
-) -> Result<Composed, ComposeError> {
-    let mut by_scope = BTreeMap::new();
-    for &(artifact, approval) in artifacts {
-        let scope = &artifact.artifact.scope;
-        if by_scope.insert(scope, (artifact, approval)).is_some() {
-            return Err(ComposeError::Malformed {
-                message: format!(
-                    "more than one artifact replaces scope `{}`; compose one artifact per scope",
-                    scope
-                ),
-            });
-        }
-    }
-    if by_scope.is_empty() {
-        return Err(ComposeError::Malformed {
-            message: "no artifact was given to compose".to_string(),
-        });
-    }
-
-    let mut nodes = default_plan.nodes.clone();
-    let mut edges = default_plan.edges.clone();
-    let mut revisions = Vec::with_capacity(by_scope.len());
-    let mut scopes = BTreeMap::new();
-    for (scope, (artifact, approval)) in by_scope {
-        let part = compose_scope(default_plan, artifact, approval, catalog, registry)?;
-        let members = &part.members;
-        let in_region = |edge: &Edge| members.contains(&edge.to.node) || members.contains(&edge.from.node);
-        let in_scope = |node: &Node| members.contains(&node.id);
-        let ordered = in_default_order(
-            nodes.iter().filter(|node| in_scope(node)).map(|node| node.id.clone()),
-            part.nodes,
-            |node| node.id.clone(),
-        );
-        nodes = splice(&nodes, in_scope, ordered);
-        let ordered = in_default_order(
-            edges
-                .iter()
-                .filter(|edge| in_region(edge))
-                .map(|edge| (edge.from.clone(), edge.to.clone())),
-            part.edges,
-            |edge| (edge.from.clone(), edge.to.clone()),
-        );
-        edges = splice(&edges, in_region, ordered);
-        revisions.push(part.revision);
-        scopes.insert(scope.clone(), part.composition);
-    }
-
-    let plan = Plan {
-        ir_version: default_plan.ir_version,
-        provenance: Some(PlanProvenance {
-            config_change: default_plan
-                .provenance
-                .as_ref()
-                .and_then(|provenance| provenance.config_change),
-            artifacts: revisions,
-            // A composed plan is never a boot plan: the native components describe the default program's layout only.
-            native_components: BTreeMap::new(),
-        }),
-        nodes,
-        edges,
-        outputs: default_plan.outputs.clone(),
-        scopes: default_plan.scopes.clone(),
-        // Resources, like output declarations, come from the default program only: an artifact cannot declare them.
-        resources: default_plan.resources.clone(),
-    };
-    let report = Validator::new(registry, catalog)
-        .with_baseline(default_plan)
-        .validate(&plan);
-    let stale_base = scopes.values().any(|scope| scope.stale_base);
-    let stale_review = scopes.values().any(|scope| scope.stale_review);
-    let correspondence = match scopes.values().collect::<Vec<_>>()[..] {
-        [only] => only.correspondence.clone(),
-        _ => Correspondence::new(),
-    };
-    Ok(Composed {
-        plan,
-        report,
-        correspondence,
-        stale_base,
-        stale_review,
-        scopes,
-    })
-}
-
-/// One artifact composed into its scope, before the composition is spliced into the plan.
-struct ScopePart {
-    /// The artifact's nodes, as composed, in artifact order.
-    nodes: Vec<Node>,
-
-    /// The artifact's edges, with plan ports, in artifact order.
-    edges: Vec<Edge>,
-
-    /// The default program's nodes of the scope's region, which the artifact's replace.
-    members: BTreeSet<NodeId>,
-
-    /// The artifact's revision and scope, as the plan's provenance names it.
-    revision: ComposedArtifact,
-
-    composition: ScopeComposition,
-}
-
-/// Composes one artifact against the default program's region of its scope.
-fn compose_scope(
     default_plan: &Plan, received: &ReceivedArtifact, approval: &Approval, catalog: &dyn Catalog,
     registry: &OperatorRegistry,
-) -> Result<ScopePart, ComposeError> {
+) -> Result<Composed, ComposeError> {
     // The artifact composes in normal form, as the default program is lowered in it, so that a program that differs
     // from the default program only in how it is written composes to the default program.
     let artifact = &normalize_artifact(&received.artifact);
-    let scope = &artifact.scope;
-    let declaration = default_plan
-        .scopes
-        .get(scope)
-        .ok_or_else(|| ComposeError::UnknownScope { scope: scope.clone() })?;
-    let default_program = |error: crate::export::ExportError| ComposeError::DefaultProgram {
-        message: error.to_string(),
-    };
-    let region = ScopeRegion::of(default_plan, scope).map_err(default_program)?;
-    let current = region.base(default_plan, scope).map_err(default_program)?;
-    let stale_base = artifact.base.program_hash != current.program_hash;
+    let sources = sources(default_plan);
+    if let Some(binding) = shared_source_binding(default_plan) {
+        return Err(ComposeError::DefaultProgram {
+            message: format!("more than one of its sources has the binding `{}`", binding),
+        });
+    }
+    let program = non_source_nodes(default_plan);
     let stale_review = approval
         .approved_against
         .is_some_and(|approved| approval.active_plan_hash != Some(approved));
-    let revision = ComposedArtifact {
-        scope: scope.clone(),
-        revision: approval.revision,
-        hash: received.hash,
-    };
 
     // Every artifact node's parameters with blobs inlined, in artifact order.
     let inlined = artifact
@@ -711,34 +486,26 @@ fn compose_scope(
         .collect::<Result<Vec<_>, _>>()?;
     let aggregation = catalog
         .single_aggregation()
-        .then(|| the_aggregation(default_plan, artifact, &inlined, &region, catalog, registry))
+        .then(|| the_aggregation(default_plan, artifact, &inlined, &program, catalog, registry))
         .flatten();
-    let ids = node_ids(default_plan, artifact, &region, aggregation)?;
+    let ids = node_ids(default_plan, artifact, &program, aggregation)?;
     let mut edges = artifact
         .edges
         .iter()
         .enumerate()
         .map(|(index, edge)| {
             Ok(Edge {
-                from: plan_port(&edge.from, index, End::From, declaration, &ids)?,
-                to: plan_port(&edge.to, index, End::To, declaration, &ids)?,
+                from: plan_port(&edge.from, index, End::From, &sources, &ids)?,
+                to: plan_port(&edge.to, index, End::To, &sources, &ids)?,
             })
         })
         .collect::<Result<Vec<_>, ComposeError>>()?;
 
-    let region_nodes = default_plan
-        .nodes
-        .iter()
-        .filter(|node| region.members.contains(&node.id))
-        .map(|node| (&node.id, node))
-        .collect::<BTreeMap<_, _>>();
-
     // Each artifact node with its plan ID, its parameters with blobs inlined and any recipients it emits to resolved
-    // to their output, how it is addressed, and the default program's node it does the operation of, if any.
+    // to their output, and how it is addressed.
     let mut placed = Vec::with_capacity(artifact.nodes.len());
     let mut outputs = EmittedOutputs::default();
     for (node, params) in artifact.nodes.iter().zip(inlined) {
-        let id = &ids[&node.id];
         let (params, addressed) = address(&node.id, &node.op, params, catalog)?;
         // A new artifact waits for every recipient it names; only the artifact in effect delivers to those that remain.
         if let (Addressed::Partial { missing, .. }, false) = (&addressed, approval.in_effect) {
@@ -749,211 +516,148 @@ fn compose_scope(
                     recipient: missing[0].clone(),
                 });
         }
-        if let Addressed::Unavailable { recipients, reason } = &addressed {
-            if !approval.in_effect {
-                // A new artifact is refused for recipients on two hosts, and waits for unknown recipients, and for an
-                // output for its recipients, unless another error refuses it first.
-                let pending = match reason {
-                    Unavailable::TwoHosts(hosts) => {
-                        return Err(ComposeError::RecipientsOnTwoHosts {
-                            node: node.id.clone(),
-                            recipients: hosts.clone(),
-                        })
-                    }
-                    Unavailable::Unknown(recipient) => ComposeError::UnknownRecipient {
+        if let (Addressed::Unavailable { recipients, reason }, false) = (&addressed, approval.in_effect) {
+            // A new artifact is refused for recipients on two hosts, and waits for unknown recipients, and for an
+            // output for its recipients, unless another error refuses it first.
+            let pending = match reason {
+                Unavailable::TwoHosts(hosts) => {
+                    return Err(ComposeError::RecipientsOnTwoHosts {
                         node: node.id.clone(),
-                        recipient: recipient.clone(),
-                    },
-                    Unavailable::NoOutput => ComposeError::PendingRecipients {
+                        recipients: hosts.clone(),
+                    })
+                }
+                Unavailable::Unknown(recipient) => ComposeError::UnknownRecipient {
+                    node: node.id.clone(),
+                    recipient: recipient.clone(),
+                },
+                Unavailable::NoOutput => ComposeError::PendingRecipients {
+                    node: node.id.clone(),
+                    recipients: recipients.clone(),
+                },
+                Unavailable::Refused(why) => {
+                    return Err(ComposeError::NoOutputFor {
                         node: node.id.clone(),
                         recipients: recipients.clone(),
-                    },
-                    Unavailable::Refused(why) => {
-                        return Err(ComposeError::NoOutputFor {
-                            node: node.id.clone(),
-                            recipients: recipients.clone(),
-                            reason: why.clone(),
-                        })
-                    }
-                };
-                outputs.pending_recipients.get_or_insert(pending);
-            }
+                        reason: why.clone(),
+                    })
+                }
+            };
+            outputs.pending_recipients.get_or_insert(pending);
         }
-        let same = region_nodes
-            .get(id)
-            .copied()
-            .filter(|default| same_operation(default, &node.op, &params, &node.id, catalog, registry));
-        placed.push((node, id, params, addressed, same));
+        placed.push((node, ids[&node.id].clone(), params, addressed));
     }
 
-    let mut correspondence = Correspondence::new();
-    let mut nodes = Vec::with_capacity(artifact.nodes.len());
+    // The default program's sources, in its order, then the artifact's nodes, in artifact order.
+    let mut nodes = default_plan
+        .nodes
+        .iter()
+        .filter(|node| !program.contains(&node.id))
+        .cloned()
+        .collect::<Vec<_>>();
     // The plan IDs taken so far, which the nodes a partly available `emit` adds must not take.
     let mut taken = ids.values().cloned().collect::<BTreeSet<_>>();
     taken.extend(default_plan.nodes.iter().map(|node| node.id.clone()));
-    for (node, id, params, addressed, same) in placed {
-        let id = id.clone();
-        if let Addressed::Partial {
-            output,
-            available,
-            missing,
-        } = addressed
-        {
-            // The artifact in effect names recipients some of which are no longer available: the `emit` keeps
-            // delivering to those that remain, through the output with exactly their recipients, and what it would
-            // have sent the others is counted as dropped. The node becomes a `tee` whose first branch emits to the
-            // remaining recipients and whose second is a counted drop.
-            let (delivered, dropped) = partial_emit(&id, output, &mut taken);
-            let reason = format!(
-                "{}; the `emit` still delivers to {}",
-                Unavailable::Unknown(missing[0].clone()).describe(),
-                describe_names(&available)
-            );
-            let entry = outputs
-                .dropped
-                .entry(DropTarget::Recipients(missing))
-                .or_insert_with(|| (DropReason::Unavailable(reason), Vec::new()));
-            entry.1.push(dropped.id.clone());
-            for (port, target) in [("0", &delivered.id), ("1", &dropped.id)] {
-                edges.push(Edge {
-                    from: PortRef::new(id.clone(), port.parse().expect("a tee's port is a port name")),
-                    to: PortRef::new(target.clone(), "in".parse().expect("`in` is a port name")),
+    let counted_drop = |id: &NodeId| Node {
+        id: id.clone(),
+        op: OperatorName::new(names::DROP).expect("`drop` is an operator name"),
+        params: Params::new(),
+    };
+    for (node, id, params, addressed) in placed {
+        match addressed {
+            Addressed::Partial {
+                output,
+                available,
+                missing,
+            } => {
+                // The artifact in effect names recipients some of which are no longer available: the `emit` keeps
+                // delivering to those that remain, through the output with exactly their recipients, and what it would
+                // have sent the others is counted as dropped. The node becomes a `tee` whose first branch emits to the
+                // remaining recipients and whose second is a counted drop.
+                let (delivered, dropped) = partial_emit(&id, output, &mut taken);
+                let reason = format!(
+                    "{}; the `emit` still delivers to {}",
+                    Unavailable::Unknown(missing[0].clone()).describe(),
+                    describe_names(&available)
+                );
+                let entry = outputs
+                    .dropped
+                    .entry(DropTarget::Recipients(missing))
+                    .or_insert_with(|| (DropReason::Unavailable(reason), Vec::new()));
+                entry.1.push(dropped.id.clone());
+                for (port, target) in [("0", &delivered.id), ("1", &dropped.id)] {
+                    edges.push(Edge {
+                        from: PortRef::new(id.clone(), port.parse().expect("a tee's port is a port name")),
+                        to: PortRef::new(target.clone(), "in".parse().expect("`in` is a port name")),
+                    });
+                }
+                let mut ports = Params::new();
+                ports.insert("ports".parse().expect("`ports` is a parameter name"), Value::from(2));
+                nodes.push(Node {
+                    id,
+                    op: OperatorName::new(names::TEE).expect("`tee` is an operator name"),
+                    params: ports,
                 });
+                nodes.push(delivered);
+                nodes.push(dropped);
             }
-            let kind = if region_nodes.contains_key(&id) {
-                CorrespondenceKind::Modified
-            } else {
-                CorrespondenceKind::Added
-            };
-            correspondence.insert(node.id.clone(), NodeCorrespondence { node: id.clone(), kind });
-            let mut ports = Params::new();
-            ports.insert("ports".parse().expect("`ports` is a parameter name"), Value::from(2));
-            nodes.push(Node {
+            Addressed::Unavailable { recipients, reason } => {
+                // The artifact in effect keeps running, but nothing it emits reaches recipients that are no longer
+                // available, or no longer on one host: the `emit` becomes a counted drop, under its ID.
+                let entry = outputs
+                    .dropped
+                    .entry(DropTarget::Recipients(recipients))
+                    .or_insert_with(|| (DropReason::Unavailable(reason.describe()), Vec::new()));
+                entry.1.push(id.clone());
+                nodes.push(counted_drop(&id));
+            }
+            Addressed::Recipients => nodes.push(Node {
                 id,
-                op: OperatorName::new(names::TEE).expect("`tee` is an operator name"),
-                params: ports,
-            });
-            nodes.push(delivered);
-            nodes.push(dropped);
-            continue;
-        }
-        if let Addressed::Unavailable { recipients, reason } = addressed {
-            // The artifact in effect keeps running, but nothing it emits reaches recipients that are no longer
-            // available, or no longer on one host: the `emit` becomes a counted drop, under its ID.
-            let entry = outputs
-                .dropped
-                .entry(DropTarget::Recipients(recipients))
-                .or_insert_with(|| (DropReason::Unavailable(reason.describe()), Vec::new()));
-            entry.1.push(id.clone());
-            let kind = if region_nodes.contains_key(&id) {
-                CorrespondenceKind::Modified
-            } else {
-                CorrespondenceKind::Added
-            };
-            let dropped = Node {
-                id: id.clone(),
-                op: OperatorName::new(names::DROP).expect("`drop` is an operator name"),
-                params: Params::new(),
-            };
-            correspondence.insert(node.id.clone(), NodeCorrespondence { node: id, kind });
-            nodes.push(dropped);
-            continue;
-        }
-        let by_name = matches!(addressed, Addressed::Recipients);
-        let (composed, kind) = match same {
-            // Written as the default program writes it, the node is the default program's own, with its resolved values.
-            Some(default) if unresolved(&default.params) == params => (default.clone(), CorrespondenceKind::Unmodified),
-            // The same only as decoded, such as a set written in another order: the node is unmodified, but it runs
-            // what the artifact wrote. The plan does the same as the default program's, so the installer, which compares
-            // plans by what they do, adopts or keeps the running generation, and builds nothing.
-            Some(_) => (
-                Node {
-                    id: id.clone(),
-                    op: node.op.clone(),
-                    params: resolve_bindings(params, catalog, &node.id)?,
-                },
-                CorrespondenceKind::Unmodified,
-            ),
-            None => {
+                op: node.op.clone(),
+                params,
+            }),
+            Addressed::Output => {
                 let params = resolve_bindings(params, catalog, &node.id)?;
-                let kind = if region_nodes.contains_key(&id) {
-                    CorrespondenceKind::Modified
-                } else {
-                    CorrespondenceKind::Added
-                };
-                let composed = Node {
-                    id: id.clone(),
-                    op: node.op.clone(),
-                    params,
-                };
-                (composed, kind)
-            }
-        };
-        let (composed, kind) = if composed.op.as_str() == names::EMIT && !by_name {
-            // An emit addressed to recipients follows them by name, so no fingerprint is recorded for it.
-            let checked = check_output(&node.id, &composed.params, &artifact.base, default_plan, catalog);
-            match checked {
-                OutputCheck::Fine => (composed, kind),
-                OutputCheck::Changed { output, reason } if approval.in_effect => {
-                    // The artifact in effect keeps running, but nothing it emits reaches an output that was removed
-                    // or now delivers elsewhere: the `emit` becomes a counted drop, under its ID.
-                    let entry = outputs
-                        .dropped
-                        .entry(DropTarget::Output(output))
-                        .or_insert_with(|| (reason, Vec::new()));
-                    entry.1.push(id.clone());
-                    let kind = if region_nodes.contains_key(&id) {
-                        CorrespondenceKind::Modified
-                    } else {
-                        CorrespondenceKind::Added
-                    };
-                    let dropped = Node {
-                        id: id.clone(),
-                        op: OperatorName::new(names::DROP).expect("`drop` is an operator name"),
-                        params: Params::new(),
-                    };
-                    (dropped, kind)
+                let undeclared = (node.op.as_str() == names::EMIT)
+                    .then(|| emitted_output(&params))
+                    .flatten()
+                    .filter(|output| catalog.output(output).is_none());
+                match undeclared {
+                    // The artifact in effect keeps running, but nothing it emits reaches an output that was removed:
+                    // the `emit` becomes a counted drop, under its ID.
+                    Some(output) if approval.in_effect => {
+                        let entry = outputs
+                            .dropped
+                            .entry(DropTarget::Output(output))
+                            .or_insert_with(|| (DropReason::Removed, Vec::new()));
+                        entry.1.push(id.clone());
+                        nodes.push(counted_drop(&id));
+                    }
+                    Some(output) => {
+                        let declared = default_plan
+                            .outputs
+                            .iter()
+                            .map(|declared| declared.id.clone())
+                            .filter(|id| catalog.output(id).is_some())
+                            .collect();
+                        return Err(ComposeError::UndeclaredOutput {
+                            node: node.id.clone(),
+                            output,
+                            declared,
+                        });
+                    }
+                    None => nodes.push(Node {
+                        id,
+                        op: node.op.clone(),
+                        params,
+                    }),
                 }
-                OutputCheck::Changed {
-                    output,
-                    reason: DropReason::Removed,
-                } => {
-                    outputs.pending.get_or_insert(output);
-                    (composed, kind)
-                }
-                OutputCheck::Changed {
-                    output,
-                    reason: DropReason::Rebound { renumbered },
-                } => return Err(ComposeError::ReboundOutput { output, renumbered }),
-                // Only an emit addressed to recipients is unavailable, and those are not checked here.
-                OutputCheck::Changed {
-                    reason: DropReason::Unavailable(_),
-                    ..
-                } => (composed, kind),
-                OutputCheck::Refused(error) => return Err(error),
             }
-        } else {
-            (composed, kind)
-        };
-        correspondence.insert(node.id.clone(), NodeCorrespondence { node: id, kind });
-        nodes.push(composed);
+        }
     }
-    // A new artifact whose outputs are otherwise fine waits for the first output it records that is not declared: it
-    // is refused with any other error first, since that one would not go away when the output is declared.
-    if let Some(output) = outputs.pending {
-        return Err(ComposeError::PendingOutput { output });
-    }
+    // A new artifact otherwise fine waits for the first recipients it names that have no output: it is refused with
+    // any other error first, since that one would not go away when the recipients are declared.
     if let Some(pending) = outputs.pending_recipients {
         return Err(pending);
-    }
-    for node in default_plan
-        .nodes
-        .iter()
-        .filter(|node| region.members.contains(&node.id))
-    {
-        if correspondence.artifact_node(&node.id).is_none() {
-            correspondence.insert_removed(node.id.clone());
-        }
     }
 
     let outcome = if outputs.dropped.is_empty() {
@@ -967,18 +671,121 @@ fn compose_scope(
                 .collect(),
         )
     };
-    Ok(ScopePart {
+    let plan = Plan {
+        ir_version: default_plan.ir_version,
+        provenance: Some(PlanProvenance {
+            config_change: default_plan
+                .provenance
+                .as_ref()
+                .and_then(|provenance| provenance.config_change),
+            artifact: Some(ArtifactRevision {
+                revision: approval.revision,
+                hash: received.hash,
+            }),
+            // A composed plan is never a boot plan: the native components describe the default program's layout only.
+            native_components: BTreeMap::new(),
+        }),
         nodes,
         edges,
-        members: region.members,
-        revision,
-        composition: ScopeComposition {
-            correspondence,
-            stale_base,
-            stale_review,
-            outcome,
-        },
+        outputs: default_plan.outputs.clone(),
+        // Resources, like output declarations, come from the default program only: an artifact cannot declare them.
+        resources: default_plan.resources.clone(),
+    };
+    let report = Validator::new(registry, catalog)
+        .with_baseline(default_plan)
+        .validate(&plan);
+    let ids = ids.into_iter().map(|(local, id)| (local.clone(), id)).collect();
+    Ok(Composed {
+        plan,
+        report,
+        ids,
+        stale_review,
+        outcome,
     })
+}
+
+/// Returns a binding two of the `source` nodes of `plan` share, if any do: a host names each source once.
+fn shared_source_binding(plan: &Plan) -> Option<&str> {
+    let mut seen = BTreeSet::new();
+    plan.nodes
+        .iter()
+        .filter(|node| node.op.as_str() == names::SOURCE)
+        .filter_map(|node| node.params.get("binding").and_then(Value::as_str))
+        .find(|binding| !seen.insert(*binding))
+}
+
+/// Which end of an edge a port is at.
+#[derive(Clone, Copy)]
+enum End {
+    From,
+    To,
+}
+
+/// Returns the plan port an artifact edge's end refers to: the port of the source of that name, or a port of an
+/// artifact node, under its plan ID.
+///
+/// # Errors
+///
+/// Returns an error if the end is a source the host does not have, a source the edge enters, or a port of a node the
+/// artifact does not have.
+fn plan_port(
+    reference: &ArtifactPortRef, index: usize, end: End, sources: &BTreeMap<InputName, PortRef>,
+    ids: &BTreeMap<&ArtifactNodeId, NodeId>,
+) -> Result<PortRef, ComposeError> {
+    match (reference, end) {
+        (ArtifactPortRef::Input(input), End::From) => {
+            sources.get(input).cloned().ok_or_else(|| ComposeError::UnknownSource {
+                name: input.clone(),
+                known: sources.keys().cloned().collect(),
+            })
+        }
+        (ArtifactPortRef::Input(_), End::To) => Err(ComposeError::Malformed {
+            message: format!(
+                "edge {} enters `{}`, which is a source; edges leave the host's sources",
+                index, reference
+            ),
+        }),
+        (ArtifactPortRef::Node { node, port }, end) => ids
+            .get(node)
+            .map(|id| PortRef::new(id.clone(), port.clone()))
+            .ok_or_else(|| ComposeError::Malformed {
+                message: format!(
+                    "edge {} {} `{}`, but the artifact has no node `{}`",
+                    index,
+                    match end {
+                        End::From => "leaves",
+                        End::To => "enters",
+                    },
+                    reference,
+                    node
+                ),
+            }),
+    }
+}
+
+/// Returns the host's sources in `plan`, by name: for each `source` node, its `binding` parameter, mapped to its
+/// output port. An artifact edge from `input.<name>` leaves that port.
+///
+/// A `source` node without a valid `binding` is left out, for validation to report; of two with one binding, the
+/// first in plan order is kept.
+pub fn sources(plan: &Plan) -> BTreeMap<InputName, PortRef> {
+    let mut sources = BTreeMap::new();
+    for node in plan.nodes.iter().filter(|node| node.op.as_str() == names::SOURCE) {
+        let Some(name) = node
+            .params
+            .get("binding")
+            .and_then(Value::as_str)
+            .and_then(|binding| InputName::new(binding).ok())
+        else {
+            continue;
+        };
+        let port = PortRef::new(
+            node.id.clone(),
+            PortName::new(METRICS_PORT).expect("a source's port is a port name"),
+        );
+        sources.entry(name).or_insert(port);
+    }
+    sources
 }
 
 /// What composing one artifact's `emit`s found about the outputs they deliver to.
@@ -986,9 +793,6 @@ fn compose_scope(
 struct EmittedOutputs {
     /// The outputs, or recipients, whose `emit`s were dropped, with why and the nodes, for the artifact in effect.
     dropped: BTreeMap<DropTarget, (DropReason, Vec<NodeId>)>,
-
-    /// The first output a new artifact records that the host does not declare.
-    pending: Option<OutputId>,
 
     /// Why a new artifact waits for the recipients an `emit` names, for the first such `emit`: a name the directory
     /// does not have, or no output with exactly their recipients yet.
@@ -1287,8 +1091,9 @@ pub fn demanded_outputs(artifact: &PolicyArtifact, catalog: &dyn Catalog) -> Res
 }
 
 /// Returns the artifact's one state owner and the reserved ID it takes, for a host that runs at most one aggregation
-/// per program: when the artifact has exactly one state owner, the scope's region has exactly one, and no artifact node
-/// has that one's local ID, the artifact's state owner is the region's, whatever it is called.
+/// per program: when the artifact has exactly one state owner, the default program has exactly one among `program`, its
+/// non-source nodes, and no artifact node has that one's local ID, the artifact's state owner is the default program's,
+/// whatever it is called.
 ///
 /// So a program's one aggregation keeps the default program's ID (`dsd_agg`, say), and with it its lineage, its
 /// isolation slot's series, and its telemetry, when an author renames it or writes the program from scratch. Whether
@@ -1297,8 +1102,8 @@ pub fn demanded_outputs(artifact: &PolicyArtifact, catalog: &dyn Catalog) -> Res
 /// A node whose operator does not configure, with its bindings resolved from the catalog, is not counted: validation
 /// reports it.
 fn the_aggregation<'a>(
-    default_plan: &Plan, artifact: &'a PolicyArtifact, inlined: &[Params], region: &ScopeRegion, catalog: &dyn Catalog,
-    registry: &OperatorRegistry,
+    default_plan: &Plan, artifact: &'a PolicyArtifact, inlined: &[Params], program: &BTreeSet<NodeId>,
+    catalog: &dyn Catalog, registry: &OperatorRegistry,
 ) -> Option<(&'a ArtifactNodeId, NodeId)> {
     let owns_state = |op: &OperatorName, params: &Params| {
         registry
@@ -1308,7 +1113,7 @@ fn the_aggregation<'a>(
     let region_owners = default_plan
         .nodes
         .iter()
-        .filter(|node| region.members.contains(&node.id) && owns_state(&node.op, &node.params))
+        .filter(|node| program.contains(&node.id) && owns_state(&node.op, &node.params))
         .collect::<Vec<_>>();
     let artifact_owners = artifact
         .nodes
@@ -1328,30 +1133,32 @@ fn the_aggregation<'a>(
     (!taken).then(|| (&artifact_owner.id, region_owner.id.clone()))
 }
 
-/// Assigns every artifact node its plan ID: the reserved ID of a region node with the same local ID, or its local ID
-/// in the policy namespace. `aggregation`, if given, is the artifact's one state owner and the reserved ID it takes
-/// instead ([`the_aggregation`]).
+/// Assigns every artifact node its plan ID: the reserved ID of a node of `program`, the default program's non-source
+/// nodes, with the same local ID, or its local ID in the policy namespace. `aggregation`, if given, is the artifact's
+/// one state owner and the reserved ID it takes instead ([`the_aggregation`]).
 ///
 /// # Errors
 ///
-/// Returns an error if two artifact nodes have the same ID, or one has the ID of a reserved node outside the region.
+/// Returns an error if two artifact nodes have the same ID, or one has the ID of one of the default program's sources.
 fn node_ids<'a>(
-    default_plan: &Plan, artifact: &'a PolicyArtifact, region: &ScopeRegion,
+    default_plan: &Plan, artifact: &'a PolicyArtifact, program: &BTreeSet<NodeId>,
     aggregation: Option<(&'a ArtifactNodeId, NodeId)>,
 ) -> Result<BTreeMap<&'a ArtifactNodeId, NodeId>, ComposeError> {
     let mut ids = BTreeMap::new();
     for node in &artifact.nodes {
         let reserved = NodeId::reserved(node.id.to_local_id());
-        let id = if let Some((_, id)) = aggregation.as_ref().filter(|(owner, _)| **owner == node.id) {
-            id.clone()
-        } else if region.members.contains(&reserved) {
-            reserved
-        } else if default_plan.node(&reserved).is_some() {
-            return Err(ComposeError::ReservedOutsideScope {
+        // A source's ID is refused even for the adopted aggregation, whose plan ID would not collide: the artifact's
+        // ID names the source, whatever plan ID the node takes.
+        if !program.contains(&reserved) && default_plan.node(&reserved).is_some() {
+            return Err(ComposeError::ReservedSource {
                 node: node.id.clone(),
                 reserved,
-                scope: artifact.scope.clone(),
             });
+        }
+        let id = if let Some((_, id)) = aggregation.as_ref().filter(|(owner, _)| **owner == node.id) {
+            id.clone()
+        } else if program.contains(&reserved) {
+            reserved
         } else {
             NodeId::policy(node.id.to_local_id())
         };
@@ -1364,68 +1171,6 @@ fn node_ids<'a>(
     Ok(ids)
 }
 
-/// Which end of an edge a port is at.
-#[derive(Clone, Copy)]
-enum End {
-    From,
-    To,
-}
-
-/// Returns the plan port an artifact edge's end refers to: a scope input's port, a scope exit's port, or a port of an
-/// artifact node, under its plan ID.
-///
-/// # Errors
-///
-/// Returns an error if the end is a scope input or exit the scope does not declare, a scope input the edge enters, a
-/// scope exit the edge leaves, or a port of a node the artifact does not have.
-fn plan_port(
-    reference: &ArtifactPortRef, index: usize, end: End, scope: &ScopeDecl, ids: &BTreeMap<&ArtifactNodeId, NodeId>,
-) -> Result<PortRef, ComposeError> {
-    let verb = match end {
-        End::From => "leaves",
-        End::To => "enters",
-    };
-    match (reference, end) {
-        (ArtifactPortRef::Input(input), End::From) => {
-            scope.inputs.get(input).cloned().ok_or_else(|| ComposeError::Malformed {
-                message: format!(
-                    "edge {} leaves `{}`, but the scope has no input `{}`",
-                    index, reference, input
-                ),
-            })
-        }
-        (ArtifactPortRef::Input(_), End::To) => Err(ComposeError::Malformed {
-            message: format!(
-                "edge {} enters `{}`, which is a scope input; edges leave a scope's inputs",
-                index, reference
-            ),
-        }),
-        (ArtifactPortRef::Exit(exit), End::To) => {
-            scope.exits.get(exit).cloned().ok_or_else(|| ComposeError::Malformed {
-                message: format!(
-                    "edge {} enters `{}`, but the scope has no exit `{}`",
-                    index, reference, exit
-                ),
-            })
-        }
-        (ArtifactPortRef::Exit(_), End::From) => Err(ComposeError::Malformed {
-            message: format!(
-                "edge {} leaves `{}`, which is a scope exit; edges enter a scope's exits",
-                index, reference
-            ),
-        }),
-        (ArtifactPortRef::Node { node, port }, _) => ids
-            .get(node)
-            .map(|id| PortRef::new(id.clone(), port.clone()))
-            .ok_or_else(|| ComposeError::Malformed {
-                message: format!(
-                    "edge {} {} `{}`, but the artifact has no node `{}`",
-                    index, verb, reference, node
-                ),
-            }),
-    }
-}
-
 /// Returns parameters with every blob reference replaced by the blob's content.
 fn inline_blobs(params: &Params, blobs: &Blobs) -> Result<Params, BlobError> {
     params
@@ -1436,29 +1181,6 @@ fn inline_blobs(params: &Params, blobs: &Blobs) -> Result<Params, BlobError> {
             Ok((name.clone(), value))
         })
         .collect()
-}
-
-/// Returns `true` if an artifact node `node` with operator `op` and parameters `params` does what the default
-/// program's node `default` does: the same operator, and the same parameters.
-///
-/// Parameters written as the default program writes them are the same. Otherwise both sides are compared as plans are
-/// ([`compared_params`]), with the artifact's configuration bindings resolved from `catalog`: so that a set written in
-/// another order is the same set, but a literal and a binding are never the same parameter, whatever the binding's
-/// value. Such a node composes as the artifact writes it.
-fn same_operation(
-    default: &Node, op: &OperatorName, params: &Params, node: &ArtifactNodeId, catalog: &dyn Catalog,
-    registry: &OperatorRegistry,
-) -> bool {
-    if default.op != *op {
-        return false;
-    }
-    if unresolved(&default.params) == *params {
-        return true;
-    }
-    let Ok(resolved) = resolve_bindings(params.clone(), catalog, node) else {
-        return false;
-    };
-    compared_params(op, &default.params, registry) == compared_params(op, &resolved, registry)
 }
 
 /// Fills in the resolved value of every configuration binding in `params` that the catalog declares.
@@ -1511,208 +1233,57 @@ fn resolve_value(value: &mut Value, catalog: &dyn Catalog, node: &ArtifactNodeId
     }
 }
 
-/// What checking the output of one `emit` against the artifact's base and the catalog found.
-enum OutputCheck {
-    /// The output is declared with the fingerprint the base records, or the `emit` names no valid output, which
-    /// validation reports.
-    Fine,
-
-    /// The output the base records was removed, or now delivers elsewhere.
-    Changed {
-        /// The output.
-        output: OutputId,
-
-        /// Whether it was removed or rebound.
-        reason: DropReason,
-    },
-
-    /// The `emit` cannot be composed whatever the artifact's state: its output is not recorded.
-    Refused(ComposeError),
-}
-
-/// Checks the output an `emit` node of the artifact delivers to against the artifact's base and the catalog.
+/// Composes artifacts with the host's current sources and outputs.
 ///
-/// An output the base does not record is refused: as unrecorded if the catalog declares it or it is named as a
-/// resources artifact names its outputs, and as undeclared otherwise, listing the outputs the default program declares,
-/// which the artifact can emit to. A recorded output is fine when the catalog declares it with the recorded
-/// fingerprint. Otherwise it changed: rebound when the catalog declares it with another fingerprint, or when another
-/// routing group's output carries the recorded fingerprint (it is named then), and removed otherwise.
-fn check_output(
-    node: &ArtifactNodeId, params: &Params, base: &ArtifactBase, default_plan: &Plan, catalog: &dyn Catalog,
-) -> OutputCheck {
-    let Some(output) = emitted_output(params) else {
-        return OutputCheck::Fine;
-    };
-    let Some(recorded) = base.outputs.get(&output) else {
-        if catalog.output(&output).is_none() {
-            let declared = default_plan
-                .outputs
-                .iter()
-                .map(|declared| declared.id.clone())
-                .filter(|id| catalog.output(id).is_some())
-                .collect();
-            return OutputCheck::Refused(ComposeError::UndeclaredOutput {
-                node: node.clone(),
-                output,
-                declared,
-            });
-        }
-        return OutputCheck::Refused(ComposeError::UnrecordedOutput {
-            node: node.clone(),
-            output,
-        });
-    };
-    let declared = catalog.output(&output);
-    if declared.is_some_and(|declared| declared.fingerprint == *recorded) {
-        return OutputCheck::Fine;
-    }
-    // After routing groups are renumbered, another group's output carries the fingerprint the base records: the
-    // recorded output now delivers elsewhere, or is gone, and the artifact is to be rebased rather than wait for it.
-    // Only routing groups have positional IDs: a declared output's fingerprint covers its recipients, not its name, so
-    // two declared outputs with the same recipients carry one fingerprint, and neither was renumbered.
-    let renumbered = default_plan
-        .outputs
-        .iter()
-        .filter(|other| other.id != output)
-        .filter(|other| {
-            other
-                .binding
-                .as_ref()
-                .is_some_and(|binding| matches!(binding.selector, Selector::Group(_)))
-        })
-        .find(|other| {
-            catalog
-                .output(&other.id)
-                .is_some_and(|declared| declared.fingerprint == *recorded)
-        })
-        .map(|other| other.id.clone());
-    let reason = match (declared, renumbered) {
-        (None, None) => DropReason::Removed,
-        (_, renumbered) => DropReason::Rebound { renumbered },
-    };
-    OutputCheck::Changed { output, reason }
-}
-
-/// Returns an artifact's nodes or edges, with plan IDs and ports, in the default program's order: each item that the
-/// default program's region has (`region`, the keys of its items in plan order) takes that item's position, and each
-/// other item follows the item of the region that the artifact lists before it (or comes first, if the artifact lists
-/// none before it), in artifact order. `key` is what identifies an item: a node's ID, or an edge's ends.
-///
-/// The order of a plan's nodes and edges means nothing to how it runs, but the plan's hash covers it. A tool may write
-/// an artifact's nodes and edges in another order than the export, as the surface syntax's printed form does with the
-/// edges from several scope inputs, and with the drop of a filter that keeps its `true` port; ordered so, an artifact
-/// that is the export but for the order of its nodes and edges composes to the default program, with its hash. Items
-/// the artifact lists in the export's order keep the order they have.
-fn in_default_order<T, K: Ord>(region: impl Iterator<Item = K>, items: Vec<T>, key: impl Fn(&T) -> K) -> Vec<T> {
-    let positions = region
-        .enumerate()
-        .map(|(position, key)| (key, position))
-        .collect::<BTreeMap<_, _>>();
-    // (the position of the region's item it is or follows, whether it is new, its position in the artifact)
-    let mut anchor = None;
-    let keys = items
-        .iter()
-        .enumerate()
-        .map(|(index, item)| match positions.get(&key(item)) {
-            Some(&position) => {
-                anchor = Some(position);
-                (Some(position), false, index)
-            }
-            None => (anchor, true, index),
-        })
-        .collect::<Vec<_>>();
-    let mut keyed = keys.into_iter().zip(items).collect::<Vec<_>>();
-    keyed.sort_by_key(|(key, _)| *key);
-    keyed.into_iter().map(|(_, item)| item).collect()
-}
-
-/// Replaces the items of `default` for which `in_region` holds with `replacement`, keeping the default's order.
-///
-/// The replacement's items take the places of the region's items in order, and any left over follow the last of them;
-/// with no region item, they follow everything. Replacing a region with its own items, in its own order, gives the
-/// default back.
-fn splice<T: Clone>(default: &[T], in_region: impl Fn(&T) -> bool, replacement: Vec<T>) -> Vec<T> {
-    let places = default.iter().filter(|item| in_region(item)).count();
-    let mut replacement = replacement.into_iter();
-    let mut spliced = Vec::with_capacity(default.len());
-    let mut seen = 0;
-    for item in default {
-        if !in_region(item) {
-            spliced.push(item.clone());
-            continue;
-        }
-        seen += 1;
-        if seen < places {
-            spliced.extend(replacement.next());
-        } else {
-            spliced.extend(replacement.by_ref());
-        }
-    }
-    spliced.extend(replacement);
-    spliced
-}
-
-/// Composes artifacts into the host's current default program.
-///
-/// The installer core composes the artifacts it accepts through this, without knowing the default program or the
-/// catalog: the host implements it over [`compose_all`], with the default program it last lowered and its catalog.
+/// The installer core composes the artifact it accepts through this, without knowing the default program or the
+/// catalog: the host implements it over [`compose`], with the default program it last lowered and its catalog.
 pub trait Composer {
-    /// Composes received artifacts, at most one per scope, each with its approval, into the current default program:
-    /// each scope is composed on its own, with its own correspondence and base check, and the plan is validated once.
+    /// Composes one received artifact with the host's current sources and outputs.
     ///
     /// # Errors
     ///
-    /// Returns an error if any artifact cannot be composed; see [`compose_all`].
-    fn compose_all(&self, artifacts: &[(&ReceivedArtifact, &Approval)]) -> Result<Composed, ComposeError>;
-
-    /// Composes one received artifact into the current default program.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the artifact cannot be composed; see [`compose_all`].
-    fn compose(&self, artifact: &ReceivedArtifact, approval: &Approval) -> Result<Composed, ComposeError> {
-        self.compose_all(&[(artifact, approval)])
-    }
+    /// Returns an error if the artifact cannot be composed; see [`compose`].
+    fn compose(&self, artifact: &ReceivedArtifact, approval: &Approval) -> Result<Composed, ComposeError>;
 }
 
 /// An artifact that cannot be composed into the default program.
 #[derive(Clone, Debug, Eq, PartialEq, Snafu)]
 #[snafu(context(suffix(false)))]
 pub enum ComposeError {
-    /// The artifact replaces a scope the default program does not declare.
-    #[snafu(display(
-        "The artifact replaces scope `{}`, which the default program does not declare. Export the scope to replace \
-         and edit that.",
-        scope
-    ))]
-    UnknownScope {
-        /// The scope.
-        scope: ScopeName,
-    },
-
-    /// The default program's scope cannot be replaced, because it cannot be written as an artifact.
-    #[snafu(display("The default program's scope cannot be replaced: {}", message))]
+    /// The default program cannot be composed with, such as one with two sources of one binding.
+    #[snafu(display("The default program cannot be composed with: {}", message))]
     DefaultProgram {
-        /// Why, as the export says it.
+        /// Why.
         message: String,
     },
 
-    /// An artifact node's local ID is a reserved ID outside the artifact's scope.
+    /// An artifact node's local ID is the ID of one of the default program's sources.
     #[snafu(display(
-        "Artifact node `{}` has the ID of reserved node `{}`, which is outside scope `{}`. Rename the node.",
+        "Artifact node `{}` has the ID of source `{}`, which the host places. Rename the node.",
         node,
-        reserved,
-        scope
+        reserved
     ))]
-    ReservedOutsideScope {
+    ReservedSource {
         /// The artifact node.
         node: ArtifactNodeId,
 
-        /// The reserved node it collides with.
+        /// The source node it collides with.
         reserved: NodeId,
+    },
 
-        /// The artifact's scope.
-        scope: ScopeName,
+    /// An artifact edge leaves `input.<name>`, and the host has no source of that name.
+    #[snafu(display(
+        "The artifact reads `input.{}`, and the host has no source `{}`. {}",
+        name,
+        name,
+        known_sources(known)
+    ))]
+    UnknownSource {
+        /// The name, as the artifact writes it.
+        name: InputName,
+
+        /// The sources the host has, in name order.
+        known: Vec<InputName>,
     },
 
     /// An artifact node is bound to a configuration binding that the host declares without a value.
@@ -1730,8 +1301,7 @@ pub enum ComposeError {
         binding: BindingName,
     },
 
-    /// An `emit` of the artifact delivers to an output the host does not declare, and the artifact's base does not
-    /// record either: no export has it.
+    /// An `emit` of a new artifact delivers to an output the host does not declare.
     #[snafu(display(
         "Artifact node `{}` emits to output `{}`, which the host does not declare. {}",
         node,
@@ -1747,53 +1317,6 @@ pub enum ComposeError {
 
         /// The outputs the host declares, in the default program's order.
         declared: Vec<OutputId>,
-    },
-
-    /// An `emit` of the artifact delivers to an output the host declares, but whose fingerprint the artifact's base
-    /// does not record.
-    #[snafu(display(
-        "Artifact node `{}` emits to output `{}`, which the artifact's base does not record. Add the output's \
-         fingerprint from the export to `base.outputs`.",
-        node,
-        output
-    ))]
-    UnrecordedOutput {
-        /// The artifact node.
-        node: ArtifactNodeId,
-
-        /// The output.
-        output: OutputId,
-    },
-
-    /// A new artifact emits to an output its base records that the host does not declare: it waits, a held state,
-    /// until native configuration or a resources artifact declares the output.
-    #[snafu(display(
-        "Waiting for output `{}`: the artifact's base records it, and the host does not declare it. The artifact \
-         installs once native configuration or a resources artifact declares the output; whatever runs keeps running.",
-        output
-    ))]
-    PendingOutput {
-        /// The output.
-        output: OutputId,
-    },
-
-    /// A new artifact emits to an output that now delivers elsewhere than its base records: the host declares it with
-    /// another fingerprint, or another output carries the recorded one.
-    #[snafu(display(
-        "The artifact emits to output `{}`, which now delivers elsewhere than the artifact's base records{}. Rebase \
-         the artifact on the current export.",
-        output,
-        renumbered.as_ref().map_or_else(String::new, |now| format!(
-            ": the outputs were renumbered, and the recorded one is now `{}`",
-            now
-        ))
-    ))]
-    ReboundOutput {
-        /// The output.
-        output: OutputId,
-
-        /// The output that now carries the recorded fingerprint, if one does.
-        renumbered: Option<OutputId>,
     },
 
     /// A new artifact emits to a recipient name the host's recipient directory does not have: it waits, a held state,
@@ -1868,7 +1391,7 @@ pub enum ComposeError {
     },
 
     /// The artifact's structure cannot be placed into a plan: two nodes have one ID, an edge names an unknown node or
-    /// scope input, or a blob reference cannot be inlined.
+    /// enters a source, or a blob reference cannot be inlined.
     #[snafu(display("The artifact cannot be composed: {}", message))]
     Malformed {
         /// What is wrong.
@@ -1887,6 +1410,19 @@ fn declared_outputs(outputs: &[OutputId]) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!("Emit to one of the outputs it declares: {}.", listed)
+}
+
+/// Says which sources the host has, for an error message about one it does not.
+fn known_sources(sources: &[InputName]) -> String {
+    if sources.is_empty() {
+        return "The host has no sources.".to_string();
+    }
+    let listed = sources
+        .iter()
+        .map(|source| format!("`input.{}`", source))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("Read one of its sources: {}.", listed)
 }
 
 #[cfg(test)]

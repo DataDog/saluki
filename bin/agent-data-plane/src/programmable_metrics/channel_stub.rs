@@ -48,7 +48,7 @@ use tokio::{
 use tracing::{debug, info, warn};
 
 /// The version of the stub protocol ADP speaks.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// The path ADP polls, under the stub URL.
 pub const POLL_PATH: &str = "/v1/artifacts/poll";

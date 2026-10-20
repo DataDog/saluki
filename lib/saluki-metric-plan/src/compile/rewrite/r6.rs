@@ -13,8 +13,6 @@
 //!   operators it commutes with.
 //! - **Native filters stay.** A host reports native series under a reserved node's ID; hoisting replaces the per-path
 //!   filters by a new node, so no filter with a reserved ID is hoisted.
-//! - **Scopes.** No filter crosses a scope's input or exit, and no port of a removed filter or `drop` is one, which
-//!   the scope would then name although the plan no longer has it.
 //! - **The frame is fixed.** The hoisted filter runs where the `tee`'s input runs; the pipeline checks that the
 //!   rewritten plan places into the boot frame.
 //! - **Dynamic operators** are never moved, and no drop moves across one: a dynamic filter or `tee` is left alone.
@@ -27,7 +25,7 @@
 use std::fmt::Write as _;
 
 use super::{
-    filters::{input_ref, output_ref, Edit, Filter, FilterForm, FilterPorts, ScopeBoundaries},
+    filters::{input_ref, output_ref, Edit, Filter, FilterForm, FilterPorts},
     Rewrite, RewriteContext, RewriteId, Rewritten, TelemetryChange, TelemetryEffect,
 };
 use crate::{
@@ -51,35 +49,23 @@ impl Rewrite for R6 {
         if !findings.is_valid() || graph.cyclic {
             return None;
         }
-        let scopes = ScopeBoundaries::of(plan);
         (0..graph.nodes.len())
-            .filter_map(|tee| guarded(&graph, &scopes, tee).map(|filters| (tee, filters)))
+            .filter_map(|tee| guarded(&graph, tee).map(|filters| (tee, filters)))
             .filter_map(|(tee, filters)| hoist(plan, &graph, tee, &filters))
             .find(|rewritten| !ctx.is_rejected(RewriteId::R6, &rewritten.nodes))
     }
 }
 
 /// Returns the filter on every port of the `tee` at `tee`, in port order, if R6's obligations hold for them.
-fn guarded(graph: &Graph<'_>, scopes: &ScopeBoundaries, tee: usize) -> Option<Vec<Filter>> {
+fn guarded(graph: &Graph<'_>, tee: usize) -> Option<Vec<Filter>> {
     let op = graph.op(tee)?;
     if op.name() != names::TEE || op.contract().is_dynamic() {
-        return None;
-    }
-    // The hoisted filter must not join a scope the filters are not in: the tee's input is no scope's exit. It may be a
-    // scope's input: the hoisted filter is then first in that scope, as the tee was.
-    if scopes.is_exit(&input_ref(graph, (tee, 0))) {
         return None;
     }
     let filters = (0..op.ports().outputs.len())
         .map(|port| {
             let (target, _) = graph.target(tee, port)?;
-            if scopes.crossed_by(&output_ref(graph, (tee, port)), &input_ref(graph, (target, 0))) {
-                return None;
-            }
-            // No port of the filter's own nodes is a boundary: the rewrite removes them.
-            Filter::at(graph, target).filter(|filter| {
-                !filter.is_native(graph) && !filter.is_dynamic(graph) && !scopes.bound_at(graph, filter)
-            })
+            Filter::at(graph, target).filter(|filter| !filter.is_native(graph) && !filter.is_dynamic(graph))
         })
         .collect::<Option<Vec<_>>>()?;
     let first = filters.first()?;

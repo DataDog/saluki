@@ -848,8 +848,8 @@ impl Runner {
     }
 
     /// Waits for ADP to serve its export and default program, and for the canary check to have a whole range of
-    /// seconds behind it, and checks that the endpoints receive what the default program routes. Returns the policy
-    /// scope's default program as the editor shows it, and ADP's status.
+    /// seconds behind it, and checks that the endpoints receive what the default program routes. Returns the
+    /// default program as the editor shows it, and ADP's status.
     async fn baseline(&mut self) -> Result<(String, Status), GenericError> {
         let baseline = Instant::now();
         self.wait_for(
@@ -1583,17 +1583,20 @@ impl Runner {
     async fn check_routes(&mut self, boot: &Status, active: Option<&Status>) -> Result<(), GenericError> {
         let Some(active) = active else {
             let export = self.client.get_json("/api/adp/export").await?;
-            let program_hash = export["artifact"]["base"]["program_hash"].as_str();
-            if program_hash != boot.default_program_hash.as_deref() {
+            let program_hash = crate::export::ExportBundle::from_value(export)
+                .map_err(|error| generic_error!("ADP's export cannot be read: {}", error))?
+                .program_hash
+                .to_string();
+            if Some(program_hash.as_str()) != boot.default_program_hash.as_deref() {
                 return Err(generic_error!(
-                    "The export's base is {:?}, but ADP's status reports the default program {:?}.",
+                    "The export's program hash is {}, but ADP's status reports the default program {:?}.",
                     program_hash,
                     boot.default_program_hash
                 ));
             }
             self.report.routes.push(RouteReport {
                 route: "/api/adp/export",
-                checked: "its base program hash is the status's default program hash".to_string(),
+                checked: "the program hash of its artifact is the status's default program hash".to_string(),
             });
             let default_program = plan_hash(self.client.get_json("/api/adp/default-program").await?)?;
             if Some(&default_program) != boot.plan_hash.as_ref() {

@@ -28,7 +28,7 @@ pub(super) type Endpoint = (usize, usize);
 /// Why a plan could not be prepared.
 pub(super) enum PrepareError {
     /// The installation is rejected, and the active plan stays.
-    Rejected(InstallRejection),
+    Rejected(Box<InstallRejection>),
 
     /// The plan cannot be interpreted at all.
     Fatal(InterpretErrorKind),
@@ -579,10 +579,10 @@ where
                 return Err(internal(id, "a `split` without a predicate"));
             };
             let predicate = predicate.compile(resolver).map_err(|source| {
-                PrepareError::Rejected(InstallRejection::UnresolvedBinding {
+                PrepareError::Rejected(Box::new(InstallRejection::UnresolvedBinding {
                     node: id.clone(),
                     source,
-                })
+                }))
             })?;
             let ports = op.ports();
             let (Some(true_port), Some(false_port)) = (
@@ -665,10 +665,10 @@ fn build_kernel_in(
     id: &NodeId, spec: &KernelSpec, context: KernelBuildContext,
 ) -> Result<Box<dyn Kernel>, PrepareError> {
     spec.build(&context).map_err(|source| {
-        PrepareError::Rejected(InstallRejection::KernelBuild {
+        PrepareError::Rejected(Box::new(InstallRejection::KernelBuild {
             node: id.clone(),
             source,
-        })
+        }))
     })
 }
 

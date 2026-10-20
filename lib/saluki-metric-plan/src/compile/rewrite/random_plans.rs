@@ -22,7 +22,6 @@ use serde_json::{json, Value};
 
 use super::{r7::OperandProfile, run_pipeline, Optimized, Rewrite, RewriteContext};
 use crate::{
-    canonical::PlanHash,
     compile::Frame,
     equivalence::{compare, compare_under_capacity, CapacityOutcome, OutputPoints},
     interpret::{AdapterError, HostBatch, HostOutput, Interpreter, OpaqueHostAdapter, RunOutput, Trace},
@@ -392,10 +391,6 @@ impl Builder {
     }
 }
 
-fn fingerprint(output: &str) -> PlanHash {
-    PlanHash::of_bytes(output.as_bytes())
-}
-
 /// The catalog random plans validate against: outputs `o0` to `o127`, each with its own recipient, and the live
 /// bindings of [`arb_configuration_leaf`].
 pub(super) fn catalog() -> MemoryCatalog {
@@ -411,7 +406,6 @@ pub(super) fn catalog() -> MemoryCatalog {
             OutputId::new(output.as_str()).expect("valid output ID"),
             CatalogOutput {
                 accepts: PortType::ANY,
-                fingerprint: fingerprint(&output),
                 recipients: vec![RecipientId::new(format!("out/{}", output)).expect("valid recipient ID")],
             },
         )
@@ -443,7 +437,7 @@ pub(super) fn plan_of(shape: &Shape) -> (Plan, Vec<NodeId>) {
         .iter()
         .map(|output| {
             json!({"id": output, "accepts": {"kinds": "all", "timestamps": "mixed"},
-                   "fingerprint": fingerprint(output).to_string(), "recipients": [format!("out/{}", output)]})
+                   "recipients": [format!("out/{}", output)]})
         })
         .collect::<Vec<_>>();
     let plan =

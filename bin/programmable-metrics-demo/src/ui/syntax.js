@@ -2,7 +2,7 @@
 //
 // `PipelineSyntax.highlight(text)` returns the text as HTML, each token in a span whose class names its kind:
 // `tk-comment`, `tk-string`, `tk-number` (numbers and durations), `tk-kw` (the keywords: `policy`, `let`, `where`,
-// `emit`, `output` after `emit`, `drop`, `exit`, and the header's `base`, `outputs`, `blobs`, `ir_version`),
+// `emit`, `output` after `emit`, `drop`, and the headers `blobs` and `ir_version`),
 // `tk-pipe` (`|`), `tk-logic` (`and`, `or`, `not`, `in`, `starts_with`, `is`, and `set` and `unset` after `is`),
 // `tk-op` (`==`, `!=`), `tk-const` (`true`, `false`, `null`), `tk-fn` (an operator or function: the name of a stage,
 // or a name followed by `(`), `tk-param` (a parameter or record member's name, before its `:`), `tk-config` (a
@@ -13,7 +13,7 @@
 
 window.PipelineSyntax = (() => {
   const KEYWORDS = new Set([
-    "policy", "let", "where", "emit", "drop", "exit", "base", "outputs", "blobs", "ir_version",
+    "policy", "let", "where", "emit", "drop", "blobs", "ir_version",
   ]);
   const LOGIC = new Set(["and", "or", "not", "in", "starts_with", "is"]);
   const CONSTANTS = new Set(["true", "false", "null"]);

@@ -4,11 +4,7 @@
 use serde_json::{json, Value};
 
 use super::*;
-use crate::{
-    canonical::PlanHash,
-    ir::{BindingName, InputName, OutputId, ParamType, RecipientId},
-    model::{Kind, KindSet, PortType, TimestampForm},
-};
+use crate::ir::{BindingName, OutputId, ParamType, RecipientId};
 
 /// A fixture: what it shows, the plan, and the findings validation must report, as rule and location.
 type Case = (&'static str, Value, Vec<(Rule, &'static str)>);
@@ -38,10 +34,6 @@ fn test_outputs() -> Vec<(&'static str, Value, Vec<&'static str>)> {
     ]
 }
 
-fn fingerprint(id: &str) -> PlanHash {
-    PlanHash::of_bytes(id.as_bytes())
-}
-
 fn test_catalog() -> MemoryCatalog {
     let mut catalog = MemoryCatalog::new();
     for (id, accepts, recipients) in test_outputs() {
@@ -49,7 +41,6 @@ fn test_catalog() -> MemoryCatalog {
             OutputId::new(id).unwrap(),
             CatalogOutput {
                 accepts: serde_json::from_value(accepts).unwrap(),
-                fingerprint: fingerprint(id),
                 recipients: recipients.into_iter().map(|r| RecipientId::new(r).unwrap()).collect(),
             },
         );
@@ -64,29 +55,6 @@ fn test_catalog() -> MemoryCatalog {
         )
         .with_binding(binding("test.window"), ParamType::Duration, Liveness::Startup)
         .with_binding(binding("test.live_window"), ParamType::Duration, Liveness::Live)
-        .with_scope_input(
-            "post".parse().unwrap(),
-            InputName::new("metrics").unwrap(),
-            PortType::ANY,
-        )
-        .with_scope_input(
-            "pre".parse().unwrap(),
-            InputName::new("metrics").unwrap(),
-            PortType::ANY,
-        )
-        .with_scope_input(
-            PROGRAM.parse().unwrap(),
-            InputName::new("metrics").unwrap(),
-            PortType::ANY,
-        )
-        .with_scope_input(
-            "post".parse().unwrap(),
-            InputName::new("gauges").unwrap(),
-            PortType {
-                kinds: KindSet::of(&[Kind::Gauge]),
-                timestamps: TimestampForm::Mixed,
-            },
-        )
 }
 
 /// A node.
@@ -97,8 +65,8 @@ fn n(id: &str, op: &str, params: Value) -> Value {
 /// The member that marks a node, until [`plan`] removes it, as one that makes the plan a program an artifact composed.
 const PROGRAM: &str = "program";
 
-/// A node that makes the plan a program: [`plan`] then declares the scope `program` after the plan's first source,
-/// and lists artifact revision 7 as replacing it, so that every node after that source is the program's.
+/// A node that makes the plan a program: [`plan`] then lists artifact revision 7 in its provenance, so that every node
+/// but its sources is the program's.
 fn a(id: &str, op: &str, params: Value) -> Value {
     json!({"id": id, "op": op, "params": params, PROGRAM: true})
 }
@@ -154,8 +122,7 @@ fn output_decls(ids: &[&str]) -> Value {
         ids.iter()
             .map(|id| {
                 let (_, accepts, recipients) = outputs.iter().find(|(known, _, _)| known == id).unwrap();
-                json!({"id": id, "accepts": accepts, "fingerprint": fingerprint(id).to_string(),
-                       "recipients": recipients})
+                json!({"id": id, "accepts": accepts, "recipients": recipients})
             })
             .collect(),
     )
@@ -163,15 +130,10 @@ fn output_decls(ids: &[&str]) -> Value {
 
 /// Builds a plan from nodes, edges written as `"node.port -> node.port"`, and the IDs of the outputs it declares.
 ///
-/// If a node is marked as [`a`] marks it, the plan is a program: it declares the scope `program`, whose input
-/// `metrics` is the `metrics` port of the plan's first source, and its provenance lists artifact revision 7 as
-/// replacing that scope.
+/// If a node is marked as [`a`] marks it, the plan is a program: its provenance lists artifact revision 7, whose
+/// nodes are every node but the plan's sources.
 fn plan(nodes: Vec<Value>, edges: &[&str], outputs: &[&str]) -> Value {
     let program = nodes.iter().any(|node| node.get(PROGRAM).is_some());
-    let source = nodes
-        .iter()
-        .find(|node| node["op"] == "source")
-        .map(|node| format!("{}.metrics", node["id"].as_str().unwrap()));
     let nodes = nodes
         .into_iter()
         .map(|mut node| {
@@ -187,9 +149,8 @@ fn plan(nodes: Vec<Value>, edges: &[&str], outputs: &[&str]) -> Value {
         })
         .collect::<Vec<_>>();
     let mut value = json!({"ir_version": 1, "nodes": nodes, "edges": edges, "outputs": output_decls(outputs)});
-    if let (true, Some(source)) = (program, source) {
-        value["scopes"] = json!({PROGRAM: {"inputs": {"metrics": source}}});
-        value["provenance"] = json!({"artifacts": [{"scope": PROGRAM, "revision": 7, "hash": ZERO_HASH}]});
+    if program {
+        value["provenance"] = json!({"artifact": {"revision": 7, "hash": ZERO_HASH}});
     }
     value
 }
@@ -594,8 +555,6 @@ fn reference_rules() {
             &["a"],
         )
     };
-    let mut wrong_fingerprint = plan(vec![otlp("src"), emit("e", "a")], &["src.metrics -> e.in"], &["a"]);
-    wrong_fingerprint["outputs"][0]["fingerprint"] = json!(ZERO_HASH);
     let mut wrong_recipients = plan(vec![otlp("src"), emit("e", "a")], &["src.metrics -> e.in"], &["a"]);
     wrong_recipients["outputs"][0]["recipients"] = json!(["out/a", "out/b"]);
     let mut wrong_accepts = plan(
@@ -615,11 +574,6 @@ fn reference_rules() {
     undeclared["nodes"][1]["params"]["output"] = json!("z");
     let mut duplicated = plan(vec![otlp("src"), emit("e", "a")], &["src.metrics -> e.in"], &["a", "a"]);
     duplicated["outputs"][1]["recipients"] = json!(["out/a"]);
-    let scoped = |scope: &str, input: &str, port: &str| {
-        let mut value = plan(vec![otlp("src"), emit("e", "a")], &["src.metrics -> e.in"], &["a"]);
-        value["scopes"] = json!({scope: {"inputs": {input: port}}});
-        value
-    };
     let names = |resolved: Value| {
         json!({"name": {"matches": {
             "values": {"config": "test.names", "resolved": resolved},
@@ -636,11 +590,6 @@ fn reference_rules() {
             "declared outputs are declared by the host",
             undeclared,
             vec![(CatalogOutput, "output `z`")],
-        ),
-        (
-            "declared outputs match the host's binding",
-            wrong_fingerprint,
-            vec![(CatalogOutput, "output `a`")],
         ),
         (
             "declared outputs have the host's recipients",
@@ -719,181 +668,10 @@ fn reference_rules() {
             },
             vec![],
         ),
-        (
-            "a scope input refers to a declared input of the right type",
-            scoped("post", "metrics", "src.metrics"),
-            vec![],
-        ),
-        (
-            "a scope input refers to an output port",
-            scoped("post", "metrics", "e.out"),
-            vec![(ScopeInputs, "scope `post`")],
-        ),
-        (
-            "a scope input is declared by the host",
-            scoped("other", "metrics", "src.metrics"),
-            vec![(ScopeInputs, "scope `other`")],
-        ),
-        (
-            "a scope input carries what the host declares",
-            scoped("post", "gauges", "src.metrics"),
-            vec![(ScopeInputs, "scope `post`")],
-        ),
     ];
     for (name, value, expected) in cases {
         assert_findings(name, &validate(&value), &expected);
     }
-}
-
-#[test]
-fn scopes_are_closed() {
-    use Rule::ScopeClosed;
-
-    let with_scopes = |mut value: Value, scopes: Value| {
-        value["scopes"] = scopes;
-        value
-    };
-    let enrich = |id: &str| n(id, "host_enrichment", json!({}));
-    let chain = || {
-        plan(
-            vec![otlp("src"), enrich("x"), enrich("y"), emit("e", "a")],
-            &["src.metrics -> x.in", "x.out -> y.in", "y.out -> e.in"],
-            &["a"],
-        )
-    };
-    let merged = || {
-        plan(
-            vec![
-                otlp("src"),
-                n("src2", "source", json!({"binding": "liveness"})),
-                merge("m", 2),
-                emit("e", "a"),
-            ],
-            &["src.metrics -> m.0", "src2.metrics -> m.1", "m.out -> e.in"],
-            &["a"],
-        )
-    };
-    let rejoined = || {
-        plan(
-            vec![
-                otlp("src"),
-                split("s", name_prefix()),
-                enrich("x"),
-                merge("m", 2),
-                emit("e", "a"),
-            ],
-            &[
-                "src.metrics -> s.in",
-                "s.true -> m.0",
-                "s.false -> x.in",
-                "x.out -> m.1",
-                "m.out -> e.in",
-            ],
-            &["a"],
-        )
-    };
-
-    let cases: Vec<Case> = vec![
-        (
-            "a scope without exits extends to the ends of its paths",
-            with_scopes(chain(), json!({"post": {"inputs": {"metrics": "src.metrics"}}})),
-            vec![],
-        ),
-        (
-            "a scope with an exit ends there",
-            with_scopes(
-                chain(),
-                json!({"post": {"inputs": {"metrics": "src.metrics"}, "exits": {"enriched": "y.in"}}}),
-            ),
-            vec![],
-        ),
-        (
-            "nothing outside a scope feeds it except through its inputs",
-            with_scopes(merged(), json!({"post": {"inputs": {"metrics": "src.metrics"}}})),
-            vec![(ScopeClosed, "scope `post`")],
-        ),
-        (
-            "a scope may have several inputs",
-            with_scopes(
-                merged(),
-                json!({"post": {"inputs": {"metrics": "src.metrics", "gauges": "src2.metrics"}}}),
-            ),
-            vec![],
-        ),
-        (
-            "an exit refers to an input port",
-            with_scopes(
-                chain(),
-                json!({"post": {"inputs": {"metrics": "src.metrics"}, "exits": {"enriched": "y.out"}}}),
-            ),
-            vec![(ScopeClosed, "scope `post`")],
-        ),
-        (
-            "an exit is fed from inside its scope",
-            with_scopes(
-                merged(),
-                json!({"post": {"inputs": {"metrics": "src.metrics"}, "exits": {"merged": "m.0", "other": "m.1"}}}),
-            ),
-            vec![(ScopeClosed, "scope `post`")],
-        ),
-        (
-            "an exit leads out of its scope",
-            with_scopes(
-                rejoined(),
-                json!({"post": {"inputs": {"metrics": "src.metrics"}, "exits": {"back": "m.1"}}}),
-            ),
-            vec![(ScopeClosed, "scope `post`")],
-        ),
-        (
-            "scopes do not overlap",
-            with_scopes(
-                chain(),
-                json!({"post": {"inputs": {"metrics": "src.metrics"}}, "pre": {"inputs": {"metrics": "x.out"}}}),
-            ),
-            vec![(ScopeClosed, "scope `pre`"), (ScopeClosed, "scope `pre`")],
-        ),
-        (
-            "scopes that meet at an exit do not overlap",
-            with_scopes(
-                chain(),
-                json!({"post": {"inputs": {"metrics": "x.out"}},
-                       "pre": {"inputs": {"metrics": "src.metrics"}, "exits": {"enriched": "y.in"}}}),
-            ),
-            vec![],
-        ),
-        (
-            "an exit behind a node whose parameters are wrong is not reported unfed as well",
-            with_scopes(
-                plan(
-                    vec![
-                        otlp("src"),
-                        n("x", "host_enrichment", json!({"extra": 1})),
-                        enrich("y"),
-                        emit("e", "a"),
-                    ],
-                    &["src.metrics -> x.in", "x.out -> y.in", "y.out -> e.in"],
-                    &["a"],
-                ),
-                json!({"pre": {"inputs": {"metrics": "src.metrics"}, "exits": {"enriched": "y.in"}}}),
-            ),
-            vec![(Rule::ValidParameters, "node `x`")],
-        ),
-    ];
-    for (name, value, expected) in cases {
-        assert_findings(name, &validate(&value), &expected);
-    }
-
-    let report = validate(&with_scopes(
-        merged(),
-        json!({"post": {"inputs": {"metrics": "src.metrics"}}}),
-    ));
-    assert!(
-        report.findings()[0]
-            .message
-            .contains("`m.1` is inside the scope, but is fed from `src2.metrics`, outside it"),
-        "{}",
-        report
-    );
 }
 
 #[test]
@@ -1919,7 +1697,6 @@ fn copies_to_outputs_without_a_recipient_in_common_are_no_duplicate_even_beside_
             OutputId::new(*id).unwrap(),
             CatalogOutput {
                 accepts: serde_json::from_value(all.clone()).unwrap(),
-                fingerprint: fingerprint(id),
                 recipients: recipients.iter().map(|r| RecipientId::new(*r).unwrap()).collect(),
             },
         )
@@ -1933,9 +1710,7 @@ fn copies_to_outputs_without_a_recipient_in_common_are_no_duplicate_even_beside_
         value["outputs"] = Value::Array(
             outputs
                 .iter()
-                .map(|(id, recipients)| {
-                    json!({"id": id, "accepts": all, "fingerprint": fingerprint(id).to_string(), "recipients": recipients})
-                })
+                .map(|(id, recipients)| json!({"id": id, "accepts": all, "recipients": recipients}))
                 .collect(),
         );
         value

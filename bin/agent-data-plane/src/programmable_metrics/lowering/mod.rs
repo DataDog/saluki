@@ -34,12 +34,16 @@
 //! Every branch exists only when `run.rs` builds it for the same configuration, decided by the same predicates and
 //! helpers. The DogStatsD pipeline and the sources follow the startup configuration; the output branches (endpoint
 //! routing groups, the failover branches) follow the current one, so a routing group or a failover branch appears and
-//! disappears live, which an artifact composed against an earlier export sees as a stale base. Outputs a resources
-//! artifact declares have no branch: only artifacts emit to them. The metrics enrichment merge (`metrics_in`)
+//! disappears live; a published program replaces every branch with its own. Outputs a resources artifact declares
+//! have no branch: only artifacts emit to them. The metrics enrichment merge (`metrics_in`)
 //! and the tees (`metrics_fanout`, `dsd_post_agg_filter_fanout`) are present even with one input or output, so that
 //! their IDs never depend on which other branches exist. The merge in front of the post-aggregation filter
 //! (`dsd_post_agg_filter_in`) exists only with the no-aggregation pipeline, whose passthrough is its second input, as
 //! natively that filter has a second input only then.
+//!
+//! The `source` nodes come first, DogStatsD's and then the OTLP, checks, liveness, and trace sampler sources, ahead of
+//! every other node, as composition writes them ahead of a published program's nodes: so the default program's export,
+//! composed unchanged, is the default program itself.
 //!
 //! # Parameters
 //!
@@ -103,10 +107,8 @@ use saluki_metric_plan::{
     compose::Demand,
     ir::{
         derived_terminal_id, format_duration, BindingName, Edge, Namespace, NativeComponentId, Node, NodeId,
-        OperatorName, ParamName, ParamType, ParamValue, Params, Plan, PlanProvenance, PortName, PortRef, ScopeDecl,
-        IR_VERSION,
+        OperatorName, ParamName, ParamType, ParamValue, Params, Plan, PlanProvenance, PortName, PortRef, IR_VERSION,
     },
-    model::{PortType, TimestampForm},
     normalize::normalize_plan,
     operators::{
         encode_mapper_profiles, encode_tag_filter_rules, encode_tag_value_rules, names, SourceBinding, MAPPER_PROFILES,
@@ -117,7 +119,7 @@ use serde_json::{json, Value};
 
 use super::{
     bindings::{self, Snapshots},
-    catalog::{scope_input_name, AdpCatalog, METRICS_SCOPE},
+    catalog::AdpCatalog,
     host_facts::{host_tags_enabled, HostFacts},
     resources::{
         cluster_agent_forwarder, routing_groups, spelled_endpoint, Demanded, FixedHosts, NativeOutputs,
@@ -522,15 +524,9 @@ impl Lowering {
         let mut program = Program::new(snapshots);
         let mut notes = Vec::new();
 
-        // Everything feeding metrics enrichment, in a fixed order, and the scope's inputs: one per source, each the
-        // source's metrics, with the port type it carries.
-        let mut enrichment_inputs = Vec::new();
-        let mut scope_inputs = Vec::new();
-        if dp.dogstatsd_enabled() {
-            let (enrichment_input, source, timestamps) = program.dogstatsd(startup, &mut notes)?;
-            enrichment_inputs.push(enrichment_input);
-            scope_inputs.push((SourceBinding::Dogstatsd, source, timestamps));
-        }
+        // The sources come first, in a fixed order, as composition writes them ahead of a program's nodes: so a
+        // program exported from the default program and composed unchanged is the default program, node for node.
+        let dogstatsd = dp.dogstatsd_enabled().then(|| program.dogstatsd_source(startup));
         let sources = [
             (
                 ids::OTLP_IN,
@@ -545,15 +541,21 @@ impl Lowering {
                 dp.traces_pipeline_required(),
             ),
         ];
-        for (id, binding, present) in sources {
-            if present {
+        let sources = sources
+            .into_iter()
+            .filter(|(_, _, present)| *present)
+            .map(|(id, binding, _)| {
                 let source = program.node(id, names::SOURCE, json!({"binding": binding.as_str()}), id);
-                let metrics = PortRef::new(source, port(METRICS_PORT));
-                enrichment_inputs.push(metrics.clone());
-                // Every other source's timestamp form is fixed by its binding.
-                scope_inputs.push((binding, metrics, TimestampForm::Mixed));
-            }
+                PortRef::new(source, port(METRICS_PORT))
+            })
+            .collect::<Vec<_>>();
+
+        // Everything feeding metrics enrichment, in a fixed order.
+        let mut enrichment_inputs = Vec::new();
+        if let Some(source) = dogstatsd {
+            enrichment_inputs.push(program.dogstatsd(startup, source, &mut notes)?);
         }
+        enrichment_inputs.extend(sources);
         if enrichment_inputs.is_empty() {
             return Err(generic_error!(
                 "The metrics pipeline is required, but no source feeds it; this is a lowering bug."
@@ -563,9 +565,8 @@ impl Lowering {
         let enriched = program.enrichment(startup, &self.facts, enrichment_inputs)?;
         program.policy(enriched, &resolved.outputs)?;
 
-        // The one scope: the whole metrics path after its sources, fed by each of them and with no exits.
         let native_components = std::mem::take(&mut program.native_components);
-        let mut plan = Plan {
+        let plan = Plan {
             ir_version: IR_VERSION,
             provenance: (!native_components.is_empty()).then(|| PlanProvenance {
                 native_components,
@@ -574,28 +575,13 @@ impl Lowering {
             nodes: std::mem::take(&mut program.nodes),
             edges: std::mem::take(&mut program.edges),
             outputs: resolved.outputs.decls(),
-            scopes: Default::default(),
             resources: resolved.resources.clone(),
         };
-        plan.scopes.insert(
-            METRICS_SCOPE.parse().expect("scope names are identifiers"),
-            ScopeDecl {
-                inputs: scope_inputs
-                    .iter()
-                    .map(|(binding, port, _)| (scope_input_name(*binding), port.clone()))
-                    .collect(),
-                exits: Default::default(),
-            },
-        );
         // The default program is written in normal form, as composition reads every artifact, so that its export, and
         // a program parsed back from that export unchanged, are the same document.
         let plan = normalize_plan(&plan);
-        let declared = scope_inputs
-            .into_iter()
-            .map(|(binding, _, timestamps)| (scope_input_name(binding), binding.port_type(timestamps)))
-            .collect::<Vec<(_, PortType)>>();
 
-        let catalog = AdpCatalog::new(&resolved, snapshots, self.hosts).with_scope_inputs(declared);
+        let catalog = AdpCatalog::new(&resolved, snapshots, self.hosts);
         let mut annotations = program.annotations;
         for node in &plan.nodes {
             if let Some(note) = annotation(node.id.local().as_str(), node.op.as_str()) {
@@ -852,16 +838,10 @@ impl<'a> Program<'a> {
         Ok(json!({"config": name, "resolved": resolved}))
     }
 
-    /// Lowers the DogStatsD source, its pre-aggregation path, aggregation, and the post-aggregation filter, and returns
-    /// the port that feeds metrics enrichment, the source's metrics port, and the timestamp form of the source's
-    /// metrics: mixed with the no-aggregation pipeline, which parses client timestamps, and untimestamped without it.
-    fn dogstatsd(
-        &mut self, startup: &SalukiConfiguration, notes: &mut Vec<LoweringNote>,
-    ) -> Result<(PortRef, PortRef, TimestampForm), GenericError> {
-        // `Lowering::new` checked what native construction rejects.
-        let dogstatsd = &startup.domains.dogstatsd;
-        let no_aggregation_pipeline = dogstatsd.aggregation.no_aggregation_pipeline;
-        let timestamps = if no_aggregation_pipeline {
+    /// Lowers the DogStatsD source and returns its metrics port. Its metrics are mixed with the no-aggregation
+    /// pipeline, which parses client timestamps, and untimestamped without it.
+    fn dogstatsd_source(&mut self, startup: &SalukiConfiguration) -> PortRef {
+        let timestamps = if startup.domains.dogstatsd.aggregation.no_aggregation_pipeline {
             "mixed"
         } else {
             "untimestamped"
@@ -869,15 +849,20 @@ impl<'a> Program<'a> {
         let dsd_in = self.node(
             ids::DSD_IN,
             names::SOURCE,
-            json!({"binding": "dogstatsd", "timestamps": timestamps}),
+            json!({"binding": SourceBinding::Dogstatsd.as_str(), "timestamps": timestamps}),
             ids::DSD_IN,
         );
-        let source = PortRef::new(dsd_in.clone(), port(METRICS_PORT));
-        let source_timestamps = if no_aggregation_pipeline {
-            TimestampForm::Mixed
-        } else {
-            TimestampForm::Untimestamped
-        };
+        PortRef::new(dsd_in, port(METRICS_PORT))
+    }
+
+    /// Lowers DogStatsD's pre-aggregation path from its `source`, aggregation, and the post-aggregation filter, and
+    /// returns the port that feeds metrics enrichment.
+    fn dogstatsd(
+        &mut self, startup: &SalukiConfiguration, source: PortRef, notes: &mut Vec<LoweringNote>,
+    ) -> Result<PortRef, GenericError> {
+        // `Lowering::new` checked what native construction rejects.
+        let dogstatsd = &startup.domains.dogstatsd;
+        let no_aggregation_pipeline = dogstatsd.aggregation.no_aggregation_pipeline;
 
         // Every setting of DogStatsD's processing is read at startup, but the filterlists.
         let mapper = &dogstatsd.mapper;
@@ -895,7 +880,7 @@ impl<'a> Program<'a> {
             )?,
         });
         let mapper = self.policy_node(ids::DSD_ENRICH, names::DOGSTATSD_MAPPER, params, ids::DSD_ENRICH);
-        self.edge(PortRef::new(dsd_in, port(METRICS_PORT)), &mapper, "in");
+        self.edge(source, &mapper, "in");
 
         let prefix_filter = &dogstatsd.prefix_filter;
         let params = json!({
@@ -1109,7 +1094,7 @@ impl<'a> Program<'a> {
             json!({"output": DSD_CLIENT_TELEMETRY}),
             DSD_CLIENT_TELEMETRY_OUT,
         );
-        Ok((PortRef::new(fanout, port("1")), source, source_timestamps))
+        Ok(PortRef::new(fanout, port("1")))
     }
 
     /// Lowers metrics enrichment fed by `inputs`, and returns the port of the enriched metrics.

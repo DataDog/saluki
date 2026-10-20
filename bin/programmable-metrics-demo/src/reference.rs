@@ -2,20 +2,22 @@
 //!
 //! The operators, their parameters (with their defaults, and which one may be passed first without its name) and ports,
 //! the rules an author meets, and the limits come from the plan crate's registry, validator, and limits table, so they
-//! are always the ones validation applies. The scope's inputs, the recipient directory, and the bindings come from
+//! are always the ones validation applies. The sources, the recipient directory, and the bindings come from
 //! ADP's export, when it is at hand, so they are the ones this ADP accepts. The node IDs the example program's stages
 //! get come from parsing it, so they are the ones the syntax derives. The examples, the shorthand and what each stands
 //! for, and the recipes are written here, and the tests parse each one, lower each shorthand and its long form to the
 //! same graph, and compile the recipes into the default program, so none of them shows something that does not
 //! compile. The grammar's prose is in the page.
 
+use std::collections::BTreeSet;
+
 use saluki_metric_plan::{
-    ir::{format_duration, ParamType, ValueType},
+    ir::{format_duration, ArtifactPortRef, ParamType, ValueType},
     limits::{self, LimitSpec, LimitValue},
     operators::{names, OperatorRegistry},
     validate::{BindingClass, Catalog as _, Liveness, Rule, Severity},
 };
-use saluki_metric_plan_syntax::{parse_with, ParseOptions};
+use saluki_metric_plan_syntax::parse;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -57,13 +59,11 @@ pub struct Reference {
     pub limits: Vec<LimitEntry>,
 }
 
-/// What this ADP accepts: the scope, its inputs, the recipient directory, and the bindings a program may read.
+/// What this ADP accepts: its sources, the recipient directory, and the bindings a program may read.
 #[derive(Debug, Serialize)]
 pub struct HostReference {
-    /// The scope a program replaces.
-    pub scope: String,
-
-    /// The scope's inputs, in name order: where each source's metrics enter, the streams a pipeline may start from.
+    /// The sources the default program reads, in name order: where each source's metrics enter, the streams a
+    /// pipeline may start from.
     pub inputs: Vec<String>,
 
     /// The recipient directory, in name order: the names `emit` takes.
@@ -260,9 +260,9 @@ const RECIPE_CONTEXT: (&str, &str) = (
     "  metrics | emit primary",
 );
 
-/// A whole program that shows each part of the language: scope inputs, a `let`, stages, `where`, streams used more
+/// A whole program that shows each part of the language: sources, a `let`, stages, `where`, streams used more
 /// than once, a tuple, sinks, and comments.
-pub const EXAMPLE_PROGRAM: &str = r#"policy metrics {
+pub const EXAMPLE_PROGRAM: &str = r#"policy {
   # A `let` names a stream: here, DogStatsD's metrics, filtered, then aggregated.
   let dsd = dogstatsd
     | where not (name starts_with "demo.debug.")
@@ -306,8 +306,8 @@ const SUGAR: &[(&str, &str, &str, &str)] = &[
     ),
 ];
 
-/// An example pipeline of each operator a program may write, in the registry's order, starting from the scope's
-/// inputs and ending in sinks.
+/// An example pipeline of each operator a program may write, in the registry's order, starting from the sources and
+/// ending in sinks.
 const OPERATOR_EXAMPLES: &[(&str, &str)] = &[
     (
         names::DOGSTATSD_MAPPER,
@@ -633,13 +633,19 @@ pub fn reference(export: Option<&ExportBundle>, labels: &RecipientLabels, host_m
 
 fn host_reference(export: &ExportBundle, labels: &RecipientLabels) -> HostReference {
     let catalog = &export.catalog;
-    let scope = export.scope.parse().ok();
     HostReference {
-        scope: export.scope.clone(),
-        inputs: scope
+        // The sources the exported program reads.
+        inputs: export
+            .artifact
+            .artifact
+            .edges
             .iter()
-            .flat_map(|scope| catalog.scope_inputs(scope))
-            .map(|(name, _)| name.to_string())
+            .filter_map(|edge| match &edge.from {
+                ArtifactPortRef::Input(input) => Some(input.to_string()),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .collect(),
         recipients: catalog
             .recipients()
@@ -672,7 +678,7 @@ fn host_reference(export: &ExportBundle, labels: &RecipientLabels) -> HostRefere
 
 /// Returns the example program's nodes, as parsing it names them, or none if it does not parse.
 fn example_nodes() -> Vec<ExampleNode> {
-    parse_with(EXAMPLE_PROGRAM, &any_base())
+    parse(EXAMPLE_PROGRAM)
         .map(|parsed| {
             parsed
                 .artifact
@@ -685,16 +691,6 @@ fn example_nodes() -> Vec<ExampleNode> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-/// Parse options that give a source without a `base` statement a base, for parsing examples alone.
-fn any_base() -> ParseOptions {
-    ParseOptions {
-        base: Some(saluki_metric_plan::ir::ArtifactBase {
-            program_hash: saluki_metric_plan::canonical::PlanHash::from_digest([0; 32]),
-            outputs: Default::default(),
-        }),
-    }
 }
 
 fn operators() -> Vec<OperatorEntry> {
@@ -750,19 +746,16 @@ fn operators() -> Vec<OperatorEntry> {
     entries
 }
 
-/// Wraps an example (statements, as they appear in a program's body) in a program with a base, for parsing alone.
+/// Wraps an example (statements, as they appear in a program's body) in a program, for parsing alone.
 pub(crate) fn example_wrapper(example: &str) -> String {
     let body = example.replace('\n', "\n  ");
-    format!(
-        "policy metrics {{\n  base \"sha256:{zeros}\"\n\n  {body}\n}}\n",
-        zeros = "0".repeat(64),
-    )
+    format!("policy {{\n  {body}\n}}\n")
 }
 
 /// Returns the input and output ports of the first node of operator `op` that an example describes, as the operator
 /// gives them for the example's parameters.
 pub(crate) fn example_ports(op: &str, example: &str) -> Option<(Vec<String>, Vec<String>)> {
-    let parsed = parse_with(&example_wrapper(example), &ParseOptions::default()).ok()?;
+    let parsed = parse(&example_wrapper(example)).ok()?;
     let node = parsed.artifact.nodes.iter().find(|node| node.op.as_str() == op)?;
     let configured = OperatorRegistry::native()
         .configure(node.op.as_str(), &node.params)

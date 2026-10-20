@@ -42,7 +42,7 @@ fn output_on(output: &str, host: &str, names: &[&str]) -> Value {
     let recipients = names.iter().map(|name| id_on(host, name)).collect::<Vec<_>>();
     json!({
         "id": output, "accepts": {"kinds": "all", "timestamps": "mixed"},
-        "fingerprint": format!("sha256:{}", "0".repeat(64)), "recipients": recipients,
+        "recipients": recipients,
         "binding": {"host": host, "selector": {"role": "main"}, "telemetry": output},
     })
 }
@@ -666,7 +666,6 @@ fn lease_keys_cover_the_binding_the_accepted_records_and_each_recipients_protoco
     assert_ne!(key(other_host, vec![native("a")]), base);
     let unbound = serde_json::from_value::<OutputDecl>(json!({
         "id": "dsd_client_telemetry", "accepts": {"kinds": "all", "timestamps": "mixed"},
-        "fingerprint": format!("sha256:{}", "0".repeat(64))
     }))
     .unwrap();
     assert_eq!(LeaseKey::of(&unbound, &Resources::default()), None);
@@ -677,7 +676,6 @@ fn an_output_without_a_binding_keeps_the_lease_it_was_given_and_no_host_runs_it(
     let mut table = ResourceTable::new();
     let telemetry = json!({
         "id": "dsd_client_telemetry", "accepts": {"kinds": "all", "timestamps": "mixed"},
-        "fingerprint": format!("sha256:{}", "0".repeat(64))
     });
     let first = install(&mut table, generation(1), &plan(vec![telemetry.clone()], vec![]));
     assert!(first.hosts.is_empty());

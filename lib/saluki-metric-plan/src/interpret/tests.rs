@@ -13,7 +13,6 @@ use stringtheory::MetaString;
 
 use super::{test_operators::test_registry, *};
 use crate::{
-    canonical::PlanHash,
     equivalence::{compare, OutputPoints},
     ir::{Plan, RecipientId},
     model::{Kind, PortType},
@@ -34,10 +33,6 @@ fn id(value: &str) -> NodeId {
 
 fn out(value: &str) -> OutputId {
     OutputId::new(value).unwrap()
-}
-
-fn fingerprint(output: &str) -> PlanHash {
-    PlanHash::of_bytes(output.as_bytes())
 }
 
 /// The outputs the test catalog declares, besides `o0` to `o127` for generated plans. Each has its own recipient.
@@ -63,7 +58,6 @@ fn test_catalog() -> MemoryCatalog {
             out(output),
             CatalogOutput {
                 accepts: PortType::ANY,
-                fingerprint: fingerprint(output),
                 recipients: vec![RecipientId::new(format!("out/{}", output)).unwrap()],
             },
         );
@@ -110,7 +104,7 @@ fn plan(nodes: Vec<Value>, edges: &[&str], outputs: &[&str]) -> Plan {
         .iter()
         .map(|output| {
             json!({"id": output, "accepts": {"kinds": "all", "timestamps": "mixed"},
-                   "fingerprint": fingerprint(output).to_string(), "recipients": [format!("out/{}", output)]})
+                   "recipients": [format!("out/{}", output)]})
         })
         .collect::<Vec<_>>();
     let plan = Plan::from_value(json!({"ir_version": 1, "nodes": nodes, "edges": edges, "outputs": outputs})).unwrap();
@@ -1825,7 +1819,7 @@ fn routing_plan(shape: &Shape) -> Plan {
         .iter()
         .map(|output| {
             json!({"id": output, "accepts": {"kinds": "all", "timestamps": "mixed"},
-                   "fingerprint": fingerprint(output).to_string(), "recipients": [format!("out/{}", output)]})
+                   "recipients": [format!("out/{}", output)]})
         })
         .collect::<Vec<_>>();
     Plan::from_value(json!({"ir_version": 1, "nodes": builder.nodes, "edges": builder.edges, "outputs": outputs}))

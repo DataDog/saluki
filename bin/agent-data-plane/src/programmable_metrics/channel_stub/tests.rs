@@ -41,7 +41,7 @@ fn config(payload: &str) -> Value {
 }
 
 fn answer(configs: Vec<Value>) -> Value {
-    json!({"protocol_version": 1, "products": {"policy": configs}})
+    json!({"protocol_version": PROTOCOL_VERSION, "products": {"policy": configs}})
 }
 
 fn snapshot(answer: Value) -> ArtifactSnapshot {
@@ -379,13 +379,13 @@ fn polls_are_written_as_the_stub_protocol_says() {
     assert_eq!(
         poll,
         json!({
-            "protocol_version": 1,
+            "protocol_version": PROTOCOL_VERSION,
             "client": {"id": "a1", "version": "1.8.0"},
             "products": ["policy"],
             "config_states": [],
             "status": {
                 "default_program_hash": null, "revision_high_water": null, "active_generation": null,
-                "active_plan_hash": null, "active_artifact": null, "stale_base": false, "stale_review": false,
+                "active_plan_hash": null, "active_artifact": null, "stale_review": false,
                 "degraded": null, "live_generations": 0
             }
         })
@@ -402,7 +402,7 @@ fn a_process_identity_is_random_and_names_the_version() {
 #[test]
 fn answers_are_read_as_complete_policy_snapshots() {
     let answered = json!({
-        "protocol_version": 1,
+        "protocol_version": PROTOCOL_VERSION,
         "products": {
             "policy": [{"id": "demo", "version": 7, "sha256": "00", "payload": "{}", "future": true}],
             // Another product's entries can have any shape, `resources` included: they are not read.
@@ -422,15 +422,15 @@ fn answers_are_read_as_complete_policy_snapshots() {
 
     // An empty list, or a missing product, revokes.
     assert!(snapshot(answer(Vec::new())).revokes());
-    assert!(snapshot(json!({"protocol_version": 1, "products": {}})).revokes());
-    assert!(snapshot(json!({"protocol_version": 1, "products": {"resources": []}})).revokes());
+    assert!(snapshot(json!({"protocol_version": PROTOCOL_VERSION, "products": {}})).revokes());
+    assert!(snapshot(json!({"protocol_version": PROTOCOL_VERSION, "products": {"resources": []}})).revokes());
 
     // An answer without products, such as an error object, is unreadable, which is a transport failure: it never
     // revokes.
     for unreadable in [
-        json!({"protocol_version": 1}),
-        json!({"protocol_version": 1, "error": "the store is busy"}),
-        json!({"protocol_version": 1, "products": null}),
+        json!({"protocol_version": PROTOCOL_VERSION}),
+        json!({"protocol_version": PROTOCOL_VERSION, "error": "the store is busy"}),
+        json!({"protocol_version": PROTOCOL_VERSION, "products": null}),
     ] {
         let read = serde_json::from_value::<PollResponse>(unreadable.clone());
         assert!(read.is_err(), "{} was read as {:?}", unreadable, read);
@@ -443,7 +443,8 @@ fn answers_are_read_as_complete_policy_snapshots() {
         json!({"policy": [{"id": "demo", "version": 7, "payload": "{}"}]}),
         json!({"policy": [{"id": "demo", "version": "7", "sha256": "00", "payload": "{}"}]}),
     ] {
-        let read = serde_json::from_value::<PollResponse>(json!({"protocol_version": 1, "products": products}));
+        let read =
+            serde_json::from_value::<PollResponse>(json!({"protocol_version": PROTOCOL_VERSION, "products": products}));
         let error = read.expect_err("the answer is unreadable").to_string();
         assert!(error.starts_with("product `policy`:"), "{}", error);
     }
@@ -530,7 +531,7 @@ async fn an_empty_or_missing_policy_product_revokes() {
     stub.answer(Answer::Json(installed));
     assert!(!worker.next_snapshot().await.revokes());
     stub.answer(Answer::Json(
-        json!({"protocol_version": 1, "products": {"resources": []}}),
+        json!({"protocol_version": PROTOCOL_VERSION, "products": {"resources": []}}),
     ));
     assert!(worker.next_snapshot().await.revokes());
     stub.polls(1).await;
@@ -558,19 +559,19 @@ async fn transport_failures_keep_the_current_snapshot_and_the_next_poll_retries(
         ),
         (
             "an answer without products",
-            Answer::Json(json!({"protocol_version": 1, "error": "the store is busy"})),
+            Answer::Json(json!({"protocol_version": PROTOCOL_VERSION, "error": "the store is busy"})),
         ),
         (
             "another protocol version",
-            Answer::Json(json!({"protocol_version": 2, "products": {}})),
+            Answer::Json(json!({"protocol_version": PROTOCOL_VERSION - 1, "products": {}})),
         ),
         (
             "a policy config that cannot be read",
-            Answer::Json(json!({"protocol_version": 1, "products": {"policy": [{"id": "demo"}]}})),
+            Answer::Json(json!({"protocol_version": PROTOCOL_VERSION, "products": {"policy": [{"id": "demo"}]}})),
         ),
         (
             "a policy member that is not a list",
-            Answer::Json(json!({"protocol_version": 1, "products": {"policy": null}})),
+            Answer::Json(json!({"protocol_version": PROTOCOL_VERSION, "products": {"policy": null}})),
         ),
     ];
     for (what, failure) in failures {

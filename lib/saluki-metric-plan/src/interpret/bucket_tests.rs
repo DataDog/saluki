@@ -30,7 +30,6 @@ use saluki_metric_kernels::aggregate::{AggregateCore, AggregateTelemetry};
 use serde_json::json;
 
 use crate::{
-    canonical::PlanHash,
     interpret::{Interpreter, Trace},
     ir::{OutputId, Plan, RecipientId},
     model::PortType,
@@ -66,7 +65,7 @@ fn plan() -> Plan {
         ],
         "edges": [{"from": "src.metrics", "to": "agg.in"}, {"from": "agg.out", "to": "out.in"}],
         "outputs": [{"id": "a", "accepts": {"kinds": "all", "timestamps": "mixed"},
-                     "fingerprint": PlanHash::of_bytes(b"a").to_string(), "recipients": ["out/a"]}],
+                     "recipients": ["out/a"]}],
     }))
     .unwrap()
 }
@@ -76,7 +75,6 @@ fn catalog() -> MemoryCatalog {
         OutputId::new("a").unwrap(),
         CatalogOutput {
             accepts: PortType::ANY,
-            fingerprint: PlanHash::of_bytes(b"a"),
             recipients: vec![RecipientId::new("out/a").unwrap()],
         },
     )

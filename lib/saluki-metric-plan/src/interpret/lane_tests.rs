@@ -441,7 +441,7 @@ fn fixture_x6_contexts_a_tag_projection_merges_are_one_series_at_any_lane_count(
             {"from": "agg.out", "to": "out.in"},
         ],
         "outputs": [{"id": "a", "accepts": {"kinds": "all", "timestamps": "mixed"},
-                     "fingerprint": super::transition_tests::fingerprint("a").to_string(), "recipients": ["out/a"]}],
+                     "recipients": ["out/a"]}],
     }))
     .unwrap();
     let report = Validator::new(&registry, &catalog).validate(&plan);
@@ -502,7 +502,7 @@ fn renamed_after_aggregation() -> (Plan, OperatorRegistry) {
             {"from": "rename.out", "to": "out.in"},
         ],
         "outputs": [{"id": "a", "accepts": {"kinds": "all", "timestamps": "mixed"},
-                     "fingerprint": super::transition_tests::fingerprint("a").to_string(), "recipients": ["out/a"]}],
+                     "recipients": ["out/a"]}],
     }))
     .unwrap();
     let report = Validator::new(&registry, &catalog()).validate(&plan);

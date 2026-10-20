@@ -1,9 +1,7 @@
 //! Tests of receipt and composition.
 //!
 //! Artifacts are edits of the default program's export, written by hand as changes to its JSON document. Expected
-//! correspondences, errors, and diffs are written by hand from the default-program fixtures, with [the two scopes they
-//! declared through stage 9](with_two_scopes), which cover part of the plan and end at exits; the one scope ADP declares
-//! now is tested in `install::unified_scope_tests`.
+//! plan IDs, errors, and diffs are written by hand from the default-program fixtures.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -13,90 +11,32 @@ use serde_json::{json, Value};
 use super::*;
 use crate::{
     canonical::ResolvedValues,
-    export::{export, ExportBundle, ExportForm},
+    export::{export, export_as, unresolved, ExportBundle, ExportForm},
     install::diff::{diff, NodeChange},
-    ir::{ArtifactEdge, ExitName, Plan, PlanProvenance},
-    testing::{
-        arb_predicate, default_program_catalog, predicate_json, two_scope_catalog, with_opaque_gateways,
-        with_two_scopes, DEFAULT_PROGRAM_JSON, NO_AGGREGATION_PIPELINE_OFF_JSON, TWO_SCOPES,
-    },
+    ir::Plan,
+    testing::{arb_predicate, catalog_for, predicate_json, DEFAULT_PROGRAM_JSON, NO_AGGREGATION_PIPELINE_OFF_JSON},
     validate::{BoundScope, CatalogBinding, Location, MemoryCatalog, Rule},
 };
-
-const ZERO_HASH: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
 
 /// A change made to an artifact document, for table-driven tests.
 type Mutation = fn(&mut Value);
 
-/// Returns a default-program fixture with [the two scopes it declared through stage 9](with_two_scopes), which these
-/// tests of composition use: a scope that covers part of the plan, with exits, and artifacts of two scopes.
-fn two_scopes(plan_json: &str) -> Plan {
-    Plan::from_value(with_two_scopes(serde_json::from_str(plan_json).unwrap())).unwrap()
-}
-
-/// The default-program fixtures, with two scopes: both configurations, each with its gateways as routing operators and
-/// as opaque hosts.
-///
-/// A default program whose scope holds a host component, such as stage 2's opaque gateways, cannot be replaced at all
-/// ([`a_scope_that_holds_a_host_component_cannot_be_replaced_even_unmodified`]), so none is listed.
-fn default_programs() -> Vec<(&'static str, Plan)> {
-    vec![
-        ("default program", two_scopes(DEFAULT_PROGRAM_JSON)),
-        (
-            "no-aggregation pipeline off",
-            two_scopes(NO_AGGREGATION_PIPELINE_OFF_JSON),
-        ),
+/// The default-program fixtures, with the host's catalog of each, carrying every binding's value.
+fn default_programs() -> Vec<(&'static str, Plan, MemoryCatalog)> {
+    [
+        ("default program", DEFAULT_PROGRAM_JSON),
+        ("no-aggregation pipeline off", NO_AGGREGATION_PIPELINE_OFF_JSON),
     ]
+    .into_iter()
+    .map(|(name, json)| {
+        let plan = Plan::from_json(json).unwrap();
+        let catalog = catalog_for(&plan);
+        (name, plan, catalog)
+    })
+    .collect()
 }
 
-/// Returns the host's catalog of a default program: the fixtures' catalog for its scopes ([`two_scope_catalog`] for a
-/// plan with [two scopes](with_two_scopes)), with every binding the program resolves carrying the value it resolves
-/// to, as a host's catalog carries the values lowering writes.
-pub(crate) fn catalog_for(plan: &Plan) -> MemoryCatalog {
-    fn collect(value: &Value, found: &mut BTreeMap<BindingName, Value>) {
-        match value {
-            Value::Object(members) => {
-                if let (Some(Value::String(name)), Some(resolved)) =
-                    (members.get(BINDING_MEMBER), members.get(RESOLVED_MEMBER))
-                {
-                    found.insert(name.parse().unwrap(), resolved.clone());
-                }
-                members.values().for_each(|member| collect(member, found));
-            }
-            Value::Array(values) => values.iter().for_each(|value| collect(value, found)),
-            _ => {}
-        }
-    }
-
-    let mut found = BTreeMap::new();
-    for node in &plan.nodes {
-        node.params.iter().for_each(|(_, value)| collect(value, &mut found));
-    }
-    let two = TWO_SCOPES
-        .iter()
-        .all(|scope| plan.scopes.contains_key(&scope.parse::<ScopeName>().unwrap()));
-    let mut catalog = if two {
-        two_scope_catalog()
-    } else {
-        default_program_catalog()
-    };
-    for (name, value) in found {
-        let declared = catalog
-            .binding(&name)
-            .expect("the catalog declares every binding")
-            .clone();
-        catalog = catalog.with_catalog_binding(
-            name,
-            CatalogBinding {
-                value: Some(value),
-                ..declared
-            },
-        );
-    }
-    catalog
-}
-
-/// A default program, the host's catalog for it, and the export of its `post_enrich` scope.
+/// A default program, the host's catalog for it, and its export.
 struct Fixture {
     plan: Plan,
     catalog: MemoryCatalog,
@@ -106,23 +46,17 @@ struct Fixture {
 impl Fixture {
     fn new(plan: Plan) -> Self {
         let catalog = catalog_for(&plan);
-        let export = export(&plan, &"post_enrich".parse().unwrap(), &catalog, &BTreeMap::new()).unwrap();
+        let export = export(&plan, &catalog, &BTreeMap::new()).unwrap();
         Self { plan, catalog, export }
     }
 
     fn default_program() -> Self {
-        Self::new(two_scopes(DEFAULT_PROGRAM_JSON))
+        Self::new(Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap())
     }
 
-    /// Returns `true` if `id` is a reserved node of the default program's scope.
-    fn is_scope_node(&self, id: &NodeId) -> bool {
-        id.is_reserved()
-            && self
-                .export
-                .artifact
-                .nodes
-                .iter()
-                .any(|node| node.id.as_str() == id.local().as_str())
+    /// Returns `true` if `id` is one of the default program's sources.
+    fn is_source(&self, id: &NodeId) -> bool {
+        self.plan.node(id).is_some_and(|node| node.op.as_str() == names::SOURCE)
     }
 
     /// Returns the export's artifact document.
@@ -217,6 +151,13 @@ fn push_node(document: &mut Value, node: Value) {
     document["nodes"].as_array_mut().unwrap().push(node);
 }
 
+/// Inserts nodes before the node `before`, in the artifact's order.
+fn insert_nodes_before(document: &mut Value, before: &str, inserted: Vec<Value>) {
+    let nodes = document["nodes"].as_array_mut().unwrap();
+    let at = nodes.iter().position(|node| node["id"] == before).unwrap();
+    nodes.splice(at..at, inserted);
+}
+
 fn push_edge(document: &mut Value, from: &str, to: &str) {
     document["edges"]
         .as_array_mut()
@@ -249,40 +190,38 @@ fn describe(change: &NodeChange) -> String {
 #[test]
 fn unmodified_exports_of_the_default_programs_compose_back_to_them() {
     let registry = OperatorRegistry::native();
-    for (name, plan) in default_programs() {
+    for (name, plan, _) in default_programs() {
         let fixture = Fixture::new(plan);
         let received = receive_artifact(fixture.artifact()).unwrap();
         let composed = compose(&fixture.plan, &received, &approval(7), &fixture.catalog, &registry).unwrap();
 
-        // The same nodes, edges, outputs, and scopes, in the same order: the same plan, with the same hash.
+        // The same nodes, edges, and outputs, in the same order: the same plan, with the same hash.
         let plan = &fixture.plan;
         assert_eq!(composed.plan.nodes, plan.nodes, "{}", name);
         assert_eq!(composed.plan.edges, plan.edges, "{}", name);
         assert_eq!(composed.plan.outputs, plan.outputs, "{}", name);
-        assert_eq!(composed.plan.scopes, plan.scopes, "{}", name);
         assert_eq!(
             composed.plan.hash(ResolvedValues::Include).unwrap(),
             plan.hash(ResolvedValues::Include).unwrap(),
             "{}",
             name
         );
-        // Only the plan's own provenance, which is not hashed, says that an artifact was composed, and which scope its
-        // program is.
+        // Only the plan's own provenance, which is not hashed, says that an artifact was composed.
         assert_eq!(
             composed.plan.provenance,
             Some(PlanProvenance {
                 config_change: None,
-                artifacts: vec![ComposedArtifact {
-                    scope: fixture.export.scope.clone(),
+                artifact: Some(ArtifactRevision {
                     revision: 7,
                     hash: received.hash
-                }],
+                }),
                 native_components: Default::default(),
             }),
             "{}",
             name
         );
-        assert!(!composed.stale_base && !composed.stale_review, "{}", name);
+        assert!(!composed.stale_review, "{}", name);
+        assert_eq!(composed.outcome, ComposeOutcome::Composed, "{}", name);
         // The same findings: the program's nodes are measured against the artifact limits too, and are within them.
         let native = Validator::new(&registry, &fixture.catalog).validate(plan);
         assert_eq!(composed.report.findings(), native.findings(), "{}", name);
@@ -296,59 +235,34 @@ fn unmodified_exports_of_the_default_programs_compose_back_to_them() {
             name
         );
 
-        // Every artifact node is the default program's node of the same ID, unmodified.
+        // Every artifact node takes the reserved ID of the default program's node of the same local ID.
+        assert_eq!(composed.ids.len(), fixture.export.artifact.nodes.len(), "{}", name);
         for artifact_node in &fixture.export.artifact.nodes {
-            let correspondence = composed.correspondence.get(&artifact_node.id).unwrap();
-            assert_eq!(correspondence.kind, CorrespondenceKind::Unmodified, "{}", name);
             assert_eq!(
-                correspondence.node.to_string(),
-                artifact_node.id.to_string(),
+                composed.ids[&artifact_node.id],
+                NodeId::reserved(artifact_node.id.to_local_id()),
                 "{}",
                 name
             );
         }
-        assert_eq!(
-            composed.correspondence.iter().count(),
-            fixture.export.artifact.nodes.len()
-        );
-        assert!(composed.correspondence.removed().is_empty(), "{}", name);
     }
 }
 
 /// What composing an accepted edit gives.
 struct Accepted {
-    /// Every artifact node that is not the default program's node unmodified: its ID, the plan node it became, and
-    /// how it relates to the default program.
-    changed: &'static [(&'static str, &'static str, CorrespondenceKind)],
-
-    /// The reserved nodes of the scope the artifact leaves out.
-    removed: &'static [&'static str],
+    /// Every artifact node placed in the policy namespace, and the plan node it became.
+    policy: &'static [(&'static str, &'static str)],
 
     /// Every node the diff against the default program does not list as unchanged, with how it lists it.
     diff: &'static [(&'static str, &'static str)],
-
-    /// Whether the base is stale.
-    stale_base: bool,
 }
 
 #[test]
-fn edits_of_the_export_compose_with_their_correspondence() {
-    use CorrespondenceKind::{Added, Modified};
-
+fn edits_of_the_export_compose_with_their_plan_ids() {
     let kinds_list = json!(["counter", "rate", "gauge", "set"]);
     let kinds_blob = PlanHash::of_value(&kinds_list).unwrap();
-
     let cases: Vec<(&str, Mutation, Accepted)> = vec![
-        (
-            "unmodified",
-            |_| {},
-            Accepted {
-                changed: &[],
-                removed: &[],
-                diff: &[],
-                stale_base: false,
-            },
-        ),
+        ("unmodified", |_| {}, Accepted { policy: &[], diff: &[] }),
         (
             "a removed branch",
             |document| {
@@ -364,12 +278,7 @@ fn edits_of_the_export_compose_with_their_correspondence() {
                 edge_to(document, "af_metrics_gateway.in")["from"] = json!("metrics_fanout.3");
             },
             Accepted {
-                changed: &[("metrics_fanout", "metrics_fanout", Modified)],
-                removed: &[
-                    "mrf_metrics_gateway",
-                    "mrf_metrics_gateway_true",
-                    "mrf_metrics_gateway_false",
-                ],
+                policy: &[],
                 diff: &[
                     ("metrics_fanout", "changed params edges"),
                     ("af_metrics_gateway", "changed edges"),
@@ -377,7 +286,6 @@ fn edits_of_the_export_compose_with_their_correspondence() {
                     ("mrf_metrics_gateway_true", "removed"),
                     ("mrf_metrics_gateway_false", "removed"),
                 ],
-                stale_base: false,
             },
         ),
         (
@@ -388,15 +296,10 @@ fn edits_of_the_export_compose_with_their_correspondence() {
                 rename(document, "metrics_routing_filter_0_false", "team_b_false");
             },
             Accepted {
-                changed: &[
-                    ("team_b", "policy/team_b", Added),
-                    ("team_b_true", "policy/team_b_true", Added),
-                    ("team_b_false", "policy/team_b_false", Added),
-                ],
-                removed: &[
-                    "metrics_routing_filter_0",
-                    "metrics_routing_filter_0_true",
-                    "metrics_routing_filter_0_false",
+                policy: &[
+                    ("team_b", "policy/team_b"),
+                    ("team_b_true", "policy/team_b_true"),
+                    ("team_b_false", "policy/team_b_false"),
                 ],
                 diff: &[
                     ("metrics_fanout", "changed edges"),
@@ -407,40 +310,38 @@ fn edits_of_the_export_compose_with_their_correspondence() {
                     ("metrics_routing_filter_0_true", "removed"),
                     ("metrics_routing_filter_0_false", "removed"),
                 ],
-                stale_base: false,
             },
         ),
         (
             "a new node",
             |document| {
-                let nodes = document["nodes"].as_array_mut().unwrap();
-                nodes.insert(
-                    0,
-                    json!({"id": "drop_debug", "op": "split",
-                           "params": {"predicate": {"name": {"prefix": "demo.debug."}}}}),
+                insert_nodes_before(
+                    document,
+                    "metrics_fanout",
+                    vec![
+                        json!({"id": "drop_debug", "op": "split",
+                               "params": {"predicate": {"name": {"prefix": "demo.debug."}}}}),
+                        json!({"id": "drop_debug_true", "op": "drop"}),
+                    ],
                 );
-                nodes.insert(1, json!({"id": "drop_debug_true", "op": "drop"}));
                 edge_to(document, "metrics_fanout.in")["from"] = json!("drop_debug.false");
-                push_edge(document, "input.metrics", "drop_debug.in");
+                push_edge(document, "metrics.out", "drop_debug.in");
                 push_edge(document, "drop_debug.true", "drop_debug_true.in");
             },
             Accepted {
-                // Every drop of the scope now drops what is left after the new filter, but does what it did: only
-                // the new nodes change. The filter composes in normal form, `split(not p)` keeping its `true` port,
-                // so its drop, named for its `true` port, is renamed for its `false` port.
-                changed: &[
-                    ("drop_debug", "policy/drop_debug", Added),
-                    ("drop_debug_false", "policy/drop_debug_false", Added),
+                // Every drop after the new filter now drops what is left after it, but does what it did: only the new
+                // nodes change. The filter composes in normal form, `split(not p)` keeping its `true` port, so its
+                // drop, named for its `true` port, is renamed for its `false` port.
+                policy: &[
+                    ("drop_debug", "policy/drop_debug"),
+                    ("drop_debug_false", "policy/drop_debug_false"),
                 ],
-                removed: &[],
-                // The node feeding the scope's input is outside the scope, but the edge at its output port changes.
                 diff: &[
                     ("metrics", "changed edges"),
                     ("policy/drop_debug", "added"),
                     ("policy/drop_debug_false", "added"),
                     ("metrics_fanout", "changed edges"),
                 ],
-                stale_base: false,
             },
         ),
         (
@@ -454,8 +355,7 @@ fn edits_of_the_export_compose_with_their_correspondence() {
                 push_edge(document, "metrics_routing_filter_0.false", "discard.in");
             },
             Accepted {
-                changed: &[("discard", "policy/discard", Added)],
-                removed: &["metrics_fanout_0"],
+                policy: &[("discard", "policy/discard")],
                 diff: &[
                     ("metrics_fanout", "changed edges"),
                     ("metrics_routing_filter_0", "changed edges"),
@@ -463,7 +363,6 @@ fn edits_of_the_export_compose_with_their_correspondence() {
                     ("policy/discard", "added"),
                     ("metrics_fanout_0", "removed"),
                 ],
-                stale_base: false,
             },
         ),
         (
@@ -474,15 +373,13 @@ fn edits_of_the_export_compose_with_their_correspondence() {
             },
             Accepted {
                 // Both do what they did, whatever feeds them: only edges change.
-                changed: &[],
-                removed: &[],
+                policy: &[],
                 diff: &[
                     ("metrics_fanout", "changed edges"),
                     ("metrics_fanout_0", "changed edges"),
                     ("metrics_routing_filter_0", "changed edges"),
                     ("metrics_routing_filter_0_false", "changed edges"),
                 ],
-                stale_base: false,
             },
         ),
         (
@@ -491,10 +388,8 @@ fn edits_of_the_export_compose_with_their_correspondence() {
                 node(document, "af_metrics_gateway")["params"]["predicate"]["all"][0] = json!({"kind_in": ["counter"]});
             },
             Accepted {
-                changed: &[("af_metrics_gateway", "af_metrics_gateway", Modified)],
-                removed: &[],
+                policy: &[],
                 diff: &[("af_metrics_gateway", "changed params")],
-                stale_base: false,
             },
         ),
         (
@@ -504,10 +399,8 @@ fn edits_of_the_export_compose_with_their_correspondence() {
             },
             // A literal equal to the binding's value is another parameter: it never follows the signal.
             Accepted {
-                changed: &[("mrf_metrics_gateway", "mrf_metrics_gateway", Modified)],
-                removed: &[],
+                policy: &[],
                 diff: &[("mrf_metrics_gateway", "changed params")],
-                stale_base: false,
             },
         ),
         (
@@ -516,10 +409,8 @@ fn edits_of_the_export_compose_with_their_correspondence() {
                 node(document, "mrf_metrics_gateway")["params"]["predicate"]["all"][1] = json!({"flag": false});
             },
             Accepted {
-                changed: &[("mrf_metrics_gateway", "mrf_metrics_gateway", Modified)],
-                removed: &[],
+                policy: &[],
                 diff: &[("mrf_metrics_gateway", "changed params")],
-                stale_base: false,
             },
         ),
         (
@@ -528,22 +419,7 @@ fn edits_of_the_export_compose_with_their_correspondence() {
                 node(document, "af_metrics_gateway")["params"]["predicate"]["all"][0] =
                     json!({"kind_in": ["set", "gauge", "rate", "counter"]});
             },
-            Accepted {
-                changed: &[],
-                removed: &[],
-                diff: &[],
-                stale_base: false,
-            },
-        ),
-        (
-            "a stale base",
-            |document| document["base"]["program_hash"] = json!(ZERO_HASH),
-            Accepted {
-                changed: &[],
-                removed: &[],
-                diff: &[],
-                stale_base: true,
-            },
+            Accepted { policy: &[], diff: &[] },
         ),
     ];
 
@@ -563,78 +439,41 @@ fn edits_of_the_export_compose_with_their_correspondence() {
     node(&mut with_blob, "af_metrics_gateway")["params"]["predicate"]["all"][0] =
         json!({"kind_in": {"blob": kinds_blob.to_string()}});
     with_blob["blobs"] = json!({kinds_blob.to_string(): kinds_list});
-    all_cases.push((
-        "a blob reference",
-        with_blob,
-        Accepted {
-            changed: &[],
-            removed: &[],
-            diff: &[],
-            stale_base: false,
-        },
-    ));
+    all_cases.push(("a blob reference", with_blob, Accepted { policy: &[], diff: &[] }));
 
     for (what, document, expected) in all_cases {
         let received = receive_artifact(document).unwrap_or_else(|e| panic!("{}: {}", what, e));
         let composed = compose(&fixture.plan, &received, &approval(3), &fixture.catalog, &registry)
             .unwrap_or_else(|e| panic!("{}: {}", what, e));
         assert!(composed.report.is_valid(), "{}:\n{}", what, composed.report);
-        assert_eq!(composed.stale_base, expected.stale_base, "{}", what);
         assert!(!composed.stale_review, "{}", what);
 
-        let revision = ComposedArtifact {
-            scope: fixture.export.scope.clone(),
-            revision: 3,
-            hash: received.hash,
-        };
-        let changed = composed
-            .correspondence
+        // Every artifact node keeps the reserved ID of the default program's node with its local ID, if there is one;
+        // the others are placed in the policy namespace.
+        let policy = composed
+            .ids
             .iter()
-            .filter(|(_, correspondence)| correspondence.kind != CorrespondenceKind::Unmodified)
-            .map(|(id, correspondence)| {
-                (
-                    id.to_string(),
-                    correspondence.node.to_string(),
-                    format!("{:?}", correspondence.kind),
-                )
-            })
+            .filter(|(_, id)| !id.is_reserved())
+            .map(|(local, id)| (local.to_string(), id.to_string()))
             .collect::<Vec<_>>();
-        let mut expected_changed = expected
-            .changed
+        let mut expected_policy = expected
+            .policy
             .iter()
-            .map(|(id, node, kind)| (id.to_string(), node.to_string(), format!("{:?}", kind)))
+            .map(|(local, id)| (local.to_string(), id.to_string()))
             .collect::<Vec<_>>();
-        expected_changed.sort();
-        assert_eq!(changed, expected_changed, "{}", what);
-        let removed = composed
-            .correspondence
-            .removed()
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>();
-        assert_eq!(removed, expected.removed, "{}", what);
-
-        // Unmodified nodes do what the default program's do, the artifact's literals where it wrote them; the plan
-        // lists the artifact and its scope.
-        for (_, correspondence) in composed.correspondence.iter() {
-            let node = composed.plan.node(&correspondence.node).unwrap();
-            if correspondence.kind == CorrespondenceKind::Unmodified {
-                let default = fixture.plan.node(&correspondence.node).unwrap();
-                assert_eq!(node.op, default.op, "{}", what);
-                // As their operator decodes them, so that a set written in another order is the same set.
-                let decoded = |node: &Node| {
-                    let params = crate::export::operation_params(&node.op, &node.params);
-                    registry
-                        .configure(node.op.as_str(), &params)
-                        .map(|configured| configured.params().encode())
-                        .unwrap_or(params)
-                };
-                assert_eq!(decoded(node), decoded(default), "{}", what);
+        expected_policy.sort();
+        assert_eq!(policy, expected_policy, "{}", what);
+        for (local, id) in &composed.ids {
+            if id.is_reserved() {
+                assert_eq!(*id, NodeId::reserved(local.to_local_id()), "{}", what);
             }
         }
         assert_eq!(
-            composed.plan.provenance.as_ref().unwrap().artifacts,
-            [revision],
+            composed.plan.provenance.as_ref().unwrap().artifact,
+            Some(ArtifactRevision {
+                revision: 3,
+                hash: received.hash,
+            }),
             "{}",
             what
         );
@@ -650,123 +489,6 @@ fn edits_of_the_export_compose_with_their_correspondence() {
             .map(|(id, change)| (id.to_string(), change.to_string()))
             .collect::<Vec<_>>();
         assert_eq!(listed, expected_diff, "{}", what);
-    }
-}
-
-#[test]
-fn a_scope_that_holds_a_host_component_cannot_be_replaced_even_unmodified() {
-    const GATEWAYS: [&str; 4] = [
-        "metrics_routing_filter_0",
-        "metrics_routing_filter_1",
-        "mrf_metrics_gateway",
-        "af_metrics_gateway",
-    ];
-    for json in [DEFAULT_PROGRAM_JSON, NO_AGGREGATION_PIPELINE_OFF_JSON] {
-        let fixture = Fixture::new(Plan::from_value(with_two_scopes(with_opaque_gateways(json))).unwrap());
-        // Every node of the scope is the program's, kept or not, and a program cannot hold a host component, which
-        // only native configuration places: the unmodified export is refused at each gateway.
-        let composed = fixture.compose(fixture.artifact(), &approval(1)).unwrap();
-        let trusted_host_errors = composed
-            .report
-            .errors()
-            .filter(|finding| finding.rule == Rule::TrustedHost)
-            .map(|finding| match &finding.location {
-                crate::validate::Location::Node { id, .. } => id.to_string(),
-                other => panic!("a host component's finding is at its node, not {:?}", other),
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(trusted_host_errors, GATEWAYS);
-        // The default program itself holds them: native configuration placed them.
-        let native = Validator::new(&OperatorRegistry::native(), &fixture.catalog).validate(&fixture.plan);
-        assert!(
-            native.errors().all(|finding| finding.rule != Rule::TrustedHost),
-            "{}",
-            native
-        );
-    }
-}
-
-#[test]
-fn artifact_nodes_take_the_place_of_the_scope_in_the_default_programs_order() {
-    let fixture = Fixture::default_program();
-    let mut document = fixture.artifact();
-    let nodes = document["nodes"].as_array_mut().unwrap();
-    let split =
-        json!({"id": "drop_debug", "op": "split", "params": {"predicate": {"name": {"prefix": "demo.debug."}}}});
-    nodes.insert(0, split);
-    nodes.insert(1, json!({"id": "drop_debug_true", "op": "drop"}));
-    // The first edge now leaves the new split, and the two new edges are the artifact's last.
-    edge_to(&mut document, "metrics_fanout.in")["from"] = json!("drop_debug.false");
-    push_edge(&mut document, "input.metrics", "drop_debug.in");
-    push_edge(&mut document, "drop_debug.true", "drop_debug_true.in");
-    let composed = fixture.compose(document, &approval(1)).unwrap();
-
-    // The scope is the end of the default program, so the artifact's nodes follow everything before it, in the
-    // artifact's order, and so do its edges, in normal form: the filter keeps its `true` port, and its drop is named
-    // for its `false` port.
-    let ids = composed
-        .plan
-        .nodes
-        .iter()
-        .map(|node| node.id.to_string())
-        .collect::<Vec<_>>();
-    let before = ids.iter().position(|id| id == "policy/drop_debug").unwrap();
-    assert_eq!(ids[before - 1], "metrics");
-    assert_eq!(
-        ids[before..before + 4],
-        [
-            "policy/drop_debug",
-            "policy/drop_debug_false",
-            "metrics_fanout",
-            "metrics_fanout_0"
-        ]
-    );
-    assert_eq!(ids.len(), fixture.plan.nodes.len() + 2);
-    let edges = composed
-        .plan
-        .edges
-        .iter()
-        .map(|edge| format!("{} -> {}", edge.from, edge.to))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        edges[edges.len() - 3..],
-        [
-            "af_metrics_gateway.false -> af_metrics_gateway_false.in",
-            "metrics.out -> policy/drop_debug.in",
-            "policy/drop_debug.false -> policy/drop_debug_false.in",
-        ]
-    );
-    let first = edges
-        .iter()
-        .position(|edge| edge == "policy/drop_debug.true -> metrics_fanout.in")
-        .unwrap();
-    assert_eq!(edges[first - 1], "metrics_host_enrichment.out -> metrics.in");
-    assert_eq!(edges.len() - first, 16);
-    assert_eq!(edges.len(), fixture.plan.edges.len() + 2);
-}
-
-#[test]
-fn splicing_fills_the_regions_places_in_order_and_puts_the_rest_after_the_last() {
-    let region = |item: &&str| item.starts_with('r');
-    // (default, replacement, spliced)
-    let cases: &[(&[&str], &[&str], &[&str])] = &[
-        (&["a", "r1", "r2", "b"], &["r1", "r2"], &["a", "r1", "r2", "b"]),
-        (
-            &["a", "r1", "b", "r2", "c"],
-            &["x", "y", "z"],
-            &["a", "x", "b", "y", "z", "c"],
-        ),
-        (&["a", "r1", "b", "r2"], &["x"], &["a", "x", "b"]),
-        (&["a", "r1", "r2"], &[], &["a"]),
-        (&["a", "b"], &["x", "y"], &["a", "b", "x", "y"]),
-    ];
-    for (default, replacement, expected) in cases {
-        assert_eq!(
-            splice(default, region, replacement.to_vec()),
-            *expected,
-            "{:?}",
-            default
-        );
     }
 }
 
@@ -797,30 +519,12 @@ fn edits_that_cannot_be_composed_are_refused_with_the_reason() {
     let fixture = Fixture::default_program();
     let id = |id: &str| id.parse::<ArtifactNodeId>().unwrap();
     let output = |id: &str| id.parse::<OutputId>().unwrap();
-    let post_enrich = "post_enrich".parse::<ScopeName>().unwrap();
+    let source = |name: &str| name.parse::<InputName>().unwrap();
 
     // (what, mutation, expected error)
     let cases: Vec<(&str, Mutation, ComposeError)> = vec![
         (
-            "an unknown output",
-            |document| {
-                node(document, "metrics_fanout_0")["params"]["output"] = json!("nowhere");
-                document["base"]["outputs"]["nowhere"] = json!(ZERO_HASH);
-            },
-            ComposeError::PendingOutput {
-                output: output("nowhere"),
-            },
-        ),
-        (
-            "an output the base does not record",
-            |document| node(document, "metrics_fanout_0")["params"]["output"] = json!("dsd_client_telemetry"),
-            ComposeError::UnrecordedOutput {
-                node: id("metrics_fanout_0"),
-                output: output("dsd_client_telemetry"),
-            },
-        ),
-        (
-            "an output neither the base records nor the host declares",
+            "an output the host does not declare",
             |document| node(document, "metrics_fanout_0")["params"]["output"] = json!("metrics_routing_encode_99"),
             ComposeError::UndeclaredOutput {
                 node: id("metrics_fanout_0"),
@@ -838,41 +542,28 @@ fn edits_that_cannot_be_composed_are_refused_with_the_reason() {
             },
         ),
         (
-            "a fingerprint mismatch",
-            |document| document["base"]["outputs"]["dd_metrics_encode"] = json!(ZERO_HASH),
-            ComposeError::ReboundOutput {
-                output: output("dd_metrics_encode"),
-                renumbered: None,
+            "a source's ID",
+            |document| rename(document, "metrics_fanout_0", "dsd_in"),
+            ComposeError::ReservedSource {
+                node: id("dsd_in"),
+                reserved: "dsd_in".parse().unwrap(),
             },
         ),
         (
-            "a reserved ID outside the scope",
-            |document| rename(document, "metrics_fanout_0", "dsd_agg"),
-            ComposeError::ReservedOutsideScope {
-                node: id("dsd_agg"),
-                reserved: "dsd_agg".parse().unwrap(),
-                scope: post_enrich.clone(),
+            "an edge from a source the host does not have",
+            |document| edge_to(document, "metrics_in.1")["from"] = json!("input.traces"),
+            ComposeError::UnknownSource {
+                name: source("traces"),
+                known: ["checks", "dogstatsd", "liveness", "otlp", "trace_sampler"]
+                    .map(source)
+                    .to_vec(),
             },
         ),
         (
-            "an unknown scope",
-            |document| document["scope"] = json!("pre_aggregation"),
-            ComposeError::UnknownScope {
-                scope: "pre_aggregation".parse().unwrap(),
-            },
-        ),
-        (
-            "an edge from an undeclared input",
-            |document| edge_to(document, "metrics_fanout.in")["from"] = json!("input.traces"),
+            "an edge into a source",
+            |document| push_edge(document, "metrics_fanout_0.in", "input.dogstatsd"),
             ComposeError::Malformed {
-                message: "edge 0 leaves `input.traces`, but the scope has no input `traces`".to_string(),
-            },
-        ),
-        (
-            "an edge into an input",
-            |document| push_edge(document, "metrics_fanout_0.in", "input.metrics"),
-            ComposeError::Malformed {
-                message: "edge 14 enters `input.metrics`, which is a scope input; edges leave a scope's inputs"
+                message: "edge 34 enters `input.dogstatsd`, which is a source; edges leave the host's sources"
                     .to_string(),
             },
         ),
@@ -880,7 +571,7 @@ fn edits_that_cannot_be_composed_are_refused_with_the_reason() {
             "an edge to an unknown node",
             |document| edge_to(document, "metrics_fanout_0.in")["to"] = json!("ghost.in"),
             ComposeError::Malformed {
-                message: "edge 1 enters `ghost.in`, but the artifact has no node `ghost`".to_string(),
+                message: "edge 21 enters `ghost.in`, but the artifact has no node `ghost`".to_string(),
             },
         ),
         (
@@ -903,28 +594,51 @@ fn edits_that_cannot_be_composed_are_refused_with_the_reason() {
 }
 
 #[test]
+fn an_input_no_source_binds_is_refused_naming_the_sources() {
+    let fixture = Fixture::default_program();
+    let mut document = fixture.artifact();
+    edge_to(&mut document, "metrics_in.1")["from"] = json!("input.traces");
+    let Err(Refused::Compose(error)) = fixture.compose(document, &approval(1)) else {
+        panic!("an input no source binds composed");
+    };
+    assert_eq!(
+        error.to_string(),
+        "The artifact reads `input.traces`, and the host has no source `traces`. Read one of its sources: \
+         `input.checks`, `input.dogstatsd`, `input.liveness`, `input.otlp`, `input.trace_sampler`."
+    );
+
+    // A host without sources says so.
+    let error = ComposeError::UnknownSource {
+        name: "traces".parse().unwrap(),
+        known: Vec::new(),
+    };
+    assert_eq!(
+        error.to_string(),
+        "The artifact reads `input.traces`, and the host has no source `traces`. The host has no sources."
+    );
+}
+
+#[test]
 fn a_state_owner_composes_with_the_artifacts_provenance_whatever_its_parameters() {
     // A state owner is no composition error: whether the frame can run it where the artifact puts it is placement's to
-    // decide, and installing a change to one is a cut. So aggregation in the policy scope composes, with or without
-    // parameters its operator accepts, for validation and placement to judge.
+    // decide, and installing a change to one is a cut. So a second aggregation composes, with or without parameters
+    // its operator accepts, for validation and placement to judge.
     let fixture = Fixture::default_program();
-    let plan = two_scopes(DEFAULT_PROGRAM_JSON);
-    let params = unresolved(&plan.node(&"dsd_agg".parse().unwrap()).unwrap().params);
+    let params = unresolved(&fixture.plan.node(&"dsd_agg".parse().unwrap()).unwrap().params);
     for params in [json!(params), json!({})] {
         let mut document = fixture.artifact();
         push_node(&mut document, json!({"id": "agg", "op": "aggregate", "params": params}));
         edge_to(&mut document, "metrics_fanout.in")["from"] = json!("agg.out");
-        push_edge(&mut document, "input.metrics", "agg.in");
+        push_edge(&mut document, "metrics.out", "agg.in");
         let composed = fixture.compose(document, &approval(1)).unwrap();
-        let correspondence = composed.correspondence.get(&"agg".parse().unwrap()).unwrap();
-        assert_eq!(correspondence.node.to_string(), "policy/agg");
-        assert_eq!(correspondence.kind, CorrespondenceKind::Added);
-        assert!(composed.plan.node(&correspondence.node).is_some());
+        let id = &composed.ids[&"agg".parse::<ArtifactNodeId>().unwrap()];
+        assert_eq!(id.to_string(), "policy/agg");
+        assert!(composed.plan.node(id).is_some());
     }
 }
 
 #[test]
-fn errors_about_outputs_and_state_say_what_the_author_can_do() {
+fn errors_about_outputs_and_sources_say_what_the_author_can_do() {
     let id = |id: &str| id.parse::<ArtifactNodeId>().unwrap();
     let output = |id: &str| id.parse::<OutputId>().unwrap();
     // (error, its message)
@@ -948,12 +662,11 @@ fn errors_about_outputs_and_state_say_what_the_author_can_do() {
              outputs.",
         ),
         (
-            ComposeError::UnrecordedOutput {
-                node: id("route"),
-                output: output("main"),
+            ComposeError::ReservedSource {
+                node: id("dsd_in"),
+                reserved: "dsd_in".parse().unwrap(),
             },
-            "Artifact node `route` emits to output `main`, which the artifact's base does not record. Add the \
-             output's fingerprint from the export to `base.outputs`.",
+            "Artifact node `dsd_in` has the ID of source `dsd_in`, which the host places. Rename the node.",
         ),
     ];
     for (error, message) in cases {
@@ -976,22 +689,22 @@ fn a_binding_the_host_declares_without_a_value_cannot_be_composed() {
         },
     );
 
-    // Kept unmodified, the node is the default program's, with its resolved value.
-    assert!(fixture.compose(fixture.artifact(), &approval(1)).is_ok());
-
-    // Modified, its bindings resolve from the catalog, which has no value for one.
-    let mut document = fixture.artifact();
-    node(&mut document, "mrf_metrics_gateway")["params"]["predicate"]["all"][0] = json!({"flag": true});
-    match fixture.compose(document, &approval(1)) {
-        Err(Refused::Compose(error)) => assert_eq!(
-            error,
-            ComposeError::UnresolvedBinding {
-                node: "mrf_metrics_gateway".parse().unwrap(),
-                binding: name,
-            }
-        ),
-        Err(Refused::Receipt(error)) => panic!("refused on receipt: {}", error),
-        Ok(composed) => panic!("expected an unresolved binding, got:\n{}", composed.report),
+    // Every node of the program resolves its bindings from the catalog, kept as the default program has it or not, and
+    // the catalog has no value for one.
+    let mut modified = fixture.artifact();
+    node(&mut modified, "mrf_metrics_gateway")["params"]["predicate"]["all"][0] = json!({"flag": true});
+    for document in [fixture.artifact(), modified] {
+        match fixture.compose(document, &approval(1)) {
+            Err(Refused::Compose(error)) => assert_eq!(
+                error,
+                ComposeError::UnresolvedBinding {
+                    node: "mrf_metrics_gateway".parse().unwrap(),
+                    binding: name.clone(),
+                }
+            ),
+            Err(Refused::Receipt(error)) => panic!("refused on receipt: {}", error),
+            Ok(composed) => panic!("expected an unresolved binding, got:\n{}", composed.report),
+        }
     }
 }
 
@@ -1056,18 +769,24 @@ fn composed_plans_that_break_a_validation_rule_are_composed_with_the_finding() {
 #[test]
 fn an_artifact_whose_nodes_declare_more_memory_than_the_limit_is_invalid() {
     let fixture = Fixture::default_program();
-    // (what, the mapper's interner bytes, the memory the error says the artifact declares, if it is invalid)
+    // The program's DogStatsD mapper, kept from the default program, declares this much of its memory.
+    const KEPT: u64 = 6_547_112;
+    // (what, the added mapper's interner bytes, the memory the error says the artifact declares, if it is invalid)
     let cases: [(&str, u64, Option<u64>); 4] = [
         ("the native default interner", 64 * 1024, None),
-        ("an interner at the limit", 64 * 1024 * 1024, None),
+        (
+            "an interner that brings the program to the limit",
+            64 * 1024 * 1024 - KEPT,
+            None,
+        ),
         (
             "an interner of a pebibyte",
             1_125_899_906_842_624,
-            Some(1_125_899_906_842_624),
+            Some(1_125_899_906_842_624 + KEPT),
         ),
         (
-            "an interner just over the limit",
-            64 * 1024 * 1024 + 1,
+            "an interner that brings the program just over the limit",
+            64 * 1024 * 1024 - KEPT + 1,
             Some(67_108_865),
         ),
     ];
@@ -1091,7 +810,6 @@ fn an_artifact_whose_nodes_declare_more_memory_than_the_limit_is_invalid() {
             .filter(|finding| finding.rule == Rule::ArtifactMemory)
             .map(|finding| (finding.location.clone(), finding.message.clone()))
             .collect::<Vec<_>>();
-        // The mapper is the artifact's only node that declares memory, so it declares all of it.
         let expected = expected
             .map(|bytes| {
                 (
@@ -1102,7 +820,7 @@ fn an_artifact_whose_nodes_declare_more_memory_than_the_limit_is_invalid() {
                     format!(
                         "the nodes of artifact revision 1 ({}) declare {} bytes of memory, more than the limit of \
                          67108864, and this node declares {} of them; reduce its cache and interner sizes",
-                        received.hash, bytes, bytes
+                        received.hash, bytes, interner
                     ),
                 )
             })
@@ -1132,13 +850,14 @@ fn stale_reviews_are_flagged_when_approval_was_against_another_active_plan() {
         };
         let composed = fixture.compose(fixture.artifact(), &approval).unwrap();
         assert_eq!(composed.stale_review, stale, "{:?}", approval);
-        assert!(!composed.stale_base);
     }
 }
 
 #[test]
 fn artifacts_beyond_the_limits_or_carrying_resolved_values_are_refused_on_receipt() {
     let fixture = Fixture::default_program();
+    let exported = fixture.export.artifact.nodes.len();
+    let exported_leaves = artifact_predicate_leaves(&fixture.export.artifact, &OperatorRegistry::native()) as usize;
     let consts = |count: usize| json!({"any": vec![json!({"const": true}); count]});
     // (what, document, check)
     type Check = fn(&ReceiptError) -> bool;
@@ -1159,19 +878,17 @@ fn artifacts_beyond_the_limits_or_carrying_resolved_values_are_refused_on_receip
     ));
 
     let mut many = fixture.artifact();
-    for i in 0..243 {
+    for i in 0..257 - exported {
         push_node(&mut many, json!({"id": format!("extra_{}", i), "op": "drop"}));
     }
     cases.push(("too many nodes", many, |error| {
         matches!(error, ReceiptError::TooManyNodes { nodes: 257, limit: 256 })
     }));
 
-    // The export's predicates have eight leaves: two in the first routing filter, one in the second, whose names are
-    // empty, two in the multi-region gateway, whose mirroring list is empty, and three in the autoscaling one.
     let mut leaves = fixture.artifact();
     push_node(
         &mut leaves,
-        json!({"id": "wide", "op": "split", "params": {"predicate": consts(1017)}}),
+        json!({"id": "wide", "op": "split", "params": {"predicate": consts(1025 - exported_leaves)}}),
     );
     cases.push(("too many predicate leaves", leaves, |error| {
         matches!(
@@ -1185,7 +902,7 @@ fn artifacts_beyond_the_limits_or_carrying_resolved_values_are_refused_on_receip
 
     // Leaves count with blob references replaced by their content.
     let mut blob_leaves = fixture.artifact();
-    let predicate = consts(1017);
+    let predicate = consts(1025 - exported_leaves);
     let predicate_hash = PlanHash::of_value(&predicate).unwrap();
     push_node(
         &mut blob_leaves,
@@ -1294,12 +1011,12 @@ fn artifacts_beyond_the_limits_or_carrying_resolved_values_are_refused_on_receip
 
     // At the limits, an artifact is received.
     let mut at_limits = fixture.artifact();
-    for i in 0..240 {
+    for i in 0..255 - exported - 1 {
         push_node(&mut at_limits, json!({"id": format!("extra_{}", i), "op": "drop"}));
     }
     push_node(
         &mut at_limits,
-        json!({"id": "wide", "op": "split", "params": {"predicate": consts(1016)}}),
+        json!({"id": "wide", "op": "split", "params": {"predicate": consts(1024 - exported_leaves)}}),
     );
     let received = receive_artifact(at_limits).unwrap();
     assert_eq!(received.artifact.nodes.len(), 255);
@@ -1324,7 +1041,8 @@ enum Tree {
     Kept(usize),
 }
 
-/// The outputs a generated tree delivers to: every output of the scope that accepts every kind.
+/// The outputs a generated tree delivers to: every output after the default program's enrichment that accepts every
+/// kind.
 const OUTPUTS: [&str; 4] = [
     "dd_metrics_encode",
     "metrics_routing_encode_0",
@@ -1338,6 +1056,23 @@ const GATEWAYS: [(&str, usize); 3] = [
     ("metrics_routing_filter_1", 2),
     ("mrf_metrics_gateway", 3),
 ];
+
+/// The node of the default program's export whose output a generated tree reads, and the nodes after it, which the
+/// tree takes the place of.
+const ENRICHED: &str = "metrics";
+
+/// Returns the default program's nodes after its enrichment ([`ENRICHED`]), which a generated tree takes the place of.
+fn after_enrichment(export: &PolicyArtifact) -> Vec<String> {
+    let index = export
+        .nodes
+        .iter()
+        .position(|node| node.id.as_str() == ENRICHED)
+        .unwrap();
+    export.nodes[index + 1..]
+        .iter()
+        .map(|node| node.id.to_string())
+        .collect()
+}
 
 /// Returns a strategy for trees that deliver only to the outputs in `outputs`.
 fn arb_tree(outputs: Vec<usize>, depth: u32) -> BoxedStrategy<Tree> {
@@ -1382,25 +1117,23 @@ fn arb_tree(outputs: Vec<usize>, depth: u32) -> BoxedStrategy<Tree> {
     prop_oneof![2 => leaf, 2 => split, 1 => tee].boxed()
 }
 
-/// The nodes and edges written for a tree, and the gateways it keeps, each with whether a `split` lies between it and
-/// the scope's input.
+/// The nodes and edges written for a tree, and the gateways it keeps.
 #[derive(Default)]
 struct Written {
     nodes: Vec<Value>,
     edges: Vec<Value>,
-    kept: Vec<(usize, bool)>,
+    kept: Vec<usize>,
 }
 
-/// Writes a tree as an artifact's nodes and edges, fed from `from`, `filtered` if a `split` lies between `from` and the
-/// scope's input.
+/// Writes a tree as an artifact's nodes and edges, fed from `from`.
 ///
 /// Each gateway is kept at most once, since its nodes have fixed IDs; a second occurrence is written as a drop.
-fn write_tree(tree: &Tree, from: String, filtered: bool, export: &PolicyArtifact, out: &mut Written) {
+fn write_tree(tree: &Tree, from: String, export: &PolicyArtifact, out: &mut Written) {
     let id = format!("n{}", out.nodes.len());
     let edge_in = |out: &mut Written, to: &str| out.edges.push(json!({"from": from, "to": format!("{}.in", to)}));
     match tree {
-        Tree::Kept(gateway) if !out.kept.iter().any(|(kept, _)| kept == gateway) => {
-            out.kept.push((*gateway, filtered));
+        Tree::Kept(gateway) if !out.kept.contains(gateway) => {
+            out.kept.push(*gateway);
             let name = GATEWAYS[*gateway].0;
             for suffix in ["", "_true", "_false"] {
                 let id = format!("{}{}", name, suffix);
@@ -1426,32 +1159,30 @@ fn write_tree(tree: &Tree, from: String, filtered: bool, export: &PolicyArtifact
             out.nodes
                 .push(json!({"id": id, "op": "split", "params": {"predicate": predicate}}));
             edge_in(out, &id);
-            write_tree(yes, format!("{}.true", id), true, export, out);
-            write_tree(no, format!("{}.false", id), true, export, out);
+            write_tree(yes, format!("{}.true", id), export, out);
+            write_tree(no, format!("{}.false", id), export, out);
         }
         Tree::Tee(branches) => {
             out.nodes
                 .push(json!({"id": id, "op": "tee", "params": {"ports": branches.len()}}));
             edge_in(out, &id);
             for (port, branch) in branches.iter().enumerate() {
-                write_tree(branch, format!("{}.{}", id, port), filtered, export, out);
+                write_tree(branch, format!("{}.{}", id, port), export, out);
             }
         }
     }
 }
 
-/// Returns the artifact document of a tree, with the export's base, and the gateways it keeps, each with whether a
-/// `split` lies between it and the scope's input.
-fn tree_artifact(tree: &Tree, export: &PolicyArtifact) -> (Value, Vec<(usize, bool)>) {
+/// Returns the artifact document of the default program's export with a tree in place of what follows its enrichment,
+/// and the gateways the tree keeps.
+fn tree_artifact(tree: &Tree, export: &PolicyArtifact) -> (Value, Vec<usize>) {
+    let replaced = after_enrichment(export);
+    let mut document = serde_json::to_value(export).unwrap();
+    remove_nodes(&mut document, &replaced.iter().map(String::as_str).collect::<Vec<_>>());
     let mut out = Written::default();
-    write_tree(tree, "input.metrics".to_string(), false, export, &mut out);
-    let document = json!({
-        "ir_version": 1,
-        "scope": "post_enrich",
-        "base": serde_json::to_value(&export.base).unwrap(),
-        "nodes": out.nodes,
-        "edges": out.edges,
-    });
+    write_tree(tree, format!("{}.out", ENRICHED), export, &mut out);
+    document["nodes"].as_array_mut().unwrap().extend(out.nodes);
+    document["edges"].as_array_mut().unwrap().extend(out.edges);
     (document, out.kept)
 }
 
@@ -1472,7 +1203,7 @@ fn arb_edit() -> impl Strategy<Value = Edit> {
         "metrics_fanout_0",
         "af_metrics_gateway",
         "dsd_agg",
-        "metrics_host_enrichment",
+        "dsd_in",
         "fresh",
         "input",
     ]);
@@ -1504,7 +1235,7 @@ fn arb_edit() -> impl Strategy<Value = Edit> {
 
 /// Applies an edit, and returns `true` if it removed a node or an edge.
 ///
-/// The export is a tree whose every port has one edge, and no edit adds an edge from a port, so a removal leaves a
+/// The export is a graph whose every port has one edge, and no edit adds an edge from a port, so a removal leaves a
 /// port without its edge that no later edit restores: the composed plan cannot be valid.
 fn apply(document: &mut Value, edit: &Edit) -> bool {
     let nodes = document["nodes"].as_array().unwrap().len().max(1);
@@ -1553,35 +1284,23 @@ fn apply(document: &mut Value, edit: &Edit) -> bool {
 /// Returns why the artifact explains a composition error, or `None` if nothing in it does.
 ///
 /// Each error is checked against the artifact itself: the node it names exists and does what the error says, and the
-/// base and catalog say what the error says of them.
+/// default program and catalog say what the error says of them.
 fn explains(error: &ComposeError, artifact: &PolicyArtifact, fixture: &Fixture) -> Option<&'static str> {
     let node = |id: &ArtifactNodeId| artifact.nodes.iter().find(|node| node.id == *id);
-    let emits_to = |output: &OutputId| {
-        artifact
-            .nodes
-            .iter()
-            .any(|node| node.op.as_str() == names::EMIT && emitted_output(&node.params).as_ref() == Some(output))
-    };
+    let known = sources(&fixture.plan);
     match error {
-        ComposeError::ReservedOutsideScope {
-            node: id,
-            reserved,
-            scope,
-        } => {
-            let outside = fixture.plan.node(reserved).is_some() && !fixture.is_scope_node(reserved);
-            (node(id).is_some()
-                && *reserved == NodeId::reserved(id.to_local_id())
-                && outside
-                && *scope == artifact.scope)
-                .then_some("a node has the ID of a reserved node outside the scope")
+        ComposeError::ReservedSource { node: id, reserved } => (node(id).is_some()
+            && *reserved == NodeId::reserved(id.to_local_id())
+            && fixture.is_source(reserved))
+        .then_some("a node has the ID of a source"),
+        ComposeError::UnknownSource { name, known: listed } => {
+            let reads = artifact
+                .edges
+                .iter()
+                .any(|edge| edge.from == ArtifactPortRef::Input(name.clone()));
+            (reads && !known.contains_key(name) && listed.iter().eq(known.keys()))
+                .then_some("an edge reads a source the host does not have")
         }
-        ComposeError::UnrecordedOutput { node: id, output } => node(id)
-            .filter(|node| node.op.as_str() == names::EMIT && emitted_output(&node.params).as_ref() == Some(output))
-            .filter(|_| {
-                !artifact.base.outputs.contains_key(output)
-                    && fixture.catalog.output(output).is_some()
-            })
-            .map(|_| "an emit delivers to an output the base does not record"),
         ComposeError::UndeclaredOutput {
             node: id,
             output,
@@ -1596,52 +1315,20 @@ fn explains(error: &ComposeError, artifact: &PolicyArtifact, fixture: &Fixture) 
                 .collect::<Vec<_>>();
             node(id)
                 .filter(|node| node.op.as_str() == names::EMIT && emitted_output(&node.params).as_ref() == Some(output))
-                .filter(|_| {
-                    !artifact.base.outputs.contains_key(output)
-                        && fixture.catalog.output(output).is_none()
-                        && *declared == all_declared
-                })
+                .filter(|_| fixture.catalog.output(output).is_none() && *declared == all_declared)
                 .map(|_| "an emit delivers to an output the host does not declare")
-        }
-        ComposeError::PendingOutput { output } => {
-            let recorded = artifact.base.outputs.get(output);
-            // No other output carries the recorded fingerprint, which would make it a renumbering.
-            let elsewhere = fixture
-                .plan
-                .outputs
-                .iter()
-                .any(|other| Some(&other.fingerprint) == recorded && other.id != *output);
-            (emits_to(output) && recorded.is_some() && fixture.catalog.output(output).is_none() && !elsewhere)
-                .then_some("an emit delivers to an output the base records and the host does not declare")
-        }
-        ComposeError::ReboundOutput { output, renumbered } => {
-            let recorded = artifact.base.outputs.get(output);
-            let current = fixture.catalog.output(output).map(|declared| declared.fingerprint);
-            let carried = |id: &OutputId| fixture.catalog.output(id).map(|declared| declared.fingerprint);
-            let rebound = match (recorded, current) {
-                (Some(recorded), Some(current)) => *recorded != current,
-                (Some(_), None) => renumbered.is_some(),
-                (None, _) => false,
-            };
-            let renumbered_right = renumbered
-                .as_ref()
-                .is_none_or(|now| recorded.is_some() && carried(now).as_ref() == recorded);
-            (emits_to(output) && rebound && renumbered_right)
-                .then_some("an emit delivers to an output that now delivers elsewhere than the base records")
         }
         ComposeError::Malformed { .. } => {
             let ids = artifact.nodes.iter().map(|node| &node.id).collect::<BTreeSet<_>>();
             let unknown_end = artifact.edges.iter().any(|edge| {
                 [&edge.from, &edge.to].into_iter().any(|end| match end {
                     ArtifactPortRef::Node { node, .. } => !ids.contains(node),
-                    ArtifactPortRef::Input(input) => input.as_str() != "metrics",
-                    ArtifactPortRef::Exit(_) => true,
+                    ArtifactPortRef::Input(_) => false,
                 }) || matches!(edge.to, ArtifactPortRef::Input(_))
             });
             (ids.len() < artifact.nodes.len() || unknown_end).then_some("two nodes share an ID, or an edge has no end")
         }
-        ComposeError::UnknownScope { .. }
-        | ComposeError::DefaultProgram { .. }
+        ComposeError::DefaultProgram { .. }
         | ComposeError::UnresolvedBinding { .. }
         // The edits never address emits to recipients.
         | ComposeError::UnknownRecipient { .. }
@@ -1662,43 +1349,39 @@ proptest! {
         let received = receive_artifact(document).unwrap();
         let composed = compose(&fixture.plan, &received, &approval(9), &fixture.catalog, &registry).unwrap();
         prop_assert!(composed.report.is_valid(), "{:?}\n{}", tree, composed.report);
-        prop_assert!(!composed.stale_base);
 
-        // Kept gateways are the default program's nodes, and so is a kept drop behind a `split` of the artifact's,
-        // which drops another stream than native configuration does: a node is what it does, whatever feeds it. Every
-        // other artifact node is the artifact's own, and every reserved node of the scope not kept is removed.
+        // Kept nodes are the default program's, and so is a kept drop behind a `split` of the artifact's, which drops
+        // another stream than native configuration does: a node is what it does, whatever feeds it. Every other node of
+        // the tree is the artifact's own, in the policy namespace.
+        let replaced = after_enrichment(&fixture.export.artifact);
         let kept_nodes = kept
             .iter()
-            .flat_map(|(gateway, _)| {
-                ["", "_true", "_false"].map(|suffix| format!("{}{}", GATEWAYS[*gateway].0, suffix))
-            })
+            .flat_map(|gateway| ["", "_true", "_false"].map(|suffix| format!("{}{}", GATEWAYS[*gateway].0, suffix)))
             .collect::<Vec<_>>();
-        for node in &received.artifact.nodes {
-            let correspondence = composed.correspondence.get(&node.id).unwrap();
-            if kept_nodes.contains(&node.id.to_string()) {
-                prop_assert_eq!(correspondence.kind, CorrespondenceKind::Unmodified);
-                prop_assert_eq!(composed.plan.node(&correspondence.node), fixture.plan.node(&correspondence.node));
-            } else {
-                prop_assert_eq!(correspondence.kind, CorrespondenceKind::Added);
-                prop_assert_eq!(correspondence.node.to_string(), format!("policy/{}", node.id));
-            }
-        }
-        let removed = composed.correspondence.removed().iter().map(ToString::to_string).collect::<Vec<_>>();
-        let expected_removed = fixture
+        let before = fixture
             .export
             .artifact
             .nodes
             .iter()
             .map(|node| node.id.to_string())
-            .filter(|id| !kept_nodes.contains(id))
+            .filter(|id| !replaced.contains(id))
             .collect::<Vec<_>>();
-        prop_assert_eq!(removed, expected_removed);
+        for node in &received.artifact.nodes {
+            let id = &composed.ids[&node.id];
+            if kept_nodes.contains(&node.id.to_string()) || before.contains(&node.id.to_string()) {
+                prop_assert_eq!(id, &NodeId::reserved(node.id.to_local_id()));
+                prop_assert_eq!(composed.plan.node(id), fixture.plan.node(id));
+            } else {
+                prop_assert_eq!(id.to_string(), format!("policy/{}", node.id));
+            }
+        }
 
-        // Nothing outside the scope changes, but the edge leaving the port that feeds the scope's input.
+        // Nothing before the tree changes, but the edge leaving the port that feeds it.
         let diff = diff(&fixture.plan, &composed.plan, &registry);
         for change in diff.changes() {
-            if change.id.is_reserved() && !fixture.is_scope_node(&change.id) {
-                prop_assert_eq!(change.id.to_string(), "metrics");
+            let local = change.id.local().to_string();
+            if change.id.is_reserved() && !replaced.contains(&local) {
+                prop_assert_eq!(local, ENRICHED);
                 prop_assert_eq!(
                     &change.change,
                     &NodeChange::Changed { operator: false, params: false, edges: true }
@@ -1720,18 +1403,17 @@ proptest! {
             return Ok(());
         };
         let artifact = &received.artifact;
-        // A node with the ID of a reserved node outside the scope is always refused. A node that aggregates, which
-        // no node of the scope does, composes with the artifact's provenance, for placement to decide.
-        let reserved_outside = artifact.nodes.iter().any(|node| {
-            let reserved = NodeId::reserved(node.id.to_local_id());
-            fixture.plan.node(&reserved).is_some() && !fixture.is_scope_node(&reserved)
-        });
+        // A node with the ID of a source is always refused.
+        let reserved_source = artifact
+            .nodes
+            .iter()
+            .any(|node| fixture.is_source(&NodeId::reserved(node.id.to_local_id())));
         match compose(&fixture.plan, &received, &approval(4), &fixture.catalog, &registry) {
             Err(error) => {
                 prop_assert!(explains(&error, artifact, &fixture).is_some(), "{:?}: {}", edits, error);
-                if reserved_outside {
+                if reserved_source {
                     prop_assert!(
-                        matches!(error, ComposeError::ReservedOutsideScope { .. } | ComposeError::Malformed { .. }),
+                        matches!(error, ComposeError::ReservedSource { .. } | ComposeError::Malformed { .. }),
                         "{:?}: {}",
                         edits,
                         error
@@ -1739,342 +1421,60 @@ proptest! {
                 }
             }
             Ok(composed) => {
-                prop_assert!(!reserved_outside, "{:?}", edits);
-                // A node that aggregates is in the artifact's scope, the program's, unless a removed or redirected
-                // edge leaves it unreachable from the scope's inputs, which validation reports at the node.
+                prop_assert!(!reserved_source, "{:?}", edits);
+                // Every node but the sources is the program's, whatever it does.
                 let program = crate::export::program_nodes(&composed.plan)
                     .into_iter()
                     .flat_map(|(_, nodes)| nodes)
                     .collect::<BTreeSet<_>>();
-                let unreachable = composed
-                    .report
-                    .findings()
-                    .iter()
-                    .filter(|finding| finding.rule == crate::validate::Rule::Reachable)
-                    .filter_map(|finding| match &finding.location {
-                        crate::validate::Location::Node { id, .. } => Some(id.clone()),
-                        _ => None,
-                    })
-                    .collect::<BTreeSet<_>>();
-                for node in composed.plan.nodes.iter().filter(|node| node.op.as_str() == names::AGGREGATE) {
-                    let artifacts = fixture.is_scope_node(&node.id)
-                        || !fixture.plan.nodes.iter().any(|kept| kept.id == node.id);
-                    if artifacts && !unreachable.contains(&node.id) {
-                        prop_assert!(
-                            program.contains(&node.id),
-                            "{:?}: `{}` aggregates outside the program",
-                            edits,
-                            node.id
-                        );
-                    }
+                for node in &composed.plan.nodes {
+                    prop_assert_eq!(program.contains(&node.id), !fixture.is_source(&node.id), "{:?}", edits);
                 }
                 // A node or an edge removed leaves a port without its edge, which no other edit restores.
                 if removed {
                     prop_assert!(!composed.report.is_valid(), "{:?}", edits);
                 }
-                // Every artifact node became one plan node, as its correspondence says.
-                prop_assert_eq!(composed.correspondence.iter().count(), received.artifact.nodes.len());
-                for (_, correspondence) in composed.correspondence.iter() {
-                    let node = composed.plan.node(&correspondence.node).unwrap();
-                    if correspondence.kind == CorrespondenceKind::Unmodified {
-                        prop_assert_eq!(Some(node), fixture.plan.node(&correspondence.node))
-                    }
+                // Every artifact node became one plan node, as its plan ID says.
+                prop_assert_eq!(composed.ids.len(), received.artifact.nodes.len());
+                for id in composed.ids.values() {
+                    prop_assert!(composed.plan.node(id).is_some());
                 }
-                // Every node outside the scope is kept as it is.
-                for node in &fixture.plan.nodes {
-                    if !fixture.is_scope_node(&node.id) {
-                        prop_assert_eq!(composed.plan.node(&node.id), Some(node));
-                    }
+                // Every source is kept as it is.
+                for node in fixture.plan.nodes.iter().filter(|node| fixture.is_source(&node.id)) {
+                    prop_assert_eq!(composed.plan.node(&node.id), Some(node));
                 }
-                // Artifacts reference native outputs only: every emit names an output the base records with the
-                // fingerprint the host declares it with.
+                // Artifacts reference native outputs only: every emit names an output the host declares.
                 for node in artifact.nodes.iter().filter(|node| node.op.as_str() == names::EMIT) {
                     let Some(output) = emitted_output(&node.params) else { continue };
-                    let declared = fixture.catalog.output(&output).map(|declared| declared.fingerprint);
-                    prop_assert!(declared.is_some(), "{:?}: `{}` emits to `{}`", edits, node.id, output);
-                    prop_assert_eq!(artifact.base.outputs.get(&output).copied(), declared, "{:?}", edits);
+                    prop_assert!(
+                        fixture.catalog.output(&output).is_some(),
+                        "{:?}: `{}` emits to `{}`",
+                        edits,
+                        node.id,
+                        output
+                    );
                 }
             }
         }
     }
 }
 
-#[test]
-fn a_composer_composes_one_artifact_as_compose_all_composes_it() {
-    struct Default<'a>(&'a Fixture);
-    impl Composer for Default<'_> {
-        fn compose_all(&self, artifacts: &[(&ReceivedArtifact, &Approval)]) -> Result<Composed, ComposeError> {
-            compose_all(&self.0.plan, artifacts, &self.0.catalog, &OperatorRegistry::native())
-        }
-    }
-
-    let fixture = Fixture::default_program();
-    let composer = Default(&fixture);
-    let received = receive_artifact(fixture.artifact()).unwrap();
-    let approval = approval(1);
-
-    // One artifact composes as `compose` composes it: the unmodified export composes back to the default program.
-    let composed = composer.compose(&received, &approval).unwrap();
-    assert_eq!(
-        composed.plan.hash(ResolvedValues::Include).unwrap(),
-        fixture.plan.hash(ResolvedValues::Include).unwrap()
-    );
-    assert_eq!(
-        composed.scopes.keys().map(ToString::to_string).collect::<Vec<_>>(),
-        ["post_enrich"]
-    );
-    let scope = "post_enrich".parse::<ScopeName>().unwrap();
-    assert_eq!(composed.scopes[&scope].correspondence, composed.correspondence);
-    // No artifact, or two for one scope, is refused.
-    let cases = [
-        (vec![], "no artifact was given to compose"),
-        (
-            vec![(&received, &approval), (&received, &approval)],
-            "more than one artifact replaces scope `post_enrich`; compose one artifact per scope",
-        ),
-    ];
-    for (artifacts, expected) in cases {
-        match composer.compose_all(&artifacts) {
-            Err(ComposeError::Malformed { message }) => assert_eq!(message, expected),
-            other => panic!("{} artifacts composed: {:?}", artifacts.len(), other.map(|_| ())),
-        }
-    }
-}
-
-// Scopes with exits, and scopes composed together.
-
-fn pre_aggregation() -> ScopeName {
-    "dogstatsd_pre_aggregation".parse().unwrap()
-}
-
-/// Returns an artifact as received, with the hash of its document, without reading it from the document: an artifact
-/// that reaches its scope's exits is not read from a document yet.
+/// Returns an artifact as received, with the hash of its document, without reading it from the document.
 fn received_directly(artifact: PolicyArtifact) -> ReceivedArtifact {
     let hash = PlanHash::of_value(&serde_json::to_value(&artifact).unwrap()).unwrap();
     ReceivedArtifact { artifact, hash }
 }
 
-/// Returns the export of one scope of a default program, as received.
-fn exported(plan: &Plan, scope: &ScopeName) -> ReceivedArtifact {
-    received_directly(
-        export(plan, scope, &catalog_for(plan), &BTreeMap::new())
-            .unwrap()
-            .artifact,
+/// Returns the detached export of a default program.
+fn detached(plan: &Plan, catalog: &MemoryCatalog) -> ExportBundle {
+    export_as(
+        plan,
+        catalog,
+        &BTreeMap::new(),
+        ExportForm::Detached,
+        &OperatorRegistry::native(),
     )
-}
-
-fn plan_edges(plan: &Plan) -> Vec<String> {
-    plan.edges
-        .iter()
-        .map(|edge| format!("{} -> {}", edge.from, edge.to))
-        .collect()
-}
-
-#[test]
-fn unmodified_exports_of_every_scope_compose_back_to_the_default_program_alone_and_together() {
-    let registry = OperatorRegistry::native();
-    for (name, plan) in default_programs() {
-        let catalog = catalog_for(&plan);
-        let expected = plan.hash(ResolvedValues::Include).unwrap();
-        let pre = exported(&plan, &pre_aggregation());
-        let post = exported(&plan, &"post_enrich".parse().unwrap());
-
-        let alone = compose(&plan, &pre, &approval(1), &catalog, &registry).unwrap();
-        assert_eq!(alone.plan.hash(ResolvedValues::Include).unwrap(), expected, "{}", name);
-        assert!(
-            !alone.stale_base && alone.report.is_valid(),
-            "{}: {}",
-            name,
-            alone.report
-        );
-        assert!(
-            alone
-                .correspondence
-                .iter()
-                .all(|(_, correspondence)| correspondence.kind == CorrespondenceKind::Unmodified),
-            "{}",
-            name
-        );
-
-        // Together, in either order: each scope composed against the default program, the plan validated once.
-        for artifacts in [
-            [(&pre, &approval(1)), (&post, &approval(2))],
-            [(&post, &approval(2)), (&pre, &approval(1))],
-        ] {
-            let together = compose_all(&plan, &artifacts, &catalog, &registry).unwrap();
-            assert_eq!(
-                together.plan.hash(ResolvedValues::Include).unwrap(),
-                expected,
-                "{}",
-                name
-            );
-            assert!(together.report.is_valid(), "{}: {}", name, together.report);
-            let scopes = together.scopes.keys().map(ToString::to_string).collect::<Vec<_>>();
-            assert_eq!(scopes, ["dogstatsd_pre_aggregation", "post_enrich"], "{}", name);
-            // The correspondences of several artifacts are each in their scope's composition.
-            assert_eq!(together.correspondence.iter().count(), 0, "{}", name);
-            assert_eq!(
-                together.scopes[&pre_aggregation()].correspondence.iter().count(),
-                pre.artifact.nodes.len()
-            );
-            // The provenance lists every revision, in scope order.
-            let revisions = together
-                .plan
-                .provenance
-                .as_ref()
-                .unwrap()
-                .artifacts
-                .iter()
-                .map(|revision| (revision.revision, revision.hash))
-                .collect::<Vec<_>>();
-            assert_eq!(revisions, [(1, pre.hash), (2, post.hash)], "{}", name);
-        }
-    }
-}
-
-#[test]
-fn an_artifacts_edges_into_its_scopes_exits_replace_those_of_the_default_program() {
-    // The pre-aggregation scope without its tag filterlist: what the timestamp split keeps for aggregation reaches it
-    // directly.
-    let plan = two_scopes(DEFAULT_PROGRAM_JSON);
-    let mut artifact = exported(&plan, &pre_aggregation()).artifact;
-    let filterlist = "dsd_tag_filterlist".parse::<ArtifactNodeId>().unwrap();
-    artifact.nodes.retain(|node| node.id != filterlist);
-    artifact
-        .edges
-        .retain(|edge| !matches!(&edge.to, ArtifactPortRef::Node { node, .. } if *node == filterlist));
-    for edge in &mut artifact.edges {
-        if matches!(&edge.from, ArtifactPortRef::Node { node, .. } if *node == filterlist) {
-            edge.from = "dsd_no_agg_split.default".parse().unwrap();
-        }
-    }
-    let received = received_directly(artifact);
-    let catalog = catalog_for(&plan);
-    let composed = compose(&plan, &received, &approval(3), &catalog, &OperatorRegistry::native()).unwrap();
-
-    // The exits' ports are fed from the artifact's edges, once each; nothing past them changes.
-    let edges = plan_edges(&composed.plan);
-    for edge in [
-        "dsd_no_agg_split.default -> dsd_agg.in",
-        "dsd_agg.out -> dsd_post_agg_filter_in.0",
-        "dsd_no_agg_split.passthrough -> dsd_post_agg_filter_in.1",
-    ] {
-        assert_eq!(edges.iter().filter(|written| *written == edge).count(), 1, "{}", edge);
-    }
-    assert!(!edges.iter().any(|edge| edge.contains("dsd_tag_filterlist")));
-    assert_eq!(edges.len(), plan.edges.len() - 1);
-    assert_eq!(
-        composed.correspondence.removed(),
-        &["dsd_tag_filterlist".parse::<NodeId>().unwrap()]
-    );
-    let changed = diff(&plan, &composed.plan, &OperatorRegistry::native())
-        .changes()
-        .map(|node| node.id.to_string())
-        .collect::<Vec<_>>();
-    // The timestamp split feeds aggregation from another port: both change in their edges only. Aggregation is fed
-    // other records than the default program feeds it, but it does what the default program's does, so it is that
-    // node, unmodified.
-    assert_eq!(changed, ["dsd_no_agg_split", "dsd_agg", "dsd_tag_filterlist"]);
-    let aggregation = composed.correspondence.get(&"dsd_agg".parse().unwrap()).unwrap();
-    assert_eq!(aggregation.kind, CorrespondenceKind::Unmodified);
-}
-
-#[test]
-fn edges_reach_a_scopes_exits_only_as_their_targets_and_only_declared_ones() {
-    let plan = two_scopes(DEFAULT_PROGRAM_JSON);
-    let catalog = catalog_for(&plan);
-    let base = exported(&plan, &pre_aggregation()).artifact;
-    let last = base.edges.len();
-    // (what, the edge added, the error)
-    let cases = [
-        (
-            "an edge from an exit",
-            ArtifactEdge {
-                from: ArtifactPortRef::Exit(ExitName::new("aggregated").unwrap()),
-                to: "dsd_agg.in".parse().unwrap(),
-            },
-            format!(
-                "edge {} leaves `exit.aggregated`, which is a scope exit; edges enter a scope's exits",
-                last
-            ),
-        ),
-        (
-            "an edge to an exit the scope does not declare",
-            ArtifactEdge {
-                from: "dsd_agg.out".parse().unwrap(),
-                to: ArtifactPortRef::Exit(ExitName::new("nowhere").unwrap()),
-            },
-            format!(
-                "edge {} enters `exit.nowhere`, but the scope has no exit `nowhere`",
-                last
-            ),
-        ),
-    ];
-    for (what, edge, expected) in cases {
-        let mut artifact = base.clone();
-        artifact.edges.push(edge);
-        let received = received_directly(artifact);
-        match compose(&plan, &received, &approval(1), &catalog, &OperatorRegistry::native()) {
-            Err(ComposeError::Malformed { message }) => assert_eq!(message, expected, "{}", what),
-            other => panic!("{}: {:?}", what, other.map(|_| ())),
-        }
-    }
-}
-
-#[test]
-fn artifacts_of_two_scopes_compose_each_against_the_default_program_with_their_own_flags() {
-    let fixture = Fixture::default_program();
-    let registry = OperatorRegistry::native();
-    let pre = exported(&fixture.plan, &pre_aggregation());
-    // A policy artifact with a stale base, approved against another active plan.
-    let mut document = fixture.artifact();
-    document["base"]["program_hash"] = json!(ZERO_HASH);
-    let post = receive_artifact(document).unwrap();
-    let reviewed = Approval {
-        revision: 2,
-        approved_against: Some(hash('9')),
-        active_plan_hash: Some(hash('8')),
-        in_effect: false,
-    };
-    let composed = compose_all(
-        &fixture.plan,
-        &[(&pre, &approval(1)), (&post, &reviewed)],
-        &fixture.catalog,
-        &registry,
-    )
-    .unwrap();
-    let flags = composed
-        .scopes
-        .iter()
-        .map(|(scope, composition)| (scope.to_string(), composition.stale_base, composition.stale_review))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        flags,
-        [
-            ("dogstatsd_pre_aggregation".to_string(), false, false),
-            ("post_enrich".to_string(), true, true),
-        ]
-    );
-    assert!(composed.stale_base && composed.stale_review);
-}
-
-/// The one-scope default program fixtures, with the host's catalog, carrying every binding's value.
-fn one_scope_programs() -> Vec<(&'static str, Plan, MemoryCatalog)> {
-    [
-        ("default program", DEFAULT_PROGRAM_JSON),
-        ("no-aggregation pipeline off", NO_AGGREGATION_PIPELINE_OFF_JSON),
-    ]
-    .into_iter()
-    .map(|(name, json)| {
-        let plan = Plan::from_json(json).unwrap();
-        let catalog = catalog_for(&plan);
-        (name, plan, catalog)
-    })
-    .collect()
-}
-
-fn metrics_scope() -> ScopeName {
-    crate::testing::DEFAULT_PROGRAM_SCOPE.parse().unwrap()
+    .unwrap()
 }
 
 /// Returns every binding a parameter value binds.
@@ -2092,21 +1492,10 @@ fn bindings_in(value: &Value, found: &mut BTreeSet<String>) {
 }
 
 #[test]
-fn the_detached_export_keeps_facts_and_signals_bound_and_the_bound_exports_base() {
-    for (name, plan, catalog) in one_scope_programs() {
-        let bound = export(&plan, &metrics_scope(), &catalog, &BTreeMap::new()).unwrap();
-        let detached = crate::export::export_as(
-            &plan,
-            &metrics_scope(),
-            &catalog,
-            &BTreeMap::new(),
-            ExportForm::Detached,
-            &OperatorRegistry::native(),
-        )
-        .unwrap();
+fn the_detached_export_keeps_facts_and_signals_bound() {
+    for (name, plan, catalog) in default_programs() {
+        let detached = detached(&plan, &catalog);
         assert_eq!(detached.form, ExportForm::Detached, "{}", name);
-        // The base describes the scope's structure, which leaving out what does nothing does not change.
-        assert_eq!(detached.artifact.base, bound.artifact.base, "{}", name);
 
         let mut found = BTreeSet::new();
         for node in &detached.artifact.nodes {
@@ -2146,26 +1535,16 @@ fn the_detached_export_keeps_facts_and_signals_bound_and_the_bound_exports_base(
 #[test]
 fn the_unmodified_detached_export_composes_to_what_the_default_program_does_in_its_own_words() {
     let registry = OperatorRegistry::native();
-    for (name, plan, catalog) in one_scope_programs() {
-        let detached = crate::export::export_as(
-            &plan,
-            &metrics_scope(),
-            &catalog,
-            &BTreeMap::new(),
-            ExportForm::Detached,
-            &OperatorRegistry::native(),
-        )
-        .unwrap();
-        let received = received_directly(detached.artifact);
+    for (name, plan, catalog) in default_programs() {
+        let received = received_directly(detached(&plan, &catalog).artifact);
         let composed = compose(&plan, &received, &approval(1), &catalog, &registry).unwrap();
         // It does what the default program does, without what does nothing as configured.
         assert_eq!(does(&composed.plan), does(&plan), "{}", name);
-        assert!(!composed.stale_base, "{}", name);
         assert!(
             composed
-                .correspondence
+                .ids
                 .iter()
-                .all(|(_, correspondence)| correspondence.kind == CorrespondenceKind::Unmodified),
+                .all(|(local, id)| *id == NodeId::reserved(local.to_local_id())),
             "{}",
             name
         );
@@ -2175,17 +1554,8 @@ fn the_unmodified_detached_export_composes_to_what_the_default_program_does_in_i
 #[test]
 fn a_native_policy_change_after_publishing_leaves_the_program_its_own_value() {
     let registry = OperatorRegistry::native();
-    let (_, plan, catalog) = one_scope_programs().remove(0);
-    let detached = crate::export::export_as(
-        &plan,
-        &metrics_scope(),
-        &catalog,
-        &BTreeMap::new(),
-        ExportForm::Detached,
-        &OperatorRegistry::native(),
-    )
-    .unwrap();
-    let received = received_directly(detached.artifact);
+    let (_, plan, catalog) = default_programs().remove(0);
+    let received = received_directly(detached(&plan, &catalog).artifact);
 
     // The metric filterlist changes natively: the default program is lowered again with the new list, and the
     // published program composed again against it.
@@ -2200,26 +1570,16 @@ fn a_native_policy_change_after_publishing_leaves_the_program_its_own_value() {
     let composed = compose(&changed, &received, &approval(1), &changed_catalog, &registry).unwrap();
 
     // The program owns its filterlist: the node is the program's, with the value it was published with, as the
-    // detached export writes it in normal form, and every other node is still the default program's.
-    let filter = composed
-        .correspondence
-        .get(&"dsd_prefix_filter_blocklist".parse().unwrap())
-        .unwrap();
-    assert_eq!(filter.kind, CorrespondenceKind::Modified);
-    let node = composed.plan.node(&filter.node).unwrap();
+    // detached export writes it in normal form.
+    let filter = &composed.ids[&"dsd_prefix_filter_blocklist".parse::<ArtifactNodeId>().unwrap()];
+    let node = composed.plan.node(filter).unwrap();
     assert_eq!(
         node.params.get("predicate").unwrap(),
         &json!({"not": {"intake_name": {"eq": "tenant.raw.blocked"}}})
     );
-    let modified = composed
-        .correspondence
-        .iter()
-        .filter(|(_, correspondence)| correspondence.kind != CorrespondenceKind::Unmodified)
-        .count();
-    assert_eq!(modified, 1);
 
-    // Status names the node whose native settings the program no longer follows; before the change, nothing differed.
-    // The nodes with parameters, as lowering writes them from native settings.
+    // Status names the node whose native settings the program no longer follows, and only it; before the change,
+    // nothing differed. The nodes with parameters, as lowering writes them from native settings.
     let every = |plan: &Plan| {
         plan.nodes
             .iter()
@@ -2233,8 +1593,8 @@ fn a_native_policy_change_after_publishing_leaves_the_program_its_own_value() {
     assert!(crate::export::node_differences(&plan, &before.plan, &every(&plan), &registry).is_empty());
 }
 
-/// The one-scope default program's catalog with a recipient directory: `primary`, `mrf`, `cluster_agent`, and two
-/// additional endpoints named by their URLs, the second with two API keys.
+/// The default program's catalog with a recipient directory: `primary`, `mrf`, `cluster_agent`, and two additional
+/// endpoints named by their URLs, the second with two API keys.
 fn with_directory(catalog: MemoryCatalog) -> MemoryCatalog {
     let entry = |recipients: &[&str], host: &str, endpoint: &str| crate::validate::CatalogRecipient {
         recipients: recipients.iter().map(|id| id.parse().unwrap()).collect(),
@@ -2290,17 +1650,9 @@ fn emits(artifact: &PolicyArtifact) -> Vec<(String, Value)> {
 #[test]
 fn the_detached_export_addresses_native_outputs_to_their_recipients_and_composes_back_to_them() {
     let registry = OperatorRegistry::native();
-    let (_, plan, catalog) = one_scope_programs().remove(0);
+    let (_, plan, catalog) = default_programs().remove(0);
     let catalog = with_directory(catalog);
-    let detached = crate::export::export_as(
-        &plan,
-        &metrics_scope(),
-        &catalog,
-        &BTreeMap::new(),
-        ExportForm::Detached,
-        &OperatorRegistry::native(),
-    )
-    .unwrap();
+    let detached = detached(&plan, &catalog);
     assert_eq!(
         emits(&detached.artifact),
         [
@@ -2341,17 +1693,9 @@ fn the_detached_export_addresses_native_outputs_to_their_recipients_and_composes
 #[test]
 fn emits_to_recipients_wait_for_unknown_names_and_outputs_and_are_refused_across_hosts() {
     let registry = OperatorRegistry::native();
-    let (_, plan, catalog) = one_scope_programs().remove(0);
+    let (_, plan, catalog) = default_programs().remove(0);
     let catalog = with_directory(catalog);
-    let detached = crate::export::export_as(
-        &plan,
-        &metrics_scope(),
-        &catalog,
-        &BTreeMap::new(),
-        ExportForm::Detached,
-        &OperatorRegistry::native(),
-    )
-    .unwrap();
+    let detached = detached(&plan, &catalog);
     let with_main_to = |to: Value| {
         let mut document = serde_json::to_value(&detached.artifact).unwrap();
         node(&mut document, "metrics_fanout_0")["params"] = json!({"to": to});
@@ -2402,7 +1746,7 @@ fn emits_to_recipients_wait_for_unknown_names_and_outputs_and_are_refused_across
             .as_str(),
         names::DROP
     );
-    assert!(composed.scopes[&metrics_scope()].outcome.is_degraded());
+    assert!(composed.outcome.is_degraded());
 
     // Recipients of two hosts: refused, naming each host.
     let error = composing(&with_main_to(json!(["primary", "mrf"])), false).unwrap_err();
@@ -2417,17 +1761,9 @@ fn emits_to_recipients_wait_for_unknown_names_and_outputs_and_are_refused_across
 #[test]
 fn an_emit_in_effect_delivers_to_its_recipients_that_remain_and_counts_what_the_others_would_have_received() {
     let registry = OperatorRegistry::native();
-    let (_, plan, catalog) = one_scope_programs().remove(0);
+    let (_, plan, catalog) = default_programs().remove(0);
     let catalog = with_directory(catalog);
-    let detached = crate::export::export_as(
-        &plan,
-        &metrics_scope(),
-        &catalog,
-        &BTreeMap::new(),
-        ExportForm::Detached,
-        &OperatorRegistry::native(),
-    )
-    .unwrap();
+    let detached = detached(&plan, &catalog);
     let mut document = serde_json::to_value(&detached.artifact).unwrap();
     // The main emit names the primary endpoint and an endpoint the configuration no longer has.
     node(&mut document, "metrics_fanout_0")["params"] = json!({"to": ["primary", "https://gone.example.com"]});
@@ -2481,10 +1817,8 @@ fn an_emit_in_effect_delivers_to_its_recipients_that_remain_and_counts_what_the_
         assert!(edges.iter().any(|found| found == edge), "{} in {:?}", edge, edges);
     }
     assert!(composed.report.is_valid(), "{:?}", composed.report.findings());
-    let outcome = &composed.scopes[&metrics_scope()].outcome;
-    assert!(outcome.is_degraded());
-    let ComposeOutcome::Degraded(dropped) = outcome else {
-        unreachable!()
+    let ComposeOutcome::Degraded(dropped) = &composed.outcome else {
+        panic!("the artifact in effect runs degraded")
     };
     assert_eq!(
         dropped.iter().map(ToString::to_string).collect::<Vec<_>>(),
@@ -2494,13 +1828,9 @@ fn an_emit_in_effect_delivers_to_its_recipients_that_remain_and_counts_what_the_
         ]
     );
     assert_eq!(dropped[0].nodes, [id("policy/metrics_fanout_0_missing")]);
-    // The correspondence maps the artifact's emit to the `tee` that took its place.
+    // The artifact's emit's plan ID is the `tee` that took its place.
     assert_eq!(
-        composed
-            .correspondence
-            .get(&"metrics_fanout_0".parse().unwrap())
-            .unwrap()
-            .node,
+        composed.ids[&"metrics_fanout_0".parse::<ArtifactNodeId>().unwrap()],
         id("metrics_fanout_0")
     );
 
@@ -2528,11 +1858,11 @@ fn an_emit_in_effect_delivers_to_its_recipients_that_remain_and_counts_what_the_
 #[test]
 fn a_literal_equal_to_a_bindings_value_is_another_parameter_than_the_binding() {
     let registry = OperatorRegistry::native();
-    let (_, plan, catalog) = one_scope_programs().remove(0);
+    let (_, plan, catalog) = default_programs().remove(0);
 
     // The export binds the host's tags, a fact; an edit writes their value as a literal in its place. The node then
     // does something else than the default program's: the literal never follows the host's tags.
-    let bound = export(&plan, &metrics_scope(), &catalog, &BTreeMap::new()).unwrap();
+    let bound = export(&plan, &catalog, &BTreeMap::new()).unwrap();
     let tags = catalog
         .binding(&"host.tags".parse().unwrap())
         .and_then(|binding| binding.value.clone())
@@ -2541,8 +1871,8 @@ fn a_literal_equal_to_a_bindings_value_is_another_parameter_than_the_binding() {
     node(&mut document, "metrics")["params"]["tags"] = tags;
     let edited = received_directly(PolicyArtifact::from_value(document).unwrap());
     let composed = compose(&plan, &edited, &approval(1), &catalog, &registry).unwrap();
-    let host_tags = composed.correspondence.get(&"metrics".parse().unwrap()).unwrap();
-    assert_eq!(host_tags.kind, CorrespondenceKind::Modified);
+    let host_tags = "metrics".parse::<NodeId>().unwrap();
+    assert_ne!(composed.plan.node(&host_tags).unwrap(), plan.node(&host_tags).unwrap());
     assert_ne!(
         crate::export::operation_hash(&composed.plan, &registry).unwrap(),
         crate::export::operation_hash(&plan, &registry).unwrap()

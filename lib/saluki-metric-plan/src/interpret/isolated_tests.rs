@@ -14,7 +14,6 @@ use saluki_core::{
 use serde_json::json;
 
 use crate::{
-    canonical::PlanHash,
     interpret::{Interpreter, RunOutput, Trace},
     ir::{NodeId, OutputId, Plan, RecipientId},
     model::PortType,
@@ -40,7 +39,6 @@ fn catalog() -> MemoryCatalog {
         OutputId::new(OUTPUT).unwrap(),
         CatalogOutput {
             accepts: PortType::ANY,
-            fingerprint: PlanHash::of_bytes(OUTPUT.as_bytes()),
             recipients: vec![RecipientId::new(format!("out/{}", OUTPUT)).unwrap()],
         },
     )
@@ -60,8 +58,7 @@ fn plan() -> Plan {
         ],
         "edges": [{"from": "src.metrics", "to": "agg.in"}, {"from": "agg.out", "to": "out.in"}],
         "outputs": [{"id": OUTPUT, "accepts": {"kinds": "all", "timestamps": "mixed"},
-                     "fingerprint": PlanHash::of_bytes(OUTPUT.as_bytes()).to_string(),
-                     "recipients": [format!("out/{}", OUTPUT)]}],
+                                          "recipients": [format!("out/{}", OUTPUT)]}],
     }))
     .unwrap();
     let report = Validator::new(&OperatorRegistry::native(), &catalog()).validate(&plan);

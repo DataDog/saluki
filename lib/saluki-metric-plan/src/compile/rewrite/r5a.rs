@@ -36,8 +36,6 @@
 //!   filterlist's filtered-metrics counter on one port of its `split`; copies would not carry them. A filter with a
 //!   reserved ID is therefore never copied (neither across a merge nor partially): it is only moved, whole, keeping
 //!   its ID and its counts exactly.
-//! - **Scopes.** The filter never crosses a scope's input or exit, and no port of its own nodes is one: a rewrite
-//!   moves no work out of or into the part of the plan an artifact replaces, and never removes a node a scope names.
 //! - **The frame is fixed.** The pipeline checks that the rewritten plan places into the boot frame, with every
 //!   kernel in the slot it ran in before, and skips the application, recording why, if it does not.
 //! - **Dynamic operators** are never moved, and no filter moves across one.
@@ -55,7 +53,7 @@ use std::fmt::Write as _;
 use super::{
     filters::{
         applied_above, commuting_kinds, drop_condition, fields, input_kinds, input_ref, kinds, output_ref,
-        reaching_kinds, restricted, uncrossable, Edit, Filter, FilterForm, FilterPorts, ScopeBoundaries,
+        reaching_kinds, restricted, uncrossable, Edit, Filter, FilterForm, FilterPorts,
     },
     Rewrite, RewriteContext, RewriteId, Rewritten, TelemetryChange, TelemetryEffect,
 };
@@ -81,10 +79,9 @@ impl Rewrite for R5a {
         if !findings.is_valid() || graph.cyclic {
             return None;
         }
-        let scopes = ScopeBoundaries::of(plan);
         (0..graph.nodes.len())
             .filter_map(|node| Filter::at(&graph, node))
-            .filter_map(|filter| Site::find(ctx.report(), &graph, &scopes, filter))
+            .filter_map(|filter| Site::find(ctx.report(), &graph, filter))
             .filter_map(|site| site.rewrite(plan, &graph))
             .find(|rewritten| !ctx.is_rejected(RewriteId::R5a, &rewritten.nodes))
     }
@@ -126,27 +123,16 @@ struct Site {
 
 impl Site {
     /// Returns the site of `filter`, if R5a's obligations hold for it.
-    fn find(report: &ValidationReport, graph: &Graph<'_>, scopes: &ScopeBoundaries, filter: Filter) -> Option<Self> {
+    fn find(report: &ValidationReport, graph: &Graph<'_>, filter: Filter) -> Option<Self> {
         if filter.is_dynamic(graph) {
             return None;
         }
-        let (above, port) = graph.source(filter.node, 0)?;
+        let (above, _) = graph.source(filter.node, 0)?;
         let op = graph.op(above)?;
         if uncrossable(op).is_some() {
             return None;
         }
         let inputs = op.ports().inputs.len();
-        // The filter must not leave the scope it is in, nor join one: between `O` and the filter is no scope's input
-        // or exit, and no input of `O` is an exit, where the filter would join the scope above it. An input of `O`
-        // may be a scope's input: the filter then stays first in that scope. No port of the filter's own nodes is a
-        // boundary either: `O` would move below a scope input at the filter's kept port, into the scope, and a filter
-        // the rewrite removes would leave a scope naming a port the plan no longer has.
-        if scopes.crossed_by(&output_ref(graph, (above, port)), &input_ref(graph, (filter.node, 0)))
-            || (0..inputs).any(|input| scopes.is_exit(&input_ref(graph, (above, input))))
-            || scopes.bound_at(graph, &filter)
-        {
-            return None;
-        }
 
         let reaching = reaching_kinds(graph, report, above);
         let commuting = commuting_kinds(&filter.reads(graph), op, reaching);

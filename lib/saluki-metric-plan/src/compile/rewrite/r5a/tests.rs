@@ -7,13 +7,12 @@ use crate::{
         rewrite::{
             harness::{
                 arb_plan_params, arb_shape, arb_trace, drop, edges, emit, ids, node, plan, registry, sample, sorted,
-                source, split, with_scope, Case, TEST_KEEP, TEST_SHED, TEST_SIGNAL_MAP,
+                source, split, Case, TEST_KEEP, TEST_SHED, TEST_SIGNAL_MAP,
             },
             run_pipeline, Optimized, RewriteOutcome, RewriteRecord,
         },
         Frame,
     },
-    ir::{InputName, ScopeDecl, ScopeName},
     operators::{names, OperatorRegistry},
     validate::Validator,
 };
@@ -581,7 +580,7 @@ fn a_filter_operator_moves_for_every_kind_or_not_at_all() {
 }
 
 #[test]
-fn nothing_moves_across_or_out_of_a_dynamic_operator_or_a_scope_boundary() {
+fn nothing_moves_across_a_dynamic_operator() {
     let filtered = |above: Value| {
         plan(
             vec![
@@ -612,105 +611,10 @@ fn nothing_moves_across_or_out_of_a_dynamic_operator_or_a_scope_boundary() {
     let ctx = RewriteContext::new(registry(), &frame, &report);
     assert!(R5a.apply(&ctx, &dynamic).is_none());
 
-    // A filter at a scope's input stays in the scope; one below the first node of a scope moves above it, staying
-    // first in the scope.
-    let scoped = |input: &str| {
-        let mut plan = filtered(prefixed.clone());
-        plan.scopes.insert(
-            ScopeName::new("post_enrich").unwrap(),
-            ScopeDecl {
-                inputs: [(InputName::new("metrics").unwrap(), input.parse().unwrap())].into(),
-                exits: Default::default(),
-            },
-        );
-        plan
-    };
-    let (_, optimized) = r5a(scoped("o.out"));
-    assert!(optimized.records.is_empty(), "{:?}", optimized.records);
-    let (case, optimized) = r5a(scoped("src.metrics"));
+    // Above an operator that is not dynamic, the filter moves.
+    let (case, optimized) = r5a(filtered(prefixed));
     assert_eq!(applied(&optimized).len(), 1);
     assert!(edges(&optimized.plan).contains(&"src.metrics -> policy/f.in".to_string()));
-    case.check_structure(&optimized).unwrap();
-}
-
-/// `src -> p -> f -> e`, where the prefix `p` writes `name` and the filter `f` drops what is not on host `web-1`.
-fn prefixed_filter() -> Plan {
-    plan(
-        vec![
-            source("src", "otlp"),
-            prefix("p"),
-            split("f", json!({"host": {"eq": "web-1"}}), false),
-            drop("f_drop", false),
-            emit("e", "o0"),
-        ],
-        &[
-            "src.metrics -> p.in",
-            "p.out -> policy/f.in",
-            "policy/f.false -> policy/f_drop.in",
-            "policy/f.true -> policy/e.in",
-        ],
-        &["o0"],
-    )
-}
-
-/// `dsd, otlp -> m -> f -> e`, where the filter `f` drops what is not on host `web-1`.
-fn merged_filter() -> Plan {
-    plan(
-        vec![
-            node(
-                "dsd",
-                names::SOURCE,
-                json!({"binding": "dogstatsd", "timestamps": "mixed"}),
-                true,
-            ),
-            source("otlp", "otlp"),
-            node("m", names::MERGE, json!({"inputs": 2}), false),
-            split("f", json!({"host": {"eq": "web-1"}}), false),
-            drop("f_drop", false),
-            emit("e", "o0"),
-        ],
-        &[
-            "dsd.metrics -> policy/m.0",
-            "otlp.metrics -> policy/m.1",
-            "policy/m.out -> policy/f.in",
-            "policy/f.false -> policy/f_drop.in",
-            "policy/f.true -> policy/e.in",
-        ],
-        &["o0"],
-    )
-}
-
-#[test]
-fn a_filter_whose_own_ports_bound_a_scope_stays_where_it_is() {
-    // (case, the plan with its scope)
-    let cases = [
-        (
-            "the scope begins at the filter's kept port: moving it would put the prefix into the scope",
-            with_scope(prefixed_filter(), "policy/f.true", &[]),
-        ),
-        (
-            "the scope ends at the filter's drop",
-            with_scope(prefixed_filter(), "src.metrics", &[("dropped", "policy/f_drop.in")]),
-        ),
-        (
-            "the scope begins at the kept port of a filter that copies across the merge would remove",
-            with_scope(merged_filter(), "policy/f.true", &[]),
-        ),
-    ];
-    for (what, scoped) in cases {
-        let (case, optimized) = r5a(scoped);
-        assert!(optimized.records.is_empty(), "{}: {:?}", what, optimized.records);
-        assert_eq!(optimized.plan, case.plan, "{}", what);
-    }
-
-    // A scope that ends below the filter, at what its kept records enter, keeps it in the scope as it moves.
-    let (case, optimized) = r5a(with_scope(
-        prefixed_filter(),
-        "src.metrics",
-        &[("enriched", "policy/e.in")],
-    ));
-    assert_eq!(applied(&optimized).len(), 1, "{:?}", optimized.records);
-    assert!(edges(&optimized.plan).contains(&"p.out -> policy/e.in".to_string()));
     case.check_structure(&optimized).unwrap();
 }
 

@@ -6,7 +6,7 @@ use std::{
 
 use saluki_core::{accounting::ComponentRegistry, components::ComponentType};
 use saluki_metric_plan::{
-    canonical::{PlanHash, ResolvedValues},
+    canonical::ResolvedValues,
     compile::{compile, Frame, RewriteId},
     ir::Plan,
     operators::OperatorRegistry,
@@ -117,25 +117,18 @@ async fn every_branch_lowers_to_the_designed_default_program() {
     let lowered = lowered(EVERY_BRANCH).await;
 
     let mut plan = lowered.plan.clone();
-    // A bound output's fingerprint, version 2, covers its host, the records it accepts, and its selector: these are the
-    // SHA-256 digests, computed with `shasum -a 256`, of
-    // `{"accepts":<port type>,"host":<host>,"selector":<selector>,"v":2}` written out by hand, a routing group's
-    // selector being the digest of its endpoints' list, `["https://c.example.com"]` for group 0 and
+    // A bound output's binding names its host and its selector, a routing group's selector being the SHA-256 digest,
+    // computed with `shasum -a 256`, of its endpoints' list, `["https://c.example.com"]` for group 0 and
     // `["https://b.example.com"]` for group 1.
-    let version_2 = [
-        ("dsd_client_telemetry", None, None),
-        (
-            "dd_metrics_encode",
-            Some(("dd_out", "{\"role\":\"main\"}")),
-            Some("sha256:35b6c7483c20787a99a97a2a2bb2684fd1a0a8f0315e5bf73fad5b48b74595f7"),
-        ),
+    let bindings = [
+        ("dsd_client_telemetry", None),
+        ("dd_metrics_encode", Some(("dd_out", "{\"role\":\"main\"}"))),
         (
             "metrics_routing_encode_0",
             Some((
                 "dd_out",
                 "{\"group\":\"sha256:fbf8ee3836041667cb9294b1d226175bd8fbf49a589514f41fabf40c501c8dc4\"}",
             )),
-            Some("sha256:914e2f654ed5262a00deb572e4d6a3c55dd839aba517ec611e36da9a7bf8040e"),
         ),
         (
             "metrics_routing_encode_1",
@@ -143,38 +136,29 @@ async fn every_branch_lowers_to_the_designed_default_program() {
                 "dd_out",
                 "{\"group\":\"sha256:3b8a3a482e967bb066247cb6430361f515ec75eba2358c9784162d522269176f\"}",
             )),
-            Some("sha256:028290e3cf2fd20a20ec863a26125dbf65a9c24946ff3b3a079a0b9eae182e2a"),
         ),
         (
             "mrf_metrics_encode",
             Some(("mrf_dd_out", "{\"role\":\"multi_region_failover\"}")),
-            Some("sha256:0ff4cb7e0e1316c414965f9ca7858095cb8feff59bd696171455cbe959c77c08"),
         ),
         (
             "af_metrics_encode",
             Some(("cluster_agent_out", "{\"role\":\"autoscaling_failover\"}")),
-            Some("sha256:608361af9ff1be71390572e16f40425d91adeab874b3f89d17435918832514ff"),
         ),
     ];
-    assert_eq!(plan.outputs.len(), version_2.len());
-    for (output, (id, bound, fingerprint)) in plan.outputs.iter_mut().zip(version_2) {
+    assert_eq!(plan.outputs.len(), bindings.len());
+    for (output, (id, bound)) in plan.outputs.iter_mut().zip(bindings) {
         assert_eq!(output.id.as_str(), id);
-        match (output.binding.take(), bound, fingerprint) {
-            (Some(binding), Some((host, selector)), Some(fingerprint)) => {
+        match (output.binding.take(), bound) {
+            (Some(binding), Some((host, selector))) => {
                 assert_eq!(binding.host.as_str(), host, "{}", id);
                 assert_eq!(serde_json::to_string(&binding.selector).unwrap(), selector, "{}", id);
                 assert_eq!(binding.telemetry.as_str(), id);
-                assert_eq!(output.fingerprint.to_string(), fingerprint, "{}", id);
             }
-            // A fixed destination keeps its fingerprint: the digest of its destination's document.
-            (None, None, None) => {
-                let document = json!({"encoder": {"destination": "dsd_client_telemetry_out"}, "forwarder": null,
-                                      "recipients": []});
-                assert_eq!(output.fingerprint, PlanHash::of_value(&document).unwrap(), "{}", id);
-            }
-            (binding, ..) => panic!("output `{}` has binding {:?}", id, binding),
+            // A fixed destination has no binding.
+            (None, None) => {}
+            (binding, _) => panic!("output `{}` has binding {:?}", id, binding),
         }
-        output.fingerprint = format!("sha256:{}", "0".repeat(64)).parse().unwrap();
     }
     // The resources the program delivers through: every recipient of every host, and each host's settings.
     let recipients = plan
@@ -211,7 +195,6 @@ async fn every_branch_lowers_to_the_designed_default_program() {
     }
     assert_eq!(plan.edges, expected.edges);
     assert_eq!(plan.outputs, expected.outputs);
-    assert_eq!(plan.scopes, expected.scopes);
     assert_eq!(plan, expected);
     assert!(lowered.notes.is_empty());
 }
@@ -1095,25 +1078,17 @@ async fn native_configurations_a_plan_cannot_express_lower_to_plans_that_do_not_
     assert!(validate(&lowered.plan, &lowered.catalog).findings().is_empty());
 }
 
-/// Returns the scope `scope` of `plan`, with each input and exit as `<name>: <node>.<port>`.
-fn scope_ports(plan: &Plan, scope: &str) -> Option<(Vec<String>, Vec<String>)> {
-    let scope = plan.scopes.get(scope)?;
-    let describe = |name: &dyn std::fmt::Display, port: &PortRef| format!("{}: {}.{}", name, port.node, port.port);
-    let inputs = scope.inputs.iter().map(|(name, port)| describe(name, port)).collect();
-    let exits = scope.exits.iter().map(|(name, port)| describe(name, port)).collect();
-    Some((inputs, exits))
-}
-
 #[tokio::test]
-async fn the_metrics_scope_has_one_input_per_source_the_program_has_and_no_exits() {
-    // (configuration, the scope's inputs, the timestamp form the catalog declares for DogStatsD's input)
+async fn the_sources_come_first_one_per_source_the_program_has() {
+    // (configuration, each source as `<binding>: <node>.<port>`, in program order, and the timestamps DogStatsD's
+    // source declares)
     let cases = [
         // In standalone mode, which these tests run in, there is no liveness source.
-        ("", vec!["dogstatsd: dsd_in.metrics"], Some(TimestampForm::Mixed)),
+        ("", vec!["dogstatsd: dsd_in.metrics"], Some("mixed")),
         (
             "dogstatsd_no_aggregation_pipeline: false",
             vec!["dogstatsd: dsd_in.metrics"],
-            Some(TimestampForm::Untimestamped),
+            Some("untimestamped"),
         ),
         (
             "data_plane: {dogstatsd: {enabled: false}, otlp: {enabled: true}}",
@@ -1124,44 +1099,55 @@ async fn the_metrics_scope_has_one_input_per_source_the_program_has_and_no_exits
         (
             EVERY_BRANCH,
             vec![
-                "checks: checks_ipc_in.metrics",
                 "dogstatsd: dsd_in.metrics",
-                "liveness: liveness_in.metrics",
                 "otlp: otlp_in.metrics",
+                "checks: checks_ipc_in.metrics",
+                "liveness: liveness_in.metrics",
                 "trace_sampler: trace_sampler.metrics",
             ],
-            Some(TimestampForm::Mixed),
+            Some("mixed"),
         ),
     ];
-    for (yaml, inputs, dogstatsd) in cases {
+    for (yaml, expected, dogstatsd) in cases {
         let lowered = lowered(yaml).await;
-        let expected = Some((inputs.into_iter().map(String::from).collect::<Vec<_>>(), Vec::new()));
-        assert_eq!(scope_ports(&lowered.plan, METRICS_SCOPE), expected, "{:?}", yaml);
-        assert_eq!(lowered.plan.scopes.len(), 1, "{:?}", yaml);
-
-        // The catalog declares every input with what its source carries, and nothing else.
-        let scope = METRICS_SCOPE.parse().unwrap();
-        for (input, port) in &lowered.plan.scopes[&scope].inputs {
-            let declared = lowered.catalog.scope_input(&scope, input).unwrap();
-            let source = lowered.plan.node(&port.node).unwrap();
-            let binding = SourceBinding::from_name(source.params.get("binding").unwrap().as_str().unwrap()).unwrap();
-            assert_eq!(declared.kinds, binding.kinds(), "{:?}: {}", yaml, input);
-            if let Some(timestamps) = binding.timestamps() {
-                assert_eq!(declared.timestamps, timestamps, "{:?}: {}", yaml, input);
-            }
-        }
-        let dogstatsd_input = lowered
-            .catalog
-            .scope_input(&scope, &"dogstatsd".parse().unwrap())
-            .map(|declared| declared.timestamps);
-        assert_eq!(dogstatsd_input, dogstatsd, "{:?}", yaml);
-        // The scopes of stage 9 are gone.
+        let plan = &lowered.plan;
+        // The program's first nodes are its sources, and no other node is one.
+        let first = plan
+            .nodes
+            .iter()
+            .take_while(|node| node.op.as_str() == names::SOURCE)
+            .map(|node| node.id.clone())
+            .collect::<Vec<_>>();
         assert_eq!(
-            lowered
-                .catalog
-                .scope_input(&"post_enrich".parse().unwrap(), &"metrics".parse().unwrap()),
-            None
+            plan.nodes
+                .iter()
+                .filter(|node| node.op.as_str() == names::SOURCE)
+                .count(),
+            first.len(),
+            "{:?}",
+            yaml
         );
+        let sources = first
+            .iter()
+            .map(|id| {
+                let binding = plan.node(id).unwrap().params.get("binding").unwrap().as_str().unwrap();
+                SourceBinding::from_name(binding).unwrap();
+                format!("{}: {}.{}", binding, id, METRICS_PORT)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sources, expected, "{:?}", yaml);
+        // Composition finds each by its binding.
+        assert_eq!(
+            saluki_metric_plan::compose::sources(plan).len(),
+            expected.len(),
+            "{:?}",
+            yaml
+        );
+
+        let timestamps = plan
+            .node(&node_id(ids::DSD_IN))
+            .map(|source| source.params.get("timestamps").unwrap().as_str().unwrap().to_string());
+        assert_eq!(timestamps.as_deref(), dogstatsd, "{:?}", yaml);
         assert!(lowered.catalog.single_aggregation());
         assert!(lowered.catalog.to_document().single_aggregation());
     }
@@ -1246,10 +1232,8 @@ async fn the_default_program_is_lowered_in_normal_form() {
         ids::DSD_POST_AGG_FILTER
     );
 
-    let scope = saluki_metric_plan::ir::ScopeName::new(METRICS_SCOPE).unwrap();
     let detached = saluki_metric_plan::export::export_as(
         plan,
-        &scope,
         &lowered.catalog.to_document(),
         &BTreeMap::new(),
         saluki_metric_plan::export::ExportForm::Detached,

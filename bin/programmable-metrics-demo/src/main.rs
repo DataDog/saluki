@@ -520,7 +520,7 @@ async fn check_launch(
     // directory left served (a policy and resources a failed or interrupted run published, or the last step's, which
     // a passing run ends with) is revoked before ADP starts.
     let store_dir = settings.store_dir();
-    if ArtifactStore::open(&store_dir)?.revoke_all(clock::unix_millis())? {
+    if ArtifactStore::open(&store_dir)?.revoke(clock::unix_millis())? {
         info!(
             store = %store_dir.display(),
             "Revoked what an earlier run left served in the run directory's artifact store."

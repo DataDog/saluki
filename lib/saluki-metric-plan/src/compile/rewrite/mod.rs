@@ -19,7 +19,7 @@
 //! [`optimize`] runs the logical rewrites in a fixed order, [`PIPELINE`], to a fixed point: a **pass** applies each
 //! rewrite in turn, as often as it applies, and passes repeat until one changes nothing. Every **application** is
 //! checked before it is accepted: the rewritten plan must validate (without the catalog's references, which no rewrite
-//! changes, but with the ports its scopes name) and must place into the frame, with every kernel in the slot it ran in
+//! changes) and must place into the frame, with every kernel in the slot it ran in
 //! before, whose name its resource group carries. An application that fails a check is **skipped**: the plan stays as
 //! it was, and the skip is recorded, so that `explain` shows it. A rewrite never offers a site it was already skipped
 //! at again ([`RewriteContext::is_rejected`]). At most [`MAX_PASSES`] passes and [`MAX_APPLICATIONS`] applications
@@ -52,7 +52,7 @@
 //! rewritten and not, and checks them equivalent, with a variant under capacity pressure checked with
 //! [`compare_under_capacity`][crate::equivalence::compare_under_capacity]; and the whole pipeline has its own, over
 //! both families of random plans the tests draw from: `harness`'s, built around filters, tag projections, operators
-//! that shed to capacity, and scopes (R5a and R6 sites), and `random_plans`'s, whose `split`s draw their predicates
+//! that shed to capacity (R5a and R6 sites), and `random_plans`'s, whose `split`s draw their predicates
 //! from a strategy each test chooses, such as constant and reorderable ones (R3 and R7 sites). A `capacity(output, n)` bound counts
 //! records in the interpreter's [delivery order][crate::interpret#delivery-order], which follows from the plan's
 //! dataflow alone, never from path lengths: a rewrite that keeps every remaining port's records in order, as R3 and R7

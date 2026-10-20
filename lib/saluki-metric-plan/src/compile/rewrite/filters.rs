@@ -6,7 +6,7 @@
 //! records; two filter operators do when they are the same operator with equal parameters.
 
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     fmt::Write as _,
     str::FromStr,
 };
@@ -444,58 +444,6 @@ pub(super) fn input_ref(graph: &Graph<'_>, (node, port): (usize, usize)) -> Port
         graph.id(node).clone(),
         name.unwrap_or_else(|| PortName::from_static("in")),
     )
-}
-
-/// The ports where a plan's scopes begin and end.
-///
-/// A filter never moves across them: a scope is the part of a plan an artifact replaces, and a rewrite neither moves
-/// work out of a scope nor into one.
-pub(super) struct ScopeBoundaries {
-    inputs: BTreeSet<PortRef>,
-    exits: BTreeSet<PortRef>,
-}
-
-impl ScopeBoundaries {
-    /// Collects the boundaries of every scope of `plan`.
-    pub fn of(plan: &Plan) -> Self {
-        let mut boundaries = Self {
-            inputs: BTreeSet::new(),
-            exits: BTreeSet::new(),
-        };
-        for scope in plan.scopes.values() {
-            boundaries.inputs.extend(scope.inputs.values().cloned());
-            boundaries.exits.extend(scope.exits.values().cloned());
-        }
-        boundaries
-    }
-
-    /// Returns `true` if the edge from the output port `from` into the input port `to` crosses a scope boundary: it
-    /// leaves a scope's input, or enters a scope's exit.
-    pub fn crossed_by(&self, from: &PortRef, to: &PortRef) -> bool {
-        self.inputs.contains(from) || self.is_exit(to)
-    }
-
-    /// Returns `true` if the input port `to` is a scope's exit: what enters it leaves the scope.
-    ///
-    /// A filter inserted on an edge into an exit would join the scope its input is in.
-    pub fn is_exit(&self, to: &PortRef) -> bool {
-        self.exits.contains(to)
-    }
-
-    /// Returns `true` if a port of the filter's own nodes is a scope boundary: an output port of the filter a scope's
-    /// input, or an input port of the filter or its `drop` a scope's exit.
-    ///
-    /// Moving such a filter would move the boundary's work across it: below a scope input at the filter's kept port,
-    /// the operator the filter moves above would join the scope. Removing it, as a copy into the inputs of a merge or a
-    /// hoist does, would leave the scope naming a port the plan no longer has.
-    pub fn bound_at(&self, graph: &Graph<'_>, filter: &Filter) -> bool {
-        filter.nodes().into_iter().any(|node| {
-            let Some(op) = graph.op(node) else { return true };
-            let ports = op.ports();
-            (0..ports.outputs.len()).any(|port| self.inputs.contains(&output_ref(graph, (node, port))))
-                || (0..ports.inputs.len()).any(|port| self.exits.contains(&input_ref(graph, (node, port))))
-        })
-    }
 }
 
 /// A rewritten copy of a plan, edited by port references.

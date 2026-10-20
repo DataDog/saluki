@@ -602,7 +602,7 @@ async fn a_boundary_that_can_no_longer_be_published_is_reported_abandoned_and_it
         .iter_mut()
         .find(|node| node["id"] == "dsd_agg")
         .expect("the default program aggregates");
-    aggregation["params"]["window"]["resolved"] = serde_json::json!("30s");
+    aggregation["params"]["window"] = serde_json::json!("30s");
     let plan = Plan::from_value(value).unwrap();
     let catalog = &installing.installer().default_program.catalog;
     let report = Validator::new(&OperatorRegistry::native(), catalog).validate(&plan);

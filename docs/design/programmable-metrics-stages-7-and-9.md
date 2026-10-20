@@ -3998,6 +3998,19 @@ After detached programs, phase 2 ([as built](programmable-metrics-detached-progr
      does not run as the default program writes them now. Since a filter with nothing in it is a `split` on a constant,
      R3 folds it in compiled programs; the host registers the native counters of such a node's ports at zero, as the
      native component registers its own. The installer's native size gauges read the plan's literals, each value once.
+197. **A program is whole, and a snapshot holds one program document** (ART, D; withdraws amendments 168's scope, 61's
+     stale base and the output fingerprints of 41, 90, and 131, and the several-configs and cross-scope revision text
+     of the artifact lifecycle; version 2's steps V4 and V5, 2026-10-20). An artifact is a complete program: its nodes
+     follow the host's sources, which are the default program's sources, and its edges are its own. A name no `let`
+     defines is a source, and composition refuses an unknown source, a local ID equal to a source's, and an emit to an
+     output the artifact does not declare. There are no scopes, no `base`, no staleness, no splicing or correspondence,
+     and no output fingerprints; a document with `scope` or `base` is refused by name. An unmodified node bound to a
+     binding the host has no value for is refused, where it took the default program's node. A policy snapshot holds at
+     most one config: none revokes, one installs, and more reject every config while what runs keeps running. Revisions
+     still strictly increase, as one mark. Emits to an output a new program removes are counted drops
+     (`DropReason::Removed`) in the program in effect. The export (version 2) is the whole program with a
+     `program_hash`, the explain document (version 3) records the artifact's provenance, and the stub protocol is
+     version 2.
 
 ## 11. Risks
 

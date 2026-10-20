@@ -10,8 +10,8 @@
 //! - For an empty snapshot, it asks for the default program, as a revocation does.
 //! - For a configuration change while an artifact is in effect, it composes the artifact again, by making the
 //!   artifact's edit to the new default program. A composition equal to the active plan is unchanged; any other is
-//!   refused, as the core refuses an artifact it cannot compose with the changed default program (one emitting to an
-//!   output the change removed): the double has no way to install a new composition under the same revision, so it
+//!   refused, as the core refuses an artifact it cannot compose with the changed default program (one bound to a
+//!   binding the change left without a value): the double has no way to install a new composition under the same revision, so it
 //!   stands in for a re-composition the core rejects, with the core's report and reason.
 //! - It reports the artifact the active generation serves as the active artifact, as the core's status summary does,
 //!   and, as the core does, adds to the summary's `degraded` why that artifact was not composed again.
@@ -53,7 +53,6 @@ use super::*;
 use crate::{
     internal::ConfigUpdatesWorker,
     programmable_metrics::{
-        catalog::METRICS_SCOPE,
         telemetry::PLAN_ACTIVE_REVISION,
         test_support::{
             configuration, connected_configuration_system, facts, programmable_metrics, update, ConfigCell,
@@ -74,13 +73,13 @@ struct Scripted {
     /// itself.
     drops: Option<String>,
 
-    /// The artifact composed into the default program of the base configuration, and its validation report.
+    /// The artifact composed with the default program of the base configuration, and its validation report.
     plan: Arc<Plan>,
     report: ValidationReport,
 }
 
 impl Scripted {
-    /// Composes the artifact, `revision` and `hash`, into `default`.
+    /// Composes the artifact, `revision` and `hash`, with `default`.
     fn compose(&self, default: &Plan, revision: u64, hash: PlanHash) -> Plan {
         match &self.drops {
             Some(name) => dropping(default, name, revision, hash),
@@ -227,7 +226,7 @@ impl ArtifactPaths for ScriptedArtifacts {
         // Refused as the core refuses a re-composition it cannot compose. A proposal under the artifact's own revision
         // changes nothing in the core, which rejects it as stale, and gives the double a candidate to report the
         // refusal under, in place of the stale rejection.
-        let message = recomposition_refused(revision, &removed_output());
+        let message = recomposition_refused(revision, &unresolved_binding());
         let (candidate, actions) = Script::propose(core, Arc::new(plan), report, revision, hash);
         let actions = actions
             .into_iter()
@@ -253,14 +252,8 @@ impl ArtifactPaths for ScriptedArtifacts {
     }
 
     fn apply_states(
-        &self, core: &InstallerCore, bases: &BTreeMap<ScopeName, PlanHash>, degraded: Option<String>,
+        &self, core: &InstallerCore, default_program_hash: Option<PlanHash>, degraded: Option<String>,
     ) -> ApplyStates {
-        // The script installs `metrics` artifacts only, so it reports the first version's form, with that scope's
-        // base alone.
-        let default_program_hash = bases
-            .iter()
-            .find(|(scope, _)| scope.as_str() == METRICS_SCOPE)
-            .map(|(_, hash)| *hash);
         let script = self.script.lock().unwrap();
         let in_effect = script.in_effect(core);
         // The core reports why the artifact it serves was not composed again, after the host's own reason.
@@ -283,12 +276,12 @@ impl ArtifactPaths for ScriptedArtifacts {
     }
 }
 
-/// Returns why the artifact of `revision` was not installed again after a configuration change, as the core reports
-/// it in the status summary.
-/// The composition error the double stands in for: the configuration change removed an output the artifact emits to.
-fn removed_output() -> ComposeError {
-    ComposeError::PendingOutput {
-        output: OutputId::new("af_metrics_encode").unwrap(),
+/// The composition error the double stands in for: the configuration change left a binding the artifact binds without
+/// a value.
+fn unresolved_binding() -> ComposeError {
+    ComposeError::UnresolvedBinding {
+        node: saluki_metric_plan::ir::ArtifactNodeId::new("metrics").unwrap(),
+        binding: saluki_metric_plan::ir::BindingName::new("host.tags").unwrap(),
     }
 }
 
@@ -348,10 +341,10 @@ fn arrived(received: &Received, name: &str, index: usize) -> bool {
 }
 
 /// Returns a copy of `default` with an artifact node in front of the main output that drops the metrics named `name`,
-/// as artifact `revision`, `hash`, replacing the one scope, composes it.
+/// as artifact `revision`, `hash`, composes it.
 fn dropping(default: &Plan, name: &str, revision: u64, hash: PlanHash) -> Plan {
     let mut value = serde_json::to_value(default).unwrap();
-    value["provenance"] = json!({"artifacts": [{"scope": METRICS_SCOPE, "revision": revision, "hash": hash}]});
+    value["provenance"] = json!({"artifact": {"revision": revision, "hash": hash}});
     let edges = value["edges"].as_array_mut().unwrap();
     let main = edges
         .iter_mut()
@@ -373,7 +366,7 @@ fn dropping(default: &Plan, name: &str, revision: u64, hash: PlanHash) -> Plan {
 fn artifact_config(revision: u64, hash: PlanHash) -> ArtifactConfig {
     let payload = json!({
         "revision": revision, "artifact_hash": hash,
-        "artifact": {"scope": "metrics", "scripted": hash}
+        "artifact": {"scripted": hash}
     })
     .to_string();
     ArtifactConfig {
@@ -970,7 +963,7 @@ async fn a_configuration_change_the_artifact_in_effect_cannot_follow_is_reported
     let reason = format!(
         "artifact revision 1 cannot be composed with the changed default program, and stays as it was composed \
          before: {}",
-        removed_output()
+        unresolved_binding()
     );
     let reason = reason.as_str();
     assert_eq!(degraded.last_error.as_deref(), Some(reason));
@@ -1335,14 +1328,13 @@ async fn an_exported_artifact_installs_follows_configuration_and_rolls_back_thro
     let names = [KEPT[0], KEPT[1], "dropped", "blocked"];
     assert_eq!(harness.send(&names).await, Some(1));
 
-    // The export of `metrics`, as the control surface serves it.
+    // The export of the default program, as the control surface serves it, whose program hash the status reports.
     let boot = harness.status.load_full();
-    let scope = ScopeName::new(METRICS_SCOPE).unwrap();
-    let bundle = boot.exports[&scope].clone().expect("the scope exports");
+    let bundle = boot.export.clone().expect("the default program exports");
     let exported = serde_json::to_value(&bundle.artifact).unwrap();
     assert_eq!(
         boot.apply_states.status.default_program_hash,
-        Some(bundle.artifact.base.program_hash)
+        Some(saluki_metric_plan::export::program_hash(&bundle.artifact).unwrap())
     );
 
     // The unmodified export leaves out what does nothing as configured, such as host enrichment: it is a generation
@@ -1497,8 +1489,7 @@ async fn a_native_policy_change_under_a_published_detached_program_changes_nothi
 
     // The unmodified detached export, which leaves out what does nothing as configured, is a generation of its own.
     let boot = harness.status.load_full();
-    let scope = ScopeName::new(METRICS_SCOPE).unwrap();
-    let exported = serde_json::to_value(&boot.exports[&scope].clone().unwrap().artifact).unwrap();
+    let exported = serde_json::to_value(&boot.export.clone().unwrap().artifact).unwrap();
     harness.deliver(vec![real_config(1, exported)]);
     let adopted = harness
         .status_where(|status| ack(status).is_some_and(|(state, ..)| state == ApplyState::Active))
@@ -1586,10 +1577,8 @@ async fn the_shorter_detached_export_over_the_default_program_builds_no_kernel_a
     let registry = OperatorRegistry::native();
 
     // The detached export of a configuration with nothing for DogStatsD's processing to do leaves its nodes out.
-    let scope = ScopeName::new(METRICS_SCOPE).unwrap();
     let bundle = export_as(
         &default,
-        &scope,
         &catalog.to_document(),
         &BTreeMap::new(),
         ExportForm::Detached,

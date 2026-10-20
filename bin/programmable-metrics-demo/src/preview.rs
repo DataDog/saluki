@@ -2,14 +2,12 @@
 //! validation of the composed plan, and the plan diff against the active plan.
 //!
 //! This is what ADP's installer computes when the artifact arrives (`saluki_metric_plan::compose::receive_artifact`,
-//! `compose_all`, and `install::diff_operations`, which compares what plans do, without what does nothing as
-//! configured), run against what ADP serves: the default program it last lowered
-//! (`GET /programmable-metrics/default-program`), the catalog of the export of the artifact's scope, the
-//! artifacts it runs for the other scopes (as its status names them, read from the configs the stub serves), and its
-//! active plan (`GET /programmable-metrics/plan`). So the editor shows ADP's own verdict, each finding placed in the
-//! source through the correspondence of plan nodes to artifact nodes, and the diff publishing would install. ADP still
-//! decides: it composes the artifact again when it arrives, against the default program, catalog, and artifacts of that
-//! moment, and compiles the plan into its regions, which can refuse a plan that validates: a new output, or a state
+//! `compose`, and `install::diff_operations`, which compares what plans do, without what does nothing as configured),
+//! run against what ADP serves: the default program it last lowered (`GET /programmable-metrics/default-program`), the
+//! catalog of its export, and its active plan (`GET /programmable-metrics/plan`). So the editor shows ADP's own
+//! verdict, each finding placed in the source through the artifact node each plan node came from
+//! ([`Composed::ids`](saluki_metric_plan::compose::Composed::ids)), and the diff publishing would install. ADP still
+//! decides: it composes the artifact again when it arrives, against the default program and catalog of that moment, and compiles the plan into its regions, which can refuse a plan that validates: a new output, or a state
 //! owner the frame cannot run where it is placed, such as the aggregation moved after enrichment. The preview does
 //! not place the plan.
 
@@ -17,15 +15,15 @@ use std::collections::BTreeMap;
 
 use saluki_metric_plan::{
     canonical::{PlanHash, ResolvedValues},
-    compose::{compose_all, demanded_outputs, receive_artifact, Approval, ComposeError, ComposeOutcome},
+    compose::{compose, demanded_outputs, Approval, ComposeError, ComposeOutcome},
     export::eliminate,
     install::{
         diff::{NodeChange, OutputChange},
-        diff_operations, Correspondence,
+        diff_operations,
     },
     ir::{
-        ArtifactNodeId, NodeId, OutputBinding, OutputDecl, OutputId, Plan, PortRef, ReceivedArtifact, RecipientName,
-        Selector,
+        ArtifactNodeId, ArtifactPortRef, NodeId, OutputBinding, OutputDecl, OutputId, Plan, PortRef, ReceivedArtifact,
+        RecipientName, Selector,
     },
     normalize::normalize_artifact_with_renames,
     operators::{names, ConfigureError, OperatorRegistry, StateContract},
@@ -38,7 +36,6 @@ use crate::{
     checks::Severity,
     compile::{LineIndex, Origin, Range, RecipientLabels},
     export::ExportBundle,
-    stub::protocol::{ChannelStatus, Envelope},
 };
 
 /// The active plan an artifact is diffed against.
@@ -57,44 +54,10 @@ pub struct ActivePlan<'a> {
     pub artifact_revision: Option<u64>,
 }
 
-/// An artifact ADP runs for another scope than the edited artifact's, which ADP composes the edited artifact with.
-#[derive(Clone, Debug)]
-pub struct ScopeArtifact {
-    /// The artifact, as ADP received it.
-    pub artifact: ReceivedArtifact,
-
-    /// The revision ADP runs it under, which composition records in the plan's provenance.
-    pub revision: u64,
-}
-
-/// Returns the artifacts ADP runs for the scopes other than `scope`: each artifact its status reports active in another
-/// scope, read from the envelope the stub serves for that scope (`served`, by scope), if the two have the same artifact
-/// hash.
-///
-/// An artifact ADP runs that the stub no longer serves (one it revoked or replaced, whose generation still runs) is
-/// left out: ADP no longer composes it either.
-pub fn other_scope_artifacts(status: &ChannelStatus, served: &[(String, Envelope)], scope: &str) -> Vec<ScopeArtifact> {
-    status
-        .active_artifacts()
-        .into_iter()
-        .filter(|(other, _)| other != scope)
-        .filter_map(|(other, active)| {
-            let (_, envelope) = served.iter().find(|(served, envelope)| {
-                *served == other && active.artifact_hash.as_deref() == Some(envelope.artifact_hash.as_str())
-            })?;
-            let artifact = receive_artifact(envelope.artifact.clone()).ok()?;
-            Some(ScopeArtifact {
-                artifact,
-                revision: active.revision.unwrap_or(envelope.revision),
-            })
-        })
-        .collect()
-}
-
 /// What a source is compiled against.
 #[derive(Clone, Copy, Debug)]
 pub struct CompileContext<'a> {
-    /// ADP's export bundle of the scope the edited artifact replaces, with the catalog.
+    /// ADP's export bundle, with the catalog.
     pub export: &'a ExportBundle,
 
     /// The default program the export was taken from, which artifacts are composed into. Without it, only the
@@ -104,10 +67,6 @@ pub struct CompileContext<'a> {
     /// The active plan, which the plan diff compares against. Without it, the diff compares against the default
     /// program.
     pub active: Option<ActivePlan<'a>>,
-
-    /// The artifacts ADP runs for the other scopes, which ADP composes the edited artifact with (see
-    /// [`other_scope_artifacts`]). One for the edited artifact's own scope is ignored: the edited artifact replaces it.
-    pub others: &'a [ScopeArtifact],
 
     /// The revision a publish would give the artifact, which composition records in the plan's provenance.
     pub revision: u64,
@@ -224,9 +183,6 @@ pub struct Preview {
     /// diff are ADP's but for those outputs' settings, and its plan hash is not the one ADP installs.
     pub provisional: bool,
 
-    /// Whether the artifact's base is not the current default program.
-    pub stale_base: bool,
-
     /// Every node that differs, the composed plan's in its order, then the removed ones.
     pub nodes: Vec<NodeChangeView>,
 
@@ -269,14 +225,13 @@ pub struct PlacedFinding {
     pub span: Option<Span>,
 }
 
-/// Composes a received artifact into the default program, with the artifacts ADP runs for the other scopes, validates
-/// the composed plan, and diffs it against the active plan (or, without one, the default program), as ADP will when the
+/// Composes a received artifact into the default program, validates the composed plan, and diffs it against the active plan (or, without one, the default program), as ADP will when the
 /// artifact arrives as revision `revision`.
 ///
 /// Returns the findings and the preview. A composition error is a single finding and no diff: ADP rejects the artifact
 /// without composing a plan.
 pub fn compose_preview(
-    source: &str, parsed: &Parsed, received: &ReceivedArtifact, context: &CompileContext<'_>, default_program: &Plan,
+    parsed: &Parsed, received: &ReceivedArtifact, context: &CompileContext<'_>, default_program: &Plan,
     index: &LineIndex<'_>,
 ) -> (Vec<PlacedFinding>, Preview) {
     let registry = OperatorRegistry::native();
@@ -327,25 +282,7 @@ pub fn compose_preview(
                 .or_else(|| written.node(parsed, stand_in.emit.as_str())),
         })
         .collect::<Vec<_>>();
-    let scope = &received.artifact.scope;
-    let others = context
-        .others
-        .iter()
-        .filter(|other| &other.artifact.artifact.scope != scope)
-        .map(|other| {
-            // ADP runs the other scopes' artifacts: their emits to an output that changed are dropped, not refused.
-            let approval = Approval {
-                revision: other.revision,
-                approved_against: None,
-                active_plan_hash: None,
-                in_effect: true,
-            };
-            (&other.artifact, approval)
-        })
-        .collect::<Vec<_>>();
-    let mut artifacts = vec![(received, &approval)];
-    artifacts.extend(others.iter().map(|(artifact, approval)| (*artifact, approval)));
-    let composed = match compose_all(default_program, &artifacts, &catalog, &registry) {
+    let composed = match compose(default_program, received, &approval, &catalog, &registry) {
         Ok(composed) => composed,
         Err(error) => {
             // A program that waits is not refused: ADP holds it pending, and installs it once what it waits for exists.
@@ -372,21 +309,22 @@ pub fn compose_preview(
                 origin: Origin::Composition,
                 rule: None,
                 message: waiting_message(&error, export, context.labels).unwrap_or_else(|| error.to_string()),
-                span: compose_error_span(&error, parsed, source),
+                span: compose_error_span(&error, parsed),
             };
             adds.push(finding);
             return (adds, Preview::unavailable(reason));
         }
     };
 
-    // The edited artifact's own composition: its correspondence places findings and diff nodes in its source.
-    let (correspondence, stale_base) = match composed.scopes.get(scope) {
-        Some(own) => (&own.correspondence, own.stale_base),
-        None => (&composed.correspondence, composed.stale_base),
-    };
+    // The artifact node each plan node came from places findings and diff nodes in the source.
+    let artifact_nodes = composed
+        .ids
+        .iter()
+        .map(|(artifact_node, node)| (node.clone(), artifact_node.clone()))
+        .collect::<BTreeMap<_, _>>();
     let mut findings = adds;
     // The artifact ADP runs, composed again in effect, may run degraded: its emits to recipients that are gone dropped.
-    if let ComposeOutcome::Degraded(dropped) = &own_outcome(&composed, scope) {
+    if let ComposeOutcome::Degraded(dropped) = &composed.outcome {
         for dropped in dropped {
             findings.push(PlacedFinding {
                 severity: Severity::Warning,
@@ -396,21 +334,6 @@ pub fn compose_preview(
                 span: None,
             });
         }
-    }
-    if stale_base {
-        findings.push(PlacedFinding {
-            severity: Severity::Warning,
-            origin: Origin::Composition,
-            rule: None,
-            message: format!(
-                "The base {} is not the current default program, {}. ADP installs the artifact but reports it as \
-                 stale: the default program changed since this artifact was derived from it. Load the default program \
-                 again and reapply your change to rebase it.",
-                parsed.artifact.base.program_hash,
-                export.program_hash()
-            ),
-            span: find(source, &parsed.artifact.base.program_hash.to_string()),
-        });
     }
     // The recipients the composed plan delivers to, through any output an `emit` names.
     let delivered = composed
@@ -449,7 +372,14 @@ pub fn compose_preview(
                 continue;
             }
         }
-        let span = finding_span(finding, &composed.plan, correspondence, parsed, &registry);
+        let span = finding_span(
+            finding,
+            &composed.plan,
+            &composed.ids,
+            &artifact_nodes,
+            parsed,
+            &registry,
+        );
         let message = if span.is_some() {
             finding.message.clone()
         } else {
@@ -493,7 +423,7 @@ pub fn compose_preview(
     // By what the plans do: what does nothing as configured, which the detached export leaves out and the default
     // program runs, is no change in what the program does. ADP compares plans as written, so dropping those nodes is a
     // generation of its own, which builds no kernel for them: a note says so.
-    let diff = diff_operations(base, &composed.plan, correspondence, &registry);
+    let diff = diff_operations(base, &composed.plan, &registry);
     let dropped = eliminate(base, &registry)
         .omitted
         .into_iter()
@@ -510,15 +440,14 @@ pub fn compose_preview(
     // A state owner the edit names differently from the plan in effect starts over with empty state: a note says so,
     // and how to keep the ID.
     notes.extend(renamed_state_owners(base, &composed.plan, &registry, |node| {
-        correspondence.artifact_node(node).map(ToString::to_string)
+        artifact_nodes.get(node).map(ToString::to_string)
     }));
     let written = WrittenIds::of(parsed);
     let nodes = diff
-        .diff
         .changes()
         .filter_map(|change| {
             let candidate = composed.plan.node(&change.id);
-            let artifact_node = diff.artifact_nodes.get(&change.id);
+            let artifact_node = artifact_nodes.get(&change.id);
             let (kind, aspects) = match &change.change {
                 NodeChange::Unchanged => return None,
                 NodeChange::Added => (ChangeKind::Added, Vec::new()),
@@ -553,16 +482,6 @@ pub fn compose_preview(
         })
         .collect();
     let edge = |from: &PortRef, to: &PortRef| format!("{} -> {}", from, to);
-    let with_others = match others.as_slice() {
-        [] => String::new(),
-        others => {
-            let scopes = others
-                .iter()
-                .map(|(artifact, approval)| format!("`{}` (revision {})", artifact.artifact.scope, approval.revision))
-                .collect::<Vec<_>>();
-            format!(" with the artifacts ADP runs for {}", scopes.join(", "))
-        }
-    };
     let provisional = if standing_in.is_empty() {
         String::new()
     } else {
@@ -578,15 +497,15 @@ pub fn compose_preview(
         provisional: !standing_in.is_empty(),
         reason: match against.kind {
             BaseKind::Active => format!(
-                "Composed into ADP's default program{} and validated as ADP does when the artifact arrives; the diff \
+                "Composed into ADP's default program and validated as ADP does when the artifact arrives; the diff \
                  compares the composed plan with the active plan. The plan is not placed into ADP's regions here.{}",
-                with_others, provisional
+                provisional
             ),
             BaseKind::DefaultProgram => format!(
-                "Composed into ADP's default program{} and validated as ADP does when the artifact arrives; ADP's \
+                "Composed into ADP's default program and validated as ADP does when the artifact arrives; ADP's \
                  active plan was not available, so the diff compares the composed plan with the default program. The \
                  plan is not placed into ADP's regions here.{}",
-                with_others, provisional
+                provisional
             ),
         },
         plan_hash: composed
@@ -595,13 +514,11 @@ pub fn compose_preview(
             .ok()
             .map(|hash| hash.to_string()),
         valid: composed.report.is_valid(),
-        unchanged: diff.diff.is_empty(),
-        stale_base,
+        unchanged: diff.is_empty(),
         nodes,
-        edges_added: diff.diff.edges_added.iter().map(|e| edge(&e.from, &e.to)).collect(),
-        edges_removed: diff.diff.edges_removed.iter().map(|e| edge(&e.from, &e.to)).collect(),
+        edges_added: diff.edges_added.iter().map(|e| edge(&e.from, &e.to)).collect(),
+        edges_removed: diff.edges_removed.iter().map(|e| edge(&e.from, &e.to)).collect(),
         outputs: diff
-            .diff
             .outputs
             .iter()
             .filter_map(|output| {
@@ -701,7 +618,6 @@ impl StandIn {
     fn catalog_output(&self) -> CatalogOutput {
         CatalogOutput {
             accepts: self.decl.accepts,
-            fingerprint: self.decl.fingerprint,
             recipients: self.decl.recipients.clone(),
         }
     }
@@ -743,21 +659,11 @@ fn stand_ins(received: &ReceivedArtifact, export: &ExportBundle, default_program
                         .find(|output| output.recipients.iter().any(|id| demand.recipients.contains(id)))
                 })?;
             let id = format!("adp_will_add_{}", index + 1).parse::<OutputId>().ok()?;
-            // As ADP binds an implied output: its selector its recipients, its fingerprint version 2 over them.
+            // As ADP binds an implied output: its selector its recipients.
             let binding = template.binding.clone().map(|binding| OutputBinding {
                 selector: Selector::Recipients(demand.recipients.clone()),
                 ..binding
             });
-            let fingerprint = match &binding {
-                Some(binding) => {
-                    saluki_metric_plan::resources::fingerprint(&binding.host, template.accepts, &binding.selector)
-                }
-                None => PlanHash::of_value(&serde_json::json!({
-                    "stand_in": id.as_str(),
-                    "recipients": demand.recipients
-                }))
-                .ok()?,
-            };
             let names = export
                 .catalog
                 .recipients()
@@ -767,7 +673,6 @@ fn stand_ins(received: &ReceivedArtifact, export: &ExportBundle, default_program
             Some(StandIn {
                 decl: OutputDecl {
                     id,
-                    fingerprint,
                     recipients: demand.recipients.clone(),
                     binding,
                     ..template.clone()
@@ -817,22 +722,6 @@ fn waiting_message(error: &ComposeError, export: &ExportBundle, labels: &Recipie
     }
 }
 
-/// Returns how the artifact of `scope` composed: as written, or degraded.
-fn own_outcome(
-    composed: &saluki_metric_plan::compose::Composed, scope: &saluki_metric_plan::ir::ScopeName,
-) -> ComposeOutcome {
-    composed
-        .scopes
-        .get(scope)
-        .map(|own| own.outcome.clone())
-        .unwrap_or(ComposeOutcome::Composed)
-}
-
-/// Returns the span of the first occurrence of `text` in `source`, if any.
-fn find(source: &str, text: &str) -> Option<Span> {
-    source.find(text).map(|start| Span::new(start, start + text.len()))
-}
-
 /// Returns the span of the `output` parameter of the first `emit` of the artifact that delivers to `output`.
 fn emit_span(parsed: &Parsed, output: &OutputId) -> Option<Span> {
     let node = parsed.artifact.nodes.iter().find(|node| {
@@ -849,11 +738,11 @@ fn emit_span(parsed: &Parsed, output: &OutputId) -> Option<Span> {
         .or_else(|| parsed.spans.node(node.id.as_str()))
 }
 
-/// Places a composition error in the source: at the node it names, or the output or scope it is about.
-fn compose_error_span(error: &ComposeError, parsed: &Parsed, source: &str) -> Option<Span> {
+/// Places a composition error in the source: at the node or edge it is about.
+fn compose_error_span(error: &ComposeError, parsed: &Parsed) -> Option<Span> {
     let written = WrittenIds::of(parsed);
     match error {
-        ComposeError::ReservedOutsideScope { node, .. } | ComposeError::UnresolvedBinding { node, .. } => {
+        ComposeError::ReservedSource { node, .. } | ComposeError::UnresolvedBinding { node, .. } => {
             written.node(parsed, node.as_str())
         }
         ComposeError::UnknownRecipient { node, .. }
@@ -862,13 +751,16 @@ fn compose_error_span(error: &ComposeError, parsed: &Parsed, source: &str) -> Op
         | ComposeError::RecipientsOnTwoHosts { node, .. } => written
             .param(parsed, node.as_str(), "to")
             .or_else(|| written.node(parsed, node.as_str())),
-        ComposeError::UnrecordedOutput { node, .. } | ComposeError::UndeclaredOutput { node, .. } => written
+        ComposeError::UndeclaredOutput { node, .. } => written
             .param(parsed, node.as_str(), "output")
             .or_else(|| written.node(parsed, node.as_str())),
-        ComposeError::PendingOutput { output } | ComposeError::ReboundOutput { output, .. } => {
-            emit_span(parsed, output)
-        }
-        ComposeError::UnknownScope { scope } => find(source, scope.as_str()),
+        // The first edge that reads the source.
+        ComposeError::UnknownSource { name, .. } => parsed
+            .artifact
+            .edges
+            .iter()
+            .position(|edge| matches!(&edge.from, ArtifactPortRef::Input(input) if input == name))
+            .and_then(|index| parsed.spans.edge(index)),
         ComposeError::DefaultProgram { .. } | ComposeError::Malformed { .. } => None,
     }
 }
@@ -907,21 +799,22 @@ impl WrittenIds {
     }
 }
 
-/// Places a validation finding of the composed plan in the source, through the artifact node each plan node came
-/// from (`correspondence`, the edited artifact's). A finding at a node the artifact does not have (outside its scope),
-/// or at the plan or a scope as a whole, is not placed.
+/// Places a validation finding of the composed plan in the source, through the plan node each artifact node became
+/// (`ids`) and its inverse (`artifact_nodes`). A finding at a node the artifact does not have (a source), or at the
+/// plan as a whole, is not placed.
 fn finding_span(
-    finding: &Finding, plan: &Plan, correspondence: &Correspondence, parsed: &Parsed, registry: &OperatorRegistry,
+    finding: &Finding, plan: &Plan, ids: &BTreeMap<ArtifactNodeId, NodeId>,
+    artifact_nodes: &BTreeMap<NodeId, ArtifactNodeId>, parsed: &Parsed, registry: &OperatorRegistry,
 ) -> Option<Span> {
     let written = WrittenIds::of(parsed);
-    let node_span = |node: &saluki_metric_plan::ir::NodeId| {
-        correspondence
-            .artifact_node(node)
+    let node_span = |node: &NodeId| {
+        artifact_nodes
+            .get(node)
             .and_then(|artifact_node| written.node(parsed, artifact_node.as_str()))
     };
     match &finding.location {
         Location::Node { id, .. } => {
-            let artifact_node = written.get(correspondence.artifact_node(id)?.as_str());
+            let artifact_node = written.get(artifact_nodes.get(id)?.as_str());
             // A parameter the operator refuses is placed at the parameter, as the operator names it.
             let parameter = (finding.rule == Rule::ValidParameters)
                 .then(|| {
@@ -948,14 +841,10 @@ fn finding_span(
                 .edges
                 .iter()
                 .position(|artifact_edge| match &artifact_edge.to {
-                    saluki_metric_plan::ir::ArtifactPortRef::Node { node, port } => {
-                        port == &edge.to.port
-                            && correspondence
-                                .get(node)
-                                .is_some_and(|placed| placed.node == edge.to.node)
+                    ArtifactPortRef::Node { node, port } => {
+                        port == &edge.to.port && ids.get(node) == Some(&edge.to.node)
                     }
-                    saluki_metric_plan::ir::ArtifactPortRef::Input(_)
-                    | saluki_metric_plan::ir::ArtifactPortRef::Exit(_) => false,
+                    ArtifactPortRef::Input(_) => false,
                 });
             artifact_edge
                 .and_then(|index| parsed.spans.edge(index))
@@ -963,7 +852,8 @@ fn finding_span(
                 .or_else(|| node_span(&edge.from.node))
         }
         Location::Output(output) => emit_span(parsed, output),
-        Location::Plan | Location::Scope(_) => None,
+        // The plan as a whole.
+        _ => None,
     }
 }
 

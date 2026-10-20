@@ -149,3 +149,55 @@ fn recipients_and_host_settings_are_reconfigured_added_or_removed() {
         vec![("dd_metrics_encode".to_string(), OutputChange::Rebound)]
     );
 }
+
+/// The default program composed back from its export: unmodified, and in the detached form, which leaves out what
+/// does nothing as configured.
+fn composed_exports(plan: &Plan) -> (Plan, Plan) {
+    let registry = OperatorRegistry::native();
+    let catalog = crate::testing::catalog_for(plan);
+    let compose = |form| {
+        let bundle = crate::export::export_as(plan, &catalog, &Default::default(), form, &registry).unwrap();
+        let document = serde_json::to_value(&bundle.artifact).unwrap();
+        let received = crate::ir::ReceivedArtifact::from_value(document).unwrap();
+        let approval = crate::compose::tests::approval(1);
+        crate::compose::compose(plan, &received, &approval, &catalog, &registry)
+            .unwrap()
+            .plan
+    };
+    (
+        compose(crate::export::ExportForm::Bound),
+        compose(crate::export::ExportForm::Detached),
+    )
+}
+
+#[test]
+fn an_unmodified_export_diffs_as_no_change_and_the_detached_one_only_by_what_it_leaves_out() {
+    let registry = OperatorRegistry::native();
+    let mut value = serde_json::from_str::<Value>(DEFAULT_PROGRAM_JSON).unwrap();
+    // An empty metric filterlist, which does nothing, and which the detached export leaves out.
+    for node in value["nodes"].as_array_mut().unwrap() {
+        if node["id"] == "dsd_prefix_filter_blocklist" {
+            node["params"]["predicate"] = crate::testing::listener_filterlist(json!([]));
+        }
+    }
+    let plan = Plan::from_value(value).unwrap();
+    let (bound, detached) = composed_exports(&plan);
+
+    // Composed back unmodified, the export is the default program: no diff changes anything.
+    assert!(diff(&plan, &bound, &registry).is_empty());
+    assert!(diff_operations(&plan, &bound, &registry).is_empty());
+
+    // The detached export leaves the filterlist out: node by node it is removed, but by what the plans do, nothing
+    // changes.
+    let removed = diff(&plan, &detached, &registry)
+        .changes()
+        .filter(|node| node.change == NodeChange::Removed)
+        .map(|node| node.id.to_string())
+        .collect::<Vec<_>>();
+    assert!(
+        removed.contains(&"dsd_prefix_filter_blocklist".to_string()),
+        "{:?}",
+        removed
+    );
+    assert!(diff_operations(&plan, &detached, &registry).is_empty());
+}

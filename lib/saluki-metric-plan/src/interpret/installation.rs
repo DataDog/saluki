@@ -83,7 +83,7 @@ impl Run<'_, '_> {
         match prepared {
             Ok(program) => Ok(Some(program)),
             Err(PrepareError::Rejected(rejection)) => {
-                self.reject(position, rejection);
+                self.reject(position, *rejection);
                 Ok(None)
             }
             Err(PrepareError::Fatal(kind)) => Err(kind),
@@ -96,7 +96,7 @@ impl Run<'_, '_> {
         let transition = match self.classify(&program) {
             Ok(transition) => transition,
             Err(PrepareError::Rejected(rejection)) => {
-                self.reject(position, rejection);
+                self.reject(position, *rejection);
                 return Ok(());
             }
             Err(PrepareError::Fatal(kind)) => return Err(kind),
@@ -112,7 +112,7 @@ impl Run<'_, '_> {
         {
             Ok(lineages) => lineages,
             Err(PrepareError::Rejected(rejection)) => {
-                self.reject(position, rejection);
+                self.reject(position, *rejection);
                 return Ok(());
             }
             Err(PrepareError::Fatal(kind)) => return Err(kind),
@@ -149,10 +149,10 @@ impl Run<'_, '_> {
                     Some((_, previous)) if previous.is_isolated() && node.is_isolated() => {
                         let class = previous.op.transition_to(&node.op);
                         if class == TransitionClass::Reject {
-                            return Err(PrepareError::Rejected(InstallRejection::Transition {
+                            return Err(PrepareError::Rejected(Box::new(InstallRejection::Transition {
                                 node: node.id.clone(),
                                 class,
-                            }));
+                            })));
                         }
                         let Some((index, instance)) = previous
                             .instance()
@@ -201,10 +201,10 @@ impl Run<'_, '_> {
                 Some((from, previous)) if previous.is_stateful() || node.is_stateful() => {
                     match previous.op.transition_to(&node.op) {
                         TransitionClass::Reject => {
-                            return Err(PrepareError::Rejected(InstallRejection::Transition {
+                            return Err(PrepareError::Rejected(Box::new(InstallRejection::Transition {
                                 node: node.id.clone(),
                                 class: TransitionClass::Reject,
-                            }))
+                            })))
                         }
                         TransitionClass::Retain if previous.op.params() == node.op.params() => {
                             transition.carried_local.push((from, to));
@@ -259,10 +259,10 @@ impl Run<'_, '_> {
                         }
                     };
                     let built = built.map_err(|source| {
-                        PrepareError::Rejected(InstallRejection::HostBuild {
+                        PrepareError::Rejected(Box::new(InstallRejection::HostBuild {
                             node: node.id.clone(),
                             source,
-                        })
+                        }))
                     })?;
                     *adapter = Some(built);
                 }

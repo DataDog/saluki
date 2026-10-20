@@ -91,18 +91,16 @@ async fn call(app: &App, method: &str, path: &str, body: Option<Value>) -> (Stat
     (status, value)
 }
 
-/// The demo export's program as the editor prints it, with its base stated, so that it compiles where the export is
-/// not at hand to give the base back.
+/// The demo export's program as the editor prints it.
 fn export_source() -> String {
     let export = ExportBundle::from_value(serde_json::from_str(DEMO_EXPORT).unwrap()).unwrap();
-    let base = format!("policy metrics {{\n  base \"{}\"\n\n", export.program_hash());
-    default_program_source(&export, &RecipientLabels::default()).replacen("policy metrics {\n", &base, 1)
+    default_program_source(&export, &RecipientLabels::default())
 }
 
 /// Records a poll from ADP whose status carries the given active plan hash and revision high-water mark.
 fn adp_polls(app: &App, active_plan_hash: &str, revision_high_water: u64) {
     let request = PollRequest {
-        protocol_version: Some(1),
+        protocol_version: Some(2),
         client: ClientInfo {
             id: "adp-1".to_string(),
             version: "1.8.0".to_string(),
@@ -169,7 +167,7 @@ async fn publishing_approves_exactly_the_last_compiled_hash() {
     // ADP's next poll receives an envelope approved against the plan that was active when the artifact was compiled.
     let response: PollResponse = {
         let request = PollRequest {
-            protocol_version: Some(1),
+            protocol_version: Some(2),
             ..PollRequest::default()
         };
         app.channel.poll(request, Vec::new(), unix_millis()).unwrap()
@@ -236,7 +234,7 @@ async fn the_compile_api_returns_placed_diagnostics_and_checks_against_the_expor
     let diagnostic = &body["diagnostics"][0];
     assert_eq!(diagnostic["severity"], "error");
     assert_eq!(diagnostic["origin"], "check");
-    assert_eq!(diagnostic["range"]["line"], 24);
+    assert_eq!(diagnostic["range"]["line"], 22);
     assert!(diagnostic["message"]
         .as_str()
         .unwrap()
@@ -246,7 +244,7 @@ async fn the_compile_api_returns_placed_diagnostics_and_checks_against_the_expor
         app,
         "POST",
         "/api/compile",
-        Some(json!({ "source": "policy metrics {\n  nod" })),
+        Some(json!({ "source": "policy {\n  nod" })),
     )
     .await;
     assert_eq!(body["ok"], false);
@@ -527,12 +525,10 @@ async fn destinations_are_added_and_removed_in_adps_configuration_file_and_nativ
     assert!(config()["additional_endpoints"][second["url"].as_str().unwrap()].is_array());
 }
 
-/// Returns the source of the default program with both of its windows set to `window`, with its base stated, since
-/// the app these tests compile through has no export to give it back.
+/// Returns the source of the default program with both of its windows set to `window`.
 fn width_source(window: &str) -> String {
     let (_, export) = crate::preview::tests::fixture();
-    let base = format!("policy metrics {{\n  base \"{}\"\n\n", export.program_hash());
-    let source = default_program_source(&export, &RecipientLabels::default()).replacen("policy metrics {\n", &base, 1);
+    let source = default_program_source(&export, &RecipientLabels::default());
     crate::scenario::edits::width_change(&source, window).unwrap()
 }
 
@@ -546,7 +542,6 @@ fn width_artifact(window: &str) -> Value {
         export: &export,
         default_program: Some(&plan),
         active: None,
-        others: &[],
         revision: 1,
         labels: &RecipientLabels::default(),
         in_effect: None,
@@ -620,22 +615,11 @@ async fn artifacts_that_cannot_set_the_canarys_width_leave_its_alignment_alone()
     let harness = harness().await;
     let app = &harness.app;
 
-    // An artifact of a scope ADP does not declare, with literal windows: ADP refuses it, so its windows never take
-    // effect.
-    let mut other = width_artifact("10s");
-    other["scope"] = json!("other_scope");
-    let served = app.channel.publish(other, None, None, unix_millis()).unwrap();
-    assert_eq!(app.channel.configs()[0].scope, "other_scope");
-    let (_, state) = call(app, "GET", "/api/state", None).await;
-    assert_eq!(state["canary_width_secs"], 1);
-    assert!(app.channel.revoke(None, unix_millis()).unwrap());
-
     // An artifact ADP rejected: its width counts only until the rejection is known.
     let rejected = app
         .channel
         .publish(width_artifact("30s"), None, None, unix_millis())
         .unwrap();
-    assert!(rejected.revision > served.revision);
     let (_, state) = call(app, "GET", "/api/state", None).await;
     assert_eq!(state["canary_width_secs"], 30);
     let status = json!({"config_states": [
@@ -645,7 +629,7 @@ async fn artifacts_that_cannot_set_the_canarys_width_leave_its_alignment_alone()
     app.control.record_status(Surface::Available(status), unix_millis());
     let (_, state) = call(app, "GET", "/api/state", None).await;
     assert_eq!(state["canary_width_secs"], 1);
-    assert!(app.channel.revoke(None, unix_millis()).unwrap());
+    assert!(app.channel.revoke(unix_millis()).unwrap());
 
     // Windows of 7 and 60 seconds share a bucket boundary every 420 seconds, beyond the history: the check waits, and
     // says why, until the older width leaves. Published through the API, one replacing the other with no look at the

@@ -6,7 +6,7 @@
 use saluki_metric_plan::ir::PolicyArtifact;
 use serde_json::Value;
 
-use crate::{parse, parse_with, print, Diagnostic, ParseOptions, Parsed, PrintOptions};
+use crate::{parse, print, Diagnostic, Parsed, PrintOptions};
 
 mod errors;
 mod fixture;
@@ -14,13 +14,13 @@ mod grammar;
 mod predicates;
 mod properties;
 
-/// The base program hash the hand-written examples use.
-const BASE: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+/// A content hash the hand-written examples use, such as a blob's.
+const HASH: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
-/// Returns a `post_enrich` policy with the header `base "<BASE>"`, then `statements`, each already indented as the
-/// printer indents them and separated by blank lines, as they print.
+/// Returns a policy with `statements`, each already indented as the printer indents them and separated by blank lines,
+/// as they print.
 fn policy(statements: &str) -> String {
-    format!("policy post_enrich {{\n  base \"{}\"\n\n{}\n}}\n", BASE, statements)
+    format!("policy {{\n{}\n}}\n", statements)
 }
 
 /// Returns the artifact a hand-written JSON document describes, read the way the plan crate reads artifacts.
@@ -96,7 +96,7 @@ fn assert_same_program(parsed: &PolicyArtifact, export: &PolicyArtifact, printed
 /// Returns the default program's export, normalized, as a JSON document, in the export's order.
 pub(crate) fn default_export_document() -> Value {
     serde_json::from_str(include_str!(
-        "../../../saluki-metric-plan/fixtures/export/default-program-metrics.json"
+        "../../../saluki-metric-plan/fixtures/export/default-program.json"
     ))
     .expect("the default program's export reads")
 }

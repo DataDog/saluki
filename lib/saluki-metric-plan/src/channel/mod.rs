@@ -11,7 +11,8 @@
 //!   summary](StatusSummary) beside them;
 //! - a transport failure delivers nothing, so the current snapshot stays in effect: it never revokes.
 //!
-//! One product travels on the channel, `policy`, whose artifacts replace the default program's scope.
+//! One product travels on the channel, `policy`, whose one config at a time is a whole program that runs in place of the
+//! default program.
 //!
 //! The host persists nothing: persistence and redelivery belong to the channel. A transport, such as the local
 //! development stub, and the installer meet through [`artifact_channel`]: the transport publishes each snapshot it
@@ -35,5 +36,5 @@ pub use self::snapshot::{
 mod state;
 pub use self::state::{
     ActiveArtifact, ApplyState, ApplyStates, ConfigAcknowledgment, NativePolicy, ProgramRuns, ProgramStatus,
-    ScopeStatus, StatusSummary, POLICY_SCOPE,
+    StatusSummary,
 };

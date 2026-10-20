@@ -33,10 +33,10 @@ use crate::{
 
 mod fixtures;
 pub use self::fixtures::{
-    default_program_catalog, default_program_hosts, default_program_resources_catalog, default_program_slot_name,
-    listener_filterlist, post_aggregate_filter, two_scope_catalog, two_scopes_of, with_opaque_gateways, with_resources,
-    with_two_scopes, without_single_aggregation, DEFAULT_PROGRAM_JSON, DEFAULT_PROGRAM_RESOURCES_JSON,
-    DEFAULT_PROGRAM_SCOPE, DEFAULT_PROGRAM_SCOPE_INPUTS, NO_AGGREGATION_PIPELINE_OFF_JSON, TWO_SCOPES,
+    catalog_for, default_program_catalog, default_program_hosts, default_program_resources_catalog,
+    default_program_slot_name, listener_filterlist, post_aggregate_filter, with_opaque_gateways, with_resources,
+    without_single_aggregation, DEFAULT_PROGRAM_JSON, DEFAULT_PROGRAM_RESOURCES_JSON, DEFAULT_PROGRAM_SOURCES,
+    NO_AGGREGATION_PIPELINE_OFF_JSON,
 };
 
 fn arb_strings(vocabulary: &'static [&'static str]) -> impl Strategy<Value = Vec<String>> {

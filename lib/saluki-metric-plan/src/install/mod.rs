@@ -13,8 +13,6 @@
 //! - [`InstallerCore`]: the installer's state and decisions, without I/O: the caller performs the
 //!   [actions][Action] it returns and reports what happens. Artifacts from the [channel](crate::channel) reach it as
 //!   snapshots ([`InstallerCore::on_snapshot`]), and it keeps each config's acknowledgment.
-//! - [`correspondence`]: which plan node each artifact node became when it was composed, and the plan diff in the
-//!   artifact's terms.
 //! - [`resources`]: the leases and recipients that the fixed encode and delivery hosts run for live generations, and
 //!   the resource transactions that publish what outlives generations.
 //!
@@ -30,11 +28,10 @@ pub use self::core::{
     Prepare, PrepareOutcome, PrepareSite, Rejection, Report, SlotPrepare, StateBinding,
 };
 
-pub mod correspondence;
-pub use self::correspondence::{diff_operations, diff_with_correspondence, Correspondence, CorrespondingDiff};
-
 pub mod diff;
-pub use self::diff::{diff, kernel_reuse, state_bindings, CutPlan, PlanDiff, StateOwnerChange, StateOwnerDiff};
+pub use self::diff::{
+    diff, diff_operations, kernel_reuse, state_bindings, CutPlan, PlanDiff, StateOwnerChange, StateOwnerDiff,
+};
 
 pub mod lifecycle;
 pub use self::lifecycle::{GenerationState, InvalidTransition, LifecycleEvent};
@@ -56,13 +53,10 @@ mod artifact_tests;
 mod cut_tests;
 
 #[cfg(test)]
+mod program_tests;
+
+#[cfg(test)]
 mod resource_tests;
 
 #[cfg(test)]
-mod scope_tests;
-
-#[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod unified_scope_tests;

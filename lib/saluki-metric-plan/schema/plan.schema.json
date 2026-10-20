@@ -54,17 +54,35 @@
           "$ref": "#/definitions/Resources"
         }
       ]
-    },
-    "scopes": {
-      "description": "The replaceable regions of the plan, by name.",
-      "type": "object",
-      "additionalProperties": {
-        "$ref": "#/definitions/ScopeDecl"
-      }
     }
   },
   "additionalProperties": false,
   "definitions": {
+    "ArtifactRevision": {
+      "description": "One revision of an approved artifact.",
+      "type": "object",
+      "required": [
+        "hash",
+        "revision"
+      ],
+      "properties": {
+        "hash": {
+          "description": "The hash of the artifact.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PlanHash"
+            }
+          ]
+        },
+        "revision": {
+          "description": "The artifact's revision number. Revisions strictly increase.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
     "BoundedDelivery": {
       "description": "A recipient's delivery within bounds tighter than its host's native ones.\n\nA dual-ship destination added for an experiment should not take the primary's memory, should not fill the disk, and may not deserve the whole drain deadline of retries when it is removed: these knobs cover that.",
       "type": "object",
@@ -129,40 +147,6 @@
           ]
         }
       ]
-    },
-    "ComposedArtifact": {
-      "description": "An artifact revision composed into a plan, and the scope it replaces.",
-      "type": "object",
-      "required": [
-        "hash",
-        "revision",
-        "scope"
-      ],
-      "properties": {
-        "hash": {
-          "description": "The hash of the artifact.",
-          "allOf": [
-            {
-              "$ref": "#/definitions/PlanHash"
-            }
-          ]
-        },
-        "revision": {
-          "description": "The artifact's revision number.",
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0.0
-        },
-        "scope": {
-          "description": "The scope the artifact replaces: every node of the scope's region in the plan is the artifact's.",
-          "allOf": [
-            {
-              "$ref": "#/definitions/ScopeName"
-            }
-          ]
-        }
-      },
-      "additionalProperties": false
     },
     "CredentialRef": {
       "description": "A credential reference.",
@@ -423,7 +407,6 @@
       "type": "object",
       "required": [
         "accepts",
-        "fingerprint",
         "id"
       ],
       "properties": {
@@ -451,14 +434,6 @@
           "allOf": [
             {
               "$ref": "#/definitions/DeliveryPolicy"
-            }
-          ]
-        },
-        "fingerprint": {
-          "description": "A digest of what the output's declaration says it delivers to.\n\nAn artifact records the fingerprint of every output it was written against, so that it is never silently applied to an output that now delivers elsewhere. A bound output's fingerprint is version 2 ([`resources::fingerprint`][crate::resources::fingerprint]): its delivery host, what it accepts, and its [selector](super::Selector), so that recipients added or removed under a role change nothing.",
-          "allOf": [
-            {
-              "$ref": "#/definitions/PlanHash"
             }
           ]
         },
@@ -529,12 +504,16 @@
       "description": "Where a plan as a whole came from.",
       "type": "object",
       "properties": {
-        "artifacts": {
-          "description": "The artifact revisions composed into the plan, each with the scope it replaces, in scope order: the program the plan runs. A plan without them is the default program.",
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/ComposedArtifact"
-          }
+        "artifact": {
+          "description": "The artifact revision the plan runs: every node of the plan but its sources is the artifact's. A plan without one is the default program.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ArtifactRevision"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "config_change": {
           "description": "The number of the configuration change the plan was lowered from, counted per process.",
@@ -685,37 +664,6 @@
     },
     "RoleName": {
       "description": "A role name.",
-      "type": "string",
-      "maxLength": 63,
-      "minLength": 1,
-      "pattern": "^[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}$"
-    },
-    "ScopeDecl": {
-      "description": "A replaceable region of a plan.\n\nA scope is the region between its inputs and its exits: every node reachable from the ports its inputs name, without entering one of the ports its exits name. A policy artifact replaces that region. A scope without exits extends to the `emit` and `drop` nodes that end its paths, as one whose inputs are a plan's sources then covers the whole plan after them.\n\nValidation checks that a scope is closed, so that replacing it changes nothing outside it: nothing outside the region feeds a node inside it except through the scope's inputs, each exit is fed from inside the region and leads out of it, and no two scopes share a node.",
-      "type": "object",
-      "required": [
-        "inputs"
-      ],
-      "properties": {
-        "exits": {
-          "description": "The scope's named exits, each mapped to the input port outside the scope that it feeds.\n\nExits let a scope end before the end of its paths, such as a region of processing before aggregation. Artifact edges reach them as `exit.<name>`, so the artifact node ID `exit` is reserved.",
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/definitions/PortRef"
-          }
-        },
-        "inputs": {
-          "description": "The scope's named inputs, each mapped to the output port that feeds it.",
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/definitions/PortRef"
-          }
-        }
-      },
-      "additionalProperties": false
-    },
-    "ScopeName": {
-      "description": "A scope name.",
       "type": "string",
       "maxLength": 63,
       "minLength": 1,

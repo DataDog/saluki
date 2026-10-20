@@ -143,7 +143,7 @@ pub enum AfterCancel {
         reason: String,
     },
 
-    /// Ask for the default program: the policy was revoked while the cut was armed.
+    /// Ask for the default program: the program was revoked while the cut was armed.
     InstallDefaultProgram,
 }
 

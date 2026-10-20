@@ -1,4 +1,4 @@
-//! References to what the catalog declares: outputs, configuration bindings, and scope inputs.
+//! References to what the catalog declares: outputs and configuration bindings.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -7,12 +7,12 @@ use serde_json::Value;
 use super::{
     catalog::{Catalog, Liveness},
     graph::{emit_output, Graph},
-    types::{describe, Types},
+    types::describe,
     Finding, Location, Rule, ValidationReport,
 };
 use crate::{
     canonical::to_canonical_string,
-    ir::{BindingName, InputName, Operand, ParamType, ParamValue, Plan, PortRef, ScopeName, ValueType},
+    ir::{BindingName, Operand, ParamType, ParamValue, Plan, ValueType},
     operators::{names, ConfiguredOperator, EMIT_TO},
     predicate::{Predicate, StringMatch},
 };
@@ -23,13 +23,9 @@ const PREDICATE_FLAG: ParamType = ParamType::Bool;
 /// The type of a predicate's list operands, such as the values of a `matches`.
 const PREDICATE_LIST: ParamType = ParamType::List(&ParamType::String);
 
-pub(super) fn check(
-    graph: &Graph<'_>, types: &Types, plan: &Plan, catalog: &dyn Catalog, report: &mut ValidationReport,
-) {
+pub(super) fn check(graph: &Graph<'_>, plan: &Plan, catalog: &dyn Catalog, report: &mut ValidationReport) {
     check_outputs(graph, plan, catalog, report);
     check_bindings(graph, catalog, report);
-    check_scopes(graph, types, plan, catalog, report);
-    check_scope_closure(graph, plan, report);
 }
 
 fn check_outputs(graph: &Graph<'_>, plan: &Plan, catalog: &dyn Catalog, report: &mut ValidationReport) {
@@ -55,12 +51,6 @@ fn check_outputs(graph: &Graph<'_>, plan: &Plan, catalog: &dyn Catalog, report: 
             continue;
         };
         let mut differences = Vec::new();
-        if output.fingerprint != known.fingerprint {
-            differences.push(format!(
-                "its fingerprint is {}, but the host's binding has fingerprint {}",
-                output.fingerprint, known.fingerprint
-            ));
-        }
         if output.accepts != known.accepts {
             differences.push(format!(
                 "it accepts {}, but the host's output accepts {}",
@@ -300,185 +290,5 @@ fn visit_predicate<'a>(predicate: &'a Predicate, path: String, uses: &mut Vec<Bi
         | Predicate::HasTag(_)
         | Predicate::HasOriginTag(_)
         | Predicate::KindIn(_) => {}
-    }
-}
-
-/// Checks that every scope is closed: its region, every node reachable from its inputs without entering one of its
-/// exits, is fed from outside only through its inputs; every exit is fed from inside the region and leads out of it;
-/// and no node is in the regions of two scopes.
-pub(super) fn check_scope_closure(graph: &Graph<'_>, plan: &Plan, report: &mut ValidationReport) {
-    let mut owner: BTreeMap<usize, &ScopeName> = BTreeMap::new();
-    for (scope, declaration) in &plan.scopes {
-        let at = || Location::Scope(scope.clone());
-        let inputs = declaration
-            .inputs
-            .values()
-            .filter_map(|port| graph.output_port(&port.node, &port.port))
-            .collect::<BTreeSet<_>>();
-        let mut exits = BTreeMap::new();
-        for (name, port) in &declaration.exits {
-            match graph.input_port(&port.node, &port.port) {
-                Some(endpoint) => {
-                    exits.insert(endpoint, name);
-                }
-                None => report.push(Finding::new(
-                    Rule::ScopeClosed,
-                    at(),
-                    format!(
-                        "exit `{}` refers to `{}`, which is not an input port of the plan",
-                        name, port
-                    ),
-                )),
-            }
-        }
-
-        // The region: every node reachable from the inputs without entering an exit. An edge into a node whose operator
-        // does not configure leads somewhere unknown, so the region may extend beyond what the walk sees.
-        let mut region = BTreeSet::new();
-        let mut fed_exits = BTreeSet::new();
-        let mut unknown = false;
-        let mut pending = Vec::new();
-        let mut follow =
-            |(node, port): (usize, usize), pending: &mut Vec<(usize, usize)>| match graph.target(node, port) {
-                Some(endpoint) => pending.push(endpoint),
-                None => unknown |= graph.leads_somewhere_unknown(node, port),
-            };
-        for &input in &inputs {
-            follow(input, &mut pending);
-        }
-        while let Some(endpoint) = pending.pop() {
-            if exits.contains_key(&endpoint) {
-                fed_exits.insert(endpoint);
-                continue;
-            }
-            let node = endpoint.0;
-            if !region.insert(node) {
-                continue;
-            }
-            let outputs = graph.op(node).map_or(0, |op| op.ports().outputs.len());
-            for port in 0..outputs {
-                follow((node, port), &mut pending);
-            }
-        }
-
-        for &node in &region {
-            let input_ports = graph.op(node).map_or(0, |op| op.ports().inputs.len());
-            for port in 0..input_ports {
-                let Some(from) = graph.source(node, port) else { continue };
-                if region.contains(&from.0) || inputs.contains(&from) {
-                    continue;
-                }
-                report.push(Finding::new(
-                    Rule::ScopeClosed,
-                    at(),
-                    format!(
-                        "`{}.{}` is inside the scope, but is fed from `{}.{}`, outside it; feed the scope only \
-                         through its inputs, or declare that port as one of them",
-                        graph.id(node),
-                        graph.input_name((node, port)),
-                        graph.id(from.0),
-                        graph.output_name(from)
-                    ),
-                ));
-            }
-            if let Some(other) = owner.insert(node, scope) {
-                report.push(Finding::new(
-                    Rule::ScopeClosed,
-                    at(),
-                    format!(
-                        "node `{}` is in both this scope and scope `{}`; scopes must not overlap",
-                        graph.id(node),
-                        other
-                    ),
-                ));
-            }
-        }
-
-        // What a node whose operator does not configure feeds is not known, so an exit behind it is not reported unfed:
-        // the node is reported where its operator is checked.
-        for (endpoint, name) in &exits {
-            let port = format!("{}.{}", graph.id(endpoint.0), graph.input_name(*endpoint));
-            if region.contains(&endpoint.0) {
-                report.push(Finding::new(
-                    Rule::ScopeClosed,
-                    at(),
-                    format!(
-                        "exit `{}` enters `{}`, which is inside the scope; an exit leads out of its scope",
-                        name, port
-                    ),
-                ));
-            } else if !fed_exits.contains(endpoint) && !unknown {
-                report.push(Finding::new(
-                    Rule::ScopeClosed,
-                    at(),
-                    format!(
-                        "exit `{}` enters `{}`, which nothing inside the scope feeds; connect the exit to the scope, \
-                         or remove it",
-                        name, port
-                    ),
-                ));
-            }
-        }
-    }
-}
-
-/// Checks that every scope input names an output port of the plan, without the catalog.
-///
-/// [`check`] reports the same finding while it checks scope inputs against the catalog. Validation of a rewritten plan
-/// runs this alone: a rewrite never changes a plan's scopes, but it removes nodes, and must not remove one a scope's
-/// input names. (Scope closure, which also runs there, reports exits that name no input port.)
-pub(super) fn check_scope_input_ports(graph: &Graph<'_>, plan: &Plan, report: &mut ValidationReport) {
-    for (scope, declaration) in &plan.scopes {
-        for (input, port) in &declaration.inputs {
-            if graph.output_port(&port.node, &port.port).is_none() {
-                report.push(missing_scope_input(scope, input, port));
-            }
-        }
-    }
-}
-
-fn missing_scope_input(scope: &ScopeName, input: &InputName, port: &PortRef) -> Finding {
-    Finding::new(
-        Rule::ScopeInputs,
-        Location::Scope(scope.clone()),
-        format!(
-            "input `{}` refers to `{}`, which is not an output port of the plan",
-            input, port
-        ),
-    )
-}
-
-fn check_scopes(graph: &Graph<'_>, types: &Types, plan: &Plan, catalog: &dyn Catalog, report: &mut ValidationReport) {
-    for (scope, declaration) in &plan.scopes {
-        for (input, port) in &declaration.inputs {
-            let at = Location::Scope(scope.clone());
-            let Some(endpoint) = graph.output_port(&port.node, &port.port) else {
-                report.push(missing_scope_input(scope, input, port));
-                continue;
-            };
-            let Some(declared) = catalog.scope_input(scope, input) else {
-                report.push(Finding::new(
-                    Rule::ScopeInputs,
-                    at,
-                    format!("input `{}` is not an input of this scope that the host declares", input),
-                ));
-                continue;
-            };
-            if let Some(carried) = types.outputs[endpoint.0][endpoint.1] {
-                if !declared.accepts(&carried) {
-                    report.push(Finding::new(
-                        Rule::ScopeInputs,
-                        at,
-                        format!(
-                            "input `{}` is declared to carry {}, but `{}` can carry {}",
-                            input,
-                            describe(&declared),
-                            port,
-                            describe(&carried)
-                        ),
-                    ));
-                }
-            }
-        }
     }
 }

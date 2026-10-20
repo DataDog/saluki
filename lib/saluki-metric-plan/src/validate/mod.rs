@@ -1,7 +1,7 @@
 //! Plan validation.
 //!
 //! [`Validator::validate`] checks a [`Plan`] against the [operator registry][OperatorRegistry] and a [`Catalog`] of the
-//! outputs, configuration bindings, and scope inputs the host declares, and returns every finding: errors, which make
+//! outputs and configuration bindings the host declares, and returns every finding: errors, which make
 //! the plan invalid, and warnings, which do not. Each finding names the [rule][Rule] it reports and where in the plan
 //! the problem is. The default program is validated by the same rules as any other plan.
 //!
@@ -13,25 +13,22 @@
 //! - **Types:** port types are propagated from the sources through every operator. An operator that cannot receive its
 //!   input, or an `emit` whose output does not accept it, is an error. A `split` whose predicate can never match its
 //!   input, or a port that can never carry anything, is a warning.
-//! - **References:** outputs, configuration bindings, and scope inputs must be declared by the catalog, and agree with
-//!   it.
+//! - **References:** outputs and configuration bindings must be declared by the catalog, and agree with it.
 //! - **Resources:** the resources the plan declares, and its outputs' bindings to them, follow the capability-binding
 //!   rule: each on a delivery host the catalog declares, with parameters the host's schema accepts, and every
 //!   recipient of an output accepting what it produces, as the host decides.
 //! - **Duplicate contribution:** no structure may deliver one contribution twice to the same output, counting outputs
 //!   that share a recipient as one (see [the analysis](#duplicate-analysis)).
-//! - **Scopes:** every scope's inputs are declared by the catalog, and every scope is closed, so that an artifact
-//!   replacing it changes nothing outside it.
 //! - **State:** a plan has at most one state owner (one aggregation) where the host says so, its state owners use at
 //!   most one bucket width above 60 seconds, a `timestamp_split` gives timestamped counters the rate interval of the
 //!   aggregation its untimestamped points go to, and an artifact's context limits fit within the host's state budget
 //!   (a warning).
-//! - **Bounds:** the [limits][crate::limits] on artifacts apply to the nodes of the programs a plan's artifacts
-//!   compose, every node of the scope each replaces (see [`program_nodes`][crate::export::program_nodes]), and never
+//! - **Bounds:** the [limits][crate::limits] on artifacts apply to the nodes of the program a plan's artifact
+//!   composes, every node of the plan but its sources (see [`program_nodes`][crate::export::program_nodes]), and never
 //!   to the default program, so that large native configurations stay valid. Validated against the default program
-//!   ([`Validator::with_baseline`]), a program's limit is the larger of the limit and what the default program has
-//!   in the program's scope: its node count, predicate leaves, and declared memory, a copying node's fan-out by node,
-//!   and the work per input by entry node. So a program may keep what native configuration sized the host for, such
+//!   ([`Validator::with_baseline`]), a program's limit is the larger of the limit and what the default program has:
+//!   its node count, predicate leaves, and declared memory, a copying node's fan-out by node, and the work per input by
+//!   entry node. So a program may keep what native configuration sized the host for, such
 //!   as a 128 MiB interner or a tee with a port per routing group, but never grow past it, and is held to the limits
 //!   wherever the default program is within them.
 //! - **Programs:** a program holds no host-owned operator, which only native configuration places (an operator says
@@ -61,7 +58,7 @@
 use std::{collections::BTreeMap, fmt};
 
 use crate::{
-    ir::{ArtifactRevision, NodeId, OutputId, Plan, PortName, PortRef, ScopeName},
+    ir::{ArtifactRevision, NodeId, OutputId, Plan, PortName, PortRef},
     model::PortType,
     operators::OperatorRegistry,
 };
@@ -189,11 +186,6 @@ rules! {
     ConsistentBinding => "consistent_binding", Error;
     /// A host-owned node is not bound to live configuration, which it only applies at restart.
     LiveBindingOnHost => "live_binding_on_host", Warning;
-    /// Every scope input refers to an output port, is declared by the catalog, and carries what the catalog declares.
-    ScopeInputs => "scope_inputs", Error;
-    /// Every scope is closed: only its inputs feed it from outside, its exits lead out of it, and no two scopes share a
-    /// node.
-    ScopeClosed => "scope_closed", Error;
     /// No structure can deliver one contribution twice to outputs that share a recipient.
     DuplicateContribution => "duplicate_contribution", Error;
     /// The duplicate analysis completes within its work limit.
@@ -255,9 +247,6 @@ pub enum Location {
 
     /// A declared output.
     Output(OutputId),
-
-    /// A scope.
-    Scope(ScopeName),
 }
 
 impl Location {
@@ -278,7 +267,6 @@ impl fmt::Display for Location {
             Self::Node { id, port: Some(port) } => write!(f, "port `{}.{}`", id, port),
             Self::Edge { index } => write!(f, "edge {}", index),
             Self::Output(id) => write!(f, "output `{}`", id),
-            Self::Scope(name) => write!(f, "scope `{}`", name),
         }
     }
 }
@@ -327,8 +315,8 @@ pub enum BoundScope {
     /// native configurations stay valid.
     Plan,
 
-    /// The nodes of the program one artifact revision composes: every node of the scope it replaces. Limits are
-    /// enforced on these.
+    /// The nodes of the program one artifact revision composes: every node of the plan but its sources. Limits
+    /// are enforced on these.
     Artifact(ArtifactRevision),
 }
 
@@ -370,9 +358,9 @@ pub struct ValidationReport {
     findings: Vec<Finding>,
     port_types: BTreeMap<PortRef, PortType>,
     bounds: Vec<BoundMeasure>,
-    /// What the default program has in each scope a program replaces, which raises the program's limits to it: kept
-    /// so that a rewritten plan is checked against the same limits.
-    baselines: BTreeMap<ScopeName, bounds::Baseline>,
+    /// What the default program has, which raises a program's limits to it: kept so that a rewritten plan is checked
+    /// against the same limits.
+    baseline: Option<bounds::Baseline>,
 }
 
 impl ValidationReport {
@@ -393,7 +381,7 @@ impl ValidationReport {
     /// revision, in revision order.
     ///
     /// The bounds are the number of nodes, the number of predicate leaves, the largest number of copies one node
-    /// makes, and the worst-case number of node visits one record entering the scope causes. The last is missing when
+    /// makes, and the worst-case number of node visits one record entering the program causes. The last is missing when
     /// the plan has a cycle.
     pub fn bounds(&self) -> &[BoundMeasure] {
         &self.bounds
@@ -455,10 +443,9 @@ impl<'a> Validator<'a> {
         }
     }
 
-    /// Measures the programs of the plans it validates against `default`, the default program they replace parts of:
-    /// a program's limit is raised to what the default program has in the program's scope where that is more, and
-    /// never above it (see [bounds](self#checks)). Without a baseline, a program is held to the limits whatever the
-    /// default program has.
+    /// Measures the programs of the plans it validates against `default`, the default program they replace: a program's
+    /// limit is raised to what the default program has where that is more, and never above it (see
+    /// [bounds](self#checks)). Without a baseline, a program is held to the limits whatever the default program has.
     pub fn with_baseline(mut self, default: &'a Plan) -> Self {
         self.baseline = Some(default);
         self
@@ -484,20 +471,16 @@ impl<'a> Validator<'a> {
         let graph = graph::Graph::build(plan, self.registry, &mut report);
         let types = types::check(&graph, plan, &mut report);
         record_port_types(&graph, &types, &mut report);
-        references::check(&graph, &types, plan, self.catalog, &mut report);
+        references::check(&graph, plan, self.catalog, &mut report);
         resources::check(plan, self.catalog, &mut report);
         duplicates::check(&graph, &types, plan, &mut report);
-        let programs = crate::export::program_nodes(plan);
+        let programs = crate::export::program_nodes(plan).into_iter().collect::<Vec<_>>();
         state::check(&graph, Some(self.catalog), &programs, &mut report);
-        if let Some(baseline) = self.baseline {
-            let scopes = programs
-                .iter()
-                .map(|(artifact, _)| artifact.scope.clone())
-                .collect::<Vec<_>>();
-            report.baselines = bounds::baselines(baseline, self.registry, &scopes);
+        if let (Some(baseline), false) = (self.baseline, programs.is_empty()) {
+            report.baseline = Some(bounds::baseline(baseline, self.registry));
         }
-        let baselines = report.baselines.clone();
-        bounds::check(&graph, &programs, &baselines, &mut report);
+        let baseline = report.baseline.clone();
+        bounds::check(&graph, &programs, baseline.as_ref(), &mut report);
 
         report
     }
@@ -505,25 +488,22 @@ impl<'a> Validator<'a> {
 
 /// Validates a plan that rewrites derived from a valid plan, without a catalog.
 ///
-/// Rewrites never change a plan's outputs, its resources, the configuration bindings an operator's parameters use, or
-/// its scopes, which are what the catalog checks: so every check but those runs, as [`Validator::validate`] runs it,
-/// and the report carries the rewritten plan's port types and bounds. Rewrites do remove nodes, so the ports that
-/// scopes name are checked to still be there: scope inputs here, and exits by scope closure.
+/// Rewrites never change a plan's outputs, its resources, or the configuration bindings an operator's parameters
+/// use, which are what the catalog checks: so every check but those runs, as [`Validator::validate`] runs it, and the
+/// report carries the rewritten plan's port types and bounds.
 pub(crate) fn revalidate(registry: &OperatorRegistry, plan: &Plan, prior: &ValidationReport) -> ValidationReport {
     let mut report = ValidationReport {
-        baselines: prior.baselines.clone(),
+        baseline: prior.baseline.clone(),
         ..ValidationReport::default()
     };
     let graph = graph::Graph::build(plan, registry, &mut report);
     let types = types::check(&graph, plan, &mut report);
     record_port_types(&graph, &types, &mut report);
-    references::check_scope_input_ports(&graph, plan, &mut report);
-    references::check_scope_closure(&graph, plan, &mut report);
     duplicates::check(&graph, &types, plan, &mut report);
-    let programs = crate::export::program_nodes(plan);
+    let programs = crate::export::program_nodes(plan).into_iter().collect::<Vec<_>>();
     state::check(&graph, None, &programs, &mut report);
-    let baselines = report.baselines.clone();
-    bounds::check(&graph, &programs, &baselines, &mut report);
+    let baseline = report.baseline.clone();
+    bounds::check(&graph, &programs, baseline.as_ref(), &mut report);
     report
 }
 

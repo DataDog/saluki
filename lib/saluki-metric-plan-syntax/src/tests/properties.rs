@@ -6,7 +6,7 @@
 //! - [`arb_graph`] makes well-formed graphs a step at a time, from open streams: every node of the registry but
 //!   `source` (which has no input, so no well-formed artifact has one), with rich parameters and predicates, merges,
 //!   reused streams, aliases, `tee`s in the core form, `where`s, splits in both polarities, nodes with several output ports,
-//!   exits, and node IDs that are often the ones lowering derives and otherwise need a `let` or an `as`.
+//!   and node IDs that are often the ones lowering derives and otherwise need a `let` or an `as`.
 //! - [`arb_tree_artifact`] makes well-formed graphs from recursive shapes, with fresh node IDs, written in canonical
 //!   order by a builder independent of the crate's.
 //! - [`arb_arbitrary_artifact`] makes small graphs with arbitrary edges, mostly not well-formed.
@@ -18,10 +18,10 @@ use proptest::{
     test_runner::TestRunner,
 };
 use saluki_metric_plan::{
-    canonical::{strip_resolved_values, PlanHash},
+    canonical::strip_resolved_values,
     ir::{
-        derived_terminal_id, ArtifactBase, ArtifactNodeId, ArtifactPortRef, Blobs, LocalId, NodeId, OperatorName,
-        PolicyArtifact, PortName,
+        derived_terminal_id, ArtifactNodeId, ArtifactPortRef, Blobs, LocalId, NodeId, OperatorName, PolicyArtifact,
+        PortName,
     },
     normalize::normalize_artifact,
     operators::OperatorRegistry,
@@ -35,10 +35,7 @@ use crate::{graph::NodeShape, ids};
 /// The outputs generated artifacts emit to.
 const OUTPUTS: &[&str] = &["dd_metrics_encode", "metrics_routing_encode_0", "mrf_metrics_encode"];
 
-/// The scope exits generated artifacts leave by.
-const EXITS: &[&str] = &["aggregated", "passthrough"];
-
-/// The scope inputs of graphs that [`arb_graph`] makes.
+/// The sources of graphs that [`arb_graph`] makes.
 const INPUTS: &[&str] = &["dogstatsd", "otlp", "checks"];
 
 /// Words the grammar gives a meaning somewhere, as node IDs and so as the names of streams.
@@ -307,47 +304,25 @@ fn opaque_params(ports: &[&str]) -> Value {
 /// Returns the headers of a generated artifact: everything but its graph.
 #[derive(Clone, Debug)]
 struct Headers {
-    scope: &'static str,
     ir_version: u32,
-    program_hash: [u8; 32],
-    fingerprints: Vec<[u8; 32]>,
     blob: Option<Value>,
 }
 
 fn arb_headers() -> impl Strategy<Value = Headers> {
     (
-        select(&["post_enrich", "metrics", "other_scope"][..]),
         // Reading an artifact document accepts only the current IR version: see `arb_arbitrary_artifact`.
         Just(1u32),
-        any::<[u8; 32]>(),
-        vec(any::<[u8; 32]>(), OUTPUTS.len()),
         // A blob is canonical JSON, whose numbers are integers within the range every reader keeps exactly.
         option::of(prop_oneof![arb_strings().boxed(), arb_json()])
             .prop_map(|blob| blob.filter(|blob| Blobs::default().insert(blob.clone()).is_ok())),
     )
-        .prop_map(|(scope, ir_version, program_hash, fingerprints, blob)| Headers {
-            scope,
-            ir_version,
-            program_hash,
-            fingerprints,
-            blob,
-        })
+        .prop_map(|(ir_version, blob)| Headers { ir_version, blob })
 }
 
-/// Returns the artifact document of a graph, with `headers` and a fingerprint for each output emitted to.
-fn document(headers: &Headers, nodes: Vec<Value>, edges: Vec<Value>, emitted: &BTreeSet<&str>) -> Value {
-    let mut outputs = Map::new();
-    for output in emitted {
-        let index = OUTPUTS.iter().position(|o| o == output).unwrap();
-        outputs.insert(
-            output.to_string(),
-            json!(PlanHash::from_digest(headers.fingerprints[index]).to_string()),
-        );
-    }
+/// Returns the artifact document of a graph, with `headers`.
+fn document(headers: &Headers, nodes: Vec<Value>, edges: Vec<Value>) -> Value {
     let mut document = json!({
         "ir_version": headers.ir_version,
-        "scope": headers.scope,
-        "base": {"program_hash": PlanHash::from_digest(headers.program_hash).to_string(), "outputs": outputs},
         "nodes": nodes,
         "edges": edges,
     });
@@ -394,7 +369,7 @@ enum Action {
     Opaque,
     /// A `merge` of this stream and one or two others.
     Merge,
-    /// A sink, or an exit.
+    /// A sink.
     End,
 }
 
@@ -404,7 +379,6 @@ enum SinkChoice {
     Output(usize),
     Recipients(Vec<&'static str>),
     Drop,
-    Exit(usize),
 }
 
 fn arb_sink() -> impl Strategy<Value = SinkChoice> {
@@ -412,7 +386,6 @@ fn arb_sink() -> impl Strategy<Value = SinkChoice> {
         3 => (0..OUTPUTS.len()).prop_map(SinkChoice::Output),
         1 => vec(select(RECIPIENTS), 1..3).prop_map(SinkChoice::Recipients),
         3 => Just(SinkChoice::Drop),
-        1 => (0..EXITS.len()).prop_map(SinkChoice::Exit),
     ]
     .boxed()
 }
@@ -570,7 +543,6 @@ struct GraphBuilder<'h> {
     nodes: Vec<Value>,
     edges: Vec<Value>,
     taken: HashSet<String>,
-    emitted: BTreeSet<&'static str>,
     open: Vec<Open>,
     fresh: usize,
 }
@@ -604,7 +576,7 @@ impl GraphBuilder<'_> {
         let port = open.port_name();
         match naming % 10 {
             0 => None,
-            // The name of a scope input, which may be one the artifact reads from.
+            // The name of a source, which may be one the artifact reads from.
             8 => ArtifactNodeId::new(INPUTS[usize::from(naming / 10) % INPUTS.len()]).ok(),
             // A word the grammar reserves somewhere.
             9 => ArtifactNodeId::new(WORDS[usize::from(naming / 10) % WORDS.len()]).ok(),
@@ -654,14 +626,7 @@ impl GraphBuilder<'_> {
     fn end(&mut self, open: &Open, sink: &SinkChoice, naming: u8) {
         let derived = (!naming.is_multiple_of(4)).then(|| ids::terminal(&open.parent, &open.port_name()));
         let (op, params) = match sink {
-            SinkChoice::Exit(exit) => {
-                self.edge(&open.from, &format!("exit.{}", EXITS[*exit]));
-                return;
-            }
-            SinkChoice::Output(output) => {
-                self.emitted.insert(OUTPUTS[*output]);
-                ("emit", json!({"output": OUTPUTS[*output]}))
-            }
+            SinkChoice::Output(output) => ("emit", json!({"output": OUTPUTS[*output]})),
             SinkChoice::Recipients(to) => ("emit", json!({"to": to})),
             SinkChoice::Drop => ("drop", json!({})),
         };
@@ -830,7 +795,6 @@ fn build_graph(plan: &GraphPlan) -> PolicyArtifact {
         nodes: Vec::new(),
         edges: Vec::new(),
         taken: HashSet::new(),
-        emitted: BTreeSet::new(),
         open: INPUTS[..plan.inputs]
             .iter()
             .map(|input| Open {
@@ -852,7 +816,7 @@ fn build_graph(plan: &GraphPlan) -> PolicyArtifact {
         let (sink, naming) = plan.closers.get(k).cloned().unwrap_or((SinkChoice::Drop, 1));
         builder.end(open, &sink, naming);
     }
-    let document = document(&plan.headers, builder.nodes, builder.edges, &builder.emitted);
+    let document = document(&plan.headers, builder.nodes, builder.edges);
     canonical(PolicyArtifact::from_value(document).expect("generated artifacts are valid artifact documents"))
 }
 
@@ -870,8 +834,6 @@ enum Shape {
     Emit { output: usize, inline: bool },
     /// A `drop`, named like an `emit`.
     Drop { inline: bool },
-    /// An edge out of the scope, into one of its exits.
-    Exit { exit: usize },
     /// A `split`, and what each of its ports leads to.
     Split {
         predicate: Value,
@@ -900,7 +862,7 @@ enum Shape {
     },
 }
 
-/// What a generated artifact's scope inputs lead to.
+/// What a generated artifact's sources lead to.
 #[derive(Clone, Debug)]
 enum Inputs {
     /// One input, `metrics`.
@@ -915,7 +877,6 @@ fn arb_shape() -> impl Strategy<Value = Shape> {
     let leaf = prop_oneof![
         (0..OUTPUTS.len(), any::<bool>()).prop_map(|(output, inline)| Shape::Emit { output, inline }),
         any::<bool>().prop_map(|inline| Shape::Drop { inline }),
-        (0..EXITS.len()).prop_map(|exit| Shape::Exit { exit }),
     ];
     leaf.prop_recursive(4, 24, 3, |inner| {
         // Each arm is boxed, as `arb_chain` explains, or every level of a deep shape takes a frame of hundreds of
@@ -969,7 +930,7 @@ fn arb_inputs() -> impl Strategy<Value = Inputs> {
 }
 
 /// Builds an artifact document from shapes, writing nodes and edges in the order a depth-first traversal from the
-/// scope inputs reaches them, the order lowering writes plans in.
+/// sources reaches them, the order lowering writes plans in.
 ///
 /// This is written independently of the crate's own ordering: it follows the shapes, and knows where each shape's
 /// edges complete a node's inputs.
@@ -977,7 +938,6 @@ fn arb_inputs() -> impl Strategy<Value = Inputs> {
 struct TreeBuilder {
     nodes: Vec<Value>,
     edges: Vec<Value>,
-    emitted: BTreeSet<&'static str>,
     next_id: usize,
 }
 
@@ -999,7 +959,7 @@ impl TreeBuilder {
         self.nodes.push(node);
     }
 
-    /// Adds the edge from port `port` of `parent` (which is `input` for a scope input) and the nodes it leads to.
+    /// Adds the edge from port `port` of `parent` (which is `input` for a source) and the nodes it leads to.
     fn attach(&mut self, parent: &str, port: &str, shape: &Shape) {
         let from = format!("{}.{}", parent, port);
         let terminal = |builder: &mut Self, inline: bool| {
@@ -1015,14 +975,12 @@ impl TreeBuilder {
                 let id = terminal(self, *inline);
                 self.edge(&from, &format!("{}.in", id));
                 self.node(&id, "emit", json!({"output": OUTPUTS[*output]}));
-                self.emitted.insert(OUTPUTS[*output]);
             }
             Shape::Drop { inline } => {
                 let id = terminal(self, *inline);
                 self.edge(&from, &format!("{}.in", id));
                 self.node(&id, "drop", json!({}));
             }
-            Shape::Exit { exit } => self.edge(&from, &format!("exit.{}", EXITS[*exit])),
             Shape::Split {
                 predicate,
                 on_true,
@@ -1101,14 +1059,14 @@ prop_compose! {
             }
         }
         if let Some(blob) = blob_ref(&headers) {
-            // Refer to the blob from a parameter, as an artifact sharing a long list would, on a scope input of its
+            // Refer to the blob from a parameter, as an artifact sharing a long list would, on a source of its
             // own, which comes last in canonical order.
             builder.edge("input.shared", "shared.in");
             builder.node("shared", "host_tags", json!({"tags": blob, "deadline": "0s"}));
             builder.edge("shared.out", "shared_out.in");
             builder.node("shared_out", "drop", json!({}));
         }
-        let document = document(&headers, builder.nodes, builder.edges, &builder.emitted);
+        let document = document(&headers, builder.nodes, builder.edges);
         PolicyArtifact::from_value(document).expect("generated artifacts are valid artifact documents")
     }
 }
@@ -1116,7 +1074,7 @@ prop_compose! {
 // Graphs with arbitrary edges.
 
 /// Returns a strategy for small artifacts with arbitrary edges between a few nodes, well-formed or not: unknown
-/// nodes and ports, ports used twice or never, cycles, duplicate IDs, IDs that are scope inputs' names or derived IDs,
+/// nodes and ports, ports used twice or never, cycles, duplicate IDs, IDs that are sources' names or derived IDs,
 /// and parameters that do not configure their operator.
 fn arb_arbitrary_artifact() -> impl Strategy<Value = PolicyArtifact> {
     const IDS: &[&str] = &[
@@ -1182,7 +1140,7 @@ fn arb_arbitrary_artifact() -> impl Strategy<Value = PolicyArtifact> {
                 .into_iter()
                 .map(|(from, to)| json!({"from": from, "to": to}))
                 .collect::<Vec<_>>();
-            let mut document = document(&headers, nodes, edges, &BTreeSet::new());
+            let mut document = document(&headers, nodes, edges);
             if version != 0 {
                 document["ir_version"] = json!(version);
             }
@@ -1193,8 +1151,8 @@ fn arb_arbitrary_artifact() -> impl Strategy<Value = PolicyArtifact> {
 
 /// Returns whether `artifact` is well-formed, checked directly: its node IDs are unique, its edges name nodes and
 /// ports that exist (a node whose ports are unknown has the conventional input `in` and the outputs its edges leave, at
-/// least one), one edge enters each input port and at most one leaves each output port and each scope input, every declared output port is
-/// used, and every node is reached from a scope input without a cycle.
+/// least one), one edge enters each input port and at most one leaves each output port and each source, every declared output port is
+/// used, and every node is reached from a source without a cycle.
 fn well_formed(artifact: &PolicyArtifact) -> bool {
     let mut index = HashMap::new();
     for (i, node) in artifact.nodes.iter().enumerate() {
@@ -1233,7 +1191,6 @@ fn well_formed(artifact: &PolicyArtifact) -> bool {
                 }
                 Some(i)
             }
-            ArtifactPortRef::Exit(_) => return false,
         };
         let target = match &edge.to {
             ArtifactPortRef::Node { node, port } => {
@@ -1246,7 +1203,6 @@ fn well_formed(artifact: &PolicyArtifact) -> bool {
                 *entered.entry((i, port)).or_default() += 1;
                 Some(i)
             }
-            ArtifactPortRef::Exit(_) => None,
             ArtifactPortRef::Input(_) => return false,
         };
         match (source, target) {
@@ -1302,13 +1258,7 @@ fn well_formed(artifact: &PolicyArtifact) -> bool {
 fn print_options() -> Vec<PrintOptions> {
     let mut options = Vec::new();
     for width in [0, 40, 120, usize::MAX] {
-        for (elide_fingerprints, elide_base) in [(false, false), (true, false), (false, true)] {
-            options.push(PrintOptions {
-                elide_fingerprints,
-                elide_base,
-                width,
-            });
-        }
+        options.push(PrintOptions { width });
     }
     options
 }
@@ -1339,30 +1289,12 @@ fn without_defaults(artifact: &PolicyArtifact) -> PolicyArtifact {
     stripped
 }
 
-/// Returns the artifact that text printed from `artifact` with `options` parses to: `artifact` itself, without the
-/// parameters equal to their default, and without its fingerprints if they are elided.
-fn expected_after(artifact: &PolicyArtifact, options: &PrintOptions) -> PolicyArtifact {
-    let mut expected = without_defaults(artifact);
-    if options.elide_fingerprints {
-        expected.base.outputs.clear();
-    }
-    expected
-}
-
-/// Parses text printed with `options`, giving back the base if the options elided it, as a tool does.
-fn parse_printed(text: &str, base: &ArtifactBase, options: &PrintOptions) -> Result<Parsed, crate::Diagnostics> {
-    let parse_options = ParseOptions {
-        base: options.elide_base.then(|| base.clone()),
-    };
-    parse_with(text, &parse_options)
-}
-
 /// Checks that `artifact`, well-formed and in canonical order, prints with every option to text that parses back to
 /// exactly it, and that printing what the text parses to gives the text back.
 fn check_round_trip(artifact: &PolicyArtifact) -> Result<(), TestCaseError> {
     for options in print_options() {
         let printed = print(artifact, &options);
-        let parsed = match parse_printed(&printed, &artifact.base, &options) {
+        let parsed = match parse(&printed) {
             Ok(parsed) => parsed,
             Err(diagnostics) => {
                 return Err(TestCaseError::fail(format!(
@@ -1374,7 +1306,7 @@ fn check_round_trip(artifact: &PolicyArtifact) -> Result<(), TestCaseError> {
                 )))
             }
         };
-        let expected = expected_after(artifact, &options);
+        let expected = without_defaults(artifact);
         prop_assert_eq!(
             &parsed.artifact,
             &expected,
@@ -1383,7 +1315,6 @@ fn check_round_trip(artifact: &PolicyArtifact) -> Result<(), TestCaseError> {
             printed,
             serde_json::to_string(artifact).unwrap()
         );
-        prop_assert_eq!(parsed.base_given, options.elide_base);
         // A fixed point on text: printing what the text parses to gives the text back.
         prop_assert_eq!(print(&parsed.artifact, &options), printed.clone(), "{:?}", options);
     }
@@ -1441,8 +1372,8 @@ fn check_total(artifact: &PolicyArtifact) -> Result<(), TestCaseError> {
     let is_well_formed = well_formed(artifact);
     for options in print_options() {
         let printed = print(artifact, &options);
-        let parsed = parse_printed(&printed, &artifact.base, &options);
-        let expected = expected_after(&canonical(artifact.clone()), &options);
+        let parsed = parse(&printed);
+        let expected = without_defaults(&canonical(artifact.clone()));
         if !is_well_formed {
             prop_assert!(
                 parsed.as_ref().map_or(true, |parsed| parsed.artifact != expected),
@@ -1475,8 +1406,6 @@ const TOKENS: &[&str] = &[
     "{",
     "}",
     "base",
-    "\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
-    "outputs",
     "blobs",
     "ir_version",
     "let",
@@ -1565,7 +1494,7 @@ fn arb_token_soup() -> impl Strategy<Value = String> {
     (any::<bool>(), vec(select(TOKENS), 0..80)).prop_map(|(opened, tokens)| {
         let soup = tokens.join(" ");
         if opened {
-            format!("policy p {{ base \"{}\" {} }}", BASE, soup)
+            format!("policy {{ {} }}", soup)
         } else {
             soup
         }
@@ -1739,7 +1668,6 @@ fn the_generators_cover_every_form() {
             ("operator in parentheses", "()"),
             ("port reference", ".passthrough"),
             ("index port reference", ".1 "),
-            ("exit", "exit "),
             ("emit output", "emit output "),
             ("emit recipients", "emit ["),
             ("drop", "drop"),
@@ -1812,7 +1740,7 @@ fn the_generators_cover_every_form() {
             if uses > 1 {
                 seen.insert("reused stream".to_string());
                 if port.is_none() && inputs.contains(name) {
-                    seen.insert("reused scope input".to_string());
+                    seen.insert("reused source".to_string());
                 }
             }
         }
@@ -1851,12 +1779,11 @@ fn the_generators_cover_every_form() {
                 "let named apart from its node",
                 "operator in parentheses",
                 "default left out",
-                "reused scope input",
+                "reused source",
                 "tuple",
                 "port reference",
                 "index port reference",
                 "reused stream",
-                "exit",
                 "emit output",
                 "emit recipients",
                 "drop",
@@ -1965,8 +1892,6 @@ proptest! {
         let values = json!([float, signed, unsigned]);
         let document = json!({
             "ir_version": 1,
-            "scope": "post_enrich",
-            "base": {"program_hash": BASE},
             "nodes": [
                 {"id": "n", "op": "frobnicate", "params": {"v": values}},
                 {"id": "n_out", "op": "drop"},

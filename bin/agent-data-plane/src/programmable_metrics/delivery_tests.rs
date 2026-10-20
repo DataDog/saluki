@@ -1694,8 +1694,7 @@ async fn a_program_routing_to_an_additional_endpoint_by_its_url_gets_an_implied_
         !intakes[1].points().is_empty()
     })
     .await;
-    let scope = saluki_metric_plan::ir::ScopeName::new("metrics").unwrap();
-    let bundle = status.load().exports[&scope].clone().expect("the scope exports");
+    let bundle = status.load().export.clone().expect("the default program exports");
     let b = bundle
         .catalog
         .recipients()
@@ -1851,8 +1850,7 @@ async fn an_endpoint_removed_under_a_program_that_names_it_beside_the_primary_le
     .await;
 
     // The recipe's main emit: the primary endpoint and C, not B.
-    let scope = saluki_metric_plan::ir::ScopeName::new("metrics").unwrap();
-    let bundle = status.load().exports[&scope].clone().expect("the scope exports");
+    let bundle = status.load().export.clone().expect("the default program exports");
     let c = intakes[2].url().trim_end_matches('/').to_string();
     let c = bundle
         .catalog

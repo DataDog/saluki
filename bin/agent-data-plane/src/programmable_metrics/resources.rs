@@ -17,9 +17,9 @@
 //! # Outputs
 //!
 //! An output is one encoder stream, or the internal DogStatsD client telemetry tap. Its declaration carries the record
-//! types it accepts, its recipients, its fingerprint, and, for an encoder stream, its binding: the delivery host it is
-//! bound to, the [`Selector`] its fingerprint covers, its encoder parameters, and the identity its encoder telemetry
-//! reports under. Native outputs exist exactly when `run.rs` wires their branches for the same configuration, decided
+//! types it accepts, its recipients, and, for an encoder stream, its binding: the delivery host it is bound to, the
+//! [`Selector`] that says what it delivers to, its encoder parameters, and the identity its encoder telemetry reports
+//! under. Native outputs exist exactly when `run.rs` wires their branches for the same configuration, decided
 //! by the same helpers (`MetricsEndpointRoutingConfiguration`, `MrfConfiguration`, `AutoscalingFailoverConfiguration`,
 //! and the Cluster Agent configuration), from the **current** configuration: an endpoint routing group or a failover
 //! branch appears and disappears live. Only the client telemetry tap follows the startup configuration, with the
@@ -48,13 +48,6 @@
 //! events, service checks, traces), by payload class. Each recipient names its credential by reference, never by value:
 //! `native:api_key` (the primary endpoint and the alternate metrics intake), `native:additional/<endpoint digest>/<key
 //! index>`, `native:multi_region_failover.api_key`, or `native:cluster_agent.auth_token`.
-//!
-//! # Fingerprints
-//!
-//! An output's fingerprint, version 2, covers what its declaration says it delivers to: its host, the records it
-//! accepts, and its selector, a role for the main and failover outputs, a routing group's endpoint set, or an implied
-//! output's recipients ([`resources::fingerprint`][fingerprints::fingerprint]). Recipients added to or removed
-//! from a role change nothing.
 
 pub mod params;
 pub mod specs;
@@ -82,10 +75,9 @@ use saluki_metric_plan::{
         RecipientDecl, RecipientId, RecipientName, Resources, RoleName, Selector,
     },
     model::{Kind, KindSet, PortType, TimestampForm},
-    resources as fingerprints,
     validate::CatalogRecipient,
 };
-use serde_json::{json, Value};
+use serde_json::json;
 
 use self::params::{encode_encoder, encode_host_settings, encode_protocol};
 use super::{host_facts::HostFacts, telemetry_profiles::lease_telemetry};
@@ -565,8 +557,8 @@ impl NativeResources {
     /// failover recipient stays while failover is enabled with its endpoint, and the Cluster Agent recipient while its
     /// branch is requested, forwarding to it is enabled, and a token is set. Only a position, or a branch, that
     /// `previous` does not declare joins as at startup: when its key, or token, is one native construction would
-    /// send with. So a rotation, even to a blank, duplicate, or invalid value, changes no recipient, no output, and no
-    /// fingerprint, and values are never read here beyond that.
+    /// send with. So a rotation, even to a blank, duplicate, or invalid value, changes no recipient and no output, and
+    /// values are never read here beyond that.
     ///
     /// # Errors
     ///
@@ -588,11 +580,7 @@ impl NativeResources {
                 decl: OutputDecl {
                     id: output_id(DSD_CLIENT_TELEMETRY),
                     accepts: PortType::ANY,
-                    // A fixed destination has no binding, and its fingerprint never changes.
-                    fingerprint: digest(
-                        &json!({"encoder": {"destination": DSD_CLIENT_TELEMETRY_OUT}, "forwarder": null,
-                        "recipients": []}),
-                    ),
+                    // A fixed destination has no binding.
                     recipients: Vec::new(),
                     delivery: DeliveryPolicy::Native,
                     binding: None,
@@ -987,9 +975,8 @@ fn bound_output(output: BoundOutput<'_>, recipients: Vec<MetricsRecipient>) -> R
         .encoder_settings()
         .error_context(format!("Failed to resolve the encoder settings of output `{}`.", id))?;
     let id = output_id(id);
-    let host_id = host.id();
     let binding = OutputBinding {
-        host: host_id.clone(),
+        host: host.id(),
         encoder: encode_encoder(&settings)
             .error_context(format!("Failed to resolve the encoder settings of output `{}`.", id))?,
         telemetry: lease_telemetry(&id)?,
@@ -997,7 +984,6 @@ fn bound_output(output: BoundOutput<'_>, recipients: Vec<MetricsRecipient>) -> R
     };
     Ok(NativeOutput {
         decl: OutputDecl {
-            fingerprint: fingerprints::fingerprint(&host_id, accepts, &selector),
             id: id.clone(),
             accepts,
             recipients: ids,
@@ -1260,10 +1246,6 @@ fn role(name: &str) -> Selector {
 
 fn output_id(id: &str) -> OutputId {
     OutputId::new(id).expect("native output IDs are identifiers")
-}
-
-fn digest(document: &Value) -> PlanHash {
-    PlanHash::of_value(document).expect("fingerprint documents have a canonical form")
 }
 
 #[cfg(test)]

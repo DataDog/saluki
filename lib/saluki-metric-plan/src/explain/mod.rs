@@ -1,11 +1,10 @@
 //! `explain`: a stable, versioned description of a plan.
 //!
 //! [`Explain::of`] describes a plan and what validation computed for it: its logical graph (nodes, their operators,
-//! parameters with every configuration binding and its resolved value, and ports), the plan's provenance (which
-//! artifacts it composes, and the scope each replaces), the port type carried
-//! by every edge, its outputs and scopes, its resource bounds against their limits, and the validation findings. The
-//! document has a deterministic JSON form ([`Explain::to_json`]) and a deterministic text rendering
-//! ([`Explain::to_text`]).
+//! parameters with every configuration binding and its resolved value, and ports), the plan's provenance (the artifact
+//! revision it runs, if any), the port type carried by every edge, its outputs, its resource bounds against their
+//! limits, and the validation findings. The document has a deterministic JSON form ([`Explain::to_json`]) and a
+//! deterministic text rendering ([`Explain::to_text`]).
 //!
 //! # Versioning
 //!
@@ -29,8 +28,9 @@
 //! and each lane's output point of an isolation slot. A frame on one lane laid out with R1's pipelining has none of
 //! them; lanes never enter the logical sections or the plan's hash. Version 2 removes each node's provenance: what a
 //! plan runs is a property of the plan, which its provenance states (the artifacts it composes, each with the scope it
-//! replaces, whose nodes are the artifact's program), so a node's loss is attributed to its node ID and to the program
-//! the plan runs. Later versions add the plan diff, and state owners with their transitions.
+//! replaced), so a node's loss is attributed to its node ID and to the program the plan runs. Version 3 removes scopes
+//! and output fingerprints: a plan runs one artifact, a whole program, whose nodes are every node but the sources, and
+//! its provenance names that artifact's revision. Later versions add the plan diff, and state owners with their transitions.
 
 use std::collections::BTreeMap;
 
@@ -42,8 +42,8 @@ use crate::{
     compile::{RewriteOutcome, RewriteRecord},
     extension::DeliveryPolicy,
     ir::{
-        ArtifactRevision, BindingName, ExitName, InputName, NodeId, OperatorName, OutputId, ParamName, Plan,
-        PlanProvenance, PortName, PortRef, RecipientId, ScopeName,
+        ArtifactRevision, BindingName, NodeId, OperatorName, OutputId, ParamName, Plan, PlanProvenance, PortName,
+        PortRef, RecipientId,
     },
     model::PortType,
     operators::{Boundary, Loss, LossClass, OperatorRegistry, StateContract},
@@ -62,7 +62,7 @@ pub use self::resources::{BoundOutputEntry, HostSettingsEntry, RecipientEntry, R
 mod text;
 
 /// The version of the explain document this crate produces.
-pub const EXPLAIN_VERSION: u32 = 2;
+pub const EXPLAIN_VERSION: u32 = 3;
 
 /// The explain document of one plan.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -129,9 +129,6 @@ pub struct LogicalGraph {
 
     /// The declared outputs, in plan order.
     pub outputs: Vec<OutputEntry>,
-
-    /// The replaceable scopes, by name.
-    pub scopes: Vec<ScopeEntry>,
 }
 
 /// One node.
@@ -227,9 +224,6 @@ pub struct OutputEntry {
     /// What the output accepts.
     pub accepts: PortType,
 
-    /// The fingerprint of the output's binding.
-    pub fingerprint: PlanHash,
-
     /// The physical recipients the output delivers to.
     pub recipients: Vec<RecipientId>,
 
@@ -238,21 +232,6 @@ pub struct OutputEntry {
 
     /// The `emit` nodes that deliver to the output, in plan order.
     pub emitted_by: Vec<NodeId>,
-}
-
-/// One replaceable scope.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct ScopeEntry {
-    /// The scope's name.
-    pub name: ScopeName,
-
-    /// The scope's inputs, each with the port that feeds it.
-    pub inputs: BTreeMap<InputName, PortRef>,
-
-    /// The scope's exits, each with the port outside the scope that it feeds: where a scope that ends before its paths
-    /// do leaves off.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub exits: BTreeMap<ExitName, PortRef>,
 }
 
 /// What a bound covers.
@@ -459,7 +438,6 @@ impl Explain {
             .map(|output| OutputEntry {
                 id: output.id.clone(),
                 accepts: output.accepts,
-                fingerprint: output.fingerprint,
                 recipients: output.recipients.clone(),
                 delivery: output.delivery,
                 emitted_by: plan
@@ -471,16 +449,6 @@ impl Explain {
                     })
                     .map(|node| node.id.clone())
                     .collect(),
-            })
-            .collect();
-
-        let scopes = plan
-            .scopes
-            .iter()
-            .map(|(name, scope)| ScopeEntry {
-                name: name.clone(),
-                inputs: scope.inputs.clone(),
-                exits: scope.exits.clone(),
             })
             .collect();
 
@@ -524,12 +492,7 @@ impl Explain {
                 provenance: plan.provenance.clone(),
                 valid: report.is_valid(),
             },
-            graph: LogicalGraph {
-                nodes,
-                edges,
-                outputs,
-                scopes,
-            },
+            graph: LogicalGraph { nodes, edges, outputs },
             resources: ResourcesEntry::of(plan),
             bounds,
             findings,

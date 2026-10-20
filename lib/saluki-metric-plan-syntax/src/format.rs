@@ -47,17 +47,6 @@ pub(crate) fn format(program: &Program, width: usize) -> String {
     if let Some(version) = program.ir_version {
         header.push(format!("{}ir_version {}", pad(INDENT), version));
     }
-    if let Some(base) = &program.base {
-        let mut text = format!("{}base \"{}\"", pad(INDENT), base.program_hash);
-        if !base.outputs.is_empty() {
-            text.push_str(&format!("\n{}outputs {{\n", pad(INDENT)));
-            for (output, fingerprint) in &base.outputs {
-                text.push_str(&format!("{}{} = \"{}\",\n", pad(2 * INDENT), output, fingerprint));
-            }
-            text.push_str(&format!("{}}}", pad(INDENT)));
-        }
-        header.push(text);
-    }
     if !header.is_empty() {
         sections.push(header.join("\n"));
     }
@@ -84,9 +73,9 @@ pub(crate) fn format(program: &Program, width: usize) -> String {
     }
 
     if sections.is_empty() {
-        format!("policy {} {{\n}}\n", program.scope)
+        "policy {\n}\n".to_string()
     } else {
-        format!("policy {} {{\n{}\n}}\n", program.scope, sections.join("\n\n"))
+        format!("policy {{\n{}\n}}\n", sections.join("\n\n"))
     }
 }
 
@@ -646,7 +635,6 @@ fn sink_text(sink: &Sink) -> String {
         },
         SinkKind::Output { output, .. } => format!("emit output {}", output),
         SinkKind::Drop => "drop".to_string(),
-        SinkKind::Exit { name, .. } => format!("exit {}", name),
     };
     format!("{}{}", text, as_clause(&sink.id))
 }

@@ -33,7 +33,7 @@ pub(crate) fn join(parent: &str, suffix: &str) -> ArtifactNodeId {
     let parent = NodeId::reserved(LocalId::new(parent).expect("derived IDs extend identifiers"));
     let suffix = PortName::new(suffix).expect("derived ID suffixes are identifiers or indices");
     ArtifactNodeId::new(derived_terminal_id(&parent, &suffix).local().as_str())
-        .expect("a derived ID is never a scope boundary's name, since it contains an underscore")
+        .expect("a derived ID is never the reserved `input` node's name, since it contains an underscore")
 }
 
 /// The ID of the `ordinal`th stage running `operator` under `anchor`, counting from 1: `<anchor>_<operator>`, then
@@ -70,7 +70,7 @@ pub(crate) fn port_anchor(node: &str, port: Option<&PortName>) -> ArtifactNodeId
     }
 }
 
-/// The anchor of a pipeline that starts from the scope input `input`: `input_<input>`.
+/// The anchor of a pipeline that starts from the source `input`: `input_<input>`.
 pub(crate) fn input_anchor(input: &str) -> ArtifactNodeId {
     join(SCOPE_INPUT_NODE, input)
 }

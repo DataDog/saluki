@@ -29,7 +29,7 @@ fn parse_ok(source: &str) -> Program {
 
 /// Returns a policy with `body` as its statements.
 fn policy(body: &str) -> String {
-    format!("policy metrics {{\n{}\n}}\n", body)
+    format!("policy {{\n{}\n}}\n", body)
 }
 
 /// Returns the statements of a policy with `body`.
@@ -136,7 +136,7 @@ fn assert_predicate_error(predicate: &str, offending: &str, message: &str) {
 
 // The example program of the design.
 
-const EXAMPLE: &str = r#"policy metrics {
+const EXAMPLE: &str = r#"policy {
   let dsd_no_agg_split = dogstatsd
     | dogstatsd_mapper(profiles: [], cache_size: 1000) as dsd_enrich
     | namespace_prefix("tenant", exclusions: ["internal.", "system."]) as dsd_prefix_filter
@@ -169,8 +169,7 @@ const EXAMPLE: &str = r#"policy metrics {
 #[test]
 fn the_example_program_parses() {
     let program = parse_ok(EXAMPLE);
-    assert_eq!(program.scope.as_str(), "metrics");
-    assert_eq!(text(EXAMPLE, program.head), "policy metrics");
+    assert_eq!(text(EXAMPLE, program.head), "policy");
     assert_eq!(text(EXAMPLE, program.close), "}");
     assert_eq!(program.close.end, EXAMPLE.len() - 1);
     assert_eq!(program.statements.len(), 8);
@@ -330,29 +329,16 @@ fn text_start(source: &str, needle: &str) -> usize {
 #[test]
 fn headers_parse() {
     let source = format!(
-        "policy metrics {{\n  ir_version 1\n  base \"{}\" outputs {{ a = \"{}\", b = \"{}\" }}\n  blobs {{ \"{}\" = \
-         [1, 2] }}\n  dogstatsd | drop\n}}",
-        ZERO_HASH, ONE_HASH, ZERO_HASH, ONE_HASH
+        "policy {{\n  ir_version 1\n  blobs {{ \"{}\" = [1, 2] }}\n  dogstatsd | drop\n}}",
+        ONE_HASH
     );
     let program = parse_ok(&source);
     assert_eq!(program.ir_version, Some(1));
-    let base = program.base.unwrap();
-    assert_eq!(base.program_hash.to_string(), ZERO_HASH);
-    assert_eq!(
-        base.outputs
-            .iter()
-            .map(|(output, hash)| (output.as_str().to_string(), hash.to_string()))
-            .collect::<Vec<_>>(),
-        [
-            ("a".to_string(), ONE_HASH.to_string()),
-            ("b".to_string(), ZERO_HASH.to_string())
-        ]
-    );
     assert_eq!(program.blobs.unwrap().get(ONE_HASH), Some(&json!([1, 2])));
     assert_eq!(program.statements.len(), 1);
 
-    let program = parse_ok("policy metrics {}");
-    assert_eq!((program.ir_version, program.base, program.blobs), (None, None, None));
+    let program = parse_ok("policy {}");
+    assert_eq!((program.ir_version, program.blobs), (None, None));
     assert!(program.statements.is_empty());
 }
 
@@ -369,22 +355,43 @@ fn header_words_followed_by_a_pipe_or_port_name_streams() {
 #[test]
 fn header_errors() {
     assert_error(
-        &format!("  base \"{}\"\n  base \"{}\"", ZERO_HASH, ZERO_HASH),
-        "base",
-        "The policy gives `base` twice.",
-    );
-    assert_error(
         "  ir_version 1\n  ir_version 1",
         "ir_version",
         "gives `ir_version` twice",
     );
     assert_error(
-        &format!("  dogstatsd | drop\n  base \"{}\"", ZERO_HASH),
+        "  dogstatsd | drop\n  blobs {}",
+        "blobs",
+        "`blobs` comes before the policy's statements",
+    );
+    assert_error("  ir_version x", "x", "Expected an IR version");
+}
+
+#[test]
+fn the_removed_forms_say_so() {
+    // A program is whole: no scope name, no `base`, and no `exit`.
+    let (found, message) = {
+        let errors = parse("policy metrics {\n}\n").unwrap_err();
+        (errors[0].span, errors[0].message.clone())
+    };
+    assert_eq!(&"policy metrics {\n}\n"[found.range()], "metrics");
+    assert_eq!(
+        message,
+        "A program is whole: `policy` takes no scope name. Write `policy {`."
+    );
+
+    let removed_base = "`base` was removed: a program records nothing of what it was written against.";
+    assert_error(&format!("  base \"{}\"", ZERO_HASH), "base", removed_base);
+    assert_error("  ir_version 1\n  base \"nope\"", "base", removed_base);
+    assert_error(
+        "  dogstatsd | drop\n  base \"nope\"",
         "base",
         "`base` comes before the policy's statements",
     );
-    assert_error("  ir_version x", "x", "Expected an IR version");
-    assert_error("  base \"nope\"", "\"nope\"", "");
+
+    let removed_exit = "`exit` was removed: a program is whole, so every path ends in `emit` or `drop`.";
+    assert_error("  dogstatsd | exit aggregated", "exit", removed_exit);
+    assert_error("  dogstatsd | host_enrichment | exit", "exit", removed_exit);
 }
 
 // Statements and heads.
@@ -588,7 +595,7 @@ fn as_is_accepted_on_every_form() {
     let body =
         "  (a, b) as m\n    | host_enrichment as h\n    | aggregate(window: 10s) as g\n    | where true as w\n    \
                 | emit primary as e1\n  s | emit \"https://x.example.com\" as e2\n  s | emit [a, b] as e3\n  s | emit \
-                output o as e4\n  s | drop as d\n  s | exit aggregated as x";
+                output o as e4\n  s | drop as d";
     let source = policy(body);
     let program = parse_ok(&source);
     let pipeline = pipeline_of(&program.statements[0]);
@@ -604,7 +611,7 @@ fn as_is_accepted_on_every_form() {
         .collect::<Vec<_>>();
     ids.extend(sinks.iter().map(|sink| id_text(&sink.id)));
     let ids = ids.into_iter().map(Option::unwrap).collect::<Vec<_>>();
-    assert_eq!(ids, ["m", "h", "g", "w", "e1", "e2", "e3", "e4", "d", "x"]);
+    assert_eq!(ids, ["m", "h", "g", "w", "e1", "e2", "e3", "e4", "d"]);
 
     // Each `as` is part of its form's span, and each ID's span covers the identifier.
     assert_eq!(text(&source, tuple(&pipeline.head).span), "(a, b) as m");
@@ -621,7 +628,7 @@ fn as_is_accepted_on_every_form() {
 #[test]
 fn every_sink_parses() {
     let body = "  a | emit primary\n  a | emit \"https://x.example.com\"\n  a | emit [primary, \"https://y\"]\n  a | \
-                emit []\n  a | emit output o\n  a | drop\n  a | exit aggregated\n  a | emit [output, as]";
+                emit []\n  a | emit output o\n  a | drop\n  a | emit [output, as]";
     let source = policy(body);
     let program = parse_ok(&source);
     let sinks = program
@@ -633,7 +640,6 @@ fn every_sink_parses() {
                 SinkKind::Recipients { names, span } => format!("to {:?} at {}", names, text(&source, *span)),
                 SinkKind::Output { output, span } => format!("output {} at {}", output, text(&source, *span)),
                 SinkKind::Drop => "drop".to_string(),
-                SinkKind::Exit { name, span } => format!("exit {} at {}", name, text(&source, *span)),
             };
             (described, text(&source, sink.span).to_string())
         })
@@ -651,7 +657,6 @@ fn every_sink_parses() {
         ("to [] at []", "emit []"),
         ("output o at o", "emit output o"),
         ("drop", "drop"),
-        ("exit aggregated at aggregated", "exit aggregated"),
         ("to [\"output\", \"as\"] at [output, as]", "emit [output, as]"),
     ];
     assert_eq!(
@@ -687,7 +692,7 @@ fn fork_is_gone() {
 
 #[test]
 fn sinks_end_pipelines() {
-    for sink in ["emit primary", "emit output o", "drop", "exit aggregated"] {
+    for sink in ["emit primary", "emit output o", "drop"] {
         let word = sink.split(' ').next().unwrap();
         assert_error(
             &format!("  dogstatsd | {} | host_enrichment | drop", sink),
@@ -745,7 +750,7 @@ fn a_bare_statement_ends() {
     assert_error(
         "  dogstatsd | host_enrichment",
         "dogstatsd | host_enrichment",
-        "This pipeline does not end: a statement without `let` ends in a sink (`emit`, `drop`, or `exit`).",
+        "This pipeline does not end: a statement without `let` ends in a sink (`emit` or `drop`).",
     );
     assert_error("  (a, b) as m", "(a, b) as m", "This pipeline does not end");
 }
@@ -796,20 +801,19 @@ fn structural_errors() {
         "}",
         "Expected an output ID after `emit output`",
     );
-    assert_error("  dogstatsd | exit", "}", "Expected a scope exit name after `exit`");
     assert_error("  Dogstatsd | drop", "Dogstatsd", "");
 }
 
 #[test]
 fn unclosed_policies_point_at_their_opening() {
-    let source = "policy metrics {\n  a | drop\n";
+    let source = "policy {\n  a | drop\n";
     let errors = parse(source).unwrap_err();
     assert_eq!(
         errors.last().unwrap().message,
-        "Expected `}` to close the policy opened at line 1, column 16, found the end of the input."
+        "Expected `}` to close the policy opened at line 1, column 8, found the end of the input."
     );
 
-    let errors = parse("policy metrics {} extra").unwrap_err();
+    let errors = parse("policy {} extra").unwrap_err();
     assert!(errors[0]
         .message
         .contains("the end of the input after the policy's closing"));
@@ -1273,7 +1277,7 @@ proptest! {
     fn property_test_any_token_sequence_parses_or_reports_an_error_in_the_source(
         words in prop::collection::vec(prop::sample::select(VOCABULARY), 0..60),
     ) {
-        let source = format!("policy metrics {{ {} }}", words.join(" "));
+        let source = format!("policy {{ {} }}", words.join(" "));
         match parse(&source) {
             Ok(_) => {}
             Err(errors) => {

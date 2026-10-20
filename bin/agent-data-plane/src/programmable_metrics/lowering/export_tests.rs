@@ -1,4 +1,4 @@
-//! Exports of lowered default programs: every configuration of the matrix exports its one scope, the export prints
+//! Exports of lowered default programs: every configuration of the matrix exports its program, the export prints
 //! and parses back as the same document but for the order of its nodes and edges, and composing the detached export,
 //! or its printed form, back gives a plan that does what the default program does, with its operation hash, and the
 //! printed form the same plan as the export itself. The detached export leaves out exactly the nodes the comparison of
@@ -11,27 +11,22 @@ use std::{
 };
 
 use saluki_metric_plan::{
-    canonical::PlanHash,
     compose::{compose, receive_artifact, Approval},
-    export::{eliminate, export, export_as, operation_hash, operation_params, ExportForm, Omission},
+    export::{eliminate, export, export_as, operation_hash, operation_params, program_hash, ExportForm, Omission},
     install::diff_operations,
-    ir::{OutputId, Plan, ScopeName},
+    ir::Plan,
     operators::{names, OperatorRegistry},
-    validate::{Catalog as _, Rule},
+    validate::Rule,
 };
 use saluki_metric_plan_syntax::{parse, print, PrintOptions};
 use serde_json::Value;
 
 use super::{matrix::MATRIX, Lowering};
-use crate::programmable_metrics::{
-    catalog::METRICS_SCOPE,
-    test_support::{configuration, facts},
-};
+use crate::programmable_metrics::test_support::{configuration, facts};
 
 #[tokio::test]
 async fn every_lowered_default_program_exports_and_composes_back_unchanged() {
     let registry = OperatorRegistry::native();
-    let scope = ScopeName::new(METRICS_SCOPE).unwrap();
     for (name, yaml) in MATRIX {
         let config = configuration(yaml).await;
         let lowered = Lowering::new(Arc::new(config.clone()), facts(&config))
@@ -40,53 +35,34 @@ async fn every_lowered_default_program_exports_and_composes_back_unchanged() {
             .lower(&config)
             .expect("the configuration lowers");
         let plan = &lowered.plan;
-        let bundle = export(plan, &scope, &lowered.catalog.to_document(), &BTreeMap::new())
+        let bundle = export(plan, &lowered.catalog.to_document(), &BTreeMap::new())
             .unwrap_or_else(|e| panic!("{}: {}", name, e));
         assert!(!bundle.artifact.nodes.is_empty(), "{}", name);
+        // The export writes no source: a program's edges leave the sources by their bindings' names.
+        assert!(
+            bundle
+                .artifact
+                .nodes
+                .iter()
+                .all(|node| node.op.as_str() != names::SOURCE),
+            "{}",
+            name
+        );
 
-        // The base program hash, which ADP reports as `default_program_hash`, is the digest of the exported document
-        // without it, and the base records the catalog's fingerprint of every output the export emits to.
-        let mut document = serde_json::to_value(&bundle.artifact).unwrap();
-        document["base"].as_object_mut().unwrap().remove("program_hash");
+        // The program hash, which ADP reports as `default_program_hash`, is what the export hashes to when it is
+        // received unmodified.
         assert_eq!(
-            PlanHash::of_value(&document).unwrap(),
-            bundle.artifact.base.program_hash,
+            program_hash(&bundle.artifact).unwrap(),
+            receive_artifact(serde_json::to_value(&bundle.artifact).unwrap())
+                .unwrap()
+                .hash,
             "{}",
             name
         );
-        let emitted = bundle
-            .artifact
-            .nodes
-            .iter()
-            .filter(|node| node.op.as_str() == names::EMIT)
-            .map(|node| {
-                node.params
-                    .get("output")
-                    .and_then(Value::as_str)
-                    .unwrap()
-                    .parse()
-                    .unwrap()
-            })
-            .collect::<BTreeSet<OutputId>>();
-        assert_eq!(
-            bundle.artifact.base.outputs.keys().cloned().collect::<BTreeSet<_>>(),
-            emitted,
-            "{}",
-            name
-        );
-        for (output, fingerprint) in &bundle.artifact.base.outputs {
-            assert_eq!(
-                lowered.catalog.output(output).map(|declared| &declared.fingerprint),
-                Some(fingerprint),
-                "{}: {}",
-                name,
-                output
-            );
-        }
 
         // The export prints and parses back as itself, but for the order of its nodes and edges, and for the
         // parameters it writes with their defaults, which the printed form leaves out and normal form writes again:
-        // the printed form writes the edges from the scope's inputs first, in input-name order, and each node's edges
+        // the printed form writes the edges from the sources first, in source-name order, and each node's edges
         // in its block, and the drop of a filter in normal form, which keeps its `true` port, after what it keeps,
         // while the export lists them in the plan's order. Composition puts them in the default program's order.
         let printed = print(&bundle.artifact, &PrintOptions::default());
@@ -136,44 +112,49 @@ async fn every_lowered_default_program_exports_and_composes_back_unchanged() {
         };
 
         // The bound export writes every policy setting as the default program does, as a literal: it composes back to
-        // the default program itself.
+        // the default program itself, node for node and edge for edge, since lowering writes the sources first, as
+        // composition does.
         let bound = compose_document(&bundle.artifact);
         assert_eq!(bound.plan.nodes, plan.nodes, "{}", name);
         assert_eq!(bound.plan.edges, plan.edges, "{}", name);
+        assert_eq!(bound.plan.outputs, plan.outputs, "{}", name);
+        assert_eq!(bound.plan.resources, plan.resources, "{}", name);
+        assert_eq!(bound.ids.len(), bundle.artifact.nodes.len(), "{}", name);
 
         // Composing the detached export back, with ADP's catalog, gives a plan that does what the default program
         // does, and its diff against the default program by what they do is empty.
         let detached = export_as(
             plan,
-            &scope,
             &lowered.catalog.to_document(),
             &BTreeMap::new(),
             ExportForm::Detached,
             &OperatorRegistry::native(),
         )
         .unwrap_or_else(|e| panic!("{}: {}", name, e));
-        assert_eq!(detached.artifact.base, bundle.artifact.base, "{}", name);
         assert_leaves_out_what_the_comparison_does(&detached, plan, &registry, name);
         let composed = compose_document(&detached.artifact);
         assert!(composed.report.findings().is_empty(), "{}:\n{}", name, composed.report);
-        assert!(!composed.stale_base && !composed.stale_review, "{}", name);
+        assert!(!composed.stale_review, "{}", name);
         assert_does_the_same(&composed.plan, plan, &registry, name);
         // The composed plan has nothing left that the comparison would leave out: the export left out all of it.
         let left = eliminate(&composed.plan, &registry).omitted;
         assert!(left.is_empty(), "{}: {:?}", name, left);
-        let diff = diff_operations(plan, &composed.plan, &composed.correspondence, &registry);
-        assert!(diff.diff.is_empty(), "{}: {:?}", name, diff.diff);
-        assert_eq!(diff.artifact_nodes.len(), detached.artifact.nodes.len(), "{}", name);
+        let diff = diff_operations(plan, &composed.plan, &registry);
+        assert!(diff.is_empty(), "{}: {:?}", name, diff);
+        assert_eq!(composed.ids.len(), detached.artifact.nodes.len(), "{}", name);
 
-        // Composing the printed detached export, whose nodes and edges are in another order, gives the same: the same
-        // nodes in the same order, since composition puts an artifact's nodes in the default program's order, and the
-        // same edges. (An edge the default program does not have, such as one that takes the place of a node the
-        // export leaves out, follows the artifact's order.)
+        // Composing the printed detached export, whose nodes and edges are in another order, gives the same nodes and
+        // edges, each in the artifact's order: the sources first, then the program as printed.
         let printed = print(&detached.artifact, &PrintOptions::default());
         let parsed = parse(&printed).unwrap_or_else(|diagnostics| panic!("{}:\n{}\n{}", name, diagnostics, printed));
         let unprinted = composed.plan;
         let composed = compose_document(&parsed.artifact);
-        assert_eq!(composed.plan.nodes, unprinted.nodes, "{}", name);
+        let by_id = |plan: &Plan| {
+            let mut nodes = plan.nodes.clone();
+            nodes.sort_by(|a, b| a.id.cmp(&b.id));
+            nodes
+        };
+        assert_eq!(by_id(&composed.plan), by_id(&unprinted), "{}", name);
         let edges = |plan: &Plan| {
             let mut edges = plan.edges.clone();
             edges.sort_by(|a, b| (&a.from, &a.to).cmp(&(&b.from, &b.to)));
@@ -182,12 +163,12 @@ async fn every_lowered_default_program_exports_and_composes_back_unchanged() {
         assert_eq!(edges(&composed.plan), edges(&unprinted), "{}", name);
         assert!(composed.report.findings().is_empty(), "{}:\n{}", name, composed.report);
         assert_does_the_same(&composed.plan, plan, &registry, name);
-        let diff = diff_operations(plan, &composed.plan, &composed.correspondence, &registry);
-        assert!(diff.diff.is_empty(), "{}: {:?}", name, diff.diff);
+        let diff = diff_operations(plan, &composed.plan, &registry);
+        assert!(diff.is_empty(), "{}: {:?}", name, diff);
     }
 }
 
-/// Asserts that the detached export of `plan` leaves out exactly the nodes of its scope that the comparison of what
+/// Asserts that the detached export of `plan` leaves out exactly the nodes of its program that the comparison of what
 /// plans do leaves out of `plan`, with ADP's facts and signals kept bound, for the same reasons: one pass decides both.
 fn assert_leaves_out_what_the_comparison_does(
     detached: &saluki_metric_plan::export::ExportBundle, plan: &Plan, registry: &OperatorRegistry, name: &str,
@@ -195,7 +176,7 @@ fn assert_leaves_out_what_the_comparison_does(
     let compared = eliminate(plan, registry)
         .omitted
         .into_iter()
-        // The sources are outside the scope, and are never left out.
+        // The sources are not the program's, and are never left out.
         .map(|(node, why)| (node.local().to_string(), why))
         .collect::<BTreeMap<_, _>>();
     let exported = detached
@@ -273,10 +254,8 @@ async fn compose_detached(
         .unwrap()
         .lower(&config)
         .unwrap();
-    let scope = ScopeName::new(METRICS_SCOPE).unwrap();
     let detached = export_as(
         &lowered.plan,
-        &scope,
         &lowered.catalog.to_document(),
         &BTreeMap::new(),
         ExportForm::Detached,
@@ -416,7 +395,7 @@ async fn a_program_may_keep_a_routing_tee_wider_than_the_fan_out_limit_but_not_w
     );
 }
 
-/// Returns the export of the one scope of the configuration `yaml` as ADP serves it, with its annotations.
+/// Returns the export of the configuration `yaml`'s default program, bound, with its annotations.
 async fn served_export(yaml: &str) -> saluki_metric_plan::export::ExportBundle {
     let config = configuration(yaml).await;
     let lowered = Lowering::new(Arc::new(config.clone()), facts(&config))
@@ -424,13 +403,12 @@ async fn served_export(yaml: &str) -> saluki_metric_plan::export::ExportBundle {
         .unwrap()
         .lower(&config)
         .unwrap();
-    let scope = ScopeName::new(METRICS_SCOPE).unwrap();
-    let mut bundle = export(&lowered.plan, &scope, &lowered.catalog.to_document(), &BTreeMap::new()).unwrap();
+    let mut bundle = export(&lowered.plan, &lowered.catalog.to_document(), &BTreeMap::new()).unwrap();
     bundle.annotations = crate::programmable_metrics::installer::export_annotations(&bundle, &lowered.annotations);
     bundle
 }
 
-/// Returns the detached export of the one scope of the configuration `yaml` as ADP serves it, with its annotations.
+/// Returns the detached export of the configuration `yaml`'s default program as ADP serves it, with its annotations.
 async fn served_detached_export(yaml: &str) -> saluki_metric_plan::export::ExportBundle {
     let config = configuration(yaml).await;
     let lowered = Lowering::new(Arc::new(config.clone()), facts(&config))
@@ -438,10 +416,8 @@ async fn served_detached_export(yaml: &str) -> saluki_metric_plan::export::Expor
         .unwrap()
         .lower(&config)
         .unwrap();
-    let scope = ScopeName::new(METRICS_SCOPE).unwrap();
     let mut bundle = export_as(
         &lowered.plan,
-        &scope,
         &lowered.catalog.to_document(),
         &BTreeMap::new(),
         ExportForm::Detached,

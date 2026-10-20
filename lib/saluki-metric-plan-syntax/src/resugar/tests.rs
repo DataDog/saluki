@@ -9,8 +9,6 @@ use serde_json::{json, Value};
 
 use super::*;
 
-const BASE: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-
 /// Builds an artifact from `(id, op, params)` nodes and `(from, to)` edges, without the checks of reading an artifact
 /// document, so that tests can build artifacts that are not well-formed.
 fn artifact(nodes: &[(&str, &str, Value)], edges: &[(&str, &str)]) -> PolicyArtifact {
@@ -24,21 +22,15 @@ fn artifact(nodes: &[(&str, &str, Value)], edges: &[(&str, &str)]) -> PolicyArti
         .collect::<Vec<_>>();
     serde_json::from_value(json!({
         "ir_version": IR_VERSION,
-        "scope": "metrics",
-        "base": {"program_hash": BASE},
         "nodes": nodes,
         "edges": edges,
     }))
     .expect("the test artifact has the artifact's shape")
 }
 
-/// Resugars with the default options and writes each statement compactly.
+/// Resugars and writes each statement compactly.
 fn statements(artifact: &PolicyArtifact) -> Vec<String> {
-    resugar(artifact, &PrintOptions::default())
-        .statements
-        .iter()
-        .map(statement)
-        .collect()
+    resugar(artifact).statements.iter().map(statement).collect()
 }
 
 fn statement(statement: &Statement) -> String {
@@ -114,7 +106,6 @@ fn end_text(sink: &Sink) -> String {
         SinkKind::Recipients { names, .. } => format!("emit [{}]", names.join(", ")),
         SinkKind::Output { output, .. } => format!("emit output {}", output),
         SinkKind::Drop => "drop".to_string(),
-        SinkKind::Exit { name, .. } => format!("exit {}", name),
     };
     format!("{}{}", kind, as_text(&sink.id))
 }
@@ -194,18 +185,6 @@ fn a_sink_on_a_scope_input_derives_from_the_input() {
         &[("input.otlp", "input_otlp.in")],
     );
     assert_eq!(statements(&a), ["otlp | emit [primary, https://b.example.com]"]);
-}
-
-#[test]
-fn an_exit_is_a_sink_without_a_node() {
-    let a = artifact(
-        &[("input_dogstatsd_alpha", "alpha", none())],
-        &[
-            ("input.dogstatsd", "input_dogstatsd_alpha.in"),
-            ("input_dogstatsd_alpha.out", "exit.done"),
-        ],
-    );
-    assert_eq!(statements(&a), ["dogstatsd | alpha | exit done"]);
 }
 
 #[test]
@@ -548,7 +527,7 @@ fn a_tee_named_for_a_free_name_is_an_alias_used_several_times() {
     assert_eq!(statements(&a), ["let x = dogstatsd", "x | drop", "x | emit output a"]);
     assert_lowers_back(&a);
 
-    // A name that a node, a scope input, or another `let` has cannot be an alias's: the core form.
+    // A name that a node, a source, or another `let` has cannot be an alias's: the core form.
     let taken = artifact(
         &[
             ("otlp_fanout", "tee", json!({"ports": 2})),
@@ -864,7 +843,7 @@ fn a_node_with_several_output_ports_is_a_let_with_port_references() {
 
 #[test]
 fn a_let_whose_node_has_the_name_of_a_scope_input_takes_a_name_of_its_own() {
-    // `let checks = ...` would make the reference to the scope input `checks` refer to the `let`, so the `let` is
+    // `let checks = ...` would make the reference to the source `checks` refer to the `let`, so the `let` is
     // named `checks_let` (and `checks_let_2` when that is taken), and its last stage has the node's ID. The node
     // before it, whose ID is not derived, ends a `let` of its own.
     let a = artifact(
@@ -925,8 +904,8 @@ fn a_let_whose_node_has_the_name_of_a_scope_input_takes_a_name_of_its_own() {
 /// Asserts that lowering what `artifact` resugars to gives it back, in canonical order.
 #[track_caller]
 fn assert_lowers_back(artifact: &PolicyArtifact) {
-    let program = resugar(artifact, &PrintOptions::default());
-    let (lowered, _) = crate::lower::lower("", program, None).expect("the tree lowers");
+    let program = resugar(artifact);
+    let (lowered, _) = crate::lower::lower("", program).expect("the tree lowers");
     assert_eq!(lowered, canonical(artifact.clone()));
 }
 
@@ -981,7 +960,7 @@ fn positional_parameters_are_marked() {
             ("ts.passthrough", "ts_passthrough.in"),
         ],
     );
-    let program = resugar(&a, &PrintOptions::default());
+    let program = resugar(&a);
     let Statement::Let { pipeline, .. } = &program.statements[0] else {
         panic!("a `let` first");
     };
@@ -1027,42 +1006,24 @@ fn parameters_equal_to_their_default_are_left_out() {
 }
 
 #[test]
-fn headers_follow_the_options() {
+fn headers_are_written_when_they_are_not_the_defaults() {
     let mut a = artifact(&[("input_otlp", "drop", none())], &[("input.otlp", "input_otlp.in")]);
-    a.base
-        .outputs
-        .insert(OutputId::new("o").unwrap(), BASE.parse().unwrap());
     a.ir_version = IR_VERSION + 1;
     a.blobs.insert(json!(["x"])).unwrap();
 
-    let program = resugar(&a, &PrintOptions::default());
-    assert_eq!(program.scope.as_str(), "metrics");
+    let program = resugar(&a);
     assert_eq!(program.ir_version, Some(IR_VERSION + 1));
-    let base = program.base.expect("the base is written");
-    assert_eq!(base.program_hash.to_string(), BASE);
-    assert_eq!(base.outputs.len(), 1);
     assert_eq!(program.blobs.expect("the blobs are written").len(), 1);
-
-    let options = PrintOptions {
-        elide_fingerprints: true,
-        ..PrintOptions::default()
-    };
-    assert!(resugar(&a, &options).base.unwrap().outputs.is_empty());
-    let options = PrintOptions {
-        elide_base: true,
-        ..PrintOptions::default()
-    };
-    assert_eq!(resugar(&a, &options).base, None);
 
     a.ir_version = IR_VERSION;
     a.blobs = Default::default();
-    let program = resugar(&a, &PrintOptions::default());
+    let program = resugar(&a);
     assert_eq!((program.ir_version, program.blobs), (None, None));
 }
 
 #[test]
 fn the_tree_has_no_spans() {
-    let program = resugar(&reused(0), &PrintOptions::default());
+    let program = resugar(&reused(0));
     assert_eq!((program.head, program.close), (Span::default(), Span::default()));
     assert!(program.statements.iter().all(|statement| match statement {
         Statement::Let { span, pipeline, .. } | Statement::Run { span, pipeline } =>
@@ -1111,7 +1072,7 @@ fn artifacts_that_are_not_well_formed_still_resugar() {
         ),
     ];
     for case in &cases {
-        let program = resugar(case, &PrintOptions::default());
+        let program = resugar(case);
         assert!(!program.statements.is_empty(), "{:?}", case);
     }
 }
@@ -1334,7 +1295,7 @@ fn arbitrary_artifact() -> impl Strategy<Value = PolicyArtifact> {
 proptest! {
     #[test]
     fn property_test_resugaring_is_total(artifact in arbitrary_artifact()) {
-        let program = resugar(&artifact, &PrintOptions::default());
-        prop_assert_eq!(program.scope, artifact.scope);
+        let program = resugar(&artifact);
+        prop_assert_eq!(program.ir_version.unwrap_or(IR_VERSION), artifact.ir_version);
     }
 }

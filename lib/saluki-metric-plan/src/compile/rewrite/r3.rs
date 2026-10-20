@@ -34,8 +34,8 @@
 //! - **Exits stay.** No source, fence (I/O or opaque host), stateful operator, or dynamic operator is removed: they
 //!   may produce records without input, or are part of the frame. A `split` whose dead subgraph reaches one is not
 //!   folded. No declared output is removed: an `emit` that nothing reaches goes, and its output stays declared, with
-//!   the frame's exit to it connected and idle. Nodes that a scope's inputs or exits name are never removed or
-//!   renumbered, and neither is the port a folded `split`'s live port leads to when a scope exit names it.
+//!   the frame's exit to it connected and idle.
+
 //! - **Dynamic operators are never removed or folded**: a signal reader may change what it does at any time.
 //!
 //! R3 does not rely on the capacity rule. Every port it keeps carries the records it carried, in the same order: the
@@ -82,9 +82,8 @@ impl Rewrite for R3 {
         if !findings.is_valid() || graph.cyclic {
             return None;
         }
-        let scoped = ScopePorts::of(plan);
         (0..graph.nodes.len()).find_map(|split| {
-            let site = Site::find(ctx, &graph, &scoped, split)?;
+            let site = Site::find(ctx, &graph, split)?;
             let rewritten = site.rewrite(plan, &graph)?;
             (!ctx.is_rejected(RewriteId::R3, &rewritten.nodes)).then_some(rewritten)
         })
@@ -128,32 +127,6 @@ fn junction_value(operands: &[Predicate], decisive: bool) -> Option<bool> {
     decided
 }
 
-/// The ports that a plan's scopes name: their inputs (output ports) and exits (input ports).
-struct ScopePorts<'p> {
-    ports: BTreeSet<&'p PortRef>,
-    nodes: BTreeSet<&'p NodeId>,
-}
-
-impl<'p> ScopePorts<'p> {
-    fn of(plan: &'p Plan) -> Self {
-        let ports = plan
-            .scopes
-            .values()
-            .flat_map(|scope| scope.inputs.values().chain(scope.exits.values()))
-            .collect::<BTreeSet<_>>();
-        let nodes = ports.iter().map(|port| &port.node).collect();
-        Self { ports, nodes }
-    }
-
-    fn names_node(&self, node: &NodeId) -> bool {
-        self.nodes.contains(node)
-    }
-
-    fn names_port(&self, port: &PortRef) -> bool {
-        self.ports.contains(port)
-    }
-}
-
 /// Why a `split` is constant.
 #[derive(Clone, Copy, Debug)]
 enum Constant {
@@ -190,13 +163,9 @@ struct Site {
 
 impl Site {
     /// Returns the application at `split`, if it is a constant `split` whose obligations hold.
-    fn find(ctx: &RewriteContext<'_>, graph: &Graph<'_>, scoped: &ScopePorts<'_>, split: usize) -> Option<Self> {
+    fn find(ctx: &RewriteContext<'_>, graph: &Graph<'_>, split: usize) -> Option<Self> {
         let op = graph.op(split)?;
         if op.name() != names::SPLIT || op.contract().is_dynamic() {
-            return None;
-        }
-        let id = graph.id(split);
-        if scoped.names_node(id) {
             return None;
         }
         let predicate = op.params().predicate("predicate")?;
@@ -229,16 +198,14 @@ impl Site {
             },
             _ => Constant::Kinds(input),
         };
-        Self::folding(graph, scoped, split, (live, dead, value), constant)
+        Self::folding(graph, split, (live, dead, value), constant)
     }
 
     /// Returns the application that folds `split`, whose every record leaves by `live` and none by `dead`, as `value`
     /// says, if R3's obligations for removing what only `dead` feeds hold: no source, fence, stateful or dynamic
-    /// operator, or node a scope names is removed, every other node that loses an input is a `merge` that keeps
-    /// another, and no scope exit names the port `live` leads to.
+    /// operator is removed, and every other node that loses an input is a `merge` that keeps another.
     fn folding(
-        graph: &Graph<'_>, scoped: &ScopePorts<'_>, split: usize, (live, dead, value): (usize, usize, bool),
-        constant: Constant,
+        graph: &Graph<'_>, split: usize, (live, dead, value): (usize, usize, bool), constant: Constant,
     ) -> Option<Self> {
         // The nodes every one of whose inputs the dead port, or a node removed already, feeds. In topological order,
         // every node's inputs are decided before it is.
@@ -254,8 +221,7 @@ impl Site {
             let removable = !contract.boundary.is_fence()
                 && contract.state == StateContract::None
                 && !contract.is_dynamic()
-                && contract.cardinality != Cardinality::Source
-                && !scoped.names_node(graph.id(node));
+                && contract.cardinality != Cardinality::Source;
             if !removable {
                 return None;
             }
@@ -270,17 +236,13 @@ impl Site {
                 continue;
             }
             let op = graph.op(node)?;
-            if op.name() != names::MERGE || scoped.names_node(graph.id(node)) {
+            if op.name() != names::MERGE {
                 return None;
             }
             merges.entry(node).or_default().insert(port);
         }
 
-        let (target, target_port) = graph.target(split, live)?;
-        let target_port = PortRef::new(graph.id(target).clone(), input_name(graph, (target, target_port))?);
-        if scoped.names_port(&target_port) {
-            return None;
-        }
+        graph.target(split, live)?;
 
         Some(Self {
             split,
@@ -361,7 +323,6 @@ impl Site {
             nodes,
             edges,
             outputs: plan.outputs.clone(),
-            scopes: plan.scopes.clone(),
             resources: plan.resources.clone(),
         };
         Some(Rewritten {
@@ -452,7 +413,7 @@ impl Site {
             .filter(|&&node| graph.op(node).is_some_and(|op| op.name() == names::EMIT))
             .count();
         parts.push(format!(
-            "exits stay: no source, fence, stateful or dynamic operator, scope port, or declared output is removed{}",
+            "exits stay: no source, fence, stateful or dynamic operator, or declared output is removed{}",
             if emits > 0 {
                 "; the outputs of removed `emit`s stay declared, and their exits connected and idle"
             } else {
@@ -524,17 +485,13 @@ pub(crate) struct Folded {
 
 /// Folds the `split` at position `split` of `graph`, whose every record leaves by its `true` port if `value` is true,
 /// and by its `false` port otherwise, in each of `plans`, if R3's obligations hold: the `split` is no dynamic operator,
-/// and no scope names it, and what only its dead port feeds can be removed ([`Site`]'s obligations).
+/// and what only its dead port feeds can be removed ([`Site`]'s obligations).
 ///
 /// Every plan must have the nodes and edges of the plan `graph` was built from, in the same order, but may differ in
 /// parameters that no port depends on: the decision is the graph's, and is applied to each as it is.
 pub(crate) fn fold_split(plans: &[&Plan], graph: &Graph<'_>, split: usize, value: bool) -> Option<Folded> {
     let op = graph.op(split)?;
     if op.name() != names::SPLIT || op.contract().is_dynamic() {
-        return None;
-    }
-    let scoped = ScopePorts::of(plans.first()?);
-    if scoped.names_node(graph.id(split)) {
         return None;
     }
     let true_port = op.ports().output(&PortName::from_static(TRUE_PORT))?;
@@ -546,7 +503,6 @@ pub(crate) fn fold_split(plans: &[&Plan], graph: &Graph<'_>, split: usize, value
     };
     let site = Site::folding(
         graph,
-        &scoped,
         split,
         ports,
         Constant::Literal {

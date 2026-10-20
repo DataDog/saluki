@@ -264,9 +264,9 @@ fn state_owner_and_output_changes_are_classified() {
     let changes = diff(&boot_plan(), &renamed, &registry);
     assert_eq!(changes.strictest_transition(), Some(TransitionClass::Reject));
 
-    // A different fingerprint rebinds the output.
+    // A different declaration rebinds the output.
     let rebound = edited(|value| {
-        value["outputs"][1]["fingerprint"] = json!(format!("sha256:{}", "9".repeat(64)));
+        value["outputs"][1]["accepts"] = json!({"kinds": ["counter"], "timestamps": "mixed"});
     });
     let changes = diff(&boot_plan(), &rebound, &registry);
     let outputs = changes

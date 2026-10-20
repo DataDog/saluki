@@ -2,16 +2,13 @@
 //!
 //! A plan carries the resources its outputs deliver through as parameters, and the plan crate does not read what they
 //! mean, so these rules check what it can: that each resource is declared once, on a delivery host the catalog
-//! declares, with parameters the host's schema accepts; and that each output binding's fingerprint is the one its
-//! selector gives, and its recipients are declared on its host and accept what it produces, as the host decides.
+//! declares, with parameters the host's schema accepts; and that each output binding's recipients are declared on its
+//! host and accept what it produces, as the host decides.
 
 use std::collections::BTreeSet;
 
 use super::{catalog::Catalog, Finding, Location, Rule, ValidationReport};
-use crate::{
-    ir::{decode_params, HostId, OutputBinding, OutputDecl, ParamError, ParamSpec, Params, Plan, Selector},
-    resources::fingerprint,
-};
+use crate::ir::{decode_params, HostId, OutputBinding, OutputDecl, ParamError, ParamSpec, Params, Plan, Selector};
 
 pub(super) fn check(plan: &Plan, catalog: &dyn Catalog, report: &mut ValidationReport) {
     check_declarations(plan, catalog, report);
@@ -100,15 +97,6 @@ fn check_binding(
         push(format!("its encoder: {}", problem));
     }
 
-    let expected = fingerprint(&binding.host, output.accepts, &binding.selector);
-    if output.fingerprint != expected {
-        push(format!(
-            "its fingerprint is {}, but its binding gives {}: a bound output's fingerprint is version 2, the digest of \
-             its delivery host, what it accepts, and its selector",
-            output.fingerprint, expected
-        ));
-    }
-
     if let Selector::Recipients(selected) = &binding.selector {
         let mut sorted = selected.clone();
         sorted.sort();
@@ -148,11 +136,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        canonical::PlanHash,
         extension::DeliveryPolicy,
         ir::{
-            BindingName, CredentialRef, HostBinding, InputName, NativeComponentId, OutputId, ParamType, PayloadClasses,
-            RecipientDecl, RecipientId, Resources, RoleName, ScopeName,
+            BindingName, CredentialRef, HostBinding, NativeComponentId, OutputId, ParamType, PayloadClasses,
+            RecipientDecl, RecipientId, Resources, RoleName,
         },
         model::PortType,
         operators::OperatorRegistry,
@@ -179,10 +166,6 @@ mod tests {
         }
 
         fn binding(&self, _: &BindingName) -> Option<&CatalogBinding> {
-            None
-        }
-
-        fn scope_input(&self, _: &ScopeName, _: &InputName) -> Option<PortType> {
             None
         }
 
@@ -224,7 +207,6 @@ mod tests {
         OutputDecl {
             id: OutputId::new(id).unwrap(),
             accepts: PortType::ANY,
-            fingerprint: fingerprint(&host, PortType::ANY, &selector),
             recipients: recipients.iter().map(|id| RecipientId::new(*id).unwrap()).collect(),
             delivery: DeliveryPolicy::Native,
             binding: Some(OutputBinding {
@@ -281,7 +263,6 @@ mod tests {
                 .map(|output| {
                     let declared = CatalogOutput {
                         accepts: output.accepts,
-                        fingerprint: output.fingerprint,
                         recipients: output.recipients.clone(),
                     };
                     (output.id.clone(), declared)
@@ -387,12 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn an_output_binding_has_its_selectors_fingerprint_and_recipients_declared_on_its_host() {
-        let mut fingerprinted = plan();
-        fingerprinted.outputs[0].fingerprint = PlanHash::of_bytes(b"version 1");
-        // The catalog agrees, so only the binding rule reports it.
-        rejected(&fingerprinted, Rule::OutputBinding, "but its binding gives sha256:");
-
+    fn an_output_binding_has_its_encoder_and_recipients_declared_on_its_host() {
         let mut encoder = plan();
         encoder.outputs[0].binding.as_mut().unwrap().encoder =
             Params::from_iter([("series".parse().unwrap(), json!("v4"))]);
@@ -417,8 +393,7 @@ mod tests {
         let host = HostId::new("mrf_dd_out").unwrap();
         let output = &mut elsewhere.outputs[0];
         let binding = output.binding.as_mut().unwrap();
-        binding.host = host.clone();
-        output.fingerprint = fingerprint(&host, output.accepts, &binding.selector);
+        binding.host = host;
         rejected(
             &elsewhere,
             Rule::OutputBinding,

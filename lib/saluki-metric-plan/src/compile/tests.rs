@@ -647,8 +647,7 @@ fn synthetic(nodes: &[(&str, &str, Value)], edges: &[(&str, &str)]) -> Plan {
         "ir_version": 1,
         "nodes": nodes,
         "edges": edges,
-        "outputs": [{"id": "out", "accepts": {"kinds": "all", "timestamps": "mixed"},
-                     "fingerprint": format!("sha256:{}", "7".repeat(64))}],
+        "outputs": [{"id": "out", "accepts": {"kinds": "all", "timestamps": "mixed"}}],
     }))
     .unwrap()
 }
@@ -658,7 +657,6 @@ fn synthetic_catalog() -> MemoryCatalog {
         output("out"),
         CatalogOutput {
             accepts: PortType::ANY,
-            fingerprint: format!("sha256:{}", "7".repeat(64)).parse().unwrap(),
             recipients: Vec::new(),
         },
     )
@@ -1352,11 +1350,9 @@ fn unplaceable(plan: &Plan, catalog: &MemoryCatalog, frame: &Frame) -> (Vec<Stri
 #[test]
 fn adding_a_fixed_destination_needs_a_restart() {
     let frame = frame_of(&stage3_default_program());
-    let fingerprint = format!("sha256:{}", "8".repeat(64));
     let plan = edited(|value| {
         value["outputs"].as_array_mut().unwrap().push(json!({
-            "id": "new_encode", "accepts": {"kinds": "all", "timestamps": "mixed"}, "fingerprint": fingerprint,
-            "recipients": ["new_out/primary/0"]
+            "id": "new_encode", "accepts": {"kinds": "all", "timestamps": "mixed"}, "recipients": ["new_out/primary/0"]
         }));
         node_mut(value, "metrics_fanout")["params"]["ports"] = json!(6);
         value["nodes"].as_array_mut().unwrap().push(json!({
@@ -1371,7 +1367,6 @@ fn adding_a_fixed_destination_needs_a_restart() {
         output("new_encode"),
         CatalogOutput {
             accepts: PortType::ANY,
-            fingerprint: fingerprint.parse().unwrap(),
             recipients: vec!["new_out/primary/0".parse().unwrap()],
         },
     );
@@ -1421,13 +1416,8 @@ fn a_new_fence_crossing_native_configuration_asks_for_needs_a_restart() {
         ]
     );
 
-    // OTLP metrics enter the enrichment slot; sending them through the DogStatsD chain needs a new physical edge. (The
-    // DogStatsD scope is fed only by DogStatsD, so the edit drops it.)
+    // OTLP metrics enter the enrichment slot; sending them through the DogStatsD chain needs a new physical edge.
     let rerouted = edited(|value| {
-        value["scopes"]
-            .as_object_mut()
-            .unwrap()
-            .remove("dogstatsd_pre_aggregation");
         value["nodes"].as_array_mut().unwrap().push(json!({
             "id": "dsd_enrich_in", "op": "merge", "params": {"inputs": 2}
         }));
@@ -1494,10 +1484,6 @@ fn host_components_keep_their_boot_configuration() {
     let without_source = edited(|value| {
         remove_nodes(value, &["trace_sampler"]);
         node_mut(value, "metrics_in")["params"]["inputs"] = json!(4);
-        value["scopes"]["metrics"]["inputs"]
-            .as_object_mut()
-            .unwrap()
-            .remove("trace_sampler");
     });
     let (problems, capabilities) = unplaceable(&without_source, &catalog, &frame);
     assert_eq!(capabilities, vec![MissingCapability::Restart]);

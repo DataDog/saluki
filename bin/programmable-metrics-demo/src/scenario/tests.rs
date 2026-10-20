@@ -97,7 +97,6 @@ fn the_width_change_composes_into_the_default_program_as_the_check_expects() {
         export: &export,
         default_program: Some(&plan),
         active: None,
-        others: &[],
         revision: 2,
         labels: &RecipientLabels::default(),
         in_effect: None,
@@ -122,7 +121,7 @@ fn the_width_change_composes_into_the_default_program_as_the_check_expects() {
     );
 
     // A source without one of the stages says which.
-    let error = edits::width_change("policy metrics {\n}\n", "30s").unwrap_err();
+    let error = edits::width_change("policy {\n}\n", "30s").unwrap_err();
     assert!(error.to_string().contains("timestamp_split"), "{}", error);
 }
 
@@ -162,7 +161,6 @@ fn the_width_change_sets_the_inline_window_of_a_detached_export() {
         export: &export,
         default_program: Some(&plan),
         active: None,
-        others: &[],
         revision: 2,
         labels: &RecipientLabels::default(),
         in_effect: None,
@@ -305,7 +303,6 @@ fn the_scenario_edits_compose_as_the_check_expects() {
         export: &export,
         default_program: Some(&plan),
         active: None,
-        others: &[],
         revision: 2,
         labels: &RecipientLabels::default(),
         in_effect: None,

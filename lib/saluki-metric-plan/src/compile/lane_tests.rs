@@ -17,7 +17,6 @@ use serde_json::{json, Value};
 
 use super::*;
 use crate::{
-    canonical::PlanHash,
     ir::{DecodedParams, NativeComponentId, NodeId, OutputId, ParamSpec, Plan, RecipientId},
     model::PortType,
     operators::{Aggregate, EffectContract, KernelSpec, OperatorDef, OperatorRegistry, Ports},
@@ -359,7 +358,7 @@ fn plan_of(nodes: Value, edges: &[(&str, &str)]) -> Plan {
         "nodes": nodes,
         "edges": edges.iter().map(|(from, to)| json!({"from": from, "to": to})).collect::<Vec<_>>(),
         "outputs": [{"id": "out", "accepts": {"kinds": "all", "timestamps": "mixed"},
-                     "fingerprint": PlanHash::of_bytes(b"out").to_string(), "recipients": ["out/out"]}],
+                     "recipients": ["out/out"]}],
     }))
     .unwrap()
 }
@@ -369,7 +368,6 @@ fn catalog() -> MemoryCatalog {
         OutputId::new("out").unwrap(),
         CatalogOutput {
             accepts: PortType::ANY,
-            fingerprint: PlanHash::of_bytes(b"out"),
             recipients: vec![RecipientId::new("out/out").unwrap()],
         },
     )
@@ -800,8 +798,8 @@ fn unpartitioned_default_program(artifact: bool) -> Plan {
     let mut value = serde_json::from_str::<Value>(DEFAULT_PROGRAM_JSON).unwrap();
     let hash = format!("sha256:{}", "a".repeat(64));
     if artifact {
-        // The program of an artifact replacing the one scope, whose region holds aggregation.
-        value["provenance"] = json!({"artifacts": [{"scope": "metrics", "revision": 1, "hash": hash}]});
+        // The program of an artifact, which holds aggregation.
+        value["provenance"] = json!({"artifact": {"revision": 1, "hash": hash}});
     }
     for node in value["nodes"].as_array_mut().unwrap() {
         if node["id"] == "dsd_agg" {
@@ -1257,8 +1255,7 @@ impl RandomPlan {
             .iter()
             .map(|output| {
                 json!({"id": output, "accepts": {"kinds": "all", "timestamps": "mixed"},
-                       "fingerprint": PlanHash::of_bytes(output.as_bytes()).to_string(),
-                       "recipients": [format!("out/{}", output)]})
+                                              "recipients": [format!("out/{}", output)]})
             })
             .collect::<Vec<_>>();
         Plan::from_value(json!({"ir_version": 1, "nodes": plan.nodes, "edges": plan.edges, "outputs": outputs}))

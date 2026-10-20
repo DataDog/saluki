@@ -35,7 +35,6 @@ use serde_json::{json, Value};
 use stringtheory::MetaString;
 
 use crate::{
-    canonical::PlanHash,
     interpret::{Interpreter, RunOutput, Trace},
     ir::{NodeId, OutputId, Plan, RecipientId},
     model::PortType,
@@ -146,7 +145,7 @@ impl Config {
             "nodes": nodes,
             "edges": [{"from": "src.metrics", "to": "agg.in"}, {"from": "agg.out", "to": "out.in"}],
             "outputs": [{"id": OUTPUT, "accepts": {"kinds": "all", "timestamps": "mixed"},
-                         "fingerprint": fingerprint().to_string(), "recipients": [recipient().to_string()]}],
+                         "recipients": [recipient().to_string()]}],
         }))
         .unwrap()
     }
@@ -173,10 +172,6 @@ impl Config {
     }
 }
 
-fn fingerprint() -> PlanHash {
-    PlanHash::of_bytes(OUTPUT.as_bytes())
-}
-
 fn recipient() -> RecipientId {
     RecipientId::new(format!("out/{}", OUTPUT)).unwrap()
 }
@@ -186,7 +181,6 @@ fn catalog() -> MemoryCatalog {
         OutputId::new(OUTPUT).unwrap(),
         CatalogOutput {
             accepts: PortType::ANY,
-            fingerprint: fingerprint(),
             recipients: vec![recipient()],
         },
     )

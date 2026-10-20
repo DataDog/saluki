@@ -613,9 +613,7 @@ mod tests {
     }
 
     fn output(id: &str) -> OutputDecl {
-        serde_json::from_value(json!({"id": id, "accepts": {"kinds": "all", "timestamps": "mixed"},
-                                      "fingerprint": format!("sha256:{}", "0".repeat(64))}))
-        .unwrap()
+        serde_json::from_value(json!({"id": id, "accepts": {"kinds": "all", "timestamps": "mixed"}})).unwrap()
     }
 
     fn recipient(slot: u16, endpoint: &str, incarnation: u64) -> RecipientPrepare {

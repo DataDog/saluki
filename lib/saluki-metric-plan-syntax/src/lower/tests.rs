@@ -9,17 +9,13 @@ use std::{
 };
 
 use saluki_metric_plan::{
-    ir::{ArtifactBase, ArtifactNodeId, OperatorName, ParamName, Params, PolicyArtifact, PortName, ScopeName},
+    ir::{ArtifactNodeId, OperatorName, ParamName, Params, PolicyArtifact, PortName},
     operators::OperatorRegistry,
 };
 use serde_json::{json, Value};
 
 use super::*;
-use crate::ast::{
-    Base, Head, Name, OpStage, Pipeline, Program, Ref, Sink, SinkKind, Stage, Statement, Tuple, WhereStage,
-};
-
-const BASE: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+use crate::ast::{Head, Name, OpStage, Pipeline, Program, Ref, Sink, SinkKind, Stage, Statement, Tuple, WhereStage};
 
 thread_local! {
     static NEXT: Cell<usize> = const { Cell::new(0) };
@@ -182,12 +178,7 @@ fn reference(value: &str) -> Head {
 fn program(statements: Vec<Statement>) -> Program {
     Program {
         head: sp(),
-        scope: ScopeName::new("metrics").unwrap(),
         ir_version: None,
-        base: Some(Base {
-            program_hash: BASE.parse().unwrap(),
-            outputs: BTreeMap::new(),
-        }),
         blobs: None,
         statements,
         close: sp(),
@@ -196,7 +187,7 @@ fn program(statements: Vec<Statement>) -> Program {
 
 #[track_caller]
 fn lower_ok(program: Program) -> (PolicyArtifact, SpanMap) {
-    match lower(&source(), program, None) {
+    match lower(&source(), program) {
         Ok(lowered) => {
             assert_well_formed(&lowered.0);
             lowered
@@ -207,7 +198,7 @@ fn lower_ok(program: Program) -> (PolicyArtifact, SpanMap) {
 
 #[track_caller]
 fn lower_err(program: Program) -> Vec<Error> {
-    match lower(&source(), program, None) {
+    match lower(&source(), program) {
         Ok((artifact, _)) => panic!("the program should not lower: {:#?}", artifact),
         Err(errors) => errors,
     }
@@ -358,7 +349,7 @@ fn a_sink_straight_after_a_scope_input_is_named_after_the_input() {
 }
 
 #[test]
-fn sinks_become_emit_and_drop_nodes_and_exit_edges() {
+fn sinks_become_emit_and_drop_nodes() {
     let recipients = sink(
         SinkKind::Recipients {
             names: vec!["primary".to_string(), "https://b.example.com".to_string()],
@@ -366,16 +357,8 @@ fn sinks_become_emit_and_drop_nodes_and_exit_edges() {
         },
         None,
     );
-    let exit = sink(
-        SinkKind::Exit {
-            name: "rest".parse().unwrap(),
-            span: sp(),
-        },
-        None,
-    );
     let (artifact, _) = lower_ok(program(vec![
         run(reference("a"), vec![], recipients),
-        run(reference("b"), vec![], exit),
         run(reference("c"), vec![], sink(SinkKind::Drop, Some("discard"))),
     ]));
     assert_eq!(
@@ -383,10 +366,7 @@ fn sinks_become_emit_and_drop_nodes_and_exit_edges() {
         params(json!({"to": ["primary", "https://b.example.com"]}))
     );
     assert_eq!(node(&artifact, "discard").op.as_str(), "drop");
-    assert_eq!(
-        edges(&artifact),
-        ["input.a -> input_a.in", "input.b -> exit.rest", "input.c -> discard.in"]
-    );
+    assert_eq!(edges(&artifact), ["input.a -> input_a.in", "input.c -> discard.in"]);
 }
 
 #[test]
@@ -651,7 +631,7 @@ fn implicit_tee_ports_follow_span_order_not_tree_order() {
     };
     reference.span = Span::new(100_000 - 1, 100_000);
     reference.name.span = reference.span;
-    let (artifact, _) = lower(&" ".repeat(100_000), program(statements), None).unwrap();
+    let (artifact, _) = lower(&" ".repeat(100_000), program(statements)).unwrap();
     assert_eq!(
         node(&artifact, "x_fanout_0").params,
         params(json!({"output": "second_in_tree"}))
@@ -685,7 +665,7 @@ fn reused_scope_inputs_and_ports_are_teed() {
             "t_passthrough_fanout_1",
         ]
     );
-    // A reused scope input's tee has the span of its first use.
+    // A reused source's tee has the span of its first use.
     assert!(spans.node("input_a_fanout").is_some());
 }
 
@@ -734,20 +714,11 @@ fn nodes_parameters_and_edges_have_the_spans_of_what_they_were_written_as() {
 }
 
 #[test]
-fn base_ir_version_and_blobs_are_recorded() {
+fn the_ir_version_is_recorded() {
     let mut tree = program(vec![run(reference("a"), vec![], drop_())]);
-    tree.base = None;
     tree.ir_version = Some(1);
-    let default = ArtifactBase {
-        program_hash: BASE.parse().unwrap(),
-        outputs: BTreeMap::new(),
-    };
-    let (artifact, _) = lower(&source(), tree.clone(), Some(&default)).unwrap();
-    assert_eq!(artifact.base, default);
+    let (artifact, _) = lower(&source(), tree).unwrap();
     assert_eq!(artifact.ir_version, 1);
-
-    let errors = lower(&source(), tree.clone(), None).unwrap_err();
-    assert_error(&errors, tree.close, "Expected `base \"<program hash>\"`");
 }
 
 // Errors.
@@ -834,7 +805,7 @@ fn a_derived_id_that_collides_with_another_node_is_an_error_that_asks_for_as() {
             vec![op_as("host_enrichment", "input_x_host_enrichment")],
             drop_(),
         ),
-        // Two derived IDs that collide: `b | host_enrichment` from the scope input `b`, and from a `let` named
+        // Two derived IDs that collide: `b | host_enrichment` from the source `b`, and from a `let` named
         // `input_b`.
         run(reference("b"), vec![op("host_enrichment")], drop_()),
         let_("input_b", reference("c"), vec![op("host_enrichment")]),
@@ -957,23 +928,6 @@ fn an_alias_is_one_stream_that_must_be_used() {
 }
 
 #[test]
-fn an_as_on_an_exit_is_an_error() {
-    let exit = sink(
-        SinkKind::Exit {
-            name: "rest".parse().unwrap(),
-            span: sp(),
-        },
-        Some("e"),
-    );
-    let Sink { id: Some(as_id), .. } = &exit else {
-        unreachable!()
-    };
-    let span = as_id.span;
-    let errors = lower_err(program(vec![run(reference("a"), vec![], exit)]));
-    assert_error(&errors, span, "An `exit` leaves the scope and makes no node");
-}
-
-#[test]
 fn unused_lets_and_ports_are_errors_with_a_fix() {
     let unused = let_("u", reference("a"), vec![op("host_enrichment")]);
     let Statement::Let { name: unused_name, .. } = &unused else {
@@ -1042,7 +996,7 @@ fn a_reference_to_a_port_that_does_not_exist_is_an_error() {
         single_span,
         "which has one output port, so write `x` without a port",
     );
-    assert_error(&errors, input_span, "`a` is a scope input, which has no ports");
+    assert_error(&errors, input_span, "`a` is a source, which has no ports");
     assert_error(&errors, filtered_span, "`f` ends in `where`, so it is one stream");
 }
 
@@ -1252,9 +1206,7 @@ fn default_program_tree(export: &PolicyArtifact) -> Program {
         run(reference("metrics"), vec![], emit_output("dd_metrics_encode")),
     ];
     statements.extend(routed(export));
-    let mut tree = program(statements);
-    tree.base = None;
-    tree
+    program(statements)
 }
 
 /// The statements of the default program's routes, each a `let` of the filter, used by its `emit`.
@@ -1278,7 +1230,7 @@ fn routed(export: &PolicyArtifact) -> Vec<Statement> {
 #[test]
 fn the_default_program_lowers_to_its_normalized_export_with_the_native_ids() {
     let export = normalized_export();
-    let (artifact, spans) = lower(&source(), default_program_tree(&export), Some(&export.base)).unwrap();
+    let (artifact, spans) = lower(&source(), default_program_tree(&export)).unwrap();
     assert_well_formed(&artifact);
 
     for native in [
@@ -1312,10 +1264,7 @@ fn the_default_program_lowers_to_its_normalized_export_with_the_native_ids() {
         )
     };
     assert_eq!(set(&artifact), set(&export));
-    assert_eq!(
-        (artifact.scope.clone(), artifact.base.clone()),
-        (export.scope.clone(), export.base.clone())
-    );
+    assert_eq!(artifact.ir_version, export.ir_version);
 
     // Every node and edge has a span.
     for node in &artifact.nodes {
@@ -1406,9 +1355,7 @@ fn default_program_core_tree(export: &PolicyArtifact) -> Program {
         run(reference("metrics"), vec![], emit_output("dd_metrics_encode")),
     ];
     statements.extend(routed(export));
-    let mut tree = program(statements);
-    tree.base = None;
-    tree
+    program(statements)
 }
 
 #[test]
@@ -1416,22 +1363,19 @@ fn the_default_programs_core_form_lowers_to_its_export_exactly_and_composes_into
     use saluki_metric_plan::{
         compose::{compose, receive_artifact, Approval},
         ir::Plan,
-        testing::{default_program_catalog, DEFAULT_PROGRAM_JSON},
+        testing::{catalog_for, DEFAULT_PROGRAM_JSON},
     };
 
     let export = native_export();
-    let (artifact, _) = lower(&source(), default_program_core_tree(&export), Some(&export.base)).unwrap();
+    let (artifact, _) = lower(&source(), default_program_core_tree(&export)).unwrap();
     assert_well_formed(&artifact);
-    // The same nodes, in the same order, and the same edges. Canonical order takes the edges from scope inputs by
+    // The same nodes, in the same order, and the same edges. Canonical order takes the edges from sources by
     // input name, where native lowering writes them as it meets them.
     assert_eq!(artifact.nodes, export.nodes);
     let sorted = |artifact: &PolicyArtifact| edges(artifact).into_iter().collect::<BTreeSet<_>>();
     assert_eq!(sorted(&artifact), sorted(&export));
     assert_eq!(artifact.edges.len(), export.edges.len());
-    assert_eq!(
-        (&artifact.scope, &artifact.base, artifact.ir_version),
-        (&export.scope, &export.base, export.ir_version)
-    );
+    assert_eq!(artifact.ir_version, export.ir_version);
 
     let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
     // Composition takes the resolved values of bindings from the plan's node with the same ID.
@@ -1446,7 +1390,7 @@ fn the_default_programs_core_form_lowers_to_its_export_exactly_and_composes_into
         &plan,
         &received,
         &approval,
-        &default_program_catalog(),
+        &catalog_for(&plan),
         &OperatorRegistry::native(),
     )
     .unwrap();
@@ -1500,7 +1444,7 @@ fn the_default_program_with_fewer_lets_derives_its_ids_from_the_others() {
         ));
     }
     tree.statements = statements;
-    let (artifact, _) = lower(&source(), tree, Some(&export.base)).unwrap();
+    let (artifact, _) = lower(&source(), tree).unwrap();
     assert_well_formed(&artifact);
     let ids = ids(&artifact);
     for derived in [
@@ -1569,7 +1513,6 @@ fn an_unknown_operator_is_assumed_to_have_one_input_and_one_output() {
     let (artifact, _) = lower(
         &source(),
         program(vec![run(reference("a"), vec![op("frobnicate")], drop_())]),
-        None,
     )
     .unwrap();
     assert_eq!(
@@ -1597,7 +1540,7 @@ proptest::proptest! {
             head.name.span = head.span;
             statements.push(run(Head::Ref(head), vec![], emit_output(&format!("o{}", i))));
         }
-        let (artifact, _) = lower(&source(), program(statements), None).unwrap();
+        let (artifact, _) = lower(&source(), program(statements)).unwrap();
         let mut by_start = starts.iter().enumerate().collect::<Vec<_>>();
         by_start.sort_by_key(|(_, start)| **start);
         for (port, (written, _)) in by_start.into_iter().enumerate() {
@@ -1611,22 +1554,14 @@ proptest::proptest! {
 fn programs_wider_than_a_node_can_be_are_reported_not_lowered() {
     // A node has at most 10000 ports, numbered 0 to 9999, so the 10001st copy of a stream or item of a tuple is
     // reported at its text, where it used to make lowering panic.
-    const BASE: &str = "  base \"sha256:1111111111111111111111111111111111111111111111111111111111111111\"\n";
-    let tuple = |n: usize| {
-        format!(
-            "policy metrics {{\n{}  ({}) | drop\n}}\n",
-            BASE,
-            vec!["a"; n].join(", ")
-        )
-    };
+    let tuple = |n: usize| format!("policy {{\n  ({}) | drop\n}}\n", vec!["a"; n].join(", "));
     let uses = |n: usize| {
         format!(
-            "policy metrics {{\n{}  let x = a | host_enrichment\n{}}}\n",
-            BASE,
+            "policy {{\n  let x = a | host_enrichment\n{}}}\n",
             "  x | drop\n".repeat(n)
         )
     };
-    let statements = |n: usize| format!("policy metrics {{\n{}{}}}\n", BASE, "  a | drop\n".repeat(n));
+    let statements = |n: usize| format!("policy {{\n{}}}\n", "  a | drop\n".repeat(n));
 
     for (what, source) in [
         ("tuple", tuple as fn(usize) -> String),

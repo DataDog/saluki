@@ -371,9 +371,9 @@ pub enum Action {
     /// [`InstallerCore::on_default_program`].
     ///
     /// The core asks for it when the plan the schedule holds must change without a configuration change: an artifact
-    /// generation failed with nothing kept to roll back to, the policy was revoked, or a rollback or a rejected
-    /// artifact left a plan running that was composed before the latest configuration change. With a policy in effect,
-    /// `on_default_program` composes the policy against the default program; otherwise it proposes the default program.
+    /// generation failed with nothing kept to roll back to, the program was revoked, or a rollback or a rejected
+    /// artifact left a plan running that was composed before the latest configuration change. With a program in effect,
+    /// `on_default_program` composes it against the default program; otherwise it proposes the default program.
     InstallDefaultProgram,
 
     /// Report what happened to a candidate, in status, telemetry, and acknowledgments.
@@ -948,7 +948,7 @@ type CutOverride = dyn Fn(&Plan, &Plan) -> Option<(CutPlan, Vec<AdmissionPointId
 /// # Artifacts
 ///
 /// Snapshots from the artifact channel arrive through [`on_snapshot`][Self::on_snapshot], and configuration changes
-/// through [`on_default_program`][Self::on_default_program], which composes the policy in effect again. Every event
+/// through [`on_default_program`][Self::on_default_program], which composes the program in effect again. Every event
 /// keeps each config's acknowledgment ([`config_states`][Self::config_states]) and the status summary
 /// ([`status_summary`][Self::status_summary]) current.
 ///
@@ -961,8 +961,9 @@ type CutOverride = dyn Fn(&Plan, &Plan) -> Option<(CutPlan, Vec<AdmissionPointId
 /// ([`lease_released`][Self::lease_released]), recipients after every lease naming them is released and nothing else
 /// holds them, and each recipient's exit arrives from its host ([`recipient_retired`][Self::recipient_retired],
 /// [`recipient_failed`][Self::recipient_failed]). At every lowering, the generation kept to roll back to, and the plan
-/// a cut replaced, are kept only while the latest lowering declares every output they declare with an equal
-/// fingerprint, and every recipient with the same protocol, so a rollback never resurrects a removed destination.
+/// a cut replaced, are kept only while the latest lowering declares every output they declare accepting the same
+/// records on the same delivery host and selector, and every recipient with the same protocol, so a rollback never
+/// resurrects a removed destination.
 pub struct InstallerCore {
     frame: Arc<Frame>,
     registry: OperatorRegistry,
@@ -1517,7 +1518,7 @@ impl InstallerCore {
     ///
     /// This is also the artifact paths' failure entry point. A failed active artifact generation takes its artifact out
     /// of effect: the artifact's config is acknowledged `failed`, its re-compositions in flight are dropped rather than
-    /// prepared again, and the policy in effect becomes the artifact of the generation rolled back to, if any. When the
+    /// prepared again, and the program in effect becomes the artifact of the generation rolled back to, if any. When the
     /// generation rolled back to predates the latest configuration change, the core asks for the default program
     /// ([`Action::InstallDefaultProgram`]), so that the plan catches up with it.
     pub fn generation_failed(&mut self, generation: GenerationId, reason: &str) -> Vec<Action> {
@@ -1610,7 +1611,7 @@ impl InstallerCore {
     ///
     /// The rollback serves the artifact the plan was composed from, under that artifact's revision, which leaves the
     /// high-water mark as it is. A plan composed before the latest configuration change is composed again after it:
-    /// the core then also asks for the default program, which composes the policy in effect again.
+    /// the core then also asks for the default program, which composes the program in effect again.
     fn install_rollback(&mut self, actions: &mut Vec<Action>) {
         let Some(rollback) = self.rollback.take() else { return };
         let id = self.candidate_id();
@@ -1678,16 +1679,6 @@ impl InstallerCore {
             attempts: 0,
             reported: None,
         })
-    }
-
-    /// Checks a candidate as queueing it for preparation does, without queueing it: its hash, its validation report,
-    /// and its placement and compilation into the frame.
-    ///
-    /// # Errors
-    ///
-    /// Returns the rejection preparing the candidate would report.
-    fn check(&self, candidate: Candidate) -> Result<(), Rejection> {
-        self.queue(CandidateId(0), candidate).map(|_| ())
     }
 
     /// Creates a generation for a queued candidate, alive and pending.
