@@ -1897,7 +1897,8 @@ fn every_rule_has_a_stable_name() {
             "port_can_carry",
             "unused_output",
             "live_binding_on_host",
-            "state_budget"
+            "state_budget",
+            "telemetry_contract"
         ]
     );
 }

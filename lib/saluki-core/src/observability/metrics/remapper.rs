@@ -140,6 +140,16 @@ impl RemapperRule {
         self.continue_matching
     }
 
+    /// Returns the name of the source metric this rule matches.
+    pub const fn source_name(&self) -> &'static str {
+        self.existing_name
+    }
+
+    /// Returns the tags, as `key:value` or bare, that the source metric must carry for this rule to match.
+    pub const fn source_tags(&self) -> &'static [&'static str] {
+        self.existing_tags
+    }
+
     /// Returns the remapped metric name produced by this rule.
     pub const fn remapped_name(&self) -> &'static str {
         self.new_name

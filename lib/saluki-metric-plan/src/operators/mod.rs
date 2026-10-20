@@ -77,6 +77,9 @@ pub use self::enrich::{HostEnrichment, HostTags};
 mod opaque;
 pub use self::opaque::OpaqueHost;
 
+mod reports;
+pub use self::reports::{PlanValue, Recorder, ReportedSeries, SeriesKind};
+
 mod routing;
 pub(crate) use self::routing::decision_cost;
 pub use self::routing::{DropOperator, Emit, Merge, Split, Tee, EMIT_TO, FALSE_PORT, TRUE_PORT};
@@ -269,6 +272,16 @@ pub trait OperatorDef: Send + Sync {
     /// partition key runs its slot on one lane. The default is `None`.
     fn partition_key(&self) -> Option<PartitionKey> {
         None
+    }
+
+    /// Returns the series a node running the operator reports, beside the component series every node has, each with
+    /// who records it (see [`Recorder`]).
+    ///
+    /// These are the series its kernel registers, under the node's labels, and those a host records for any node
+    /// running it. A host may add series a node reports because of its role, which depend on its name. The default is
+    /// none.
+    fn reports(&self) -> &'static [ReportedSeries] {
+        &[]
     }
 }
 
@@ -759,6 +772,11 @@ impl ConfiguredOperator {
     /// [`OperatorDef::partition_key`].
     pub fn partition_key(&self) -> Option<PartitionKey> {
         self.def.partition_key()
+    }
+
+    /// Returns the series a node running the operator reports (see [`OperatorDef::reports`]).
+    pub fn reports(&self) -> &'static [ReportedSeries] {
+        self.def.reports()
     }
 }
 

@@ -19,8 +19,9 @@ use super::{
     },
     names,
     ports::{KindMap, PortMapping, Ports, TimestampMap},
+    reports,
     support::{check_bucket_width, check_whole_seconds, error, unresolved},
-    KernelSpec, OperatorDef, PartitionKey,
+    KernelSpec, OperatorDef, PartitionKey, ReportedSeries,
 };
 use crate::{
     canonical::MAX_SAFE_INTEGER,
@@ -178,6 +179,10 @@ impl OperatorDef for Aggregate {
 
     fn summary(&self) -> &'static str {
         "Aggregates each context into time buckets, natively: counters become rates and histograms expand into series."
+    }
+
+    fn reports(&self) -> &'static [ReportedSeries] {
+        reports::AGGREGATE
     }
 
     fn params(&self) -> &'static [ParamSpec] {

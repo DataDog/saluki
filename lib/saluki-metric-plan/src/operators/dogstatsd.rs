@@ -30,8 +30,9 @@ use super::{
     contract::{Cardinality, EffectContract, Identity, Loss, LossClass, LossDecl, PerKind},
     names,
     ports::{InputPort, KindMap, OutputPort, PortMapping, Ports, TimestampMap, IN},
+    reports,
     support::{check_bucket_width, error, error_chain, unresolved},
-    KernelBuildContext, KernelBuildError, KernelSpec, OperatorDef,
+    KernelBuildContext, KernelBuildError, KernelSpec, OperatorDef, ReportedSeries,
 };
 use crate::{
     canonical::MAX_SAFE_INTEGER,
@@ -393,6 +394,10 @@ impl OperatorDef for TimestampSplit {
         "Separates timestamped points, which bypass aggregation, turning timestamped counters into rates."
     }
 
+    fn reports(&self) -> &'static [ReportedSeries] {
+        reports::TIMESTAMP_SPLIT
+    }
+
     fn params(&self) -> &'static [ParamSpec] {
         TIMESTAMP_SPLIT_PARAMS
     }
@@ -600,6 +605,10 @@ impl OperatorDef for TagProjection {
 
     fn summary(&self) -> &'static str {
         "Removes tags and restricts tag values of counters and distributions, by rules on the raw name."
+    }
+
+    fn reports(&self) -> &'static [ReportedSeries] {
+        reports::TAG_PROJECTION
     }
 
     fn params(&self) -> &'static [ParamSpec] {

@@ -27,6 +27,9 @@ pub mod api;
 pub mod bindings;
 pub mod catalog;
 pub mod channel_stub;
+// Not yet called outside its tests: V10's second half wires it into the catalog and status.
+#[allow(dead_code, unused_imports)]
+pub mod compatibility;
 pub mod credentials;
 pub mod host_facts;
 pub mod installer;

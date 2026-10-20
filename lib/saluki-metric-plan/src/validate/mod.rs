@@ -73,6 +73,8 @@ pub use self::catalog::{
     BindingClass, Catalog, CatalogBinding, CatalogOutput, CatalogRecipient, HostSchema, Liveness, MemoryCatalog,
 };
 
+pub mod contract;
+pub use self::contract::{ContractEntry, ContractReport, TelemetryContract, Unmet};
 mod duplicates;
 pub(crate) mod graph;
 mod references;
@@ -219,6 +221,9 @@ rules! {
     /// A program holds no host-owned operator, such as a source or an opaque host: only native configuration places
     /// them.
     TrustedHost => "trusted_host", Error;
+    /// Every node the host's telemetry contract reads series from is in the plan, running the operator that reports
+    /// them (see [`contract`]).
+    TelemetryContract => "telemetry_contract", Warning;
 }
 
 impl fmt::Display for Rule {
