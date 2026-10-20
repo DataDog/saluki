@@ -71,10 +71,12 @@
 //! With an artifact channel [connected](ProgrammableMetrics::connect_artifact_channel), the worker also wakes on every
 //! snapshot the channel delivers, and hands it to the core ([`InstallerCore::on_snapshot`]), which revokes, rejects,
 //! acknowledges, or proposes the artifact it holds, composed with the default program ADP last lowered, with its
-//! catalog. While an artifact is in effect, each configuration change composes it again against the new default
-//! program ([`InstallerCore::on_default_program`]), so native configuration still reaches it through the facts and
-//! signals it binds, and the resources it delivers through. Its policy is its own: native policy settings reach only the
-//! default program, whose lowering writes them as literals, so a change of one is a new default program, installed as a
+//! catalog, and [elaborated](saluki_metric_plan::elaborate) into its core plan. The default program installs as its
+//! core plan too ([`elaborate_default`]): what the installer compares, hashes, and reports is always a core plan. While
+//! an artifact is in effect, each configuration change composes it again against the new default program
+//! ([`InstallerCore::on_default_program`]), so native configuration still reaches it through the facts and signals it
+//! binds, and the resources it delivers through. Its policy is its own: native policy settings reach only the default
+//! program, whose lowering writes them as literals, so a change of one is a new default program, installed as a
 //! generation that rebuilds only what the change touches.
 //! The core's actions are performed as for any candidate. A preparation's panic budget is the budget of the program it
 //! runs, in every region: zero for the default program, so that a panic fails its region as a native component's does,
@@ -86,8 +88,7 @@
 //! same way when the program is revoked.
 //!
 //! After every event, the worker reports the core's acknowledgments and its status summary back through the channel
-//! ([`InstallerCore::apply_states`]), with the program hash of the default program's export and whether ADP is
-//! degraded.
+//! ([`InstallerCore::apply_states`]), with the hash of the default program's core plan and whether ADP is degraded.
 //!
 //! # Resources
 //!
@@ -149,8 +150,9 @@ use saluki_metric_plan::{
     },
     compile::{compile, compile_unvalidated, Frame, LeaseTable, RegionProgram, SlotId},
     compose::{compose, demanded_outputs, Approval, ComposeError, Composed, Composer, Demand},
+    elaborate::elaborate_default,
     explain::Explain,
-    export::{export_as, node_differences, program_hash, Annotations, ExportBundle, ExportForm, Omission},
+    export::{export_as, node_differences, Annotations, ExportBundle, ExportForm, Omission},
     install::{
         Action, ArmCut, Candidate, CandidateId, CreditKey, CutDeferReason, CutPhase, GenerationState, InstallerConfig,
         InstallerCore, InstallerStatus, LeaseRef, Origin, Outcome, PendingReason, Prepare, PrepareOutcome, PrepareSite,
@@ -163,7 +165,7 @@ use saluki_metric_plan::{
         build_kernels, GenerationFailureReporter, LanePreparation, PanicBudget, PrepareRegion, RegionControl,
         RegionError, StateBudgets,
     },
-    validate::{ValidationReport, Validator},
+    validate::ValidationReport,
 };
 use tokio::{
     select,
@@ -359,7 +361,10 @@ impl ProgrammableMetrics {
         for note in &lowered.notes {
             info!(node = %note.node, "{}", note.message);
         }
-        let report = Validator::new(&registry, &lowered.catalog).validate(&lowered.plan);
+        // What installs is the default program's core plan; the plan as lowered, with its bindings, is what the export,
+        // and composition, are taken from.
+        let elaborated = elaborate_default(&lowered.plan, &lowered.catalog, &registry);
+        let report = elaborated.report;
         let degraded = errors(&report);
         if !degraded.is_empty() {
             warn!(
@@ -371,7 +376,7 @@ impl ProgrammableMetrics {
 
         // The slots' lanes are fixed at boot.
         let frame = Frame::compute_with(
-            &lowered.plan,
+            &elaborated.plan,
             &registry,
             &slot_name,
             &lowering.hosts().frame_hosts(),
@@ -386,7 +391,8 @@ impl ProgrammableMetrics {
             )
         })?;
         let frame = Arc::new(frame);
-        let plan = Arc::new(lowered.plan);
+        let plan = Arc::new(elaborated.plan);
+        let lowered_plan = Arc::new(lowered.plan);
 
         let (retired_tx, retired_rx) = mpsc::unbounded_channel();
         let notifier = move |_: GenerationId| {
@@ -398,6 +404,7 @@ impl ProgrammableMetrics {
         };
         let boot_candidate = Candidate {
             plan: Arc::clone(&plan),
+            bindings: elaborated.bindings,
             report,
             origin: Origin::DefaultProgram { config_change: 0 },
         };
@@ -460,7 +467,8 @@ impl ProgrammableMetrics {
 
         let labels = output_labels(&lowered.resources.outputs);
         let default_program = DefaultProgramView::of(
-            &plan,
+            &lowered_plan,
+            Arc::clone(&plan),
             lowered.catalog,
             &labels,
             &lowered.annotations,
@@ -490,7 +498,7 @@ impl ProgrammableMetrics {
             failures: failures_rx,
             config,
             config_changes: 0,
-            last_lowered: Arc::clone(&plan),
+            last_lowered: lowered_plan,
             default_program,
             labels,
             degraded: degraded_candidates,
@@ -677,8 +685,9 @@ pub struct PlanStatus {
     /// The same export in the bound form, every node as the default program has it, for tools that study lowering.
     pub bound_export: Result<Arc<ExportBundle>, String>,
 
-    /// The default program last lowered, with every configuration binding resolved: the plan whose sources, outputs,
-    /// and resources artifacts are composed with, and the exports are taken from.
+    /// The default program last lowered, as written, with every configuration binding and its resolved value: the plan
+    /// whose sources, outputs, and resources artifacts are composed with, and the exports are taken from. Elaborated
+    /// with the export's catalog, it is the core plan whose hash the status reports as `default_program_hash`.
     pub default_program: Arc<Plan>,
 
     /// The active generation's plan and explain document.
@@ -858,8 +867,8 @@ pub(super) trait ArtifactPaths: Send {
         &mut self, core: &mut InstallerCore, candidate: Candidate, composer: &dyn Composer,
     ) -> (CandidateId, Vec<Action>);
 
-    /// Returns every config's acknowledgment and the status summary, with the program hash of the default program's
-    /// export and why the host is degraded, if it is: what the installer reports, and the artifact in effect it
+    /// Returns every config's acknowledgment and the status summary, with the hash of the default program's core plan
+    /// and why the host is degraded, if it is: what the installer reports, and the artifact in effect it
     /// reports.
     fn apply_states(
         &self, core: &InstallerCore, default_program_hash: Option<PlanHash>, degraded: Option<String>,
@@ -1035,18 +1044,21 @@ struct DefaultProgramView {
     bound_export: Result<Arc<ExportBundle>, String>,
     /// The nodes whose parameters lowering writes from native policy settings.
     policy_nodes: BTreeSet<NodeId>,
-    /// The program hash of the detached export's artifact, which status reports, if it can be computed.
+    /// The default program's core plan, which installs and which a running program is compared with.
+    core: Arc<Plan>,
+    /// The core plan's hash, which status reports, if it can be computed: the active plan hash exactly when the default
+    /// program, or a program that elaborates to it, runs.
     default_program_hash: Option<PlanHash>,
 }
 
 impl DefaultProgramView {
-    /// Derives the view of a default program lowered with `catalog`, with output display labels `labels` and the notes
-    /// lowering wrote for its nodes, `annotations`, and the nodes it writes from native policy settings,
-    /// `policy_nodes`; `registry` is the operator registry plans are compiled with, which says which nodes the detached
-    /// export leaves out because they do nothing.
+    /// Derives the view of a default program `plan` lowered with `catalog`, whose core plan is `core`, with output
+    /// display labels `labels` and the notes lowering wrote for its nodes, `annotations`, and the nodes it writes from
+    /// native policy settings, `policy_nodes`; `registry` is the operator registry plans are compiled with, which says
+    /// which nodes the detached export leaves out because they do nothing.
     fn of(
-        plan: &Plan, catalog: AdpCatalog, labels: &BTreeMap<OutputId, String>, annotations: &BTreeMap<NodeId, String>,
-        policy_nodes: BTreeSet<NodeId>, registry: &OperatorRegistry,
+        plan: &Plan, core: Arc<Plan>, catalog: AdpCatalog, labels: &BTreeMap<OutputId, String>,
+        annotations: &BTreeMap<NodeId, String>, policy_nodes: BTreeSet<NodeId>, registry: &OperatorRegistry,
     ) -> Self {
         let document = catalog.to_document();
         let export_in = |form: ExportForm| {
@@ -1059,21 +1071,19 @@ impl DefaultProgramView {
         };
         let export = export_in(ExportForm::Detached);
         let bound_export = export_in(ExportForm::Bound);
-        let default_program_hash = match &export {
-            Ok(bundle) => match program_hash(&bundle.artifact) {
-                Ok(hash) => Some(hash),
-                Err(error) => {
-                    debug!(error = %error, "The program hash of the default program's export cannot be computed.");
-                    None
-                }
-            },
-            Err(_) => None,
+        let default_program_hash = match core.hash() {
+            Ok(hash) => Some(hash),
+            Err(error) => {
+                debug!(error = %error, "The default program's core plan cannot be hashed.");
+                None
+            }
         };
         Self {
             catalog,
             export,
             bound_export,
             default_program_hash,
+            core,
             policy_nodes,
         }
     }
@@ -1293,7 +1303,7 @@ struct Installer {
     /// The last default program lowered, against which a change's binding changes are counted, and into which
     /// artifacts are composed.
     last_lowered: Arc<Plan>,
-    /// What is derived from the last default program lowered: its catalog, exports, and their program hash.
+    /// What is derived from the last default program lowered: its catalog, exports, and core plan, with its hash.
     default_program: DefaultProgramView,
     /// The display label of every output, by output ID.
     labels: BTreeMap<OutputId, String>,
@@ -1632,8 +1642,10 @@ impl Installer {
             }
         };
         self.telemetry.count_param_changes(&self.last_lowered, &lowered.plan);
-        let report = Validator::new(&self.registry, &lowered.catalog).validate(&lowered.plan);
+        let elaborated = elaborate_default(&lowered.plan, &lowered.catalog, &self.registry);
+        let report = elaborated.report;
         let degraded = errors(&report);
+        let core = Arc::new(elaborated.plan);
         let plan = Arc::new(lowered.plan);
         // Outputs follow the configuration, and their labels with them.
         let labels = output_labels(&lowered.resources.outputs);
@@ -1641,6 +1653,7 @@ impl Installer {
             self.labels = labels;
             let view = DefaultProgramView::of(
                 &plan,
+                Arc::clone(&core),
                 lowered.catalog,
                 &self.labels,
                 &lowered.annotations,
@@ -1666,7 +1679,8 @@ impl Installer {
         }
         self.lowered_resources = lowered.resources;
         let candidate = Candidate {
-            plan: Arc::clone(&plan),
+            plan: core,
+            bindings: elaborated.bindings,
             report,
             origin: Origin::DefaultProgram {
                 config_change: self.config_changes,
@@ -2376,14 +2390,14 @@ impl Installer {
         // A published program owns its policy: status names the native settings it does not run as they are now.
         if let (Some(program), Some(active)) = (apply_states.status.program.as_mut(), self.core.active_plan()) {
             if program.runs == ProgramRuns::Published {
-                let cached = self.differs.as_ref().filter(|(running, lowered, _)| {
-                    Arc::ptr_eq(running, active) && Arc::ptr_eq(lowered, &self.last_lowered)
+                let cached = self.differs.as_ref().filter(|(running, default, _)| {
+                    Arc::ptr_eq(running, active) && Arc::ptr_eq(default, &self.default_program.core)
                 });
                 program.differs = match cached {
                     Some((_, _, differs)) => differs.clone(),
                     None => {
                         let differs = node_differences(
-                            &self.last_lowered,
+                            &self.default_program.core,
                             active,
                             &self.default_program.policy_nodes,
                             &self.registry,
@@ -2391,7 +2405,11 @@ impl Installer {
                         .iter()
                         .map(|node| node.local().clone())
                         .collect::<Vec<_>>();
-                        self.differs = Some((Arc::clone(active), Arc::clone(&self.last_lowered), differs.clone()));
+                        self.differs = Some((
+                            Arc::clone(active),
+                            Arc::clone(&self.default_program.core),
+                            differs.clone(),
+                        ));
                         differs
                     }
                 };
@@ -2466,13 +2484,16 @@ impl Installer {
             return Some(Arc::clone(cached));
         }
         let plan = Arc::clone(self.core.active_plan()?);
-        // Measured against the default program, as composition measures a program.
-        let report = Validator::new(&self.registry, &self.default_program.catalog)
-            .with_baseline(&self.last_lowered)
-            .validate(&plan);
-        // The rewrites section lists what compiling the active generation considered, as the core recorded it.
+        // The report the active plan was installed with: its program's as written, with its bindings resolved, which
+        // compilation used.
+        let report = self.core.active_report()?.clone();
+        // The rewrites section lists what compiling the active generation considered, as the core recorded it, and the
+        // logical sections the core plan with the bindings it was written with.
         let rewrites = self.core.active_rewrites().unwrap_or_default();
-        let explain = Explain::of(&plan, &self.registry, &report).with_rewrites(rewrites);
+        let bindings = self.core.active_bindings().cloned().unwrap_or_default();
+        let explain = Explain::of(&plan, &self.registry, &report)
+            .with_bindings(&bindings)
+            .with_rewrites(rewrites);
         // The physical sections describe the plan as it runs: after the logical rewrites, placed into the frame. The
         // core keeps only the programs, so the plan is compiled again, as the core compiled it: compilation is
         // deterministic, and the active plan compiled into the frame when it was installed. Its explain document goes

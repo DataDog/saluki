@@ -5,8 +5,8 @@
 //! | `GET /programmable-metrics/status` | the status summary and `config_states`, as the stub protocol writes them |
 //! | `GET /programmable-metrics/resources` | the delivery hosts, outputs, recipients, and resource budget |
 //! | `GET /programmable-metrics/export` | the export bundle of the default program; `?form=bound` for its bound form |
-//! | `GET /programmable-metrics/plan` | the active composed logical plan, resolved values included |
-//! | `GET /programmable-metrics/default-program` | the default program last lowered, resolved values included |
+//! | `GET /programmable-metrics/plan` | the active core plan, every binding written as its value |
+//! | `GET /programmable-metrics/default-program` | the default program as lowered, with its bindings and their values |
 //! | `GET /programmable-metrics/explain` | the explain document of the active plan, as JSON; `?format=text` for text |
 //!
 //! The contract is specified in `docs/design/programmable-metrics-stub-protocol.md`, section 3; the demo server reads

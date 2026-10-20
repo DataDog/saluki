@@ -30,6 +30,7 @@ use saluki_error::GenericError;
 use saluki_metric_plan::{
     compile::{LineageKey, RewriteId, RewriteOutcome, RewriteRecord},
     install::{CutProgress, StateBinding},
+    validate::Validator,
 };
 use saluki_metrics::test::TestRecorder;
 use tokio::{
@@ -607,6 +608,7 @@ async fn a_boundary_that_can_no_longer_be_published_is_reported_abandoned_and_it
     let catalog = &installing.installer().default_program.catalog;
     let report = Validator::new(&OperatorRegistry::native(), catalog).validate(&plan);
     let candidate = Candidate {
+        bindings: Default::default(),
         plan: Arc::new(plan),
         report,
         origin: Origin::DefaultProgram { config_change: 1 },

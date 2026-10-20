@@ -1334,3 +1334,49 @@ tests, and the demo check come at the end of version 2, not here.
 **Results.** An unmodified printed export composes with an empty diff and is adopted, but its `Plan::hash` differs from
 the default program's (the detached export leaves out what does nothing, and writes edges as written); V6's single hash
 resolves that. `policy/<local>` node IDs and the `dsd_agg` adoption stay until V10, and `program.differs` stays.
+
+## Version 2: V6 (elaboration as a phase)
+
+**What went** (amendment 198): the second hash and resolution done outside composition. `ResolvedValues` and
+`Plan::hash`'s argument, `strip_node_params`, the explain document's `structural_hash`, `export::operation_hash`,
+`operation_params`, and `compared_params`, and the installer core's `does` on its installed and queued generations.
+Composition's body left `compose.rs`, which keeps receipt, `Approval`, the outcome and drop types, `ComposeError`,
+`demanded_outputs`, and `sources`.
+
+**What replaced it:** `elaborate.rs`, one pass from the program as written to the core program: normal form, blobs
+inlined, node IDs, sources, recipients and outputs, bindings from the catalog, then canonical order (the order the
+pipeline syntax prints, after the host's sources), validation of the program as written with its bindings resolved,
+and the core form: every binding written as its value, recorded in `BindingUses`, every parameter in normal form as its
+operator encodes it. `elaborate_default` runs the same passes on a lowered default program, and is a fixed point on a
+core plan. `compose` and `Composed` are names for `elaborate` and `Elaborated`. The installer core compares
+`plan_hash`; `diff` and `KernelKey::of` read parameters directly; `node_differences` compares two core plans. A
+candidate carries its `BindingUses`, adoption replaces them with the plan, and the core exposes `active_bindings` and
+`active_report`, so ADP's explain shows the core plan with the bindings it was written with and compiles it again with
+the report it was installed with. ADP elaborates every default program it lowers: the core plan installs and lays out
+the frame, its hash is `default_program_hash`, and the plan as lowered stays what the export, composition, and the
+default-program route use. The demo diffs against the core plan, checks the status by elaborating the default program
+with the export's catalog, and checks the export by exporting the default program. Explain is version 4.
+
+**A choice:** validation reports on the program as written, because the core plan writes a signal's value, and a
+`split` on a signal that is off would otherwise be a predicate that can never match, a warning on every program while
+failover is off. Compilation uses that report, so it treats such a split as the program wrote it unless another rewrite
+applies first and validates the core plan again.
+
+**Tests.** New `elaborate/tests.rs`: the unmodified export, also with its nodes and edges reversed, and the default
+program elaborate to one plan and hash; the core form is a fixed point; a binding and its value, a parameter left out
+and its default, and a set in another order each elaborate to one hash; a signal change changes the hash and only its
+node's kernel key. Tests that compared a composition with the default program as lowered compare it with its core
+plan, and boot harnesses boot the core plan with the elaboration's report. The syntax crate's fixture tests and the
+demo's unmodified-export preview test compare the one hash again, which V4 had relaxed to operation hashes. Tests of
+deleted behavior went or turned around: a literal equal to a binding's value is now the same parameter, kernel identity
+is the core plan's, and plan order no longer follows the artifact. Explain golden files were regenerated: version 4, no
+`structural_hash`, and for the default program core parameters, bindings by pointer, and canonical order. Targeted
+runs passed: the plan crate's elaborate, install, explain, compile, IR, compose, export, and normalize tests (and, once,
+its whole non-property suite), composition's property tests in debug, ADP's lowering, installer, API, telemetry, and
+differential tests, the syntax crate's fixture tests, and the demo crate.
+
+**Results.** An unmodified printed bound export elaborates to the default program's core plan, so
+`default_program_hash` equals `active_plan_hash` while either runs. The detached export, which leaves out what does
+nothing, is still a generation that builds no kernel (S0); elaboration does not leave nodes out, which would change the
+running default program's telemetry. V3's precise updates hold: a native policy change rebuilds only the kernels whose
+settings changed.

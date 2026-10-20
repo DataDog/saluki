@@ -1,9 +1,9 @@
 //! Exports of lowered default programs: every configuration of the matrix exports its program, the export prints
 //! and parses back as the same document but for the order of its nodes and edges, and composing the detached export,
-//! or its printed form, back gives a plan that does what the default program does, with its operation hash, and the
-//! printed form the same plan as the export itself. The detached export leaves out exactly the nodes the comparison of
-//! what plans do leaves out. The bound export, which writes every node as the default program has it, composes back to
-//! the default program itself.
+//! or its printed form, back gives a plan that does what the default program does, and the printed form the same core
+//! plan as the export itself. The detached export leaves out exactly the nodes the comparison of what plans do leaves
+//! out. The bound export, which writes every node as the default program has it, composes back to the default
+//! program's core plan itself.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -12,7 +12,8 @@ use std::{
 
 use saluki_metric_plan::{
     compose::{compose, receive_artifact, Approval},
-    export::{eliminate, export, export_as, operation_hash, operation_params, program_hash, ExportForm, Omission},
+    elaborate::elaborate_default,
+    export::{eliminate, export, export_as, program_hash, ExportForm, Omission},
     install::diff_operations,
     ir::Plan,
     operators::{names, OperatorRegistry},
@@ -49,8 +50,7 @@ async fn every_lowered_default_program_exports_and_composes_back_unchanged() {
             name
         );
 
-        // The program hash, which ADP reports as `default_program_hash`, is what the export hashes to when it is
-        // received unmodified.
+        // The program hash is what the export hashes to when it is received unmodified.
         assert_eq!(
             program_hash(&bundle.artifact).unwrap(),
             receive_artifact(serde_json::to_value(&bundle.artifact).unwrap())
@@ -64,7 +64,7 @@ async fn every_lowered_default_program_exports_and_composes_back_unchanged() {
         // parameters it writes with their defaults, which the printed form leaves out and normal form writes again:
         // the printed form writes the edges from the sources first, in source-name order, and each node's edges
         // in its block, and the drop of a filter in normal form, which keeps its `true` port, after what it keeps,
-        // while the export lists them in the plan's order. Composition puts them in the default program's order.
+        // while the export lists them in the plan's order. Elaboration puts them in canonical order.
         let printed = print(&bundle.artifact, &PrintOptions::default());
         let parsed = parse(&printed).unwrap_or_else(|diagnostics| panic!("{}:\n{}\n{}", name, diagnostics, printed));
         let sorted = |edges: &[saluki_metric_plan::ir::ArtifactEdge]| {
@@ -112,13 +112,15 @@ async fn every_lowered_default_program_exports_and_composes_back_unchanged() {
         };
 
         // The bound export writes every policy setting as the default program does, as a literal: it composes back to
-        // the default program itself, node for node and edge for edge, since lowering writes the sources first, as
-        // composition does.
+        // the default program's core plan itself, node for node and edge for edge, with its hash.
+        let default = elaborate_default(plan, &lowered.catalog, &registry);
+        let core = &default.plan;
         let bound = compose_document(&bundle.artifact);
-        assert_eq!(bound.plan.nodes, plan.nodes, "{}", name);
-        assert_eq!(bound.plan.edges, plan.edges, "{}", name);
-        assert_eq!(bound.plan.outputs, plan.outputs, "{}", name);
-        assert_eq!(bound.plan.resources, plan.resources, "{}", name);
+        assert_eq!(bound.plan.nodes, core.nodes, "{}", name);
+        assert_eq!(bound.plan.edges, core.edges, "{}", name);
+        assert_eq!(bound.plan.outputs, core.outputs, "{}", name);
+        assert_eq!(bound.plan.resources, core.resources, "{}", name);
+        assert_eq!(bound.hash().unwrap(), default.hash().unwrap(), "{}", name);
         assert_eq!(bound.ids.len(), bundle.artifact.nodes.len(), "{}", name);
 
         // Composing the detached export back, with ADP's catalog, gives a plan that does what the default program
@@ -135,35 +137,39 @@ async fn every_lowered_default_program_exports_and_composes_back_unchanged() {
         let composed = compose_document(&detached.artifact);
         assert!(composed.report.findings().is_empty(), "{}:\n{}", name, composed.report);
         assert!(!composed.stale_review, "{}", name);
-        assert_does_the_same(&composed.plan, plan, &registry, name);
-        // The composed plan has nothing left that the comparison would leave out: the export left out all of it.
-        let left = eliminate(&composed.plan, &registry).omitted;
-        assert!(left.is_empty(), "{}: {:?}", name, left);
-        let diff = diff_operations(plan, &composed.plan, &registry);
+        assert_does_the_same(&composed.plan, core, &registry, name);
+        // What the comparison leaves out of the composed plan is what it leaves out of the default program's core plan
+        // and the export did not: what a fact's or signal's value decides, which the export keeps bound and the core
+        // plan writes as a value.
+        let omitted = |plan: &Plan| {
+            eliminate(plan, &registry)
+                .omitted
+                .into_iter()
+                .map(|(node, _)| node.local().to_string())
+                .collect::<BTreeSet<_>>()
+        };
+        let exported = detached
+            .omitted
+            .keys()
+            .map(ToString::to_string)
+            .collect::<BTreeSet<_>>();
+        let decided = omitted(core).difference(&exported).cloned().collect::<BTreeSet<_>>();
+        assert_eq!(omitted(&composed.plan), decided, "{}", name);
+        let diff = diff_operations(core, &composed.plan, &registry);
         assert!(diff.is_empty(), "{}: {:?}", name, diff);
         assert_eq!(composed.ids.len(), detached.artifact.nodes.len(), "{}", name);
 
-        // Composing the printed detached export, whose nodes and edges are in another order, gives the same nodes and
-        // edges, each in the artifact's order: the sources first, then the program as printed.
+        // Composing the printed detached export, whose nodes and edges are in another order, gives the same core plan,
+        // with the same hash: elaboration puts nodes and edges in canonical order.
         let printed = print(&detached.artifact, &PrintOptions::default());
         let parsed = parse(&printed).unwrap_or_else(|diagnostics| panic!("{}:\n{}\n{}", name, diagnostics, printed));
-        let unprinted = composed.plan;
+        let unprinted = composed;
         let composed = compose_document(&parsed.artifact);
-        let by_id = |plan: &Plan| {
-            let mut nodes = plan.nodes.clone();
-            nodes.sort_by(|a, b| a.id.cmp(&b.id));
-            nodes
-        };
-        assert_eq!(by_id(&composed.plan), by_id(&unprinted), "{}", name);
-        let edges = |plan: &Plan| {
-            let mut edges = plan.edges.clone();
-            edges.sort_by(|a, b| (&a.from, &a.to).cmp(&(&b.from, &b.to)));
-            edges
-        };
-        assert_eq!(edges(&composed.plan), edges(&unprinted), "{}", name);
+        assert_eq!(composed.plan.nodes, unprinted.plan.nodes, "{}", name);
+        assert_eq!(composed.plan.edges, unprinted.plan.edges, "{}", name);
+        assert_eq!(composed.hash().unwrap(), unprinted.hash().unwrap(), "{}", name);
         assert!(composed.report.findings().is_empty(), "{}:\n{}", name, composed.report);
-        assert_does_the_same(&composed.plan, plan, &registry, name);
-        let diff = diff_operations(plan, &composed.plan, &registry);
+        let diff = diff_operations(core, &composed.plan, &registry);
         assert!(diff.is_empty(), "{}: {:?}", name, diff);
     }
 }
@@ -198,11 +204,10 @@ fn assert_leaves_out_what_the_comparison_does(
     }
 }
 
-/// Asserts that `composed` does what the default program `plan` does: without what does nothing as configured, the
-/// same nodes, each the same operation, the same edges, and so the same operation hash, by which the installer adopts
-/// or keeps the running generation.
-fn assert_does_the_same(composed: &Plan, plan: &Plan, registry: &OperatorRegistry, name: &str) {
-    let (composed, plan) = (&eliminate(composed, registry).plan, &eliminate(plan, registry).plan);
+/// Asserts that `composed` does what the default program's core plan `core` does: without what does nothing as
+/// configured, the same nodes, each the same operation, and the same edges.
+fn assert_does_the_same(composed: &Plan, core: &Plan, registry: &OperatorRegistry, name: &str) {
+    let (composed, core) = (&eliminate(composed, registry).plan, &eliminate(core, registry).plan);
     let edges = |plan: &Plan| {
         let mut edges = plan
             .edges
@@ -212,33 +217,17 @@ fn assert_does_the_same(composed: &Plan, plan: &Plan, registry: &OperatorRegistr
         edges.sort();
         edges
     };
-    assert_eq!(edges(composed), edges(plan), "{}", name);
-    assert_eq!(composed.nodes.len(), plan.nodes.len(), "{}", name);
+    assert_eq!(edges(composed), edges(core), "{}", name);
     let by_id = |plan: &Plan| {
         let mut nodes = plan.nodes.clone();
         nodes.sort_by(|a, b| a.id.cmp(&b.id));
         nodes
     };
-    for (composed, default) in by_id(composed).iter().zip(&by_id(plan)) {
-        assert_eq!((&composed.id, &composed.op), (&default.id, &default.op), "{}", name);
-        assert_eq!(
-            operation_params(&composed.op, &composed.params),
-            operation_params(&default.op, &default.params),
-            "{}: {}",
-            name,
-            composed.id
-        );
-    }
-    assert_eq!(
-        operation_hash(composed, registry).unwrap(),
-        operation_hash(plan, registry).unwrap(),
-        "{}",
-        name
-    );
+    assert_eq!(by_id(composed), by_id(core), "{}", name);
 }
 
 /// Lowers the configuration `yaml`, and composes its unmodified detached export, and then the export with `edit`.
-/// Returns the default program, the export, and both compositions.
+/// Returns the default program's core plan, the export, and both compositions.
 async fn compose_detached(
     yaml: &str, edit: impl FnOnce(&mut Value),
 ) -> (
@@ -282,7 +271,7 @@ async fn compose_detached(
         .unwrap()
     };
     (
-        lowered.plan.clone(),
+        elaborate_default(&lowered.plan, &lowered.catalog, &registry).plan,
         document.clone(),
         compose_document(document),
         compose_document(edited),

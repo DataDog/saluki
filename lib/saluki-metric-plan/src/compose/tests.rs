@@ -10,12 +10,12 @@ use serde_json::{json, Value};
 
 use super::*;
 use crate::{
-    canonical::ResolvedValues,
-    export::{export, export_as, unresolved, ExportBundle, ExportForm},
+    elaborate::elaborate_default,
+    export::{emitted_output, export, export_as, unresolved, ExportBundle, ExportForm},
     install::diff::{diff, NodeChange},
-    ir::Plan,
+    ir::{ArtifactPortRef, ArtifactRevision, Plan, PlanProvenance},
     testing::{arb_predicate, catalog_for, predicate_json, DEFAULT_PROGRAM_JSON, NO_AGGREGATION_PIPELINE_OFF_JSON},
-    validate::{BoundScope, CatalogBinding, Location, MemoryCatalog, Rule},
+    validate::{BoundScope, CatalogBinding, Location, MemoryCatalog, Rule, Validator},
 };
 
 /// A change made to an artifact document, for table-driven tests.
@@ -36,18 +36,25 @@ fn default_programs() -> Vec<(&'static str, Plan, MemoryCatalog)> {
     .collect()
 }
 
-/// A default program, the host's catalog for it, and its export.
+/// A default program as lowering writes it, the host's catalog for it, its export, and its core plan.
 struct Fixture {
     plan: Plan,
     catalog: MemoryCatalog,
     export: ExportBundle,
+    core: Plan,
 }
 
 impl Fixture {
     fn new(plan: Plan) -> Self {
         let catalog = catalog_for(&plan);
         let export = export(&plan, &catalog, &BTreeMap::new()).unwrap();
-        Self { plan, catalog, export }
+        let core = elaborate_default(&plan, &catalog, &OperatorRegistry::native()).plan;
+        Self {
+            plan,
+            catalog,
+            export,
+            core,
+        }
     }
 
     fn default_program() -> Self {
@@ -195,17 +202,13 @@ fn unmodified_exports_of_the_default_programs_compose_back_to_them() {
         let received = receive_artifact(fixture.artifact()).unwrap();
         let composed = compose(&fixture.plan, &received, &approval(7), &fixture.catalog, &registry).unwrap();
 
-        // The same nodes, edges, and outputs, in the same order: the same plan, with the same hash.
-        let plan = &fixture.plan;
+        // The same nodes, edges, and outputs as the default program's core plan, in the same order: the same plan, with
+        // the same hash.
+        let plan = &fixture.core;
         assert_eq!(composed.plan.nodes, plan.nodes, "{}", name);
         assert_eq!(composed.plan.edges, plan.edges, "{}", name);
         assert_eq!(composed.plan.outputs, plan.outputs, "{}", name);
-        assert_eq!(
-            composed.plan.hash(ResolvedValues::Include).unwrap(),
-            plan.hash(ResolvedValues::Include).unwrap(),
-            "{}",
-            name
-        );
+        assert_eq!(composed.plan.hash().unwrap(), plan.hash().unwrap(), "{}", name);
         // Only the plan's own provenance, which is not hashed, says that an artifact was composed.
         assert_eq!(
             composed.plan.provenance,
@@ -223,7 +226,7 @@ fn unmodified_exports_of_the_default_programs_compose_back_to_them() {
         assert!(!composed.stale_review, "{}", name);
         assert_eq!(composed.outcome, ComposeOutcome::Composed, "{}", name);
         // The same findings: the program's nodes are measured against the artifact limits too, and are within them.
-        let native = Validator::new(&registry, &fixture.catalog).validate(plan);
+        let native = Validator::new(&registry, &fixture.catalog).validate(&fixture.plan);
         assert_eq!(composed.report.findings(), native.findings(), "{}", name);
         assert!(
             composed
@@ -397,11 +400,9 @@ fn edits_of_the_export_compose_with_their_plan_ids() {
             |document| {
                 node(document, "mrf_metrics_gateway")["params"]["predicate"]["all"][1] = json!({"flag": true});
             },
-            // A literal equal to the binding's value is another parameter: it never follows the signal.
-            Accepted {
-                policy: &[],
-                diff: &[("mrf_metrics_gateway", "changed params")],
-            },
+            // A literal equal to the binding's value elaborates to the same core plan: it does what the binding does
+            // now. (It no longer follows the signal, which only a later composition shows.)
+            Accepted { policy: &[], diff: &[] },
         ),
         (
             "a binding replaced by another value",
@@ -478,16 +479,19 @@ fn edits_of_the_export_compose_with_their_plan_ids() {
             what
         );
 
-        let diff = diff(&fixture.plan, &composed.plan, &registry);
-        let listed = diff
+        let diff = diff(&fixture.core, &composed.plan, &registry);
+        // In node ID order: the diff lists nodes in the composed plan's canonical order.
+        let mut listed = diff
             .changes()
             .map(|node| (node.id.to_string(), describe(&node.change)))
             .collect::<Vec<_>>();
-        let expected_diff = expected
+        let mut expected_diff = expected
             .diff
             .iter()
             .map(|(id, change)| (id.to_string(), change.to_string()))
             .collect::<Vec<_>>();
+        listed.sort();
+        expected_diff.sort();
         assert_eq!(listed, expected_diff, "{}", what);
     }
 }
@@ -504,13 +508,22 @@ fn modified_and_added_nodes_have_their_bindings_resolved_from_the_catalog() {
     let composed = fixture.compose(document, &approval(2)).unwrap();
     assert!(composed.report.is_valid(), "{}", composed.report);
 
-    let node = composed.plan.node(&"af_metrics_gateway".parse().unwrap()).unwrap();
+    // The core plan writes each binding as its value, which normal form then folds: both flags are on.
+    let gateway = "af_metrics_gateway".parse().unwrap();
+    let node = composed.plan.node(&gateway).unwrap();
+    assert_eq!(node.params.get("predicate").unwrap(), &json!({"kind_in": ["counter"]}));
+    let bindings = composed
+        .bindings
+        .of(&gateway)
+        .iter()
+        .map(|found| (found.path.0.as_str(), found.binding.as_str(), found.value.clone()))
+        .collect::<Vec<_>>();
     assert_eq!(
-        node.params.get("predicate").unwrap(),
-        &json!({"all": [
-            {"kind_in": ["counter"]},
-            {"flag": {"config": "autoscaling_failover.enabled", "resolved": true}},
-            {"flag": {"config": "multi_region_failover.enabled", "resolved": true}}]})
+        bindings,
+        [
+            ("/predicate/all/1/flag", "autoscaling_failover.enabled", json!(true)),
+            ("/predicate/all/2/flag", "multi_region_failover.enabled", json!(true)),
+        ]
     );
 }
 
@@ -1370,14 +1383,14 @@ proptest! {
             let id = &composed.ids[&node.id];
             if kept_nodes.contains(&node.id.to_string()) || before.contains(&node.id.to_string()) {
                 prop_assert_eq!(id, &NodeId::reserved(node.id.to_local_id()));
-                prop_assert_eq!(composed.plan.node(id), fixture.plan.node(id));
+                prop_assert_eq!(composed.plan.node(id), fixture.core.node(id));
             } else {
                 prop_assert_eq!(id.to_string(), format!("policy/{}", node.id));
             }
         }
 
         // Nothing before the tree changes, but the edge leaving the port that feeds it.
-        let diff = diff(&fixture.plan, &composed.plan, &registry);
+        let diff = diff(&fixture.core, &composed.plan, &registry);
         for change in diff.changes() {
             let local = change.id.local().to_string();
             if change.id.is_reserved() && !replaced.contains(&local) {
@@ -1587,10 +1600,13 @@ fn a_native_policy_change_after_publishing_leaves_the_program_its_own_value() {
             .map(|node| node.id.clone())
             .collect::<BTreeSet<_>>()
     };
-    let differs = crate::export::node_differences(&changed, &composed.plan, &every(&changed), &registry);
+    // Status compares core plans: the default program's, and the one running.
+    let changed_core = elaborate_default(&changed, &changed_catalog, &registry).plan;
+    let differs = crate::export::node_differences(&changed_core, &composed.plan, &every(&changed_core), &registry);
     assert_eq!(differs, ["dsd_prefix_filter_blocklist".parse::<NodeId>().unwrap()]);
     let before = compose(&plan, &received, &approval(1), &catalog, &registry).unwrap();
-    assert!(crate::export::node_differences(&plan, &before.plan, &every(&plan), &registry).is_empty());
+    let core = elaborate_default(&plan, &catalog, &registry).plan;
+    assert!(crate::export::node_differences(&core, &before.plan, &every(&core), &registry).is_empty());
 }
 
 /// The default program's catalog with a recipient directory: `primary`, `mrf`, `cluster_agent`, and two additional
@@ -1855,46 +1871,12 @@ fn an_emit_in_effect_delivers_to_its_recipients_that_remain_and_counts_what_the_
     );
 }
 
-#[test]
-fn a_literal_equal_to_a_bindings_value_is_another_parameter_than_the_binding() {
-    let registry = OperatorRegistry::native();
-    let (_, plan, catalog) = default_programs().remove(0);
-
-    // The export binds the host's tags, a fact; an edit writes their value as a literal in its place. The node then
-    // does something else than the default program's: the literal never follows the host's tags.
-    let bound = export(&plan, &catalog, &BTreeMap::new()).unwrap();
-    let tags = catalog
-        .binding(&"host.tags".parse().unwrap())
-        .and_then(|binding| binding.value.clone())
-        .unwrap_or_else(|| json!(["cloud_provider:example", "zone:a"]));
-    let mut document = serde_json::to_value(&bound.artifact).unwrap();
-    node(&mut document, "metrics")["params"]["tags"] = tags;
-    let edited = received_directly(PolicyArtifact::from_value(document).unwrap());
-    let composed = compose(&plan, &edited, &approval(1), &catalog, &registry).unwrap();
-    let host_tags = "metrics".parse::<NodeId>().unwrap();
-    assert_ne!(composed.plan.node(&host_tags).unwrap(), plan.node(&host_tags).unwrap());
-    assert_ne!(
-        crate::export::operation_hash(&composed.plan, &registry).unwrap(),
-        crate::export::operation_hash(&plan, &registry).unwrap()
-    );
-
-    // Unmodified, the export composes to the default program itself.
-    let composed = compose(
-        &plan,
-        &received_directly(bound.artifact),
-        &approval(1),
-        &catalog,
-        &registry,
-    )
-    .unwrap();
-    assert_eq!((&composed.plan.nodes, &composed.plan.edges), (&plan.nodes, &plan.edges));
-}
-
-/// Returns what `plan` does with every record: the [operation hash](crate::export::operation_hash) of the plan without
-/// what does nothing as configured, as the detached export leaves it out.
+/// Returns what `plan` does with every record: the hash of its core plan without what does nothing as configured, as
+/// the detached export leaves it out.
 fn does(plan: &Plan) -> crate::canonical::PlanHash {
     let registry = OperatorRegistry::native();
-    crate::export::operation_hash(&crate::export::eliminate(plan, &registry).plan, &registry).unwrap()
+    let core = elaborate_default(plan, &catalog_for(plan), &registry).plan;
+    crate::export::eliminate(&core, &registry).plan.hash().unwrap()
 }
 
 #[test]

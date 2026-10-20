@@ -124,9 +124,10 @@ since the repository sets `commit.gpgsign=true`). No CI pipeline has run on the 
 | `771bd7e320`, `79555ebcb4` | docs | N2 and N3 (one region from decode to encode) in the next steps, and the version 2 plan. |
 | `06e7301501`, `6973a3e8d8` | V2 | Resources artifacts removed (amendment 192). |
 | `e6599d63f3` | V3 | Native configuration lowers to literals; bindings are facts and signals (amendment 196). |
-| (V4+V5 commit) | V4, V5 | Programs are whole and a snapshot holds one program document: scopes, `base`, staleness, fingerprints, and splicing removed (amendment 197). |
+| `53cd99b576` | V4, V5 | Programs are whole and a snapshot holds one program document: scopes, `base`, staleness, fingerprints, and splicing removed (amendment 197). |
+| (V6 commit) | V6 | Elaboration as a phase: one pass from the program as written to the core program, which installs, has the one hash, and explain shows (amendment 198). |
 
-**Next.** The [version 2 simplifications](programmable-metrics-v2.md), from V6, come first. Beside them, the stage 9
+**Next.** The [version 2 simplifications](programmable-metrics-v2.md), from V10, come first. Beside them, the stage 9
 gate on a Linux host with at least 20 homogeneous cores (plan 8.5,
 [Q2](programmable-metrics-stages-7-and-9.md#12-open-questions)): its items 1 to 4, with the per-buffer cost of lanes as
 the risk to watch (plan 8.6), M2's rerun for O4's choice, M4 at P = 8, and the allocator setting measured beside it
@@ -901,6 +902,30 @@ amendment 197):
 - An unmodified printed export is adopted (the operation hash matches), but its plan hash differs from the default
   program's until V6.
 
+**Version 2's step V6: elaboration as a phase** (not committed; **not release-noted**; amendment 198):
+
+- Every plan hash changes. The installed plan is the **core plan**: every binding written as its value, every parameter
+  in normal form with its defaults written, sets in order, and nodes and edges in canonical order (the order the
+  pipeline syntax prints, after the sources). `active_plan_hash`, the generation records' `plan_hash`, the explain
+  document's `hash`, and the plan route's body are the core plan's.
+- `default_program_hash` is the default program's core hash, no longer the export's program hash: it equals
+  `active_plan_hash` exactly when the default program, or a program that elaborates to it (the unmodified bound export,
+  printed or not), runs. The detached export, which leaves out what does nothing, is still a generation of its own that
+  builds no kernel. The demo checks the export against the default program by exporting it, and the status against
+  the default program by elaborating it with the export's catalog.
+- The plan route (`/programmable-metrics/plan`) writes facts and signals as values, with no `{"config": ...}`; the
+  default-program route still writes the default program as lowered, with its bindings and their values, which the
+  export is taken from.
+- The explain document is version 4: `structural_hash` is gone, its parameters are the core plan's, and each node's
+  `bindings` lists the bindings it was written with, by JSON pointer into the parameters as written (`binding
+  /predicate/all/1/flag <- autoscaling_failover.enabled = true` in text). A `split` on a signal shows the constant its
+  value makes, such as `{"const":true}`, while its port types stay those of the program as written.
+- A binding and the same literal are one parameter: a program that writes a signal's current value instead of the
+  binding is the same plan, adopts the running generation, and builds no kernel, until the signal changes. A signal
+  change is a new core plan that rebuilds only the kernel of the node that reads it.
+- Validation reports on the program as written, with its bindings resolved, so a `split` on a signal that is off is not
+  reported as a predicate that can never match. Compilation may fold such a split (R3) once another rewrite has applied.
+
 **Telemetry** (all release-noted): the fused components' and gateways' component, health, and task series are gone;
 `metrics_enrich` and `dsd_agg` report sent counts per output instead of `_default`; accounting paths nest under the
 slot; `dsd_agg` no longer counts sent metrics twice, no longer emits what R5b suppresses, and counts one extra flush
@@ -1144,14 +1169,14 @@ the shutdown row, the expiry row, and the timestamped row.
 
 Totals: kinds C 49, D 26, N 9, L 3; themes STA 20, ART 16, NAT 12, INS 9, IR 8, VER 8, FRM 7, TEL 4, EXE 3.
 
-Amendments 88 to 192 and 195 to 197 are in [the stages 7 and 9 plan's section
+Amendments 88 to 192 and 195 to 198 are in [the stages 7 and 9 plan's section
 10](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments): 88 to 107 from its stage 7 design, 108 to 128
 from its stage 9 design, 129 to 138 from stage 7's parts and integration, 139 and 140 from stage 9's foundations (P9.F),
 141 to 162 from stage 9's parts and integration, 163 to 167 from stage 9's review, 168 and 169 from the one-scope
 change after stage 9, 170 to 182 from the detached-programs design, 183 to 188 from its phase 2, 189 and 190 from its
 phase 3, 191 from leaving out what does nothing, 192 from version 2's step V2, 195 from version 2's design for
-many aggregations, 196 from its step V3, and 197 from its steps V4 and V5. 193 and 194 come from the [pipeline
-syntax](programmable-metrics-pipeline-syntax.md) and are indexed below only. The next is 198.
+many aggregations, 196 from its step V3, 197 from its steps V4 and V5, and 198 from its step V6. 193 and 194 come from
+the [pipeline syntax](programmable-metrics-pipeline-syntax.md) and are indexed below only. The next is 199.
 Stage 7's:
 
 | # | Short title | Theme | Kind | Owner |
@@ -1312,6 +1337,12 @@ After version 2's steps V4 and V5 (built, not committed):
 | # | Short title | Theme | Kind | Owner |
 |---|---|---|---|---|
 | 197 | A program is whole, and a snapshot holds one program document | ART | D | version 2, decided by the owner (2026-10-19) |
+
+After version 2's step V6 (built, not committed):
+
+| # | Short title | Theme | Kind | Owner |
+|---|---|---|---|---|
+| 198 | Elaboration: one pass to the core program, which installs, with one hash; a binding and its value are one parameter | IR | D | version 2, decided by the owner (2026-10-19, V4 to V6 plan question 8) |
 
 Wording proposed for adoption: amendment 49 ("under the reference interpreter's delivery order"), 51 ("a maximal
 group of `split` and `tee` operators joined directly by edges within one region"), and 52 ("operator parameters,

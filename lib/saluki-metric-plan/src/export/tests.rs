@@ -1,11 +1,10 @@
 use serde_json::{json, Value};
 
 use super::*;
-use crate::validate::Catalog;
-use crate::{
-    canonical::ResolvedValues,
-    testing::{default_program_catalog, with_opaque_gateways, DEFAULT_PROGRAM_JSON, NO_AGGREGATION_PIPELINE_OFF_JSON},
+use crate::testing::{
+    default_program_catalog, with_opaque_gateways, DEFAULT_PROGRAM_JSON, NO_AGGREGATION_PIPELINE_OFF_JSON,
 };
+use crate::validate::Catalog;
 
 /// The export of the default program, derived from `fixtures/default-program.json` with Python (every node but the
 /// sources, with its bound parameters unresolved and without provenance, and every edge, with each source's port
@@ -280,10 +279,7 @@ fn the_program_hash_covers_the_programs_structure_and_literals_but_not_resolved_
 
     // The fixture without the no-aggregation pipeline: another program.
     let other = Plan::from_json(NO_AGGREGATION_PIPELINE_OFF_JSON).unwrap();
-    assert_ne!(
-        other.hash(ResolvedValues::Exclude).unwrap(),
-        plan.hash(ResolvedValues::Exclude).unwrap()
-    );
+    assert_ne!(other.hash().unwrap(), plan.hash().unwrap());
     assert_ne!(hash(&other).unwrap(), expected);
 }
 

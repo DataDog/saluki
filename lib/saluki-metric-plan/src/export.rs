@@ -40,12 +40,11 @@ use serde_json::Value;
 use snafu::Snafu;
 
 use crate::{
-    canonical::{strip_resolved_values, CanonicalError, PlanHash, BINDING_MEMBER},
+    canonical::{strip_resolved_values, CanonicalError, PlanHash},
     compose::sources,
     ir::{
         is_identifier, ArtifactEdge, ArtifactNode, ArtifactNodeId, ArtifactPortRef, ArtifactRevision, BindingName,
-        Blobs, InputName, NodeId, OperatorName, OutputId, Params, Plan, PolicyArtifact, PortRef, ACCEPTED_IR_VERSIONS,
-        IR_VERSION,
+        Blobs, InputName, NodeId, OutputId, Params, Plan, PolicyArtifact, PortRef, ACCEPTED_IR_VERSIONS, IR_VERSION,
     },
     normalize::{normalize_artifact, normalize_params},
     operators::{names, OperatorRegistry, EMIT_TO},
@@ -400,9 +399,10 @@ fn recipients_of_output(plan: &Plan, catalog: &MemoryCatalog, params: &Params) -
     Some(std::iter::once((EMIT_TO.parse().expect("`to` is a parameter name"), Value::Array(names))).collect())
 }
 
-/// Returns the nodes of the default program `default` among `nodes`, in plan order, that the plan `running` does not run
-/// as `default` writes them: absent from `running`, or with another operator or other parameters in their [operation
-/// form](operation_params), as their operator decodes them when it can.
+/// Returns the nodes of the default program `default` among `nodes`, in plan order, that the plan `running` does not
+/// run as `default` writes them: absent from `running`, or with another operator or other parameters. Both plans are
+/// core plans ([`elaborate`](crate::elaborate)), so a parameter left out and its default, or a binding and its value,
+/// are the same.
 ///
 /// So for a published program, which owns its policy, and the nodes whose parameters native lowering writes from
 /// policy settings, it lists the nodes whose native settings changed since the program was published, or that the
@@ -421,7 +421,6 @@ pub fn node_differences(
             .collect::<BTreeSet<_>>()
     };
     let (idle_default, idle_running) = (idle(default), idle(running));
-    let operation = |node: &crate::ir::Node| compared_params(&node.op, &node.params, registry);
     default
         .nodes
         .iter()
@@ -430,64 +429,10 @@ pub fn node_differences(
             // A node that does nothing, which the running plan leaves out or has doing nothing too, differs in nothing.
             other if idle_default.contains(&node.id) && (other.is_none() || idle_running.contains(&node.id)) => false,
             None => true,
-            Some(other) => other.op != node.op || operation(other) != operation(node),
+            Some(other) => other.op != node.op || other.params != node.params,
         })
         .map(|node| node.id.clone())
         .collect()
-}
-
-/// Returns what a node of operator `op` with parameters `params` does: its parameters in normal form
-/// ([`normalize_params`]), every default written and every predicate normalized, with every configuration binding and
-/// its resolved value as written.
-///
-/// A parameter left out and its default do the same thing, and a binding does what its value does only while it has
-/// that value: kernels are keyed by this form, the plan diff compares it, and the installer decides by it whether a
-/// candidate changes anything. A literal and a binding are never the same parameter, whatever the binding's value.
-pub fn operation_params(op: &OperatorName, params: &Params) -> Params {
-    normalize_params(op, params)
-}
-
-/// Returns the parameters of a node of operator `op` as plans are compared: in their [operation
-/// form](operation_params), as their operator decodes and encodes them when it can, so that a set written in another
-/// order is the same set. A parameter bound to configuration stays bound, with its resolved value, since decoding reads
-/// a binding as its value (a predicate keeps its bound operands as they are): a literal and a binding are never the same
-/// parameter.
-pub fn compared_params(op: &OperatorName, params: &Params, registry: &OperatorRegistry) -> Params {
-    let params = operation_params(op, params);
-    let Ok(configured) = registry.configure(op.as_str(), &params) else {
-        return params;
-    };
-    let mut decoded = configured.params().encode();
-    for (name, value) in params.iter() {
-        if value
-            .as_object()
-            .is_some_and(|members| members.contains_key(BINDING_MEMBER))
-        {
-            decoded.insert(name.clone(), value.clone());
-        }
-    }
-    decoded
-}
-
-/// Returns the hash of what `plan` does: the plan, without provenance, its nodes and edges in order, with each node's
-/// parameters as plans are compared ([`compared_params`]), so that a set written in another order is the same set.
-///
-/// Two plans with one operation hash run the same kernels on the same edges: plans that list their nodes or edges in
-/// another order, which means nothing to how a plan runs, hash alike. (Composition puts the edges a program shares with the default program in the default program's order,
-/// but an edge it does not share, such as the one that takes the place of a node the detached export leaves out,
-/// follows the program's own order.) A candidate whose operation hash is the active generation's changes nothing, and
-/// adopts it if it is another program's. A node that does nothing as configured counts: a program written from the
-/// detached export, which leaves such nodes out ([`eliminate`]), is a new generation over the default program, which
-/// builds no kernel, so that the plan running is always the plan the generation was built from.
-pub fn operation_hash(plan: &Plan, registry: &OperatorRegistry) -> Result<PlanHash, CanonicalError> {
-    let mut plan = plan.clone();
-    plan.provenance = None;
-    plan.nodes.sort_by(|a, b| a.id.cmp(&b.id));
-    plan.edges.sort_by(|a, b| (&a.from, &a.to).cmp(&(&b.from, &b.to)));
-    for node in &mut plan.nodes {
-        node.params = compared_params(&node.op, &node.params, registry);
-    }
-    plan.hash(crate::canonical::ResolvedValues::Include)
 }
 
 /// Returns the program hash of an artifact: the RFC 8785 digest of its normalized form, which is what an unmodified

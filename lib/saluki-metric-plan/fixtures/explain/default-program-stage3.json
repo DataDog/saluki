@@ -1,9 +1,8 @@
 {
-  "explain_version": 3,
+  "explain_version": 4,
   "plan": {
     "ir_version": 1,
     "hash": "sha256:bb5566de2d9d6f8e5825e5ec41c6b39f9e80e18ea3dce89be9e101f3f94c8d3a",
-    "structural_hash": "sha256:55e7eec7aa0439e2cf564aeb534e5b4daf44c34b1f6c71358f8e7989e28655bd",
     "provenance": {
       "native_components": {
         "af_metrics_gateway_false": "af_metrics_gateway",

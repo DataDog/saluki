@@ -14,8 +14,9 @@
 use std::collections::BTreeMap;
 
 use saluki_metric_plan::{
-    canonical::{PlanHash, ResolvedValues},
+    canonical::PlanHash,
     compose::{compose, demanded_outputs, Approval, ComposeError, ComposeOutcome},
+    elaborate::elaborate_default,
     export::eliminate,
     install::{
         diff::{NodeChange, OutputChange},
@@ -397,6 +398,7 @@ pub fn compose_preview(
         });
     }
 
+    let default_core;
     let (base, against) = match context.active {
         Some(active) => (
             active.plan,
@@ -407,22 +409,23 @@ pub fn compose_preview(
                 artifact_revision: active.artifact_revision,
             },
         ),
-        None => (
-            served_default_program,
-            PreviewBase {
-                kind: BaseKind::DefaultProgram,
-                plan_hash: served_default_program
-                    .hash(ResolvedValues::Include)
-                    .map(|hash| hash.to_string())
-                    .unwrap_or_default(),
-                generation: None,
-                artifact_revision: None,
-            },
-        ),
+        None => {
+            // The default program as ADP installs it: its core plan, which the composed plan compares with.
+            default_core = elaborate_default(served_default_program, &export.catalog, &registry).plan;
+            (
+                &default_core,
+                PreviewBase {
+                    kind: BaseKind::DefaultProgram,
+                    plan_hash: default_core.hash().map(|hash| hash.to_string()).unwrap_or_default(),
+                    generation: None,
+                    artifact_revision: None,
+                },
+            )
+        }
     };
     // By what the plans do: what does nothing as configured, which the detached export leaves out and the default
-    // program runs, is no change in what the program does. ADP compares plans as written, so dropping those nodes is a
-    // generation of its own, which builds no kernel for them: a note says so.
+    // program runs, is no change in what the program does. ADP compares core plans by hash, so dropping those nodes is
+    // a generation of its own, which builds no kernel for them: a note says so.
     let diff = diff_operations(base, &composed.plan, &registry);
     let dropped = eliminate(base, &registry)
         .omitted
@@ -508,11 +511,7 @@ pub fn compose_preview(
                 provisional
             ),
         },
-        plan_hash: composed
-            .plan
-            .hash(ResolvedValues::Include)
-            .ok()
-            .map(|hash| hash.to_string()),
+        plan_hash: composed.plan.hash().ok().map(|hash| hash.to_string()),
         valid: composed.report.is_valid(),
         unchanged: diff.is_empty(),
         nodes,

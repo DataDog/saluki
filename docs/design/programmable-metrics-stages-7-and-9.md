@@ -4011,6 +4011,19 @@ After detached programs, phase 2 ([as built](programmable-metrics-detached-progr
      (`DropReason::Removed`) in the program in effect. The export (version 2) is the whole program with a
      `program_hash`, the explain document (version 3) records the artifact's provenance, and the stub protocol is
      version 2.
+198. **Elaboration: one pass to the core program, which installs, with one hash** (IR, D; withdraws amendment 196's
+     sentence that a literal and a binding are never the same parameter, the installer's operation hash, and the explain
+     document's structural hash; version 2's step V6, 2026-10-20). Composition elaborates a program as written into its
+     **core program**: names resolved (sources, outputs, recipients, node IDs), every binding written as its value,
+     every parameter in its operator's encoded normal form with its defaults written, and nodes and edges in canonical
+     order, the order the pipeline syntax prints after the host's sources. Which binding each value came from is kept
+     beside the plan, outside its hash, and explain lists it. The default program goes through the same passes. The core
+     plan is what installs, and its hash is the plan's one hash: `active_plan_hash`, adoption, the plan diff, and kernel
+     keys all read the core plan, so a binding and the same literal are one parameter, and a signal change is a new core
+     plan that rebuilds only the kernel of the node that reads it. Status's `default_program_hash` is the default
+     program's core hash, which equals `active_plan_hash` exactly when the default program or a program that elaborates
+     to it runs. Validation reports on the program as written, with its bindings resolved, so what a signal's value
+     decides is not reported as if the author had written it. The explain document is version 4.
 
 ## 11. Risks
 

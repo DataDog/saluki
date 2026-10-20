@@ -24,7 +24,6 @@ use super::{
     *,
 };
 use crate::{
-    canonical::ResolvedValues,
     compile::{Frame, FrameHosts, LeaseTable, SlotId},
     compose::{Approval, ComposeError, Composed, Composer},
     ir::{HostBinding, HostId, NativeComponentId, OutputDecl, Plan, ReceivedArtifact, RecipientDecl, RecipientId},
@@ -213,6 +212,7 @@ fn candidate(plan: Plan, origin: Origin) -> Candidate {
     }
     let report = Validator::new(&OperatorRegistry::native(), &catalog).validate(&plan);
     Candidate {
+        bindings: Default::default(),
         plan: Arc::new(plan),
         report,
         origin,
@@ -813,7 +813,7 @@ impl World {
             ..self.config.clone()
         };
         let plan = lowered(&config);
-        let hash = plan.hash(ResolvedValues::Include).unwrap();
+        let hash = plan.hash().unwrap();
         self.core
             .propose(candidate(plan, Origin::Artifact { revision, hash }))
             .1

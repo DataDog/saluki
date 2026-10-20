@@ -343,7 +343,7 @@ impl CutPlan {
 
 /// Diffs a candidate plan against the active one.
 ///
-/// Nodes correspond by ID. Each state owner's transition class follows the table of [`StateOwnerDiff::class`], from
+/// Both are core plans ([`elaborate`](crate::elaborate)), so parameters compare as written. Nodes correspond by ID. Each state owner's transition class follows the table of [`StateOwnerDiff::class`], from
 /// its old and new configured operators; a node whose operator does not configure is compared by what it says only,
 /// and is no state owner.
 pub fn diff(active: &Plan, candidate: &Plan, registry: &OperatorRegistry) -> PlanDiff {
@@ -371,10 +371,9 @@ pub fn diff(active: &Plan, candidate: &Plan, registry: &OperatorRegistry) -> Pla
             continue;
         };
         let operator = old.op != node.op;
-        // Compared by what they do: a parameter left out and its default are the same, and so are two sets written in
-        // another order.
-        let params = crate::export::compared_params(&old.op, &old.params, registry)
-            != crate::export::compared_params(&node.op, &node.params, registry);
+        // Both plans are core plans, so equal parameters are written alike: a parameter left out and its default, or
+        // two sets written in another order, were made one by elaboration.
+        let params = old.params != node.params;
         let edges = old_edges.get(&node.id) != new_edges.get(&node.id);
         let change = if operator || params || edges {
             NodeChange::Changed {

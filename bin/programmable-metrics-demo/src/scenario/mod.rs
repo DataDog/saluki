@@ -12,9 +12,10 @@
 //! record of ADP's polls), and then waits for the families each intake receives to be what the scenario says, and to
 //! stay so for [`STABLE`]:
 //!
-//! - **S0**: the unmodified default program adopts the running generation (no new generation), its plan diff is empty,
-//!   ADP's status says a published program runs and native policy settings are not applied, and the endpoints receive
-//!   what they did.
+//! - **S0**: the unmodified default program, as ADP exports it detached, has an empty plan diff, and installs as a
+//!   generation that builds no kernel and makes no cut (the export leaves out what does nothing, which the default
+//!   program's core plan keeps); ADP's status says a published program runs and native policy settings are not
+//!   applied, and the endpoints receive what they did.
 //! - **S1**: `demo.debug.*` is dropped ahead of the policy: it leaves every endpoint.
 //! - **S2**, the recipe: team B is narrowed to the checkout families: its URL leaves the main `emit`, and a branch
 //!   emits `demo.checkout.*` to it. Both `emit`s address recipient sets no output delivers to, so the editor says ADP
@@ -87,7 +88,7 @@ use std::{
 };
 
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use saluki_metric_plan::{canonical::ResolvedValues, ir::Plan};
+use saluki_metric_plan::ir::Plan;
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -1582,33 +1583,51 @@ impl Runner {
     /// is active.
     async fn check_routes(&mut self, boot: &Status, active: Option<&Status>) -> Result<(), GenericError> {
         let Some(active) = active else {
-            let export = self.client.get_json("/api/adp/export").await?;
-            let program_hash = crate::export::ExportBundle::from_value(export)
-                .map_err(|error| generic_error!("ADP's export cannot be read: {}", error))?
-                .program_hash
-                .to_string();
-            if Some(program_hash.as_str()) != boot.default_program_hash.as_deref() {
+            let export = crate::export::ExportBundle::from_value(self.client.get_json("/api/adp/export").await?)
+                .map_err(|error| generic_error!("ADP's export cannot be read: {}", error))?;
+            let document = self.client.get_json("/api/adp/default-program").await?;
+            let default_program = Plan::from_value(document).error_context("The route did not serve a plan.")?;
+            let registry = saluki_metric_plan::operators::OperatorRegistry::native();
+            let again = saluki_metric_plan::export::export_as(
+                &default_program,
+                &export.catalog,
+                &Default::default(),
+                export.form,
+                &registry,
+            )
+            .error_context("ADP's default program cannot be exported.")?;
+            let exported = saluki_metric_plan::export::program_hash(&again.artifact)
+                .error_context("ADP's default program's export cannot be hashed.")?;
+            if exported != export.program_hash {
                 return Err(generic_error!(
-                    "The export's program hash is {}, but ADP's status reports the default program {:?}.",
-                    program_hash,
-                    boot.default_program_hash
+                    "The export's program hash is {}, but ADP's default program exports as {}.",
+                    export.program_hash,
+                    exported
                 ));
             }
             self.report.routes.push(RouteReport {
                 route: "/api/adp/export",
-                checked: "the program hash of its artifact is the status's default program hash".to_string(),
+                checked: "it is the export of the default program the default-program route serves".to_string(),
             });
-            let default_program = plan_hash(self.client.get_json("/api/adp/default-program").await?)?;
-            if Some(&default_program) != boot.plan_hash.as_ref() {
+            // Elaborated as ADP elaborates it, the default program is its core plan, whose hash the status reports as
+            // the default program's, and which the boot generation runs.
+            let core = saluki_metric_plan::elaborate::elaborate_default(&default_program, &export.catalog, &registry)
+                .hash()
+                .error_context("ADP's default program cannot be hashed.")?
+                .to_string();
+            if Some(&core) != boot.default_program_hash.as_ref() || Some(&core) != boot.plan_hash.as_ref() {
                 return Err(generic_error!(
-                    "The default program hashes to {}, but the boot generation runs {:?}.",
-                    default_program,
+                    "The default program elaborates to {}, but ADP's status reports the default program {:?}, and the \
+                     boot generation runs {:?}.",
+                    core,
+                    boot.default_program_hash,
                     boot.plan_hash
                 ));
             }
             self.report.routes.push(RouteReport {
                 route: "/api/adp/default-program",
-                checked: "it hashes to the boot generation's plan".to_string(),
+                checked: "elaborated, it hashes to the status's default program hash and the boot generation's plan"
+                    .to_string(),
             });
             return Ok(());
         };
@@ -2029,10 +2048,7 @@ fn unused_output(diagnostic: &Value) -> bool {
 /// Returns the hash of a plan document, with resolved values.
 fn plan_hash(document: Value) -> Result<String, GenericError> {
     let plan = Plan::from_value(document).error_context("The route did not serve a plan.")?;
-    Ok(plan
-        .hash(ResolvedValues::Include)
-        .error_context("The plan cannot be hashed.")?
-        .to_string())
+    Ok(plan.hash().error_context("The plan cannot be hashed.")?.to_string())
 }
 
 /// Summarizes the plan diff preview of a compile in a few words.

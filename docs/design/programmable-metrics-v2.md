@@ -203,21 +203,28 @@ for N5's shedding.
 what does nothing and in addressing emits to recipients; V6's elaboration may make one of them the only form.
 `program.differs` names default-program nodes; V4 kept it.
 
-**Left by V4 and V5, for later:** an unmodified printed export composes with an empty diff and is adopted, but its
-`Plan::hash` differs from the default program's, because the detached export leaves out what does nothing and writes
-edges as written; the installer adopts on the operation hash. V6's single hash resolves it. Node IDs in an artifact
-are still `policy/<local>` and a node named `dsd_agg` still adopts the reserved ID, until V10. Scope declarations,
-`base`, and `scope` are gone (a document that has one is refused by name), and `exit` stays a reserved word with no
-use.
+**Left by V4 and V5, for later:** node IDs in an artifact are still `policy/<local>` and a node named `dsd_agg` still
+adopts the reserved ID, until V10. Scope declarations, `base`, and `scope` are gone (a document that has one is refused
+by name), and `exit` stays a reserved word with no use. (The split between an unmodified export's `Plan::hash` and the
+default program's is resolved by V6.)
+
+**Left by V6, for later:** elaboration does not leave out what does nothing, so the detached export, which does, is
+still a generation of its own that builds no kernel (S0), and `default_program_hash` equals `active_plan_hash` for the
+default program and for programs that elaborate to it, such as the unmodified bound export, not for the detached one.
+Making the core form leave out what does nothing would change what the running default program reports (telemetry of
+nodes that do nothing), so it waits for V10's contract. The validation report is the program's as written, with its
+bindings resolved, while compilation and kernels read the core plan; compilation may fold a split a signal decides
+(R3) once another rewrite has applied. The export keeps its two forms; `compose` and `Composed` are names for
+`elaborate` and `Elaborated`.
 
 | Step | State | Commit |
 |---|---|---|
 | V1 | not started (V2 went first: opaque hosts carry about 50 tests of the frame and the interpreter's re-admission, which V7 and V8 rework anyway) | |
 | V2 | done: amendment 192 | `06e7301501` |
 | V3 | done: amendment 196 | `e6599d63f3` |
-| V4 | done: amendment 197 | (V4+V5 commit) |
-| V5 | done: amendment 197 | (V4+V5 commit) |
-| V6 | not started | |
+| V4 | done: amendment 197 | `53cd99b576` |
+| V5 | done: amendment 197 | `53cd99b576` |
+| V6 | done: amendment 198 | (V6 commit) |
 | V7a | not started | |
 | V7b | not started | |
 | V8 | not started | |
@@ -236,7 +243,7 @@ How a new session continues this work. The state is the branch's last commit; th
 - Commit locally with `git commit --no-gpg-sign`, one commit per step (code), then one for documents if needed. Do not
   push unless the owner asks for that push.
 - Do not edit the [specification](programmable-metrics.md); propose changes as numbered amendments. The next amendment
-  is **198**: add it to the [stages 7 and 9
+  is **199**: add it to the [stages 7 and 9
   amendments](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments) and to the [status amendments
   index](programmable-metrics-status.md#spec-amendments-index).
 - Do not touch `architecture-experiment/` or `.claude/`, and add no CI jobs.
@@ -273,31 +280,39 @@ document's [changes users can see](programmable-metrics-status.md#changes-users-
 and a section of the [log](programmable-metrics-log.md) saying what went, what replaced it, how the tests moved, and
 the results.
 
-### The next step: V6
+### The next step: V10
 
-**Elaboration as a phase.** After V4 and V5 a composed program is whole, but its meaning is still computed in two
-places: `Plan::hash(ResolvedValues)` (the explain document's `structural_hash` is the second form) and `export::operation_hash`,
-which the installer's `does` uses to decide that a candidate is the same program. V6 makes one pass from the program as
-written to the core program, with bindings resolved to values and parameters in operation form, and has explain,
-comparison, hashing, and adoption read its result. `Plan::hash` then takes no argument and the two hashes are one.
+**Names and a compatibility analysis** ([telemetry contracts as an analysis](#v10-telemetry-contracts-as-an-analysis)).
+V10's additive half is committed (`7b1e126d16`: operator reports, the telemetry contract, compatibility roles); the
+wiring half (the `dsd_prefix_filter` rename in lowering, the catalog's telemetry contract, telemetry by name, validation
+findings, `keeps_identity` in the filter rewrites) runs beside V6. What remains is the deletion half: node IDs are
+names, and what only native identity needed goes.
 
 Where to start:
 
-- `lib/saluki-metric-plan/src/compose.rs`: the body of `compose` moves to a new `elaborate.rs` as passes (receipt stays
-  in `compose.rs`); `elaborate_default` runs the last passes on a lowered plan.
-- `lib/saluki-metric-plan/src/canonical.rs` (`ResolvedValues`) and `ir/plan.rs` (`Plan::hash`, `strip_node_params`):
-  deleted or simplified.
-- `lib/saluki-metric-plan/src/export.rs` (`operation_hash`, `operation_params`, `write_bindings_as_values`), and
-  `install/core.rs` (`Installed.does`, `Queued.does`, `submit`, `adopt`): compare `plan_hash`.
-- `install/diff.rs` and `compile/program.rs` (`KernelKey::of`): compare and hash the parameters directly.
-- `explain/mod.rs` and `explain/text.rs`: show the core plan with `BindingUses` as annotations; `EXPLAIN_VERSION` 3 to 4.
-- `bin/agent-data-plane/src/programmable_metrics/lowering/mod.rs` (`normalize_plan` becomes `elaborate_default`),
-  `installer.rs` (`active_plan`), and `telemetry.rs` (binding names read from parameters).
-- The demo's `preview.rs` (`plan_hash`), and the S0 and S1 hash checks.
+- `lib/saluki-metric-plan/src/ir/id.rs`: `Namespace`, `NodeId::{reserved, policy, namespace, is_reserved}`, and the
+  `policy/` prefix go; `NodeId::new(LocalId)` replaces them, serialized as the bare identifier, and `Plan::from_json`
+  refuses `policy/x` with a message naming the change. Callers: `normalize.rs`, `export.rs`, `elaborate.rs` (`node_ids`,
+  `partial_emit`), `ir/plan.rs`, the syntax crate's `ids.rs`, `compile/rewrite/{harness.rs, filters.rs}`, ADP
+  `lowering/mod.rs`, `installer.rs`, and `topology.rs` (which asks the plan's `native_components` instead).
+- `lib/saluki-metric-plan/src/elaborate.rs`: amendment 182's adoption (`the_aggregation`, and the `aggregation`
+  parameter of `node_ids`) goes; a renamed aggregation is a new lineage, removed and added at a cut.
+- `single_aggregation` (amendment 169): `validate/state.rs`, `Rule::SingleAggregation`, `Catalog::single_aggregation`,
+  `MemoryCatalog`'s member and `with_single_aggregation`, ADP `catalog.rs`, the plan crate's `testing`, and the demo's
+  `export.rs`, `reference.rs`, and `scenario/`. A stale `single_aggregation` key in a catalog document is ignored.
+- Naming by namespace: `operators/mod.rs` (`detached`), `compile/frame.rs` (`component_name`), `runtime/bounds.rs`
+  (`kernel_accounting_name`, `kernel_accounting_path`), and ADP `telemetry.rs` (`component`): a node reports under its
+  ID as a transform and accounts under `<region>.<node>`.
+- ADP status gains `telemetry: ContractReport` for the active plan; the `#[allow(dead_code, unused_imports)]` on `mod
+  compatibility` goes.
+- Tests that invert: `install/program_tests.rs`'s `the_one_aggregation_keeps_the_default_programs_id_and_lineage_...`
+  becomes a test that a renamed aggregation starts a new lineage at a cut, and ADP's lifecycle tests likewise; `policy/`
+  in the rewrite, explain, normalize, compose, and install tests, and in the demo's `preview/tests.rs` and
+  `scenario/destinations.rs`.
 
-Tests: a binding and the same literal elaborate to one hash, as do a parameter left out and its default; the unmodified
-export and the default program elaborate to one plan, so `default_program_hash` equals `active_plan_hash` exactly when
-either runs.
+V6 left the core plan as V10's input: node IDs are resolved in one place (`elaborate::node_ids`), and kernel keys and
+the plan diff read the core plan's parameters directly. Then V7a ([state owners in any
+region](#v7a-state-owners-in-any-region)).
 
 ### Also deferred by the owner
 

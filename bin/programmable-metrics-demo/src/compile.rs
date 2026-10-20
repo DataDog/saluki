@@ -115,7 +115,7 @@ pub struct CheckContext {
     /// Why they did not run, when they did not.
     pub reason: Option<String>,
 
-    /// The default program hash the checks used.
+    /// The program hash of the export the checks used.
     pub default_program_hash: Option<String>,
 }
 

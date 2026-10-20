@@ -14,11 +14,13 @@ use crate::{
 /// The environment variable that makes the golden tests rewrite their files instead of comparing against them.
 const UPDATE_VARIABLE: &str = "SALUKI_METRIC_PLAN_UPDATE_EXPLAIN";
 
+/// The default program's explain document, as a host describes the plan it installs: the core plan, with the bindings
+/// it was written with.
 fn default_program() -> Explain {
     let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
     let registry = OperatorRegistry::native();
-    let report = Validator::new(&registry, &default_program_catalog()).validate(&plan);
-    Explain::of(&plan, &registry, &report)
+    let elaborated = crate::elaborate::elaborate_default(&plan, &crate::testing::catalog_for(&plan), &registry);
+    Explain::of(&elaborated.plan, &registry, &elaborated.report).with_bindings(&elaborated.bindings)
 }
 
 fn port_type(kinds: &[Kind], timestamps: TimestampForm) -> PortType {
@@ -84,7 +86,7 @@ fn explain_is_deterministic() {
 #[test]
 fn the_default_programs_explain_describes_its_graph() {
     let explain = default_program();
-    assert_eq!(explain.explain_version, 3);
+    assert_eq!(explain.explain_version, 4);
     assert!(explain.plan.valid);
     assert!(explain.findings.is_empty());
 
@@ -107,17 +109,19 @@ fn the_default_programs_explain_describes_its_graph() {
     // Its parameters are policy settings, which lowering writes as literals: it binds nothing.
     assert!(aggregate.bindings.is_empty());
 
-    // Host tags bind two facts of the host, listed with their resolved values.
+    // Host tags bind two facts of the host, listed with their values, which the core plan's parameters write.
     let host_tags = node(&explain, "metrics");
     assert_eq!(host_tags.bindings.len(), 2);
-    assert_eq!(host_tags.bindings[0].param, "tags");
-    assert_eq!(host_tags.bindings[0].binding.to_string(), "host.tags");
+    assert_eq!(host_tags.bindings[1].param, "/tags");
+    assert_eq!(host_tags.bindings[1].binding.to_string(), "host.tags");
     assert_eq!(
-        host_tags.bindings[0].resolved,
+        host_tags.bindings[1].resolved,
         Some(json!(["cloud_provider:example", "zone:a"]))
     );
+    assert_eq!(host_tags.params["tags"], json!(["cloud_provider:example", "zone:a"]));
 
-    // Bindings inside predicates are listed with their place in the predicate and their resolved values.
+    // Bindings inside predicates are listed with their place in the predicate as written, and their values, which
+    // normal form folds: both switches are on, so the gateway's predicate is the constant `true`.
     let gateway = node(&explain, "mrf_metrics_gateway");
     let bindings = gateway
         .bindings
@@ -134,17 +138,18 @@ fn the_default_programs_explain_describes_its_graph() {
         bindings,
         vec![
             (
-                "predicate.all[0].flag",
+                "/predicate/all/0/flag",
                 "multi_region_failover.enabled".to_string(),
                 Some(json!(true))
             ),
             (
-                "predicate.all[1].flag",
+                "/predicate/all/1/flag",
                 "multi_region_failover.metric_mirroring.enabled".to_string(),
                 Some(json!(true))
             ),
         ]
     );
+    assert_eq!(gateway.params["predicate"], json!({"const": true}));
     let blocklist = node(&explain, "dsd_prefix_filter_blocklist");
     assert!(blocklist.bindings.is_empty());
     assert_eq!(blocklist.loss, Vec::<String>::new());
@@ -275,6 +280,11 @@ fn the_default_programs_explain_summarizes_every_nodes_contract() {
             )
         })
         .collect::<Vec<_>>();
+    // The rows are in the fixture's order; the core plan's canonical order moves the drops a filter's turned ports
+    // feed.
+    let (mut actual, mut expected) = (actual, expected);
+    actual.sort();
+    expected.sort();
     assert_eq!(actual, expected);
 }
 

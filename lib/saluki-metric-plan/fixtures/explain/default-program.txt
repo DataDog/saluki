@@ -1,9 +1,8 @@
-explain_version 3
+explain_version 4
 
 plan
   ir_version 1
-  hash sha256:455d2601087cab001098b8f80c6ba659c27936e06685a350bf5bc80dca93fbe1
-  structural_hash sha256:4ab94cf6b8128a47ce9188abc5339316b77eae899ba0a8c2330d35570f3d8a64
+  hash sha256:55cabe6395b26e4c7c2e3f4b352f0c29432d8d7772d811fa84b32cb3febb7951
   valid: 0 errors, 0 warnings
 
 nodes (34)
@@ -39,9 +38,6 @@ nodes (34)
     in in <- dsd_prefix_filter_blocklist_namespace_prefix.out, accepts every kind (mixed timestamps)
     out true -> dsd_no_agg_split.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
     out false -> dsd_prefix_filter_blocklist_false.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
-  dsd_prefix_filter_blocklist_false: drop [synchronous, state none]
-    loss policy
-    in in <- dsd_prefix_filter_blocklist.false, accepts every kind (mixed timestamps)
   dsd_no_agg_split: timestamp_split [synchronous, state none]
     param window = "10s"
     in in <- dsd_prefix_filter_blocklist.true, accepts every kind (mixed timestamps)
@@ -77,9 +73,6 @@ nodes (34)
     in in <- dsd_post_agg_filter_in.out, accepts every kind (mixed timestamps)
     out true -> dsd_post_agg_filter_fanout.in, carries rate, gauge, set, histogram, distribution (timestamped)
     out false -> dsd_post_agg_filter_false.in, carries rate, gauge, set (timestamped)
-  dsd_post_agg_filter_false: drop [synchronous, state none]
-    loss policy
-    in in <- dsd_post_agg_filter.false, accepts every kind (mixed timestamps)
   dsd_post_agg_filter_fanout: tee [synchronous, state none]
     param ports = 2
     in in <- dsd_post_agg_filter.true, accepts every kind (mixed timestamps)
@@ -88,6 +81,12 @@ nodes (34)
   dsd_post_agg_filter_fanout_0: emit [synchronous, state none]
     param output = "dsd_client_telemetry"
     in in <- dsd_post_agg_filter_fanout.0, accepts every kind (mixed timestamps)
+  dsd_post_agg_filter_false: drop [synchronous, state none]
+    loss policy
+    in in <- dsd_post_agg_filter.false, accepts every kind (mixed timestamps)
+  dsd_prefix_filter_blocklist_false: drop [synchronous, state none]
+    loss policy
+    in in <- dsd_prefix_filter_blocklist.false, accepts every kind (mixed timestamps)
   metrics_in: merge [synchronous, state none]
     param inputs = 5
     in 0 <- dsd_post_agg_filter_fanout.1, accepts every kind (mixed timestamps)
@@ -100,10 +99,10 @@ nodes (34)
     in in <- metrics_in.out, accepts every kind (mixed timestamps)
     out out -> metrics.in, carries every kind (mixed timestamps)
   metrics: host_tags [synchronous, state none]
-    param deadline = {"config":"host.tags_deadline","resolved":"1700000300s"}
-    param tags = {"config":"host.tags","resolved":["cloud_provider:example","zone:a"]}
-    binding tags <- host.tags = ["cloud_provider:example","zone:a"]
-    binding deadline <- host.tags_deadline = "1700000300s"
+    param deadline = "1700000300s"
+    param tags = ["cloud_provider:example","zone:a"]
+    binding /deadline <- host.tags_deadline = "1700000300s"
+    binding /tags <- host.tags = ["cloud_provider:example","zone:a"]
     in in <- metrics_host_enrichment.out, accepts every kind (mixed timestamps)
     out out -> metrics_fanout.in, carries every kind (mixed timestamps)
   metrics_fanout: tee [synchronous, state none]
@@ -140,9 +139,9 @@ nodes (34)
     loss policy
     in in <- metrics_routing_filter_1.false, accepts every kind (mixed timestamps)
   mrf_metrics_gateway: split [synchronous, state none]
-    param predicate = {"all":[{"flag":{"config":"multi_region_failover.enabled","resolved":true}},{"flag":{"config":"multi_region_failover.metric_mirroring.enabled","resolved":true}}]}
-    binding predicate.all[0].flag <- multi_region_failover.enabled = true
-    binding predicate.all[1].flag <- multi_region_failover.metric_mirroring.enabled = true
+    param predicate = {"const":true}
+    binding /predicate/all/0/flag <- multi_region_failover.enabled = true
+    binding /predicate/all/1/flag <- multi_region_failover.metric_mirroring.enabled = true
     in in <- metrics_fanout.3, accepts every kind (mixed timestamps)
     out true -> mrf_metrics_gateway_true.in, carries every kind (mixed timestamps)
     out false -> mrf_metrics_gateway_false.in, carries every kind (mixed timestamps)
@@ -153,8 +152,8 @@ nodes (34)
     loss policy
     in in <- mrf_metrics_gateway.false, accepts every kind (mixed timestamps)
   af_metrics_gateway: split [synchronous, state none]
-    param predicate = {"all":[{"kind_in":["counter","rate","gauge","set"]},{"flag":{"config":"autoscaling_failover.enabled","resolved":true}},{"name":{"eq":"requests.count"}}]}
-    binding predicate.all[1].flag <- autoscaling_failover.enabled = true
+    param predicate = {"all":[{"kind_in":["counter","rate","gauge","set"]},{"name":{"eq":"requests.count"}}]}
+    binding /predicate/all/1/flag <- autoscaling_failover.enabled = true
     in in <- metrics_fanout.4, accepts every kind (mixed timestamps)
     out true -> af_metrics_gateway_true.in, carries counter, rate, gauge, set (mixed timestamps)
     out false -> af_metrics_gateway_false.in, carries every kind (mixed timestamps)
@@ -166,23 +165,23 @@ nodes (34)
     in in <- af_metrics_gateway.false, accepts every kind (mixed timestamps)
 
 edges (34)
+  checks_ipc_in.metrics -> metrics_in.2: counter, rate, gauge, histogram (mixed timestamps)
   dsd_in.metrics -> dsd_enrich.in: counter, gauge, set, histogram, distribution (mixed timestamps)
   dsd_enrich.out -> dsd_prefix_filter_blocklist_namespace_prefix.in: counter, gauge, set, histogram, distribution (mixed timestamps)
   dsd_prefix_filter_blocklist_namespace_prefix.out -> dsd_prefix_filter_blocklist.in: counter, gauge, set, histogram, distribution (mixed timestamps)
-  dsd_prefix_filter_blocklist.false -> dsd_prefix_filter_blocklist_false.in: counter, gauge, set, histogram, distribution (mixed timestamps)
   dsd_prefix_filter_blocklist.true -> dsd_no_agg_split.in: counter, gauge, set, histogram, distribution (mixed timestamps)
   dsd_no_agg_split.default -> dsd_tag_filterlist.in: counter, gauge, set, histogram, distribution (untimestamped)
   dsd_tag_filterlist.out -> dsd_agg.in: counter, gauge, set, histogram, distribution (untimestamped)
   dsd_agg.out -> dsd_post_agg_filter_in.0: rate, gauge, set, distribution (timestamped)
   dsd_no_agg_split.passthrough -> dsd_post_agg_filter_in.1: rate, gauge, set, histogram, distribution (timestamped)
   dsd_post_agg_filter_in.out -> dsd_post_agg_filter.in: rate, gauge, set, histogram, distribution (timestamped)
-  dsd_post_agg_filter.false -> dsd_post_agg_filter_false.in: rate, gauge, set (timestamped)
   dsd_post_agg_filter.true -> dsd_post_agg_filter_fanout.in: rate, gauge, set, histogram, distribution (timestamped)
   dsd_post_agg_filter_fanout.0 -> dsd_post_agg_filter_fanout_0.in: rate, gauge, set, histogram, distribution (timestamped)
   dsd_post_agg_filter_fanout.1 -> metrics_in.0: rate, gauge, set, histogram, distribution (timestamped)
-  otlp_in.metrics -> metrics_in.1: counter, rate, gauge, distribution (mixed timestamps)
-  checks_ipc_in.metrics -> metrics_in.2: counter, rate, gauge, histogram (mixed timestamps)
+  dsd_post_agg_filter.false -> dsd_post_agg_filter_false.in: rate, gauge, set (timestamped)
+  dsd_prefix_filter_blocklist.false -> dsd_prefix_filter_blocklist_false.in: counter, gauge, set, histogram, distribution (mixed timestamps)
   liveness_in.metrics -> metrics_in.3: gauge (timestamped)
+  otlp_in.metrics -> metrics_in.1: counter, rate, gauge, distribution (mixed timestamps)
   trace_sampler.metrics -> metrics_in.4: counter, gauge (untimestamped)
   metrics_in.out -> metrics_host_enrichment.in: every kind (mixed timestamps)
   metrics_host_enrichment.out -> metrics.in: every kind (mixed timestamps)

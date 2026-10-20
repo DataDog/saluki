@@ -46,7 +46,7 @@ pub struct ExportBundle {
     /// The default program as an artifact, with the hash of its document.
     pub artifact: ReceivedArtifact,
 
-    /// The program hash of the artifact ([`program_hash`]): what ADP's status reports as its `default_program_hash`.
+    /// The program hash of the artifact ([`program_hash`]): what an unmodified copy hashes to when ADP receives it.
     pub program_hash: PlanHash,
 
     /// How the artifact writes the default program: `bound`, if the bundle does not say.

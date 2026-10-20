@@ -11,9 +11,10 @@
 //!
 //! The default program (`GET /programmable-metrics/default-program`), which the editor composes artifacts into, is
 //! fetched with every export, and kept only if the export in hand was taken from it: exported in the export's form
-//! with the export's catalog, it has the export's program hash, which is also the `default_program_hash` ADP's status
-//! reports. One that is not (the configuration changed between the requests) makes the watcher fetch both again. The active plan (`GET /programmable-metrics/plan`), which the editor diffs against, is fetched when the
-//! active plan hash the status reports changes.
+//! with the export's catalog, it has the export's program hash, and elaborated with that catalog, as ADP elaborates it,
+//! it has the `default_program_hash` ADP's status reports, its core plan's. One that is not (the configuration changed
+//! between the requests) makes the watcher fetch both again. The active plan (`GET /programmable-metrics/plan`), which
+//! the editor diffs against, is fetched when the active plan hash the status reports changes.
 //!
 //! The status is read field by field (see [`AdpStatus::read`]), and the status in hand is kept, with when it was
 //! received, when a later request fails, so that the UI can show it as last known.
@@ -33,7 +34,8 @@ use std::{
 };
 
 use saluki_metric_plan::{
-    canonical::{PlanHash, ResolvedValues},
+    canonical::PlanHash,
+    elaborate::elaborate_default,
     export::{export_as, program_hash},
     ir::Plan,
     operators::OperatorRegistry,
@@ -367,7 +369,7 @@ impl ControlSurface {
             let plan =
                 Plan::from_value(value).map_err(|error| format!("ADP's active plan cannot be read: {}", error))?;
             let hash = plan
-                .hash(ResolvedValues::Include)
+                .hash()
                 .map_err(|error| format!("ADP's active plan cannot be hashed: {}", error))?;
             Ok((hash, Arc::new(plan)))
         });
@@ -511,18 +513,13 @@ impl ControlSurface {
 }
 
 /// Checks that `export` was taken from `plan`, the default program: exported in the export's form with its catalog, the
-/// plan has the export's program hash. Checks too that it is of the default program ADP's status reports, `reported`,
-/// if it reports one.
+/// plan has the export's program hash. Checks too that it is the default program ADP's status reports, `reported`, if
+/// it reports one: elaborated with the export's catalog, as ADP elaborates it, the plan has the reported hash.
 fn matching_export(plan: &Plan, export: &ExportBundle, reported: Option<&str>) -> Result<(), String> {
     let unchecked = |error: String| format!("ADP's default program cannot be checked against its export: {}", error);
-    let bundle = export_as(
-        plan,
-        &export.catalog,
-        &BTreeMap::new(),
-        export.form,
-        &OperatorRegistry::native(),
-    )
-    .map_err(|error| unchecked(error.to_string()))?;
+    let registry = OperatorRegistry::native();
+    let bundle = export_as(plan, &export.catalog, &BTreeMap::new(), export.form, &registry)
+        .map_err(|error| unchecked(error.to_string()))?;
     let exported = program_hash(&bundle.artifact).map_err(|error| unchecked(error.to_string()))?;
     if exported != export.program_hash {
         return Err(format!(
@@ -531,14 +528,20 @@ fn matching_export(plan: &Plan, export: &ExportBundle, reported: Option<&str>) -
             exported, export.program_hash
         ));
     }
-    match reported {
-        Some(reported) if reported != export.program_hash.to_string() => Err(format!(
-            "ADP's status reports the default program {}, but the export in hand is of {}: the configuration changed \
-             since it was fetched. Both are fetched again.",
-            reported, export.program_hash
-        )),
-        _ => Ok(()),
+    let Some(reported) = reported else {
+        return Ok(());
+    };
+    let core = elaborate_default(plan, &export.catalog, &registry)
+        .hash()
+        .map_err(|error| unchecked(error.to_string()))?;
+    if reported != core.to_string() {
+        return Err(format!(
+            "ADP's status reports the default program {}, but the one in hand, with its export, is {}: the \
+             configuration changed since they were fetched. Both are fetched again.",
+            reported, core
+        ));
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -619,8 +622,11 @@ mod tests {
             .contains("the configuration changed"));
         assert!(control.export_wanted(1_000));
 
-        // The export of the default program the status reports: the program is kept.
-        control.record_status(Surface::Available(status(&read.program_hash.to_string())), 1_000);
+        // The export of the default program the status reports, by its core hash: the program is kept.
+        let core = elaborate_default(&plan, &read.catalog, &OperatorRegistry::native())
+            .hash()
+            .unwrap();
+        control.record_status(Surface::Available(status(&core.to_string())), 1_000);
         control.record_export(Surface::Available(export), 1_000);
         assert_eq!(control.record_default_program(program()), SurfaceState::Available);
         let (_, default_program) = control.export_with_default_program().unwrap();
@@ -636,7 +642,7 @@ mod tests {
         assert_eq!(control.view().default_program_error, None);
 
         // The active plan is kept by the hash it has, which is what callers ask for.
-        let hash = plan.hash(ResolvedValues::Include).unwrap();
+        let hash = plan.hash().unwrap();
         let (kept, _) = control.record_active_plan(program()).unwrap();
         assert_eq!(kept, hash);
         assert!(control.active_plan(&hash).is_some());

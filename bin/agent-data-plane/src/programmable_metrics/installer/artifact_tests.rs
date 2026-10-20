@@ -42,9 +42,9 @@ use saluki_core::{
     execution::GenerationId,
 };
 use saluki_metric_plan::{
-    canonical::ResolvedValues,
     channel::{ActiveArtifact, ArtifactConfig, ArtifactConfigId, ArtifactProduct, Envelope},
     install::Rejection,
+    validate::Validator,
 };
 use saluki_metrics::test::TestRecorder;
 use serde_json::json;
@@ -135,6 +135,7 @@ impl Script {
         core: &mut InstallerCore, plan: Arc<Plan>, report: ValidationReport, revision: u64, hash: PlanHash,
     ) -> (CandidateId, Vec<Action>) {
         core.propose(Candidate {
+            bindings: Default::default(),
             plan,
             report,
             origin: Origin::Artifact { revision, hash },
@@ -181,7 +182,7 @@ impl ArtifactPaths for ScriptedArtifacts {
             .get(&envelope.artifact_hash)
             .expect("the test scripted every artifact it delivers");
         let (plan, report) = (Arc::clone(&scripted.plan), scripted.report.clone());
-        let plan_hash = plan.hash(ResolvedValues::Include).expect("scripted plans hash");
+        let plan_hash = plan.hash().expect("scripted plans hash");
         let (candidate, actions) = Script::propose(core, plan, report, envelope.revision, envelope.artifact_hash);
         // An artifact whose plan already runs is served by the generation that runs it.
         let unchanged = actions.iter().any(|action| match action {
@@ -210,14 +211,13 @@ impl ArtifactPaths for ScriptedArtifacts {
         let plan = script.artifacts[&hash].compose(&candidate.plan, revision, hash);
         let catalog = script.catalog.as_ref().expect("the harness sets the catalog");
         let report = Validator::new(&OperatorRegistry::native(), catalog).validate(&plan);
-        let running = core
-            .active_plan()
-            .map(|active| active.hash(ResolvedValues::Include).ok());
-        if running == Some(plan.hash(ResolvedValues::Include).ok()) {
+        let running = core.active_plan().map(|active| active.hash().ok());
+        if running == Some(plan.hash().ok()) {
             // Unchanged, as the core reports a composition equal to the active plan (under the default program's
             // origin here, since the double cannot report under the artifact's).
             script.policy_error = None;
             return core.propose(Candidate {
+                bindings: Default::default(),
                 plan: Arc::new(plan),
                 report,
                 origin: candidate.origin,
@@ -403,7 +403,7 @@ struct Harness {
     script: Arc<StdMutex<Script>>,
     failures: GenerationFailureReporter,
     stream: mpsc::Sender<ConfigUpdate>,
-    /// The default program of the base configuration, and its catalog.
+    /// The default program of the base configuration, its core plan as it installs, and its catalog.
     default_program: (Plan, AdpCatalog),
     /// The batches sent so far.
     sent: usize,
@@ -459,7 +459,15 @@ impl Harness {
             script,
             failures,
             stream,
-            default_program: (lowered.plan, lowered.catalog),
+            default_program: (
+                saluki_metric_plan::elaborate::elaborate_default(
+                    &lowered.plan,
+                    &lowered.catalog,
+                    &OperatorRegistry::native(),
+                )
+                .plan,
+                lowered.catalog,
+            ),
             sent: 0,
             seen: BTreeMap::new(),
         }
@@ -1328,13 +1336,14 @@ async fn an_exported_artifact_installs_follows_configuration_and_rolls_back_thro
     let names = [KEPT[0], KEPT[1], "dropped", "blocked"];
     assert_eq!(harness.send(&names).await, Some(1));
 
-    // The export of the default program, as the control surface serves it, whose program hash the status reports.
+    // The export of the default program, as the control surface serves it. The status reports the default program's
+    // core hash, which the boot generation runs.
     let boot = harness.status.load_full();
     let bundle = boot.export.clone().expect("the default program exports");
     let exported = serde_json::to_value(&bundle.artifact).unwrap();
     assert_eq!(
         boot.apply_states.status.default_program_hash,
-        Some(saluki_metric_plan::export::program_hash(&bundle.artifact).unwrap())
+        boot.installer.active.as_ref().map(|active| active.plan_hash)
     );
 
     // The unmodified export leaves out what does nothing as configured, such as host enrichment: it is a generation

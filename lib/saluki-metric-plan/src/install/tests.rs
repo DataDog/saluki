@@ -394,6 +394,7 @@ impl Harness {
 pub(super) fn candidate(plan: Plan, origin: Origin) -> Candidate {
     let report = Validator::new(&OperatorRegistry::native(), &default_program_catalog()).validate(&plan);
     Candidate {
+        bindings: Default::default(),
         plan: Arc::new(plan),
         report,
         origin,
@@ -823,6 +824,7 @@ fn invalid_and_unplaceable_candidates_are_rejected_and_the_active_generation_sta
     let mut harness = Harness::new(InstallerConfig::default());
     // Validated against an empty catalog, the plan names bindings and outputs the catalog lacks.
     let invalid = |origin| Candidate {
+        bindings: Default::default(),
         plan: Arc::new(filtered(&["a"])),
         report: Validator::new(&OperatorRegistry::native(), &crate::validate::MemoryCatalog::new())
             .validate(&filtered(&["a"])),
@@ -893,6 +895,7 @@ fn a_default_program_with_validation_errors_is_installed_as_long_as_it_fits_the_
         Validator::new(&OperatorRegistry::native(), &crate::validate::MemoryCatalog::new()).validate(&filtered(&["a"]));
     assert!(!report.is_valid());
     let (_, actions) = harness.core.propose(Candidate {
+        bindings: Default::default(),
         plan: Arc::new(filtered(&["a"])),
         report,
         origin: Origin::DefaultProgram { config_change: 1 },
@@ -917,6 +920,7 @@ fn a_default_program_with_validation_errors_is_installed_as_long_as_it_fits_the_
     });
     let report = Validator::new(&OperatorRegistry::native(), &default_program_catalog()).validate(&unknown);
     let (_, actions) = harness.core.propose(Candidate {
+        bindings: Default::default(),
         plan: Arc::new(unknown),
         report,
         origin: Origin::DefaultProgram { config_change: 2 },

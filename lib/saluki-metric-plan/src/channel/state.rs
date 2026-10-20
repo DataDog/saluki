@@ -120,8 +120,9 @@ pub struct ActiveArtifact {
 /// says a stale review is flagged in status, and readers ignore members they do not know.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StatusSummary {
-    /// The program hash of the default program's current export ([`program_hash`][crate::export::program_hash]). A
-    /// client refetches the export exactly when it changes.
+    /// The hash of the default program's current core plan
+    /// ([`elaborate_default`][crate::elaborate::elaborate_default]): `active_plan_hash` exactly when the default
+    /// program, or a program that elaborates to it, runs. A client refetches the export when it changes.
     pub default_program_hash: Option<PlanHash>,
 
     /// The highest artifact revision seen, if any. A proposal at or below it is stale.
@@ -130,7 +131,7 @@ pub struct StatusSummary {
     /// The active generation.
     pub active_generation: Option<u64>,
 
-    /// The hash of the active composed plan, with resolved values: the hash an approval's `approved_against` names.
+    /// The hash of the active core plan: the hash an approval's `approved_against` names.
     pub active_plan_hash: Option<PlanHash>,
 
     /// The artifact active, or `None` when the default program runs.

@@ -164,11 +164,9 @@ fn write_string(string: &str, out: &mut String) {
 /// Removes the resolved value from every configuration binding in `value`, which is one parameter's value.
 ///
 /// A configuration binding is an object with a [`BINDING_MEMBER`] member; its resolved value, if any, is its
-/// [`RESOLVED_MEMBER`] member. Lowering fills in resolved values, but exports and artifacts never carry them, and
-/// hashes that must not change when only configuration values change are computed without them.
+/// [`RESOLVED_MEMBER`] member. Lowering fills in resolved values, but exports and artifacts never carry them.
 ///
-/// Apply this to parameter values only, where [`BINDING_MEMBER`] is reserved; [`Plan::hash`](crate::ir::Plan::hash)
-/// applies it to the parameters of every node.
+/// Apply this to parameter values only, where [`BINDING_MEMBER`] is reserved.
 pub fn strip_resolved_values(value: &mut Value) {
     match value {
         Value::Array(values) => values.iter_mut().for_each(strip_resolved_values),
@@ -192,17 +190,6 @@ pub fn contains_resolved_values(value: &Value) -> bool {
         }
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => false,
     }
-}
-
-/// Whether a hash covers the resolved values of configuration bindings.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ResolvedValues {
-    /// Resolved values are part of the hash, so it changes whenever a bound configuration value changes.
-    Include,
-
-    /// Resolved values are removed before hashing, so the hash changes only when the plan's structure, operators,
-    /// literal parameters, or binding names change.
-    Exclude,
 }
 
 const HASH_PREFIX: &str = "sha256:";
@@ -553,42 +540,14 @@ mod tests {
     }
 
     #[test]
-    fn hashes_can_exclude_resolved_binding_values() {
-        let bound = |resolved: Option<Value>| {
-            let mut binding = json!({"config": "dogstatsd.metric_filter.values"});
-            if let Some(resolved) = resolved {
-                binding["resolved"] = resolved;
-            }
-            json!({"params": {"values": binding, "prefix": false}})
-        };
-
-        let unresolved = bound(None);
-        let first = bound(Some(json!(["a"])));
-        let second = bound(Some(json!(["a", "b"])));
-        assert!(!contains_resolved_values(&unresolved));
-        assert!(contains_resolved_values(&first));
-
-        let hash = |value: &Value, resolved| {
-            let mut value = value.clone();
-            if resolved == ResolvedValues::Exclude {
-                strip_resolved_values(&mut value);
-            }
-            PlanHash::of_value(&value).unwrap()
-        };
-        // Excluding resolved values, a configuration change does not change the hash.
-        assert_eq!(
-            hash(&first, ResolvedValues::Exclude),
-            hash(&second, ResolvedValues::Exclude)
-        );
-        assert_eq!(
-            hash(&first, ResolvedValues::Exclude),
-            hash(&unresolved, ResolvedValues::Exclude)
-        );
-        // Including them, it does.
-        assert_ne!(
-            hash(&first, ResolvedValues::Include),
-            hash(&second, ResolvedValues::Include)
-        );
+    fn resolved_binding_values_are_found_and_stripped_only_inside_bindings() {
+        let bound = json!({"params": {"values": {"config": "dogstatsd.metric_filter.values"}, "prefix": false}});
+        let mut resolved = bound.clone();
+        resolved["params"]["values"]["resolved"] = json!(["a"]);
+        assert!(!contains_resolved_values(&bound));
+        assert!(contains_resolved_values(&resolved));
+        strip_resolved_values(&mut resolved);
+        assert_eq!(resolved, bound);
 
         // A `resolved` member outside a binding is ordinary data and is kept.
         let mut not_a_binding = json!({"resolved": 1, "nested": [{"config": "x", "resolved": 2}]});

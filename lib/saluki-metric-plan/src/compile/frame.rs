@@ -131,7 +131,7 @@ use snafu::Snafu;
 
 use super::{resolve, Role};
 use crate::{
-    canonical::{PlanHash, ResolvedValues},
+    canonical::PlanHash,
     ir::{
         HostId, Namespace, NativeComponentId, NodeId, OperatorName, OutputDecl, OutputId, Params, Plan, PortName,
         PortRef,
@@ -1332,7 +1332,7 @@ impl Frame {
             .collect();
 
         Ok(Self {
-            plan_hash: plan.hash(ResolvedValues::Include).ok(),
+            plan_hash: plan.hash().ok(),
             fixed,
             admission_points,
             slots,
@@ -1379,7 +1379,7 @@ impl Frame {
         self.cost_budget
     }
 
-    /// Returns the hash of the boot plan the frame was computed from, with resolved values, if it has one.
+    /// Returns the hash of the boot plan the frame was computed from, if it has one.
     pub fn plan_hash(&self) -> Option<PlanHash> {
         self.plan_hash
     }

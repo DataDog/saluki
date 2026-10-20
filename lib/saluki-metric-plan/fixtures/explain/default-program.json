@@ -1,9 +1,8 @@
 {
-  "explain_version": 3,
+  "explain_version": 4,
   "plan": {
     "ir_version": 1,
-    "hash": "sha256:455d2601087cab001098b8f80c6ba659c27936e06685a350bf5bc80dca93fbe1",
-    "structural_hash": "sha256:4ab94cf6b8128a47ce9188abc5339316b77eae899ba0a8c2330d35570f3d8a64",
+    "hash": "sha256:55cabe6395b26e4c7c2e3f4b352f0c29432d8d7772d811fa84b32cb3febb7951",
     "provenance": {
       "native_components": {
         "af_metrics_gateway_false": "af_metrics_gateway",
@@ -320,28 +319,6 @@
         ]
       },
       {
-        "id": "dsd_prefix_filter_blocklist_false",
-        "op": "drop",
-        "boundary": "synchronous",
-        "state": "none",
-        "loss": [
-          "policy"
-        ],
-        "params": {},
-        "bindings": [],
-        "inputs": [
-          {
-            "name": "in",
-            "accepts": {
-              "kinds": "all",
-              "timestamps": "mixed"
-            },
-            "from": "dsd_prefix_filter_blocklist.false"
-          }
-        ],
-        "outputs": []
-      },
-      {
         "id": "dsd_no_agg_split",
         "op": "timestamp_split",
         "boundary": "synchronous",
@@ -620,28 +597,6 @@
         ]
       },
       {
-        "id": "dsd_post_agg_filter_false",
-        "op": "drop",
-        "boundary": "synchronous",
-        "state": "none",
-        "loss": [
-          "policy"
-        ],
-        "params": {},
-        "bindings": [],
-        "inputs": [
-          {
-            "name": "in",
-            "accepts": {
-              "kinds": "all",
-              "timestamps": "mixed"
-            },
-            "from": "dsd_post_agg_filter.false"
-          }
-        ],
-        "outputs": []
-      },
-      {
         "id": "dsd_post_agg_filter_fanout",
         "op": "tee",
         "boundary": "synchronous",
@@ -710,6 +665,50 @@
               "timestamps": "mixed"
             },
             "from": "dsd_post_agg_filter_fanout.0"
+          }
+        ],
+        "outputs": []
+      },
+      {
+        "id": "dsd_post_agg_filter_false",
+        "op": "drop",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [
+          "policy"
+        ],
+        "params": {},
+        "bindings": [],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "dsd_post_agg_filter.false"
+          }
+        ],
+        "outputs": []
+      },
+      {
+        "id": "dsd_prefix_filter_blocklist_false",
+        "op": "drop",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [
+          "policy"
+        ],
+        "params": {},
+        "bindings": [],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "dsd_prefix_filter_blocklist.false"
           }
         ],
         "outputs": []
@@ -813,31 +812,25 @@
         "state": "none",
         "loss": [],
         "params": {
-          "deadline": {
-            "config": "host.tags_deadline",
-            "resolved": "1700000300s"
-          },
-          "tags": {
-            "config": "host.tags",
-            "resolved": [
-              "cloud_provider:example",
-              "zone:a"
-            ]
-          }
+          "deadline": "1700000300s",
+          "tags": [
+            "cloud_provider:example",
+            "zone:a"
+          ]
         },
         "bindings": [
           {
-            "param": "tags",
+            "param": "/deadline",
+            "binding": "host.tags_deadline",
+            "resolved": "1700000300s"
+          },
+          {
+            "param": "/tags",
             "binding": "host.tags",
             "resolved": [
               "cloud_provider:example",
               "zone:a"
             ]
-          },
-          {
-            "param": "deadline",
-            "binding": "host.tags_deadline",
-            "resolved": "1700000300s"
           }
         ],
         "inputs": [
@@ -1137,30 +1130,17 @@
         "loss": [],
         "params": {
           "predicate": {
-            "all": [
-              {
-                "flag": {
-                  "config": "multi_region_failover.enabled",
-                  "resolved": true
-                }
-              },
-              {
-                "flag": {
-                  "config": "multi_region_failover.metric_mirroring.enabled",
-                  "resolved": true
-                }
-              }
-            ]
+            "const": true
           }
         },
         "bindings": [
           {
-            "param": "predicate.all[0].flag",
+            "param": "/predicate/all/0/flag",
             "binding": "multi_region_failover.enabled",
             "resolved": true
           },
           {
-            "param": "predicate.all[1].flag",
+            "param": "/predicate/all/1/flag",
             "binding": "multi_region_failover.metric_mirroring.enabled",
             "resolved": true
           }
@@ -1256,12 +1236,6 @@
                 ]
               },
               {
-                "flag": {
-                  "config": "autoscaling_failover.enabled",
-                  "resolved": true
-                }
-              },
-              {
                 "name": {
                   "eq": "requests.count"
                 }
@@ -1271,7 +1245,7 @@
         },
         "bindings": [
           {
-            "param": "predicate.all[1].flag",
+            "param": "/predicate/all/1/flag",
             "binding": "autoscaling_failover.enabled",
             "resolved": true
           }
@@ -1357,6 +1331,19 @@
     ],
     "edges": [
       {
+        "from": "checks_ipc_in.metrics",
+        "to": "metrics_in.2",
+        "port_type": {
+          "kinds": [
+            "counter",
+            "rate",
+            "gauge",
+            "histogram"
+          ],
+          "timestamps": "mixed"
+        }
+      },
+      {
         "from": "dsd_in.metrics",
         "to": "dsd_enrich.in",
         "port_type": {
@@ -1387,20 +1374,6 @@
       {
         "from": "dsd_prefix_filter_blocklist_namespace_prefix.out",
         "to": "dsd_prefix_filter_blocklist.in",
-        "port_type": {
-          "kinds": [
-            "counter",
-            "gauge",
-            "set",
-            "histogram",
-            "distribution"
-          ],
-          "timestamps": "mixed"
-        }
-      },
-      {
-        "from": "dsd_prefix_filter_blocklist.false",
-        "to": "dsd_prefix_filter_blocklist_false.in",
         "port_type": {
           "kinds": [
             "counter",
@@ -1496,18 +1469,6 @@
         }
       },
       {
-        "from": "dsd_post_agg_filter.false",
-        "to": "dsd_post_agg_filter_false.in",
-        "port_type": {
-          "kinds": [
-            "rate",
-            "gauge",
-            "set"
-          ],
-          "timestamps": "timestamped"
-        }
-      },
-      {
         "from": "dsd_post_agg_filter.true",
         "to": "dsd_post_agg_filter_fanout.in",
         "port_type": {
@@ -1550,27 +1511,27 @@
         }
       },
       {
-        "from": "otlp_in.metrics",
-        "to": "metrics_in.1",
+        "from": "dsd_post_agg_filter.false",
+        "to": "dsd_post_agg_filter_false.in",
         "port_type": {
           "kinds": [
-            "counter",
             "rate",
             "gauge",
-            "distribution"
+            "set"
           ],
-          "timestamps": "mixed"
+          "timestamps": "timestamped"
         }
       },
       {
-        "from": "checks_ipc_in.metrics",
-        "to": "metrics_in.2",
+        "from": "dsd_prefix_filter_blocklist.false",
+        "to": "dsd_prefix_filter_blocklist_false.in",
         "port_type": {
           "kinds": [
             "counter",
-            "rate",
             "gauge",
-            "histogram"
+            "set",
+            "histogram",
+            "distribution"
           ],
           "timestamps": "mixed"
         }
@@ -1583,6 +1544,19 @@
             "gauge"
           ],
           "timestamps": "timestamped"
+        }
+      },
+      {
+        "from": "otlp_in.metrics",
+        "to": "metrics_in.1",
+        "port_type": {
+          "kinds": [
+            "counter",
+            "rate",
+            "gauge",
+            "distribution"
+          ],
+          "timestamps": "mixed"
         }
       },
       {

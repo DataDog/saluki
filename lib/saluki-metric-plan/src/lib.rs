@@ -25,7 +25,7 @@
 //!   a transport and the installer.
 //! - [`export`]: the default program exported as an artifact, with the catalog it is checked against.
 //! - [`compose`]: the checks an artifact passes on receipt, and its composition with the host's sources and outputs.
-//! - [`elaborate`]: the one pass from a program as written to the core program that installs (bodies in V6).
+//! - [`elaborate`]: the one pass from a program as written to the core program that installs.
 //! - [`runtime`]: the region driver, which runs the region programs of every live generation in one slot.
 //!
 //! With the `test-util` feature, the `testing` module provides property-testing strategies for metrics and predicates.

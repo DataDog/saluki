@@ -67,14 +67,21 @@ pub(crate) fn fixture() -> (Plan, ExportBundle) {
     (plan, ExportBundle::from_value(document).unwrap())
 }
 
+/// Returns the core plan of the default program `plan`, as ADP elaborates it with the export's catalog: the plan it
+/// installs.
+pub(crate) fn core(plan: &Plan, export: &ExportBundle) -> Plan {
+    saluki_metric_plan::elaborate::elaborate_default(plan, &export.catalog, &OperatorRegistry::native()).plan
+}
+
 /// Compiles `source` against the fixture, with the default program active (generation 3) and revision 7 next.
 fn compile_against(source: &str, plan: &Plan, export: &ExportBundle) -> CompileOutcome {
+    let active = core(plan, export);
     let context = CompileContext {
         export,
         default_program: Some(plan),
         active: Some(ActivePlan {
-            plan,
-            hash: plan.hash(ResolvedValues::Include).unwrap(),
+            plan: &active,
+            hash: active.hash().unwrap(),
             generation: Some(3),
             artifact_revision: None,
         }),
@@ -113,10 +120,9 @@ fn an_unmodified_export_composes_to_the_active_default_program_with_an_empty_dif
         preview
     );
     assert!(preview.nodes.is_empty() && preview.edges_added.is_empty() && preview.edges_removed.is_empty());
-    // The composed plan does what the default program does, so ADP adopts the running generation. It is not the same
-    // document: the detached export leaves out what does nothing, and the printed program orders its edges as written.
-    let hash = plan.hash(ResolvedValues::Include).unwrap().to_string();
-    assert!(preview.plan_hash.is_some());
+    // The composed plan is the default program's core plan, with its hash, so ADP adopts the running generation.
+    let hash = core(&plan, &export).hash().unwrap().to_string();
+    assert_eq!(preview.plan_hash.as_deref(), Some(hash.as_str()));
     assert_eq!(
         preview.against,
         Some(PreviewBase {
@@ -486,12 +492,13 @@ fn renaming_the_one_aggregation_of_a_program_keeps_its_id_and_gets_no_note() {
         spans: Default::default(),
     };
     let labels = crate::compile::RecipientLabels::default();
+    let active = core(&plan, &export);
     let context = CompileContext {
         export: &export,
         default_program: Some(&plan),
         active: Some(ActivePlan {
-            plan: &plan,
-            hash: plan.hash(ResolvedValues::Include).unwrap(),
+            plan: &active,
+            hash: active.hash().unwrap(),
             generation: Some(3),
             artifact_revision: None,
         }),

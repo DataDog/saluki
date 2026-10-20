@@ -17,7 +17,7 @@ use super::{
     *,
 };
 use crate::{
-    canonical::{PlanHash, ResolvedValues},
+    canonical::PlanHash,
     channel::{ApplyState, ArtifactConfig, ArtifactConfigId, ArtifactProduct, ArtifactSnapshot, ConfigAcknowledgment},
     compile::SlotId,
     compose::{Approval, ComposeError, ComposeOutcome, Composed, Composer, DropReason, DroppedEmits},
@@ -148,6 +148,7 @@ impl Composer for TestComposer {
             plan,
             report,
             ids: BTreeMap::new(),
+            bindings: Default::default(),
             stale_review,
             outcome,
         })
@@ -250,14 +251,12 @@ pub(super) fn snapshot(policies: &[Policy]) -> ArtifactSnapshot {
 }
 
 fn boot_hash() -> PlanHash {
-    boot_plan().hash(ResolvedValues::Include).unwrap()
+    boot_plan().hash().unwrap()
 }
 
 /// Returns the hash of the plan an artifact `marker` composes to, before any configuration change.
 fn plan_hash(marker: &str) -> PlanHash {
-    program(marker, BOOT_POST_AGGREGATION)
-        .hash(ResolvedValues::Include)
-        .unwrap()
+    program(marker, BOOT_POST_AGGREGATION).hash().unwrap()
 }
 
 /// One thing that happens to the host.
@@ -1594,11 +1593,7 @@ fn acknowledgments_name_the_config_revision_hash_generation_and_error() {
     assert_eq!(states.status.active_generation, Some(2));
     assert_eq!(
         states.status.active_plan_hash,
-        Some(
-            program("a", BOOT_POST_AGGREGATION)
-                .hash(ResolvedValues::Include)
-                .unwrap()
-        )
+        Some(program("a", BOOT_POST_AGGREGATION).hash().unwrap())
     );
     let artifact = states.status.active_artifact.as_ref().unwrap();
     assert_eq!(

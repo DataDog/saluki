@@ -24,10 +24,10 @@ use super::{
     *,
 };
 use crate::{
-    canonical::ResolvedValues,
     channel::{ArtifactConfig, ArtifactConfigId, ArtifactProduct, ArtifactSnapshot},
     compile::{compile, place, Frame, SlotId},
     compose::{compose, tests::approval, Approval, ComposeError, Composed, Composer},
+    elaborate::elaborate_default,
     export::export,
     extension::TransitionClass,
     ir::{NodeId, OutputId, Plan, ReceivedArtifact},
@@ -49,11 +49,27 @@ fn strings(list: &[&str]) -> Vec<String> {
     list.iter().map(|item| item.to_string()).collect()
 }
 
-/// The default-program fixture, editable with `edit` first.
-fn unified_with(edit: impl FnOnce(&mut Value)) -> Plan {
+/// The default-program fixture as lowering writes it, with its bindings, editable with `edit` first: what the export is
+/// taken from, and what artifacts are composed against.
+fn lowered_with(edit: impl FnOnce(&mut Value)) -> Plan {
     let mut value = serde_json::from_str::<Value>(DEFAULT_PROGRAM_JSON).unwrap();
     edit(&mut value);
     Plan::from_value(value).unwrap()
+}
+
+/// The default-program fixture as lowering writes it.
+fn lowered() -> Plan {
+    lowered_with(|_| {})
+}
+
+/// Returns the core plan of a default program as lowering writes it.
+fn core(lowered: &Plan) -> Plan {
+    elaborate_default(lowered, &unified_catalog(lowered), &registry()).plan
+}
+
+/// The boot plan: the default program's core plan, editable as lowering writes it with `edit` first.
+fn unified_with(edit: impl FnOnce(&mut Value)) -> Plan {
+    core(&lowered_with(edit))
 }
 
 /// The boot plan.
@@ -61,14 +77,19 @@ fn unified_plan() -> Plan {
     unified_with(|_| {})
 }
 
-/// The host's catalog for the default program: the fixtures' catalog, which declares one aggregation per program, with
-/// every binding's value, as composition needs.
-fn unified_catalog(plan: &Plan) -> MemoryCatalog {
-    catalog_for(plan)
+/// The host's catalog for the default program `lowered`, as lowering writes it: the fixtures' catalog, which declares
+/// one aggregation per program, with every binding's value, as composition needs.
+fn unified_catalog(lowered: &Plan) -> MemoryCatalog {
+    catalog_for(lowered)
 }
 
 fn report(plan: &Plan) -> ValidationReport {
-    Validator::new(&registry(), &unified_catalog(&unified_plan())).validate(plan)
+    Validator::new(&registry(), &unified_catalog(&lowered())).validate(plan)
+}
+
+/// The boot plan's validation report: the default program's, as lowering writes it, which elaboration returns.
+fn boot_report() -> ValidationReport {
+    elaborate_default(&lowered(), &unified_catalog(&lowered()), &registry()).report
 }
 
 fn frame(plan: &Plan) -> Frame {
@@ -77,7 +98,7 @@ fn frame(plan: &Plan) -> Frame {
 
 /// The export of the boot plan, as an artifact document.
 fn exported() -> Value {
-    let plan = unified_plan();
+    let plan = lowered();
     let bundle = export(&plan, &unified_catalog(&plan), &BTreeMap::new()).unwrap();
     serde_json::to_value(&bundle.artifact).unwrap()
 }
@@ -89,7 +110,7 @@ fn received(document: Value) -> ReceivedArtifact {
 
 /// Composes an artifact document with the boot plan.
 fn composed(document: Value) -> Result<Composed, ComposeError> {
-    let plan = unified_plan();
+    let plan = lowered();
     compose(
         &plan,
         &received(document),
@@ -186,7 +207,7 @@ fn changes(composed: &Composed) -> Vec<(String, String)> {
 
 #[test]
 fn the_default_program_validates_with_no_findings_and_exports_every_node_but_its_sources() {
-    let plan = unified_plan();
+    let plan = lowered();
     let validated = report(&plan);
     assert!(validated.findings().is_empty(), "{}", validated);
 
@@ -233,10 +254,7 @@ fn the_unmodified_export_composes_back_to_the_same_plan_and_diffs_as_no_change()
     let composed = composed(exported()).unwrap();
     assert_eq!(composed.plan.nodes, plan.nodes);
     assert_eq!(composed.plan.edges, plan.edges);
-    assert_eq!(
-        composed.plan.hash(ResolvedValues::Include).unwrap(),
-        plan.hash(ResolvedValues::Include).unwrap()
-    );
+    assert_eq!(composed.plan.hash().unwrap(), plan.hash().unwrap());
     assert!(composed.report.findings().is_empty(), "{}", composed.report);
     assert!(!composed.stale_review);
 
@@ -283,7 +301,7 @@ fn the_composed_plan_places_onto_the_boot_frame_exactly_as_the_boot_plan_does() 
     assert_eq!(frame.slots().iter().filter(|slot| slot.is_isolation()).count(), 1);
 
     let composed = composed(exported()).unwrap();
-    let boot_report = report(&plan);
+    let boot_report = boot_report();
     let boot = place(&plan, &boot_report, &registry(), &frame).unwrap();
     let candidate = place(&composed.plan, &composed.report, &registry(), &frame).unwrap();
     assert_eq!(candidate, boot);
@@ -387,10 +405,7 @@ fn the_one_aggregation_keeps_the_default_programs_id_and_lineage_whatever_the_ar
     let renamed = composed(edited(|document| rename_node(document, "dsd_agg", "agg"))).unwrap();
     assert!(renamed.report.findings().is_empty(), "{}", renamed.report);
     assert_eq!(plan_id(&renamed, "agg"), "dsd_agg");
-    assert_eq!(
-        renamed.plan.hash(ResolvedValues::Include).unwrap(),
-        plan.hash(ResolvedValues::Include).unwrap()
-    );
+    assert_eq!(renamed.plan.hash().unwrap(), plan.hash().unwrap());
     assert_eq!(
         aggregation(&renamed),
         (Some((TransitionClass::Retain, StateOwnerChange::Kept)), false)
@@ -442,7 +457,7 @@ fn the_one_aggregation_keeps_the_default_programs_id_and_lineage_whatever_the_ar
 
     // A host that does not restrict programs to one aggregation places the renamed node in the artifact's namespace,
     // as a new state owner.
-    let mut document = serde_json::to_value(unified_catalog(&plan)).unwrap();
+    let mut document = serde_json::to_value(unified_catalog(&lowered())).unwrap();
     document.as_object_mut().unwrap().remove("single_aggregation");
     let catalog = serde_json::from_value::<MemoryCatalog>(document).unwrap();
     let artifact = received(edited(|document| rename_node(document, "dsd_agg", "agg")));
@@ -498,11 +513,14 @@ struct Host {
 
 impl Host {
     fn new() -> Self {
-        Self::with(unified_plan(), InstallerConfig::default())
+        Self::with(lowered(), InstallerConfig::default())
     }
 
-    /// Boots the default program `plan`, with the installer configured as `config` says.
-    fn with(plan: Plan, config: InstallerConfig) -> Self {
+    /// Boots the default program `lowered`, as lowering writes it, elaborated, with the installer configured as
+    /// `config` says.
+    fn with(lowered: Plan, config: InstallerConfig) -> Self {
+        let elaborated = elaborate_default(&lowered, &unified_catalog(&lowered), &registry());
+        let plan = elaborated.plan;
         let retired = Arc::new(Mutex::new(Vec::new()));
         let notified = Arc::clone(&retired);
         let notifier = move |_: GenerationId| {
@@ -510,16 +528,17 @@ impl Host {
             RetireNotifier::new(move |id| notified.lock().unwrap().push(id))
         };
         let boot = Candidate {
+            bindings: elaborated.bindings,
             plan: Arc::new(plan.clone()),
-            report: report(&plan),
+            report: elaborated.report,
             origin: Origin::DefaultProgram { config_change: 0 },
         };
         let (core, boot) = InstallerCore::new(Arc::new(frame(&plan)), registry(), config, notifier, boot).unwrap();
         Self {
             core,
             composer: UnifiedComposer {
-                catalog: unified_catalog(&plan),
-                plan,
+                catalog: unified_catalog(&lowered),
+                plan: lowered,
             },
             retired,
             arming: None,
@@ -576,10 +595,11 @@ impl Host {
                     Action::Commit { generation } | Action::FinalizeCut { generation } => self.schedule = generation,
                     Action::ArmCut(arming) => self.arming = Some(arming),
                     Action::InstallDefaultProgram => {
-                        let plan = self.composer.plan.clone();
+                        let elaborated = elaborate_default(&self.composer.plan, &self.composer.catalog, &registry());
                         let candidate = Candidate {
-                            report: report(&plan),
-                            plan: Arc::new(plan),
+                            bindings: elaborated.bindings,
+                            report: elaborated.report,
+                            plan: Arc::new(elaborated.plan),
                             origin: Origin::DefaultProgram { config_change: 1 },
                         };
                         next.extend(self.core.on_default_program(candidate, &self.composer).1);
@@ -656,7 +676,7 @@ fn dogstatsd_point() -> AdmissionPointId {
 #[test]
 fn an_unmodified_export_of_the_one_scope_adopts_the_running_generation() {
     let mut host = Host::new();
-    let boot_hash = host.active_plan().hash(ResolvedValues::Include).unwrap();
+    let boot_hash = host.active_plan().hash().unwrap();
     // The composition is the boot plan: it adopts the boot generation. Nothing is prepared, so no kernel is built and
     // nothing is cut or drained; the generation keeps its ID and only its origin changes, which the regions are told,
     // for its panic budget. The config is acknowledged active on the boot generation.
@@ -677,7 +697,7 @@ fn an_unmodified_export_of_the_one_scope_adopts_the_running_generation() {
     assert_eq!(host.schedule.id(), GenerationId::new(1));
     // The plan the generation holds is the composition's: the same hash, and a provenance that names the program.
     let plan = host.active_plan();
-    assert_eq!(plan.hash(ResolvedValues::Include).unwrap(), boot_hash);
+    assert_eq!(plan.hash().unwrap(), boot_hash);
     assert_eq!(plan.provenance.as_ref().unwrap().artifact.as_ref().unwrap().revision, 1);
 
     // Another document that composes to the same plan, its edges in another order, adopts it again, as its revision.
@@ -897,7 +917,7 @@ fn a_width_and_routing_edit_runs_through_region_drivers_with_the_routing_in_effe
     let _guard = runtime.enter();
     let mut harness = FrameHarness::starting_at(
         &boot,
-        &report(&boot),
+        &boot_report(),
         registry(),
         Default::default(),
         AdmissionTime::from_unix_secs(B),
@@ -1121,7 +1141,8 @@ fn a_second_aggregation_is_rejected_by_validation_wherever_it_is_at_its_node() {
 #[test]
 fn a_second_aggregation_beside_a_widened_one_is_the_one_reported_wherever_it_is_listed() {
     // A width change modifies the default program's aggregation; an aggregation the artifact adds, listed ahead of it,
-    // is still the second one: the first is the one with a reserved ID.
+    // is still the second one: the first is the one with a reserved ID. (Elaboration puts the nodes in canonical order,
+    // so where the artifact lists a node never matters.)
     let composed = composed(edited(|document| {
         widen(document);
         let mut aggregation = node_mut(document, "dsd_agg").clone();
@@ -1140,15 +1161,6 @@ fn a_second_aggregation_beside_a_widened_one_is_the_one_reported_wherever_it_is_
     .unwrap();
     assert_eq!(plan_id(&composed, "dsd_agg"), "dsd_agg");
     assert_eq!(plan_id(&composed, "early_agg"), "policy/early_agg");
-    let position = |node: &str| {
-        composed
-            .plan
-            .nodes
-            .iter()
-            .position(|found| found.id == id(node))
-            .unwrap()
-    };
-    assert!(position("policy/early_agg") < position("dsd_agg"));
     let errors = composed.report.errors().map(ToString::to_string).collect::<Vec<_>>();
     assert_eq!(
         errors,
@@ -1161,7 +1173,7 @@ fn a_second_aggregation_beside_a_widened_one_is_the_one_reported_wherever_it_is_
 
 /// The fixtures' catalog for the default program, without the restriction to one aggregation.
 fn catalog_of_any_aggregations() -> MemoryCatalog {
-    crate::testing::without_single_aggregation(unified_catalog(&unified_plan()))
+    crate::testing::without_single_aggregation(unified_catalog(&lowered()))
 }
 
 #[test]
@@ -1283,7 +1295,7 @@ fn the_one_aggregation_fed_by_the_otlp_input_has_no_isolation_slot_in_the_boot_f
 /// The default-program fixture with nothing configured for DogStatsD processing: no mapper profiles, no namespace, an
 /// empty metric filterlist, no tag rules, and no histogram statistic filterlisted.
 fn unconfigured_plan() -> Plan {
-    unified_with(|value| {
+    lowered_with(|value| {
         let mut set = |node: &str, param: &str, literal: Value| node_mut(value, node)["params"][param] = literal;
         set("dsd_enrich", "profiles", json!([]));
         set("dsd_prefix_filter_blocklist_namespace_prefix", "namespace", json!(""));
@@ -1483,18 +1495,21 @@ fn a_published_program_without_a_node_that_does_nothing_follows_no_setting_until
             .map(|node| node.id.clone())
             .collect::<std::collections::BTreeSet<_>>()
     };
-    assert!(crate::export::node_differences(&plan, &composed.plan, &every(&plan), &registry).is_empty());
+    // Status compares core plans: the default program's, and the one running.
+    let default = core(&plan);
+    assert!(crate::export::node_differences(&default, &composed.plan, &every(&default), &registry).is_empty());
 
     // The filterlist set natively: the program, which has none, no longer does what the default program does.
-    let changed = unified_with(|value| {
+    let changed = lowered_with(|value| {
         *value = serde_json::to_value(&plan).unwrap();
         node_mut(value, "dsd_prefix_filter_blocklist")["params"]["predicate"] =
             json!({"not": {"intake_name": {"eq": "tenant.raw.blocked"}}});
     });
     let changed_catalog = unified_catalog(&changed);
     let recomposed = compose(&changed, &received(document), &approval(1), &changed_catalog, &registry).unwrap();
+    let default = core(&changed);
     assert_eq!(
-        crate::export::node_differences(&changed, &recomposed.plan, &every(&changed), &registry),
+        crate::export::node_differences(&default, &recomposed.plan, &every(&default), &registry),
         ["dsd_prefix_filter_blocklist".parse::<NodeId>().unwrap()]
     );
 }

@@ -12,15 +12,16 @@
 //!   see a program written from that export, which does not have the nodes, as doing what the default program, which
 //!   does, does.
 //!
-//! The plan that runs is never changed by this: the default program keeps every node, whatever its values, so its
-//! structure never depends on a configuration value, and the installer compares plans as written
-//! ([`operation_hash`](super::operation_hash)): publishing the shorter export over the default program is a generation
-//! that builds no kernel, after which the plan running is the program as published.
+//! The plan that runs is never changed by this: the default program keeps every node, whatever its values, and the
+//! installer compares core plans by their [hash](crate::ir::Plan::hash): publishing the shorter export over the default
+//! program is a generation that builds no kernel, after which the plan running is the program as published.
 //!
 //! # What is left out
 //!
 //! Decisions read **literal** parameters only. A binding, a fact or a signal, is not known, whatever its resolved value,
-//! so it never decides anything. Two kinds of node go, until none is left:
+//! so it never decides anything: the detached export keeps every node bound to one. A core plan
+//! ([`elaborate`](crate::elaborate)) writes every binding as its value, so its comparisons see a split that a signal's
+//! value decides as constant, in both plans compared alike. Two kinds of node go, until none is left:
 //!
 //! - **A constant `split`**: one whose predicate its literal operands decide ([`Predicate::literal_value`]), such as a
 //!   filterlist with nothing in it (`intake_name in []`), together with everything only its dead port feeds, by rewrite

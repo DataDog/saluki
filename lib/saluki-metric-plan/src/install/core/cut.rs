@@ -300,7 +300,7 @@ impl CutInFlight {
             origin: self.installed.origin,
             plan: self.installed.plan,
             plan_hash: self.installed.plan_hash,
-            does: self.installed.does,
+            bindings: self.installed.bindings,
             report: self.installed.report,
             compiled: self.compiled,
             attempts: self.attempts,

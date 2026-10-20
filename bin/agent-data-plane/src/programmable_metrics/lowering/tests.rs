@@ -6,7 +6,6 @@ use std::{
 
 use saluki_core::{accounting::ComponentRegistry, components::ComponentType};
 use saluki_metric_plan::{
-    canonical::ResolvedValues,
     compile::{compile, Frame, RewriteId},
     ir::Plan,
     operators::OperatorRegistry,
@@ -214,12 +213,7 @@ async fn every_configuration_of_the_matrix_lowers_to_a_valid_plan() {
         let json = serde_json::to_string(&lowered.plan).unwrap();
         assert_eq!(Plan::from_json(&json).unwrap(), lowered.plan, "{}", name);
         let again = self::lowered(yaml).await;
-        assert_eq!(
-            again.plan.hash(ResolvedValues::Include).unwrap(),
-            lowered.plan.hash(ResolvedValues::Include).unwrap(),
-            "{}",
-            name
-        );
+        assert_eq!(again.plan.hash().unwrap(), lowered.plan.hash().unwrap(), "{}", name);
 
         // Every node is reserved, stands for a native component (its own, unless the plan's provenance names
         // another), and has that component's telemetry identity, which follows from its ID and operator alone.

@@ -1,9 +1,8 @@
-explain_version 3
+explain_version 4
 
 plan
   ir_version 1
   hash sha256:92ff8bdc7d73bf10d3acd5c9111a349b86c1ebadff1288cc4cd8345af7506cca
-  structural_hash sha256:6e10ca8712d6e31023e43fc3e2d5615872d050ea3043bf8db7bf298bad8e5f43
   artifact revision 1 sha256:00000000000000000000000000000000000000000000000000000000000000a1
   valid: 0 errors, 0 warnings
 

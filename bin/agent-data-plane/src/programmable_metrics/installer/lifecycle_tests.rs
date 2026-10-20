@@ -42,6 +42,7 @@ use saluki_metric_plan::{
     limits,
     model::{Field, FieldSet, PortType},
     operators::{EffectContract, KernelSpec, OperatorDef, PerKind, PortMapping, Ports},
+    validate::Validator,
 };
 use saluki_metrics::test::TestRecorder;
 use serde_json::{json, Value};
@@ -625,7 +626,7 @@ struct Lifecycle {
     _stream: mpsc::Sender<ConfigUpdate>,
     /// The artifact of the `metrics` export, as the status served it at boot.
     export: Value,
-    /// The default program of the configuration at boot, and its catalog.
+    /// The default program of the configuration at boot, its core plan as it installs, and its catalog.
     default_program: (Plan, AdpCatalog),
     /// The names of every batch sent, by sequence number.
     sent: Vec<Vec<&'static str>>,
@@ -692,7 +693,10 @@ impl Lifecycle {
             transport,
             _stream: stream,
             export,
-            default_program: (lowered.plan, lowered.catalog),
+            default_program: (
+                saluki_metric_plan::elaborate::elaborate_default(&lowered.plan, &lowered.catalog, &operators()).plan,
+                lowered.catalog,
+            ),
             sent: Vec::new(),
             feeds,
         }
@@ -1765,6 +1769,7 @@ impl ArtifactPaths for NativeFault {
         let plan = Plan::from_value(plan).expect("the default program with a native fault is a plan");
         let report = Validator::new(&operators(), &self.catalog).validate(&plan);
         let candidate = Candidate {
+            bindings: Default::default(),
             plan: Arc::new(plan),
             report,
             origin: candidate.origin,
@@ -2339,11 +2344,15 @@ async fn an_artifact_that_changes_aggregations_window_installs_at_a_cut_and_ever
         .status_where(|status| active(status) == Some(2) && status.installer.cut.is_none())
         .await;
 
-    // The status names the program hash of the default program's export, and the artifact active.
-    let bundle = installed.export.as_ref().expect("the default program exports");
+    // The status names the default program's core hash, which the boot generation ran, and the artifact active.
     assert_eq!(
         installed.apply_states.status.default_program_hash,
-        Some(saluki_metric_plan::export::program_hash(&bundle.artifact).unwrap())
+        installed
+            .installer
+            .generations
+            .iter()
+            .find(|record| record.id == GenerationId::new(1))
+            .map(|record| record.plan_hash)
     );
     assert_eq!(
         installed

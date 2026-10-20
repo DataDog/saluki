@@ -101,8 +101,8 @@ fn every_default_programs_export_prints_and_parses_back_to_the_same_document() {
     ];
     // The export is in normal form, with every default written, and lists its nodes and edges in the plan's order. Its
     // text leaves out the defaults and parses in canonical order, so it parses back to the same program once normalized
-    // and in canonical order, which composes to a plan that does what the default program does: composition keeps the
-    // artifact's order, so the two agree on the operation hash, which adoption compares.
+    // and in canonical order, which elaborates to the default program's core plan, with its hash, which adoption
+    // compares.
     for (what, plan) in plans {
         let export = program_export(&plan);
         let printed = print_default(&export);
@@ -110,24 +110,24 @@ fn every_default_programs_export_prints_and_parses_back_to_the_same_document() {
         assert_same_program(&parsed.artifact, &export, &format!("{}:\n{}", what, printed));
         if !what.ends_with("opaque gateways") {
             // (A program cannot hold host components, such as opaque gateways.)
-            assert_eq!(
-                composed_hash(&plan, &parsed.artifact),
-                operation_hash(&plan),
-                "{}",
-                what
-            );
+            assert_eq!(composed_hash(&plan, &parsed.artifact), core_hash(&plan), "{}", what);
         }
         assert_eq!(print_default(&parsed.artifact), printed, "{}", what);
     }
 }
 
-/// Returns `plan`'s operation hash, which adoption compares.
-fn operation_hash(plan: &Plan) -> PlanHash {
-    saluki_metric_plan::export::operation_hash(plan, &saluki_metric_plan::operators::OperatorRegistry::native())
-        .unwrap()
+/// Returns the hash of `plan`'s core plan, which installs, and which adoption compares.
+fn core_hash(plan: &Plan) -> PlanHash {
+    saluki_metric_plan::elaborate::elaborate_default(
+        plan,
+        &catalog_for(plan),
+        &saluki_metric_plan::operators::OperatorRegistry::native(),
+    )
+    .hash()
+    .unwrap()
 }
 
-/// Returns the operation hash of the plan `artifact` composes to in `plan`, with the host's catalog for it: an unmodified
+/// Returns the hash of the core plan `artifact` composes to in `plan`, with the host's catalog for it: an unmodified
 /// export's nodes resolve their bindings from it, and it carries the default program's values.
 fn composed_hash(plan: &Plan, artifact: &PolicyArtifact) -> PlanHash {
     use saluki_metric_plan::{
@@ -151,7 +151,7 @@ fn composed_hash(plan: &Plan, artifact: &PolicyArtifact) -> PlanHash {
     )
     .unwrap();
     assert!(composed.report.findings().is_empty(), "{}", composed.report);
-    operation_hash(&composed.plan)
+    composed.hash().unwrap()
 }
 
 #[test]
@@ -201,10 +201,10 @@ fn the_default_program_prints_from_its_sources_through_aggregation_and_enrichmen
         let positions = order.map(at).collect::<Vec<_>>();
         assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "{}", printed);
 
-        // It parses back to the same program, and composes to a plan that does what the default program does.
+        // It parses back to the same program, and elaborates to the default program's core plan.
         let parsed = parse_ok(&printed).artifact;
         assert_same_program(&parsed, &export, &printed);
         assert_eq!(print_default(&parsed), printed);
-        assert_eq!(composed_hash(&plan, &parsed), operation_hash(&plan));
+        assert_eq!(composed_hash(&plan, &parsed), core_hash(&plan));
     }
 }

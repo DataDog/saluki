@@ -72,6 +72,7 @@ use crate::{
         ConfigAcknowledgment, Envelope, NativePolicy, ProgramRuns, ProgramStatus, StatusSummary,
     },
     compose::{receive_artifact, Approval, ComposeError, Composed, Composer},
+    elaborate::BindingUses,
     install::lifecycle::{GenerationState, LifecycleEvent},
     ir::{Plan, PolicyArtifact, ReceivedArtifact},
 };
@@ -466,10 +467,11 @@ impl InstallerCore {
                 let id = self.candidate_id();
                 let origin = candidate.origin;
                 let plan = Arc::clone(&candidate.plan);
+                let bindings = candidate.bindings.clone();
                 if self.submit(id, candidate, Arrival::Queue, &mut actions) {
                     // The generation that holds the default program's plan serves the default program.
                     if let Some(target) = self.target_candidate() {
-                        self.serve_unchanged(id, origin, &plan, target, &mut actions);
+                        self.serve_unchanged(id, origin, &plan, &bindings, target, &mut actions);
                     }
                 }
                 id
@@ -569,10 +571,11 @@ impl InstallerCore {
             .collect()
     }
 
-    /// Returns the status summary the host reports with its acknowledgments, given the program hash of the default
-    /// program's export.
+    /// Returns the status summary the host reports with its acknowledgments, given the hash of the default program's
+    /// core plan.
     ///
-    /// The core knows everything in it but the program hash, which the host computes from its export, and whether the
+    /// The core knows everything in it but the default program's hash, which the host computes as it elaborates the
+    /// default program it lowers, and whether the
     /// host is degraded, which the host decides; the core adds why the program in effect, or the one running, could not
     /// be composed again, if it could not. The active artifact is the one the active generation serves, unless the
     /// generation failed; its stale review is that of the composition that generation runs. A revoked artifact is
@@ -614,7 +617,7 @@ impl InstallerCore {
     }
 
     /// Returns everything the host reports through the channel: the status summary and every config's acknowledgment,
-    /// given the program hash of the default program's export.
+    /// given the hash of the default program's core plan.
     pub fn apply_states(&self, default_program_hash: Option<PlanHash>, degraded: Option<String>) -> ApplyStates {
         ApplyStates {
             status: self.status_summary(default_program_hash, degraded),
@@ -953,6 +956,7 @@ impl InstallerCore {
         let Composed {
             plan,
             report,
+            bindings,
             stale_review,
             ..
         } = composed;
@@ -973,13 +977,14 @@ impl InstallerCore {
         let plan = Arc::new(plan);
         let candidate = Candidate {
             plan: Arc::clone(&plan),
+            bindings: bindings.clone(),
             report,
             origin,
         };
         if self.submit(id, candidate, arrival, actions) {
             // The candidate equals what the schedule will hold: the generation that holds it serves the artifact.
             if let Some(target) = self.target_candidate() {
-                self.serve_unchanged(id, origin, &plan, target, actions);
+                self.serve_unchanged(id, origin, &plan, &bindings, target, actions);
             }
         }
         id
@@ -991,17 +996,17 @@ impl InstallerCore {
     /// revision it was lowered with. Its generation then runs the program of the candidate's origin: it is adopted
     /// ([`adopt`][Self::adopt]).
     pub(super) fn serve_unchanged(
-        &mut self, candidate: CandidateId, origin: Origin, plan: &Arc<Plan>, target: CandidateId,
-        actions: &mut Vec<Action>,
+        &mut self, candidate: CandidateId, origin: Origin, plan: &Arc<Plan>, bindings: &BindingUses,
+        target: CandidateId, actions: &mut Vec<Action>,
     ) {
         let Some(source) = self.artifacts.sources.get(&candidate).cloned() else {
             if matches!(origin, Origin::DefaultProgram { .. }) && self.artifacts.policy.is_none() {
                 self.artifacts.sources.remove(&target);
-                self.adopt(target, origin, plan, actions);
+                self.adopt(target, origin, plan, bindings, actions);
             }
             return;
         };
-        self.adopt(target, origin, plan, actions);
+        self.adopt(target, origin, plan, bindings, actions);
         match self.artifacts.sources.get_mut(&target) {
             // The same document: the generation that holds its composition serves its latest acceptance, such as an
             // approval under a newer revision, or a delivery after a revocation.

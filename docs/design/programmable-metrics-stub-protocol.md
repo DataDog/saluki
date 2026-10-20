@@ -83,10 +83,12 @@ Request body:
   from the active plan hash it was prepared against, or, for a delivery that acknowledged the current state, from the
   active plan hash when it was delivered. It was added after the first version of this contract, as an
   additive member: readers that do not know it ignore it.
-- `status.default_program_hash` is the program hash (the plan crate's `export::program_hash`, the hash of the
-  canonical document) of the current export bundle's `artifact` (section 3, the `detached` form), so a client
-  refetches the export when its artifact changes, and checks an export it holds against it. Catalog values (binding
-  values, recipients, labels) can change without it, so a client that shows them also refetches periodically.
+- `status.default_program_hash` is the hash of the default program's core plan (the plan crate's
+  `elaborate::elaborate_default`, version 2's step V6), so it equals `status.active_plan_hash` exactly when the default
+  program, or a program that elaborates to it, runs. A client refetches the export when it changes, and checks a
+  default program it holds against it by elaborating it with the export's catalog. Catalog values (recipients, labels)
+  can change without it, so a client that shows them also refetches periodically. Before V6 it was the program hash of
+  the detached export's artifact.
 - A program is whole: it replaces the default program, the whole metrics path after its sources. Version 1 of this
   protocol carried scopes (`status.scopes`, `stale_base`, one config per scope, and an artifact's `scope` and `base`);
   version 2 removed them (version 2's steps V4 and V5).
@@ -228,9 +230,10 @@ Export bundle:
   checks (`single_aggregation`).
 - The default program is served so that a client can compose an artifact the way ADP will (the plan crate's
   `compose::compose` takes the default program, which neither the export nor `/plan`, possibly composed, carries) and
-  diff it against `/plan`. A client that fetches the export and the default program separately checks the export
-  against `status.default_program_hash`, and fetches both again when they differ (the configuration changed between
-  the requests). It answers whether or not a generation is active.
+  diff it against `/plan`. A client that fetches the export and the default program separately checks that the default
+  program exports as the export (the same program hash), and that it elaborates to `status.default_program_hash`, and
+  fetches both again when either differs (the configuration changed between the requests). It answers whether or not
+  a generation is active. `/plan` is the active core plan, every binding written as its value.
 - Errors are plain text: `400` for an unknown `form` or `format`, `500` for a default program that cannot be exported
   (the body says why), and `503` from `/plan` and `/explain` while no generation is active.
 

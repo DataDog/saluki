@@ -7,13 +7,13 @@
 //!    supported IR version and migrated to the current one, and refused if any node or blob carries a resolved
 //!    configuration value or its blob table is inconsistent. The result is a [`ReceivedArtifact`], with the hash of the
 //!    document as received, which approval binds to.
-//! 2. **Composition** ([`compose`]): the artifact is a whole program. Composition resolves its names and builds the
-//!    plan: the default program's `source` nodes, then the artifact's nodes, with every edge from `input.<name>`
-//!    leaving the source whose `binding` is `<name>` ([`sources`]); `emit`s to recipients addressed to the outputs
-//!    that deliver to them; configuration bindings resolved from the catalog; and the default program's outputs and
-//!    resources. Nothing of the default program but its sources runs beside the artifact. The plan's provenance names
-//!    the artifact's revision, and the plan is validated. Composition also reports whether the artifact was approved
-//!    against another active plan (a stale review: it still installs).
+//! 2. **Composition** ([`compose`]): the artifact is a whole program, which [elaboration](crate::elaborate) resolves
+//!    and writes in its core form: the default program's `source` nodes, then the artifact's nodes, with every edge
+//!    from `input.<name>` leaving the source whose `binding` is `<name>` ([`sources`]); `emit`s to recipients addressed
+//!    to the outputs that deliver to them; configuration bindings written as their values from the catalog; and the
+//!    default program's outputs and resources. Nothing of the default program but its sources runs beside the artifact.
+//!    The plan's provenance names the artifact's revision, and the plan is validated. Composition also reports whether
+//!    the artifact was approved against another active plan (a stale review: it still installs).
 //!
 //! # Outputs that change under an artifact
 //!
@@ -29,17 +29,15 @@ use serde_json::Value;
 use snafu::Snafu;
 
 use crate::{
-    canonical::{contains_resolved_values, to_canonical_string, PlanHash, BINDING_MEMBER, RESOLVED_MEMBER},
-    export::{emitted_output, non_source_nodes},
+    canonical::{contains_resolved_values, to_canonical_string, PlanHash},
+    elaborate::{elaborate, Elaborated},
     ir::{
-        decode_params, ArtifactNodeId, ArtifactPortRef, ArtifactRevision, BindingName, BlobError, Blobs, Edge, HostId,
-        InputName, IrError, LocalId, Node, NodeId, OperatorName, OutputId, Params, Plan, PlanProvenance,
-        PolicyArtifact, PortName, PortRef, ReceivedArtifact, RecipientId, RecipientName, BLOB_MEMBER,
+        decode_params, ArtifactNodeId, BindingName, BlobError, Blobs, HostId, InputName, IrError, NodeId, OutputId,
+        Params, Plan, PolicyArtifact, PortName, PortRef, ReceivedArtifact, RecipientId, RecipientName, BLOB_MEMBER,
     },
     limits::values::{ARTIFACT_NODES, ARTIFACT_SIZE, BLOB_SIZE, PREDICATE_LEAVES},
-    normalize::normalize_artifact,
-    operators::{names, OperatorRegistry, StateContract, EMIT_TO, METRICS_PORT},
-    validate::{predicate_leaves, Catalog, ValidationReport, Validator},
+    operators::{names, OperatorRegistry, EMIT_TO, METRICS_PORT},
+    validate::{predicate_leaves, Catalog},
 };
 
 /// Reads an artifact document received from the channel, after checking it against the artifact limits.
@@ -292,7 +290,7 @@ pub struct Approval {
     /// The active plan hash the approver reviewed the artifact against, from its envelope, if it says.
     pub approved_against: Option<PlanHash>,
 
-    /// The host's active plan hash (with resolved values) when the artifact is composed, if a generation is active.
+    /// The host's active plan hash when the artifact is composed, if a generation is active.
     ///
     /// When `approved_against` is given and differs, the composed artifact has a stale review.
     pub active_plan_hash: Option<PlanHash>,
@@ -306,39 +304,19 @@ pub struct Approval {
     pub in_effect: bool,
 }
 
-/// An artifact composed with the host's sources and outputs.
-#[derive(Clone, Debug)]
-pub struct Composed {
-    /// The composed plan, with every configuration binding resolved, and the artifact it runs in its provenance.
-    pub plan: Plan,
+/// An artifact composed with the host's sources and outputs: its [elaboration](crate::elaborate).
+pub type Composed = Elaborated;
 
-    /// The composed plan's validation report. An artifact whose report has errors is rejected.
-    pub report: ValidationReport,
-
-    /// Which plan node each artifact node became: its reserved ID, the policy namespace, or the default program's one
-    /// aggregation's ID (amendment 182). A node composition adds, such as the nodes of a partly available `emit`, has
-    /// none.
-    pub ids: BTreeMap<ArtifactNodeId, NodeId>,
-
-    /// Whether the artifact was approved against an active plan other than the one it is composed against. The artifact
-    /// still installs, with its review reported stale.
-    pub stale_review: bool,
-
-    /// Whether the artifact's `emit`s were composed as written, or, for the artifact in effect, some were dropped.
-    pub outcome: ComposeOutcome,
-}
-
-impl Composed {
-    /// Returns what the artifact's acknowledgment says about its composition beside its state, in plain text: why it
-    /// runs degraded, or `None` if there is nothing to say.
-    pub fn notes(&self) -> Option<String> {
-        match &self.outcome {
-            ComposeOutcome::Degraded(dropped) => {
-                Some(dropped.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "))
-            }
-            ComposeOutcome::Composed => None,
-        }
-    }
+/// Composes a received artifact, a whole program, with the host's sources and outputs: [`elaborate`] it.
+///
+/// # Errors
+///
+/// Returns an error if the artifact cannot be composed at all; see [`ComposeError`].
+pub fn compose(
+    default_plan: &Plan, received: &ReceivedArtifact, approval: &Approval, catalog: &dyn Catalog,
+    registry: &OperatorRegistry,
+) -> Result<Composed, ComposeError> {
+    elaborate(default_plan, received, approval, catalog, registry)
 }
 
 /// Whether an artifact's `emit`s were composed as written.
@@ -417,7 +395,7 @@ pub enum DropReason {
 }
 
 /// Writes recipient names as a program does, as `[primary, "https://intake.example.com"]`.
-fn describe_names(names: &[RecipientName]) -> String {
+pub(crate) fn describe_names(names: &[RecipientName]) -> String {
     let names = names
         .iter()
         .map(|name| {
@@ -430,337 +408,6 @@ fn describe_names(names: &[RecipientName]) -> String {
         })
         .collect::<Vec<_>>();
     format!("[{}]", names.join(", "))
-}
-
-/// Composes a received artifact, a whole program, with the host's sources and outputs.
-///
-/// `default_plan` is the default program as lowered, with its bindings resolved, and `catalog` the host's catalog of
-/// the same configuration. Of the default program, only its `source` nodes, its outputs, and its resources are used.
-///
-/// - The artifact composes in [normal form](crate::normalize), as native lowering writes the default program.
-/// - Each artifact node's plan ID is the reserved ID of the default program's non-source node with the same local ID,
-///   or its local ID in the policy namespace; where the catalog runs at most one aggregation per program
-///   ([`Catalog::single_aggregation`]), the artifact's one state owner takes the reserved ID of the default program's
-///   one state owner, whatever the artifact calls it (amendment 182, until V10). A local ID equal to a source node's
-///   is refused ([`ComposeError::ReservedSource`]).
-/// - An edge from `input.<name>` leaves the port of the source whose `binding` is `<name>` ([`sources`]); a name no
-///   source has is refused ([`ComposeError::UnknownSource`]).
-/// - Blob references are replaced with their content, and configuration bindings resolve from `catalog`.
-/// - An `emit` to recipients is addressed to the output with exactly their recipients; an `emit` to an output must name
-///   one the catalog declares (see [Outputs that change under an artifact](self#outputs-that-change-under-an-artifact)).
-/// - The plan is the default program's `source` nodes, in its order, then the artifact's nodes, in artifact order; its
-///   edges are the artifact's, in artifact order; its outputs and resources are the default program's; and its
-///   provenance names the artifact's revision. It is validated with `registry` and `catalog`; the report is returned,
-///   not judged.
-///
-/// # Errors
-///
-/// Returns an error if the artifact cannot be composed at all; see [`ComposeError`].
-pub fn compose(
-    default_plan: &Plan, received: &ReceivedArtifact, approval: &Approval, catalog: &dyn Catalog,
-    registry: &OperatorRegistry,
-) -> Result<Composed, ComposeError> {
-    // The artifact composes in normal form, as the default program is lowered in it, so that a program that differs
-    // from the default program only in how it is written composes to the default program.
-    let artifact = &normalize_artifact(&received.artifact);
-    let sources = sources(default_plan);
-    if let Some(binding) = shared_source_binding(default_plan) {
-        return Err(ComposeError::DefaultProgram {
-            message: format!("more than one of its sources has the binding `{}`", binding),
-        });
-    }
-    let program = non_source_nodes(default_plan);
-    let stale_review = approval
-        .approved_against
-        .is_some_and(|approved| approval.active_plan_hash != Some(approved));
-
-    // Every artifact node's parameters with blobs inlined, in artifact order.
-    let inlined = artifact
-        .nodes
-        .iter()
-        .map(|node| {
-            inline_blobs(&node.params, &artifact.blobs).map_err(|error| ComposeError::Malformed {
-                message: format!("node `{}`: {}", node.id, error),
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let aggregation = catalog
-        .single_aggregation()
-        .then(|| the_aggregation(default_plan, artifact, &inlined, &program, catalog, registry))
-        .flatten();
-    let ids = node_ids(default_plan, artifact, &program, aggregation)?;
-    let mut edges = artifact
-        .edges
-        .iter()
-        .enumerate()
-        .map(|(index, edge)| {
-            Ok(Edge {
-                from: plan_port(&edge.from, index, End::From, &sources, &ids)?,
-                to: plan_port(&edge.to, index, End::To, &sources, &ids)?,
-            })
-        })
-        .collect::<Result<Vec<_>, ComposeError>>()?;
-
-    // Each artifact node with its plan ID, its parameters with blobs inlined and any recipients it emits to resolved
-    // to their output, and how it is addressed.
-    let mut placed = Vec::with_capacity(artifact.nodes.len());
-    let mut outputs = EmittedOutputs::default();
-    for (node, params) in artifact.nodes.iter().zip(inlined) {
-        let (params, addressed) = address(&node.id, &node.op, params, catalog)?;
-        // A new artifact waits for every recipient it names; only the artifact in effect delivers to those that remain.
-        if let (Addressed::Partial { missing, .. }, false) = (&addressed, approval.in_effect) {
-            outputs
-                .pending_recipients
-                .get_or_insert(ComposeError::UnknownRecipient {
-                    node: node.id.clone(),
-                    recipient: missing[0].clone(),
-                });
-        }
-        if let (Addressed::Unavailable { recipients, reason }, false) = (&addressed, approval.in_effect) {
-            // A new artifact is refused for recipients on two hosts, and waits for unknown recipients, and for an
-            // output for its recipients, unless another error refuses it first.
-            let pending = match reason {
-                Unavailable::TwoHosts(hosts) => {
-                    return Err(ComposeError::RecipientsOnTwoHosts {
-                        node: node.id.clone(),
-                        recipients: hosts.clone(),
-                    })
-                }
-                Unavailable::Unknown(recipient) => ComposeError::UnknownRecipient {
-                    node: node.id.clone(),
-                    recipient: recipient.clone(),
-                },
-                Unavailable::NoOutput => ComposeError::PendingRecipients {
-                    node: node.id.clone(),
-                    recipients: recipients.clone(),
-                },
-                Unavailable::Refused(why) => {
-                    return Err(ComposeError::NoOutputFor {
-                        node: node.id.clone(),
-                        recipients: recipients.clone(),
-                        reason: why.clone(),
-                    })
-                }
-            };
-            outputs.pending_recipients.get_or_insert(pending);
-        }
-        placed.push((node, ids[&node.id].clone(), params, addressed));
-    }
-
-    // The default program's sources, in its order, then the artifact's nodes, in artifact order.
-    let mut nodes = default_plan
-        .nodes
-        .iter()
-        .filter(|node| !program.contains(&node.id))
-        .cloned()
-        .collect::<Vec<_>>();
-    // The plan IDs taken so far, which the nodes a partly available `emit` adds must not take.
-    let mut taken = ids.values().cloned().collect::<BTreeSet<_>>();
-    taken.extend(default_plan.nodes.iter().map(|node| node.id.clone()));
-    let counted_drop = |id: &NodeId| Node {
-        id: id.clone(),
-        op: OperatorName::new(names::DROP).expect("`drop` is an operator name"),
-        params: Params::new(),
-    };
-    for (node, id, params, addressed) in placed {
-        match addressed {
-            Addressed::Partial {
-                output,
-                available,
-                missing,
-            } => {
-                // The artifact in effect names recipients some of which are no longer available: the `emit` keeps
-                // delivering to those that remain, through the output with exactly their recipients, and what it would
-                // have sent the others is counted as dropped. The node becomes a `tee` whose first branch emits to the
-                // remaining recipients and whose second is a counted drop.
-                let (delivered, dropped) = partial_emit(&id, output, &mut taken);
-                let reason = format!(
-                    "{}; the `emit` still delivers to {}",
-                    Unavailable::Unknown(missing[0].clone()).describe(),
-                    describe_names(&available)
-                );
-                let entry = outputs
-                    .dropped
-                    .entry(DropTarget::Recipients(missing))
-                    .or_insert_with(|| (DropReason::Unavailable(reason), Vec::new()));
-                entry.1.push(dropped.id.clone());
-                for (port, target) in [("0", &delivered.id), ("1", &dropped.id)] {
-                    edges.push(Edge {
-                        from: PortRef::new(id.clone(), port.parse().expect("a tee's port is a port name")),
-                        to: PortRef::new(target.clone(), "in".parse().expect("`in` is a port name")),
-                    });
-                }
-                let mut ports = Params::new();
-                ports.insert("ports".parse().expect("`ports` is a parameter name"), Value::from(2));
-                nodes.push(Node {
-                    id,
-                    op: OperatorName::new(names::TEE).expect("`tee` is an operator name"),
-                    params: ports,
-                });
-                nodes.push(delivered);
-                nodes.push(dropped);
-            }
-            Addressed::Unavailable { recipients, reason } => {
-                // The artifact in effect keeps running, but nothing it emits reaches recipients that are no longer
-                // available, or no longer on one host: the `emit` becomes a counted drop, under its ID.
-                let entry = outputs
-                    .dropped
-                    .entry(DropTarget::Recipients(recipients))
-                    .or_insert_with(|| (DropReason::Unavailable(reason.describe()), Vec::new()));
-                entry.1.push(id.clone());
-                nodes.push(counted_drop(&id));
-            }
-            Addressed::Recipients => nodes.push(Node {
-                id,
-                op: node.op.clone(),
-                params,
-            }),
-            Addressed::Output => {
-                let params = resolve_bindings(params, catalog, &node.id)?;
-                let undeclared = (node.op.as_str() == names::EMIT)
-                    .then(|| emitted_output(&params))
-                    .flatten()
-                    .filter(|output| catalog.output(output).is_none());
-                match undeclared {
-                    // The artifact in effect keeps running, but nothing it emits reaches an output that was removed:
-                    // the `emit` becomes a counted drop, under its ID.
-                    Some(output) if approval.in_effect => {
-                        let entry = outputs
-                            .dropped
-                            .entry(DropTarget::Output(output))
-                            .or_insert_with(|| (DropReason::Removed, Vec::new()));
-                        entry.1.push(id.clone());
-                        nodes.push(counted_drop(&id));
-                    }
-                    Some(output) => {
-                        let declared = default_plan
-                            .outputs
-                            .iter()
-                            .map(|declared| declared.id.clone())
-                            .filter(|id| catalog.output(id).is_some())
-                            .collect();
-                        return Err(ComposeError::UndeclaredOutput {
-                            node: node.id.clone(),
-                            output,
-                            declared,
-                        });
-                    }
-                    None => nodes.push(Node {
-                        id,
-                        op: node.op.clone(),
-                        params,
-                    }),
-                }
-            }
-        }
-    }
-    // A new artifact otherwise fine waits for the first recipients it names that have no output: it is refused with
-    // any other error first, since that one would not go away when the recipients are declared.
-    if let Some(pending) = outputs.pending_recipients {
-        return Err(pending);
-    }
-
-    let outcome = if outputs.dropped.is_empty() {
-        ComposeOutcome::Composed
-    } else {
-        ComposeOutcome::Degraded(
-            outputs
-                .dropped
-                .into_iter()
-                .map(|(target, (reason, nodes))| DroppedEmits { target, reason, nodes })
-                .collect(),
-        )
-    };
-    let plan = Plan {
-        ir_version: default_plan.ir_version,
-        provenance: Some(PlanProvenance {
-            config_change: default_plan
-                .provenance
-                .as_ref()
-                .and_then(|provenance| provenance.config_change),
-            artifact: Some(ArtifactRevision {
-                revision: approval.revision,
-                hash: received.hash,
-            }),
-            // A composed plan is never a boot plan: the native components describe the default program's layout only.
-            native_components: BTreeMap::new(),
-        }),
-        nodes,
-        edges,
-        outputs: default_plan.outputs.clone(),
-        // Resources, like output declarations, come from the default program only: an artifact cannot declare them.
-        resources: default_plan.resources.clone(),
-    };
-    let report = Validator::new(registry, catalog)
-        .with_baseline(default_plan)
-        .validate(&plan);
-    let ids = ids.into_iter().map(|(local, id)| (local.clone(), id)).collect();
-    Ok(Composed {
-        plan,
-        report,
-        ids,
-        stale_review,
-        outcome,
-    })
-}
-
-/// Returns a binding two of the `source` nodes of `plan` share, if any do: a host names each source once.
-fn shared_source_binding(plan: &Plan) -> Option<&str> {
-    let mut seen = BTreeSet::new();
-    plan.nodes
-        .iter()
-        .filter(|node| node.op.as_str() == names::SOURCE)
-        .filter_map(|node| node.params.get("binding").and_then(Value::as_str))
-        .find(|binding| !seen.insert(*binding))
-}
-
-/// Which end of an edge a port is at.
-#[derive(Clone, Copy)]
-enum End {
-    From,
-    To,
-}
-
-/// Returns the plan port an artifact edge's end refers to: the port of the source of that name, or a port of an
-/// artifact node, under its plan ID.
-///
-/// # Errors
-///
-/// Returns an error if the end is a source the host does not have, a source the edge enters, or a port of a node the
-/// artifact does not have.
-fn plan_port(
-    reference: &ArtifactPortRef, index: usize, end: End, sources: &BTreeMap<InputName, PortRef>,
-    ids: &BTreeMap<&ArtifactNodeId, NodeId>,
-) -> Result<PortRef, ComposeError> {
-    match (reference, end) {
-        (ArtifactPortRef::Input(input), End::From) => {
-            sources.get(input).cloned().ok_or_else(|| ComposeError::UnknownSource {
-                name: input.clone(),
-                known: sources.keys().cloned().collect(),
-            })
-        }
-        (ArtifactPortRef::Input(_), End::To) => Err(ComposeError::Malformed {
-            message: format!(
-                "edge {} enters `{}`, which is a source; edges leave the host's sources",
-                index, reference
-            ),
-        }),
-        (ArtifactPortRef::Node { node, port }, end) => ids
-            .get(node)
-            .map(|id| PortRef::new(id.clone(), port.clone()))
-            .ok_or_else(|| ComposeError::Malformed {
-                message: format!(
-                    "edge {} {} `{}`, but the artifact has no node `{}`",
-                    index,
-                    match end {
-                        End::From => "leaves",
-                        End::To => "enters",
-                    },
-                    reference,
-                    node
-                ),
-            }),
-    }
 }
 
 /// Returns the host's sources in `plan`, by name: for each `source` node, its `binding` parameter, mapped to its
@@ -788,50 +435,8 @@ pub fn sources(plan: &Plan) -> BTreeMap<InputName, PortRef> {
     sources
 }
 
-/// What composing one artifact's `emit`s found about the outputs they deliver to.
-#[derive(Default)]
-struct EmittedOutputs {
-    /// The outputs, or recipients, whose `emit`s were dropped, with why and the nodes, for the artifact in effect.
-    dropped: BTreeMap<DropTarget, (DropReason, Vec<NodeId>)>,
-
-    /// Why a new artifact waits for the recipients an `emit` names, for the first such `emit`: a name the directory
-    /// does not have, or no output with exactly their recipients yet.
-    pending_recipients: Option<ComposeError>,
-}
-
-/// How an artifact node delivers, if it is an `emit`.
-enum Addressed {
-    /// Not an `emit` addressed to recipients: another operator, or an `emit` naming its output.
-    Output,
-
-    /// An `emit` addressed to recipients, resolved to the output whose recipients they are.
-    Recipients,
-
-    /// An `emit` of recipients some of which the directory no longer names: the others, `available`, resolve to
-    /// `output`, which the artifact in effect goes on delivering to, while a new artifact waits for `missing`.
-    Partial {
-        /// The output with exactly the available recipients.
-        output: OutputId,
-
-        /// The names the directory has, as the artifact writes them.
-        available: Vec<RecipientName>,
-
-        /// The names it does not have.
-        missing: Vec<RecipientName>,
-    },
-
-    /// An `emit` addressed to recipients that have no output now.
-    Unavailable {
-        /// The names, as the artifact writes them.
-        recipients: Vec<RecipientName>,
-
-        /// Why.
-        reason: Unavailable,
-    },
-}
-
 /// Why the recipients an `emit` names have no output now.
-enum Unavailable {
+pub(crate) enum Unavailable {
     /// The directory has no recipient of this name.
     Unknown(RecipientName),
 
@@ -847,7 +452,7 @@ enum Unavailable {
 }
 
 impl Unavailable {
-    fn describe(&self) -> String {
+    pub(crate) fn describe(&self) -> String {
         match self {
             Self::Unknown(name) => format!("the host has no recipient `{}`", name),
             Self::TwoHosts(_) => "they are recipients of more than one delivery host".to_string(),
@@ -857,133 +462,14 @@ impl Unavailable {
     }
 }
 
-/// Resolves the recipients an `emit` node `node` names in its `to` parameter, if it has one, into the output whose
-/// recipients are exactly theirs, which `params` then name in place of them.
-///
-/// Each name resolves through the host's recipient directory to the recipients it stands for. The names must stand for
-/// recipients of one delivery host, since an output is one encoder stream on one host. Their recipients, sorted and
-/// without repeats, are matched to an output with exactly those recipients ([`Catalog::output_for`]): a native output,
-/// a declared one, or one the host added for a program's demand ([`demanded_outputs`]). The names' order and spelling
-/// never matter, only the recipients they stand for.
-///
-/// # Errors
-///
-/// Returns an error if `to` is not a list of recipient names, or is given beside `output`, for which validation would
-/// report the `emit` anyway.
-fn address(
-    node: &ArtifactNodeId, op: &OperatorName, mut params: Params, catalog: &dyn Catalog,
-) -> Result<(Params, Addressed), ComposeError> {
-    if op.as_str() != names::EMIT {
-        return Ok((params, Addressed::Output));
-    }
-    let Some(names) = recipient_names(node, &params)? else {
-        return Ok((params, Addressed::Output));
-    };
-    match resolve_recipients(&names, catalog) {
-        Ok(recipients) => match catalog.output_for(&recipients) {
-            Some(output) => {
-                params = std::iter::once((
-                    "output".parse().expect("`output` is a parameter name"),
-                    Value::String(output.to_string()),
-                ))
-                .collect();
-                Ok((params, Addressed::Recipients))
-            }
-            None => {
-                let reason = match catalog.implied_output_refused(&recipients) {
-                    Some(why) => Unavailable::Refused(why),
-                    None => Unavailable::NoOutput,
-                };
-                Ok((
-                    params,
-                    Addressed::Unavailable {
-                        recipients: names,
-                        reason,
-                    },
-                ))
-            }
-        },
-        Err(reason) => {
-            // Some names the directory no longer has: the others may still resolve to an output.
-            if let Unavailable::Unknown(_) = reason {
-                let (available, missing): (Vec<_>, Vec<_>) = names
-                    .iter()
-                    .cloned()
-                    .partition(|name| catalog.recipient(name).is_some());
-                let output = (!available.is_empty())
-                    .then(|| resolve_recipients(&available, catalog).ok())
-                    .flatten()
-                    .and_then(|recipients| catalog.output_for(&recipients));
-                if let Some(output) = output {
-                    return Ok((
-                        params,
-                        Addressed::Partial {
-                            output,
-                            available,
-                            missing,
-                        },
-                    ));
-                }
-            }
-            Ok((
-                params,
-                Addressed::Unavailable {
-                    recipients: names,
-                    reason,
-                },
-            ))
-        }
-    }
-}
-
-/// Returns the two nodes a partly available `emit` with plan ID `id` adds after it, once it is a `tee`: an `emit` to
-/// `output`, the output of its remaining recipients, and a counted drop, which counts what it would have sent the
-/// recipients that are gone. Their IDs are `id`'s with `_delivered` and `_missing` after its local part, cut to fit an
-/// identifier and numbered when taken; each is added to `taken`.
-fn partial_emit(id: &NodeId, output: OutputId, taken: &mut BTreeSet<NodeId>) -> (Node, Node) {
-    let mut derive = |suffix: &str| {
-        let local = id.local().as_str();
-        let base = &local[..local.len().min(crate::ir::MAX_IDENTIFIER_LEN - suffix.len() - 3)];
-        let base = base.trim_end_matches('_');
-        let mut attempt = 1usize;
-        loop {
-            let candidate = if attempt == 1 {
-                format!("{}{}", base, suffix)
-            } else {
-                format!("{}{}_{}", base, suffix, attempt)
-            };
-            let node = LocalId::new(candidate)
-                .map(NodeId::policy)
-                .expect("a derived local ID is an identifier");
-            if taken.insert(node.clone()) {
-                return node;
-            }
-            attempt += 1;
-        }
-    };
-    let delivered = Node {
-        id: derive("_delivered"),
-        op: OperatorName::new(names::EMIT).expect("`emit` is an operator name"),
-        params: std::iter::once((
-            "output".parse().expect("`output` is a parameter name"),
-            Value::String(output.to_string()),
-        ))
-        .collect(),
-    };
-    let dropped = Node {
-        id: derive("_missing"),
-        op: OperatorName::new(names::DROP).expect("`drop` is an operator name"),
-        params: Params::new(),
-    };
-    (delivered, dropped)
-}
-
 /// Returns the recipient names of an `emit`'s `to` parameter, or `None` if it has none.
 ///
 /// # Errors
 ///
 /// Returns an error if `to` is not a list of recipient names, or is given beside `output`.
-fn recipient_names(node: &ArtifactNodeId, params: &Params) -> Result<Option<Vec<RecipientName>>, ComposeError> {
+pub(crate) fn recipient_names(
+    node: &ArtifactNodeId, params: &Params,
+) -> Result<Option<Vec<RecipientName>>, ComposeError> {
     let Some(to) = params.get(EMIT_TO) else {
         return Ok(None);
     };
@@ -1011,7 +497,9 @@ fn recipient_names(node: &ArtifactNodeId, params: &Params) -> Result<Option<Vec<
 
 /// Resolves recipient names through the host's directory into the recipients they stand for, sorted and without
 /// repeats, all on one delivery host.
-fn resolve_recipients(names: &[RecipientName], catalog: &dyn Catalog) -> Result<Vec<RecipientId>, Unavailable> {
+pub(crate) fn resolve_recipients(
+    names: &[RecipientName], catalog: &dyn Catalog,
+) -> Result<Vec<RecipientId>, Unavailable> {
     let mut hosts = Vec::new();
     let mut recipients = BTreeSet::new();
     for name in names {
@@ -1090,89 +578,8 @@ pub fn demanded_outputs(artifact: &PolicyArtifact, catalog: &dyn Catalog) -> Res
         .collect())
 }
 
-/// Returns the artifact's one state owner and the reserved ID it takes, for a host that runs at most one aggregation
-/// per program: when the artifact has exactly one state owner, the default program has exactly one among `program`, its
-/// non-source nodes, and no artifact node has that one's local ID, the artifact's state owner is the default program's,
-/// whatever it is called.
-///
-/// So a program's one aggregation keeps the default program's ID (`dsd_agg`, say), and with it its lineage, its
-/// isolation slot's series, and its telemetry, when an author renames it or writes the program from scratch. Whether
-/// its state is kept is then decided as for any node with that ID: by its operation and its lineage parameters.
-///
-/// A node whose operator does not configure, with its bindings resolved from the catalog, is not counted: validation
-/// reports it.
-fn the_aggregation<'a>(
-    default_plan: &Plan, artifact: &'a PolicyArtifact, inlined: &[Params], program: &BTreeSet<NodeId>,
-    catalog: &dyn Catalog, registry: &OperatorRegistry,
-) -> Option<(&'a ArtifactNodeId, NodeId)> {
-    let owns_state = |op: &OperatorName, params: &Params| {
-        registry
-            .configure(op.as_str(), params)
-            .is_ok_and(|configured| matches!(configured.contract().state, StateContract::Keyed(_)))
-    };
-    let region_owners = default_plan
-        .nodes
-        .iter()
-        .filter(|node| program.contains(&node.id) && owns_state(&node.op, &node.params))
-        .collect::<Vec<_>>();
-    let artifact_owners = artifact
-        .nodes
-        .iter()
-        .zip(inlined)
-        .filter(|(node, params)| {
-            resolve_bindings((*params).clone(), catalog, &node.id).is_ok_and(|params| owns_state(&node.op, &params))
-        })
-        .collect::<Vec<_>>();
-    let ([region_owner], [(artifact_owner, _)]) = (&region_owners[..], &artifact_owners[..]) else {
-        return None;
-    };
-    let taken = artifact
-        .nodes
-        .iter()
-        .any(|node| node.id.as_str() == region_owner.id.local().as_str());
-    (!taken).then(|| (&artifact_owner.id, region_owner.id.clone()))
-}
-
-/// Assigns every artifact node its plan ID: the reserved ID of a node of `program`, the default program's non-source
-/// nodes, with the same local ID, or its local ID in the policy namespace. `aggregation`, if given, is the artifact's
-/// one state owner and the reserved ID it takes instead ([`the_aggregation`]).
-///
-/// # Errors
-///
-/// Returns an error if two artifact nodes have the same ID, or one has the ID of one of the default program's sources.
-fn node_ids<'a>(
-    default_plan: &Plan, artifact: &'a PolicyArtifact, program: &BTreeSet<NodeId>,
-    aggregation: Option<(&'a ArtifactNodeId, NodeId)>,
-) -> Result<BTreeMap<&'a ArtifactNodeId, NodeId>, ComposeError> {
-    let mut ids = BTreeMap::new();
-    for node in &artifact.nodes {
-        let reserved = NodeId::reserved(node.id.to_local_id());
-        // A source's ID is refused even for the adopted aggregation, whose plan ID would not collide: the artifact's
-        // ID names the source, whatever plan ID the node takes.
-        if !program.contains(&reserved) && default_plan.node(&reserved).is_some() {
-            return Err(ComposeError::ReservedSource {
-                node: node.id.clone(),
-                reserved,
-            });
-        }
-        let id = if let Some((_, id)) = aggregation.as_ref().filter(|(owner, _)| **owner == node.id) {
-            id.clone()
-        } else if program.contains(&reserved) {
-            reserved
-        } else {
-            NodeId::policy(node.id.to_local_id())
-        };
-        if ids.insert(&node.id, id).is_some() {
-            return Err(ComposeError::Malformed {
-                message: format!("more than one node has the ID `{}`; give each node its own ID", node.id),
-            });
-        }
-    }
-    Ok(ids)
-}
-
 /// Returns parameters with every blob reference replaced by the blob's content.
-fn inline_blobs(params: &Params, blobs: &Blobs) -> Result<Params, BlobError> {
+pub(crate) fn inline_blobs(params: &Params, blobs: &Blobs) -> Result<Params, BlobError> {
     params
         .iter()
         .map(|(name, value)| {
@@ -1181,56 +588,6 @@ fn inline_blobs(params: &Params, blobs: &Blobs) -> Result<Params, BlobError> {
             Ok((name.clone(), value))
         })
         .collect()
-}
-
-/// Fills in the resolved value of every configuration binding in `params` that the catalog declares.
-///
-/// # Errors
-///
-/// Returns an error for the first binding the catalog declares without a value.
-fn resolve_bindings(params: Params, catalog: &dyn Catalog, node: &ArtifactNodeId) -> Result<Params, ComposeError> {
-    params
-        .iter()
-        .map(|(name, value)| {
-            let mut value = value.clone();
-            resolve_value(&mut value, catalog, node)?;
-            Ok((name.clone(), value))
-        })
-        .collect()
-}
-
-/// Fills in the resolved value of every configuration binding in one parameter value.
-///
-/// A binding is an object with a `config` member, which parameters reserve for bindings. A binding whose name is
-/// invalid, or that the catalog does not declare, is left as it is, for validation to report.
-fn resolve_value(value: &mut Value, catalog: &dyn Catalog, node: &ArtifactNodeId) -> Result<(), ComposeError> {
-    match value {
-        Value::Object(members) if members.contains_key(BINDING_MEMBER) => {
-            let Some(binding) = members
-                .get(BINDING_MEMBER)
-                .and_then(Value::as_str)
-                .and_then(|name| name.parse::<BindingName>().ok())
-            else {
-                return Ok(());
-            };
-            let Some(declared) = catalog.binding(&binding) else {
-                return Ok(());
-            };
-            let resolved = declared.value.clone().ok_or_else(|| ComposeError::UnresolvedBinding {
-                node: node.clone(),
-                binding,
-            })?;
-            members.insert(RESOLVED_MEMBER.to_string(), resolved);
-            Ok(())
-        }
-        Value::Object(members) => members
-            .values_mut()
-            .try_for_each(|member| resolve_value(member, catalog, node)),
-        Value::Array(values) => values
-            .iter_mut()
-            .try_for_each(|element| resolve_value(element, catalog, node)),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => Ok(()),
-    }
 }
 
 /// Composes artifacts with the host's current sources and outputs.

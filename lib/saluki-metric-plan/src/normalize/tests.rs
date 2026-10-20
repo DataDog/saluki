@@ -120,7 +120,7 @@ fn defaults_are_written_in_and_decode_alike() {
 /// A node that writes its defaults and one that leaves them out build the same kernel: their kernel keys and their
 /// lineages are equal, whether or not the node is normalized first.
 #[test]
-fn kernel_identity_does_not_depend_on_whether_defaults_are_written() {
+fn kernel_identity_of_normal_form_does_not_depend_on_whether_defaults_are_written() {
     let registry = OperatorRegistry::native();
     let node = |params: Params| Node {
         id: "dsd_agg".parse().unwrap(),
@@ -130,8 +130,8 @@ fn kernel_identity_does_not_depend_on_whether_defaults_are_written() {
     let written = node(aggregate_with_every_default());
     let left_out = node(aggregate_with_only_a_window());
     let normalized = node(normalize_params(&left_out.op, &left_out.params));
+    // Kernels are keyed by the parameters of the core plan, which elaboration writes in normal form.
     let key = KernelKey::of(&written).unwrap();
-    assert_eq!(KernelKey::of(&left_out).unwrap(), key);
     assert_eq!(KernelKey::of(&normalized).unwrap(), key);
 
     let lineage = |node: &Node| {

@@ -24,8 +24,8 @@
 //!    from `<split>_true` to `<split>_false`, and a terminal on the other port from `<split>_false` to
 //!    `<split>_true`. A terminal named otherwise keeps its ID, as does one whose new ID another node already has.
 //!
-//! Rules 1 to 3 are per node ([`normalize_params`]), and also give the [operation
-//! form](crate::export::operation_params) its predicates and defaults, so that a node that writes a default and one
+//! Rules 1 to 3 are per node ([`normalize_params`]), and also give the [core form](crate::elaborate#the-core-form) its
+//! predicates and defaults, so that a node that writes a default and one
 //! that leaves it out build the same kernel, before normalization as after. Rule 4 is the one rule over the graph,
 //! shared by plans and artifacts.
 //!

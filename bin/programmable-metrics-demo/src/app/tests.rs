@@ -257,10 +257,7 @@ async fn the_compile_api_composes_into_the_default_program_adp_serves_as_the_rev
     let harness = harness().await;
     let app = &harness.app;
     let (plan, export) = crate::preview::tests::fixture_documents();
-    let active_plan_hash = plan
-        .hash(saluki_metric_plan::canonical::ResolvedValues::Include)
-        .unwrap()
-        .to_string();
+    let active_plan_hash = plan.hash().unwrap().to_string();
     // ADP's high-water mark is 4, so a publish would be revision 5; the default program is active, in generation 2.
     app.control.record_status(
         Surface::Available(json!({

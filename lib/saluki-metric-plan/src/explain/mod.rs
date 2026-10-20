@@ -1,10 +1,10 @@
 //! `explain`: a stable, versioned description of a plan.
 //!
 //! [`Explain::of`] describes a plan and what validation computed for it: its logical graph (nodes, their operators,
-//! parameters with every configuration binding and its resolved value, and ports), the plan's provenance (the artifact
-//! revision it runs, if any), the port type carried by every edge, its outputs, its resource bounds against their
-//! limits, and the validation findings. The document has a deterministic JSON form ([`Explain::to_json`]) and a
-//! deterministic text rendering ([`Explain::to_text`]).
+//! parameters, the configuration bindings they were written with ([`Explain::with_bindings`]), and ports), the plan's
+//! provenance (the artifact revision it runs, if any), the port type carried by every edge, its outputs, its resource
+//! bounds against their limits, and the validation findings. The document has a deterministic JSON form
+//! ([`Explain::to_json`]) and a deterministic text rendering ([`Explain::to_text`]).
 //!
 //! # Versioning
 //!
@@ -30,7 +30,9 @@
 //! plan runs is a property of the plan, which its provenance states (the artifacts it composes, each with the scope it
 //! replaced), so a node's loss is attributed to its node ID and to the program the plan runs. Version 3 removes scopes
 //! and output fingerprints: a plan runs one artifact, a whole program, whose nodes are every node but the sources, and
-//! its provenance names that artifact's revision. Later versions add the plan diff, and state owners with their transitions.
+//! its provenance names that artifact's revision. Version 4 describes the core plan ([`elaborate`](crate::elaborate)):
+//! its parameters write every binding as its value, with the bindings listed beside them, and the plan has one hash, so
+//! `structural_hash` is gone. Later versions add the plan diff, and state owners with their transitions.
 
 use std::collections::BTreeMap;
 
@@ -38,8 +40,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::{
-    canonical::{PlanHash, ResolvedValues},
+    canonical::PlanHash,
     compile::{RewriteOutcome, RewriteRecord},
+    elaborate::BindingUses,
     extension::DeliveryPolicy,
     ir::{
         ArtifactRevision, BindingName, NodeId, OperatorName, OutputId, ParamName, Plan, PlanProvenance, PortName,
@@ -62,7 +65,7 @@ pub use self::resources::{BoundOutputEntry, HostSettingsEntry, RecipientEntry, R
 mod text;
 
 /// The version of the explain document this crate produces.
-pub const EXPLAIN_VERSION: u32 = 3;
+pub const EXPLAIN_VERSION: u32 = 4;
 
 /// The explain document of one plan.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -103,12 +106,8 @@ pub struct PlanSummary {
     /// The IR version the plan is written in.
     pub ir_version: u32,
 
-    /// The plan's hash, including resolved configuration values; `None` if the plan has no canonical form.
+    /// The plan's [hash](Plan::hash), the one hash of a core plan; `None` if the plan has no canonical form.
     pub hash: Option<PlanHash>,
-
-    /// The plan's hash without resolved configuration values, which changes only when its structure or literal
-    /// parameters change; `None` if the plan has no canonical form.
-    pub structural_hash: Option<PlanHash>,
 
     /// Where the plan came from, if it says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -150,10 +149,12 @@ pub struct NodeEntry {
     /// The classes of loss the operator declares: `policy`, `capacity`, `invalid`, or `shutdown`.
     pub loss: Vec<String>,
 
-    /// The parameters as written, with the resolved value of every configuration binding.
+    /// The parameters: of a core plan, with every configuration binding written as its value; of a plan as written,
+    /// with every binding and its resolved value.
     pub params: BTreeMap<ParamName, Value>,
 
-    /// Every configuration binding in the parameters, in parameter order.
+    /// Every configuration binding the node was written with, in parameter order: of a core plan, the bindings its
+    /// elaboration wrote as values ([`Explain::with_bindings`]); of a plan as written, the bindings in its parameters.
     pub bindings: Vec<BindingEntry>,
 
     /// The input ports, in operator order.
@@ -163,16 +164,17 @@ pub struct NodeEntry {
     pub outputs: Vec<OutputPortEntry>,
 }
 
-/// One configuration binding in a node's parameters.
+/// One configuration binding a node was written with.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct BindingEntry {
-    /// Where in the parameters the binding is, such as `predicate.intake_name.values`.
+    /// Where in the parameters the binding is: of a core plan, the JSON pointer to it in the parameters as written,
+    /// such as `/predicate/flag/operand`; of a plan as written, its path, such as `predicate.intake_name.values`.
     pub param: String,
 
     /// The binding.
     pub binding: BindingName,
 
-    /// The binding's resolved value, if the plan carries one.
+    /// The binding's resolved value, if it has one: of a core plan, the value its parameters write.
     pub resolved: Option<Value>,
 }
 
@@ -487,8 +489,7 @@ impl Explain {
             explain_version: EXPLAIN_VERSION,
             plan: PlanSummary {
                 ir_version: plan.ir_version,
-                hash: plan.hash(ResolvedValues::Include).ok(),
-                structural_hash: plan.hash(ResolvedValues::Exclude).ok(),
+                hash: plan.hash().ok(),
                 provenance: plan.provenance.clone(),
                 valid: report.is_valid(),
             },
@@ -499,6 +500,28 @@ impl Explain {
             rewrites: None,
             physical: None,
         }
+    }
+
+    /// Lists, for each node of the core plan this document describes, the bindings its elaboration wrote as values,
+    /// `bindings` ([`Elaborated::bindings`](crate::elaborate::Elaborated::bindings)), in place of the bindings its
+    /// parameters hold, which a core plan has none of but those without a value.
+    pub fn with_bindings(mut self, bindings: &BindingUses) -> Self {
+        for node in &mut self.graph.nodes {
+            let uses = bindings.of(&node.id);
+            if uses.is_empty() {
+                continue;
+            }
+            node.bindings = uses
+                .iter()
+                .map(|found| BindingEntry {
+                    param: found.path.to_string(),
+                    binding: found.binding.clone(),
+                    resolved: Some(sorted(&found.value)),
+                })
+                .chain(node.bindings.drain(..))
+                .collect();
+        }
+        self
     }
 
     /// Adds the rewrites section: every rewrite the compiler considered for the plan, applied or skipped, in the order

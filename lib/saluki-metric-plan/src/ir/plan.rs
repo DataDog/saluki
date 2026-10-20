@@ -16,7 +16,7 @@ use super::{
     version::{migrate, BlobTable, Invalid, IrError, Parse, RemovedMember, ResolvedInArtifact, Unhashable},
 };
 use crate::{
-    canonical::{contains_resolved_values, strip_resolved_values, CanonicalError, PlanHash, ResolvedValues},
+    canonical::{contains_resolved_values, CanonicalError, PlanHash},
     extension::DeliveryPolicy,
     model::PortType,
 };
@@ -91,20 +91,17 @@ impl Plan {
     /// Returns the plan's hash: the RFC 8785 digest of its [normalized form](#normalized-form), without plan-level
     /// provenance.
     ///
-    /// With [`ResolvedValues::Exclude`], the hash also leaves out the resolved values of configuration bindings in node
-    /// parameters, so it changes only when the plan's structure, operators, literal parameters, or binding names
-    /// change.
+    /// This is the one hash of a plan. Of a plan [elaborated](crate::elaborate) into its core form, where every binding
+    /// is written as its value and every parameter in normal form, it is the hash of what the plan does: installation,
+    /// adoption, and status compare it.
     ///
     /// # Errors
     ///
     /// Returns an error if the plan contains an integer parameter outside the range that canonical JSON allows.
-    pub fn hash(&self, resolved: ResolvedValues) -> Result<PlanHash, CanonicalError> {
+    pub fn hash(&self) -> Result<PlanHash, CanonicalError> {
         let mut value = serde_json::to_value(self).context(crate::canonical::ToJson)?;
         if let Some(members) = value.as_object_mut() {
             members.remove("provenance");
-            if resolved == ResolvedValues::Exclude {
-                strip_node_params(members);
-            }
         }
         PlanHash::of_value(&value)
     }
@@ -150,21 +147,6 @@ impl Plan {
                 this.binding_identity(&self.resources) == that.binding_identity(&other.resources)
             }
             _ => false,
-        }
-    }
-}
-
-/// Removes the resolved values of configuration bindings from the parameters of every node of a serialized plan.
-///
-/// Bindings occur only in node parameters, so nothing else is touched: a map elsewhere in the plan may have members
-/// named `config` and `resolved`.
-fn strip_node_params(document: &mut serde_json::Map<String, Value>) {
-    let Some(Value::Array(nodes)) = document.get_mut("nodes") else {
-        return;
-    };
-    for node in nodes {
-        if let Some(Value::Object(params)) = node.get_mut("params") {
-            params.values_mut().for_each(strip_resolved_values);
         }
     }
 }
@@ -700,7 +682,7 @@ mod tests {
         let plan = Plan::from_value(plan_document.clone()).unwrap();
         assert_eq!(serde_json::to_value(&plan).unwrap(), plan_document);
         let expected = "sha256:1850cdb08ade8efcaf497bb2dc04ff2d609d785d73f0ca40f913a480a55ae1b6";
-        assert_eq!(plan.hash(ResolvedValues::Include).unwrap().to_string(), expected);
+        assert_eq!(plan.hash().unwrap().to_string(), expected);
         assert_eq!(PlanHash::of_value(&plan_document).unwrap().to_string(), expected);
 
         // A document that writes the defaults explicitly reads as the same plan, so it has the same plan hash.
@@ -708,11 +690,7 @@ mod tests {
         explicit["outputs"][0]["recipients"] = json!([]);
         explicit["outputs"][0]["delivery"] = json!("native");
         assert_eq!(
-            Plan::from_value(explicit)
-                .unwrap()
-                .hash(ResolvedValues::Include)
-                .unwrap()
-                .to_string(),
+            Plan::from_value(explicit).unwrap().hash().unwrap().to_string(),
             expected
         );
 
@@ -986,9 +964,9 @@ mod tests {
     }
 
     #[test]
-    fn plan_hashes_ignore_provenance_and_optionally_resolved_values() {
+    fn plan_hashes_ignore_provenance_and_cover_everything_else() {
         let plan = Plan::from_value(design_example()).unwrap();
-        let hash = |plan: &Plan, resolved| plan.hash(resolved).unwrap();
+        let hash = |plan: &Plan| plan.hash().unwrap();
 
         // Plan-level provenance does not change the hash.
         let mut with_provenance = plan.clone();
@@ -996,34 +974,16 @@ mod tests {
             config_change: Some(12),
             ..PlanProvenance::default()
         });
-        assert_eq!(
-            hash(&plan, ResolvedValues::Include),
-            hash(&with_provenance, ResolvedValues::Include)
-        );
+        assert_eq!(hash(&plan), hash(&with_provenance));
 
-        // A resolved value changes the inclusive hash only.
-        let mut resolved = plan.clone();
-        let predicate = serde_json::from_value(json!({"intake_name": {"matches": {
-            "values": {"config": "dogstatsd.metric_filter.values", "resolved": ["blocked"]},
-            "prefix": {"config": "dogstatsd.metric_filter.match_prefix", "resolved": false}}}}))
-        .unwrap();
-        resolved.nodes[1].params.insert("predicate".parse().unwrap(), predicate);
-        assert_ne!(
-            hash(&plan, ResolvedValues::Include),
-            hash(&resolved, ResolvedValues::Include)
-        );
-        assert_eq!(
-            hash(&plan, ResolvedValues::Exclude),
-            hash(&resolved, ResolvedValues::Exclude)
-        );
-
-        // A structural change changes both.
+        // A parameter changes it, and so does the structure.
+        let mut changed = plan.clone();
+        let predicate = serde_json::from_value(json!({"intake_name": {"eq": "blocked"}})).unwrap();
+        changed.nodes[1].params.insert("predicate".parse().unwrap(), predicate);
+        assert_ne!(hash(&plan), hash(&changed));
         let mut changed = plan.clone();
         changed.edges.clear();
-        assert_ne!(
-            hash(&plan, ResolvedValues::Exclude),
-            hash(&changed, ResolvedValues::Exclude)
-        );
+        assert_ne!(hash(&plan), hash(&changed));
     }
 
     #[test]

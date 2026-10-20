@@ -28,7 +28,6 @@ fn write_document(explain: &Explain, out: &mut String) -> std::fmt::Result {
     writeln!(out, "plan")?;
     writeln!(out, "  ir_version {}", plan.ir_version)?;
     writeln!(out, "  hash {}", hash(&plan.hash))?;
-    writeln!(out, "  structural_hash {}", hash(&plan.structural_hash))?;
     if let Some(provenance) = &plan.provenance {
         if let Some(change) = provenance.config_change {
             writeln!(out, "  config_change {}", change)?;

@@ -1,4 +1,3 @@
-use saluki_metric_plan::canonical::ResolvedValues;
 use saluki_metric_plan_syntax::parse;
 
 use super::*;
@@ -17,7 +16,7 @@ fn compile_against_default(source: &str) -> CompileOutcome {
         default_program: Some(&plan),
         active: Some(ActivePlan {
             plan: &plan,
-            hash: plan.hash(ResolvedValues::Include).unwrap(),
+            hash: plan.hash().unwrap(),
             generation: Some(3),
             artifact_revision: None,
         }),

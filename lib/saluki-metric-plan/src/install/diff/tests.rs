@@ -180,8 +180,10 @@ fn an_unmodified_export_diffs_as_no_change_and_the_detached_one_only_by_what_it_
             node["params"]["predicate"] = crate::testing::listener_filterlist(json!([]));
         }
     }
-    let plan = Plan::from_value(value).unwrap();
-    let (bound, detached) = composed_exports(&plan);
+    let lowered = Plan::from_value(value).unwrap();
+    let (bound, detached) = composed_exports(&lowered);
+    // What installs is the default program's core plan.
+    let plan = crate::elaborate::elaborate_default(&lowered, &crate::testing::catalog_for(&lowered), &registry).plan;
 
     // Composed back unmodified, the export is the default program: no diff changes anything.
     assert!(diff(&plan, &bound, &registry).is_empty());

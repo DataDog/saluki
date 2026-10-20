@@ -37,12 +37,12 @@ use super::{
     lifecycle::{GenerationState, LifecycleEvent},
 };
 use crate::{
-    canonical::{PlanHash, ResolvedValues},
+    canonical::PlanHash,
     compile::{
         compile, compile_unvalidated, CompileError, CompiledPlan, Frame, KernelKey, LeaseTable, LineageKey,
         PlacementError, RegionProgram, RewriteRecord, SlotId,
     },
-    export::operation_hash,
+    elaborate::BindingUses,
     extension::TransitionClass,
     ir::{HostId, NodeId, Plan},
     limits::{self, values::MAX_TRANSITION_LCM},
@@ -105,6 +105,10 @@ impl fmt::Display for Origin {
 pub struct Candidate {
     /// The plan, with every configuration binding resolved.
     pub plan: Arc<Plan>,
+
+    /// Which literal of the plan came from which configuration binding, as elaboration recorded it
+    /// ([`Elaborated::bindings`](crate::elaborate::Elaborated::bindings)): what explain prints beside the active plan.
+    pub bindings: BindingUses,
 
     /// The plan's validation report.
     ///
@@ -746,7 +750,7 @@ pub struct GenerationRecord {
     /// Where its plan came from.
     pub origin: Origin,
 
-    /// Its plan's hash, with resolved values.
+    /// Its plan's hash: the core plan's [hash](Plan::hash).
     pub plan_hash: PlanHash,
 
     /// Its state.
@@ -792,13 +796,13 @@ struct Installed {
     candidate: CandidateId,
     origin: Origin,
     plan: Arc<Plan>,
+    /// The core plan's hash, which decides whether a candidate changes anything.
     plan_hash: PlanHash,
-    /// What the plan does: its [operation hash](crate::export::operation_hash), which decides whether a candidate
-    /// changes anything.
-    does: PlanHash,
     /// Whether the default program adopted the generation from an artifact: a region may then report it failed, for a
     /// failure it decided under the artifact's panic budget.
     adopted_from_artifact: bool,
+    /// Which literal of the plan came from which binding.
+    bindings: BindingUses,
     /// The plan's validation report, for a rollback that installs the plan again.
     report: ValidationReport,
     programs: Vec<Arc<RegionProgram>>,
@@ -828,8 +832,7 @@ struct Queued {
     origin: Origin,
     plan: Arc<Plan>,
     plan_hash: PlanHash,
-    /// What the plan does: its [operation hash](crate::export::operation_hash).
-    does: PlanHash,
+    bindings: BindingUses,
     report: ValidationReport,
     compiled: CompiledPlan,
     /// The preparations attempted so far.
@@ -856,7 +859,7 @@ impl Preparation {
             origin: self.installed.origin,
             plan: self.installed.plan,
             plan_hash: self.installed.plan_hash,
-            does: self.installed.does,
+            bindings: self.installed.bindings,
             report: self.installed.report,
             compiled: self.compiled,
             attempts: self.attempts,
@@ -878,6 +881,7 @@ impl Rollback {
         Self {
             candidate: Candidate {
                 plan: Arc::clone(&installed.plan),
+                bindings: installed.bindings.clone(),
                 report: installed.report.clone(),
                 origin: installed.origin,
             },
@@ -1108,8 +1112,8 @@ impl InstallerCore {
             origin: queued.origin,
             plan: queued.plan,
             plan_hash: queued.plan_hash,
-            does: queued.does,
             adopted_from_artifact: false,
+            bindings: queued.bindings,
             report: queued.report,
             programs: programs.clone(),
             rewrites: queued.compiled.rewrites.into(),
@@ -1136,6 +1140,19 @@ impl InstallerCore {
     /// Returns the active plan.
     pub fn active_plan(&self) -> Option<&Arc<Plan>> {
         self.active.as_ref().map(|active| &active.plan)
+    }
+
+    /// Returns the active plan's validation report, as its candidate carried it: what compilation used, and what
+    /// explain reports beside the active plan, so that compiling the active plan again places and rewrites it as
+    /// installed.
+    pub fn active_report(&self) -> Option<&ValidationReport> {
+        self.active.as_ref().map(|active| &active.report)
+    }
+
+    /// Returns which literal of the active plan came from which configuration binding, as its candidate said: what
+    /// explain prints beside the active plan ([`Explain::with_bindings`](crate::explain::Explain::with_bindings)).
+    pub fn active_bindings(&self) -> Option<&BindingUses> {
+        self.active.as_ref().map(|active| &active.bindings)
     }
 
     /// Returns the rewrites compilation considered for the active plan, applied or skipped, as
@@ -1229,23 +1246,23 @@ impl InstallerCore {
             .active
             .as_ref()
             .filter(|active| !self.has_failed(active.generation.id()))
-            .map(|active| active.does);
+            .map(|active| active.plan_hash);
         // A cut that failed, or that is being cancelled, may not be what the schedule ends up holding.
         let target = match (&self.preparing, &self.cut) {
-            (Some(preparing), _) => Some(preparing.installed.does),
-            (None, Some(cut)) if cut.failed.is_none() && !cut.cancelling => Some(cut.installed.does),
+            (Some(preparing), _) => Some(preparing.installed.plan_hash),
+            (None, Some(cut)) if cut.failed.is_none() && !cut.cancelling => Some(cut.installed.plan_hash),
             (None, Some(_)) => None,
             (None, None) => active,
         };
         let cancels = arrival == Arrival::Cancel
             && (self.preparing.is_some() || self.cut.as_ref().is_some_and(|cut| cut.phase == CutPhase::Barrier));
-        // Compared by what the plans do: a parameter left out and its default are the same.
-        let does = operation_hash(&candidate.plan, &self.registry).ok();
-        if does.is_some() && (does == target || (cancels && does == active)) {
+        // Compared by hash: core plans that do the same are written alike.
+        let hash = candidate.plan.hash().ok();
+        if hash.is_some() && (hash == target || (cancels && hash == active)) {
             if let Some(replaced) = self.pending.take() {
                 actions.push(Self::report(&replaced, Outcome::Superseded));
             }
-            if does != target {
+            if hash != target {
                 self.cancel_in_flight(actions);
             }
             actions.push(report(Outcome::Unchanged));
@@ -1642,13 +1659,7 @@ impl InstallerCore {
 
     /// Validates, places, and compiles a candidate.
     fn queue(&self, id: CandidateId, candidate: Candidate) -> Result<Queued, Rejection> {
-        let plan_hash = candidate
-            .plan
-            .hash(ResolvedValues::Include)
-            .map_err(|error| Rejection::Unhashable {
-                message: error.to_string(),
-            })?;
-        let does = operation_hash(&candidate.plan, &self.registry).map_err(|error| Rejection::Unhashable {
+        let plan_hash = candidate.plan.hash().map_err(|error| Rejection::Unhashable {
             message: error.to_string(),
         })?;
         // The default program runs even when validation reports errors in it, reported degraded by the caller: it is
@@ -1673,7 +1684,7 @@ impl InstallerCore {
             origin: candidate.origin,
             plan: candidate.plan,
             plan_hash,
-            does,
+            bindings: candidate.bindings,
             report: candidate.report,
             compiled,
             attempts: 0,
@@ -1742,11 +1753,18 @@ impl InstallerCore {
         let unchanged = self
             .active
             .as_ref()
-            .filter(|active| active.does == queued.does && !self.has_failed(active.generation.id()))
+            .filter(|active| active.plan_hash == queued.plan_hash && !self.has_failed(active.generation.id()))
             .map(|active| active.candidate);
         if let Some(target) = unchanged {
             actions.push(Self::report(&queued, Outcome::Unchanged));
-            self.serve_unchanged(queued.candidate, queued.origin, &queued.plan, target, actions);
+            self.serve_unchanged(
+                queued.candidate,
+                queued.origin,
+                &queued.plan,
+                &queued.bindings,
+                target,
+                actions,
+            );
             return;
         }
         let mut cut = None;
@@ -1813,8 +1831,8 @@ impl InstallerCore {
                 origin: queued.origin,
                 plan: queued.plan,
                 plan_hash: queued.plan_hash,
-                does: queued.does,
                 adopted_from_artifact: false,
+                bindings: queued.bindings,
                 report: queued.report,
                 programs,
                 rewrites: queued.compiled.rewrites.clone().into(),
@@ -2135,15 +2153,24 @@ impl InstallerCore {
     ///
     /// The plan does not change, so nothing is built, cut, or drained, and the generation keeps its ID: only its origin
     /// changes, in its record, and so in status, and in what a panic in it does, which [`Action::Adopt`] tells the
-    /// regions; and the plan it holds becomes `plan`, the candidate's, which has the same [operation
-    /// hash](crate::export::operation_hash), and so does the same, says in its provenance which program it is, and may
-    /// write as a literal what the other binds. Reuse is decided by what the plan does, never by where it came from. A
+    /// regions; and the plan it holds becomes `plan`, the candidate's, which has the same [hash](Plan::hash), and so is
+    /// the same core plan, but says in its provenance which program it is, and may have written as a literal what the
+    /// other binds. Reuse is decided by what the plan does, never by where it came from. A
     /// default program does not take over a default program's generation: one lowered after another configuration
     /// change that leaves the plan as it is changes nothing, as before.
-    fn adopt(&mut self, target: CandidateId, origin: Origin, plan: &Arc<Plan>, actions: &mut Vec<Action>) {
+    fn adopt(
+        &mut self, target: CandidateId, origin: Origin, plan: &Arc<Plan>, bindings: &BindingUses,
+        actions: &mut Vec<Action>,
+    ) {
         let mut adopted = None;
         let held = if let Some(queued) = self.pending.as_mut().filter(|queued| queued.candidate == target) {
-            (&mut queued.origin, &mut queued.plan, &mut queued.plan_hash, None)
+            (
+                &mut queued.origin,
+                &mut queued.plan,
+                &mut queued.bindings,
+                &mut queued.plan_hash,
+                None,
+            )
         } else if let Some(preparing) = self
             .preparing
             .as_mut()
@@ -2154,6 +2181,7 @@ impl InstallerCore {
             (
                 &mut installed.origin,
                 &mut installed.plan,
+                &mut installed.bindings,
                 &mut installed.plan_hash,
                 Some(installed.generation.id()),
             )
@@ -2163,6 +2191,7 @@ impl InstallerCore {
             (
                 &mut installed.origin,
                 &mut installed.plan,
+                &mut installed.bindings,
                 &mut installed.plan_hash,
                 Some(installed.generation.id()),
             )
@@ -2171,13 +2200,14 @@ impl InstallerCore {
             (
                 &mut active.origin,
                 &mut active.plan,
+                &mut active.bindings,
                 &mut active.plan_hash,
                 Some(active.generation.id()),
             )
         } else {
             return;
         };
-        let (current, held_plan, held_hash, generation) = held;
+        let (current, held_plan, held_bindings, held_hash, generation) = held;
         let same = match (*current, origin) {
             (Origin::DefaultProgram { .. }, Origin::DefaultProgram { .. }) => true,
             (current, origin) => current == origin,
@@ -2185,13 +2215,14 @@ impl InstallerCore {
         if same {
             return;
         }
-        // The plans do the same, but may write it differently: a literal where the other binds the same value.
-        let plan_hash = plan.hash(ResolvedValues::Include).unwrap_or(*held_hash);
+        // The plans are the same core plan, apart from their provenance.
+        let plan_hash = plan.hash().unwrap_or(*held_hash);
         if let Some(adopted) = adopted {
             *adopted = current.can_roll_back() && !origin.can_roll_back();
         }
         *current = origin;
         *held_plan = Arc::clone(plan);
+        held_bindings.clone_from(bindings);
         *held_hash = plan_hash;
         if let Some(generation) = generation {
             if let Some(record) = self.records.get_mut(&generation) {

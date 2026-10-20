@@ -1,9 +1,8 @@
-explain_version 3
+explain_version 4
 
 plan
   ir_version 1
   hash sha256:6e3f0d14b5f5c20a2edcb8f3aeea01d3c1956fd70ddb353500f919d69eb8238a
-  structural_hash sha256:b9bd7e1fe0c5ca69f4f3176ab05abb59335414b5e6ac296becf279f171e7c834
   valid: 0 errors, 0 warnings
 
 nodes (28)

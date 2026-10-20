@@ -182,8 +182,9 @@ pub struct KernelKey {
     /// The node the kernel runs.
     pub node: NodeId,
 
-    /// The hash of `{"op": <operator>, "params": <parameters>}`, with the parameters in their [operation
-    /// form](crate::export::operation_params): a parameter left out and its default build the same kernel.
+    /// The hash of `{"op": <operator>, "params": <parameters>}`. The plan is a core plan
+    /// ([`elaborate`](crate::elaborate)), so a parameter left out and its default, or a binding and its value, build
+    /// the same kernel.
     pub params_hash: PlanHash,
 }
 
@@ -194,8 +195,7 @@ impl KernelKey {
     ///
     /// Returns an error if the node's parameters have no canonical form.
     pub fn of(node: &Node) -> Result<Self, CompileError> {
-        let params = crate::export::operation_params(&node.op, &node.params);
-        let value = json!({"op": node.op.as_str(), "params": params});
+        let value = json!({"op": node.op.as_str(), "params": node.params});
         let params_hash = PlanHash::of_value(&value).map_err(|error| CompileError::Unhashable {
             node: node.id.clone(),
             message: error.to_string(),

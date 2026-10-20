@@ -231,7 +231,7 @@ async fn the_export_route_serves_the_default_programs_export_in_the_form_the_que
         .iter()
         .any(|edge| edge.from.to_string() == "input.dogstatsd"));
 
-    // The route serves the published export, detached by default, whose program hash the status reports.
+    // The route serves the published export, detached by default.
     for uri in [
         "/programmable-metrics/export",
         "/programmable-metrics/export?form=detached",
@@ -243,9 +243,10 @@ async fn the_export_route_serves_the_default_programs_export_in_the_form_the_que
         assert_eq!(body["form"], "detached", "{}", uri);
         assert_eq!(body["labels"]["dd_metrics_encode"], "Main metrics output");
     }
+    // The status reports the default program's core hash: at boot, the active plan's.
     assert_eq!(
         status.apply_states.status.default_program_hash,
-        Some(saluki_metric_plan::export::program_hash(&exported.artifact).unwrap())
+        status.installer.active.as_ref().map(|active| active.plan_hash)
     );
     let bound = Arc::clone(status.bound_export.as_ref().expect("the default program exports"));
     let (code, content_type, body) = get(status.clone(), "/programmable-metrics/export?form=bound").await;
@@ -296,12 +297,7 @@ async fn the_plan_route_serves_the_active_composed_plan_with_its_resolved_values
     assert_eq!(served, *active.plan);
     // With the resolved values of any fact or signal it binds: the plan the boot generation runs, hash for hash.
     let record = status.installer.active.as_ref().unwrap();
-    assert_eq!(
-        served
-            .hash(saluki_metric_plan::canonical::ResolvedValues::Include)
-            .unwrap(),
-        record.plan_hash
-    );
+    assert_eq!(served.hash().unwrap(), record.plan_hash);
 
     let mut idle = status;
     idle.active = None;
@@ -323,25 +319,29 @@ async fn the_default_program_route_serves_the_plan_artifacts_are_composed_with()
     assert_eq!((code, content_type), (StatusCode::OK, json_type()));
     let served = Plan::from_value(serde_json::from_str(&body).unwrap()).expect("the body is a plan");
     assert_eq!(served, *status.default_program);
-    // It is the program the export was taken from: exported with the export's catalog and labels, it hashes to the
-    // default program hash the status reports, so a client can tell that an export and a default program it fetched
-    // separately belong together.
+    // It is the program the export was taken from: exported with the export's catalog and labels, it is the export, so
+    // a client can tell that an export and a default program it fetched separately belong together.
     let export = status.export.as_ref().expect("the default program exports");
+    let registry = saluki_metric_plan::operators::OperatorRegistry::native();
     let again = saluki_metric_plan::export::export_as(
         &served,
         &export.catalog,
         &export.labels,
         saluki_metric_plan::export::ExportForm::Detached,
-        &saluki_metric_plan::operators::OperatorRegistry::native(),
+        &registry,
     )
     .unwrap();
+    assert_eq!(again.artifact, export.artifact);
+    // It writes the resolved values of any fact or signal it binds, as composition needs them, and elaborated with the
+    // export's catalog it is the core plan, whose hash the status reports: at boot, the plan the active generation
+    // runs.
+    let core = saluki_metric_plan::elaborate::elaborate_default(&served, &export.catalog, &registry);
     assert_eq!(
-        Some(saluki_metric_plan::export::program_hash(&again.artifact).unwrap()),
+        Some(core.hash().unwrap()),
         status.apply_states.status.default_program_hash
     );
-    // With the resolved values of any fact or signal it binds, as composition needs them: at boot, it is the plan the
-    // active generation runs.
-    assert_eq!(served, *status.active.as_ref().unwrap().plan);
+    assert_eq!(core.plan.nodes, status.active.as_ref().unwrap().plan.nodes);
+    assert_eq!(core.plan.edges, status.active.as_ref().unwrap().plan.edges);
 
     // It does not depend on a generation being active, or on what the active generation runs.
     let mut idle = status.clone();
