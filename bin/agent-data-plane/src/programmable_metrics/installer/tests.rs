@@ -268,6 +268,8 @@ struct Running {
     telemetry_output: mpsc::UnboundedReceiver<String>,
     /// What the Multi-Region Failover output receives, when the configuration enables it.
     _mirror_output: mpsc::UnboundedReceiver<String>,
+    /// What the output of the first endpoint routing group receives, when the configuration routes metrics.
+    routed_output: mpsc::UnboundedReceiver<String>,
     status: Arc<ArcSwap<PlanStatus>>,
     shutdown: Option<oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<Result<(), saluki_core::runtime::SupervisorError>>,
@@ -296,6 +298,7 @@ impl Running {
         let (main, main_output) = mpsc::unbounded_channel();
         let (telemetry, telemetry_output) = mpsc::unbounded_channel();
         let (mirror, mirror_output) = mpsc::unbounded_channel();
+        let (routed, routed_output) = mpsc::unbounded_channel();
         blueprint
             .add_destination(
                 "dsd_client_telemetry_out",
@@ -309,6 +312,7 @@ impl Running {
                 outputs: [
                     ("dd_metrics_encode".to_string(), main),
                     ("mrf_metrics_encode".to_string(), mirror),
+                    ("metrics_routing_encode_0".to_string(), routed),
                 ]
                 .into(),
             }),
@@ -343,6 +347,7 @@ impl Running {
             main_output,
             telemetry_output,
             _mirror_output: mirror_output,
+            routed_output,
             status,
             shutdown: Some(shutdown),
             task,
@@ -902,6 +907,144 @@ async fn a_native_policy_change_installs_a_generation_that_rebuilds_only_the_ker
     }
 }
 
+/// Sends one batch, through aggregation, of gauges `blocked` and `kept` (which, unlike counters, aggregation does not
+/// flush again as zeros), a histogram `latency`, and a distribution `sketch` (the only kind the tag filterlist applies
+/// to), each tagged `user_id:1`, and returns the `expected` metrics the main output receives once aggregation flushes
+/// them, by name and tags, sorted.
+async fn send_aggregated(running: &mut Running, expected: usize) -> Vec<String> {
+    let tagged = |name| Context::from_static_parts(name, &["user_id:1"]);
+    let batch = vec![
+        Event::Metric(Metric::gauge(tagged("blocked"), 1.0)),
+        Event::Metric(Metric::gauge(tagged("kept"), 1.0)),
+        Event::Metric(Metric::histogram(tagged("latency"), &[1.0, 2.0][..])),
+        Event::Metric(Metric::distribution(tagged("sketch"), &[1.0, 2.0][..])),
+    ];
+    running.batches.send(batch).await.unwrap();
+    let mut received = Vec::new();
+    tokio::time::timeout(PATIENCE, async {
+        while received.len() < expected {
+            let metric = running.main_output.recv().await.expect("the main output stays open");
+            received.push(format!("{}]", metric.split("] ").next().unwrap_or_default()));
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the main output receives {} metrics, not only {:?}", expected, received));
+    received.sort();
+    received
+}
+
+#[tokio::test]
+async fn a_native_policy_list_empty_at_boot_can_become_non_empty_and_empty_again() {
+    // Each native policy list, empty at boot: a filterlist with nothing in it lowers to a `split` on `true`, which
+    // normalizes away, so the boot frame is laid out without its decision. A live change that fills it, and one that
+    // empties it again, must each install as a generation in that frame and apply to the next batch. The metric
+    // filterlist names a histogram statistic too, which fills the post-aggregation filter. Aggregation flushes each
+    // batch within a second.
+    const BOOT: &str = "\
+additional_endpoints: {https://b.example.com: [key-b]}
+aggregate_window_duration_seconds: 1
+aggregate_flush_interval: 50ms
+";
+    let unfiltered = [
+        "blocked [user_id:1]",
+        "kept [user_id:1]",
+        "latency.95percentile [user_id:1]",
+        "latency.avg [user_id:1]",
+        "latency.count [user_id:1]",
+        "latency.max [user_id:1]",
+        "latency.median [user_id:1]",
+        "sketch [user_id:1]",
+    ];
+    let without = |dropped: &[&str]| {
+        unfiltered
+            .iter()
+            .filter(|metric| !dropped.iter().any(|name| metric.starts_with(&format!("{} ", name))))
+            .map(|metric| metric.to_string())
+            .collect::<Vec<_>>()
+    };
+    let changes = [
+        (
+            "metric_filterlist: [blocked, latency.max]",
+            without(&["blocked", "latency.max"]),
+            None,
+        ),
+        (
+            "metric_tag_filterlist: [{metric_name: sketch, action: exclude, tags: [user_id]}]",
+            {
+                let mut filtered = without(&["sketch"]);
+                filtered.push("sketch []".to_string());
+                filtered
+            },
+            None,
+        ),
+        (
+            "experimental: {metrics_endpoint_routing: {metric_allowlist: {https://b.example.com: [kept]}}}",
+            without(&[]),
+            Some("kept [user_id:1]"),
+        ),
+    ];
+    for (change, filtered, routed) in changes {
+        let mut running = Running::start(BOOT, Aggregation::Native).await;
+        status_where(&running.status, |status| active(status) == Some(1)).await;
+        assert_eq!(
+            send_aggregated(&mut running, unfiltered.len()).await,
+            unfiltered,
+            "{}",
+            change
+        );
+
+        // Filled: generation 2 installs, becomes active, and filters the next batch.
+        running.cell.set(layered_configuration(&[BOOT, change]).await);
+        let status = status_where(&running.status, |status| {
+            active(status) == Some(2) || status.last_error.is_some() || !status.degraded.is_empty()
+        })
+        .await;
+        assert_eq!(active(&status), Some(2), "{}: {}", change, status);
+        assert!(
+            status.degraded.is_empty() && status.last_error.is_none(),
+            "{}: {}",
+            change,
+            status
+        );
+        assert_eq!(
+            send_aggregated(&mut running, filtered.len()).await,
+            filtered,
+            "{}",
+            change
+        );
+        if let Some(routed) = routed {
+            let metric = tokio::time::timeout(PATIENCE, running.routed_output.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(format!("{}]", metric.split("] ").next().unwrap_or_default()), routed);
+        }
+
+        // Emptied: generation 3, which filters nothing again.
+        running.cell.set(configuration(BOOT).await);
+        let status = status_where(&running.status, |status| {
+            active(status) == Some(3) || status.last_error.is_some() || !status.degraded.is_empty()
+        })
+        .await;
+        assert_eq!(active(&status), Some(3), "{}: {}", change, status);
+        assert!(
+            status.degraded.is_empty() && status.last_error.is_none(),
+            "{}: {}",
+            change,
+            status
+        );
+        assert_eq!(
+            send_aggregated(&mut running, unfiltered.len()).await,
+            unfiltered,
+            "{}",
+            change
+        );
+        assert!(running.routed_output.try_recv().is_err(), "{}", change);
+
+        running.stop().await;
+    }
+}
+
 #[tokio::test]
 async fn a_configuration_whose_program_no_operator_accepts_fails_the_boot() {
     // An integer beyond what a plan holds: lowering writes it as configured, and the aggregation operator cannot be
@@ -1046,7 +1189,7 @@ impl LeaseObserver for DescribingObserver {
         let metrics = self
             .outputs
             .get(output)
-            .unwrap_or_else(|| panic!("DogStatsD with Multi-Region Failover has no output `{}`", output));
+            .unwrap_or_else(|| panic!("the test topology has no output `{}`", output));
         for metric in buffer.into_iter().filter_map(Event::try_as_metric) {
             let _ = metrics.send(describe(metric));
         }
