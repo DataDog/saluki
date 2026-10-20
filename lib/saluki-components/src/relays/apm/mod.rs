@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, LazyLock};
 
-use agent_data_plane_config::domains;
+use agent_data_plane_config::SalukiConfiguration;
 use async_trait::async_trait;
 use axum::extract::{ConnectInfo, Request as AxumRequest, State};
 use axum::response::IntoResponse;
@@ -21,6 +21,7 @@ use saluki_core::runtime;
 use saluki_core::topology::OutputDefinition;
 use saluki_env::workload::{CaptureEntityResolver, EntityId};
 use saluki_error::{generic_error, GenericError};
+use saluki_io::net::resolve::resolve_bind_host;
 use saluki_io::net::server::http::HttpServer;
 use saluki_io::net::{ConnectionAddress, ListenAddress};
 use saluki_metrics::static_metrics;
@@ -49,26 +50,37 @@ const ENTITY_ID_HEADER: HeaderName = HeaderName::from_static("datadog-entity-id"
 /// positional constructor arguments (a silent one).
 #[derive(Clone)]
 pub struct ApmRelayConfiguration {
-    /// TCP address the relay listens on, for example `0.0.0.0:8126`.
-    ///
-    /// Empty disables the TCP listener.
-    pub receiver_endpoint: String,
-
     /// Unix domain socket path the relay listens on.
     ///
     /// Empty disables the Unix domain socket listener.
-    pub receiver_socket: String,
+    receiver_socket: String,
 
     /// URL of the trace-agent that every request not handled by ADP is proxied to: `http://host:port` or
     /// `unix:///path/to/socket`.
-    pub proxy_destination: String,
+    proxy_destination: String,
 
     /// Resolver for mapping the process ID of a tracer connected over the Unix domain socket to its container.
     ///
     /// The trace-agent finds the container of a tracer that sends no container headers from the peer credentials of
     /// its Unix domain socket connection, but behind the relay those credentials are ADP's. With a resolver, the relay
     /// resolves the container from the tracer's credentials itself, and passes it on as `Datadog-Container-ID`.
-    pub capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
+    capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
+
+    /// The host address to bind the APM relay TCP listeners to.
+    ///
+    /// Accepts either an IP literal (for example, `192.168.1.50`, `::1`) or a hostname that resolves via DNS (for example, `agent.internal`).
+    /// Ignored when `apm_non_local_traffic` is `true`, and binds to `127.0.0.1` when unset.
+    bind_host: Option<String>,
+
+    /// Whether the TCP listener accepts traffic from other hosts.
+    ///
+    /// When `true`, the listener binds every interface, overriding `bind_host`, as the trace-agent does.
+    non_local_traffic: bool,
+
+    /// TCP port the trace receiver listens on.
+    ///
+    /// `0` disables the TCP listener.
+    receiver_port: u16,
 }
 
 #[static_metrics(prefix = component, labels(component_id, component_type))]
@@ -79,24 +91,15 @@ struct Metrics {
 
 impl ApmRelayConfiguration {
     /// Creates a new `ApmRelayConfiguration` from the resolved configuration.
-    pub fn from_configuration(config: &domains::apm::Domain) -> Self {
+    pub fn from_configuration(config: &SalukiConfiguration) -> Self {
         // receiver_port `0` disables the TCP listener
-        let receiver_endpoint = if config.receiver_port == 0 {
-            String::new()
-        } else {
-            let listen_address = if config.non_local_traffic {
-                "0.0.0.0"
-            } else {
-                // TODO: resolve `bind_host` instead of hardcoding
-                "127.0.0.1"
-            };
-            format!("{}:{}", listen_address, config.receiver_port)
-        };
         Self {
-            receiver_endpoint,
-            receiver_socket: config.receiver_socket.clone().unwrap_or_default(),
-            proxy_destination: config.proxy_destination.to_owned(),
+            receiver_socket: config.domains.apm.receiver_socket.clone().unwrap_or_default(),
+            proxy_destination: config.domains.apm.proxy_destination.to_owned(),
             capture_entity_resolver: None,
+            bind_host: config.shared.bind_host.clone(),
+            non_local_traffic: config.domains.apm.non_local_traffic,
+            receiver_port: config.domains.apm.receiver_port,
         }
     }
 
@@ -106,19 +109,23 @@ impl ApmRelayConfiguration {
         self
     }
 
-    fn tcp_listen_address(&self) -> Result<Option<ListenAddress>, GenericError> {
-        if self.receiver_endpoint.is_empty() {
+    async fn tcp_listen_address(&self) -> Result<Option<ListenAddress>, GenericError> {
+        if self.receiver_port == 0 {
             return Ok(None);
-        }
+        };
 
-        ListenAddress::try_from(format!("tcp://{}", self.receiver_endpoint))
-            .map(Some)
-            .map_err(|e| {
-                generic_error!(
-                    "Invalid APM relay TCP receiver endpoint `{}`: {e}",
-                    self.receiver_endpoint
-                )
-            })
+        let listen_address = if self.non_local_traffic {
+            [0, 0, 0, 0].into()
+        } else if let Some(bind_host) = &self.bind_host {
+            resolve_bind_host(bind_host).await?
+        } else {
+            [127, 0, 0, 1].into()
+        };
+
+        Ok(Some(ListenAddress::Tcp(std::net::SocketAddr::new(
+            listen_address,
+            self.receiver_port,
+        ))))
     }
 
     fn uds_listen_address(&self) -> Result<Option<ListenAddress>, GenericError> {
@@ -155,7 +162,7 @@ impl RelayBuilder for ApmRelayConfiguration {
     }
 
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Relay + Send>, GenericError> {
-        let tcp_endpoint = self.tcp_listen_address()?;
+        let tcp_endpoint = self.tcp_listen_address().await?;
         let uds_endpoint = self.uds_listen_address()?;
 
         if tcp_endpoint.is_none() && uds_endpoint.is_none() {
@@ -612,6 +619,7 @@ mod tests {
     async fn build_fails_with_invalid_endpoint_string() {
         let config = ApmRelayConfiguration {
             receiver_endpoint: "not a valid host:port".to_string(),
+
             receiver_socket: String::new(),
             proxy_destination: "http://127.0.0.1:8127".to_string(),
             capture_entity_resolver: None,

@@ -7,6 +7,7 @@ pub use self::addr::{
 pub mod client;
 pub mod dns;
 pub mod listener;
+pub mod resolve;
 pub mod server;
 
 mod resource;
