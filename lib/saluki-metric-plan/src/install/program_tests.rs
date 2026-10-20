@@ -1087,17 +1087,15 @@ fn the_installer_core_installs_a_second_aggregation_where_placement_runs_it_star
     let plan = host.active_plan();
     assert!(plan.node(&id("late_agg")).is_some() && plan.node(&id("dsd_agg")).is_some());
 
-    // Where the frame cannot run it, the candidate is refused as unplaceable, and the running generation stays.
+    // After enrichment too: it runs in a region of its own inside enrichment's slot.
     let mut host = Host::new();
     let performed = host.deliver(1, second_aggregation("late_agg", "metrics.out", "metrics_fanout.in"));
-    assert_eq!(performed.len(), 1, "{:?}", performed);
-    assert!(
-        performed[0].starts_with("candidate 2: rejected (") && performed[0].contains("node `late_agg`"),
+    assert_eq!(
+        performed.last().map(String::as_str),
+        Some("candidate 2 generation 2: pending"),
         "{:?}",
         performed
     );
-    assert_eq!(host.core.status().live, vec![GenerationId::new(1)]);
-    assert!(host.arming.is_none());
 }
 
 #[test]
