@@ -62,7 +62,14 @@ fn default_program() -> (Frame, CompiledPlan) {
     let report = Validator::new(&registry, &default_program_catalog()).validate(&plan);
     assert!(report.is_valid(), "{}", report);
     let frame = Frame::compute(&plan, &registry, &namer).unwrap();
-    let compiled = compile(&plan, &report, &registry, &frame).unwrap();
+    let compiled = compile(
+        &plan,
+        &report,
+        &registry,
+        &frame,
+        &saluki_metric_plan::compile::DerivedPoints::for_plan(&frame, &plan, &registry),
+    )
+    .unwrap();
     (frame, compiled)
 }
 
@@ -566,7 +573,14 @@ impl Aggregation {
         let report = Validator::new(&registry, &default_program_catalog()).validate(&plan);
         assert!(report.is_valid(), "{}", report);
         let frame = Frame::compute(&plan, &registry, &namer).unwrap();
-        let compiled = compile(&plan, &report, &registry, &frame).unwrap();
+        let compiled = compile(
+            &plan,
+            &report,
+            &registry,
+            &frame,
+            &saluki_metric_plan::compile::DerivedPoints::for_plan(&frame, &plan, &registry),
+        )
+        .unwrap();
         let slot = frame.slot(slot_named(&frame, "dsd_agg")).unwrap().clone();
         let program = Arc::clone(&compiled.programs[slot.id.get()]);
         let generation: GenerationRef = Arc::new(GenerationToken::new(GenerationId::new(1)));

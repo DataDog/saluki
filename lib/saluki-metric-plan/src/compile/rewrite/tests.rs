@@ -50,7 +50,14 @@ fn optimizing_the_default_program_changes_nothing_while_no_rewrite_applies() {
     assert!(optimized.converged);
     assert!(!optimized.changed());
 
-    let compiled = compile(&plan, &report, &registry, &frame).unwrap();
+    let compiled = compile(
+        &plan,
+        &report,
+        &registry,
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, &plan, &registry),
+    )
+    .unwrap();
     assert_eq!(*compiled.plan, plan);
     // Only the rewrites that change programs, not the plan, apply: the decision-time rewrites, which the programs'
     // decisions record, and R5b, which pushes the post-aggregation filter into aggregation's per-call parameters.

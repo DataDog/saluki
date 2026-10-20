@@ -1205,8 +1205,13 @@ impl Case {
         if !report.is_valid() {
             return Err(format!("the rewritten plan is invalid:\n{}", report));
         }
-        compile_unvalidated(rewritten, registry(), &self.frame)
-            .map_err(|error| format!("the rewritten plan does not compile into the frame: {}", error))?;
+        compile_unvalidated(
+            rewritten,
+            registry(),
+            &self.frame,
+            &crate::compile::DerivedPoints::for_plan(&self.frame, rewritten, registry()),
+        )
+        .map_err(|error| format!("the rewritten plan does not compile into the frame: {}", error))?;
         if rewritten.outputs != self.plan.outputs {
             return Err("the rewritten plan declares other outputs".to_string());
         }
@@ -1306,7 +1311,7 @@ mod tests {
             trace in arb_trace(),
         ) {
             let case = Case::new(&shape, &params).map_err(TestCaseError::fail)?;
-            let compiled = compile(&case.plan, &case.report, registry(), &case.frame);
+            let compiled = compile(&case.plan, &case.report, registry(), &case.frame, &crate::compile::DerivedPoints::for_plan(&case.frame, &case.plan, registry()));
             prop_assert!(compiled.is_ok(), "{:?}", compiled.err());
             let run = case.run(&case.plan, &trace.events(&case.outputs(), true));
             prop_assert!(run.is_ok(), "{:?}", run.err());

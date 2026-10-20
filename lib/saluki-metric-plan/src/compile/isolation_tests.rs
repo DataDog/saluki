@@ -500,7 +500,14 @@ fn a_state_owner_fed_straight_by_an_admission_point_runs_in_the_isolation_slot_t
 
     // The split's region's program passes the point's batches to the isolation slot's entry; aggregation takes them
     // there.
-    let compiled = compile(&straight, &validated(&straight), &registry, &frame).unwrap();
+    let compiled = compile(
+        &straight,
+        &validated(&straight),
+        &registry,
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, &straight, &registry),
+    )
+    .unwrap();
     let steps = |slot: SlotId| {
         compiled.programs[slot.get()]
             .entries()
@@ -572,7 +579,14 @@ fn a_state_owners_kernel_is_keyed_by_its_lineage_and_its_per_call_parameters_by_
     let compiled_with = |plan: &Plan| {
         let report = Validator::new(&registry, &catalog).validate(plan);
         assert!(report.is_valid(), "{}", report);
-        compile(plan, &report, &registry, &frame).unwrap()
+        compile(
+            plan,
+            &report,
+            &registry,
+            &frame,
+            &crate::compile::DerivedPoints::for_plan(&frame, plan, &registry),
+        )
+        .unwrap()
     };
     let compiled = compiled_with(&plan);
     let slot = slot_named(&frame, "dsd_agg").id;
@@ -708,7 +722,16 @@ fn a_pushed_filter_reaches_its_state_owners_parameters_and_fingerprint_and_a_sit
     let filter: std::sync::Arc<dyn saluki_metric_kernels::aggregate::EmissionFilter> =
         std::sync::Arc::new(DropsEverything);
     let programs = |pushed: &[program::SiteFilter]| {
-        program::compile_programs_with(&plan, &registry, &frame, &placement, pushed, DecisionRewrites::ALL).unwrap()
+        program::compile_programs_with(
+            &plan,
+            &registry,
+            &frame,
+            &placement,
+            &DerivedPoints::for_plan(&frame, &plan, &registry),
+            pushed,
+            DecisionRewrites::ALL,
+        )
+        .unwrap()
     };
     let plain = programs(&[]);
     let pushed = programs(&[program::SiteFilter {

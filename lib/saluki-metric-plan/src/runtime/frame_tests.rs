@@ -708,7 +708,14 @@ fn random_plans_of_every_shape_are_valid_and_span_several_slots() {
             let report = Validator::new(&registry, &catalog).validate(&plan);
             assert!(report.is_valid(), "{:?}:\n{}", shape, report);
             let frame = Frame::compute(&plan, &registry, &namer).unwrap();
-            compile(&plan, &report, &registry, &frame).unwrap();
+            compile(
+                &plan,
+                &report,
+                &registry,
+                &frame,
+                &crate::compile::DerivedPoints::for_plan(&frame, &plan, &registry),
+            )
+            .unwrap();
             slot_counts.push(frame.slots().len());
         }
     }
@@ -736,7 +743,14 @@ fn a_slot_reached_by_two_edges_over_one_exit_has_an_entry_for_each() {
         let (plan, _) = random_plan(&shape, &params, plan_index);
         let report = Validator::new(&registry, &catalog).validate(&plan);
         let frame = Frame::compute(&random_plan(&shape, &params, 0).0, &registry, &namer).unwrap();
-        let compiled = compile(&plan, &report, &registry, &frame).unwrap();
+        let compiled = compile(
+            &plan,
+            &report,
+            &registry,
+            &frame,
+            &crate::compile::DerivedPoints::for_plan(&frame, &plan, &registry),
+        )
+        .unwrap();
         compiled.placement.slots()[1]
             .entries
             .iter()
@@ -1051,7 +1065,14 @@ fn random_plans_exercise_decision_groups_and_every_decision_time_rewrite() {
         let report = Validator::new(&registry, &catalog).validate(&plan);
         assert!(report.is_valid(), "{:?}:\n{}", shape, report);
         let frame = Frame::compute(&plan, &registry, &namer).unwrap();
-        let compiled = compile(&plan, &report, &registry, &frame).unwrap();
+        let compiled = compile(
+            &plan,
+            &report,
+            &registry,
+            &frame,
+            &crate::compile::DerivedPoints::for_plan(&frame, &plan, &registry),
+        )
+        .unwrap();
         let decisions = compiled.programs.iter().flat_map(|program| program.decisions());
         for decision in decisions {
             grouped += usize::from(decision.nodes.len() > 1);

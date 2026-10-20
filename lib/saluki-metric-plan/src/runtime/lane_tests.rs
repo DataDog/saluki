@@ -60,7 +60,14 @@ fn laid_out(lanes: LanePolicy) -> (Frame, CompiledPlan) {
     .unwrap();
     let report = Validator::new(&registry, &default_program_catalog()).validate(&plan);
     assert!(report.is_valid(), "{}", report);
-    let compiled = compile(&plan, &report, &registry, &frame).unwrap();
+    let compiled = compile(
+        &plan,
+        &report,
+        &registry,
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, &plan, &registry),
+    )
+    .unwrap();
     (frame, compiled)
 }
 

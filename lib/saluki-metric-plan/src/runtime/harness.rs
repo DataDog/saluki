@@ -1937,7 +1937,13 @@ fn compiled_with(
     let compiled = if !options.pushes_filters() {
         without_pushed_filters(plan, report, registry, frame)
     } else if options.rewrites_decisions() {
-        compile(plan, report, registry, frame)
+        compile(
+            plan,
+            report,
+            registry,
+            frame,
+            &crate::compile::DerivedPoints::for_plan(frame, plan, registry),
+        )
     } else {
         without_decision_rewrites(plan, report, registry, frame)
     };
@@ -1948,7 +1954,13 @@ fn compiled_with(
 fn without_pushed_filters(
     plan: &Plan, report: &ValidationReport, registry: &OperatorRegistry, frame: &Frame,
 ) -> Result<CompiledPlan, crate::compile::CompileError> {
-    crate::compile::compile_without_pushed_filters(plan, report, registry, frame)
+    crate::compile::compile_without_pushed_filters(
+        plan,
+        report,
+        registry,
+        frame,
+        &crate::compile::DerivedPoints::for_plan(frame, plan, registry),
+    )
 }
 
 /// Outside this crate's own tests, programs are always compiled with R5b.
@@ -1956,14 +1968,26 @@ fn without_pushed_filters(
 fn without_pushed_filters(
     plan: &Plan, report: &ValidationReport, registry: &OperatorRegistry, frame: &Frame,
 ) -> Result<CompiledPlan, crate::compile::CompileError> {
-    compile(plan, report, registry, frame)
+    compile(
+        plan,
+        report,
+        registry,
+        frame,
+        &crate::compile::DerivedPoints::for_plan(frame, plan, registry),
+    )
 }
 
 #[cfg(test)]
 fn without_decision_rewrites(
     plan: &Plan, report: &ValidationReport, registry: &OperatorRegistry, frame: &Frame,
 ) -> Result<CompiledPlan, crate::compile::CompileError> {
-    crate::compile::compile_without_decision_rewrites(plan, report, registry, frame)
+    crate::compile::compile_without_decision_rewrites(
+        plan,
+        report,
+        registry,
+        frame,
+        &crate::compile::DerivedPoints::for_plan(frame, plan, registry),
+    )
 }
 
 /// Outside this crate's own tests, programs are always compiled with the decision-time rewrites.
@@ -1971,7 +1995,13 @@ fn without_decision_rewrites(
 fn without_decision_rewrites(
     plan: &Plan, report: &ValidationReport, registry: &OperatorRegistry, frame: &Frame,
 ) -> Result<CompiledPlan, crate::compile::CompileError> {
-    compile(plan, report, registry, frame)
+    compile(
+        plan,
+        report,
+        registry,
+        frame,
+        &crate::compile::DerivedPoints::for_plan(frame, plan, registry),
+    )
 }
 
 /// How a [`LanedFrameHarness`] delivers what each lane sends to the lanes of the slots downstream.

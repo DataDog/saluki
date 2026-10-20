@@ -506,7 +506,14 @@ mod physical {
         let registry = OperatorRegistry::native();
         let report = Validator::new(&registry, &default_program_catalog()).validate(&plan);
         let frame = Frame::compute(&plan, &registry, &namer).unwrap();
-        let compiled = compile(&plan, &report, &registry, &frame).unwrap();
+        let compiled = compile(
+            &plan,
+            &report,
+            &registry,
+            &frame,
+            &crate::compile::DerivedPoints::for_plan(&frame, &plan, &registry),
+        )
+        .unwrap();
         Explain::of(&plan, &registry, &report)
             .with_rewrites(&compiled.rewrites)
             .with_physical(&compiled.plan, &frame, &compiled.placement)
@@ -545,7 +552,14 @@ mod physical {
         let frame = Frame::compute(&boot, &registry, &namer).unwrap();
         let report = Validator::new(&registry, &default_program_catalog()).validate(plan);
         assert!(report.is_valid(), "{}", report);
-        let compiled = compile(plan, &report, &registry, &frame).unwrap();
+        let compiled = compile(
+            plan,
+            &report,
+            &registry,
+            &frame,
+            &crate::compile::DerivedPoints::for_plan(&frame, plan, &registry),
+        )
+        .unwrap();
         let explain = Explain::of(plan, &registry, &report)
             .with_rewrites(&compiled.rewrites)
             .with_physical(&compiled.plan, &frame, &compiled.placement);
@@ -1089,7 +1103,14 @@ mod resources {
         let catalog = changed_catalog(plan);
         let report = Validator::new(&registry, &catalog).validate(plan);
         assert!(report.is_valid(), "{}", report);
-        let compiled = compile(plan, &report, &registry, &frame).unwrap();
+        let compiled = compile(
+            plan,
+            &report,
+            &registry,
+            &frame,
+            &crate::compile::DerivedPoints::for_plan(&frame, plan, &registry),
+        )
+        .unwrap();
         Explain::of(plan, &registry, &report)
             .with_resource_changes(plan, &boot)
             .with_rewrites(&compiled.rewrites)
@@ -1402,7 +1423,14 @@ mod lanes {
         .unwrap();
         let report = Validator::new(&registry, &default_program_resources_catalog()).validate(&plan);
         assert!(report.is_valid(), "{}", report);
-        let compiled = compile(&plan, &report, &registry, &frame).unwrap();
+        let compiled = compile(
+            &plan,
+            &report,
+            &registry,
+            &frame,
+            &crate::compile::DerivedPoints::for_plan(&frame, &plan, &registry),
+        )
+        .unwrap();
         Explain::of(&plan, &registry, &report)
             .with_rewrites(&compiled.rewrites)
             .with_physical(&compiled.plan, &frame, &compiled.placement)

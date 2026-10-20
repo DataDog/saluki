@@ -309,7 +309,14 @@ fn a_new_or_rebound_output_on_a_frame_host_places_as_a_lease_with_no_new_structu
         "{}",
         report
     );
-    let compiled = compile(&routed, &report, &registry, &frame).unwrap();
+    let compiled = compile(
+        &routed,
+        &report,
+        &registry,
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, &routed, &registry),
+    )
+    .unwrap();
     let enrich = frame
         .slots()
         .iter()

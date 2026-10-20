@@ -236,8 +236,14 @@ async fn compiling_a_lowered_default_program_folds_only_filters_with_nothing_in_
             &crate::programmable_metrics::test_support::frame_hosts(),
         )
         .unwrap_or_else(|error| panic!("{}: {}", name, error));
-        let compiled =
-            compile(&lowered.plan, &report, &registry, &frame).unwrap_or_else(|error| panic!("{}: {}", name, error));
+        let compiled = compile(
+            &lowered.plan,
+            &report,
+            &registry,
+            &frame,
+            &saluki_metric_plan::compile::DerivedPoints::for_plan(&frame, &lowered.plan, &registry),
+        )
+        .unwrap_or_else(|error| panic!("{}: {}", name, error));
         assert!(compiled.converged, "{}", name);
         let records = compiled.logical_rewrites();
         assert!(

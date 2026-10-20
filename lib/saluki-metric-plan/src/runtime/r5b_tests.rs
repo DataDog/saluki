@@ -221,7 +221,14 @@ fn pushed(plan: &Plan) -> bool {
     let namer =
         |nodes: &[NodeId]| NativeComponentId::new(format!("region_{}", nodes[0].local())).map_err(|e| e.to_string());
     let frame = Frame::compute(plan, &registry, &namer).unwrap();
-    let compiled = compile(plan, &report(plan), &registry, &frame).unwrap();
+    let compiled = compile(
+        plan,
+        &report(plan),
+        &registry,
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, plan, &registry),
+    )
+    .unwrap();
     compiled
         .rewrites
         .iter()

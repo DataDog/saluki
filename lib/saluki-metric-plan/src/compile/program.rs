@@ -70,8 +70,8 @@ use super::{
         Branch, Decision, DecisionExit, DecisionKind, DecisionNode, ExitTarget, PredicateIndex, PredicateTable,
         EXIT_SET_CAPACITY, MEMO_COST_FLOOR,
     },
-    frame::{ExitIndex, Frame, FrameTarget, SlotId, SlotKind},
-    placement::{EntryKey, Placement, RegionKey, UpstreamPoint},
+    frame::{ExitIndex, Frame, FrameTarget, SlotId},
+    placement::{DerivedPoints, EntryKey, Placement, RegionKey, UpstreamPoint},
     resolve,
     rewrite::r5b::PushedFilterSite,
     Role,
@@ -701,19 +701,6 @@ impl DecisionRewrites {
     }
 }
 
-/// Compiles the program of every slot of a frame for a placed candidate plan, in slot order.
-///
-/// # Errors
-///
-/// Returns an error if a `split`'s predicate has a binding without a resolved value, if a node's parameters cannot be
-/// hashed, if a `tee` has more output ports than a decision has exits ([`EXIT_SET_CAPACITY`]), or if the plan does not
-/// match its placement.
-pub fn compile_programs(
-    plan: &Plan, registry: &OperatorRegistry, frame: &Frame, placement: &Placement,
-) -> Result<Vec<RegionProgram>, CompileError> {
-    compile_programs_with(plan, registry, frame, placement, &[], DecisionRewrites::ALL)
-}
-
 /// A site R5b pushed a filter to, with the filter its state owner judges the records it emits with.
 #[derive(Clone)]
 pub(crate) struct SiteFilter {
@@ -735,9 +722,15 @@ impl fmt::Debug for SiteFilter {
 
 /// Compiles the program of every slot of a frame for a placed candidate plan, in slot order, with the filters R5b
 /// pushed into its state owners, applying the given decision-time rewrites.
+///
+/// # Errors
+///
+/// Returns an error if a `split`'s predicate has a binding without a resolved value, if a node's parameters cannot be
+/// hashed, if a `tee` has more output ports than a decision has exits ([`EXIT_SET_CAPACITY`]), if a state owner has
+/// no derived point, or if the plan does not match its placement.
 pub(crate) fn compile_programs_with(
-    plan: &Plan, registry: &OperatorRegistry, frame: &Frame, placement: &Placement, pushed: &[SiteFilter],
-    rewrites: DecisionRewrites,
+    plan: &Plan, registry: &OperatorRegistry, frame: &Frame, placement: &Placement, derived: &DerivedPoints,
+    pushed: &[SiteFilter], rewrites: DecisionRewrites,
 ) -> Result<Vec<RegionProgram>, CompileError> {
     let graph = resolve(plan, registry).map_err(|problems| CompileError::Internal {
         message: format!("a placed plan has structural problems: {}", problems.join("; ")),
@@ -756,6 +749,7 @@ pub(crate) fn compile_programs_with(
         slot_of: &slot_of,
         frame,
         placement,
+        derived,
         pushed,
         rewrites,
     };
@@ -769,6 +763,7 @@ struct Context<'a, 'p> {
     slot_of: &'a [Option<SlotId>],
     frame: &'a Frame,
     placement: &'a Placement,
+    derived: &'a DerivedPoints,
     pushed: &'a [SiteFilter],
     rewrites: DecisionRewrites,
 }
@@ -921,9 +916,20 @@ impl Context<'_, '_> {
             .filter(|exit| !exit.progress_points.is_empty())
             .map(|exit| (StepExit::Slot(exit.index), exit.progress_points.clone()))
             .collect();
-        let output_points = match &frame_slot.kind {
-            SlotKind::Isolation { output_points, .. } if !members.is_empty() => output_points.clone(),
-            _ => Vec::new(),
+        let output_points = match members.iter().find(|&&node| self.roles[node] == Role::Isolated) {
+            Some(&owner) => {
+                let id = graph.id(owner);
+                let lanes = usize::from(frame_slot.lanes);
+                match self.derived.get(id) {
+                    Some(points) if points.len() >= lanes => points[..lanes].to_vec(),
+                    _ => {
+                        return Err(CompileError::Internal {
+                            message: format!("state owner `{}` has no derived point for each lane of its region", id),
+                        })
+                    }
+                }
+            }
+            None => Vec::new(),
         };
         let state_upstream = placed
             .regions

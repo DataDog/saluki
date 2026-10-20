@@ -456,7 +456,14 @@ fn compiling_a_plan_records_r5a_for_explain() {
         Vec::new(),
     )
     .unwrap();
-    let compiled = crate::compile::compile(&case.plan, &case.report, registry(), &case.frame).unwrap();
+    let compiled = crate::compile::compile(
+        &case.plan,
+        &case.report,
+        registry(),
+        &case.frame,
+        &crate::compile::DerivedPoints::for_plan(&case.frame, &case.plan, registry()),
+    )
+    .unwrap();
     assert!(edges(&compiled.plan).contains(&"src.metrics -> a_f.in".to_string()));
     let report = Validator::new(registry(), &crate::compile::rewrite::harness::catalog()).validate(&compiled.plan);
     let text = crate::explain::Explain::of(&compiled.plan, registry(), &report)
@@ -1022,7 +1029,14 @@ fn a_filter_moved_above_an_operator_that_sheds_relies_on_the_capacity_rule() {
     }
 
     // `explain` flags the reliance.
-    let compiled = crate::compile::compile(&case.plan, &case.report, registry(), &case.frame).unwrap();
+    let compiled = crate::compile::compile(
+        &case.plan,
+        &case.report,
+        registry(),
+        &case.frame,
+        &crate::compile::DerivedPoints::for_plan(&case.frame, &case.plan, registry()),
+    )
+    .unwrap();
     let report = Validator::new(registry(), &crate::compile::rewrite::harness::catalog()).validate(&compiled.plan);
     let text = crate::explain::Explain::of(&compiled.plan, registry(), &report)
         .with_rewrites(&compiled.rewrites)

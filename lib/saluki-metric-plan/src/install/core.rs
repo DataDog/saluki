@@ -1668,9 +1668,20 @@ impl InstallerCore {
         // The default program runs even when validation reports errors in it, reported degraded by the caller: it is
         // what native configuration says, and nothing else could run in its place. An artifact must validate.
         let compiled = if candidate.report.is_valid() {
-            compile(&candidate.plan, &candidate.report, &self.registry, &self.frame)
+            compile(
+                &candidate.plan,
+                &candidate.report,
+                &self.registry,
+                &self.frame,
+                &crate::compile::DerivedPoints::for_plan(&self.frame, &candidate.plan, &self.registry),
+            )
         } else if matches!(candidate.origin, Origin::DefaultProgram { .. }) {
-            compile_unvalidated(&candidate.plan, &self.registry, &self.frame)
+            compile_unvalidated(
+                &candidate.plan,
+                &self.registry,
+                &self.frame,
+                &crate::compile::DerivedPoints::for_plan(&self.frame, &candidate.plan, &self.registry),
+            )
         } else {
             return Err(Rejection::Invalid {
                 problems: candidate.report.errors().map(ToString::to_string).collect(),

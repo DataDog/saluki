@@ -787,7 +787,14 @@ mod tests {
         let registry = OperatorRegistry::native();
         let report = Validator::new(&registry, &default_program_catalog()).validate(&plan);
         let frame = Frame::compute(&plan, &registry, &namer).unwrap();
-        let compiled = compile(&plan, &report, &registry, &frame).unwrap();
+        let compiled = compile(
+            &plan,
+            &report,
+            &registry,
+            &frame,
+            &crate::compile::DerivedPoints::for_plan(&frame, &plan, &registry),
+        )
+        .unwrap();
         let physical = PhysicalPlan::of(&compiled.plan, &frame, &compiled.placement);
 
         let agg = physical.slots.iter().find(|slot| slot.name == "dsd_agg").unwrap();

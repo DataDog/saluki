@@ -2499,9 +2499,20 @@ impl Installer {
         // deterministic, and the active plan compiled into the frame when it was installed. Its explain document goes
         // without the physical sections otherwise.
         let compiled = if report.is_valid() {
-            compile(&plan, &report, &self.registry, self.core.frame())
+            compile(
+                &plan,
+                &report,
+                &self.registry,
+                self.core.frame(),
+                &saluki_metric_plan::compile::DerivedPoints::for_plan(self.core.frame(), &plan, &self.registry),
+            )
         } else {
-            compile_unvalidated(&plan, &self.registry, self.core.frame())
+            compile_unvalidated(
+                &plan,
+                &self.registry,
+                self.core.frame(),
+                &saluki_metric_plan::compile::DerivedPoints::for_plan(self.core.frame(), &plan, &self.registry),
+            )
         };
         let explain = match compiled {
             Ok(compiled) => explain.with_physical(&compiled.plan, self.core.frame(), &compiled.placement),

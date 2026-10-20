@@ -443,7 +443,14 @@ fn every_lanes_point_has_an_entry_of_its_own_with_the_steps_of_the_first() {
     let registry = OperatorRegistry::native();
     let report = Validator::new(&registry, &default_program_catalog()).validate(&plan);
     let frame = frame_on(lanes(3, 2, 2), false).unwrap();
-    let compiled = compile(&plan, &report, &registry, &frame).unwrap();
+    let compiled = compile(
+        &plan,
+        &report,
+        &registry,
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, &plan, &registry),
+    )
+    .unwrap();
     let pre = slot_named(&frame, "dsd_pre_aggregation");
     let placed = compiled.placement.slot(pre.id).unwrap();
     assert_eq!(
@@ -572,7 +579,14 @@ fn a_state_owner_fed_straight_by_a_point_with_one_lane_keeps_its_state_on_one_la
         let point_info = &frame.admission_points()[0];
         assert_eq!((point_info.lanes, point_info.routing), (1, PointRouting::One));
 
-        let compiled = compile(&plan, &validated(&plan, &registry), &registry, &frame).unwrap();
+        let compiled = compile(
+            &plan,
+            &validated(&plan, &registry),
+            &registry,
+            &frame,
+            &crate::compile::DerivedPoints::for_plan(&frame, &plan, &registry),
+        )
+        .unwrap();
         let program = &compiled.programs[agg.id.get()];
         let keys = program.entries().iter().map(|entry| entry.key).collect::<Vec<_>>();
         assert_eq!(
@@ -623,7 +637,14 @@ fn a_candidate_passes_every_lanes_batches_through_the_keyed_exit_to_the_state_la
         json!([dogstatsd("src"), aggregate("dsd_agg"), emit()]),
         &[("src.metrics", "dsd_agg.in"), ("dsd_agg.out", "emit.in")],
     );
-    let compiled = compile(&straight, &validated(&straight, &registry), &registry, &frame).unwrap();
+    let compiled = compile(
+        &straight,
+        &validated(&straight, &registry),
+        &registry,
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, &straight, &registry),
+    )
+    .unwrap();
     let placed = compiled.placement.slot(passing.id).unwrap();
     assert!(placed.nodes.is_empty());
     assert_eq!(
@@ -701,7 +722,13 @@ fn without_pipelining_aggregation_fed_straight_by_dogstatsd_places_through_the_o
     );
 
     let frame = frame_on(lanes(2, 2, 2), false).unwrap();
-    let compiled = compile_unvalidated(&straight, &registry, &frame).unwrap();
+    let compiled = compile_unvalidated(
+        &straight,
+        &registry,
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, &straight, &registry),
+    )
+    .unwrap();
     let pre = slot_named(&frame, "dsd_pre_aggregation");
     let to_agg = exit_to(&frame, pre, "dsd_agg");
     assert!(compiled.placement.slot(pre.id).unwrap().nodes.is_empty());
@@ -1630,8 +1657,13 @@ fn check_frame_on_lanes(plan: &Plan, asked: LanePolicy) -> Result<(Frame, bool),
 
     // Placement and programs on lanes: the boot plan compiles into its frame, and every slot a point's edge leads to
     // has an entry for each of the point's lanes, all running the first lane's steps.
-    let compiled = compile_unvalidated(plan, &registry, &frame)
-        .map_err(|error| TestCaseError::fail(format!("the boot plan does not compile on lanes: {}", error)))?;
+    let compiled = compile_unvalidated(
+        plan,
+        &registry,
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, plan, &registry),
+    )
+    .map_err(|error| TestCaseError::fail(format!("the boot plan does not compile on lanes: {}", error)))?;
     for point in frame.admission_points() {
         let Some(FrameTarget::Slot(target)) = point.route else {
             continue;

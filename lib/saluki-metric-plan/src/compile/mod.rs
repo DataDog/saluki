@@ -79,8 +79,8 @@ pub use self::frame::{
     PointRouting, Site, Slot, SlotId, SlotKind, SlotNamer,
 };
 pub use self::placement::{
-    place, place_unvalidated, ClockId, EntryKey, MissingCapability, PlacedEntry, Placement, PlacementError,
-    PlacementProblem, RegionKey, RegionPlacement, SlotPlacement, UpstreamPoint,
+    place, place_unvalidated, state_owners, ClockId, DerivedPoints, EntryKey, MissingCapability, PlacedEntry,
+    Placement, PlacementError, PlacementProblem, RegionKey, RegionPlacement, SlotPlacement, UpstreamPoint,
 };
 pub use self::program::{
     CompileError, DecisionIndex, EntryProgram, EntrySource, KernelIndex, KernelKey, LeaseTable, LineageInfo,
@@ -146,32 +146,15 @@ impl CompiledPlan {
 /// Places a validated candidate plan into a frame and compiles the program of every slot.
 ///
 /// The logical rewrites run first ([`optimize`]), against the frame; the rewritten plan is placed and compiled.
+/// `derived` gives every state owner of the plan its derived point ([`DerivedPoints::assign`]).
 ///
 /// # Errors
 ///
 /// Returns an error if the plan is not valid, if it cannot be placed into the frame (see [`place`]), or if a program
-/// cannot be compiled, for example because a predicate has a configuration binding without a resolved value.
+/// cannot be compiled, for example because a predicate has a configuration binding without a resolved value, or a
+/// state owner has no derived point in `derived`.
 pub fn compile(
-    plan: &Plan, report: &ValidationReport, registry: &OperatorRegistry, frame: &Frame,
-) -> Result<CompiledPlan, CompileError> {
-    let placement = place(plan, report, registry, frame).map_err(|source| CompileError::Placement { source })?;
-    compile_placed(plan, Some(report), registry, frame, placement, DecisionRewrites::ALL)
-}
-
-/// Compiles a validated candidate plan as [`compile`] does, but without the decision-time rewrites (R2, R3's folding of
-/// bound constants, R4): the original that property tests compare their effect with.
-#[cfg(test)]
-pub(crate) fn compile_without_decision_rewrites(
-    plan: &Plan, report: &ValidationReport, registry: &OperatorRegistry, frame: &Frame,
-) -> Result<CompiledPlan, CompileError> {
-    let placement = place(plan, report, registry, frame).map_err(|source| CompileError::Placement { source })?;
-    compile_placed(plan, Some(report), registry, frame, placement, DecisionRewrites::NONE)
-}
-
-/// Compiles a validated candidate plan as [`compile`] does, but without R5b: no filter is pushed into a state owner.
-#[cfg(test)]
-pub(crate) fn compile_without_pushed_filters(
-    plan: &Plan, report: &ValidationReport, registry: &OperatorRegistry, frame: &Frame,
+    plan: &Plan, report: &ValidationReport, registry: &OperatorRegistry, frame: &Frame, derived: &DerivedPoints,
 ) -> Result<CompiledPlan, CompileError> {
     let placement = place(plan, report, registry, frame).map_err(|source| CompileError::Placement { source })?;
     compile_placed(
@@ -179,6 +162,42 @@ pub(crate) fn compile_without_pushed_filters(
         Some(report),
         registry,
         frame,
+        derived,
+        placement,
+        DecisionRewrites::ALL,
+    )
+}
+
+/// Compiles a validated candidate plan as [`compile`] does, but without the decision-time rewrites (R2, R3's folding of
+/// bound constants, R4): the original that property tests compare their effect with.
+#[cfg(test)]
+pub(crate) fn compile_without_decision_rewrites(
+    plan: &Plan, report: &ValidationReport, registry: &OperatorRegistry, frame: &Frame, derived: &DerivedPoints,
+) -> Result<CompiledPlan, CompileError> {
+    let placement = place(plan, report, registry, frame).map_err(|source| CompileError::Placement { source })?;
+    compile_placed(
+        plan,
+        Some(report),
+        registry,
+        frame,
+        derived,
+        placement,
+        DecisionRewrites::NONE,
+    )
+}
+
+/// Compiles a validated candidate plan as [`compile`] does, but without R5b: no filter is pushed into a state owner.
+#[cfg(test)]
+pub(crate) fn compile_without_pushed_filters(
+    plan: &Plan, report: &ValidationReport, registry: &OperatorRegistry, frame: &Frame, derived: &DerivedPoints,
+) -> Result<CompiledPlan, CompileError> {
+    let placement = place(plan, report, registry, frame).map_err(|source| CompileError::Placement { source })?;
+    compile_placed(
+        plan,
+        Some(report),
+        registry,
+        frame,
+        derived,
         placement,
         DecisionRewrites::WITHOUT_PUSHED_FILTERS,
     )
@@ -196,17 +215,17 @@ pub(crate) fn compile_without_pushed_filters(
 /// Returns an error if the plan has structural problems, if it cannot be placed into the frame, or if a program cannot
 /// be compiled.
 pub fn compile_unvalidated(
-    plan: &Plan, registry: &OperatorRegistry, frame: &Frame,
+    plan: &Plan, registry: &OperatorRegistry, frame: &Frame, derived: &DerivedPoints,
 ) -> Result<CompiledPlan, CompileError> {
     let placement = place_unvalidated(plan, registry, frame).map_err(|source| CompileError::Placement { source })?;
-    compile_placed(plan, None, registry, frame, placement, DecisionRewrites::ALL)
+    compile_placed(plan, None, registry, frame, derived, placement, DecisionRewrites::ALL)
 }
 
 /// Rewrites a placed candidate, places the result, and compiles its programs: the one path from a candidate to its
 /// programs. `report` is the candidate's validation report, if it is valid.
 fn compile_placed(
-    plan: &Plan, report: Option<&ValidationReport>, registry: &OperatorRegistry, frame: &Frame, placement: Placement,
-    decision_rewrites: DecisionRewrites,
+    plan: &Plan, report: Option<&ValidationReport>, registry: &OperatorRegistry, frame: &Frame,
+    derived: &DerivedPoints, placement: Placement, decision_rewrites: DecisionRewrites,
 ) -> Result<CompiledPlan, CompileError> {
     let optimized = match report {
         Some(report) => optimize(plan, &RewriteContext::new(registry, frame, report)),
@@ -231,11 +250,18 @@ fn compile_placed(
     };
     let pushed = site_filters(&sites)?;
     let (pushed_filters, pushed_records) = reconcile_pushed(sites, records, &pushed);
-    let programs =
-        program::compile_programs_with(&optimized.plan, registry, frame, &placement, &pushed, decision_rewrites)?
-            .into_iter()
-            .map(Arc::new)
-            .collect::<Vec<_>>();
+    let programs = program::compile_programs_with(
+        &optimized.plan,
+        registry,
+        frame,
+        &placement,
+        derived,
+        &pushed,
+        decision_rewrites,
+    )?
+    .into_iter()
+    .map(Arc::new)
+    .collect::<Vec<_>>();
     let mut rewrites = optimized.records;
     rewrites.extend(pushed_records);
     rewrites.extend(

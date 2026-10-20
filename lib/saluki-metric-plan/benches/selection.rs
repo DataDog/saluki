@@ -310,7 +310,14 @@ fn compiled(policies: usize) -> Compiled {
     let report = Validator::new(&registry, &catalog).validate(&plan);
     assert!(report.is_valid(), "{}", report);
     let frame = Frame::compute(&plan, &registry, &namer).unwrap();
-    let compiled = compile(&plan, &report, &registry, &frame).unwrap();
+    let compiled = compile(
+        &plan,
+        &report,
+        &registry,
+        &frame,
+        &saluki_metric_plan::compile::DerivedPoints::for_plan(&frame, &plan, &registry),
+    )
+    .unwrap();
     let [program] = compiled.programs.as_slice() else {
         panic!("the policy region is one slot")
     };
@@ -580,7 +587,14 @@ impl DefaultProgram {
         let report = Validator::new(&registry, catalog).validate(plan);
         assert!(report.is_valid(), "{}", report);
         let frame = Frame::compute(plan, &registry, &default_program_slot_name).unwrap();
-        let compiled = compile(plan, &report, &registry, &frame).unwrap();
+        let compiled = compile(
+            plan,
+            &report,
+            &registry,
+            &frame,
+            &saluki_metric_plan::compile::DerivedPoints::for_plan(&frame, plan, &registry),
+        )
+        .unwrap();
         Self { frame, compiled }
     }
 

@@ -304,8 +304,22 @@ fn the_composed_plan_places_onto_the_boot_frame_exactly_as_the_boot_plan_does() 
         assert_eq!(candidate.site(&node.id), boot.site(&node.id), "`{}`", node.id);
     }
     // Compiled, every slot keeps every kernel: the same programs, the same exits used.
-    let boot = compile(&plan, &boot_report, &registry(), &frame).unwrap();
-    let candidate = compile(&composed.plan, &composed.report, &registry(), &frame).unwrap();
+    let boot = compile(
+        &plan,
+        &boot_report,
+        &registry(),
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, &plan, &registry()),
+    )
+    .unwrap();
+    let candidate = compile(
+        &composed.plan,
+        &composed.report,
+        &registry(),
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, &composed.plan, &registry()),
+    )
+    .unwrap();
     assert_eq!(candidate.placement, boot.placement);
     let reuse = kernel_reuse(Some(&boot.programs), &candidate.programs);
     assert_eq!(reuse.len(), frame.slots().len());
@@ -335,7 +349,14 @@ fn a_routing_only_edit_composes_validates_places_and_retains_aggregation_with_no
     }
 
     let frame = frame(&plan);
-    compile(&composed.plan, &composed.report, &registry(), &frame).unwrap();
+    compile(
+        &composed.plan,
+        &composed.report,
+        &registry(),
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, &composed.plan, &registry()),
+    )
+    .unwrap();
 
     let changes = diff(&plan, &composed.plan, &registry());
     let aggregation = changes
@@ -972,7 +993,13 @@ fn outcome(composed: Result<Composed, ComposeError>) -> String {
     match composed {
         Err(error) => format!("refused: {}", error),
         Ok(composed) if !composed.report.is_valid() => format!("invalid: {}", composed.report),
-        Ok(composed) => match compile(&composed.plan, &composed.report, &registry(), &frame) {
+        Ok(composed) => match compile(
+            &composed.plan,
+            &composed.report,
+            &registry(),
+            &frame,
+            &crate::compile::DerivedPoints::for_plan(&frame, &composed.plan, &registry()),
+        ) {
             Ok(_) => "places".to_string(),
             Err(crate::compile::CompileError::Placement { source }) => {
                 format!("unplaceable {:?}: {}", source.capabilities(), source)

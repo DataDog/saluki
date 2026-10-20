@@ -452,6 +452,93 @@ impl Placement {
     }
 }
 
+/// The **derived point** of every state owner: the IDs that stamp its time-driven output, one per lane of its region,
+/// which a state owner downstream of it has upstream.
+///
+/// A boot state owner keeps the points the frame numbered for its boot slot ([`Frame::boot_output_points`]); any other
+/// state owner gets one point, numbered after them ([`Frame::derived_point_base`]) and after every point already
+/// assigned. The installer keeps one instance for its life, assigns the state owners of each candidate before compiling
+/// it, and removes a node's points once no live generation has it, so that a state owner keeps its points while any
+/// generation runs it.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DerivedPoints {
+    points: BTreeMap<NodeId, Vec<AdmissionPointId>>,
+}
+
+impl DerivedPoints {
+    /// Creates an empty set of derived points.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the derived points of every state owner of a plan, assigned afresh: what a plan compiled on its own,
+    /// such as the boot plan, has.
+    ///
+    /// A plan with structural problems has no state owners to assign; compiling it reports them.
+    pub fn for_plan(frame: &Frame, plan: &Plan, registry: &OperatorRegistry) -> Self {
+        let mut points = Self::new();
+        points.assign(frame, &state_owners(plan, registry));
+        points
+    }
+
+    /// Assigns points to every state owner of `owners` that has none, in the order given, keeping those already
+    /// assigned.
+    pub fn assign<'a>(&mut self, frame: &Frame, owners: impl IntoIterator<Item = &'a NodeId>) {
+        for owner in owners {
+            if self.points.contains_key(owner) {
+                continue;
+            }
+            let points = match frame.boot_output_points(owner) {
+                Some(points) => points.to_vec(),
+                None => vec![AdmissionPointId::new(self.next(frame))],
+            };
+            self.points.insert(owner.clone(), points);
+        }
+    }
+
+    /// Returns the points of a state owner, one per lane of its region, if it has any.
+    pub fn get(&self, node: &NodeId) -> Option<&[AdmissionPointId]> {
+        self.points.get(node).map(Vec::as_slice)
+    }
+
+    /// Returns every state owner with its points, in node order.
+    pub fn iter(&self) -> impl Iterator<Item = (&NodeId, &[AdmissionPointId])> {
+        self.points.iter().map(|(node, points)| (node, points.as_slice()))
+    }
+
+    /// Keeps only the points of the state owners `keep` accepts.
+    pub fn retain(&mut self, mut keep: impl FnMut(&NodeId) -> bool) {
+        self.points.retain(|node, _| keep(node));
+    }
+
+    /// Returns the next free ID: after the frame's points and every point assigned.
+    fn next(&self, frame: &Frame) -> u32 {
+        self.points
+            .values()
+            .flatten()
+            .map(|point| point.get().saturating_add(1))
+            .fold(frame.derived_point_base(), u32::max)
+    }
+}
+
+/// Returns the state owners of a plan, in plan order: every node run in a region whose operator keeps state. Empty for
+/// a plan with structural problems.
+pub fn state_owners(plan: &Plan, registry: &OperatorRegistry) -> Vec<NodeId> {
+    let Ok(graph) = resolve(plan, registry) else {
+        return Vec::new();
+    };
+    let roles = super::roles(&graph);
+    (0..graph.nodes.len())
+        .filter(|&node| !matches!(roles[node], Role::Fixed | Role::Terminal))
+        .filter(|&node| {
+            graph
+                .op(node)
+                .is_some_and(|op| op.contract().state != StateContract::None)
+        })
+        .map(|node| graph.id(node).clone())
+        .collect()
+}
+
 /// Places a validated candidate plan into a frame.
 ///
 /// # Errors

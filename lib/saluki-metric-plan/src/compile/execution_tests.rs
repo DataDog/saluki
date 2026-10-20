@@ -101,7 +101,14 @@ impl Executor {
         let registry = OperatorRegistry::native();
         let report = Validator::new(&registry, &default_program_catalog()).validate(plan);
         let frame = Frame::compute_with(plan, &registry, &namer, &FrameHosts::new(), &lanes, options).unwrap();
-        let compiled = compile(plan, &report, &registry, &frame).unwrap();
+        let compiled = compile(
+            plan,
+            &report,
+            &registry,
+            &frame,
+            &crate::compile::DerivedPoints::for_plan(&frame, plan, &registry),
+        )
+        .unwrap();
         assert!(
             frame.slots().iter().any(Slot::is_isolation),
             "aggregation runs in an isolation slot"
@@ -841,8 +848,14 @@ fn compiled_programs_on_lanes_deliver_what_the_interpreter_delivers_and_keep_eac
 /// Compiles a random plan of the rewrite harness, with every logical rewrite, and runs its programs over the trace
 /// without capacity bounds; returns what its outputs received and whether a logical rewrite applied.
 fn run_compiled(case: &Case, trace: &TraceParams) -> Result<(OutputPoints, bool), String> {
-    let compiled = compile(&case.plan, &case.report, harness::registry(), &case.frame)
-        .map_err(|error| format!("the plan does not compile: {}", error))?;
+    let compiled = compile(
+        &case.plan,
+        &case.report,
+        harness::registry(),
+        &case.frame,
+        &crate::compile::DerivedPoints::for_plan(&case.frame, &case.plan, harness::registry()),
+    )
+    .map_err(|error| format!("the plan does not compile: {}", error))?;
     let rewritten = compiled.rewrites.iter().any(|record| record.is_applied());
     // Kernels with caches need a Tokio runtime to be built in, as the interpreter's are.
     let runtime = tokio::runtime::Builder::new_current_thread()

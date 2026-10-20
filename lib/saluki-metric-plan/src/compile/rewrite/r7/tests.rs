@@ -327,7 +327,14 @@ fn the_default_program_writes_its_predicates_in_the_static_order() {
 fn explain_lists_an_applied_reordering() {
     let (plan, report, frame, registry) =
         split_plan(json!({"all": [{"tag": {"key": "env", "value": {"eq": "prod"}}}, {"kind_in": ["gauge"]}]}));
-    let compiled = compile(&plan, &report, &registry, &frame).unwrap();
+    let compiled = compile(
+        &plan,
+        &report,
+        &registry,
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, &plan, &registry),
+    )
+    .unwrap();
     let r7 = compiled
         .rewrites
         .iter()
@@ -358,12 +365,25 @@ fn a_reordered_program_has_a_fingerprint_of_its_own_so_that_regions_run_it() {
     // new order while the candidate's records said it did.
     let (plan, report, frame, registry) =
         split_plan(json!({"all": [{"tag": {"key": "env", "value": {"eq": "prod"}}}, {"kind_in": ["gauge"]}]}));
-    let reordered = compile(&plan, &report, &registry, &frame).unwrap();
+    let reordered = compile(
+        &plan,
+        &report,
+        &registry,
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, &plan, &registry),
+    )
+    .unwrap();
     assert!(reordered
         .rewrites
         .iter()
         .any(|record| record.id == RewriteId::R7 && record.is_applied()));
-    let written = crate::compile::compile_unvalidated(&plan, &registry, &frame).unwrap();
+    let written = crate::compile::compile_unvalidated(
+        &plan,
+        &registry,
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, &plan, &registry),
+    )
+    .unwrap();
     assert!(written.rewrites.is_empty());
 
     let runs_s = |program: &crate::compile::RegionProgram| {
@@ -380,7 +400,14 @@ fn a_reordered_program_has_a_fingerprint_of_its_own_so_that_regions_run_it() {
         assert_eq!(slot.unchanged, !runs_s(program), "slot {}", slot.slot);
     }
     // Compiling again gives the same fingerprints: they change with the order, and nothing else here.
-    let again = compile(&plan, &report, &registry, &frame).unwrap();
+    let again = compile(
+        &plan,
+        &report,
+        &registry,
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, &plan, &registry),
+    )
+    .unwrap();
     for (a, b) in reordered.programs.iter().zip(&again.programs) {
         assert_eq!(a.fingerprint(), b.fingerprint());
     }

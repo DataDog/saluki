@@ -1506,7 +1506,14 @@ fn an_invalid_candidate_is_not_placed() {
 
 fn compiled(plan: &Plan, frame: &Frame) -> CompiledPlan {
     let report = validated(plan, &default_program_catalog());
-    compile(plan, &report, &OperatorRegistry::native(), frame).unwrap()
+    compile(
+        plan,
+        &report,
+        &OperatorRegistry::native(),
+        frame,
+        &crate::compile::DerivedPoints::for_plan(frame, plan, &OperatorRegistry::native()),
+    )
+    .unwrap()
 }
 
 fn kernel_nodes(program: &RegionProgram) -> Vec<(String, &'static str, usize)> {
@@ -1893,7 +1900,14 @@ fn a_split_rejoined_by_a_merge_concatenates_both_branches() {
     let registry = OperatorRegistry::native();
     let report = validated(&plan, &synthetic_catalog());
     let frame = Frame::compute(&plan, &registry, &first_node_namer).unwrap();
-    let compiled = compile(&plan, &report, &registry, &frame).unwrap();
+    let compiled = compile(
+        &plan,
+        &report,
+        &registry,
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, &plan, &registry),
+    )
+    .unwrap();
     let [program] = compiled.programs.as_slice() else {
         panic!("one program")
     };
@@ -1935,7 +1949,14 @@ fn an_unresolved_predicate_binding_fails_compilation() {
     );
     let report = validated(&plan, &catalog);
     let frame = Frame::compute(&plan, &registry, &first_node_namer).unwrap();
-    let error = compile(&plan, &report, &registry, &frame).unwrap_err();
+    let error = compile(
+        &plan,
+        &report,
+        &registry,
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, &plan, &registry),
+    )
+    .unwrap_err();
     assert!(
         matches!(&error, CompileError::UnresolvedBinding { node, .. } if node == &id("s")),
         "{}",

@@ -1016,7 +1016,14 @@ impl Direct {
     fn compiled(registry: &OperatorRegistry, frame: &Frame, plan: &Plan) -> crate::compile::CompiledPlan {
         let report = Validator::new(registry, &catalog()).validate(plan);
         assert!(report.is_valid(), "the fixture plan is invalid:\n{}", report);
-        crate::compile::compile(plan, &report, registry, frame).unwrap()
+        crate::compile::compile(
+            plan,
+            &report,
+            registry,
+            frame,
+            &crate::compile::DerivedPoints::for_plan(frame, plan, registry),
+        )
+        .unwrap()
     }
 
     fn header(&self, at: AdmissionTime) -> BatchHeader {
@@ -1833,7 +1840,14 @@ fn an_isolation_slots_bounds_hold_its_state_owners_state_at_its_top_level_and_on
     let plan = plan();
     let registry = OperatorRegistry::native();
     let frame = Frame::compute(&plan, &registry, &crate::testing::default_program_slot_name).unwrap();
-    let compiled = crate::compile::compile(&plan, &report(&plan), &registry, &frame).unwrap();
+    let compiled = crate::compile::compile(
+        &plan,
+        &report(&plan),
+        &registry,
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, &plan, &registry),
+    )
+    .unwrap();
     let slot = &frame.slots()[0];
     assert_eq!(slot.name.as_str(), "dsd_agg");
     let program = &compiled.programs[0];
@@ -1924,7 +1938,14 @@ fn an_artifacts_state_owner_at_the_native_context_limit_is_within_the_artifact_m
     let plan = plan();
     let registry = OperatorRegistry::native();
     let frame = Frame::compute(&plan, &registry, &crate::testing::default_program_slot_name).unwrap();
-    let compiled = crate::compile::compile(&plan, &report(&plan), &registry, &frame).unwrap();
+    let compiled = crate::compile::compile(
+        &plan,
+        &report(&plan),
+        &registry,
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, &plan, &registry),
+    )
+    .unwrap();
     let bounds = super::RegionBounds::for_slot(&plan, &registry, &compiled.programs[0], &frame.slots()[0]).unwrap();
     let components = saluki_core::accounting::ComponentRegistry::default();
     saluki_core::accounting::MemoryBounds::specify_bounds(
@@ -1944,7 +1965,14 @@ fn a_region_refuses_a_program_whose_kernels_do_not_fit_its_kind_of_slot_and_an_i
     let compile_slot0 = |plan: &Plan| {
         let registry = OperatorRegistry::native();
         let frame = Frame::compute(plan, &registry, &crate::testing::default_program_slot_name).unwrap();
-        let compiled = crate::compile::compile(plan, &report(plan), &registry, &frame).unwrap();
+        let compiled = crate::compile::compile(
+            plan,
+            &report(plan),
+            &registry,
+            &frame,
+            &crate::compile::DerivedPoints::for_plan(&frame, plan, &registry),
+        )
+        .unwrap();
         (frame.slots()[0].clone(), Arc::clone(&compiled.programs[0]))
     };
     let (isolation, state_program) = compile_slot0(&plan());

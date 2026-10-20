@@ -294,7 +294,14 @@ fn frame_of(plan: &Plan) -> Frame {
 fn compiled(plan: &Plan, frame: &Frame) -> CompiledPlan {
     let report = Validator::new(&registry(), &catalog()).validate(plan);
     assert!(report.is_valid(), "test plan is invalid:\n{}", report);
-    compile(plan, &report, &registry(), frame).unwrap()
+    compile(
+        plan,
+        &report,
+        &registry(),
+        frame,
+        &crate::compile::DerivedPoints::for_plan(frame, plan, &registry()),
+    )
+    .unwrap()
 }
 
 /// Returns a generation token that records its retirement in `retired`.
@@ -537,7 +544,15 @@ fn exits_to_encode_hosts_write_the_lease_of_the_generations_lease_table_as_the_e
     let frame = Frame::compute_with_hosts(&plan, &registry(), &namer, &hosts).unwrap();
     let report = Validator::new(&registry(), &catalog).validate(&plan);
     assert!(report.is_valid(), "{}", report);
-    let programs = compile(&plan, &report, &registry(), &frame).unwrap().programs;
+    let programs = compile(
+        &plan,
+        &report,
+        &registry(),
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, &plan, &registry()),
+    )
+    .unwrap()
+    .programs;
     // `region_m`'s one exit leads to the output's encode host, named after it.
     assert_eq!(frame.slots()[1].exits[0].name.as_str(), "out_encode");
     assert_eq!(

@@ -575,7 +575,13 @@ fn compiled_in(plan: &Plan, catalog: MemoryCatalog) -> Result<crate::compile::Co
     let namer =
         |nodes: &[NodeId]| NativeComponentId::new(format!("slot_{}", nodes[0].local())).map_err(|e| e.to_string());
     let frame = Frame::compute(plan, &registry, &namer).unwrap();
-    compile(plan, &report, &registry, &frame)
+    compile(
+        plan,
+        &report,
+        &registry,
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, plan, &registry),
+    )
 }
 
 fn nodes_of(decision: &Decision) -> Vec<String> {
@@ -894,7 +900,14 @@ fn the_default_programs_decisions_are_its_filters_its_fan_outs_and_its_gateways(
     let registry = OperatorRegistry::native();
     let report = Validator::new(&registry, &default_program_catalog()).validate(&plan);
     let frame = Frame::compute(&plan, &registry, &default_program_slot_name).unwrap();
-    let compiled = compile(&plan, &report, &registry, &frame).unwrap();
+    let compiled = compile(
+        &plan,
+        &report,
+        &registry,
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, &plan, &registry),
+    )
+    .unwrap();
     let decisions = compiled
         .programs
         .iter()

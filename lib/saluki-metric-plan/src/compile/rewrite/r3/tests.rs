@@ -540,8 +540,21 @@ fn regions_receive_only_metrics_which_folding_a_split_to_its_true_port_relies_on
         1,
     ));
     assert!(fixture.apply().is_some());
-    let compiled = compile(&fixture.plan, &fixture.report, &fixture.registry, &fixture.frame).unwrap();
-    let unfolded = crate::compile::compile_unvalidated(&fixture.plan, &fixture.registry, &fixture.frame).unwrap();
+    let compiled = compile(
+        &fixture.plan,
+        &fixture.report,
+        &fixture.registry,
+        &fixture.frame,
+        &crate::compile::DerivedPoints::for_plan(&fixture.frame, &fixture.plan, &fixture.registry),
+    )
+    .unwrap();
+    let unfolded = crate::compile::compile_unvalidated(
+        &fixture.plan,
+        &fixture.registry,
+        &fixture.frame,
+        &crate::compile::DerivedPoints::for_plan(&fixture.frame, &fixture.plan, &fixture.registry),
+    )
+    .unwrap();
     let decision = unfolded
         .programs
         .iter()
@@ -613,7 +626,14 @@ fn a_fold_the_frame_cannot_run_is_skipped_and_recorded() {
         ],
         1,
     ));
-    let compiled = compile(&fixture.plan, &fixture.report, &fixture.registry, &fixture.frame).unwrap();
+    let compiled = compile(
+        &fixture.plan,
+        &fixture.report,
+        &fixture.registry,
+        &fixture.frame,
+        &crate::compile::DerivedPoints::for_plan(&fixture.frame, &fixture.plan, &fixture.registry),
+    )
+    .unwrap();
     assert_eq!(*compiled.plan, fixture.plan);
     // The logical fold is skipped; the decision that runs the split still folds its constant predicate, inside the
     // compiled program, which needs no edge the frame lacks.
@@ -654,7 +674,14 @@ fn explain_lists_an_applied_fold_with_its_justification_and_telemetry() {
         ],
         1,
     ));
-    let compiled = compile(&fixture.plan, &fixture.report, &fixture.registry, &fixture.frame).unwrap();
+    let compiled = compile(
+        &fixture.plan,
+        &fixture.report,
+        &fixture.registry,
+        &fixture.frame,
+        &crate::compile::DerivedPoints::for_plan(&fixture.frame, &fixture.plan, &fixture.registry),
+    )
+    .unwrap();
     let r3 = compiled
         .rewrites
         .iter()

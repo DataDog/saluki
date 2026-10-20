@@ -932,6 +932,8 @@ pub struct Frame {
     cost_budget: u32,
     lanes: LanePolicy,
     options: FrameOptions,
+    boot_output_points: BTreeMap<NodeId, Vec<AdmissionPointId>>,
+    next_point: u32,
 }
 
 impl Frame {
@@ -1244,6 +1246,7 @@ impl Frame {
         // Isolation slots: their output points, one per lane, numbered after every admission point of the fixed
         // components, and the admission points upstream of them, with the exits that carry those points' progress.
         let mut next_point = next_id;
+        let mut boot_output_points = BTreeMap::new();
         for slot in &mut slots {
             let lanes = slot.lanes;
             if let SlotKind::Isolation { output_points, .. } = &mut slot.kind {
@@ -1251,6 +1254,7 @@ impl Frame {
                     output_points.push(AdmissionPointId::new(next_point));
                     next_point = next_point.checked_add(1).ok_or_else(|| too_large("ports"))?;
                 }
+                boot_output_points.insert(slot.nodes[0].clone(), output_points.clone());
             }
         }
         state_upstream(&graph, &layout, &mut admission_points, &mut slots)?;
@@ -1341,6 +1345,8 @@ impl Frame {
             cost_budget: layout.budget,
             lanes: *lanes,
             options,
+            boot_output_points,
+            next_point,
         })
     }
 
@@ -1358,6 +1364,19 @@ impl Frame {
     /// ID order.
     pub fn admission_point_ids(&self) -> impl Iterator<Item = AdmissionPointId> + '_ {
         self.admission_points.iter().flat_map(AdmissionPointInfo::lane_ids)
+    }
+
+    /// Returns the IDs that stamp a boot state owner's time-driven output in its boot slot, one per lane of the slot,
+    /// in lane order: numbered after every admission point of the fixed components, and only ever seen in headers,
+    /// never registered. `None` for a node that is no state owner of the boot plan.
+    pub fn boot_output_points(&self, node: &NodeId) -> Option<&[AdmissionPointId]> {
+        self.boot_output_points.get(node).map(Vec::as_slice)
+    }
+
+    /// Returns the first ID after every admission point of the fixed components and every boot state owner's output
+    /// point: where the derived points of other state owners start ([`DerivedPoints`][super::DerivedPoints]).
+    pub fn derived_point_base(&self) -> u32 {
+        self.next_point
     }
 
     /// Returns the frame's delivery hosts, each with its encode host.

@@ -285,7 +285,14 @@ fn frame() -> Arc<Frame> {
 fn compiled(plan: &Plan, frame: &Frame) -> crate::compile::CompiledPlan {
     let registry = OperatorRegistry::native();
     let report = Validator::new(&registry, &default_program_catalog()).validate(plan);
-    crate::compile::compile(plan, &report, &registry, frame).unwrap()
+    crate::compile::compile(
+        plan,
+        &report,
+        &registry,
+        frame,
+        &crate::compile::DerivedPoints::for_plan(frame, plan, &registry),
+    )
+    .unwrap()
 }
 
 #[test]
