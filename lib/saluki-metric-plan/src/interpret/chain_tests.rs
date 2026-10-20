@@ -362,12 +362,15 @@ fn trace_17_a_second_aggregation_a_later_program_drops_crosses_at_the_first_ones
         installs(&run),
         outcomes(&[(0, "active 1"), (4, "cut 2 at 60000"), (8, "cut 3 at 120000")])
     );
+    // A flush emits its contexts in no particular order.
+    let mut b = delivered(&run, "b");
+    b.sort();
     assert_eq!(
-        delivered(&run, "b"),
+        b,
         expected(&[
             (1, 11_000, "g gauge [0:1]"),
-            (2, 120_000, "o gauge [65:40]"),
             (2, 120_000, "g gauge [60:8, 110:16]"),
+            (2, 120_000, "o gauge [65:40]"),
         ])
     );
     assert_eq!(run.live(), [GenerationId::new(3)]);
