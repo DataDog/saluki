@@ -1,0 +1,4 @@
+security:
+  - |
+    Reject TLS certificate chains containing compromised eMudhra public keys,
+    even when their issuing roots remain trusted.
