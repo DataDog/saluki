@@ -238,7 +238,7 @@ version 2's notes are.
 | V5 | done: amendment 197 | `53cd99b576` |
 | V6 | done: amendment 198 | `9fb3990648` |
 | V7a | done: amendments 200 and 201 | (V7a commit) |
-| V7b | not started | |
+| V7b | done: amendments 203 to 206 ([design](programmable-metrics-v7b.md)); the N1 candidate runs come next | `ed58c17def` (interfaces), `a4412d5884`, `e5318f28dd`, `19cb393167`, `e087239c37` (parts), `7e6b437476` (integration) |
 | V8 | not started | |
 | V9 | not started | |
 | V10 | done: amendment 199 | `7b1e126d16` (additive), `64fe645ca9` (wiring), (V10 commit) (deletions) |
@@ -273,11 +273,11 @@ this Mac, as of V2:
 
 | Command | Tests | Time |
 |---|---|---|
-| `cargo nextest run -p saluki-metric-plan -E 'not test(/property_test_/)'` | 904 | about 1 minute |
-| `cargo nextest run -p saluki-metric-plan --release -E 'test(/property_test_/)'` | 50 | a few minutes, with the release build |
-| `cargo nextest run -p agent-data-plane -E 'test(/programmable_metrics::/)'` | 323 | the slowest suite; filter while iterating |
+| `cargo nextest run -p saluki-metric-plan -E 'not test(/property_test_/)'` | 919 (`--features test-util`) | about 1 minute |
+| `cargo nextest run -p saluki-metric-plan --release -E 'test(/property_test_/)'` | 52 | a few minutes, with the release build |
+| `cargo nextest run -p agent-data-plane -E 'test(/programmable_metrics::/)'` | 337 | the slowest suite; filter while iterating |
 | `cargo nextest run -p agent-data-plane-config -p agent-data-plane-config-system` | 250 | quick |
-| `cargo nextest run -p programmable-metrics-demo` | 146 | quick |
+| `cargo nextest run -p programmable-metrics-demo` | 162 | quick |
 | `make demo-programmable-metrics-check` | two launches | about 7.5 minutes with the build (154 s and 281 s) |
 
 Then `cargo clippy` with `-D warnings` on the changed crates, `cargo check --workspace --tests`, `make check-fmt`, and
@@ -294,9 +294,27 @@ the results.
 
 ### What is left
 
-Version 2's in-scope steps are done: V2 to V7a and V10. What remains is V7b, V8, V9, and V1, gated on the N1
-measurements and on the lanes decision. A new session starts from the log's V7a section and the status document's
-[changes users can see](programmable-metrics-status.md#changes-users-can-see).
+Version 2's steps V2 to V7b and V10 are done. V7b's exit is the N1 candidate runs
+([V7b validation](programmable-metrics-v7b.md#64-validation)), which come next; then V8, V9, and V1. A new session
+starts from the log's V7b section, the V7b design's [as built](programmable-metrics-v7b.md#65-as-built), and the status
+document's [changes users can see](programmable-metrics-status.md#changes-users-can-see).
+
+**Left by V7b, for later:**
+
+- **The room check is conservative.** It counts every event of a batch that reaches a state owner as a new context, so
+  a small, full table makes every batch wait for the pass; production tables have room to grow. Counting distinct new
+  contexts would let more batches in, at the cost of a lookup per event.
+- **Several owners in one region** (question 3): a second state owner in a slot still opens a sub-region, with V7a's
+  task, input channel, and budget credit.
+- **Boot-generation sub-regions in the frame harness.** The harness starts a slot's sub-regions only for candidates, so
+  a chain in the boot plan runs there only on the layout that isolates state (transition traces 17 to 19 and i17).
+- **The `aggregator.processed` remap** for DogStatsD metrics goes away without lanes, with the native `dsd_agg`
+  component's series; a kernel series of aggregation's own could bring it back.
+- **A chained owner under saturation.** An upstream pass may spread over up to a third of its interval (5 s at 15 s),
+  longer than a downstream owner's tick waits for its watermark (2 s), so its tick may expire its grace and flush at
+  the watermark it has, as any late tick does today (`plan_state_tick_grace_expired_total`). The default program has
+  no chain.
+- The datagram pool (question 4) waits for the candidate's columns, in N4.
 
 **Left by V7a, for later:**
 

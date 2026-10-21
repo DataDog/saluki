@@ -5,8 +5,10 @@ The design of version 2's step V7b ([version 2](programmable-metrics-v2.md#the-s
 next chunk of work. It builds on V7a as built ([state owners in any
 region](programmable-metrics-v2.md#v7a-state-owners-in-any-region)) and is judged by N1's gates G1 to G6
 ([gates](programmable-metrics-next.md#gates-for-n2-to-n4)). The owner decided its questions on 2026-10-21
-([section 7](#7-owner-questions)), and the interfaces step ([6.1](#61-interfaces-step-i)) is built. Line references
-are to `3a871929f3`. Amendments 203 to 206 are proposed in [section 8](#8-proposed-amendments).
+([section 7](#7-owner-questions)). **Built** (2026-10-21): the interfaces step, the six parts, and the integration
+([6.3](#63-integration-z)); what integration decided or found is in [6.5](#65-as-built). The N1 candidate runs
+([6.4](#64-validation)) come next. Line references are to `3a871929f3`. Amendments 203 to 206 are proposed in
+[section 8](#8-proposed-amendments).
 
 ## Contents
 
@@ -317,11 +319,11 @@ By 1 to 3, every context sees the flush at `F` and then the admitted metrics in 
 that finished first gives it. Contexts interact in aggregation only through budgets, table positions, and the end of
 the pass. Positions are 4. Budgets are 5: native, after its flush, holds no more contexts than the interleaved state
 does, so whatever the interleaved state admits native admits, and nothing is refused. The end of a pass clears the
-breach flag when the state is below the limit; with the room check strict, the interleaved state is below it whenever
-native's is, and native's is below it whenever the interleaved one is, since it holds fewer. So delivered points, loss
-by class, budget use, the breach flag and its two log lines, and `last_flush` are the same. Only the kernel's own
-fallback ([3.3](#33-flush-on-touch)), reached only when the driver did not check, can leave the breach flag set at a
-pass's end where native cleared it, which changes a log line and nothing admitted or emitted.
+breach flag when the state is below the limit, judged without the contexts created during the pass: what the state
+holds then is what native's holds after its flush. So delivered points, loss by class, budget use, the breach flag and
+its two log lines, and `last_flush` are the same, even after the kernel's own fallback ([3.3](#33-flush-on-touch)),
+reached only when the driver did not check: exactness does not depend on the room check, which only keeps the
+fallbacks rare.
 
 What may differ: the order in which records leave, and with it how encoders cut payloads; when they leave in wall time,
 up to `D` later under saturation; the table's positions, which order the next flush; and context gauges between steps,
@@ -453,6 +455,46 @@ REGIME_PLAN_IMAGE=saluki-images/agent-data-plane:plan-n1 \
   where a miss comes from. The p99 half of N2's exit stays with the in-process paced curves
   ([runbook](programmable-metrics-measurement.md)), timed across a flush.
 
+### 6.5 As built
+
+What integration decided, found, or left, against the text above:
+
+- **Interleaving is on by default** (`RegionConfig::for_slot`); the frame harness and the state tests' direct region
+  turn it off unless a test asks for it, so that blocking drains stay tested. ADP lays the frame out with
+  `FrameOptions { isolate_state: lanes_on }`; the plan crate's `FrameOptions::default()` still isolates state, for its
+  tests and golden files.
+- **Accounting** (decided at integration). A state owner accounts under its own node's name wherever it runs: in its
+  region's group when an isolation slot is named after it (aggregation on lanes), as a component of its own beside the
+  region when it is fused with its neighbors (aggregation without lanes: resource group and bounds `dsd_agg`, so the
+  sizing guide's `dsd_agg.aggregate_context_limit` resolves), and under the region in a sub-region
+  (`KernelAccounting`, `RegionBounds::beside`). Only the owner's kernel draws on the budgets of state, not the stateless
+  kernels fused beside it.
+- **A drain split over several deliveries sends its progress once** (decided at integration). Every batch a drain
+  writes carries its stamp, so records keep their flush time on the way to outputs, but a state owner downstream counts
+  a derived point's time only from the header-only batch the upstream owner sends on each progress exit once the drain
+  completed (`WatermarkTracker::observe_with`); a data batch that is the point's first, or the first of an epoch,
+  starts its progress at the start of the timeline. So a chained owner in another region never closes a bucket the
+  rest of the drain still reaches (transition trace i17), and the same gap closes for blocking drains that yield across
+  tasks, which P4 noted. Resets, shutdown, and drains while another lineage retires send that header only where they
+  wrote, which is exactly the progress their data used to carry; cut handovers are unchanged. A first attempt held the
+  stamp on the data instead, which changed the flush time of records that a downstream region passes on to an output.
+- **Found: a renamed owner placed into the main region.** Placement let a candidate's new state owner take a fused
+  slot's main region once the boot owner was gone from the plan, but the region keeps the boot owner's state for as long
+  as it runs, so the preparation failed. A slot whose boot plan runs a state owner now keeps its main region for that
+  owner; any other opens a sub-region, as V7a placed a renamed aggregation.
+- **Found: the rewrite harness's contract.** With R1's cuts gone, R5a moves filters it was kept from moving before, and
+  the pipeline's release property test found an author's filter left dropping into a native drop after R3 folded the
+  native `split` before it, which R5a copied. The product's rule allows it (only contract nodes move whole); the
+  harness's contract now names native drops, as its structural check, which keeps every native node, assumes.
+- **Telemetry.** Without lanes, the state slot's one lane publishes the state lane series (`plan_lane_flush_seconds`,
+  `plan_lane_flush_blocked_seconds`, the new `plan_lane_flush_touched_contexts_total`, and the others), under
+  `component_id:dsd_pre_aggregation` and `lane:0`, where ADP published them only on lanes. The Datadog Agent's
+  `aggregator.processed` for DogStatsD metrics, remapped from what entered the native `dsd_agg` component, goes away
+  without lanes with the component's other series (accepted).
+- **Left as is:** the room check counts every event of a batch as a new context, so a small, full table makes every
+  batch wait for the pass; production tables have room to grow. The test-only `AdmittingStandIn` stays: the traces'
+  `room: Some(0)` cases use it.
+
 ## 7. Owner questions
 
 Decided by the owner on 2026-10-21, all as recommended:
@@ -495,7 +537,8 @@ The next free number is 203 ([status](programmable-metrics-status.md#spec-amendm
      context table to grow, waits for the flush. Resets, final retirements, and shutdown still stop admission. A flush
      is due to finish within a third of its flush interval, and to run at least a step every 100 ms; it runs whenever
      the region has no input waiting, and once behind that pace it runs before input until it completes. A new flush
-     never starts while one is pending.
+     never starts while one is pending. A downstream state owner counts a derived point's time only from the header-only
+     batch its owner sends once a drain completed ([6.5](#65-as-built)).
 206. **Admission while advancing** (EXE, C; refines the kernel contract). A kernel that says so may receive batches
      while its `advance_time` is yielded, never while a `control` or `finish` is; what it writes then is output of the
      yielded call. A region driver may have background work, which its host runs only while no batch waits.

@@ -4066,6 +4066,31 @@ After detached programs, phase 2 ([as built](programmable-metrics-detached-progr
      ends at the cut, as a removed owner's does, and the stateless node is simply added; the reverse, already `cut`, is
      an added owner. Only another operator with state, keyed or opaque, is `reject`. The interpreter agrees. The check
      is one local case of how the plan diff classifies state owners, so it can be changed later.
+203. **State steps fuse, and R1's cost model is removed** (FRM, D; version 2's step V7b, decided by the owner
+     2026-10-21; brings forward the stage 10 candidate "removing the aggregator isolation fence"; adopts 122 and
+     withdraws 47; revises 200 and status invariants 4 and 5). Without lanes, a state owner is not a fence: fusion is
+     maximal between fixed components, I/O hosts, and opaque hosts, whatever the costs, and a state owner runs in the
+     region of its inputs when that region runs no other and its slot's boot plan runs no other owner, else in a
+     sub-region as amendment 200 says. With lanes, the frame isolates state owners as before. The default program's
+     metrics path is one region, `dsd_pre_aggregation`, in which aggregation keeps its node's telemetry, resource group,
+     and bounds, `dsd_agg`.
+204. **Lanes are opt-in** (EXE, D; version 2's step V7b, decided by the owner 2026-10-21; reverses 157; 167 stays for
+     `auto`). `lanes.mode` defaults to `off`. `auto` and explicit counts keep their meaning, with state owners isolated
+     and flushes blocking.
+205. **The interleaved flush** (STA, D; version 2's step V7b, decided by the owner 2026-10-21; refines stage 6's decision
+     10, drains). A tick or boundary flush of an instance not on lanes is fixed when it starts and runs in steps while
+     admission continues; a context admission reaches before the flush did is flushed first, so output, losses, and
+     state equal those of the flush completed before the batches, apart from the order in which records leave. A batch
+     that could be refused, or that needs the context table to grow, waits for the flush. Resets, final retirements,
+     and shutdown still stop admission. A flush is due to finish within a third of its flush interval, and to run at
+     least a step every 100 ms; it runs whenever the region has no input waiting, and once behind that pace it runs
+     before input until it completes. A new flush never starts while one is pending. A downstream state owner counts a
+     derived point's time only from the header-only batch its owner sends once a drain completed, so it sees the flush
+     time only once the drain's whole output reached it.
+206. **Admission while advancing** (EXE, C; version 2's step V7b, 2026-10-21; refines the kernel contract). A kernel that
+     says so may receive batches while its `advance_time` is yielded, never while a `control` or `finish` is; what it
+     writes then is output of the yielded call. A region driver may have background work, which its host runs only
+     while no batch waits.
 
 ## 11. Risks
 

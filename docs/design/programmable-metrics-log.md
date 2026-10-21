@@ -1484,3 +1484,62 @@ Not run: the release property tests, ADP suites other than `topology::`, and the
 
 **Left for later:** sub-region buffer credits (kernel credits merge into the slot's, over-counting for a slot with several lanes),
 the reason explain gives for cutting a moved owner, the 128-buffer size to confirm against N1, and R1, lanes, and V7b to V9.
+
+## Version 2: V7b (one region with an interleaved flush)
+
+V7b was built from [its design](programmable-metrics-v7b.md) and the owner's answers (2026-10-21) in parallel parts on
+an interfaces commit (`ed58c17def`): P3 the region host's background turns (`a4412d5884`), P1 the frame and placement
+(`e5318f28dd`), P2 the aggregation kernel's flush on touch (`19cb393167`), P4 the driver's interleaved passes
+(`e087239c37`), then P5 (ADP and configuration), P6 (the demo), and the integration, in one commit (`7e6b437476`), and a documents
+commit, recorded here.
+
+**What went** (amendments 203 to 206): R1's cost model whole, `FrameOptions::pipelining`, `Slot::cost`,
+`FusionVerdict::Pipelined`, `Frame::cost_budget`, every operator's cost estimate (R4's split estimate kept as
+`compile::split_cost`), the cost and pipelining fields of explain, and ADP's cost pins; `lanes.mode: auto` as the default;
+the boot log's `pipelining` field; the `dsd_agg` and `metrics_enrich` regions without lanes, and R1's `_region` slots.
+
+**What replaced it:**
+
+- **The frame.** `FrameOptions { isolate_state }`, which ADP sets from the lanes-on flag: without it a state owner
+  fuses like any synchronous node, and the default program's metrics path is one slot, `dsd_pre_aggregation`, with 902
+  input buffers. Placement runs a state owner in the region of its inputs when that region runs no other; a slot whose
+  boot plan runs a state owner keeps its main region for it.
+- **The kernel.** Each context carries the number of the pass that last visited it; admission during a pass flushes a
+  context it reaches first, a pass removes in place, the table never grows while one is pending, and two fallbacks
+  complete the pass inside `consume`. `RoomToAdmit` and `PassProgress` answer the driver.
+- **The driver and host.** A tick or boundary flush of an owner not on lanes is a pass, paced to a third of the flush
+  interval with a step at least every 100 ms, admitting batches that fit and running ahead of admission once behind;
+  touch output is the step's own. The host runs background steps while no batch waits. Interleaving is on by default.
+- **Integration's decisions.** A state owner accounts under its own name wherever it runs: fused, beside its region,
+  so aggregation's resource group and bounds stay `dsd_agg` (`KernelAccounting`). A downstream owner counts a derived
+  point's time only from the header-only batch its upstream owner sends once a drain completed, so a drain split over
+  several deliveries never lets it close a bucket early. The fused state slot publishes the state lane series without
+  lanes, `plan_lane_flush_touched_contexts_total` among them.
+
+**Found at integration.** A renamed aggregation was placed into the fused main region, which still held `dsd_agg`'s
+state, and the preparation failed (ADP's lifecycle test); placement now reserves the main region for the slot's boot
+owner. A first fix for split drains held the stamp on the data, which changed the flush time of records a downstream
+region passes to an output (trace 17 interleaved); the hold moved to the receiving side. The fused slot was not a
+state slot to ADP (`is_state_slot` read the boot output points, which a fused owner has none of), and every stateless
+kernel fused beside aggregation drew on the budgets of state; both fixed. Deleting R5a's refusal to move a filter
+across an R1 cut let the release property test of the rewrite pipeline find a case where R3 folds a native `split`
+and R5a then copies the author's filter left dropping into the native drop; R5a is right by the product's rule (only
+contract nodes move whole), and the harness, whose structural check keeps every native node, now names native drops
+in its contract too.
+
+**Tests.** New: transition trace i16 (a pass pending at a crossing and at a reset, a boundary flush that interleaves)
+and i17 (a chained owner in another region receives a pass in several parts), traces 1 to 16 on the fused layout and
+1 to 19 interleaved, `property_test_interleaved_drains_match_the_interpreter`,
+`property_test_an_interleaved_flush_is_a_flush_before_its_batches`, the frame property test for both settings, the
+host's background-turn tests, a placement test for the renamed owner, and accounting tests for both layouts. ADP's
+topology, lane, isolation, installer, and telemetry pins moved to one region; the telemetry tests drop the one remapped
+line that goes, `aggregator.processed` for DogStatsD metrics. At integration, all passing: the plan crate 919
+(`--features test-util`) and its 52 release property tests, the kernels crate 174 and 26, `saluki-core` 801 and 12,
+the syntax crate 191 and 11, ADP's `programmable_metrics::` 337 (the differential tests included), the configuration
+crates 332, the demo 162, `make demo-programmable-metrics-check` (both launches, 159 s and 274 s, canaries balanced),
+clippy `-D warnings` on the touched crates, `cargo check --workspace --tests`, and `make check-fmt`.
+
+**Left for later:** the conservative room check, several owners in one region, boot-generation sub-regions in the frame
+harness, and the `aggregator.processed` remap ([version 2: what is left](programmable-metrics-v2.md#what-is-left));
+under saturation a chained owner's tick may wait out its 2 s grace for an upstream pass spread over up to 5 s. Next:
+the N1 candidate runs.

@@ -243,6 +243,11 @@ where that distance exceeds 0.25 the cell has no ratio gate.
 
 ### N2 and N3: one region from decode to encode, with an interleaved flush
 
+- **Status (2026-10-21):** built as version 2's step V7b ([design and as built](programmable-metrics-v7b.md),
+  amendments 203 to 206): without lanes the metrics path is one region, `dsd_pre_aggregation`, R1's cost model is
+  gone, lanes are opt-in, and a tick or boundary flush interleaves with admission, paced to a third of the flush
+  interval. Approach items 1 to 3 are done; item 4 (decoding inside the region, encoding as a terminal kernel) is V8's.
+  The exit's measurements, the N1 candidate runs against the gates, come next.
 - **Goal:** at one core or less, run the whole metrics path between its I/O as one region, one task, with admission
   that never stalls on a flush, no sharding, and no fixed overhead at low load.
 - **Why it is possible now.** Only I/O still needs a task of its own: the sources' sockets in, and delivery's HTTP,
@@ -323,4 +328,4 @@ Each is a small part, measured by N1 at the production limits:
 - Which workloads and burst shapes to model in N1: ideally traces from Nodeless and from the clusters at 1.2 cores.
 - What counts as acceptable during a crunch: which drops, how much latency, how much memory.
 - Whether SMP experiments can run at 0.3 cores, so that N1's gates also run in CI.
-- How much of N2's turn should go to draining against admission, and whether it should adapt to the CPU quota.
+- How much of N2's turn should go to draining against admission, and whether it should adapt to the CPU quota (V7b's answer: a pace of a third of the flush interval, at least a step every 100 ms, which never reads the quota; the candidate runs say whether it holds).

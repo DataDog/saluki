@@ -66,8 +66,9 @@ ADP's artifact channel and given its headless check in stage 5, and extended in 
 - **Version 2 is under way** ([version 2 simplifications](programmable-metrics-v2.md)): the premise is now that native
   configuration is a front end and the program is the system, and the machinery of coexistence is being removed step
   by step. V2 (resources artifacts), V3 (native configuration lowers to literals), V4 (programs are whole), V5 (one program
-  document), V6 (elaboration as a phase), V10 (names and a compatibility analysis), and V7a (state owners in any region) are done;
-  V7b, V8, V9, and V1 wait on the owner's reading of N1 and the lanes decision. The plan's
+  document), V6 (elaboration as a phase), V10 (names and a compatibility analysis), V7a (state owners in any region), and
+  V7b (one region with an interleaved flush, amendments 203 to 206) are done but for V7b's N1 candidate runs, which come
+  next; V8, V9, and V1 wait. The plan's
   [handoff](programmable-metrics-v2.md#handing-off) says how to continue.
 - DogStatsD processing runs on **lanes** (stage 9), tasks inside one component, fixed at boot: `dsd_pre_aggregation`
   runs a producer lane per decoder, each the only stamper of its own admission point; `dsd_agg` runs state lanes, each
@@ -75,8 +76,8 @@ ADP's artifact channel and given its headless check in stage 5, and extended in 
   of up to B events; `metrics_enrich` runs post-aggregation lanes. Small records shared by the lanes of one lineage
   keep the rules that couple contexts (a tick's instant and second, the idle-counter back-fill start, the flush count,
   the breach warning, the shutdown time) node-wide, and a reset window per state lane keeps clock resets exact over
-  several points. `lanes.mode: auto` is the default; the counts follow the decoders and the workers (see [running it
-  with lanes](#running-it-with-lanes)). The DogStatsD source's datagram queue no longer has a mutex and each datagram
+  several points. Lanes are opt-in since V7b (`lanes.mode: off` by default, amendment 204); with `auto`, the counts follow
+  the decoders and the workers (see [running it with lanes](#running-it-with-lanes)). The DogStatsD source's datagram queue no longer has a mutex and each datagram
   decoder caches its recent contexts (O4 and O5), which legacy shares. See the plan's [Stage 9 as
   built](programmable-metrics-stages-7-and-9.md#stage-9-as-built) and the [implementation design's
   summary](programmable-metrics-implementation.md#stage-9-partitioned-execution-as-built).
@@ -90,12 +91,11 @@ ADP's artifact channel and given its headless check in stage 5, and extended in 
   test passes with lanes on, and `plan_lane_misrouted_total` stayed 0 in every run) and the shape of the curves at up to
   four workers, and both hold; items 1 to 4 (throughput, scaling, CPU and p99, one stream connection, on Linux at 1 to
   16 workers) and 6 (the SMP throughput and RSS gates) wait for a Linux host with at least 20 homogeneous cores, which
-  only the owner can provide ([decisions](#decisions-awaiting-the-owner)). R1's cost model is kept, off whenever lanes
-  are on (plan 8.5, P9.7). On two workers the defaults profile ran 3 to 10% behind `lanes.mode: off`, but R1 cuts no
+  only the owner can provide ([decisions](#decisions-awaiting-the-owner)). R1's cost model was kept, off whenever lanes
+  were on (plan 8.5, P9.7), until V7b deleted it. On two workers the defaults profile ran 3 to 10% behind `lanes.mode: off`, but R1 cuts no
   slot in that profile: the gap was the lane runtime at one lane per slot, so since the stage 9 review `auto` runs the
   layout without lanes wherever every count comes to one, as below three workers. R1's own evidence, the mapper profile,
-  is equal at one and two workers, and its deletion waits for the mapper and gateways profiles at W = 1 to 3 on the gate
-  host.
+  was equal at one and two workers.
 - **N1 is measured** (2026-10-21, [results and gates](programmable-metrics-next.md#n1-results)): at 0.05 to 1.2 CPUs
   with lanes off, the plan's CPU per metric is 0.93 to 1.00 of native and its peak memory 0.54 to 0.95, but at 100,000
   contexts a flush stalls its admission more than native's at 0.3 CPUs (0.47 against 0.64 of the rate before the
@@ -133,10 +133,12 @@ since the repository sets `commit.gpgsign=true`). No CI pipeline has run on the 
 | `e6599d63f3` | V3 | Native configuration lowers to literals; bindings are facts and signals (amendment 196). |
 | `53cd99b576` | V4, V5 | Programs are whole and a snapshot holds one program document: scopes, `base`, staleness, fingerprints, and splicing removed (amendment 197). |
 | `9fb3990648` | V6 | Elaboration as a phase: one pass from the program as written to the core program, which installs, has the one hash, and explain shows (amendment 198). |
+| `7e6b437476` | V7b | One region with an interleaved flush: state owners fuse with stateless work and R1's cost model is gone, so the metrics path without lanes is one region, `dsd_pre_aggregation`; a tick or boundary flush interleaves with admission, flushing on touch; lanes opt-in (amendments 203 to 206). |
 | (V7a commit) | V7a | State owners in any region: a sub-region for a state owner placement puts outside the boot state slots, made at installation and retired with its last generation; a watermark over several sources, chained owners with derived points and boundary flushes, cuts and telemetry by node, heartbeats on every routed point (amendments 200 and 201). |
 | `7b1e126d16`, `64fe645ca9`, (V10 commit) | V10 | Names and a compatibility analysis: operators describe what they report, the telemetry contract as validation warnings and a status section, every node reporting under its name; the node namespace, `single_aggregation`, and the adoption of `dsd_agg` removed (amendment 199). |
 
-**Next.** The [version 2 simplifications](programmable-metrics-v2.md), from V7a, come first. Beside them, the stage 9
+**Next.** V7b's N1 candidate runs ([V7b validation](programmable-metrics-v7b.md#64-validation)), then the [version 2
+simplifications](programmable-metrics-v2.md) that remain. Beside them, the stage 9
 gate on a Linux host with at least 20 homogeneous cores (plan 8.5,
 [Q2](programmable-metrics-stages-7-and-9.md#12-open-questions)): its items 1 to 4, with the per-buffer cost of lanes as
 the risk to watch (plan 8.6), M2's rerun for O4's choice, M4 at P = 8, and the allocator setting measured beside it
@@ -438,8 +440,8 @@ another agent's UDP benchmark flooding loopback at those times, which the loopba
 
 ### Running it with lanes
 
-Lanes are on by default (`experimental.programmable_metrics.lanes.mode: auto`) and fixed at boot; every key changes
-only at a restart.
+Lanes are opt-in since V7b (`experimental.programmable_metrics.lanes.mode: auto` turns them on; `off` is the default)
+and fixed at boot; every key changes only at a restart.
 
 | Key or variable | Effect | Default |
 |---|---|---|
@@ -648,12 +650,19 @@ and gives the dependency direction. This section is the orientation that layout 
 2. A commit is one store of the schedule; every point switches at its next stamp.
 3. A cut's instant `T` is on the new generation's token before publication. A cut can be cancelled only until some
    point stamps the new generation.
-4. A state owner runs in a region of its own, in its boot slot or in a sub-region of the slot placement gives it, and
-   owns its ticks, watermark, drains, and cuts. Its watermark is the minimum over its upstream admission points, by
-   clock; its output is a derived point with an output clock of its own (V7a, amendments 200 and 201).
+4. A region runs at most one state owner, which owns its ticks, watermark, drains, and cuts. Without lanes it runs in
+   the region of its inputs, fused with stateless work, where that region runs no other and its slot's boot plan runs
+   no other owner; on lanes a boot owner runs in its isolation slot; any other opens a sub-region of the slot placement
+   gives it. Its watermark is the minimum over its upstream admission points, by clock; its output is a derived point
+   with an output clock of its own, whose progress a drain sends only once its whole output is out. A tick or boundary
+   flush of an owner not on lanes interleaves with admission and equals the flush completed before the batches that
+   entered during it; resets, final retirements, and shutdown still block (V7a and V7b, amendments 200, 201, 203, and
+   205).
 5. The physical frame's slots, edges, outputs, and host components are fixed at boot, and candidates place into them;
-   anything needing a new one is a capability error (stage 7). State owners are the exception: a sub-region is made at
-   installation and retired with its last generation.
+   anything needing a new one is a capability error (stage 7). Fusion is maximal between fixed components, I/O hosts,
+   and opaque hosts, with no cost model: without lanes, the default program's metrics path is one slot. With lanes,
+   state owners are fences. State owners are the exception: a sub-region is made at installation and retired with its
+   last generation (amendments 200 and 203).
 6. A node reports under its name (its `component_id`, and its accounting path `<slot>.<node>` under the slot); native
    names survive only in the remapper's table and in the default program's names for the nodes the telemetry contract
    lists (V10). Slots keep native IDs; only the fused components' own component series go.
@@ -666,14 +675,15 @@ and gives the dependency direction. This section is the orientation that layout 
 10. A region's input holds as many buffers as the queues it replaces and their in-flight buffers did.
 11. Dead legacy code goes behind `cfg(test)`, never `#[allow(dead_code)]`.
 
-**Names worth knowing.** Slots keep native IDs: `dsd_pre_aggregation`, `dsd_agg` (the boot state slot), and
-`metrics_enrich`; with `lanes.mode: off`, a chain R1 cuts gets `<first node>_region` slots such as
-`dsd_prefix_filter_region`, `dsd_no_agg_split_region`, and `dsd_post_agg_filter_region`; on lanes (the default) fusion
-is maximal between fences and there are none. A slot on lanes stays one component; its lanes account under
+**Names worth knowing.** Slots keep native IDs: with `lanes.mode: off`, the default since V7b, the metrics path is one
+slot, `dsd_pre_aggregation`, in which aggregation reports and is accounted as `dsd_agg`; on lanes, `dsd_pre_aggregation`,
+`dsd_agg` (the boot state slot), and `metrics_enrich`. R1's `<first node>_region` slots are gone with its cost model. A
+slot on lanes stays one component; its lanes account under
 `<slot>.lane_<i>`, its kernels under `<slot>.lane_<i>.<node>`, and with several producer lanes `dsd_in`'s output is
 `metrics_<d>`, its points consecutive IDs (the plan writes them `dsd_in.metrics#d`). Region input capacities with
-defaults: 515 (`dsd_pre_aggregation`), 257 (`metrics_enrich`), 386 (`metrics_enrich` with Multi-Region Failover), 128
-(`dsd_agg`); on lanes each stateless lane holds `ceil(native / lanes)` buffers (172 and 129 at `{3, 2, 2}`) and each
+defaults: 902 for the one slot without lanes (seven native components on its longest path, 7 × 129 − 1); on lanes 515
+(`dsd_pre_aggregation`), 257 (`metrics_enrich`), 386 (`metrics_enrich` with Multi-Region Failover), and 128 (`dsd_agg`),
+and each stateless lane holds `ceil(native / lanes)` buffers (172 and 129 at `{3, 2, 2}`) and each
 state lane `ceil(native × 1,024 / (P × B))` buffers of B events (64 at P = 2). Limits and their decision-log notes are
 in [`limits.rs`](../../lib/saluki-metric-plan/src/limits.rs). In method syntax, `FixedSizeEventBuffer`'s inherent
 `header_mut` (returning `&mut BatchHeader`) shadows the trait method `Dispatchable::header_mut` (returning an `Option`).
@@ -1000,6 +1010,34 @@ release-noted**; amendment 199):
   `reject`)"). So a published program whose aggregation is named `metrics`, the default program's enrichment, can be
   revoked. A state owner replaced by another operator with state is still refused.
 
+**Version 2's step V7b: one region with an interleaved flush** (`7e6b437476`; **not release-noted**; amendments 203 to
+206):
+
+- **The components that go.** Without lanes, the metrics path between the sources and the encode hosts is one
+  component, `dsd_pre_aggregation`, one task with one input of 902 buffers: the `dsd_agg` and `metrics_enrich`
+  components merge into it, and so do R1's `dsd_prefix_filter_region`, `dsd_no_agg_split_region`, and
+  `dsd_post_agg_filter_region`. Their component, health, and task series go, as every fused component's did:
+  `component_id:dsd_agg`'s among them, and with it the Datadog Agent's `aggregator.processed` for DogStatsD metrics,
+  which the remapper derives from what entered the native aggregation component (accepted). Aggregation's kernel keeps
+  its own series under `dsd_agg`, and its resource group and bounds stay `dsd_agg`, beside the region, so the sizing
+  guide's `dsd_agg.aggregate_context_limit` still resolves.
+- **`lanes.mode` defaults to `off`** (amendment 157 reversed). `auto` and explicit counts keep their meaning, with
+  aggregation in `dsd_agg` and its flushes blocking admission, as before. At production's two workers `auto` already
+  ran without lanes, so the layout changes by fusion, not by the flip.
+- **Explain** shows no cost, budget, pipelining, or `pipelined` verdict; without lanes, the frame has one slot whose
+  main region runs aggregation, after the pre-aggregation chain and before enrichment.
+- **Flushes interleave with admission.** A flush no longer stops the region reading: it works through closed buckets a
+  step at a time, due within a third of the flush interval and at least a step every 100 ms, while new metrics enter
+  open buckets, a context they reach before the flush did being flushed first. What is delivered is the same; only the
+  order in which records leave changes, and so how encoders cut payloads. Under saturation, aggregated points may leave
+  up to a third of the flush interval later (5 s at 15 s); once a flush falls behind its pace, it runs ahead of
+  admission until it completes.
+- **Telemetry.** The state slot's one lane publishes the `plan_lane_*` state series without lanes too, under
+  `component_id:dsd_pre_aggregation` and `lane:0`. `plan_lane_flush_blocked_seconds` is now the time a flush held
+  admission: all of it for a blocking flush, and for an interleaved one only while it ran behind its pace or a batch
+  waited for it. New: `plan_lane_flush_touched_contexts_total`, the contexts admission flushed on touch.
+- A renamed aggregation runs in a sub-region of `dsd_pre_aggregation`, whose main region keeps `dsd_agg`'s state.
+
 **Telemetry** (all release-noted): the fused components' and gateways' component, health, and task series are gone;
 `metrics_enrich` and `dsd_agg` report sent counts per output instead of `_default`; accounting paths nest under the
 slot; `dsd_agg` no longer counts sent metrics twice, no longer emits what R5b suppresses, and counts one extra flush
@@ -1115,12 +1153,12 @@ the local `--test-threads 4` in the gate (see [Environment notes](#environment-n
 | **Stage 7 changes against native** | Amendments 135 (a burst reaching several outputs of one encode host backs up sooner: 451 batches where native held 515 with one routing group) and 137 (a removed endpoint loses what its old generation's leases still build after the transaction that withdraws it), both release-noted. | Accept, or size the encode host's input by its boot leases (135), or withdraw after the generation without the recipient commits (137). |
 | **Stage 7 deferrals** | Static mode stays the native forwarder (not folded into the delivery host); platform roots load per client build; failures stay text-matched; growth in place is not admitted; 4.13's validation errors are caps at run time. See [Stage 7](#stage-7-resource-generations). | Decide which belong in a stage 7 follow-up. |
 | **The stage 9 gate host** ([Q2](programmable-metrics-stages-7-and-9.md#12-open-questions)) | Items 1 to 4 of the gate (throughput, scaling, CPU and p99, one stream connection) and item 6 (the SMP RSS gate) need a Linux host with at least 20 homogeneous cores (36 for W = 32), with an A/A series first. This Mac decided item 5 and the curves' shape at up to four workers, both passing (plan 8.5). | Provide or approve a host; the runbook is plan 8.4's P9.0 (`test/scaling/`) and 8.6. |
-| **Lanes on by default before the gate host ran** (amendment 157) | `lanes.mode: auto` with D one below three workers, P at most 4, M at most 8, chosen on macOS and the 6-vCPU VM; where every count comes to one, as below three workers, `auto` runs the layout without lanes (since the stage 9 review), so hosts of two workers or fewer keep the stage 7 layout. Process CPU per metric on lanes read 1.04 to 1.13 of legacy's saturated and up to 1.30 paced, against item 3's 1.07 (the per-buffer cost of lanes, plan 8.6). | Accept auto by default now, or ship `off` until the gate passes (one default in `control.rs`, the docs, and the release note). Production limits of 0.3 to 1.2 cores make lanes matter little: [next steps N2 and N3](programmable-metrics-next.md#n2-and-n3-one-region-from-decode-to-encode-with-an-interleaved-flush) recommends `off`. |
+| **Lanes on by default before the gate host ran** (amendment 157) | Decided by the owner (2026-10-21) and built in V7b: lanes are opt-in, `lanes.mode: off` by default (amendment 204). | None. |
 | **ADP's allocator setting** (the memory investigation) | `.cargo/config.toml` compiles `narenas:1,tcache:false` into every Linux build (since #378, for low RSS on the 4-CPU targets of SMP): every allocation takes one arena's lock, 0.5 µs at two threads and 1.6 at four against 31 ns alone. In ADP at N = 2 the thread cache gave legacy +7.1% throughput and -6.9% CPU per point, the plan +2.8% and -4.1%, for about +8 MiB of peak (+11 to +13 MiB at N = 4); with it on, the shared group counters of the tracking allocator become the next choke point, which per-decoder resource groups would remove. `MALLOC_CONF` overrides the setting at run time without a rebuild. | Measure `MALLOC_CONF=tcache:true` (and with `narenas:<W>`) beside the native setting on the gate host and the RSS gates of SMP, then choose; per-decoder groups are a small stage 9 part if the cache lands. |
 | **The datagram queue's default ceiling** (native, ADP-wide) | `dogstatsd_buffer_count_max` (32,768 datagrams of 8 KiB, about 256 MiB, #2079) fills at saturation on both paths (legacy at its cap at N = 4, 384 MiB peak); capped at 512, both paths peak at 63 to 64 MiB at N = 2 with equal throughput. The plan's deeper queue at N = 2 was the debug-log tap's clone under the admission lock, gated since. | Keep the Core Agent's burst absorption, or lower the default (2,048 or 4,096: 20 to 40 MiB). |
 | **Fused region inputs** | A fused slot's input holds the sum of the native inputs it replaces (invariant 10), so it holds more than legacy (up to about 130 MiB) only when the bottleneck is inside the fused chain; no measured configuration reached it. | Keep burst parity, or size by the longest component if a gate configuration shows it. |
 | **Memory times lanes** | The firm bound grows with every lane's kernels and memos at their configured sizes (about 16, 70, 161, and 186 MiB at 4, 8, 16, and 32 cores, 189 MiB at 64, each decoder's 96 KiB front cache included), most of it the tag filterlist's memo bound (6.4 MB per producer lane); M11 kept per-lane memos (each holds the working set; divided ones would miss). | Accept, or give producer lanes a share of one memo budget (`configured / D` with a floor). |
-| **R1's cost model** (P9.7) | Kept, off whenever lanes are on (plan 8.5, P9.7). Two decisions, which Z3's reading conflated: (1) the defaults profile's lead of `lanes.mode: off` on two workers (1.081 and 1.050 of legacy in two paired runs against 0.986 and 1.023 on `{1, 1, 1}`; CPU per metric 0.961 and 0.975 against 1.046 and 1.017) is the lane runtime's cost at one lane per slot, since R1 cuts no slot in that profile: as built since the stage 9 review, `auto` runs the layout without lanes wherever every count comes to one; (2) R1's own evidence is the mapper profile, where it places `dsd_prefix_filter_region`: equal at one and two workers (1.003 against 0.994 at W = 2), lanes ahead from four. Amendment 122 and the withdrawal of 47 wait. | (1) Accept `auto`'s layout without lanes at one lane per slot, or revert it with a release note that such hosts run the lane runtime. (2) Run the mapper and gateways profiles at W = 1 to 3 on the gate host, `lanes.mode: off` with and without R1's pipelining; if pipelining does not lead, delete R1 as plan 5.10 lists. |
+| **R1's cost model** (P9.7) | Decided by the owner (2026-10-21) and built in V7b: deleted, with fusion maximal between fences (amendment 203, which adopts 122 and withdraws 47). | None. |
 | **O4's queue and O5's size** | O4's shared queue is provisional (per-decoder queues measured higher at one and two decoders on macOS); O5's front cache has 4,096 slots per decoder, where 16,384 cost 25 to 30% less per resolution in a paired timing. | Rerun M2 on the gate host before recording O4's choice; size O5 from the hit share at lading's distributions. |
 | **`make check-deny`** | Fails on `RUSTSEC-2024-0449` (`unsafe-libyaml` unmaintained, through `serde_yaml` in `agent-data-plane-config-system`, `datadog-agent-config-overlay-model`, and `antithesis-intake`): the advisory database has it now, and `main`'s `Cargo.lock` at the merge base already holds `unsafe-libyaml` 0.2.11. | An exception in `deny.toml`, or a move off `serde_yaml`. |
 | **One scope, one aggregation** (amendments 168 and 169) | The default program has one scope, `metrics`, over the whole metrics path, and a program at most one aggregation (`single_aggregation`, declared by ADP's catalog). After a width change, every lossy node fed by the timestamp split or aggregation (eight in the fixtures) carries the artifact's provenance, so its loss is attributed to the artifact. Composition puts an artifact's edges in the default program's order. | Accept both, or narrow the scope again. (The one-aggregation rule went in V10, amendment 199; scopes in V4.) |
@@ -1438,6 +1476,15 @@ After version 2:
 | # | Short title | Theme | Kind | Owner |
 |---|---|---|---|---|
 | 202 | A state owner that becomes a stateless node is a cut that ends its lineage, as a removed one's | INS | D | decided by the owner (2026-10-21) |
+
+After version 2's step V7b (built):
+
+| # | Short title | Theme | Kind | Owner |
+|---|---|---|---|---|
+| 203 | State steps fuse, and R1's cost model is removed: fusion is maximal between fixed components, I/O hosts, and opaque hosts; a state owner runs in the region of its inputs; with lanes, state owners stay fences | FRM | D | version 2, decided by the owner (2026-10-21: V7b questions 2, 3) |
+| 204 | Lanes are opt-in: `lanes.mode` defaults to `off` | EXE | D | version 2, decided by the owner (2026-10-21) |
+| 205 | The interleaved flush: a tick or boundary flush of an owner not on lanes runs in steps while admission continues, exactly as the flush completed first, within a third of its interval | STA | D | version 2, decided by the owner (2026-10-21: V7b questions 1, 4, 5) |
+| 206 | Admission while advancing: a kernel that says so receives batches while its `advance_time` is yielded; a region driver may have background work | EXE | C | version 2 (2026-10-21) |
 
 Wording proposed for adoption: amendment 49 ("under the reference interpreter's delivery order"), 51 ("a maximal
 group of `split` and `tee` operators joined directly by edges within one region"), and 52 ("operator parameters,
