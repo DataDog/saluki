@@ -160,6 +160,7 @@ REGIME_PLAN_IMAGE=saluki-images/agent-data-plane:plan REGIME_CONTEXTS=3000 \
 | `REGIME_LABELS`, `REGIME_ROUNDS` | `native-a native-b plan-a plan-b`, 3 | the labels (a `native`, `plan`, or `candidate` prefix picks the image) and rounds |
 | `REGIME_NATIVE_IMAGE`, `REGIME_PLAN_IMAGE` | `...:legacy-b940bf1f8b`, `...:plan` | the images |
 | `REGIME_CANDIDATE_IMAGE`, `REGIME_CANDIDATE_CONFIG` | none, the plan image's configuration | a change judged against the plan image: `REGIME_LABELS="plan-a plan-b candidate-a candidate-b"` (N1's gates for N2 to N4) |
+| `REGIME_VARIANTS` | none | further label prefixes that run the candidate image with another configuration, `name=path` pairs (a path relative to `test/scaling`), such as `fused=adp/lanes-off.yaml isolated=adp/isolated.yaml` for `REGIME_LABELS="fused-a fused-b isolated-a isolated-b"`; the summary compares each with the plan image and each later one with each earlier one |
 | `REGIME_STEADY_RATES` | none | the steady rate per limit, `cpus:KiB/s` pairs; N1 uses 30% of the native image's saturated rate at that limit |
 | `REGIME_STEADY_RATE_PER_CPU` | `60 MiB` | the steady rate per CPU for a limit `REGIME_STEADY_RATES` does not list |
 | `REGIME_BURST_FACTOR` | 4 | the total rate during a burst, in multiples of the steady rate |

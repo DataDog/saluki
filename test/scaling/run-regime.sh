@@ -5,7 +5,8 @@
 # steady paced rate, then a burst of several times that rate timed across an aggregation flush. For each limit in
 # REGIME_CPUS and each round, every label in REGIME_LABELS runs once, in an order that rotates by round; a label names
 # its image by its prefix (`native*` is the native image, `plan*` the plan image, `candidate*` a change judged against
-# the plan image), so that `native-a native-b plan-a plan-b` gives an A/A pair of each image beside the comparison.
+# the plan image), so that `native-a native-b plan-a plan-b` gives an A/A pair of each image beside the comparison. A
+# prefix that REGIME_VARIANTS names runs the candidate image with the configuration it gives.
 #
 # Each run: ADP, the blackholes, and the sampler (`regime_sampler.py`, which reads ADP's cgroup and UDP counters from
 # outside its container every 100 ms) start; the steady generator and the burst generator start, and the burst
@@ -37,6 +38,9 @@ candidate_image=${REGIME_CANDIDATE_IMAGE:-}
 plan_config=${REGIME_PLAN_CONFIG:-"$here/adp/lanes-off.yaml"}
 native_config=${REGIME_NATIVE_CONFIG:-"$here/adp/defaults.yaml"}
 candidate_config=${REGIME_CANDIDATE_CONFIG:-$plan_config}
+# Further label prefixes for the candidate image, each with its own configuration: `name=path` pairs, such as
+# `fused=adp/lanes-off.yaml isolated=adp/isolated.yaml` for labels `fused-a fused-b isolated-a isolated-b`.
+variants=${REGIME_VARIANTS:-}
 steady_per_cpu=${REGIME_STEADY_RATE_PER_CPU:-"60 MiB"}
 # Steady rates per limit, `cpus:KiB/s` pairs, such as `0.3:23295 1.2:209900`; a limit not listed gets
 # REGIME_STEADY_RATE_PER_CPU times its CPUs. N1 sets each to 30% of the native image's saturated rate at that limit.
@@ -157,7 +161,14 @@ measure() {
     native*) image=$native_image config=$native_config ;;
     plan*) image=$plan_image config=$plan_config ;;
     candidate*) image=$candidate_image config=$candidate_config ;;
-    *) fail "a label starts with native, plan, or candidate, not '$label'" ;;
+    *)
+      local pair
+      for pair in $variants; do
+        [[ "${label%%-*}" != "${pair%%=*}" ]] || image=$candidate_image config=${pair#*=}
+      done
+      [[ -n "${config:-}" ]] || fail "a label starts with native, plan, candidate, or a variant, not '$label'"
+      [[ "$config" == /* ]] || config="$here/$config"
+      ;;
   esac
   # A series resumes where it stopped (a rerun with the same REGIME_OUT): a run with a row in runs.csv is done.
   if [[ -f "$out/runs.csv" ]] && grep -q "^$cpus,$round,$label," "$out/runs.csv"; then
@@ -258,7 +269,7 @@ print(f'{origin + k * interval:.3f}')")
 regime_main() {
   trap '"${compose[@]}" unpause burst >/dev/null 2>&1 || true; "${compose[@]}" down --volumes --timeout 5 >/dev/null 2>&1 || true' EXIT
   local images=("$native_image" "$plan_image")
-  if [[ "$labels" == *candidate* ]]; then
+  if [[ "$labels" == *candidate* || -n "$variants" ]]; then
     [[ -n "$candidate_image" ]] || fail "candidate labels need REGIME_CANDIDATE_IMAGE"
     images+=("$candidate_image")
   fi
@@ -278,6 +289,7 @@ regime_main() {
     echo "plan_image: $plan_image ($(docker image inspect --format '{{.Id}}' "$plan_image"))"
     echo "plan_config: $plan_config"
     [[ -z "$candidate_image" ]] || echo "candidate_image: $candidate_image ($(docker image inspect --format '{{.Id}}' "$candidate_image")), config $candidate_config"
+    [[ -z "$variants" ]] || echo "variants (candidate image): $variants"
     echo "contexts: $contexts (context limit $context_limit), cache $cache, transport $transport"
     echo "steady_rate_per_cpu: $steady_per_cpu; burst_factor: $burst_factor; steady_rates (KiB/s): ${steady_rates:-none}"
     echo "warmup $warmup s, steady $steady_window s, burst lead $burst_lead s, burst $burst_seconds s, recovery $recovery s"

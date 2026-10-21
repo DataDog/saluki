@@ -743,6 +743,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `experimental.metrics_endpoint_routing.metric_prefix_allowlist`    | Per-endpoint literal metric-prefix allow lists                              | {}             |
 | `experimental.programmable_metrics.artifact_channel.poll_interval` | Artifact channel stub poll interval                                         | 1 second       |
 | `experimental.programmable_metrics.artifact_channel.stub_url`      | Artifact channel stub URL (development only)                                |                |
+| `experimental.programmable_metrics.isolate_state`                  | Isolate state owners in components of their own (measurement only)          |                |
 | `experimental.programmable_metrics.lanes.mode`                     | Whether the slots of the metrics path run on lanes                          | off            |
 | `experimental.programmable_metrics.lanes.post`                     | Post-aggregation lanes of the metrics path (0 is automatic)                 | 0              |
 | `experimental.programmable_metrics.lanes.state`                    | State lanes of DogStatsD aggregation (0 is automatic)                       | 0              |
@@ -869,6 +870,20 @@ experimental:
       mode: auto
       state: 0
       post: 0
+```
+
+### `experimental.programmable_metrics.isolate_state`
+
+Without lanes, ADP runs the metrics path from the DogStatsD mapper through aggregation and enrichment in one component, `dsd_pre_aggregation`. With `isolate_state: true`, each state owner, such as DogStatsD aggregation, runs in a component of its own instead, as it does on lanes: the default metrics path is then `dsd_pre_aggregation`, `dsd_agg`, and `metrics_enrich`, with a queue between each, and aggregation's flushes still interleave with admission. When unset, state owners run in components of their own exactly when the metrics path runs on lanes. `false` is ignored on lanes, which need them apart. The key is read at startup; changing it requires a restart.
+
+> [!WARNING]
+> This setting exists to compare the two layouts in measurements. It is not for production use and may be removed without notice.
+
+```yaml
+# Experimental keys may change, move, or be removed without backward compatibility.
+experimental:
+  programmable_metrics:
+    isolate_state: true
 ```
 
 ### `experimental.standalone_config_reload.*`

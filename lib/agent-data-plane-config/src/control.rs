@@ -173,6 +173,16 @@ pub struct ProgrammableMetrics {
 
     /// How many lanes the slots of the metrics path run on, read once at startup.
     pub lanes: ProgrammableMetricsLanes,
+
+    /// Whether the frame runs each state owner, such as DogStatsD aggregation, in a slot of its own, apart from the
+    /// processing before and after it, read once at startup.
+    ///
+    /// Defaults to `None`: state owners are isolated exactly when the metrics path runs on lanes, and without lanes
+    /// the metrics path is one region. `Some(true)` isolates them without lanes too, which lays the default program out
+    /// as three regions (`dsd_pre_aggregation`, `dsd_agg`, `metrics_enrich`) whose flushes still interleave with
+    /// admission. `Some(false)` is the default without lanes and is ignored on lanes, which need isolated state owners.
+    /// It exists to compare the two layouts in measurements; it is not for production use.
+    pub isolate_state: Option<bool>,
 }
 
 /// How many lanes the slots of the metrics path run on (`experimental.programmable_metrics.lanes.*`). (not in Datadog

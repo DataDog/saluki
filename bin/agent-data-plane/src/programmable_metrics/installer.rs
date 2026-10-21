@@ -381,7 +381,7 @@ impl ProgrammableMetrics {
             &slot_name,
             &lowering.hosts().frame_hosts(),
             &lanes.lanes,
-            lanes.frame_options(),
+            lanes.frame_options(startup.control.programmable_metrics.isolate_state),
         )
         .map_err(|error| {
             generic_error!(

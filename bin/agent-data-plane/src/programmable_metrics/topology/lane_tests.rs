@@ -133,6 +133,13 @@ experimental:
       state: 4
 "#;
 
+/// Lanes off, with state owners isolated: aggregation in a slot of its own, on one lane.
+const ISOLATED_WITHOUT_LANES: &str = r#"
+experimental:
+  programmable_metrics:
+    isolate_state: true
+"#;
+
 /// The plan-driven topology of one configuration, built, with its frame and the registry it declared its bounds in.
 struct Built {
     plan: BlueprintSnapshot,
@@ -281,6 +288,37 @@ async fn on_lanes_each_slot_runs_its_lanes_and_each_edge_into_lanes_routes_as_it
         .admission_points()
         .iter()
         .all(|point| !point.output().to_string().starts_with("dsd_in.")));
+}
+
+#[tokio::test]
+async fn without_lanes_isolate_state_runs_aggregation_in_a_slot_of_its_own_on_one_lane() {
+    let Built { plan, frame, lanes, .. } = built(ISOLATED_WITHOUT_LANES).await;
+    assert!(!lanes.lanes_on());
+    let slots = frame
+        .slots()
+        .iter()
+        .map(|slot| (slot.name.to_string(), slot.lanes))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        slots,
+        [
+            ("dsd_pre_aggregation".to_string(), 1),
+            ("dsd_agg".to_string(), 1),
+            ("metrics_enrich".to_string(), 1)
+        ]
+    );
+    for (slot, _) in slots {
+        assert_eq!(input_lanes(&plan, &slot), 1, "`{}`", slot);
+    }
+
+    // Unset, the same configuration fuses the metrics path into one region.
+    let Built { frame, .. } = built("").await;
+    let slots = frame
+        .slots()
+        .iter()
+        .map(|slot| slot.name.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(slots, ["dsd_pre_aggregation"]);
 }
 
 #[tokio::test]

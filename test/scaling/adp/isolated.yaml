@@ -1,0 +1,8 @@
+# The plan image with lanes off and state owners isolated (`isolate_state: true`): DogStatsD aggregation in a region of
+# its own between `dsd_pre_aggregation` and `metrics_enrich`, as before V7b fused them, with interleaved flushes. For
+# comparing the two layouts against `lanes-off.yaml`, which fuses them into one region.
+experimental:
+  programmable_metrics:
+    lanes:
+      mode: "off"
+    isolate_state: true

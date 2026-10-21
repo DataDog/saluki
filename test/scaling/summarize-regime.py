@@ -5,7 +5,8 @@ Reads `<dir>/runs.csv` (the readings of ADP's telemetry and lading's counters at
 `<dir>/runs/<cpus>-<round>-<label>/timeline.csv` (the sampler's 100 ms rows, see `regime_sampler.py`), derives the
 measures below per run, writes them to `<dir>/derived.csv`, and prints Markdown tables per limit: each image's median
 over its runs (a label's prefix before `-` names its image: `native-a` and `native-b` pool into `native`, and likewise
-`plan` and `candidate`), the ratios plan / native, candidate / plan, and candidate / native, each image's A/A ratio (the
+`plan`, `candidate`, and each prefix of `REGIME_VARIANTS`), the ratios plan / native, candidate / plan, and
+candidate / native, each variant / plan and each variant / each variant named before it, each image's A/A ratio (the
 median of its `-a` runs over the median of its `-b` runs), and each image's spread (p25 to p75 over the median, over all
 its runs): the A/A ratio and the spread are the noise this host adds at that limit.
 
@@ -211,7 +212,10 @@ def main(directory):
         for row in derived:
             writer.writerow({k: (f"{v:.4f}" if isinstance(v, float) else v) for k, v in row.items()})
 
-    print(open(os.path.join(directory, "series.txt")).read().strip().replace("\n", "; "))
+    series = open(os.path.join(directory, "series.txt")).read()
+    print(series.strip().replace("\n", "; "))
+    named = re.search(r"^labels: (.*)$", series, re.MULTILINE)
+    label_order = list(dict.fromkeys(label.split("-")[0] for label in (named.group(1).split() if named else [])))
     groups = defaultdict(list)
     for row in derived:
         groups[(row["cpus"], row["label"])].append(row)
@@ -241,6 +245,15 @@ def main(directory):
 
         images = [image for image in IMAGES if any(label.split("-")[0] == image for label in labels)]
         pairs = [(a, b) for a, b in COMPARISONS if a in images and b in images]
+        # Variants (`REGIME_VARIANTS`): further prefixes, in the order the series names them, each against the plan
+        # image and every later variant against each earlier one.
+        variants = [prefix for prefix in label_order if prefix not in IMAGES and any(
+            label.split("-")[0] == prefix for label in labels)]
+        for i, variant in enumerate(variants):
+            if "plan" in images:
+                pairs.append((variant, "plan"))
+            pairs += [(later, variant) for later in variants[i + 1:]]
+        images += variants
         count = {image: sum(len(groups[(cpus, l)]) for l in labels if l.split("-")[0] == image) for image in images}
         columns = [f"{image} ({count[image]})" for image in images]
         columns += [f"{a} / {b}" for a, b in pairs] + [f"A/A {image}" for image in images]

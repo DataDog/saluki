@@ -332,6 +332,9 @@ pub struct ProgrammableMetrics {
     pub artifact_channel: ArtifactChannel,
     /// How many lanes the metrics path's slots run on (`experimental.programmable_metrics.lanes.*`).
     pub lanes: ProgrammableMetricsLanes,
+    /// Whether state owners run in slots of their own (`experimental.programmable_metrics.isolate_state`). Defaults to
+    /// absent, which isolates them exactly when the metrics path runs on lanes.
+    pub isolate_state: Option<bool>,
 }
 
 /// How many lanes the programmable metrics path's slots run on (`experimental.programmable_metrics.lanes.*`).
@@ -872,6 +875,7 @@ impl SalukiOnly {
         destination.mode = lanes.mode.map(LanesMode::from).unwrap_or_default();
         destination.state = lanes.state.and_then(NonZeroU16::new);
         destination.post = lanes.post.and_then(NonZeroU16::new);
+        config.control.programmable_metrics.isolate_state = self.experimental.programmable_metrics.isolate_state;
 
         // shared
         config.shared.metrics_level = self
@@ -1462,6 +1466,27 @@ mod tests {
             let unreadable = json!({ "experimental": { "programmable_metrics": { "lanes": lanes } } });
             assert!(serde_json::from_value::<SalukiOnly>(unreadable).is_err(), "{lanes}");
         }
+    }
+
+    #[test]
+    fn isolate_state_is_absent_by_default_and_read_as_a_boolean() {
+        let saluki_only: SalukiOnly = serde_json::from_value(json!({})).expect("the source deserializes");
+        let mut config = SalukiConfiguration::default();
+        saluki_only.seed(&mut config);
+        assert_eq!(config.control.programmable_metrics.isolate_state, None);
+
+        for (source, expected) in [(json!(true), Some(true)), (json!(false), Some(false))] {
+            let saluki_only: SalukiOnly = serde_json::from_value(
+                json!({ "experimental": { "programmable_metrics": { "isolate_state": source } } }),
+            )
+            .expect("the source deserializes");
+            let mut config = SalukiConfiguration::default();
+            saluki_only.seed(&mut config);
+            assert_eq!(config.control.programmable_metrics.isolate_state, expected, "{source}");
+        }
+
+        let unreadable = json!({ "experimental": { "programmable_metrics": { "isolate_state": "sometimes" } } });
+        assert!(serde_json::from_value::<SalukiOnly>(unreadable).is_err());
     }
 
     #[test]

@@ -8,7 +8,8 @@
 //!
 //! Lanes are opt-in: with `lanes.mode: off`, the default, every slot runs one lane, and the frame fuses state owners
 //! with their neighbors, so that the default program's metrics path is one region, `dsd_pre_aggregation`, whose flushes
-//! interleave with admission.
+//! interleave with admission. The measurement-only `experimental.programmable_metrics.isolate_state: true` isolates
+//! them without lanes too ([`LaneCounts::frame_options`]).
 //!
 //! # Automatic counts
 //!
@@ -99,6 +100,9 @@ const STATE_KEY: &str = "experimental.programmable_metrics.lanes.state";
 /// The configuration key of the post-aggregation lanes.
 const POST_KEY: &str = "experimental.programmable_metrics.lanes.post";
 
+/// The configuration key that isolates state owners without lanes.
+const ISOLATE_STATE_KEY: &str = "experimental.programmable_metrics.isolate_state";
+
 /// The lanes of the metrics path, and how its frame is laid out.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LaneCounts {
@@ -124,11 +128,12 @@ impl LaneCounts {
         Self { lanes, lanes_on: true }
     }
 
-    /// Returns the options the frame is laid out with: state owners isolated exactly when the metrics path runs on
-    /// lanes.
-    pub fn frame_options(&self) -> FrameOptions {
+    /// Returns the options the frame is laid out with: state owners isolated whenever the metrics path runs on lanes,
+    /// and without lanes as `isolate_state` (`experimental.programmable_metrics.isolate_state`) asks, fused when it is
+    /// unset.
+    pub fn frame_options(&self, isolate_state: Option<bool>) -> FrameOptions {
         FrameOptions {
-            isolate_state: self.lanes_on,
+            isolate_state: self.lanes_on || isolate_state.unwrap_or(false),
         }
     }
 
@@ -223,8 +228,21 @@ impl LaneSettings {
     /// Returns the lane counts the configuration `config` asks for on a primary runtime of `workers` workers.
     ///
     /// Logs a warning for an explicit count above [`MAX_LANES`][limits::values::MAX_LANES], which is lowered to it,
-    /// and for explicit counts that `lanes.mode: off` ignores.
+    /// for explicit counts that `lanes.mode: off` ignores, and for `isolate_state: false` on lanes, which it ignores.
     pub fn from_config(config: &SalukiConfiguration, workers: usize) -> Self {
+        let settings = Self::asked(config, workers);
+        if settings.counts.lanes_on() && config.control.programmable_metrics.isolate_state == Some(false) {
+            warn!(
+                "`{}` is ignored, since the metrics path runs on lanes, which run every state owner in a component of \
+                 its own.",
+                ISOLATE_STATE_KEY
+            );
+        }
+        settings
+    }
+
+    /// Returns the lane counts `lanes.*` asks for, as [`from_config`][Self::from_config] describes.
+    fn asked(config: &SalukiConfiguration, workers: usize) -> Self {
         let lanes = &config.control.programmable_metrics.lanes;
         let decoders = dogstatsd_decoder_workers(config.domains.dogstatsd.listeners.workers_count).get();
         match lanes.mode {
@@ -594,7 +612,7 @@ mod tests {
         assert_eq!(counts, LaneCounts::OFF);
         assert!(counts.lanes.is_one());
         assert!(!counts.lanes_on());
-        assert!(!counts.frame_options().isolate_state);
+        assert!(!counts.frame_options(None).isolate_state);
 
         let settings = LaneSettings::from_config(&config(LanesMode::Off, 4, 3, 6), 8);
         assert_eq!(settings.counts, LaneCounts::OFF);
@@ -606,8 +624,18 @@ mod tests {
         let producer = automatic_producer_lanes(dogstatsd_decoder_workers(0).get(), 8);
         assert_eq!(settings.counts, on(producer, 4, automatic_post_lanes(producer)));
         assert!(settings.counts.lanes_on());
-        assert!(settings.counts.frame_options().isolate_state);
+        assert!(settings.counts.frame_options(None).isolate_state);
         assert!(!settings.explicit_state && !settings.explicit_post);
+    }
+
+    #[test]
+    fn isolate_state_isolates_state_owners_without_lanes_and_never_fuses_them_on_lanes() {
+        assert!(!LaneCounts::OFF.frame_options(Some(false)).isolate_state);
+        assert!(LaneCounts::OFF.frame_options(Some(true)).isolate_state);
+        let lanes = on(2, 2, 2);
+        for isolate_state in [None, Some(false), Some(true)] {
+            assert!(lanes.frame_options(isolate_state).isolate_state, "{isolate_state:?}");
+        }
     }
 
     #[test]
@@ -643,7 +671,7 @@ mod tests {
         let settings = LaneSettings::from_config(&config(LanesMode::Auto, 0, 0, 2), 2);
         assert_eq!(settings.counts, LaneCounts::OFF);
         assert!(!settings.counts.lanes_on());
-        assert!(!settings.counts.frame_options().isolate_state);
+        assert!(!settings.counts.frame_options(None).isolate_state);
         // A count the configuration sets, even of one, keeps the lanes asked for.
         for (state, post) in [(1, 0), (0, 1), (1, 1)] {
             let settings = LaneSettings::from_config(&config(LanesMode::Auto, state, post, 2), 2);
