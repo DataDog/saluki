@@ -99,26 +99,15 @@ a modified checkout and `unknown` when it cannot be determined.
 
 ## Read the traffic artifacts
 
-A correctness test records what it sent and what each side decoded under `<log_dir>/traffic/`. An
-integration test with an intake sidecar records what the intake held after its assertions finished,
-as side `target`. Start with `traffic/manifest.json`: it names each capture, reports its compressed
-size, and says whether the file is still on disk (`file.present`). A passing test keeps only the
-manifest; every other outcome keeps the captures. When `input` is `null`, read
-`input_unavailable_reason` - the `kubernetes_in_docker` runtime and integration tests never produce an
-input capture. When a side's capture is missing or unusable, `decoded_unavailable` gives its reason,
-such as a collection error, an expired capture budget, or a cancelled test.
-
-The integration capture is evidence collected after the assertions, not necessarily the snapshot an
-`intake_has_metric` assertion decided on. Its failure message lists the contexts that share the
-expected name and why each one failed.
-
-The captures are zstd-compressed JSON Lines, one record per line, so decompress before reading:
+Traffic captures live under `<log_dir>/traffic/`. Start with `traffic/manifest.json`: it lists each
+capture, whether its file is still on disk, and why any capture is missing. Take file names from the
+manifest rather than guessing them. Captures are zstd-compressed JSON Lines:
 
 ```bash
-zstd -dc traffic/input.jsonl.zst | head -5
-zstd -dc traffic/baseline-decoded.jsonl.zst | jq -c 'select(.kind == "metric") | .value.context'
-zstd -dc traffic/target-decoded.jsonl.zst | jq -c 'select(.kind == "metric") | .value'
+jq -r '(.input // empty), .decoded[] | select(.file.present) | .file.name' traffic/manifest.json
+zstd -dc traffic/<file-name> | head -5
 ```
 
-Input records are in send order, which is not packet order. Decoded records are grouped by kind and
-indexed within each kind, so `index` is a position within a kind, not a global receive order.
+The module docs in `bin/correctness/panoramic/src/traffic.rs` explain each artifact, its retention,
+and record ordering. For intake sidecar captures, see "Intake artifacts" in
+`test/integration/README.md`.

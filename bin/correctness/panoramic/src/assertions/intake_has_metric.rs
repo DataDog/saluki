@@ -16,10 +16,10 @@ use crate::intake::IntakeClient;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Most candidate contexts a failure message lists.
+/// Most metric contexts with the expected name that a failure message lists.
 const MAX_CANDIDATES: usize = 10;
 
-/// Most other metric names a failure message lists when no candidate was observed.
+/// Most other metric names a failure message lists when no metric with the expected name was observed.
 const MAX_OTHER_NAMES: usize = 10;
 
 /// Most bytes in a failure message, including [`TRUNCATION_NOTICE`].
@@ -29,9 +29,10 @@ const TRUNCATION_NOTICE: &str = "\n[message truncated]";
 
 /// Assertion that polls the intake sidecar for a metric matching the configured criteria.
 ///
-/// Each poll normalizes the intake's metrics dump per (context, type), so a value split across flushes is compared as
-/// its total. The assertion passes once one normalized context meets every criterion by itself; contexts are never
-/// combined.
+/// A metric context is a metric name plus its normalized tag set, with the host as a `host:` tag; see
+/// [`NormalizedMetricContext`]. Each poll normalizes the intake's metrics dump per (metric context, type), so a value
+/// split across flushes is compared as its total. The assertion passes once one metric context meets every criterion by
+/// itself; metric contexts are never combined.
 pub struct IntakeHasMetricAssertion {
     /// Expected name and tags, normalized like an observed context.
     expected: NormalizedMetricContext,
