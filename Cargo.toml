@@ -227,8 +227,7 @@ tower-http = { version = "0.7", default-features = false }
 bollard = { version = "0.21", default-features = false }
 home = { version = "0.5", default-features = false }
 reqwest = { version = "0.13", default-features = false }
-# TODO: Pin back to a `rev` on lading's main once the branch adding the v0.4 trace `priority` setting is merged.
-lading-payload = { git = "https://github.com/DataDog/lading", branch = "oscarld/v04-sampling-priority" }
+lading-payload = { git = "https://github.com/DataDog/lading", rev = "4dbacec20b11eff23e0edd7fcc91300124663157" }
 serde_yaml = { version = "0.9", default-features = false }
 serde_with = { version = "3.18.0", default-features = false, features = [
   "macros",

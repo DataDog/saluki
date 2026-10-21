@@ -25,7 +25,7 @@ corpus:
         error_rate: 0.01
         # Tracers always set a sampling priority. `1` (auto keep) also makes the trace-agent keep every trace on both
         # sides, so all spans get compared.
-        priority: 1
+        priority_weights: { 1: 1 }
         service_name_length:
           inclusive: { min: 1, max: 32 }
         operation_name_length:

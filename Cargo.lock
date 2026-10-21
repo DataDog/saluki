@@ -3697,7 +3697,7 @@ dependencies = [
 [[package]]
 name = "lading-payload"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/lading?branch=oscarld%2Fv04-sampling-priority#1fdb3ed1c37e4afe9f83ef1b6ecee31b9b8d9cc7"
+source = "git+https://github.com/DataDog/lading?rev=4dbacec20b11eff23e0edd7fcc91300124663157#4dbacec20b11eff23e0edd7fcc91300124663157"
 dependencies = [
  "byte-unit",
  "bytes",
@@ -6530,7 +6530,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.52.0",
@@ -7148,7 +7148,7 @@ version = "2.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "86a801b3cea342a06d468c8710662aa29e5e05e4f5c0d62f00bbb7f2ad7941c2"
 dependencies = [
- "rand 0.9.4",
+ "rand 0.10.3",
 ]
 
 [[package]]
