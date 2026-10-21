@@ -12,13 +12,13 @@
 //!   a **fixed destination**, a component of its own, fixed too.
 //! - **Slots** hold the synchronous operators between fences. A slot is a connected set of synchronous nodes, as large
 //!   as fusion allows (rewrite R1): two synchronous neighbors share a slot unless some path leaves one of them through
-//!   a fence and comes back to the other, since fusing them would then form a cycle through that fence, or unless
-//!   R1's cost model cuts between them, so that a chain too costly for one task pipelines across several (see
-//!   [below](#pipelining)). A slot may have several inputs. Each slot is run by one region host component, named by
-//!   the host's [slot namer][SlotNamer].
-//! - **Isolation slots** each hold one state owner behind a declared isolation fence
-//!   ([`Boundary::Isolated`]), such as aggregation as a kernel: it is never fused, and its region owns its state, its
-//!   watermark, and its flush ticks (see [below](#isolation-slots)).
+//!   a fence and comes back to the other, since fusing them would then form a cycle through that fence. Fusion is
+//!   maximal between fences, whatever the nodes cost. A slot may have several inputs. Each slot is run by one region
+//!   host component, named by the host's [slot namer][SlotNamer].
+//! - **State owners** behind a declared isolation fence ([`Boundary::Isolated`]), such as aggregation as a kernel, fuse
+//!   with their synchronous neighbors like any other node, unless the frame isolates state
+//!   ([`FrameOptions::isolate_state`]), as a frame with lanes does: each then holds an **isolation slot** of its own,
+//!   and is a fence for fusion (see [below](#state-slots)).
 //! - Each slot's **exits** are its outputs: one for every edge of the boot plan that leaves the slot, to a fixed
 //!   component or to another slot, one for every output the boot plan delivers to downstream of the slot (to its
 //!   delivery host's encode host, or to its fixed destination), whether or not the boot plan emits to it from the
@@ -42,52 +42,35 @@
 //! fence, which increases the depth, or is a direct edge between neighbors of different depths, so the slots and fixed
 //! components form an acyclic graph, as a topology must.
 //!
-//! # Pipelining
-//!
-//! A region runs its program in one task, one batch after another, so one stream of batches through a region gets at
-//! most one core. Natively, each component of a chain runs in a task of its own, and consecutive batches move through
-//! the chain in parallel: the chain keeps the throughput of its costliest component. R1 therefore fuses a chain only
-//! as far as that throughput is kept, by a cost model:
-//!
-//! - Each operator estimates its work per event ([`OperatorDef::cost`][crate::operators::OperatorDef::cost]), and each
-//!   native component, the nodes that lowering says do its work (the plan's
-//!   [`native_components`][crate::ir::PlanProvenance::native_components]), costs the sum of its nodes' estimates. A
-//!   node lowering names no component for is a component of its own.
-//! - The **budget** of a region is the estimated cost of the costliest native component that runs in any slot, or
-//!   [`REGION_COST_FLOOR`] if that is less: a region within the floor is fast enough for one stream whatever it fuses.
-//! - In a region, `split`s and `tee`s joined by edges are one **decision**, run as one function (see
-//!   [`decision`][super::decision]), so they are never cut, and their `split`s are priced together as the function
-//!   runs them: derived fields such as the intake name are computed once, and a memoizable decision costs one memo
-//!   lookup (R4) in place of its predicates. A `tee` keeps its copies' estimate. The **units** R1 never cuts are the
-//!   native components, each joined with every other that one of its decisions reaches into.
-//! - Walking each fused set in topological order, a unit joins the regions its inputs come from, on their stage, if
-//!   the joined region's estimate stays within the budget, and starts the next stage of a pipeline otherwise. Regions
-//!   are tracked as they form, so parallel branches, which run in regions of their own, never add up unless a node
-//!   joins them; a unit that adds no work to the one region it joins never moves, so no region holds only a terminal.
-//!   No region does less than a native component did, and none costs more than the budget unless one unit alone does.
-//!
-//! A cut follows the edges, so a slot's **stage** only grows along them, and the slots and fixed components stay
-//! acyclic. The frame records each cut as a [`FusionVerdict::Pipelined`] decision.
+//! The fences are the fixed components: sources, opaque hosts, and, beyond the slots, the encode hosts and fixed
+//! destinations. A region runs its program in one task, so a slot gets at most one core per lane; at one core or less
+//! a cut would only add a hop and a queue, and lanes give the parallelism beyond that.
 //!
 //! # State slots
 //!
-//! A boot state owner behind an isolation fence counts as a fence in the fence-depth walk, as a host does, and starts
-//! a slot of its own; R1 neither fuses it nor prices it. That is the boot layout rule only: no slot kind owns state.
-//! Each generation's placement decides which region of which slot runs each of its state owners, and which points are
-//! upstream of it ([placement](super::placement#regions)). The slot's exits are those of any slot: what its state owner
-//! emits at its flush ticks goes where the boot plan sends it, and a later generation may emit to any output
-//! downstream of it. Every edge into or out of it is recorded as a [`FusionVerdict::Isolation`] decision.
+//! Without [`FrameOptions::isolate_state`], a state owner behind an isolation fence is a synchronous node of the
+//! fence-depth walk, and no slot is an isolation slot: each generation's placement runs a state owner in the region of
+//! its inputs when that region runs no other, and in a sub-region of the slot otherwise
+//! ([placement](super::placement#regions)), and gives it an output point of its own ([`DerivedPoints`]). Every edge
+//! into or out of it is recorded as any synchronous node's.
 //!
-//! A boot state owner stamps its time-driven output, in its boot slot, as if its output were an admission point of its
-//! own per lane ([`Frame::boot_output_points`]), numbered after every admission point of the fixed components; other
-//! state owners' points are numbered after those ([`Frame::derived_point_base`]).
+//! With it, a boot state owner counts as a fence in the fence-depth walk, as a host does, and starts a slot of its
+//! own. That is the boot layout rule only: no slot kind owns state. Each generation's placement decides which region of
+//! which slot runs each of its state owners, and which points are upstream of it. The slot's exits are those of any
+//! slot: what its state owner emits at its flush ticks goes where the boot plan sends it, and a later generation may
+//! emit to any output downstream of it. Every edge into or out of it is recorded as a [`FusionVerdict::Isolation`]
+//! decision. A boot state owner in an isolation slot stamps its time-driven output, in its boot slot, as if its output
+//! were an admission point of its own per lane ([`Frame::boot_output_points`]), numbered after every admission point of
+//! the fixed components; other state owners' points are numbered after those ([`Frame::derived_point_base`]).
+//!
+//! [`DerivedPoints`]: super::DerivedPoints
 //!
 //! # Lanes
 //!
 //! A slot may run on several **lanes**: tasks inside its one component, each running the slot's program on an input of
 //! its own. Lane counts are runtime layout, fixed at boot by the host's [`LanePolicy`], and never plan content: the
-//! plan's hash and its logical explanation do not depend on them. A frame with lanes is laid out without R1's
-//! pipelining ([`FrameOptions`]), so fusion is maximal between fences. [`Frame::compute_with`] gives:
+//! plan's hash and its logical explanation do not depend on them. A frame with lanes isolates its state owners
+//! ([`FrameOptions::isolate_state`]). [`Frame::compute_with`] gives:
 //!
 //! - **Lane points.** The DogStatsD source's `metrics` output is split into
 //!   [`LanePolicy::dogstatsd`] admission points, one per lane, with consecutive IDs from the point's
@@ -130,14 +113,9 @@ use super::{resolve, Role};
 use crate::{
     canonical::PlanHash,
     ir::{HostId, NativeComponentId, NodeId, OperatorName, OutputDecl, OutputId, Params, Plan, PortName, PortRef},
-    operators::{decision_cost, names, Boundary, OperatorRegistry, SourceBinding, StateContract, METRICS_PORT},
+    operators::{names, Boundary, OperatorRegistry, SourceBinding, StateContract, METRICS_PORT},
     validate::graph::{emit_output, Graph},
 };
-
-/// The estimated cost per event, in nanoseconds, within which R1 fuses a chain into one region whatever the costs of
-/// its native components: such a region processes over 15 million events per second, more than one stream of the
-/// sources it runs behind delivers (see [Pipelining](self#pipelining)).
-pub const REGION_COST_FLOOR: u32 = 64;
 
 /// Names the region host component of one slot, given the IDs of the boot plan's nodes in the slot, in plan order.
 ///
@@ -334,39 +312,25 @@ impl Default for LanePolicy {
 /// Choices of the frame's layout that the host makes at boot, besides the lanes.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct FrameOptions {
-    /// Whether R1's cost model cuts chains of synchronous nodes into pipelined slots (see
-    /// [Pipelining](self#pipelining)).
-    ///
-    /// Without it, fusion is maximal between fences: every connected set of synchronous nodes at one fence depth is one
-    /// slot, and lanes give the parallelism. A frame with lanes needs it off. On by default.
-    pub pipelining: bool,
-
-    /// Whether every state owner runs in a slot of its own, apart from its synchronous neighbors.
+    /// Whether every state owner runs in a slot of its own, apart from its synchronous neighbors (see
+    /// [State slots](self#state-slots)).
     ///
     /// With it, a state owner is a fence for fusion and its node gets an isolation slot, as before version 2's step
-    /// V7b. Without it, a state owner fuses with its synchronous neighbors like any other node, only fixed components,
-    /// I/O hosts, and opaque hosts are fences, and a state owner runs in the region of its inputs when that region runs
-    /// no other, else in a sub-region. A frame with lanes needs it on. On by default.
-    ///
-    /// The layout does not read it yet: every frame isolates its state owners.
+    /// V7b. Without it, a state owner fuses with its synchronous neighbors like any other node, only fixed components
+    /// (sources and opaque hosts) are fences, no slot is an isolation slot, and placement runs a state owner in the
+    /// region of its inputs when that region runs no other, else in a sub-region. A frame with lanes needs it on. On
+    /// by default.
     pub isolate_state: bool,
 }
 
 impl FrameOptions {
-    /// The layout a frame with lanes needs: without R1's pipelining, so that fusion is maximal between fences, and
-    /// with every state owner in a slot of its own.
-    pub const ON_LANES: Self = Self {
-        pipelining: false,
-        isolate_state: true,
-    };
+    /// The layout a frame with lanes needs: every state owner in a slot of its own.
+    pub const ON_LANES: Self = Self { isolate_state: true };
 }
 
 impl Default for FrameOptions {
     fn default() -> Self {
-        Self {
-            pipelining: true,
-            isolate_state: true,
-        }
+        Self { isolate_state: true }
     }
 }
 
@@ -654,10 +618,6 @@ pub struct Slot {
     /// Transitional (V7a): whether the boot layout gave the slot to a boot state owner (see [`SlotKind`]).
     pub kind: SlotKind,
 
-    /// The estimated cost per event of the slot's boot nodes, in nanoseconds: the sum of their operators' estimates,
-    /// with the `split`s of each decision priced together (see [Pipelining](self#pipelining)).
-    pub cost: u32,
-
     /// The number of lanes the slot runs on: one task per lane, each with an input of its own (see
     /// [Lanes](self#lanes)).
     pub lanes: u16,
@@ -720,7 +680,7 @@ pub enum FusionVerdict {
         boundary: Boundary,
     },
 
-    /// The edge enters or leaves an isolation slot, which runs its state owner alone.
+    /// The edge enters or leaves an isolation slot, which runs its state owner alone, in a frame that isolates state.
     Isolation {
         /// The isolation slot.
         slot: SlotId,
@@ -737,19 +697,6 @@ pub enum FusionVerdict {
 
         /// The fence on such a path, nearest the downstream node.
         through: Option<NodeId>,
-    },
-
-    /// Both nodes are synchronous, and nothing separates them, but R1's cost model cuts between them: fusing them
-    /// would make the upstream node's region cost more per event than the budget, so the two slots pipeline.
-    Pipelined {
-        /// The upstream node's slot.
-        from: SlotId,
-
-        /// The downstream node's slot.
-        to: SlotId,
-
-        /// The budget, in estimated nanoseconds per event.
-        budget: u32,
     },
 
     /// The edge leads from a fence to an `emit` or `drop`, which runs in no slot: the fence's output connects
@@ -899,7 +846,6 @@ pub struct Frame {
     edges: Vec<FrameEdge>,
     fusion: Vec<FusionDecision>,
     sites: BTreeMap<NodeId, Site>,
-    cost_budget: u32,
     lanes: LanePolicy,
     options: FrameOptions,
     boot_output_points: BTreeMap<NodeId, Vec<AdmissionPointId>>,
@@ -941,7 +887,8 @@ impl Frame {
     /// The plan must be structurally sound: every operator known and configured, every edge resolved, and no cycle.
     /// `namer` names each slot's region host component. A bound output delivers through the encode host of its
     /// delivery host, which `hosts` must have; an output without a binding is a fixed destination. `lanes` says how
-    /// many lanes which slots run on (see [Lanes](self#lanes)), and `options` whether R1's cost model pipelines slots.
+    /// many lanes which slots run on (see [Lanes](self#lanes)), and `options` whether state owners get slots of their
+    /// own (see [State slots](self#state-slots)).
     ///
     /// # Errors
     ///
@@ -970,7 +917,7 @@ impl Frame {
             }
         }
 
-        let layout = Layout::compute(plan, &graph, &roles, options.pipelining);
+        let layout = Layout::compute(plan, &graph, &roles, options.isolate_state);
         let mut slots = Vec::with_capacity(layout.slots.len());
         let mut names = BTreeSet::new();
         for (index, members) in layout.slots.iter().enumerate() {
@@ -983,10 +930,6 @@ impl Frame {
             if !names.insert(name.clone()) {
                 return Err(FrameError::DuplicateSlotName { name });
             }
-            let cost = members
-                .iter()
-                .map(|&node| layout.cost[node])
-                .fold(0u32, u32::saturating_add);
             slots.push(Slot {
                 id,
                 name,
@@ -994,7 +937,6 @@ impl Frame {
                 inputs: Vec::new(),
                 exits: Vec::new(),
                 kind: SlotKind::Fused,
-                cost,
                 lanes: 1,
             });
         }
@@ -1197,7 +1139,7 @@ impl Frame {
         }
 
         for (index, members) in layout.slots.iter().enumerate() {
-            if members.iter().any(|&node| roles[node] == Role::Isolated) {
+            if options.isolate_state && members.iter().any(|&node| roles[node] == Role::Isolated) {
                 slots[index].kind = SlotKind::Isolation {
                     output_points: Vec::new(),
                     upstream: Vec::new(),
@@ -1242,11 +1184,12 @@ impl Frame {
                     graph.op(to).expect("configured").ports().inputs[to_port].name.clone(),
                 );
                 let boundary = |node: usize| graph.op(node).expect("configured").contract().boundary;
+                let isolated = |node: usize| options.isolate_state && roles[node] == Role::Isolated;
                 let verdict = match (roles[from], roles[to]) {
-                    (Role::Isolated, _) | (_, Role::Isolated) => {
-                        let isolated = if roles[from] == Role::Isolated { from } else { to };
+                    _ if isolated(from) || isolated(to) => {
+                        let owner = if isolated(from) { from } else { to };
                         FusionVerdict::Isolation {
-                            slot: slot_of(isolated).expect("every state owner behind an isolation fence has a slot"),
+                            slot: slot_of(owner).expect("every state owner behind an isolation fence has a slot"),
                         }
                     }
                     (Role::Fixed, Role::Terminal) => FusionVerdict::Direct {
@@ -1262,11 +1205,6 @@ impl Frame {
                     },
                     _ => match (slot_of(from), slot_of(to)) {
                         (Some(a), Some(b)) if a == b => FusionVerdict::Fused { slot: a },
-                        (Some(a), Some(b)) if layout.depth[from] == layout.depth[to] => FusionVerdict::Pipelined {
-                            from: a,
-                            to: b,
-                            budget: layout.budget,
-                        },
                         (Some(a), Some(b)) => FusionVerdict::Separated {
                             from: a,
                             to: b,
@@ -1306,7 +1244,6 @@ impl Frame {
             edges,
             fusion,
             sites,
-            cost_budget: layout.budget,
             lanes: *lanes,
             options,
             boot_output_points,
@@ -1351,12 +1288,6 @@ impl Frame {
     /// Returns the delivery host with its encode host, if the frame has it.
     pub fn encode_host(&self, host: &HostId) -> Option<&FrameHost> {
         self.hosts.get(host)
-    }
-
-    /// Returns the budget of R1's cost model: the estimated cost per event, in nanoseconds, within which a region
-    /// fuses native components (see [Pipelining](self#pipelining)).
-    pub fn cost_budget(&self) -> u32 {
-        self.cost_budget
     }
 
     /// Returns the hash of the boot plan the frame was computed from, if it has one.
@@ -1512,7 +1443,7 @@ fn check_supported(graph: &Graph<'_>, roles: &[Role]) -> Result<(), FrameError> 
 }
 
 /// Checks that every lane count is between one and [`MAX_LANES`][crate::limits::values::MAX_LANES], and that a frame
-/// with lanes fuses maximally and isolates its state owners: R1's pipelined slots and fused state owners get no lanes.
+/// with lanes isolates its state owners: fused state owners get no lanes.
 fn check_lane_policy(lanes: &LanePolicy, options: FrameOptions) -> Result<(), FrameError> {
     let max = crate::limits::values::MAX_LANES;
     for (what, count) in [
@@ -1528,13 +1459,6 @@ fn check_lane_policy(lanes: &LanePolicy, options: FrameOptions) -> Result<(), Fr
                 ),
             });
         }
-    }
-    if options.pipelining && !lanes.is_one() {
-        return Err(FrameError::Lanes {
-            message: "R1's cost model pipelines slots, and slots with lanes need fusion to be maximal between fences. \
-                      Lay the frame out without pipelining, or on one lane."
-                .to_string(),
-        });
     }
     if !options.isolate_state && !lanes.is_one() {
         return Err(FrameError::Lanes {
@@ -1882,24 +1806,17 @@ struct Layout {
     /// Each node's slot, for synchronous nodes and state owners behind an isolation fence.
     slot_of: Vec<Option<usize>>,
 
-    /// Each node's fence depth within its connected set of synchronous nodes.
-    depth: Vec<u32>,
-
     /// For each node, the fence nearest it on a deepest path from its connected set, if any path crosses one.
     via: Vec<Option<usize>>,
-
-    /// Each node's estimated cost per event, zero for nodes that run in no slot.
-    cost: Vec<u32>,
-
-    /// The budget of R1's cost model.
-    budget: u32,
 
     /// Every edge of the plan, in plan order, by port positions.
     edges: Vec<(Endpoint, Endpoint)>,
 }
 
 impl Layout {
-    fn compute(plan: &Plan, graph: &Graph<'_>, roles: &[Role], pipelining: bool) -> Self {
+    /// Lays out the slots: with `isolate_state`, each state owner behind an isolation fence is a fence for fusion and
+    /// runs alone in a slot of its own; without it, it fuses as any synchronous node.
+    fn compute(plan: &Plan, graph: &Graph<'_>, roles: &[Role], isolate_state: bool) -> Self {
         let count = graph.nodes.len();
         // Every edge, in plan order. A structurally sound plan resolves every edge on both ends.
         let edges = plan
@@ -1912,11 +1829,22 @@ impl Layout {
             })
             .collect::<Vec<_>>();
 
-        // Connected sets of synchronous nodes.
-        let synchronous = |node: usize| roles[node] == Role::Synchronous;
+        // The nodes that fuse, and the fences between them.
+        let fuses = |node: usize| match roles[node] {
+            Role::Synchronous => true,
+            Role::Isolated => !isolate_state,
+            Role::Fixed | Role::Terminal => false,
+        };
+        let fence = |node: usize| match roles[node] {
+            Role::Fixed => true,
+            Role::Isolated => isolate_state,
+            Role::Synchronous | Role::Terminal => false,
+        };
+
+        // Connected sets of fusing nodes.
         let mut sets = UnionFind::new(count);
         for &((from, _), (to, _)) in &edges {
-            if synchronous(from) && synchronous(to) {
+            if fuses(from) && fuses(to) {
                 sets.union(from, to);
             }
         }
@@ -1926,7 +1854,7 @@ impl Layout {
         let mut via = vec![None; count];
         let mut roots = BTreeSet::new();
         for node in 0..count {
-            if synchronous(node) {
+            if fuses(node) {
                 roots.insert(sets.find(node));
             }
         }
@@ -1934,7 +1862,7 @@ impl Layout {
             let mut reach: Vec<Option<u32>> = vec![None; count];
             let mut nearest: Vec<Option<usize>> = vec![None; count];
             for &node in &graph.order {
-                let mut best = (synchronous(node) && sets.find(node) == root).then_some(0u32);
+                let mut best = (fuses(node) && sets.find(node) == root).then_some(0u32);
                 let mut best_via = None;
                 let Some(op) = graph.op(node) else { continue };
                 for port in 0..op.ports().inputs.len() {
@@ -1942,179 +1870,41 @@ impl Layout {
                         continue;
                     };
                     let Some(reached) = reach[from] else { continue };
-                    // An isolation fence separates as a host does: a state owner's slot is a fence for fusion.
-                    let fence = matches!(roles[from], Role::Fixed | Role::Isolated);
-                    let value = reached + u32::from(fence);
+                    let value = reached + u32::from(fence(from));
                     if best.is_none_or(|best| value > best) {
                         best = Some(value);
-                        best_via = if fence { Some(from) } else { nearest[from] };
+                        best_via = if fence(from) { Some(from) } else { nearest[from] };
                     }
                 }
                 reach[node] = best;
                 nearest[node] = best_via;
             }
             for node in 0..count {
-                if synchronous(node) && sets.find(node) == root {
+                if fuses(node) && sets.find(node) == root {
                     depth[node] = reach[node].unwrap_or(0);
                     via[node] = nearest[node];
                 }
             }
         }
 
-        // R1's cost model: the stage of each node within its set and depth, so that each region stays within the
-        // budget (see the module documentation).
-        let native_cost = (0..count)
-            .map(|node| match graph.op(node) {
-                Some(op) if synchronous(node) => op.cost(),
-                _ => 0,
-            })
-            .collect::<Vec<_>>();
-        let native_components = plan.provenance.as_ref().map(|provenance| &provenance.native_components);
-        let component = |node: usize| match native_components.and_then(|components| components.get(graph.id(node))) {
-            Some(component) => component.to_string(),
-            None => graph.id(node).to_string(),
-        };
-        // The budget is what the costliest native component costs natively.
-        let mut component_cost: BTreeMap<String, u32> = BTreeMap::new();
-        for node in (0..count).filter(|&node| synchronous(node)) {
-            let total = component_cost.entry(component(node)).or_default();
-            *total = total.saturating_add(native_cost[node]);
-        }
-        let budget = component_cost
-            .values()
-            .copied()
-            .max()
-            .unwrap_or_default()
-            .max(REGION_COST_FLOOR);
-
-        // Decisions: `split`s and `tee`s joined by edges run as one function, so a region prices their `split`s
-        // together, as the function runs them (`tee`s keep their copies' estimates), on the first `split` of each.
-        let decides = |node: usize| {
-            synchronous(node)
-                && graph
-                    .op(node)
-                    .is_some_and(|op| matches!(op.name(), names::SPLIT | names::TEE))
-        };
-        let mut decisions = UnionFind::new(count);
-        for &((from, _), (to, _)) in &edges {
-            if decides(from) && decides(to) && depth[from] == depth[to] {
-                decisions.union(from, to);
-            }
-        }
-        let mut cost = native_cost;
-        let mut splits_of: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-        for &node in &graph.order {
-            if decides(node) && graph.op(node).is_some_and(|op| op.name() == names::SPLIT) {
-                splits_of.entry(decisions.find(node)).or_default().push(node);
-            }
-        }
-        for splits in splits_of.values() {
-            let predicates = splits
-                .iter()
-                .filter_map(|&split| graph.op(split)?.params().predicate("predicate"))
-                .collect::<Vec<_>>();
-            for &split in splits {
-                cost[split] = 0;
-            }
-            cost[splits[0]] = decision_cost(&predicates);
-        }
-
-        // Units: what R1 never cuts. Each is a native component (its nodes in one set and depth), joined with every
-        // other that one of its decisions reaches into, since a decision is never cut either.
-        let mut units = UnionFind::new(count);
-        let mut first_of_component: BTreeMap<(usize, u32, String), usize> = BTreeMap::new();
-        for node in (0..count).filter(|&node| synchronous(node)) {
-            let first = *first_of_component
-                .entry((sets.find(node), depth[node], component(node)))
-                .or_insert(node);
-            units.union(first, node);
-        }
-        for node in (0..count).filter(|&node| decides(node)) {
-            units.union(decisions.find(node), node);
-        }
-        let mut unit_cost = vec![0u32; count];
-        for node in (0..count).filter(|&node| synchronous(node)) {
-            let unit = units.find(node);
-            unit_cost[unit] = unit_cost[unit].saturating_add(cost[node]);
-        }
-
-        // Walking each set in plan order, a unit joins the regions of its inputs on their stage unless the joined
-        // region would cost more than the budget. Regions are tracked as they form, so that parallel branches, which
-        // run in regions of their own, are never summed unless a node joins them.
-        let mut stage = vec![0u32; count];
-        let mut unit_stage: Vec<Option<u32>> = vec![None; count];
-        let mut regions = UnionFind::new(count);
-        let mut region_cost = vec![0u32; count];
-        for &node in &graph.order {
-            if !synchronous(node) {
-                continue;
-            }
-            let Some(op) = graph.op(node) else { continue };
-            // A node runs no earlier than the stage of any input in its group.
-            let inputs = (0..op.ports().inputs.len())
-                .filter_map(|port| graph.source(node, port))
-                .map(|(from, _)| from)
-                .filter(|&from| synchronous(from) && depth[from] == depth[node])
-                .collect::<Vec<_>>();
-            let mut at = inputs.iter().map(|&from| stage[from]).max().unwrap_or(0);
-            let unit = units.find(node);
-            let added = match unit_stage[unit] {
-                Some(placed) => {
-                    at = at.max(placed);
-                    0
-                }
-                None => {
-                    let added = unit_cost[unit];
-                    let mut joined = inputs
-                        .iter()
-                        .filter(|&&from| stage[from] == at)
-                        .map(|&from| regions.find(from))
-                        .collect::<Vec<_>>();
-                    joined.sort_unstable();
-                    joined.dedup();
-                    let merged = joined
-                        .iter()
-                        .map(|&region| region_cost[region])
-                        .fold(added, u32::saturating_add);
-                    // A unit that adds no work to the one region it joins stays with it, even past the budget (behind
-                    // a unit that alone costs more): moving it would only add a region for a lone `emit` or `drop`.
-                    if pipelining && !joined.is_empty() && merged > budget && (added > 0 || joined.len() > 1) {
-                        at += 1;
-                    }
-                    unit_stage[unit] = Some(at);
-                    added
-                }
-            };
-            stage[node] = at;
-            region_cost[node] = added;
-            for &from in &inputs {
-                let (own, other) = (regions.find(node), regions.find(from));
-                if stage[from] == at && own != other {
-                    let total = region_cost[own].saturating_add(region_cost[other]);
-                    regions.union(own, other);
-                    region_cost[regions.find(own)] = total;
-                }
-            }
-        }
-
-        // Slots: neighbors in one set with equal depth and stage.
+        // Slots: neighbors in one set with equal depth.
         let mut groups = UnionFind::new(count);
         for &((from, _), (to, _)) in &edges {
-            if synchronous(from) && synchronous(to) && depth[from] == depth[to] && stage[from] == stage[to] {
+            if fuses(from) && fuses(to) && depth[from] == depth[to] {
                 groups.union(from, to);
             }
         }
         let mut by_root: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
         for node in 0..count {
-            if synchronous(node) {
+            if fuses(node) {
                 by_root.entry(groups.find(node)).or_default().push(node);
             }
         }
         let mut slots = by_root.into_values().collect::<Vec<_>>();
-        // Each state owner behind an isolation fence runs alone, in an isolation slot of its own.
+        // With isolated state, each state owner behind an isolation fence runs alone, in an isolation slot of its own.
         slots.extend(
             (0..count)
-                .filter(|&node| roles[node] == Role::Isolated)
+                .filter(|&node| isolate_state && roles[node] == Role::Isolated)
                 .map(|node| vec![node]),
         );
         slots.sort_by_key(|members| members[0]);
@@ -2128,10 +1918,7 @@ impl Layout {
         Self {
             slots,
             slot_of,
-            depth,
             via,
-            cost,
-            budget,
             edges,
         }
     }

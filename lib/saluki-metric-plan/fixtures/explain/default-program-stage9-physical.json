@@ -2,8 +2,7 @@
   "layout": {
     "dogstatsd_lanes": 2,
     "state_lanes": 2,
-    "post_lanes": 2,
-    "pipelining": false
+    "post_lanes": 2
   },
   "fixed": [
     {
@@ -92,7 +91,6 @@
   "slots": [
     {
       "name": "dsd_pre_aggregation",
-      "cost": 200,
       "lanes": 2,
       "nodes": [
         "dsd_enrich",
@@ -173,7 +171,6 @@
     },
     {
       "name": "dsd_agg",
-      "cost": 0,
       "lanes": 2,
       "nodes": [
         "dsd_agg"
@@ -246,7 +243,6 @@
     },
     {
       "name": "metrics_enrich",
-      "cost": 141,
       "lanes": 2,
       "nodes": [
         "dsd_post_agg_filter_in",

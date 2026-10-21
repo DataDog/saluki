@@ -281,11 +281,10 @@ fn write_physical(physical: &PhysicalPlan, out: &mut String) -> std::fmt::Result
     if let Some(layout) = &physical.layout {
         writeln!(
             out,
-            "  laid out on {}, {}, and {}, {} R1's pipelining",
+            "  laid out on {}, {}, and {}",
             count(usize::from(layout.dogstatsd_lanes), "DogStatsD producer lane"),
             count(usize::from(layout.state_lanes), "state lane"),
             count(usize::from(layout.post_lanes), "post-aggregation lane"),
-            if layout.pipelining { "with" } else { "without" }
         )?;
     }
     writeln!(out, "  fixed ({})", physical.fixed.len())?;
@@ -314,22 +313,17 @@ fn write_physical(physical: &PhysicalPlan, out: &mut String) -> std::fmt::Result
     }
     writeln!(out, "  slots ({})", physical.slots.len())?;
     for slot in &physical.slots {
-        // R1 never fuses a boot state owner's slot, so its cost model does not price one.
-        match slot.state_slot {
-            true => writeln!(
-                out,
-                "    {} (not priced: R1 never fuses a state owner's slot){}",
-                slot.name,
-                lanes_suffix(slot.lanes)
-            )?,
-            false => writeln!(
-                out,
-                "    {} (estimated {} ns per event){}",
-                slot.name,
-                slot.cost,
-                lanes_suffix(slot.lanes)
-            )?,
-        }
+        writeln!(
+            out,
+            "    {}{}{}",
+            slot.name,
+            if slot.state_slot {
+                " (a state owner's own slot)"
+            } else {
+                ""
+            },
+            lanes_suffix(slot.lanes)
+        )?;
         for region in &slot.regions {
             write!(out, "      region {}", region.region)?;
             if region.region != "main" {

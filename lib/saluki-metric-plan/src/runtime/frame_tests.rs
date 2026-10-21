@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 
 use super::harness::{FrameHarness, HarnessOptions};
 use crate::{
-    compile::{compile, Frame, FusionVerdict, Site},
+    compile::{compile, Frame, Site},
     equivalence::{compare, compare_under_capacity, OutputPoints},
     interpret::{AdapterError, HostBatch, HostOutput, Interpreter, OpaqueHostAdapter, Trace},
     ir::{NativeComponentId, NodeId, OutputId, Plan, RecipientId},
@@ -149,10 +149,14 @@ fn the_default_program_runs_through_a_frame_of_region_drivers_as_the_interpreter
             .unwrap();
         let _guard = runtime.enter();
         let mut harness = FrameHarness::new(&plan, &report, registry);
-        // R1's cost model cuts the default program into five fused slots: three before aggregation, the
-        // post-aggregation filter's, and enrichment with the whole policy region, one decision; aggregation runs in
-        // an isolation slot of its own between them.
-        assert_eq!(harness.drivers().len(), 6, "the default program's frame has six slots");
+        // Fusion is maximal between fences: one slot before aggregation, and one after it with the post-aggregation
+        // filter and enrichment with the whole policy region, one decision; aggregation runs in an isolation slot of
+        // its own between them.
+        assert_eq!(
+            harness.drivers().len(),
+            3,
+            "the default program's frame has three slots"
+        );
         harness.admit("dsd_in", t(3), dogstatsd);
         harness.admit("otlp_in", t(4), otlp);
         harness.advance(t(15));
@@ -395,8 +399,7 @@ fn arb_plan_params_of(distinct: usize) -> impl Strategy<Value = PlanParams> {
         })
 }
 
-/// A node with native provenance of its own, so that lossy and host nodes have authority, and so that R1's cost model
-/// may cut between any two nodes, as it cuts between native components.
+/// A node with native provenance of its own, so that lossy and host nodes have authority.
 fn node(id: &str, op: &str, params: Value) -> Value {
     json!({"id": id, "op": op, "params": params})
 }
@@ -720,10 +723,10 @@ fn random_plans_of_every_shape_are_valid_and_span_several_slots() {
         }
     }
     // The detour separates its split and its merge into two slots, and so does the double detour, whose second split
-    // reaches the slot below by two edges over one exit. Two mappers, of 65 ns per event each, pipeline.
+    // reaches the slot below by two edges over one exit. Two mappers fuse, whatever they cost.
     assert_eq!(slot_counts[10], 2);
     assert_eq!(slot_counts[18], 2);
-    assert_eq!(slot_counts[20], 2);
+    assert_eq!(slot_counts[20], 1);
     assert!(slot_counts.iter().all(|count| *count >= 1));
 }
 
@@ -1191,46 +1194,5 @@ proptest! {
         // The rewrites change no exit set and no order within an exit, so under pressure they deliver and refuse
         // exactly what the original does.
         prop_assert_eq!(rewritten, original);
-    }
-}
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(512))]
-
-    /// R1's cost model over random plans, in which every node is a native component of its own: a decision (`split`s
-    /// and `tee`s joined by edges) is never cut, no region runs only terminals, and a region costs more than the budget
-    /// only when one decision alone does, which takes a `tee` (no single node costs more than the budget, which is the
-    /// costliest node's estimate, and a decision without copies costs no more than its costliest `split`).
-    #[test]
-    fn property_test_the_cost_model_keeps_decisions_whole_and_regions_within_the_budget(
-        shape in arb_shape(),
-        params in arb_plan_params(),
-    ) {
-        let registry = OperatorRegistry::native();
-        let (plan, _) = random_plan(&shape, &params, 0);
-        let frame = Frame::compute(&plan, &registry, &namer).unwrap();
-        let operator = |node: &NodeId| plan.node(node).map_or("", |node| node.op.as_str());
-        let decides = |node: &NodeId| matches!(operator(node), names::SPLIT | names::TEE);
-        for decision in frame.fusion() {
-            if decides(&decision.from.node) && decides(&decision.to.node) {
-                prop_assert!(
-                    !matches!(decision.verdict, FusionVerdict::Pipelined { .. }),
-                    "{} to {} is cut: {:?}", decision.from, decision.to, decision.verdict
-                );
-            }
-        }
-        for slot in frame.slots() {
-            prop_assert!(
-                slot.nodes.iter().any(|node| !matches!(operator(node), names::EMIT | names::DROP)),
-                "`{}` runs only terminals: {:?}", slot.name, slot.nodes
-            );
-            if slot.cost > frame.cost_budget() {
-                prop_assert!(
-                    slot.nodes.iter().any(|node| operator(node) == names::TEE),
-                    "`{}` costs {} of {} without a decision that copies: {:?}",
-                    slot.name, slot.cost, frame.cost_budget(), slot.nodes
-                );
-            }
-        }
     }
 }

@@ -1,16 +1,16 @@
 //! The default program's regions run through `MetricRegionDriver`, against hand-written baselines that call the same
 //! kernels in sequence.
 //!
-//! - **Pre-aggregation**: R1's cost model pipelines the stage 3 default program's DogStatsD chain over three regions:
-//!   the mapper; the namespace prefix with the listener filterlist; and the timestamp split with the tag filterlist.
-//!   The driver side runs a batch through the three drivers, handing each one's exit buffers to the next, as the
-//!   topology does; the baseline calls the four kernels and the filter on the batch in place. Both deliver the same
-//!   events, stamped with the batch's header, toward aggregation and toward the passthrough's merge. Measured over
-//!   batches of 1,024 metrics with 256 and 4,096 contexts, and of 128 metrics.
-//! - **Post-aggregation**: the post-aggregation filter's region (the filter and the client telemetry tap's copy) and
-//!   the enrichment region (host enrichment, host tags, and the five-way fan-out to the primary output and the four
-//!   gateways), against a baseline that filters with the compiled predicate, copies the buffer for the tap, calls both
-//!   kernels, and copies the buffer for each gateway.
+//! - **Pre-aggregation**: the stage 3 default program's DogStatsD chain, fused into one region between the source and
+//!   aggregation's isolation slot: the mapper, the namespace prefix with the listener filterlist, and the timestamp
+//!   split with the tag filterlist. The driver side runs a batch through the region's driver; the baseline calls the
+//!   four kernels and the filter on the batch in place. Both deliver the same events, stamped with the batch's header,
+//!   toward aggregation and toward the passthrough's merge. Measured over batches of 1,024 metrics with 256 and 4,096
+//!   contexts, and of 128 metrics.
+//! - **Post-aggregation**: the enrichment region, which runs the post-aggregation filter and the client telemetry
+//!   tap's copy, then host enrichment, host tags, and the five-way fan-out to the primary output and the four gateways,
+//!   against a baseline that filters with the compiled predicate, copies the buffer for the tap, calls both kernels,
+//!   and copies the buffer for each gateway.
 //!
 //! - **Aggregation**: the default program's isolation slot `dsd_agg`, with aggregation as a stateful kernel behind its
 //!   isolation fence: admitting a batch of 1,024 metrics over 256 contexts, and a flush tick that closes the buckets
@@ -258,15 +258,16 @@ fn split_of(program: &RegionProgram) -> Arc<CompiledPredicate> {
         .unwrap()
 }
 
-/// Keeps the events a predicate does not match, as a filter whose `true` port leads to a `drop` does.
+/// Keeps the events a predicate matches, as a filter whose `false` port leads to a `drop` does: the listener
+/// filterlist and the post-aggregation filter both are.
 fn filter(batch: &mut EventsBuffer, predicate: &CompiledPredicate) {
     let mut dropped = 0u64;
     batch.retain(|event| {
         let matched = event
             .try_as_metric()
             .is_some_and(|metric| predicate.evaluate(&mut EventView::new(metric)));
-        dropped += u64::from(matched);
-        !matched
+        dropped += u64::from(!matched);
+        matched
     });
     std::hint::black_box(dropped);
 }
@@ -284,16 +285,13 @@ struct PreAggregationBaseline {
 
 impl PreAggregationBaseline {
     fn new(compiled: &CompiledPlan, frame: &Frame) -> Self {
-        let program = |name: &str| &compiled.programs[slot_named(frame, name).get()];
+        let program = &compiled.programs[slot_named(frame, "dsd_pre_aggregation").get()];
         Self {
-            mapper: kernel_of(program("dsd_pre_aggregation"), "dsd_enrich"),
-            prefix: kernel_of(
-                program("dsd_prefix_filter_region"),
-                "dsd_prefix_filter_namespace_prefix",
-            ),
-            split: kernel_of(program("dsd_no_agg_split_region"), "dsd_no_agg_split"),
-            tags: kernel_of(program("dsd_no_agg_split_region"), "dsd_tag_filterlist"),
-            blocklist: split_of(program("dsd_prefix_filter_region")),
+            mapper: kernel_of(program, "dsd_enrich"),
+            prefix: kernel_of(program, "dsd_prefix_filter_namespace_prefix"),
+            split: kernel_of(program, "dsd_no_agg_split"),
+            tags: kernel_of(program, "dsd_tag_filterlist"),
+            blocklist: split_of(program),
             ports: PortOutputs::new(2),
             counters: TurnCounters::default(),
         }
@@ -356,12 +354,12 @@ impl PostAggregationBaseline {
     const GATEWAYS: usize = 4;
 
     fn new(compiled: &CompiledPlan, frame: &Frame) -> Self {
-        let filter_program = &compiled.programs[slot_named(frame, "dsd_post_agg_filter_region").get()];
+        // The post-aggregation filter is the enrichment program's first decision.
         let enrich_program = &compiled.programs[slot_named(frame, "metrics_enrich").get()];
         Self {
             enrichment: kernel_of(enrich_program, "metrics_host_enrichment"),
             host_tags: kernel_of(enrich_program, "metrics"),
-            post_aggregate: split_of(filter_program),
+            post_aggregate: split_of(enrich_program),
             counters: TurnCounters::default(),
         }
     }
@@ -425,13 +423,9 @@ fn bench_pre_aggregation(c: &mut Criterion) {
 
     let (frame, compiled) = default_program();
     let generation: GenerationRef = Arc::new(GenerationToken::new(GenerationId::new(1)));
-    let slots = [
-        slot_named(&frame, "dsd_pre_aggregation"),
-        slot_named(&frame, "dsd_prefix_filter_region"),
-        slot_named(&frame, "dsd_no_agg_split_region"),
-    ];
+    let slots = [slot_named(&frame, "dsd_pre_aggregation")];
     let aggregation = FrameTarget::Slot(slot_named(&frame, "dsd_agg"));
-    let merge = FrameTarget::Slot(slot_named(&frame, "dsd_post_agg_filter_region"));
+    let merge = FrameTarget::Slot(slot_named(&frame, "metrics_enrich"));
     let now = Instant::now();
 
     let mut group = c.benchmark_group("pre_aggregation_pipeline");
@@ -488,14 +482,11 @@ fn bench_post_aggregation(c: &mut Criterion) {
 
     let (frame, compiled) = default_program();
     let generation: GenerationRef = Arc::new(GenerationToken::new(GenerationId::new(1)));
-    let slots = [
-        slot_named(&frame, "dsd_post_agg_filter_region"),
-        slot_named(&frame, "metrics_enrich"),
-    ];
+    let slots = [slot_named(&frame, "metrics_enrich")];
     let mut pipeline = Pipeline::new(&frame, &compiled, &generation, &slots);
     let mut baseline = PostAggregationBaseline::new(&compiled, &frame);
     // Batches from aggregation carry its isolation slot's output point, which stamps its time-driven output, and the
-    // entry of the post-aggregation filter's region that its exit sets.
+    // entry of the enrichment region, at the post-aggregation filter, that its exit sets.
     let aggregation = slot_named(&frame, "dsd_agg");
     let Some(&output_point) = compiled.programs[aggregation.get()].output_points().first() else {
         panic!("aggregation runs in an isolation slot");
@@ -509,7 +500,7 @@ fn bench_post_aggregation(c: &mut Criterion) {
             Step::Exit { entry, .. } => entry.region(),
             _ => None,
         })
-        .expect("aggregation's output leads to the post-aggregation filter's region");
+        .expect("aggregation's output leads to the enrichment region");
     let mut batch = aggregated_input(header(&generation, output_point.get()));
     let mut stamped = batch.take_header();
     stamped.entry = Some(entry);

@@ -6,7 +6,8 @@
 //! and every flush tick runs each state owner's time-driven work at the tick's whole second, as if every source
 //! heartbeat at the tick, through the entry of its time-driven output. It is the smallest host that exercises the
 //! compiled steps, entries, exits, and admission routes, so comparing it with the interpreter checks compilation, not
-//! a region host.
+//! a region host. Without isolated state, aggregation's state step and its time-driven output run in the program of
+//! the one slot it fuses into, between the stateless steps before and after it.
 //!
 //! On lanes, each lane of a slot runs its own kernels, and each edge reaches the lanes its routing names, so comparing
 //! a frame on lanes with the interpreter, which has none, checks that programs compiled for lanes run every lane's
@@ -84,19 +85,16 @@ struct Executor {
     loss: BTreeMap<NodeId, LossCount>,
     /// The rotation of every spread edge, by the lanes it has sent to so far.
     rotation: u64,
-    /// The lanes of each isolation slot each context key reached a state step on.
+    /// The lanes of each slot each context key reached a state step on.
     state_lanes: BTreeMap<(SlotId, u64), BTreeSet<u16>>,
     /// The lanes of each slot that the batches stamped at each admission point reached.
     point_lanes: BTreeMap<(SlotId, AdmissionPointId), BTreeSet<u16>>,
 }
 
 impl Executor {
-    /// Compiles a default program with the native registry: its aggregation runs as a kernel in an isolation slot.
-    fn new(plan: &Plan) -> Self {
-        Self::on_lanes(plan, LanePolicy::ONE, FrameOptions::default())
-    }
-
-    /// Compiles a default program with the native registry into its frame on `lanes`, laid out with `options`.
+    /// Compiles a default program with the native registry into its frame on `lanes`, laid out with `options`: its
+    /// aggregation runs as a kernel in an isolation slot when the frame isolates state, and fused into the slot of its
+    /// neighbors otherwise.
     fn on_lanes(plan: &Plan, lanes: LanePolicy, options: FrameOptions) -> Self {
         let registry = OperatorRegistry::native();
         let report = Validator::new(&registry, &default_program_catalog()).validate(plan);
@@ -109,9 +107,10 @@ impl Executor {
             &crate::compile::DerivedPoints::for_plan(&frame, plan, &registry),
         )
         .unwrap();
-        assert!(
+        assert_eq!(
             frame.slots().iter().any(Slot::is_isolation),
-            "aggregation runs in an isolation slot"
+            options.isolate_state,
+            "aggregation runs in an isolation slot exactly when the frame isolates state"
         );
         Self::of(frame, compiled, BTreeMap::new())
     }
@@ -176,15 +175,14 @@ impl Executor {
         }
     }
 
-    /// Runs every state owner's flush, on every lane, at the whole second of `now`, and its output through its
-    /// time-driven entry.
+    /// Runs every state owner's flush, in every slot that runs one, on every lane, at the whole second of `now`, and
+    /// its output through its time-driven entry.
     fn tick_state_owners(&mut self, now: AdmissionTime) {
         let flush = AdmissionTime::from_unix_secs(now.as_unix_secs());
         let slots = self
             .frame
             .slots()
             .iter()
-            .filter(|slot| slot.is_isolation())
             .map(|slot| (slot.id, slot.lanes))
             .collect::<Vec<_>>();
         for (slot, lanes) in slots {
@@ -608,10 +606,15 @@ fn trace(plan: Plan, events: &[TraceStep]) -> Trace {
 
 #[test]
 fn compiled_programs_deliver_what_the_interpreter_delivers() {
-    // Aggregation runs as a kernel in its isolation slot: its batches are state steps, and its flushes run its
-    // time-driven output entry. The interpreter's sources heartbeat at every tick, so its watermark has reached each
-    // tick when it fires, as the executor's flushes assume; the last tick closes every bucket the trace filled.
-    for (json, timestamped) in [(DEFAULT_PROGRAM_JSON, true), (NO_AGGREGATION_PIPELINE_OFF_JSON, false)] {
+    // Aggregation runs as a kernel, in its isolation slot or fused into the slot of its neighbors: its batches are
+    // state steps, and its flushes run its time-driven output entry. The interpreter's sources heartbeat at every tick,
+    // so its watermark has reached each tick when it fires, as the executor's flushes assume; the last tick closes
+    // every bucket the trace filled.
+    let layouts = [FrameOptions::default(), FrameOptions { isolate_state: false }];
+    for ((json, timestamped), options) in [(DEFAULT_PROGRAM_JSON, true), (NO_AGGREGATION_PIPELINE_OFF_JSON, false)]
+        .into_iter()
+        .flat_map(|program| layouts.map(|options| (program, options)))
+    {
         let plan = Plan::from_json(json).unwrap();
         let registry = OperatorRegistry::native();
         let catalog = default_program_catalog();
@@ -628,7 +631,7 @@ fn compiled_programs_deliver_what_the_interpreter_delivers() {
             .build()
             .unwrap();
         let _guard = runtime.enter();
-        let mut executor = Executor::new(&plan);
+        let mut executor = Executor::on_lanes(&plan, LanePolicy::ONE, options);
         executor.run(steps);
 
         let expected = OutputPoints::from_run(&run);
@@ -637,7 +640,10 @@ fn compiled_programs_deliver_what_the_interpreter_delivers() {
             "the trace delivers"
         );
         if let Err(mismatch) = compare(&expected, &executor.outputs) {
-            panic!("compiled programs differ from the interpreter:\n{}", mismatch);
+            panic!(
+                "compiled programs differ from the interpreter ({:?}):\n{}",
+                options, mismatch
+            );
         }
         for node in [
             "dsd_prefix_filter_false",
@@ -732,7 +738,7 @@ fn lane_events(timestamped_dogstatsd: bool, lanes: u16) -> Vec<TraceStep> {
 fn compiled_programs_on_lanes_deliver_what_the_interpreter_delivers_and_keep_each_context_on_one_state_lane() {
     // Each lane runs kernels of its own, DogStatsD's batches arrive at every producer lane, the keyed exit splits them
     // by context over the state lanes, and the other edges route by affinity or spread: what the outputs receive is
-    // what the interpreter, which has no lanes, delivers, at every policy, and without pipelining on one lane.
+    // what the interpreter, which has no lanes, delivers, at every policy.
     let policies = [
         LanePolicy::ONE,
         LanePolicy {

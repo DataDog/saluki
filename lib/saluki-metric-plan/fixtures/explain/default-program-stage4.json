@@ -1989,140 +1989,19 @@
     "slots": [
       {
         "name": "dsd_pre_aggregation",
-        "cost": 65,
         "nodes": [
-          "dsd_enrich"
+          "dsd_enrich",
+          "dsd_prefix_filter_namespace_prefix",
+          "dsd_prefix_filter",
+          "dsd_prefix_filter_false",
+          "dsd_no_agg_split",
+          "dsd_tag_filterlist"
         ],
         "entries": [
           {
             "key": "admission point 0",
             "from": "dsd_in.metrics",
             "input": "dsd_enrich.in"
-          }
-        ],
-        "exits": [
-          {
-            "index": 0,
-            "name": "dsd_prefix_filter_region",
-            "to": "dsd_prefix_filter_region",
-            "idle": false,
-            "progress_points": [
-              0
-            ]
-          },
-          {
-            "index": 1,
-            "name": "dsd_client_telemetry",
-            "to": "output dsd_client_telemetry",
-            "idle": true
-          },
-          {
-            "index": 2,
-            "name": "dd_metrics_encode",
-            "to": "output dd_metrics_encode",
-            "idle": true
-          },
-          {
-            "index": 3,
-            "name": "metrics_routing_encode_0",
-            "to": "output metrics_routing_encode_0",
-            "idle": true
-          },
-          {
-            "index": 4,
-            "name": "metrics_routing_encode_1",
-            "to": "output metrics_routing_encode_1",
-            "idle": true
-          },
-          {
-            "index": 5,
-            "name": "mrf_metrics_encode",
-            "to": "output mrf_metrics_encode",
-            "idle": true
-          },
-          {
-            "index": 6,
-            "name": "af_metrics_encode",
-            "to": "output af_metrics_encode",
-            "idle": true
-          }
-        ]
-      },
-      {
-        "name": "dsd_prefix_filter_region",
-        "cost": 110,
-        "nodes": [
-          "dsd_prefix_filter_namespace_prefix",
-          "dsd_prefix_filter",
-          "dsd_prefix_filter_false"
-        ],
-        "entries": [
-          {
-            "key": "entry 0",
-            "from": "dsd_enrich.out",
-            "input": "dsd_prefix_filter_namespace_prefix.in"
-          }
-        ],
-        "exits": [
-          {
-            "index": 0,
-            "name": "dsd_no_agg_split_region",
-            "to": "dsd_no_agg_split_region",
-            "idle": false,
-            "progress_points": [
-              0
-            ]
-          },
-          {
-            "index": 1,
-            "name": "dsd_client_telemetry",
-            "to": "output dsd_client_telemetry",
-            "idle": true
-          },
-          {
-            "index": 2,
-            "name": "dd_metrics_encode",
-            "to": "output dd_metrics_encode",
-            "idle": true
-          },
-          {
-            "index": 3,
-            "name": "metrics_routing_encode_0",
-            "to": "output metrics_routing_encode_0",
-            "idle": true
-          },
-          {
-            "index": 4,
-            "name": "metrics_routing_encode_1",
-            "to": "output metrics_routing_encode_1",
-            "idle": true
-          },
-          {
-            "index": 5,
-            "name": "mrf_metrics_encode",
-            "to": "output mrf_metrics_encode",
-            "idle": true
-          },
-          {
-            "index": 6,
-            "name": "af_metrics_encode",
-            "to": "output af_metrics_encode",
-            "idle": true
-          }
-        ]
-      },
-      {
-        "name": "dsd_no_agg_split_region",
-        "cost": 25,
-        "nodes": [
-          "dsd_no_agg_split",
-          "dsd_tag_filterlist"
-        ],
-        "entries": [
-          {
-            "key": "entry 0",
-            "from": "dsd_prefix_filter.true",
-            "input": "dsd_no_agg_split.in"
           }
         ],
         "exits": [
@@ -2137,8 +2016,8 @@
           },
           {
             "index": 1,
-            "name": "dsd_post_agg_filter_region",
-            "to": "dsd_post_agg_filter_region",
+            "name": "metrics_enrich",
+            "to": "metrics_enrich",
             "idle": false
           },
           {
@@ -2181,7 +2060,6 @@
       },
       {
         "name": "dsd_agg",
-        "cost": 0,
         "nodes": [
           "dsd_agg"
         ],
@@ -2195,8 +2073,8 @@
         "exits": [
           {
             "index": 0,
-            "name": "dsd_post_agg_filter_region",
-            "to": "dsd_post_agg_filter_region",
+            "name": "metrics_enrich",
+            "to": "metrics_enrich",
             "idle": false
           },
           {
@@ -2255,76 +2133,13 @@
         ]
       },
       {
-        "name": "dsd_post_agg_filter_region",
-        "cost": 36,
+        "name": "metrics_enrich",
         "nodes": [
           "dsd_post_agg_filter_in",
           "dsd_post_agg_filter",
           "dsd_post_agg_filter_false",
           "dsd_post_agg_filter_fanout",
-          "dsd_post_agg_filter_fanout_0"
-        ],
-        "entries": [
-          {
-            "key": "entry 0",
-            "from": "dsd_agg.out",
-            "input": "dsd_post_agg_filter_in.0"
-          },
-          {
-            "key": "entry 1",
-            "from": "dsd_no_agg_split.passthrough",
-            "input": "dsd_post_agg_filter_in.1"
-          }
-        ],
-        "exits": [
-          {
-            "index": 0,
-            "name": "dsd_client_telemetry",
-            "to": "output dsd_client_telemetry",
-            "idle": false
-          },
-          {
-            "index": 1,
-            "name": "metrics_enrich",
-            "to": "metrics_enrich",
-            "idle": false
-          },
-          {
-            "index": 2,
-            "name": "dd_metrics_encode",
-            "to": "output dd_metrics_encode",
-            "idle": true
-          },
-          {
-            "index": 3,
-            "name": "metrics_routing_encode_0",
-            "to": "output metrics_routing_encode_0",
-            "idle": true
-          },
-          {
-            "index": 4,
-            "name": "metrics_routing_encode_1",
-            "to": "output metrics_routing_encode_1",
-            "idle": true
-          },
-          {
-            "index": 5,
-            "name": "mrf_metrics_encode",
-            "to": "output mrf_metrics_encode",
-            "idle": true
-          },
-          {
-            "index": 6,
-            "name": "af_metrics_encode",
-            "to": "output af_metrics_encode",
-            "idle": true
-          }
-        ]
-      },
-      {
-        "name": "metrics_enrich",
-        "cost": 105,
-        "nodes": [
+          "dsd_post_agg_filter_fanout_0",
           "metrics_in",
           "metrics_host_enrichment",
           "metrics",
@@ -2366,37 +2181,48 @@
           },
           {
             "key": "entry 0",
-            "from": "dsd_post_agg_filter_fanout.1",
-            "input": "metrics_in.0"
+            "from": "dsd_agg.out",
+            "input": "dsd_post_agg_filter_in.0"
+          },
+          {
+            "key": "entry 1",
+            "from": "dsd_no_agg_split.passthrough",
+            "input": "dsd_post_agg_filter_in.1"
           }
         ],
         "exits": [
           {
             "index": 0,
+            "name": "dsd_client_telemetry",
+            "to": "output dsd_client_telemetry",
+            "idle": false
+          },
+          {
+            "index": 1,
             "name": "dd_metrics_encode",
             "to": "output dd_metrics_encode",
             "idle": false
           },
           {
-            "index": 1,
+            "index": 2,
             "name": "metrics_routing_encode_0",
             "to": "output metrics_routing_encode_0",
             "idle": false
           },
           {
-            "index": 2,
+            "index": 3,
             "name": "metrics_routing_encode_1",
             "to": "output metrics_routing_encode_1",
             "idle": false
           },
           {
-            "index": 3,
+            "index": 4,
             "name": "mrf_metrics_encode",
             "to": "output mrf_metrics_encode",
             "idle": false
           },
           {
-            "index": 4,
+            "index": 5,
             "name": "af_metrics_encode",
             "to": "output af_metrics_encode",
             "idle": false
@@ -2431,8 +2257,13 @@
         "kind": "admission"
       },
       {
-        "from": "dsd_pre_aggregation.dsd_prefix_filter_region",
-        "to": "dsd_prefix_filter_region",
+        "from": "dsd_pre_aggregation.dsd_agg",
+        "to": "dsd_agg",
+        "kind": "exit"
+      },
+      {
+        "from": "dsd_pre_aggregation.metrics_enrich",
+        "to": "metrics_enrich",
         "kind": "exit"
       },
       {
@@ -2466,83 +2297,8 @@
         "kind": "exit"
       },
       {
-        "from": "dsd_prefix_filter_region.dsd_no_agg_split_region",
-        "to": "dsd_no_agg_split_region",
-        "kind": "exit"
-      },
-      {
-        "from": "dsd_prefix_filter_region.dsd_client_telemetry",
-        "to": "output dsd_client_telemetry",
-        "kind": "exit"
-      },
-      {
-        "from": "dsd_prefix_filter_region.dd_metrics_encode",
-        "to": "output dd_metrics_encode",
-        "kind": "exit"
-      },
-      {
-        "from": "dsd_prefix_filter_region.metrics_routing_encode_0",
-        "to": "output metrics_routing_encode_0",
-        "kind": "exit"
-      },
-      {
-        "from": "dsd_prefix_filter_region.metrics_routing_encode_1",
-        "to": "output metrics_routing_encode_1",
-        "kind": "exit"
-      },
-      {
-        "from": "dsd_prefix_filter_region.mrf_metrics_encode",
-        "to": "output mrf_metrics_encode",
-        "kind": "exit"
-      },
-      {
-        "from": "dsd_prefix_filter_region.af_metrics_encode",
-        "to": "output af_metrics_encode",
-        "kind": "exit"
-      },
-      {
-        "from": "dsd_no_agg_split_region.dsd_agg",
-        "to": "dsd_agg",
-        "kind": "exit"
-      },
-      {
-        "from": "dsd_no_agg_split_region.dsd_post_agg_filter_region",
-        "to": "dsd_post_agg_filter_region",
-        "kind": "exit"
-      },
-      {
-        "from": "dsd_no_agg_split_region.dsd_client_telemetry",
-        "to": "output dsd_client_telemetry",
-        "kind": "exit"
-      },
-      {
-        "from": "dsd_no_agg_split_region.dd_metrics_encode",
-        "to": "output dd_metrics_encode",
-        "kind": "exit"
-      },
-      {
-        "from": "dsd_no_agg_split_region.metrics_routing_encode_0",
-        "to": "output metrics_routing_encode_0",
-        "kind": "exit"
-      },
-      {
-        "from": "dsd_no_agg_split_region.metrics_routing_encode_1",
-        "to": "output metrics_routing_encode_1",
-        "kind": "exit"
-      },
-      {
-        "from": "dsd_no_agg_split_region.mrf_metrics_encode",
-        "to": "output mrf_metrics_encode",
-        "kind": "exit"
-      },
-      {
-        "from": "dsd_no_agg_split_region.af_metrics_encode",
-        "to": "output af_metrics_encode",
-        "kind": "exit"
-      },
-      {
-        "from": "dsd_agg.dsd_post_agg_filter_region",
-        "to": "dsd_post_agg_filter_region",
+        "from": "dsd_agg.metrics_enrich",
+        "to": "metrics_enrich",
         "kind": "exit"
       },
       {
@@ -2576,38 +2332,8 @@
         "kind": "exit"
       },
       {
-        "from": "dsd_post_agg_filter_region.dsd_client_telemetry",
+        "from": "metrics_enrich.dsd_client_telemetry",
         "to": "output dsd_client_telemetry",
-        "kind": "exit"
-      },
-      {
-        "from": "dsd_post_agg_filter_region.metrics_enrich",
-        "to": "metrics_enrich",
-        "kind": "exit"
-      },
-      {
-        "from": "dsd_post_agg_filter_region.dd_metrics_encode",
-        "to": "output dd_metrics_encode",
-        "kind": "exit"
-      },
-      {
-        "from": "dsd_post_agg_filter_region.metrics_routing_encode_0",
-        "to": "output metrics_routing_encode_0",
-        "kind": "exit"
-      },
-      {
-        "from": "dsd_post_agg_filter_region.metrics_routing_encode_1",
-        "to": "output metrics_routing_encode_1",
-        "kind": "exit"
-      },
-      {
-        "from": "dsd_post_agg_filter_region.mrf_metrics_encode",
-        "to": "output mrf_metrics_encode",
-        "kind": "exit"
-      },
-      {
-        "from": "dsd_post_agg_filter_region.af_metrics_encode",
-        "to": "output af_metrics_encode",
         "kind": "exit"
       },
       {
@@ -2646,32 +2372,32 @@
       {
         "from": "dsd_enrich.out",
         "to": "dsd_prefix_filter_namespace_prefix.in",
-        "decision": "pipelined",
-        "reason": "fusing would make one region cost more than 110 ns per event, the cost model's budget: slots `dsd_pre_aggregation` and `dsd_prefix_filter_region` pipeline"
+        "decision": "fused",
+        "reason": "both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`"
       },
       {
         "from": "dsd_prefix_filter_namespace_prefix.out",
         "to": "dsd_prefix_filter.in",
         "decision": "fused",
-        "reason": "both nodes are synchronous and nothing separates them: slot `dsd_prefix_filter_region`"
+        "reason": "both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`"
       },
       {
         "from": "dsd_prefix_filter.false",
         "to": "dsd_prefix_filter_false.in",
         "decision": "fused",
-        "reason": "both nodes are synchronous and nothing separates them: slot `dsd_prefix_filter_region`"
+        "reason": "both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`"
       },
       {
         "from": "dsd_prefix_filter.true",
         "to": "dsd_no_agg_split.in",
-        "decision": "pipelined",
-        "reason": "fusing would make one region cost more than 110 ns per event, the cost model's budget: slots `dsd_prefix_filter_region` and `dsd_no_agg_split_region` pipeline"
+        "decision": "fused",
+        "reason": "both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`"
       },
       {
         "from": "dsd_no_agg_split.default",
         "to": "dsd_tag_filterlist.in",
         "decision": "fused",
-        "reason": "both nodes are synchronous and nothing separates them: slot `dsd_no_agg_split_region`"
+        "reason": "both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`"
       },
       {
         "from": "dsd_tag_filterlist.out",
@@ -2689,37 +2415,37 @@
         "from": "dsd_no_agg_split.passthrough",
         "to": "dsd_post_agg_filter_in.1",
         "decision": "separated",
-        "reason": "fusing would form a cycle through `dsd_agg`: slots `dsd_no_agg_split_region` and `dsd_post_agg_filter_region` stay apart"
+        "reason": "fusing would form a cycle through `dsd_agg`: slots `dsd_pre_aggregation` and `metrics_enrich` stay apart"
       },
       {
         "from": "dsd_post_agg_filter_in.out",
         "to": "dsd_post_agg_filter.in",
         "decision": "fused",
-        "reason": "both nodes are synchronous and nothing separates them: slot `dsd_post_agg_filter_region`"
+        "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
       },
       {
         "from": "dsd_post_agg_filter.false",
         "to": "dsd_post_agg_filter_false.in",
         "decision": "fused",
-        "reason": "both nodes are synchronous and nothing separates them: slot `dsd_post_agg_filter_region`"
+        "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
       },
       {
         "from": "dsd_post_agg_filter.true",
         "to": "dsd_post_agg_filter_fanout.in",
         "decision": "fused",
-        "reason": "both nodes are synchronous and nothing separates them: slot `dsd_post_agg_filter_region`"
+        "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
       },
       {
         "from": "dsd_post_agg_filter_fanout.0",
         "to": "dsd_post_agg_filter_fanout_0.in",
         "decision": "fused",
-        "reason": "both nodes are synchronous and nothing separates them: slot `dsd_post_agg_filter_region`"
+        "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
       },
       {
         "from": "dsd_post_agg_filter_fanout.1",
         "to": "metrics_in.0",
-        "decision": "pipelined",
-        "reason": "fusing would make one region cost more than 110 ns per event, the cost model's budget: slots `dsd_post_agg_filter_region` and `metrics_enrich` pipeline"
+        "decision": "fused",
+        "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
       },
       {
         "from": "otlp_in.metrics",
@@ -2879,9 +2605,6 @@
         ],
         "slots": [
           "dsd_pre_aggregation",
-          "dsd_prefix_filter_region",
-          "dsd_no_agg_split_region",
-          "dsd_post_agg_filter_region",
           "metrics_enrich"
         ],
         "ends": [
@@ -3059,7 +2782,6 @@
           "af_metrics_gateway_false"
         ],
         "slots": [
-          "dsd_post_agg_filter_region",
           "metrics_enrich"
         ],
         "ends": [
@@ -3080,12 +2802,10 @@
         "overflow": "wait",
         "closure": "native",
         "fed_by": [
-          "dsd_post_agg_filter_region.dsd_client_telemetry"
+          "metrics_enrich.dsd_client_telemetry"
         ],
         "idle": [
           "dsd_pre_aggregation.dsd_client_telemetry",
-          "dsd_prefix_filter_region.dsd_client_telemetry",
-          "dsd_no_agg_split_region.dsd_client_telemetry",
           "dsd_agg.dsd_client_telemetry"
         ]
       },
@@ -3102,10 +2822,7 @@
         ],
         "idle": [
           "dsd_pre_aggregation.dd_metrics_encode",
-          "dsd_prefix_filter_region.dd_metrics_encode",
-          "dsd_no_agg_split_region.dd_metrics_encode",
-          "dsd_agg.dd_metrics_encode",
-          "dsd_post_agg_filter_region.dd_metrics_encode"
+          "dsd_agg.dd_metrics_encode"
         ]
       },
       {
@@ -3121,10 +2838,7 @@
         ],
         "idle": [
           "dsd_pre_aggregation.metrics_routing_encode_0",
-          "dsd_prefix_filter_region.metrics_routing_encode_0",
-          "dsd_no_agg_split_region.metrics_routing_encode_0",
-          "dsd_agg.metrics_routing_encode_0",
-          "dsd_post_agg_filter_region.metrics_routing_encode_0"
+          "dsd_agg.metrics_routing_encode_0"
         ]
       },
       {
@@ -3141,10 +2855,7 @@
         ],
         "idle": [
           "dsd_pre_aggregation.metrics_routing_encode_1",
-          "dsd_prefix_filter_region.metrics_routing_encode_1",
-          "dsd_no_agg_split_region.metrics_routing_encode_1",
-          "dsd_agg.metrics_routing_encode_1",
-          "dsd_post_agg_filter_region.metrics_routing_encode_1"
+          "dsd_agg.metrics_routing_encode_1"
         ]
       },
       {
@@ -3160,10 +2871,7 @@
         ],
         "idle": [
           "dsd_pre_aggregation.mrf_metrics_encode",
-          "dsd_prefix_filter_region.mrf_metrics_encode",
-          "dsd_no_agg_split_region.mrf_metrics_encode",
-          "dsd_agg.mrf_metrics_encode",
-          "dsd_post_agg_filter_region.mrf_metrics_encode"
+          "dsd_agg.mrf_metrics_encode"
         ]
       },
       {
@@ -3179,10 +2887,7 @@
         ],
         "idle": [
           "dsd_pre_aggregation.af_metrics_encode",
-          "dsd_prefix_filter_region.af_metrics_encode",
-          "dsd_no_agg_split_region.af_metrics_encode",
-          "dsd_agg.af_metrics_encode",
-          "dsd_post_agg_filter_region.af_metrics_encode"
+          "dsd_agg.af_metrics_encode"
         ]
       }
     ]

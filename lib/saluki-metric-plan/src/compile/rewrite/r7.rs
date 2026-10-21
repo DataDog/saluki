@@ -34,9 +34,9 @@
 //! key, 90 when no tag does; a tag value 58 to 63. A tag scan is linear in the number of tags, and R7 assumes it
 //! misses, which is when the order matters most, so tags come after every name match.
 //!
-//! R1's estimates of a `split`'s cost ([`OperatorDef::cost`][crate::operators::OperatorDef::cost]) put a tag
-//! predicate at 10 and an intake-name match at 15. They serve another end: ranking whole `split`s against the kernels
-//! of a chain, coarsely, to decide where regions are cut, and no `split` of the default program reads tags. R7's order
+//! R4's estimates of a `split`'s cost ([`split_cost`][crate::compile::split_cost]) put a tag predicate at 10 and an
+//! intake-name match at 15. They serve another end: deciding, coarsely, whether a decision is worth memoizing, and no
+//! `split` of the default program reads tags. R7's order
 //! is checked against a hand-written selection baseline by the stage 4 selection bench.
 //!
 //! # Canonical form

@@ -10,9 +10,10 @@
 //! - An `emit` or `drop` fed straight by a fence must match the frame's direct edge: the same fixed destination, or no
 //!   edge. A host never feeds an encode host directly, since only a region writes the lease it reads.
 //! - Every other node is synchronous and runs in a slot. A node the boot plan has runs in its boot slot, where its
-//!   inputs can reach that slot: R1's cost model may have put it in a later slot of a pipeline than its inputs. Any
-//!   other node's slot follows from its inputs: the slot an admission point's edge leads to, or the slot of the node
-//!   feeding it. When its inputs come from several slots, it runs in the one that every other of them has an exit to.
+//!   inputs can reach that slot: in a frame that isolates state, a boot state owner's slot and the slots after it are
+//!   apart from the slots its inputs come from. Any other node's slot follows from its inputs: the slot an admission
+//!   point's edge leads to, or the slot of the node feeding it. When its inputs come from several slots, it runs in the
+//!   one that every other of them has an exit to.
 //! - A state owner behind an isolation fence places as any synchronous node: a boot state owner in its boot slot,
 //!   which the slot an admission point feeding it straight leads to passes the point's batches through to, unchanged,
 //!   and any other by its inputs. Each slot then runs it in a region of its own (see [below](#regions)).
@@ -33,12 +34,13 @@
 //! # Regions
 //!
 //! Each slot's nodes are partitioned into **regions**, in topological order ([`SlotPlacement::regions`]). The main
-//! region runs the slot's entries and every node before its first state owner. Each state owner opens a region of its
-//! own, a **sub-region** ([`RegionKey::State`]): a task of the slot's component, fed through internal exits of the
-//! regions before it. A state owner every one of whose inputs enters the slot from outside it runs in the main region
-//! instead, when that runs no state owner yet and has one lane, or is the state owner's boot slot, so that a boot
-//! state owner runs in its slot's own task, as at boot. Any other node runs in the highest region among those of its
-//! inputs in the slot, so that a state owner's consumers in its slot run in its region and write the slot's exits.
+//! region runs the slot's entries. A region runs at most one state owner. A state owner runs in the highest region
+//! among those of its inputs in the slot, the main region when it has none, if that region runs no state owner yet and
+//! has one lane, or is the main region of the state owner's boot slot, so that a boot state owner runs in its slot's
+//! own task, as at boot; otherwise it opens a region of its own, a **sub-region** ([`RegionKey::State`]): a task of the
+//! slot's component, fed through internal exits of the regions before it. Since every sub-region runs a state owner,
+//! only the main region takes one in. Any other node runs in the highest region among those of its inputs in the slot,
+//! so that a state owner's consumers in its slot run in its region and write the slot's exits.
 //! Edges between regions of a slot go only to later regions: the regions of a slot form a DAG, with no loop through
 //! their bounded inputs. A sub-region runs on one lane, fed by every lane of the regions before it.
 //!
@@ -896,8 +898,8 @@ pub fn place_unvalidated(
             fixed == slot
                 || (role == Role::Isolated && frame.boot_output_points(id).is_some() && passes_through(fixed, slot))
         };
-        // A node keeps the slot it has at boot when its inputs reach it, so that a candidate runs pipelined as the boot
-        // plan does.
+        // A node keeps the slot it has at boot when its inputs reach it, so that a candidate runs where the boot plan
+        // does: in a frame that isolates state, a boot state owner in its own slot and its consumers after it.
         let boot_slot = match frame.site(id) {
             Some(Site::Slot(slot)) => Some(slot),
             _ => None,
@@ -1242,10 +1244,10 @@ struct Regions<'a, 'p> {
 }
 
 impl<'a, 'p> Regions<'a, 'p> {
-    /// Partitions each slot's nodes into regions, in topological order: a state owner opens a region of its own, unless
-    /// every one of its inputs enters the slot from outside it and the main region runs no state owner yet, on one lane
-    /// or as the boot state owner of the slot, when it runs in the main region; any other node runs in the highest
-    /// region among those of its inputs in the slot, the main region if it has none.
+    /// Partitions each slot's nodes into regions, in topological order: a state owner runs in the highest region among
+    /// those of its inputs in the slot, the main region if it has none, when that region runs no state owner yet and
+    /// has one lane, or is the main region of the state owner's boot slot, and opens a region of its own otherwise; any
+    /// other node runs in the highest region among those of its inputs in the slot, the main region if it has none.
     fn partition(graph: &'a Graph<'p>, roles: &'a [Role], slot_of: &'a [Option<SlotId>], frame: &'a Frame) -> Self {
         let mut region_of = vec![0; graph.nodes.len()];
         let mut keys = vec![vec![RegionKey::Main]; frame.slots().len()];
@@ -1258,14 +1260,16 @@ impl<'a, 'p> Regions<'a, 'p> {
                 .filter(|&(from, _)| slot_of[from] == Some(slot))
                 .map(|(from, _)| region_of[from])
                 .collect::<Vec<_>>();
+            let highest = inputs.into_iter().max().unwrap_or(0);
             if roles[node] != Role::Isolated {
-                region_of[node] = inputs.into_iter().max().unwrap_or(0);
+                region_of[node] = highest;
                 continue;
             }
             let id = graph.id(node);
             let lanes = frame.slot(slot).map_or(1, |slot| slot.lanes);
             let boot = frame.boot_output_points(id).is_some() && frame.site(id) == Some(Site::Slot(slot));
-            if inputs.is_empty() && !main_owner[slot.get()] && (lanes == 1 || boot) {
+            // Every sub-region runs its state owner, so only the main region can take one in.
+            if highest == 0 && !main_owner[slot.get()] && (lanes == 1 || boot) {
                 main_owner[slot.get()] = true;
             } else {
                 keys[slot.get()].push(RegionKey::State(id.clone()));

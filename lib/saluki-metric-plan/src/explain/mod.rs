@@ -23,10 +23,9 @@
 //! the resources section: every output binding, delivery host setting, and recipient, with its provenance, and, against
 //! the active plan ([`Explain::with_resource_changes`]), whether each is reused or new; and, in the physical
 //! sections, the encode host each bound output's lease runs in. Stage 9 adds, within version 1, the lanes of a frame
-//! laid out on them, in the physical sections only: the lane counts and whether R1 pipelines slots, the lanes of each
-//! admission point and slot, how each edge reaches the lanes of its target (with the key groups behind a keyed exit),
-//! and each lane's output point of an isolation slot. A frame on one lane laid out with R1's pipelining has none of
-//! them; lanes never enter the logical sections or the plan's hash. Version 2 removes each node's provenance: what a
+//! laid out on them, in the physical sections only: the lane counts, the lanes of each admission point and slot, how
+//! each edge reaches the lanes of its target (with the key groups behind a keyed exit), and each lane's output point of
+//! an isolation slot. A frame on one lane has none of them; lanes never enter the logical sections or the plan's hash. Version 2 removes each node's provenance: what a
 //! plan runs is a property of the plan, which its provenance states (the artifacts it composes, each with the scope it
 //! replaced), so a node's loss is attributed to its node ID and to the program the plan runs. Version 3 removes scopes
 //! and output fingerprints: a plan runs one artifact, a whole program, whose nodes are every node but the sources, and

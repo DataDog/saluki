@@ -109,20 +109,17 @@ fn every_fused_slot_with_an_output_downstream_has_one_exit_to_every_encode_host(
         ("mrf_metrics_encode", host("mrf_dd_out")),
         ("af_metrics_encode", host("cluster_agent_out")),
     ];
-    // The enrichment slot emits to every bound output: the main output and both routing groups share `dd_out`'s
-    // encode host, in boot edge order, and the failover outputs have theirs.
-    assert_eq!(exits(&frame, "metrics_enrich"), named(&encode_hosts));
-    // The slot before enrichment: its boot edges to the client telemetry tap (a fixed destination) and to the
-    // enrichment slot, then an exit to every encode host, idle, so that a later generation can emit to any.
-    let mut expected = vec![
-        ("dsd_client_telemetry", destination("dsd_client_telemetry")),
-        ("metrics_enrich", FrameTarget::Slot(SlotId::new(5))),
-    ];
+    // The enrichment slot, which runs the post-aggregation filter too, emits to the client telemetry tap (a fixed
+    // destination) and to every bound output: the main output and both routing groups share `dd_out`'s encode host, in
+    // boot edge order, and the failover outputs have theirs.
+    let mut expected = vec![("dsd_client_telemetry", destination("dsd_client_telemetry"))];
     expected.extend(encode_hosts.iter().cloned());
-    assert_eq!(exits(&frame, "dsd_post_agg_filter_region"), named(&expected));
-    // The first slot has the tap downstream too, and every encode host after it.
+    assert_eq!(exits(&frame, "metrics_enrich"), named(&expected));
+    // The pre-aggregation slot: its boot edges to aggregation's slot and to the enrichment slot, then the tap
+    // downstream of it and an exit to every encode host, idle, so that a later generation can emit to any.
     let mut expected = vec![
-        ("dsd_prefix_filter_region", FrameTarget::Slot(SlotId::new(1))),
+        ("dsd_agg", FrameTarget::Slot(SlotId::new(1))),
+        ("metrics_enrich", FrameTarget::Slot(SlotId::new(2))),
         ("dsd_client_telemetry", destination("dsd_client_telemetry")),
     ];
     expected.extend(encode_hosts.iter().cloned());
@@ -130,7 +127,7 @@ fn every_fused_slot_with_an_output_downstream_has_one_exit_to_every_encode_host(
     // Aggregation's slot has the exits of any slot: its boot edge, then the tap downstream of it, and every encode
     // host, so that stateless nodes after aggregation, or a state owner after it, can emit from its regions.
     let mut expected = vec![
-        ("dsd_post_agg_filter_region", FrameTarget::Slot(SlotId::new(4))),
+        ("metrics_enrich", FrameTarget::Slot(SlotId::new(2))),
         ("dsd_client_telemetry", destination("dsd_client_telemetry")),
     ];
     expected.extend(encode_hosts.iter().cloned());
@@ -156,7 +153,7 @@ fn an_idle_host_gets_its_exits_so_an_output_bound_to_it_later_places_without_a_r
     let frame = Frame::compute_with_hosts(&bound(|_| {}), &registry, &namer, &hosts).unwrap();
     let enrich = exits(&frame, "metrics_enrich");
     assert_eq!(enrich.last(), Some(&("spare_encode".to_string(), host("spare_out"))));
-    assert_eq!(enrich.len(), 4);
+    assert_eq!(enrich.len(), 5);
     assert_eq!(
         exits(&frame, "dsd_agg").last(),
         Some(&("spare_encode".to_string(), host("spare_out")))
@@ -399,10 +396,10 @@ fn an_output_bound_to_a_delivery_host_the_frame_lacks_needs_a_restart() {
 }
 
 #[test]
-fn an_artifact_aggregating_after_enrichment_runs_it_in_a_sub_region_of_enrichments_slot() {
-    // An artifact aggregating after enrichment: the topology has no slot of aggregation's there, so it runs in a
-    // sub-region of enrichment's slot, with the nodes after it, over every source's point and aggregation's derived
-    // point.
+fn an_artifact_aggregating_after_enrichment_runs_it_in_the_main_region_of_enrichments_slot() {
+    // An artifact aggregating after enrichment: the topology has no slot of aggregation's there, so it runs in
+    // enrichment's slot, in the region of its input, the main region, which runs no other state owner and one lane,
+    // with the nodes after it, over every source's point and aggregation's derived point.
     let hash = "sha256:00000000000000000000000000000000000000000000000000000000000000a7";
     let plan = bound(|value| {
         value["provenance"] = json!({"artifact": {"revision": 7, "hash": hash}});
@@ -434,17 +431,15 @@ fn an_artifact_aggregating_after_enrichment_runs_it_in_a_sub_region_of_enrichmen
         .iter()
         .find(|slot| slot.name.as_str() == "metrics_enrich")
         .unwrap();
-    let key = RegionKey::State(owner.clone());
-    assert_eq!(compiled.placement.region_of(&owner), Some((enrich.id, key.clone())));
-    let regions = &compiled.placement.slot(enrich.id).unwrap().regions;
-    assert_eq!(
-        regions.iter().map(|region| region.key.clone()).collect::<Vec<_>>(),
-        vec![RegionKey::Main, key.clone()]
-    );
+    assert_eq!(compiled.placement.region_of(&owner), Some((enrich.id, RegionKey::Main)));
+    let [main] = compiled.placement.slot(enrich.id).unwrap().regions.as_slice() else {
+        panic!("one region");
+    };
+    assert_eq!(main.state_owner, Some(owner.clone()));
     // The routing after the aggregation runs in its region, and writes the slot's exits.
-    assert!(regions[1].nodes.contains(&"metrics_fanout".parse().unwrap()));
-    assert_eq!(regions[0].internal, vec![(key.clone(), ExitRouting::One)]);
-    let upstream = &regions[1].upstream;
+    assert!(main.nodes.contains(&"metrics_fanout".parse().unwrap()));
+    assert!(main.internal.is_empty() && main.progress.is_empty());
+    let upstream = &main.upstream;
     let real = frame.admission_point_ids().collect::<Vec<_>>();
     assert_eq!(
         upstream
@@ -471,17 +466,10 @@ fn an_artifact_aggregating_after_enrichment_runs_it_in_a_sub_region_of_enrichmen
         compiled.placement.admission_upstream(&owner),
         real.iter().copied().collect()
     );
-    // Enrichment's main region forwards every point's progress to the sub-region.
-    let mut every = real.clone();
-    every.push(dsd_agg_point);
-    every.sort();
-    assert_eq!(regions[0].progress, vec![(StepExit::Region(key.clone()), every)]);
-    let [sub] = compiled.sub_programs.as_slice() else {
-        panic!("one sub-region");
-    };
-    assert_eq!((sub.slot(), sub.region()), (enrich.id, &key));
-    assert_eq!(sub.state_upstream(), upstream.as_slice());
-    assert_eq!(sub.output_points(), &[AdmissionPointId::new(base)]);
+    assert!(compiled.sub_programs.is_empty());
+    let program = &compiled.programs[enrich.id.get()];
+    assert_eq!(program.state_upstream(), upstream.as_slice());
+    assert_eq!(program.output_points(), &[AdmissionPointId::new(base)]);
     assert_eq!(MissingCapability::FrameChanges.to_string(), "stage 10 frame changes");
     assert_eq!(MissingCapability::Restart.to_string(), "a restart");
     assert_eq!(MissingCapability::Restart.stage(), None);

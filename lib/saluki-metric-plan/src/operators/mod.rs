@@ -81,7 +81,6 @@ mod reports;
 pub use self::reports::{PlanValue, Recorder, ReportedSeries, SeriesKind};
 
 mod routing;
-pub(crate) use self::routing::decision_cost;
 pub use self::routing::{DropOperator, Emit, Merge, Split, Tee, EMIT_TO, FALSE_PORT, TRUE_PORT};
 
 mod source;
@@ -202,18 +201,6 @@ pub trait OperatorDef: Send + Sync {
     /// plans do ([`eliminate`](crate::export::eliminate)); it still runs it. The default is `false`.
     fn is_identity(&self, _params: &DecodedParams) -> bool {
         false
-    }
-
-    /// Returns an estimate of the work the operator does per event, in nanoseconds, for rewrite R1's cost model.
-    ///
-    /// The estimates come from the stage 3 measurements of the default program's kernels running in a region over a
-    /// DogStatsD-like batch, release build, and are only compared with one another: R1 fuses synchronous neighbors
-    /// into one region as long as the region's estimated cost stays within a budget (see
-    /// [`Frame`][crate::compile::Frame]). Operators that run in host components, or alone in an isolation slot, which
-    /// R1 never fuses, are not priced: their cost counts nowhere. The default is zero, for those and for operators
-    /// whose work is negligible next to a kernel's.
-    fn cost(&self, _params: &DecodedParams) -> u32 {
-        0
     }
 
     /// Returns how to build the operator's kernel, or `None` if it has none.
@@ -750,12 +737,6 @@ impl ConfiguredOperator {
     /// see [`OperatorDef::specify_state_bounds`].
     pub fn specify_state_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         self.def.specify_state_bounds(&self.params, builder);
-    }
-
-    /// Returns the estimate of the work the operator does per event, in nanoseconds, for R1's cost model; see
-    /// [`OperatorDef::cost`].
-    pub fn cost(&self) -> u32 {
-        self.def.cost(&self.params)
     }
 
     /// Returns `true` if the node passes every record through unchanged as configured; see

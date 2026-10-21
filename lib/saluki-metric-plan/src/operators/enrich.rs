@@ -102,11 +102,6 @@ impl OperatorDef for HostTags {
         }
     }
 
-    fn cost(&self, _params: &DecodedParams) -> u32 {
-        // Until its deadline, every metric's tags are extended.
-        30
-    }
-
     fn is_identity(&self, params: &DecodedParams) -> bool {
         // No tags to add leaves every metric as it is, whatever the deadline. Tags still bound to a host fact are not
         // known, so a node that binds them is never left out.

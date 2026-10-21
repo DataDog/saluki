@@ -4,11 +4,11 @@
 //! the internal exits between them; the admission points upstream of a state owner and the exits that carry their
 //! progress are marked. Documents without them read as they always did.
 //!
-//! A frame laid out on lanes ([`LanePolicy`][crate::compile::LanePolicy]) says so: its lane counts and whether R1
-//! pipelines its slots, the lanes of every admission point and slot, how every edge into a slot with lanes reaches its
-//! lanes (with the key groups each lane owns behind a keyed exit), and the output point of every lane of a state
-//! owner's region. A frame on one lane, laid out with R1's pipelining, has none of these members, so its document reads as it
-//! did before lanes, and a document without them reads as one on one lane.
+//! A frame laid out on lanes ([`LanePolicy`][crate::compile::LanePolicy]) says so: its lane counts, the lanes of every
+//! admission point and slot, how every edge into a slot with lanes reaches its lanes (with the key groups each lane
+//! owns behind a keyed exit), and the output point of every lane of a state owner's region. A frame on one lane has
+//! none of these members, so its document reads as it did before lanes, and a document without them reads as one on
+//! one lane.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -30,8 +30,7 @@ use crate::{
 /// How a plan runs: the frame built at boot, and where the plan's nodes run in it.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PhysicalPlan {
-    /// The lanes the frame was laid out on, and whether R1's cost model pipelines its slots; left out for a frame on
-    /// one lane laid out with pipelining, as every frame was before lanes.
+    /// The lanes the frame was laid out on; left out for a frame on one lane, as every frame was before lanes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<LayoutEntry>,
 
@@ -54,7 +53,7 @@ pub struct PhysicalPlan {
     pub output_bindings: Vec<OutputBindingEntry>,
 }
 
-/// The lanes a frame was laid out on, and whether R1's cost model pipelines its slots.
+/// The lanes a frame was laid out on.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct LayoutEntry {
     /// The admission points of the DogStatsD source's metrics, and the lanes of the slot they feed: the producer
@@ -68,10 +67,6 @@ pub struct LayoutEntry {
     /// The lanes of each fused slot with no state owner downstream that the DogStatsD points do not feed: the
     /// post-aggregation lanes.
     pub post_lanes: u16,
-
-    /// Whether R1's cost model cuts chains of synchronous nodes into pipelined slots; without it, fusion is maximal
-    /// between fences.
-    pub pipelining: bool,
 }
 
 /// One fixed component.
@@ -214,12 +209,6 @@ pub struct SlotEntry {
     /// The region host component's ID.
     pub name: String,
 
-    /// The estimated cost per event of the slot's boot nodes, in nanoseconds, which R1's cost model kept within its
-    /// budget. Documents written before it was added have none, read as zero. A boot state owner's slot, which R1 never
-    /// fuses, is not priced: its cost is zero, whatever its state owner's work.
-    #[serde(default)]
-    pub cost: u32,
-
     /// The number of lanes the slot runs on, each a task with an input of its own: one, which documents leave out, for
     /// a slot without lanes.
     #[serde(default = "one_lane", skip_serializing_if = "is_one_lane")]
@@ -234,7 +223,7 @@ pub struct SlotEntry {
     /// The slot's exits, in order.
     pub exits: Vec<ExitEntry>,
 
-    /// Whether the boot layout gave the slot to a boot state owner, which R1 neither fuses nor prices.
+    /// Whether the boot layout gave the slot to a boot state owner, alone, in a frame that isolates state.
     #[serde(default, skip_serializing_if = "is_false")]
     pub state_slot: bool,
 
@@ -329,7 +318,7 @@ pub struct FusionEntry {
     /// The input port the edge enters.
     pub to: PortRef,
 
-    /// `fused`, `fence`, `isolation`, `separated`, `pipelined`, or `direct`.
+    /// `fused`, `fence`, `isolation`, `separated`, or `direct`.
     pub decision: String,
 
     /// Why.
@@ -424,12 +413,11 @@ impl PhysicalPlan {
             .map(|point| point.id)
             .collect::<BTreeSet<_>>();
 
-        let (lanes, options) = (frame.lane_policy(), frame.options());
-        let layout = (!lanes.is_one() || !options.pipelining).then_some(LayoutEntry {
+        let lanes = frame.lane_policy();
+        let layout = (!lanes.is_one()).then_some(LayoutEntry {
             dogstatsd_lanes: lanes.dogstatsd,
             state_lanes: lanes.state,
             post_lanes: lanes.post,
-            pipelining: options.pipelining,
         });
 
         let fixed = frame
@@ -475,7 +463,6 @@ impl PhysicalPlan {
                 };
                 SlotEntry {
                     name: slot.name.to_string(),
-                    cost: slot.cost,
                     lanes: slot.lanes,
                     nodes: placed.map(|placed| placed.nodes.clone()).unwrap_or_default(),
                     entries: placed
@@ -601,16 +588,6 @@ impl PhysicalPlan {
                             through
                                 .as_ref()
                                 .map_or_else(String::new, |node| format!(" through `{}`", node)),
-                            slot_name(*from),
-                            slot_name(*to)
-                        ),
-                    ),
-                    FusionVerdict::Pipelined { from, to, budget } => (
-                        "pipelined",
-                        format!(
-                            "fusing would make one region cost more than {} ns per event, the cost model's budget: \
-                             slots `{}` and `{}` pipeline",
-                            budget,
                             slot_name(*from),
                             slot_name(*to)
                         ),
@@ -922,19 +899,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             progress,
-            vec![
-                (
-                    "dsd_pre_aggregation".to_string(),
-                    "dsd_prefix_filter_region".to_string(),
-                    vec![0]
-                ),
-                (
-                    "dsd_prefix_filter_region".to_string(),
-                    "dsd_no_agg_split_region".to_string(),
-                    vec![0]
-                ),
-                ("dsd_no_agg_split_region".to_string(), "dsd_agg".to_string(), vec![0]),
-            ]
+            vec![("dsd_pre_aggregation".to_string(), "dsd_agg".to_string(), vec![0])]
         );
         let feeding = physical
             .fixed

@@ -483,9 +483,9 @@ fn check(
 /// Returns why the rewritten plan `plan`, placed as `placed`, moves a kernel to another slot than `placement` runs it
 /// in, if it does.
 ///
-/// A kernel is built in a resource group named for its slot and node, so moving it would change its memory accounting
-/// and the frame's cost cuts, which no rewrite's record lists. This happens when a filter moves above a kernel across
-/// a cut R1 made between them: the kernel would then be fed from the filter's slot, which has no exit back.
+/// A kernel is built in a resource group named for its slot and node, so moving it would change its memory accounting,
+/// which no rewrite's record lists. Fusion is maximal between fences and no rewrite crosses one, so this is a check
+/// against a bug.
 fn moved_kernel(ctx: &RewriteContext<'_>, placement: &Placement, placed: &Placement, plan: &Plan) -> Option<String> {
     let graph = super::resolve(plan, ctx.registry).ok()?;
     let slot = |slot: SlotId| format!("`{}`", ctx.frame.describe_target(&FrameTarget::Slot(slot)));

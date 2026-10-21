@@ -14,7 +14,7 @@
 //!     exit buffers), with and without the memo; the baseline makes the same selection and fills the same buffers:
 //!     the original batch to the primary output, and a buffer of copies per policy that selects events.
 //! - **The default program** (`selection_default_program`): the stage 4 default program with the policies as its
-//!   endpoint routing groups, compiled into its own frame, as ADP runs it. R1 never cuts a decision, so the policy
+//!   endpoint routing groups, compiled into its own frame, as ADP runs it. A decision is never cut, so the policy
 //!   fan-out and every gateway below it (the routing filters and both failover gateways) are one memoized decision of
 //!   the enrichment region, beside the enrichment kernels: the shape of the one-region benchmarks, behind
 //!   enrichment. The region runs from a batch entering it (and any region downstream, as a pipeline); the baselines
@@ -907,7 +907,7 @@ fn bench_default_program(c: &mut Criterion) {
     for policies in POLICIES {
         let (plan, catalog) = default_program_with(policies);
         let program = DefaultProgram::new(&plan, &catalog);
-        // R1 never cuts a decision: the policy fan-out, every routing filter, and both failover gateways are one
+        // A decision is never cut: the policy fan-out, every routing filter, and both failover gateways are one
         // decision of the enrichment region, and it is memoized.
         let (slot, decision) = program.decision("metrics_fanout");
         assert_eq!(slot, program.slot("metrics_enrich"));

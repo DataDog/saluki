@@ -534,8 +534,7 @@ fn malformed_decisions_do_not_compile_to_functions() {
 
 // Grouping, in compiled programs.
 
-/// A plan whose nodes share one native provenance, so that R1 keeps them in one slot, fed by an OTLP source, with one
-/// output `out`.
+/// A plan whose nodes share one native provenance, all in one slot, fed by an OTLP source, with one output `out`.
 fn grouped_plan(nodes: &[(&str, &str, Value)], edges: &[(&str, &str)]) -> Plan {
     let mut all = vec![json!({"id": "src", "op": "source", "params": {"binding": "otlp"}})];
     all.extend(
@@ -665,7 +664,7 @@ fn splits_and_tees_joined_by_edges_are_one_decision_and_a_map_ends_it() {
             vec![to_exit(4), to_exit(5)],
         ]
     );
-    // The map ends the group: `s4` is a decision of its own. The group's three splits cost 36 ns by R1's cost model,
+    // The map ends the group: `s4` is a decision of its own. The group's three splits are estimated at 36 ns,
     // at least `MEMO_COST_FLOOR`, and are memoized; `s4`, on the kind alone, costs 6, and is not.
     assert_eq!(nodes_of(&decisions[1]), vec!["s4"]);
     assert!(decisions[0].memoized);
@@ -797,7 +796,7 @@ fn decisions_record_shared_folded_and_memoized_predicates() {
     let compiled = compiled(&plan).unwrap();
     let decision = &compiled.programs[0].decisions()[0];
     // `prefix_in` is shorthand for `matches` by prefix, and `any` is unordered, so the two are equal in canonical form:
-    // one entry, evaluated once. It costs 25 ns by R1's cost model (the intake name normalized once), and `s3` folds,
+    // one entry, evaluated once. It is estimated at 25 ns (the intake name normalized once), and `s3` folds,
     // so the decision is memoized. Before decision compilation, R7 writes `s1`'s exact match before its prefix match,
     // as `s2` already has it: the logical record comes first.
     assert_eq!(decision.predicates.len(), 2);
@@ -920,8 +919,8 @@ fn the_default_programs_decisions_are_its_filters_its_fan_outs_and_its_gateways(
         })
         .collect::<Vec<_>>();
     let strings = |list: &[&str]| list.iter().map(|item| item.to_string()).collect::<Vec<_>>();
-    // R1 never cuts a decision, and prices one by its function (a memo lookup when regions memoize it), so the policy
-    // fan-out and every gateway below it are one decision of `metrics_enrich`. Multi-Region Failover's predicate, two
+    // A decision is never cut, so the policy fan-out and every gateway below it are one decision of `metrics_enrich`,
+    // beside the post-aggregation filter's. Multi-Region Failover's predicate, two
     // bound flags once lowering folded its empty allowlist away, is constant for this configuration (enabled and
     // mirroring: everything is forwarded), so R3 folds it. What is left to evaluate, the routing filters on their
     // intake-name leaves and the autoscaling gateway's on the kind and the raw name, costs at least `MEMO_COST_FLOOR`,
@@ -931,12 +930,12 @@ fn the_default_programs_decisions_are_its_filters_its_fan_outs_and_its_gateways(
         decisions,
         vec![
             (
-                "dsd_prefix_filter_region".to_string(),
+                "dsd_pre_aggregation".to_string(),
                 strings(&["dsd_prefix_filter"]),
                 false
             ),
             (
-                "dsd_post_agg_filter_region".to_string(),
+                "metrics_enrich".to_string(),
                 strings(&["dsd_post_agg_filter", "dsd_post_agg_filter_fanout"]),
                 false
             ),

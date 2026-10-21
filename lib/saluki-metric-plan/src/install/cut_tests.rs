@@ -378,8 +378,7 @@ impl Host {
 /// Describes the preparation of `generation` by a candidate that changes only the listener filterlist.
 fn prepare(generation: u64) -> String {
     format!(
-        "prepare {} [0:unchanged reuse 1 build 0, 1:changed reuse 1 build 0, 2:unchanged reuse 2 build 0, 3:unchanged \
-         reuse 1 build 0, 4:unchanged reuse 0 build 0, 5:unchanged reuse 2 build 0]",
+        "prepare {} [0:changed reuse 4 build 0, 1:unchanged reuse 1 build 0, 2:unchanged reuse 2 build 0]",
         generation
     )
 }
@@ -393,7 +392,7 @@ fn watch(generation: u64) -> String {
 }
 
 fn abort(generation: u64) -> String {
-    format!("abort {} in 6 slots", generation)
+    format!("abort {} in 3 slots", generation)
 }
 
 /// Why the core rejects a generation a newer candidate cancelled.
@@ -1303,8 +1302,7 @@ fn re_compositions_of_the_cuts_artifact_replace_it_before_arming_and_wait_for_it
             &format!("candidate 2 generation 2: {}", CANCELLED),
             // R5b pushed the post-aggregation filter into aggregation, so the filter's change reaches the aggregation
             // slot's per-call parameters, on the same instance.
-            "prepare 3 [0:unchanged reuse 1 build 0, 1:changed reuse 1 build 0, 2:unchanged reuse 2 build 0, \
-             3:changed reuse 1 build 0, 4:changed reuse 0 build 0, 5:unchanged reuse 2 build 0]",
+            "prepare 3 [0:changed reuse 4 build 0, 1:changed reuse 1 build 0, 2:changed reuse 2 build 0]",
             "candidate 3 generation 3: pending",
         ])
     );
@@ -1332,8 +1330,7 @@ fn re_compositions_of_the_cuts_artifact_replace_it_before_arming_and_wait_for_it
         host.poll(true, true),
         strings(&[
             "finalize the cut of 2",
-            "prepare 3 [0:unchanged reuse 1 build 0, 1:unchanged reuse 1 build 0, 2:unchanged reuse 2 build 0, \
-             3:changed reuse 1 build 0, 4:changed reuse 0 build 0, 5:unchanged reuse 2 build 0]",
+            "prepare 3 [0:unchanged reuse 4 build 0, 1:changed reuse 1 build 0, 2:changed reuse 2 build 0]",
             "candidate 5 generation 3: pending",
             "candidate 1 generation 1: retired",
         ])

@@ -1,5 +1,5 @@
 frame
-  laid out on 2 DogStatsD producer lanes, 2 state lanes, and 2 post-aggregation lanes, without R1's pipelining
+  laid out on 2 DogStatsD producer lanes, 2 state lanes, and 2 post-aggregation lanes
   fixed (5)
     dsd_in: source [io_host]
       admission points 0 to 1 metrics (admit, 2 lanes) -> dsd_pre_aggregation, lane by lane, feeds state
@@ -12,7 +12,7 @@ frame
     trace_sampler: source [io_host]
       admission point 5 metrics (admit) -> metrics_enrich, spread
   slots (3)
-    dsd_pre_aggregation (estimated 200 ns per event), 2 lanes
+    dsd_pre_aggregation, 2 lanes
       nodes dsd_enrich, dsd_prefix_filter_namespace_prefix, dsd_prefix_filter, dsd_prefix_filter_false, dsd_no_agg_split, dsd_tag_filterlist
       admission point 0: dsd_in.metrics -> dsd_enrich.in
       admission point 1: dsd_in.metrics -> dsd_enrich.in
@@ -22,7 +22,7 @@ frame
       exit 3 dd_metrics_encode -> encode host dd_metrics_encode of dd_out, idle
       exit 4 mrf_metrics_encode -> encode host mrf_metrics_encode of mrf_dd_out, idle
       exit 5 af_metrics_encode -> encode host af_metrics_encode of cluster_agent_out, idle
-    dsd_agg (not priced: R1 never fuses a state owner's slot), 2 lanes
+    dsd_agg (a state owner's own slot), 2 lanes
       region main, state owner dsd_agg, output points 6, 7, watermark of admission points 0, 1
       nodes dsd_agg
       entry 0: dsd_tag_filterlist.out -> dsd_agg.in
@@ -31,7 +31,7 @@ frame
       exit 2 dd_metrics_encode -> encode host dd_metrics_encode of dd_out, idle
       exit 3 mrf_metrics_encode -> encode host mrf_metrics_encode of mrf_dd_out, idle
       exit 4 af_metrics_encode -> encode host af_metrics_encode of cluster_agent_out, idle
-    metrics_enrich (estimated 141 ns per event), 2 lanes
+    metrics_enrich, 2 lanes
       nodes dsd_post_agg_filter_in, dsd_post_agg_filter, dsd_post_agg_filter_false, dsd_post_agg_filter_fanout, dsd_post_agg_filter_fanout_0, metrics_in, metrics_host_enrichment, metrics, metrics_fanout, metrics_fanout_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false
       admission point 2: otlp_in.metrics -> metrics_in.1
       admission point 3: checks_ipc_in.metrics -> metrics_in.2

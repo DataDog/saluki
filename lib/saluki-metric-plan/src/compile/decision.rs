@@ -43,7 +43,7 @@
 //!   program in one region, and never allocating on the data path. Keying by the 64-bit context identity reproduces
 //!   native collision behavior. Predicates that read signals are never memoized. Decision compilation memoizes a
 //!   memoizable decision ([`Decision::memoized`]) when the `split`s it evaluates, those R3 did not fold, are estimated
-//!   to cost at least [`MEMO_COST_FLOOR`] by R1's cost model: a cheaper decision, such as one on a name, the kind, or
+//!   to cost at least [`MEMO_COST_FLOOR`] ([`split_cost`]): a cheaper decision, such as one on a name, the kind, or
 //!   one intake-name match, saves too little on a hit to make up for what a miss adds, unless most lookups hit.
 //!
 //! Each of these is recorded on the decision ([`Decision::rewrites`]), so that `explain` lists it.
@@ -77,22 +77,68 @@ const EXIT_SET_WORDS: usize = EXIT_SET_CAPACITY.div_ceil(64);
 /// early, which costs a pass over the counted sets, and counts on: nothing is lost.
 pub const COUNTED_EXIT_SETS: usize = 64;
 
-/// The least estimated cost, in nanoseconds per event by R1's cost model ([`OperatorDef::cost`]), of the `split`s a
-/// decision evaluates for decision compilation to memoize it (R4): that of a `split` on two intake-name leaves, such as
-/// an endpoint allowlist's names and prefixes (25, the intake name normalized once), but not one leaf (20) or one leaf
-/// and the kind (21). R1 prices a decision with the same floor (`operators::decision_cost`), so that the frame is cut
-/// by what regions run.
+/// The least estimated cost, in nanoseconds per event ([`split_cost`]), of the `split`s a decision evaluates for
+/// decision compilation to memoize it (R4): that of a `split` on two intake-name leaves, such as an endpoint
+/// allowlist's names and prefixes (25, the intake name normalized once), but not one leaf (20) or one leaf and the
+/// kind (21).
 ///
 /// A lookup that hits costs about 10 ns, and one that misses adds about 4 ns to the evaluation (the probe of an entry
 /// that is rarely in the nearest cache), whatever the decision (`memo_misses` in `benches/selection.rs`). At a hit
 /// rate `p`, memoizing a decision that takes `t` ns to evaluate pays when `p * (t - 10) > (1 - p) * 4`. An endpoint
-/// allowlist (25 by the cost model, about 25 ns measured) pays from a hit rate of about one in five; a `split` on one
+/// allowlist (25 by the estimate, about 25 ns measured) pays from a hit rate of about one in five; a `split` on one
 /// intake-name leaf (20, about 18 ns) only from about one in three, and with every lookup a miss, as for a
 /// pre-aggregation filter over more contexts than the memo holds, it would take about a fifth longer than evaluating.
 /// The memo also takes memory: 96 KiB for a decision of up to 64 exits.
-///
-/// [`OperatorDef::cost`]: crate::operators::OperatorDef::cost
 pub const MEMO_COST_FLOOR: u32 = 25;
+
+/// The estimated work, in nanoseconds per event, of moving the events a `split` routes out of its buffer.
+const ROUTE_COST: u32 = 5;
+
+/// The estimated work, in nanoseconds per event, of normalizing a name into its intake name, which a predicate does
+/// once per event however many `intake_name` leaves it has (see `EventView::intake_name`).
+const INTAKE_NAME_COST: u32 = 10;
+
+/// Returns the estimated work, in nanoseconds per event, of a `split` with `predicate`: evaluating it in full, with the
+/// intake name normalized once, plus routing what leaves the buffer. A `split` whose predicate is not known costs as
+/// much as one intake-name leaf.
+///
+/// The estimates come from the stage 3 measurements of the default program's kernels running in a region over a
+/// DogStatsD-like batch, release build, and only decide R4 against [`MEMO_COST_FLOOR`]. A tag scan that finds no tag
+/// with its key costs more than this says on records with many tags; R7, which orders the operands of junctions, ranks
+/// leaves by its own static costs (see [`r7`][super::rewrite::r7]).
+pub fn split_cost(predicate: Option<&Predicate>) -> u32 {
+    predicate
+        .map_or(20, |predicate| leaves_cost(predicate, &mut false))
+        .saturating_add(ROUTE_COST)
+}
+
+/// Returns the estimate of evaluating every leaf of `predicate`, adding the intake name's normalization unless
+/// `intake_name` says an earlier leaf has paid for it.
+fn leaves_cost(predicate: &Predicate, intake_name: &mut bool) -> u32 {
+    match predicate {
+        Predicate::Const(_)
+        | Predicate::Flag(_)
+        | Predicate::IsEmpty(_)
+        | Predicate::HostUnset {}
+        | Predicate::KindIn(_) => 1,
+        Predicate::Name(_) | Predicate::Host(_) => 5,
+        // The intake name is normalized before it is matched, once per event.
+        Predicate::IntakeName(_) => {
+            let normalize = if std::mem::replace(intake_name, true) {
+                0
+            } else {
+                INTAKE_NAME_COST
+            };
+            5 + normalize
+        }
+        Predicate::HasTag(_) | Predicate::Tag(_) | Predicate::HasOriginTag(_) | Predicate::OriginTag(_) => 10,
+        Predicate::All(operands) | Predicate::Any(operands) => operands
+            .iter()
+            .map(|operand| leaves_cost(operand, intake_name))
+            .fold(0, u32::saturating_add),
+        Predicate::Not(operand) => leaves_cost(operand, intake_name),
+    }
+}
 
 /// A multiplier with well-mixed bits, for hashing exit sets and memo keys.
 const MIX: u64 = 0x9E37_79B9_7F4A_7C15;

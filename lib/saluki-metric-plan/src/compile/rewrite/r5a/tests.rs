@@ -768,11 +768,10 @@ fn a_filter_crossing_a_one_port_tee_changes_the_tees_counts() {
 }
 
 #[test]
-fn a_filter_never_moves_a_kernel_into_another_region() {
-    // The prefix is the costliest native component, which makes R1's budget; with the filter on intake names after
-    // it, the region would cost more, so R1 cuts between the host enrichment and the filter. Above the enrichment,
-    // the filter would stay in its region, fed by the prefix's, and the enrichment would follow it there: it would be
-    // built in another region's resource group. The pipeline skips that.
+fn a_filter_moves_above_a_kernel_in_its_region_whatever_the_kernels_cost() {
+    // Fusion is maximal between fences, so the prefix, the host enrichment, and the filter on intake names after them
+    // run in one region, however costly the prefix: the filter moves above the enrichment, which stays where it ran. It
+    // stops below the prefix, which writes the name it reads.
     let (case, optimized) = r5a(plan(
         vec![
             source("src", "otlp"),
@@ -793,20 +792,13 @@ fn a_filter_never_moves_a_kernel_into_another_region() {
     ));
     let site = |node: &str| case.frame.site(&id(node));
     assert_eq!(site("p"), site("h"));
-    assert_ne!(site("h"), site("a_f"), "R1 cuts between the enrichment and the filter");
+    assert_eq!(site("h"), site("a_f"));
 
-    assert_eq!(optimized.records.len(), 1, "{:?}", optimized.records);
-    let record = &optimized.records[0];
+    let [record] = applied(&optimized)[..] else {
+        panic!("one application: {:?}", optimized.records);
+    };
     assert_eq!(record.nodes, vec![id("h"), id("a_f"), id("a_f_drop")]);
-    match &record.outcome {
-        RewriteOutcome::Skipped { reason } => assert!(
-            reason.starts_with("the rewritten plan would move the kernel `h` from `region_p` to `region_a_f`"),
-            "{}",
-            reason
-        ),
-        RewriteOutcome::Applied => panic!("the application was accepted: {:?}", record),
-    }
-    assert_eq!(optimized.plan, case.plan);
+    case.check_structure(&optimized).unwrap();
 }
 
 #[test]

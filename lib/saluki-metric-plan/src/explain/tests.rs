@@ -817,7 +817,7 @@ mod physical {
             physical.fixed[7].admission_points[0].to.as_deref(),
             Some("output mrf_metrics_encode")
         );
-        let [main] = physical.slots[3].regions.as_slice() else {
+        let [main] = physical.slots[1].regions.as_slice() else {
             panic!("aggregation runs in its slot's main region");
         };
         assert_eq!(main.output_point, Some(9));
@@ -830,44 +830,28 @@ mod physical {
                 .map(|exit| exit.idle)
                 .collect::<Vec<_>>()
         };
-        // Every slot but enrichment has an exit to the next one and idle exits to every output, aggregation's too;
-        // enrichment to its primary output and the four gateways, and idle ones to the gateways' outputs.
+        // The pre-aggregation slot has exits to aggregation and, for the passthrough, to enrichment, and aggregation's
+        // to enrichment, each with idle exits to every output; enrichment to the client telemetry tap, its primary
+        // output, and the four gateways, and idle ones to the gateways' outputs.
         let names = physical.slots.iter().map(|slot| slot.name.as_str()).collect::<Vec<_>>();
-        assert_eq!(
-            names,
-            vec![
-                "dsd_pre_aggregation",
-                "dsd_prefix_filter_region",
-                "dsd_no_agg_split_region",
-                "dsd_agg",
-                "dsd_post_agg_filter_region",
-                "metrics_enrich"
-            ]
-        );
+        assert_eq!(names, vec!["dsd_pre_aggregation", "dsd_agg", "metrics_enrich"]);
         let busy_then_idle = |busy: usize, idle: usize| {
             let mut exits = vec![false; busy];
             exits.extend(vec![true; idle]);
             exits
         };
-        let all_idle = (0..6).map(idle).collect::<Vec<_>>();
+        let all_idle = (0..3).map(idle).collect::<Vec<_>>();
         assert_eq!(
             all_idle,
-            vec![
-                busy_then_idle(1, 6),
-                busy_then_idle(1, 6),
-                busy_then_idle(2, 6),
-                busy_then_idle(1, 6),
-                busy_then_idle(2, 5),
-                busy_then_idle(5, 4),
-            ]
+            vec![busy_then_idle(2, 6), busy_then_idle(1, 6), busy_then_idle(6, 4)]
         );
-        assert_eq!(physical.slots[5].entries.len(), 5);
-        assert_eq!(physical.slots[5].entries[4].key, "entry 0");
+        assert_eq!(physical.slots[2].entries.len(), 6);
+        assert_eq!(physical.slots[2].entries[4].key, "entry 0");
 
-        // 9 admission points (4 of them direct edges to encoders) and 7 + 7 + 8 + 7 + 7 + 9 exits.
-        assert_eq!(physical.edges.len(), 54);
+        // 9 admission points (4 of them direct edges to encoders) and 8 + 7 + 10 exits.
+        assert_eq!(physical.edges.len(), 34);
         let kinds = |kind: &str| physical.edges.iter().filter(|edge| edge.kind == kind).count();
-        assert_eq!((kinds("admission"), kinds("direct"), kinds("exit")), (5, 4, 45));
+        assert_eq!((kinds("admission"), kinds("direct"), kinds("exit")), (5, 4, 25));
 
         assert_eq!(physical.fusion.len(), 30);
         let separated = physical
@@ -878,32 +862,7 @@ mod physical {
         assert_eq!(separated.from.to_string(), "dsd_no_agg_split.passthrough");
         assert_eq!(
             separated.reason,
-            "fusing would form a cycle through `dsd_agg`: slots `dsd_no_agg_split_region` and \
-             `dsd_post_agg_filter_region` stay apart"
-        );
-        let pipelined = physical
-            .fusion
-            .iter()
-            .filter(|decision| decision.decision == "pipelined")
-            .map(|decision| decision.from.to_string())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            pipelined,
-            strings(&[
-                "dsd_enrich.out",
-                "dsd_prefix_filter.true",
-                "dsd_post_agg_filter_fanout.1"
-            ])
-        );
-        assert_eq!(
-            physical
-                .fusion
-                .iter()
-                .find(|decision| decision.decision == "pipelined")
-                .unwrap()
-                .reason,
-            "fusing would make one region cost more than 110 ns per event, the cost model's budget: slots \
-             `dsd_pre_aggregation` and `dsd_prefix_filter_region` pipeline"
+            "fusing would form a cycle through `dsd_agg`: slots `dsd_pre_aggregation` and `metrics_enrich` stay apart"
         );
         assert_eq!(
             physical
@@ -955,16 +914,7 @@ mod physical {
         let dogstatsd = segment(0);
         assert_eq!(dogstatsd.from.to_string(), "dsd_in.metrics");
         assert_eq!(dogstatsd.mode, "admit");
-        assert_eq!(
-            dogstatsd.slots,
-            strings(&[
-                "dsd_pre_aggregation",
-                "dsd_prefix_filter_region",
-                "dsd_no_agg_split_region",
-                "dsd_post_agg_filter_region",
-                "metrics_enrich"
-            ])
-        );
+        assert_eq!(dogstatsd.slots, strings(&["dsd_pre_aggregation", "metrics_enrich"]));
         let mut nodes = ids(&[
             "dsd_enrich",
             "dsd_prefix_filter_namespace_prefix",
@@ -1021,13 +971,7 @@ mod physical {
             ("wait", "native")
         );
         assert_eq!(primary.fed_by, strings(&["metrics_enrich.dd_metrics_encode"]));
-        let before_enrichment = [
-            "dsd_pre_aggregation",
-            "dsd_prefix_filter_region",
-            "dsd_no_agg_split_region",
-            "dsd_agg",
-            "dsd_post_agg_filter_region",
-        ];
+        let before_enrichment = ["dsd_pre_aggregation", "dsd_agg"];
         let idle_exits = |output: &str, slots: &[&str]| {
             slots
                 .iter()
@@ -1383,8 +1327,8 @@ mod resources {
 }
 
 /// The physical sections of a frame laid out on lanes, as stage 9 lays out the frame of the default program with its
-/// outputs bound and its resources declared (`fixtures/default-program-resources.json`): with its encode hosts, without
-/// R1's pipelining.
+/// outputs bound and its resources declared (`fixtures/default-program-resources.json`): with its encode hosts, every
+/// state owner in a slot of its own.
 mod lanes {
     use super::*;
     use crate::{
@@ -1404,20 +1348,18 @@ mod lanes {
         post: 2,
     };
 
-    /// The explain document of the bound default program compiled into its own frame on `lanes`, without pipelining,
-    /// with its rewrites and physical sections.
+    /// The explain document of the bound default program compiled into its own frame on `lanes`, isolating state, with
+    /// its rewrites and physical sections.
     fn on_lanes(lanes: LanePolicy) -> Explain {
+        laid_out(lanes, FrameOptions::ON_LANES)
+    }
+
+    /// The explain document of the bound default program compiled into its own frame on `lanes`, laid out with
+    /// `options`, with its rewrites and physical sections.
+    fn laid_out(lanes: LanePolicy, options: FrameOptions) -> Explain {
         let plan = Plan::from_value(with_resources(DEFAULT_PROGRAM_JSON)).unwrap();
         let registry = OperatorRegistry::native();
-        let frame = Frame::compute_with(
-            &plan,
-            &registry,
-            &namer,
-            &default_program_hosts(),
-            &lanes,
-            FrameOptions::ON_LANES,
-        )
-        .unwrap();
+        let frame = Frame::compute_with(&plan, &registry, &namer, &default_program_hosts(), &lanes, options).unwrap();
         let report = Validator::new(&registry, &default_program_resources_catalog()).validate(&plan);
         assert!(report.is_valid(), "{}", report);
         let compiled = compile(
@@ -1445,6 +1387,18 @@ mod lanes {
     }
 
     #[test]
+    fn the_default_programs_physical_sections_without_isolated_state_match_their_golden_files() {
+        // Version 2's step V7b: aggregation fuses with its neighbors, so everything between the sources and the encode
+        // hosts is one slot, whose main region runs aggregation.
+        let physical = laid_out(LanePolicy::ONE, FrameOptions { isolate_state: false })
+            .physical
+            .unwrap();
+        assert_eq!(physical.slots.len(), 1);
+        assert_golden("default-program-fused-physical.json", &physical_json(&physical));
+        assert_golden("default-program-fused-physical.txt", &physical.to_text());
+    }
+
+    #[test]
     fn the_physical_sections_on_lanes_say_what_runs_on_each_lane_and_how_each_edge_reaches_it() {
         let physical = on_lanes(TWO).physical.unwrap();
         assert_eq!(
@@ -1453,7 +1407,6 @@ mod lanes {
                 dogstatsd_lanes: 2,
                 state_lanes: 2,
                 post_lanes: 2,
-                pipelining: false,
             })
         );
 
@@ -1486,7 +1439,6 @@ mod lanes {
             slots,
             vec![("dsd_pre_aggregation", 2), ("dsd_agg", 2), ("metrics_enrich", 2)]
         );
-        assert!(physical.fusion.iter().all(|decision| decision.decision != "pipelined"));
 
         // Each producer lane has the entry of its own point.
         let pre = &physical.slots[0];
@@ -1583,8 +1535,7 @@ mod lanes {
         // The text form says the same.
         let text = physical.to_text();
         for line in [
-            "  laid out on 2 DogStatsD producer lanes, 2 state lanes, and 2 post-aggregation lanes, without R1's \
-             pipelining",
+            "  laid out on 2 DogStatsD producer lanes, 2 state lanes, and 2 post-aggregation lanes",
             "      admission points 0 to 1 metrics (admit, 2 lanes) -> dsd_pre_aggregation, lane by lane, feeds state",
             "      admission point 2 metrics (admit) -> metrics_enrich, spread",
             "      exit 0 dsd_agg -> dsd_agg, keyed (key groups 0 to 127 on lane 0, 128 to 255 on lane 1), progress \
@@ -1614,25 +1565,16 @@ mod lanes {
         };
         assert_eq!(logical(&one), logical(&two));
 
-        // On one lane, a frame without pipelining says only that; with pipelining, nothing at all, and its whole
-        // document says what it said before lanes.
+        // On one lane, a frame says nothing of lanes, and its whole document says what it said before lanes.
         let physical = one.physical.unwrap();
-        assert_eq!(
-            physical.layout,
-            Some(LayoutEntry {
-                dogstatsd_lanes: 1,
-                state_lanes: 1,
-                post_lanes: 1,
-                pipelining: false,
-            })
-        );
+        assert_eq!(physical.layout, None);
         let value = serde_json::to_value(&physical).unwrap();
         let text = serde_json::to_string(&value["slots"]).unwrap() + &serde_json::to_string(&value["fixed"]).unwrap();
         for member in ["\"lanes\"", "\"routing\"", "\"key_groups\"", "\"output_points\""] {
             assert!(!text.contains(member), "one lane writes no {}: {}", member, text);
         }
 
-        // A document written without the lane members reads as one on one lane, laid out with pipelining.
+        // A document written without the lane members reads as one on one lane.
         let mut value = serde_json::to_value(two.physical.as_ref().unwrap()).unwrap();
         strip(
             &mut value,

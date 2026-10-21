@@ -637,8 +637,8 @@ impl Host {
 }
 
 /// Describes the preparation of `generation` with what each slot prepares, as [`describe`] writes it. The frame's
-/// slots are the three pre-aggregation regions, aggregation's isolation slot (3), the post-aggregation filter's region,
-/// and enrichment with the whole policy region (5).
+/// slots are the pre-aggregation region (0), aggregation's isolation slot (1), and enrichment with the
+/// post-aggregation filter and the whole policy region (2).
 fn prepare(generation: u64, slots: &str) -> String {
     format!(
         "prepare {} [{}]",
@@ -766,8 +766,7 @@ fn a_routing_only_edit_installs_through_the_installer_core_as_a_commit() {
         strings(&[
             &prepare(
                 2,
-                "0:unchanged reuse 1 build 0, 1:unchanged reuse 1 build 0, 2:unchanged reuse 2 build 0, 3:unchanged \
-                 reuse 1 build 0, 4:changed reuse 0 build 0, 5:changed reuse 2 build 0"
+                "0:unchanged reuse 4 build 0, 1:unchanged reuse 1 build 0, 2:changed reuse 2 build 0"
             ),
             "candidate 2 generation 2: pending",
         ])
@@ -792,8 +791,7 @@ fn a_width_only_edit_installs_through_the_installer_core_as_a_cut() {
         strings(&[
             &prepare(
                 2,
-                "0:unchanged reuse 1 build 0, 1:unchanged reuse 1 build 0, 2:changed reuse 1 build 1, 3:changed \
-                 reuse 0 build 1, 4:unchanged reuse 0 build 0, 5:unchanged reuse 2 build 0"
+                "0:changed reuse 3 build 1, 1:changed reuse 0 build 1, 2:unchanged reuse 2 build 0"
             ),
             "candidate 2 generation 2: pending",
         ])
@@ -906,16 +904,14 @@ fn a_width_and_routing_edit_installs_as_one_generation_through_one_cut_with_the_
             route(document);
         }),
     );
-    // One preparation: the width change's two regions, and the policy region, whose decision the split joins. The
-    // post-aggregation filter's region builds and reuses nothing new: only its program's fingerprint changes, as for
-    // the routing edit alone.
+    // One preparation: the width change's two regions, and the enrichment region, whose policy decision the split
+    // joins, and which builds nothing new, as for the routing edit alone.
     assert_eq!(
         performed,
         strings(&[
             &prepare(
                 2,
-                "0:unchanged reuse 1 build 0, 1:unchanged reuse 1 build 0, 2:changed reuse 1 build 1, 3:changed \
-                 reuse 0 build 1, 4:changed reuse 0 build 0, 5:changed reuse 2 build 0"
+                "0:changed reuse 3 build 1, 1:changed reuse 0 build 1, 2:changed reuse 2 build 0"
             ),
             "candidate 2 generation 2: pending",
         ])
@@ -1174,10 +1170,11 @@ fn the_installer_core_installs_a_second_aggregation_where_placement_runs_it_star
 }
 
 #[test]
-fn the_one_aggregation_fed_by_the_otlp_input_runs_where_otlps_records_go_and_joins_none() {
-    // OTLP's records reach the enrichment region: the one aggregation moved to their path runs in a region of its own
-    // there, but fed by them as well, it would join the records of two slots neither of which sends to the other. A
-    // second aggregation there places (above).
+fn the_one_aggregation_fed_by_the_otlp_input_runs_in_the_enrichment_slot_where_otlps_records_go() {
+    // OTLP's records reach the enrichment slot: the one aggregation moved to their path runs there. Fed by DogStatsD's
+    // records as well, through a merge, it runs there too, since the pre-aggregation slot, the one slot of the chain
+    // with fusion maximal, sends DogStatsD's passthrough there: the merge joins the records of two slots, one of which
+    // sends to the other. A second aggregation there places (above).
 
     // The one aggregation fed by OTLP too, through a merge ahead of it.
     let merged = composed(edited(|document| {
@@ -1207,13 +1204,7 @@ fn the_one_aggregation_fed_by_the_otlp_input_runs_where_otlps_records_go_and_joi
         }
     }));
     assert!(merged.as_ref().is_ok_and(|composed| composed.report.is_valid()));
-    assert_eq!(
-        outcome(merged),
-        "unplaceable [FrameChanges]: The candidate plan cannot run in the physical structure built at boot: node \
-         `agg_in`: it joins records from the regions `dsd_no_agg_split_region`, `metrics_enrich`, and no one of \
-         them receives from all the others: connecting regions in a new way requires stage 10 frame changes: the \
-         physical structure is built from the default program at boot, so a restart does not add it."
-    );
+    assert_eq!(outcome(merged), "places");
 
     // The one aggregation moved to OTLP's path alone.
     let moved = composed(edited(|document| {
@@ -1338,8 +1329,7 @@ fn the_shorter_detached_export_over_the_default_program_is_a_commit_that_builds_
         strings(&[
             &prepare(
                 2,
-                "0:changed reuse 1 build 0, 1:unchanged reuse 1 build 0, 2:unchanged reuse 0 build 0, 3:changed reuse \
-                 1 build 0"
+                "0:changed reuse 1 build 0, 1:unchanged reuse 1 build 0, 2:changed reuse 1 build 0"
             ),
             "candidate 2 generation 2: pending"
         ])
@@ -1362,8 +1352,7 @@ fn the_shorter_detached_export_over_the_default_program_is_a_commit_that_builds_
         strings(&[
             &prepare(
                 3,
-                "0:changed reuse 1 build 0, 1:unchanged reuse 1 build 0, 2:unchanged reuse 0 build 0, 3:unchanged \
-                 reuse 1 build 0"
+                "0:changed reuse 1 build 0, 1:unchanged reuse 1 build 0, 2:unchanged reuse 1 build 0"
             ),
             "candidate 3 generation 3: pending"
         ])
@@ -1378,8 +1367,7 @@ fn the_shorter_detached_export_over_the_default_program_is_a_commit_that_builds_
         strings(&[
             &prepare(
                 4,
-                "0:changed reuse 1 build 0, 1:unchanged reuse 1 build 0, 2:unchanged reuse 0 build 0, 3:unchanged \
-                 reuse 1 build 0"
+                "0:changed reuse 1 build 0, 1:unchanged reuse 1 build 0, 2:unchanged reuse 1 build 0"
             ),
             "candidate 4 generation 4: pending"
         ])

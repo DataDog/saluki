@@ -70,9 +70,9 @@ pub mod program;
 pub mod rewrite;
 
 pub use self::decision::{
-    Branch, Decision, DecisionExit, DecisionFunction, DecisionKind, DecisionMemo, DecisionNode, DecisionScratch,
-    ExitSet, ExitSetCounts, ExitTarget, MalformedDecision, MemoKey, PredicateIndex, PredicateTable, SharedPredicate,
-    COUNTED_EXIT_SETS, EXIT_SET_CAPACITY, MEMO_COST_FLOOR,
+    split_cost, Branch, Decision, DecisionExit, DecisionFunction, DecisionKind, DecisionMemo, DecisionNode,
+    DecisionScratch, ExitSet, ExitSetCounts, ExitTarget, MalformedDecision, MemoKey, PredicateIndex, PredicateTable,
+    SharedPredicate, COUNTED_EXIT_SETS, EXIT_SET_CAPACITY, MEMO_COST_FLOOR,
 };
 pub use self::frame::{
     AdmissionPointInfo, Exit, ExitIndex, ExitRouting, FixedComponent, Frame, FrameEdge, FrameError, FrameHost,
@@ -370,9 +370,10 @@ pub(crate) enum Role {
     /// A synchronous operator, run in a slot.
     Synchronous,
 
-    /// A state owner behind a declared isolation fence ([`Boundary::Isolated`][crate::operators::Boundary]), run in a
-    /// region of its own. A boot state owner starts a slot of its own in the frame's layout; placement treats it as any
-    /// synchronous node, and partitions each slot into regions.
+    /// A state owner behind a declared isolation fence ([`Boundary::Isolated`][crate::operators::Boundary]), the only
+    /// node a region runs that keeps state. It fuses as any synchronous node, unless the frame isolates state, when a
+    /// boot state owner starts a slot of its own; placement treats it as any synchronous node, and partitions each slot
+    /// into regions, at most one state owner to a region.
     Isolated,
 }
 

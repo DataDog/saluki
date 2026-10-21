@@ -244,14 +244,6 @@ impl OperatorDef for DogstatsdMapper {
         params.list("profiles").is_some_and(<[_]>::is_empty)
     }
 
-    fn cost(&self, params: &DecodedParams) -> u32 {
-        // Every name is looked up in the mapper's cache; names that match a profile are rebuilt.
-        match params.get("profiles").and_then(decode_mapper_profiles) {
-            Some(profiles) if profiles.is_empty() => 10,
-            _ => 65,
-        }
-    }
-
     fn kernel(&self, params: &DecodedParams) -> Option<KernelSpec> {
         let profiles = params.get("profiles").and_then(decode_mapper_profiles);
         let cache_size = params.integer("cache_size").and_then(|size| usize::try_from(size).ok());
@@ -336,14 +328,6 @@ impl OperatorDef for NamespacePrefix {
     fn is_identity(&self, params: &DecodedParams) -> bool {
         // An empty namespace disables prefixing, whatever the exclusions: the kernel leaves every batch as it is.
         params.str("namespace") == Some("")
-    }
-
-    fn cost(&self, params: &DecodedParams) -> u32 {
-        // Prefixing builds a new name and context for every metric; an empty namespace disables it.
-        match params.str("namespace") {
-            Some("") => 0,
-            _ => 90,
-        }
     }
 
     fn kernel(&self, params: &DecodedParams) -> Option<KernelSpec> {
@@ -441,10 +425,6 @@ impl OperatorDef for TimestampSplit {
             cardinality: Cardinality::Expand { max: Some(2) },
             ..EffectContract::passthrough()
         }
-    }
-
-    fn cost(&self, _params: &DecodedParams) -> u32 {
-        10
     }
 
     fn kernel(&self, params: &DecodedParams) -> Option<KernelSpec> {
@@ -675,11 +655,6 @@ impl OperatorDef for TagProjection {
         // No rule names any metric: every metric is a rule miss, which leaves it unchanged. The kernel still counts
         // the misses, and its memo the lookups.
         params.list("rules").is_some_and(<[_]>::is_empty) && params.list("value_rules").is_some_and(<[_]>::is_empty)
-    }
-
-    fn cost(&self, _params: &DecodedParams) -> u32 {
-        // Every counter and distribution is looked up in the context memo.
-        15
     }
 
     fn kernel(&self, params: &DecodedParams) -> Option<KernelSpec> {

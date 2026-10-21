@@ -167,8 +167,7 @@ pub struct PlanProvenance {
     /// Which native component each node of a lowered default program does the work of, as lowering writes it.
     ///
     /// This describes native configuration's topology, for the layout the host builds at boot from its default
-    /// program: R1's cost model prices native components, not nodes, and a host may size a region's input by the
-    /// native components it replaces. It decides nothing else: not what a node may do, not who answers for its loss,
+    /// program: a host may size a region's input by the native components it replaces. It decides nothing else: not what a node may do, not who answers for its loss,
     /// and not what a later generation reuses. Composition does not carry it, since a composed plan is never a boot
     /// plan. A node it does not list is a component of its own.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

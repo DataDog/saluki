@@ -67,8 +67,8 @@ use snafu::Snafu;
 
 use super::{
     decision::{
-        Branch, Decision, DecisionExit, DecisionKind, DecisionNode, ExitTarget, PredicateIndex, PredicateTable,
-        EXIT_SET_CAPACITY, MEMO_COST_FLOOR,
+        split_cost, Branch, Decision, DecisionExit, DecisionKind, DecisionNode, ExitTarget, PredicateIndex,
+        PredicateTable, EXIT_SET_CAPACITY, MEMO_COST_FLOOR,
     },
     frame::{ExitIndex, Frame, FrameTarget, SlotId},
     placement::{ClockId, EntryKey, Placement, RegionKey, UpstreamPoint},
@@ -1283,7 +1283,7 @@ impl Context<'_, '_> {
             plan_position
                 .get(node)
                 .and_then(|&node| graph.op(node))
-                .map_or(0, |op| op.cost())
+                .map_or(0, |op| split_cost(op.params().predicate("predicate")))
         });
         decision.memoized = self.rewrites.memoize && decision.memoizable() && cost >= MEMO_COST_FLOOR;
         decision.rewrites =

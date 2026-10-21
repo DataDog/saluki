@@ -21,8 +21,8 @@
 //!   that the records describe the plan they produced.
 //!
 //! Routing and filter nodes are an author's, named `a_<local>`, except filters a plan's parameters mark native; kernels,
-//! timestamp splits, sources, and hosts are native nodes, named `<local>`, each a native component of its own, so that
-//! R1 may cut between any two of them. A native filter is one the host's telemetry contract names
+//! timestamp splits, sources, and hosts are native nodes, named `<local>`, each a native component of its own. A
+//! native filter is one the host's telemetry contract names
 //! ([`contract_catalog`]), so rewrites move it only whole.
 
 use std::{collections::BTreeSet, sync::OnceLock};

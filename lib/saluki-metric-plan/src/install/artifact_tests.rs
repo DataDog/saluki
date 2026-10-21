@@ -1658,8 +1658,7 @@ fn a_revoked_policy_leaves_effect_at_once_while_its_generation_runs_until_replac
         performed,
         vec![
             "install the default program".to_string(),
-            "prepare 3 [0:unchanged reuse 1 build 0, 1:changed reuse 1 build 0, 2:unchanged reuse 2 build 0, \
-             3:unchanged reuse 1 build 0, 4:unchanged reuse 0 build 0, 5:unchanged reuse 2 build 0]"
+            "prepare 3 [0:changed reuse 4 build 0, 1:unchanged reuse 1 build 0, 2:unchanged reuse 2 build 0]"
                 .to_string(),
             "candidate 3 generation 3: pending".to_string(),
         ]
@@ -1816,7 +1815,7 @@ fn a_cut_serving_an_artifact_of_a_failed_generation_is_dropped_as_a_preparation_
     );
     assert_eq!(host.summary(), "g2 demo@1 hw1 kept g1 | demo v1 r1 active g2");
     let performed = host.step(&Panic);
-    assert_eq!(performed[..2], ["abort 3 in 6 slots".to_string(), failed.to_string()]);
+    assert_eq!(performed[..2], ["abort 3 in 3 slots".to_string(), failed.to_string()]);
     assert!(performed.contains(&"commit 1".to_string()), "{:?}", performed);
     assert_eq!(
         host.summary(),
@@ -1833,7 +1832,7 @@ fn a_cut_serving_an_artifact_of_a_failed_generation_is_dropped_as_a_preparation_
     );
     let actions = host.harness.core.cut_cancelled(GenerationId::new(3));
     let performed = host.perform(actions);
-    assert_eq!(performed[..2], ["abort 3 in 6 slots".to_string(), failed.to_string()]);
+    assert_eq!(performed[..2], ["abort 3 in 3 slots".to_string(), failed.to_string()]);
     assert!(performed.contains(&"commit 1".to_string()), "{:?}", performed);
     assert_eq!(
         host.summary(),
