@@ -1,10 +1,10 @@
 //! Resolution of the dynamic span times used by case specs.
 //!
 //! Case specs express span times relative to the test clock so that the generated payload always lands in the
-//! concentrator's current bucket. A span `start` is either a Go duration string, interpreted as a signed offset from
-//! the test clock (for example, `"-2s"`), or a JSON integer holding an absolute Unix timestamp in nanoseconds (used by
-//! the pre-year-2000 repair cases). A span `duration` is either a Go duration string (for example, `"80ms"`) or a JSON
-//! integer holding raw nanoseconds.
+//! current bucket of the concentrator. A span `start` is either a Go duration string, interpreted as a signed offset
+//! from the test clock (for example, `"-2s"`), or a JSON integer holding an absolute Unix timestamp in nanoseconds
+//! (used by the pre-year-2000 repair cases). A span `duration` is either a Go duration string (for example, `"80ms"`)
+//! or a JSON integer holding raw nanoseconds.
 
 use go_duration::parse_duration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};

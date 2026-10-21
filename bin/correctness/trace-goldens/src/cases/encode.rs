@@ -18,7 +18,7 @@ use super::{AttributeSpec, MaterializedCase, MaterializedChunk, MaterializedPayl
 /// Request path of the v1.0 traces endpoint.
 pub const V1_TRACES_PATH: &str = "/v1.0/traces";
 
-/// Writes to a `Vec<u8>` can't fail; this collapses rmp's `Result` into a panic that never happens in practice.
+/// Writes to a `Vec<u8>` can't fail; this collapses `rmp`'s `Result` into a panic that never happens in practice.
 fn infallible<T, E: std::fmt::Debug>(r: Result<T, E>) {
     r.expect("writing MessagePack to a Vec should not fail");
 }
@@ -271,7 +271,10 @@ mod tests {
             header(&req.headers, "Datadog-Container-ID"),
             Some("abcdef0123456789abcdef0123456789")
         );
-        assert_eq!(header(&req.headers, "X-Datadog-Process-Tags"), Some("env:golden,team:apm"));
+        assert_eq!(
+            header(&req.headers, "X-Datadog-Process-Tags"),
+            Some("env:golden,team:apm")
+        );
 
         case.headers.insert("content-type".into(), "application/other".into());
         let req = case.request();

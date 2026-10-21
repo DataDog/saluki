@@ -17,7 +17,7 @@ pub const STATS_PATH: &str = "/api/v0.2/stats";
 /// Intake path for trace payloads.
 pub const TRACES_PATH: &str = "/api/v0.2/traces";
 
-/// The request headers pinned by the wire goldens; all others are build- or runtime-dependent and ignored.
+/// The request headers pinned by the wire golden files; all others are build- or runtime-dependent and ignored.
 pub const PINNED_HEADERS: [&str; 4] = ["Content-Type", "Content-Encoding", "DD-API-KEY", "Datadog-Languages"];
 
 /// One request recorded in a wire golden.
@@ -31,7 +31,7 @@ pub struct WireGoldenRequest {
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
 
-    /// Decoded, normalized payload, as protojson.
+    /// Decoded, normalized payload, as `protojson`.
     pub payload: serde_json::Value,
 }
 
@@ -67,7 +67,7 @@ impl WireGolden {
     ///
     /// # Errors
     ///
-    /// Returns an error if a stats payload doesn't match the expected protojson shape.
+    /// Returns an error if a stats payload doesn't match the expected `protojson` shape.
     pub fn stats_summary(&self) -> Result<StatsSummary, GenericError> {
         StatsSummary::from_golden_payloads(self.payloads::<GoldenStatsPayload>(STATS_PATH)?)
     }
@@ -76,7 +76,7 @@ impl WireGolden {
     ///
     /// # Errors
     ///
-    /// Returns an error if a trace payload doesn't match the expected protojson shape or holds an invalid ref.
+    /// Returns an error if a trace payload doesn't match the expected `protojson` shape or holds an invalid ref.
     pub fn trace_summary(&self, opts: &CompareOptions) -> Result<TraceSummary, GenericError> {
         TraceSummary::from_golden_payloads(self.payloads::<GoldenAgentPayload>(TRACES_PATH)?, opts)
     }

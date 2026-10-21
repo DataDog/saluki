@@ -18,10 +18,10 @@ use std::path::PathBuf;
 pub mod cases;
 pub mod compare;
 
-/// Agent hostname configured by the Go harness when the goldens were recorded.
+/// Agent hostname configured by the Go harness when the golden files were recorded.
 pub const GOLDEN_AGENT_HOSTNAME: &str = "agent-host";
 
-/// API key configured by the Go harness when the goldens were recorded.
+/// API key configured by the Go harness when the golden files were recorded.
 pub const GOLDEN_API_KEY: &str = "test";
 
 /// Returns the directory holding the bundled fixtures (`cases/` and `golden/`).

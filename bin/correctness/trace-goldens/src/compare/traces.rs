@@ -1,4 +1,4 @@
-//! Semantic comparison of trace payloads (`AgentPayload` with idx tracer payloads).
+//! Semantic comparison of trace payloads (`AgentPayload` with `idx` tracer payloads).
 
 use std::{
     cmp::Ordering,
@@ -19,7 +19,7 @@ use super::{
     CompareOptions, Mismatches,
 };
 
-// --- Golden protojson model -------------------------------------------------------------------------------------
+// --- Golden `protojson` model -------------------------------------------------------------------------------------
 
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
@@ -167,11 +167,10 @@ fn parse_start_placeholder(s: &str) -> Result<i64, GenericError> {
         .ok_or_else(|| generic_error!("Invalid golden span start '{}'; expected '<start:N>'.", s))
 }
 
-fn golden_attributes(attrs: BTreeMap<u32, GoldenAnyValue>) -> Result<std::collections::HashMap<u32, idx::AnyValue>, GenericError> {
-    attrs
-        .into_iter()
-        .map(|(k, v)| Ok((k, v.into_proto()?)))
-        .collect()
+fn golden_attributes(
+    attrs: BTreeMap<u32, GoldenAnyValue>,
+) -> Result<std::collections::HashMap<u32, idx::AnyValue>, GenericError> {
+    attrs.into_iter().map(|(k, v)| Ok((k, v.into_proto()?))).collect()
 }
 
 impl GoldenAnyValue {
@@ -221,7 +220,7 @@ impl GoldenAnyValue {
 }
 
 impl GoldenAgentPayload {
-    /// Converts the golden protojson model into the protobuf message.
+    /// Converts the golden `protojson` model into the protobuf message.
     ///
     /// Span starts carry the already-normalized golden offset, bit-cast from `i64` to `u64`.
     pub(super) fn into_proto(self) -> Result<AgentPayload, GenericError> {
@@ -353,7 +352,7 @@ struct Link {
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct Event {
-    /// Absolute event time, compared exactly (the Go goldens don't normalize it).
+    /// Absolute event time, compared exactly (the Go golden files don't normalize it).
     time: u64,
     name: String,
     attributes: Attributes,
@@ -415,7 +414,7 @@ struct AgentMeta {
     error_tps: F64,
     rare_sampler_enabled: bool,
     tags: BTreeMap<String, String>,
-    /// Number of classic (non-idx) tracer payloads; expected to be `0`.
+    /// Number of classic (non-`idx`) tracer payloads; expected to be `0`.
     classic_tracer_payloads: usize,
 }
 
@@ -436,7 +435,7 @@ pub struct TraceSummary {
 /// This reproduces the Go harness formula exactly: `off = start - epoch; off = (off + R/2) / R * R`, using
 /// truncating integer division. Because truncation rounds toward zero, negative offsets don't round to the nearest
 /// multiple: both `-2s` and `-1.99s` normalize to `-1.9s`. Matching that quirk is what makes actual output comparable
-/// with the goldens.
+/// with the golden files.
 pub fn normalize_start(start: u64, epoch_unix_nanos: u64, rounding_ns: i64) -> i64 {
     let off = (start as i64).wrapping_sub(epoch_unix_nanos as i64);
     (off + rounding_ns / 2) / rounding_ns * rounding_ns
@@ -655,12 +654,28 @@ fn diff_attributes(out: &mut Mismatches, path: &str, e: &Attributes, a: &Attribu
 fn diff_chunk(out: &mut Mismatches, path: &str, e: &Chunk, a: &Chunk) {
     let t = format!("{}.tracer", path);
     out.check(format!("{}.lang", t), &e.tracer.lang, &a.tracer.lang);
-    out.check(format!("{}.lang_version", t), &e.tracer.lang_version, &a.tracer.lang_version);
-    out.check(format!("{}.tracer_version", t), &e.tracer.tracer_version, &a.tracer.tracer_version);
+    out.check(
+        format!("{}.lang_version", t),
+        &e.tracer.lang_version,
+        &a.tracer.lang_version,
+    );
+    out.check(
+        format!("{}.tracer_version", t),
+        &e.tracer.tracer_version,
+        &a.tracer.tracer_version,
+    );
     out.check(format!("{}.env", t), &e.tracer.env, &a.tracer.env);
     out.check(format!("{}.hostname", t), &e.tracer.hostname, &a.tracer.hostname);
-    out.check(format!("{}.app_version", t), &e.tracer.app_version, &a.tracer.app_version);
-    out.check(format!("{}.container_id", t), &e.tracer.container_id, &a.tracer.container_id);
+    out.check(
+        format!("{}.app_version", t),
+        &e.tracer.app_version,
+        &a.tracer.app_version,
+    );
+    out.check(
+        format!("{}.container_id", t),
+        &e.tracer.container_id,
+        &a.tracer.container_id,
+    );
     out.check(format!("{}.runtime_id", t), &e.tracer.runtime_id, &a.tracer.runtime_id);
     diff_attributes(out, &t, &e.tracer.attributes, &a.tracer.attributes);
     out.check(format!("{}.priority", path), &e.priority, &a.priority);
@@ -736,7 +751,11 @@ pub fn compare_traces(expected: &TraceSummary, actual: &TraceSummary, opts: &Com
             out.check("agent.agent_version", &e.agent_version, &a.agent_version);
             out.check("agent.target_tps", &e.target_tps, &a.target_tps);
             out.check("agent.error_tps", &e.error_tps, &a.error_tps);
-            out.check("agent.rare_sampler_enabled", &e.rare_sampler_enabled, &a.rare_sampler_enabled);
+            out.check(
+                "agent.rare_sampler_enabled",
+                &e.rare_sampler_enabled,
+                &a.rare_sampler_enabled,
+            );
             out.check("agent.tags", &e.tags, &a.tags);
             out.check(
                 "agent.classic_tracer_payloads",
@@ -763,10 +782,11 @@ pub fn compare_traces(expected: &TraceSummary, actual: &TraceSummary, opts: &Com
         let path = format!("chunk{:?}", span_ids(e));
         // Prefer a chunk with identical span IDs, then one sharing any span ID.
         let ids = span_ids(e);
-        let position = remaining
-            .iter()
-            .position(|a| span_ids(a) == ids)
-            .or_else(|| remaining.iter().position(|a| span_ids(a).iter().any(|id| ids.contains(id))));
+        let position = remaining.iter().position(|a| span_ids(a) == ids).or_else(|| {
+            remaining
+                .iter()
+                .position(|a| span_ids(a).iter().any(|id| ids.contains(id)))
+        });
         match position {
             Some(i) => {
                 let a = remaining.remove(i);
@@ -831,9 +851,12 @@ pub(crate) mod tests {
         root.start = EPOCH - 2_000_000_000;
         root.duration = 100_000_000;
         root.attributes.insert(st.r("http.method"), string_value(st.r("GET")));
-        root.attributes.insert(st.r("http.status_code"), string_value(st.r("200")));
-        root.attributes.insert(st.r("http.url"), string_value(st.r("http://example.com/home")));
-        root.attributes.insert(st.r("_sampling_priority_rate_v1"), double_value(1.0));
+        root.attributes
+            .insert(st.r("http.status_code"), string_value(st.r("200")));
+        root.attributes
+            .insert(st.r("http.url"), string_value(st.r("http://example.com/home")));
+        root.attributes
+            .insert(st.r("_sampling_priority_rate_v1"), double_value(1.0));
         root.attributes.insert(st.r("_top_level"), double_value(1.0));
 
         let mut child = idx::Span::new();
@@ -845,7 +868,9 @@ pub(crate) mod tests {
         child.typeRef = st.r("sql");
         child.start = EPOCH - 1_990_000_000;
         child.duration = 50_000_000;
-        child.attributes.insert(st.r("db.system"), string_value(st.r("postgres")));
+        child
+            .attributes
+            .insert(st.r("db.system"), string_value(st.r("postgres")));
         child.attributes.insert(st.r("_top_level"), double_value(1.0));
 
         let mut chunk = idx::TraceChunk::new();

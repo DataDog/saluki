@@ -30,18 +30,18 @@ pub use self::wire::{
     TRACES_PATH,
 };
 
-/// Options that control how strictly actual output is compared against the goldens.
+/// Options that control how strictly actual output is compared against the golden files.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CompareOptions {
     /// Whether to ignore the agent version reported in stats and trace payloads.
     ///
-    /// The goldens record an empty agent version, while a real build reports its own version. Defaults to `true`.
+    /// The golden files record an empty agent version, while a real build reports its own version. Defaults to `true`.
     pub ignore_agent_version: bool,
 
     /// Rounding applied to span start offsets, in nanoseconds, before comparison.
     ///
     /// This absorbs the small jitter between the payload build clock and the clock of the system under test. It
-    /// **SHOULD** match the rounding used when the goldens were recorded. Defaults to 100ms.
+    /// **SHOULD** match the rounding used when the golden files were recorded. Defaults to 100 milliseconds.
     pub start_rounding_ns: i64,
 
     /// Maximum relative difference allowed between quantiles of an expected and actual latency sketch.
@@ -118,7 +118,8 @@ impl Mismatches {
 
     pub(crate) fn extend_prefixed(&mut self, prefix: &str, other: Mismatches) {
         for m in other.0 {
-            self.0.push(Mismatch::new(format!("{}: {}", prefix, m.path), m.expected, m.actual));
+            self.0
+                .push(Mismatch::new(format!("{}: {}", prefix, m.path), m.expected, m.actual));
         }
     }
 }

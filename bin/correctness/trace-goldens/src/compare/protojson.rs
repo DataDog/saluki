@@ -1,6 +1,6 @@
-//! Deserialization helpers for the protojson encoding used by the golden files.
+//! Deserialization helpers for the `protojson` encoding used by the golden files.
 //!
-//! protojson encodes 64-bit integers as strings and bytes as base64 strings.
+//! `protojson` encodes 64-bit integers as strings and bytes as base64 strings.
 
 use base64::Engine as _;
 use serde::{de::Error as _, Deserialize, Deserializer};

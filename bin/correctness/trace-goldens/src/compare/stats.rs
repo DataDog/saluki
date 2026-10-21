@@ -17,7 +17,7 @@ use super::{
     CompareOptions, Mismatches,
 };
 
-// --- Golden protojson model -------------------------------------------------------------------------------------
+// --- Golden `protojson` model -------------------------------------------------------------------------------------
 
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
@@ -58,7 +58,7 @@ struct GoldenClientStatsPayload {
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 struct GoldenBucket {
-    /// Bucket start; the goldens replace it with the `"<bucket>"` placeholder, and it is ignored.
+    /// Bucket start; the golden files replace it with the `"<bucket>"` placeholder, and it is ignored.
     #[serde(rename = "start")]
     _start: serde_json::Value,
     #[serde(deserialize_with = "u64_str")]
@@ -117,7 +117,7 @@ fn trilean_from_name(name: Option<&str>) -> Result<Trilean, GenericError> {
 }
 
 impl GoldenStatsPayload {
-    /// Converts the golden protojson model into the protobuf message. Bucket starts are set to `0`.
+    /// Converts the golden `protojson` model into the protobuf message. Bucket starts are set to `0`.
     pub(super) fn into_proto(self) -> Result<StatsPayload, GenericError> {
         let mut p = StatsPayload::new();
         p.agentHostname = self.agent_hostname;
@@ -343,8 +343,16 @@ impl fmt::Display for GroupKey {
             ("is_trace_root", self.is_trace_root.clone(), ""),
             ("service_source", self.service_source.clone(), ""),
             ("peer_tags", format!("{:?}", self.peer_tags), "[]"),
-            ("span_derived_primary_tags", format!("{:?}", self.span_derived_primary_tags), "[]"),
-            ("additional_metric_tags", format!("{:?}", self.additional_metric_tags), "[]"),
+            (
+                "span_derived_primary_tags",
+                format!("{:?}", self.span_derived_primary_tags),
+                "[]",
+            ),
+            (
+                "additional_metric_tags",
+                format!("{:?}", self.additional_metric_tags),
+                "[]",
+            ),
             ("client.hostname", self.hostname.clone(), ""),
             ("client.env", self.env.clone(), ""),
             ("client.version", self.version.clone(), ""),
@@ -456,11 +464,11 @@ impl StatsSummary {
         Ok(summary)
     }
 
-    /// Builds a summary from a golden stats file (`v1_<case>.json`): a JSON array of protojson `StatsPayload`s.
+    /// Builds a summary from a golden stats file (`v1_<case>.json`): a JSON array of `protojson` `StatsPayload`s.
     ///
     /// # Errors
     ///
-    /// Returns an error if the JSON doesn't match the expected protojson shape, or if a sketch can't be decoded.
+    /// Returns an error if the JSON doesn't match the expected `protojson` shape, or if a sketch can't be decoded.
     pub fn from_golden_json(json: &str) -> Result<Self, GenericError> {
         let goldens: Vec<GoldenStatsPayload> =
             serde_json::from_str(json).error_context("Failed to parse golden stats payloads.")?;

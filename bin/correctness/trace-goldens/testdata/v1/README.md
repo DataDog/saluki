@@ -32,10 +32,10 @@ Each `cases/<name>.json` file describes one scenario, and `cases/defaults.json` 
 
 ## Golden outputs
 
-- `golden/v1_<name>.json`: the stats payloads flushed by the concentrator, as protojson. Bucket starts are replaced by
+- `golden/v1_<name>.json`: the stats payloads flushed by the concentrator, as `protojson`. Bucket starts are replaced by
   `"<bucket>"`.
 - `golden/v1_<name>_wire.json`: the HTTP requests sent to `/api/v0.2/traces` and `/api/v0.2/stats`, with their pinned
   headers and decoded payloads. Trace string tables are sorted, and span starts are replaced by `"<start:N>"`, where
-  `N` is the offset from the payload build clock rounded to 100ms.
+  `N` is the offset from the payload build clock rounded to 100 milliseconds.
 
 The Go harness ran the agent with its default configuration, the hostname `agent-host`, and the API key `test`.

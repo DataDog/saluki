@@ -55,7 +55,7 @@ impl TryFrom<serde_json::Value> for AttributeSpec {
     }
 }
 
-/// A span kind from a case spec, carrying the numeric value of the idx `SpanKind` enum.
+/// A span kind from a case spec, carrying the numeric value of the `idx` `SpanKind` enum.
 ///
 /// Accepted names are `unspecified` (0), `internal` (1), `server` (2), `client` (3), `producer` (4), and `consumer`
 /// (5). An empty or absent kind leaves the span kind unset (0).
@@ -343,7 +343,7 @@ pub struct MaterializedSpan {
     pub resource: String,
     /// Span type.
     pub span_type: String,
-    /// Numeric idx `SpanKind` value.
+    /// Numeric `idx` `SpanKind` value.
     pub kind: u32,
     /// Whether the span is an error.
     pub error: bool,
@@ -473,7 +473,11 @@ mod tests {
         );
         dir.push(unique);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join(DEFAULTS_FILE_NAME), r#"{"payload": {"lang": "python", "env": "prod"}}"#).unwrap();
+        fs::write(
+            dir.join(DEFAULTS_FILE_NAME),
+            r#"{"payload": {"lang": "python", "env": "prod"}}"#,
+        )
+        .unwrap();
         for (name, body) in files {
             fs::write(dir.join(name), body).unwrap();
         }
