@@ -1,0 +1,11 @@
+---
+upgrade:
+  - |
+    A DogStatsD listener that can't be created, for example because its port is already in use, no longer stops
+    Agent Data Plane from starting. As in the Datadog Agent, the failure is logged and DogStatsD runs with the
+    listeners it could create. When it can create none, DogStatsD logs an error and accepts no traffic. To keep
+    failing startup when no DogStatsD listener can be created, set ``dogstatsd_require_listener`` to ``true``.
+features:
+  - |
+    Add support for ``dogstatsd_require_listener``. When set to ``true``, Agent Data Plane fails to start if it
+    can't create any DogStatsD listener.

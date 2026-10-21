@@ -30,7 +30,6 @@ tracking.
 | `dogstatsd_experimental_http.max_concurrent_requests`            | DogStatsD HTTP concurrent request limit   | [#1682] |
 | `dogstatsd_experimental_http.max_payload_size`                   | DogStatsD HTTP request body size limit    | [#1682] |
 | `dogstatsd_experimental_http.read_timeout`                       | DogStatsD HTTP request read timeout       | [#1682] |
-| `dogstatsd_require_listener`                                     | Require an active DogStatsD listener      | [#2556] |
 | `forwarder_stop_wait_for_inflight`                               | Wait for in-flight forwarder requests     | [#2560] |
 | `metric_lookback.capacity`                                       | Metric lookback ring capacity             | [#2558] |
 | `metric_lookback.dogstatsd.metric_names`                         | DogStatsD metric lookback selection       | [#2558] |
@@ -999,6 +998,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `dogstatsd_origin_optout_enabled`                                                          | Allow clients to opt out origin                    |
 | `dogstatsd_pipe_name`                                                                      | Windows named pipe path                            |
 | `dogstatsd_port`                                                                           | UDP listen port                                    |
+| `dogstatsd_require_listener`                                                               | Require an active DogStatsD listener               |
 | `dogstatsd_so_rcvbuf`                                                                      | Socket receive buffer size                         |
 | `dogstatsd_socket`                                                                         | UDS datagram socket path                           |
 | `dogstatsd_stream_log_too_big`                                                             | Log oversized UDS stream frames                    |
@@ -1412,7 +1412,6 @@ Both commands scrub recognized secret values before writing JSON to standard out
 [#2079]: https://github.com/DataDog/saluki/issues/2079
 [#2338]: https://github.com/DataDog/saluki/issues/2338
 [#2555]: https://github.com/DataDog/saluki/issues/2555
-[#2556]: https://github.com/DataDog/saluki/issues/2556
 [#2557]: https://github.com/DataDog/saluki/issues/2557
 [#2558]: https://github.com/DataDog/saluki/issues/2558
 [#2559]: https://github.com/DataDog/saluki/issues/2559

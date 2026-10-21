@@ -1413,13 +1413,13 @@ inventory:
     documentation: "ADP bounds datagram queues with `dogstatsd_buffer_count_max`."
 
   dogstatsd_require_listener:
-    support: none
-    severity: medium
-    planned: true
-    issue: "#2556"
+    support: full
     pipelines: [dogstatsd]
     description: "Require an active DogStatsD listener"
-    documentation: "ADP does not honor this setting. DogStatsD startup fails if no listeners are configured or a configured listener cannot be created."
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   dogstatsd_so_rcvbuf:
     support: full

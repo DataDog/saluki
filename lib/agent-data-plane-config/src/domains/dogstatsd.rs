@@ -126,6 +126,15 @@ pub struct Listeners {
     /// Whether to log stream messages that exceed the buffer size.
     pub stream_log_too_big: bool,
 
+    /// Whether startup requires at least one active DogStatsD listener.
+    ///
+    /// Defaults to `false`. A listener that can't be created is logged and skipped either way. When `true`, startup
+    /// fails if no configured listener can be created. When `false`, the source keeps running without listeners.
+    ///
+    /// Enable this when a process supervisor should detect and restart a process that can't receive DogStatsD
+    /// traffic.
+    pub require_listener: bool,
+
     /// Whether to relax decoder strictness on malformed packets. (not in Datadog Agent config
     /// schema)
     pub permissive_decoding: bool,
@@ -161,6 +170,7 @@ impl Default for Listeners {
             capture_depth: 0,
             eol_required: Vec::new(),
             stream_log_too_big: false,
+            require_listener: false,
             forward_host: None,
             forward_port: 0,
         }
