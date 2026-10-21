@@ -241,13 +241,98 @@ where that distance exceeds 0.25 the cell has no ratio gate.
   and 377,000 metrics/s, first), overloaded throughput at 0.05 CPUs, and any change smaller than G1's tolerance: a
   5% CPU saving at 0.3 CPUs, for instance, needs more rounds or the in-process harness to show.
 
+#### V7b candidate results
+
+Measured on 2026-10-21 by the method above: the candidate image is this branch at `f35066de9e` (V7b, lanes off by
+default and in `lanes-off.yaml`), against N1's plan image, three rounds, N1's steady rates and burst. At 100,000
+contexts the labels were `native-a native-b plan-a plan-b candidate-a candidate-b` (72 runs; the series was paused
+for 80 minutes after 20 runs and resumed on the same host), at 3,000 `plan-a plan-b candidate-a candidate-b` (48
+runs). The summaries are under `test/scaling/results/v7b-20261021/`. Ratios are candidate / plan medians; the flush
+columns are the state lane's `plan_lane_flush_seconds` and `plan_lane_flush_blocked_seconds` across the burst.
+
+100,000 contexts:
+
+| Limit | G1 CPU/metric, steady and burst | G3 burst decoded/s | G4 peak memory | Shortfall, native / plan / candidate | Admission after / before, native / plan / candidate | Pool at burst end, native / plan / candidate | Flush s, blocked s |
+|---|---|---|---|---|---|---|---|
+| 0.05 | 0.952, 0.940 | 1.165 (no gate) | 0.983 | 0.60 / 0.67 / 0.67 | 3.4 / 0.62 / 0.90 (no gate) | 1,460 / 128 / 128 | 0.70, 0 |
+| 0.3 | 0.991, 1.022 | 0.967 | 1.041 | 0.30 / 0.33 / **0.375** | 0.61 / 0.51 / **0.44** | 5,708 / 798 / 129 | 0.58, 0 |
+| 0.6 | 1.012, 1.011 | 0.961 (no gate) | 1.017 | 0.03 / 0.04 / 0.075 | 0.89 / 0.81 / 0.60 (no gate) | 19,029 / 1,196 / 1,528 | 0.13, 0 |
+| 1.2 | 1.000, 0.991 | 1.012 | 1.004 | 0.23 / 0.17 / 0.16 | 0.66 / 0.65 / **0.73** | 32,768 / 1,670 / 1,786 | 0.07, 0 |
+
+3,000 contexts:
+
+| Limit | G1 CPU/metric, steady and burst | G3 burst decoded/s | G4 peak memory | Shortfall, plan / candidate | Admission after / before, plan / candidate |
+|---|---|---|---|---|---|
+| 0.05 | 0.984, 1.058 | 1.028 (no gate) | 1.044 | 0.26 / 0.24 | 0.80 / 0.79 |
+| 0.3 | **1.115**, 1.021 | 1.003 | 0.990 | 0.13 / 0.13 | 0.90 / 0.93 |
+| 0.6 | **1.144**, **1.104** | 0.960 (no gate) | 1.014 | 0 / 0 | 1.01 / 1.03 |
+| 1.2 | 0.986, 1.009 | 0.983 | 0.996 | 0.14 / 0.15 | 0.99 / 1.00 |
+
+**Verdict: V7b does not meet N2's exit.**
+
+| Gate | Result |
+|---|---|
+| G1 | Holds at 100,000 contexts. Misses at 3,000: 1.115 steady at 0.3 CPUs and 1.144 steady, 1.104 burst at 0.6 (at most 1.10); holds at 0.05 and 1.2. |
+| G3 | Holds: 0.967 and 1.003 at 0.3 CPUs, 1.012 and 0.983 at 1.2. |
+| G4 | Holds everywhere: at most 1.044. |
+| G5 | Misses at 0.05 CPUs (0.67 against native's 0.60, 0.56 in N1; equal to plan's) and at 0.3 (0.375 against native's 0.30, 0.25 in N1). Holds at 1.2 (0.16, plan's + 0.02 is 0.19). |
+| G6 | Misses at 0.3 CPUs (0.44, at least 0.85) and at 1.2 (0.73, at least 0.90; plan's is 0.65, native's 0.66). |
+
+The owner's allowance (V7b done if G6 passes and G5's shortfall at 0.3 CPUs is at most 0.31) does not apply: G6
+misses, and the shortfall is above 0.31. The candidate's A/A distance exceeds N1's noise in some cells (steady CPU per
+metric at 0.6 CPUs, 1.09 at both cardinalities; admission at 0.3 CPUs with 100,000 contexts, 0.77), and so does plan's
+in this series (its steady CPU spread at 0.3 CPUs with 3,000 contexts, 0.12), so by the method these cells are to be
+rerun. A rerun cannot pass G5 or G6 at 0.3 CPUs: every candidate run misses them (admission 0.31 to 0.48, shortfall
+0.33 to 0.42). It should confirm G1 at 3,000 contexts: at 0.6 CPUs every candidate run (1,973 to 2,288 ns) is above
+plan's median (1,881), while at 0.3 plan's own runs span 2,957 to 3,870.
+
+What the candidate runs say:
+
+- **The flush no longer stalls admission.** `plan_lane_flush_blocked_seconds` is 0 across the burst in every candidate
+  run whose drains completed, and passes interleave, flushing up to 4,600 contexts on touch at 0.3 and 0.6 CPUs. That
+  telemetry counts a batch held by the room check, so passes did not fall back to a blocking flush. At 0.05 CPUs the
+  admission ratio rose from 0.62 to 0.90 and the longest stall fell from 750 to 600 ms. At 1.2 the ratio rose from 0.65
+  to 0.73, and admission recovers within about 1 s of the flush instead of 1.5 s.
+- **But admission still falls after a flush, on every image, at the full quota.** In the 500 ms bins of the sampler, all
+  three images use their whole quota from the flush on, and read about half as much from the socket for 1 to 2 s. Native
+  falls to 0.61 at 0.3 CPUs and 0.66 at 1.2. So what G6 reads is no longer a stall: it is CPU that the flush's
+  consequences take from admission in that window. That is the drain, encoding its output (at 0.3 CPUs with 100,000
+  contexts, encoding is about half of the CPU the resource groups account for), and contexts created anew in the next
+  bucket. G6's 0.85 and 0.90 are above what any image reaches in this harness.
+- **The pace does not spread the flush.** Passes completed in 0.07 s at 1.2 CPUs and 0.58 s at 0.3, not over the 5 s of
+  a third of the interval. The pace is a floor: while a pass is pending the region runs a step whenever no batch waits
+  (`has_background_work`), and under a CPU quota an idle region is not spare CPU, because the decoders and encoders
+  share the quota. So the drain and the encoding it causes land right after the flush, where G6 reads.
+- **At 0.3 CPUs the candidate parks less of the burst.** Its datagram pool ends the burst at 129 buffers against plan's
+  798 and native's 5,708, and its shortfall is 0.375 against 0.33 and 0.30, with burst throughput 0.97 of plan's. As
+  [V7b section 4](programmable-metrics-v7b.md#4-the-datagram-pool-and-back-pressure) expected, G5 is where a burst
+  waits: N4's datagram pool item, bounded by G4.
+- **At 0.6 CPUs the candidate is worse than plan in the burst.** The 0.6 burst overloads both images slightly in this
+  series (decoded 0.96 of plan's, shortfall 0.075 against 0.039, admission 0.60 against 0.81, a distance of 0.27 against
+  N1's noise of 0.22). No gate covers 0.6, but it is the same direction as 0.3.
+- **CPU per metric rose at 3,000 contexts below 1.2 CPUs.** The resource groups put the increase in the DogStatsD
+  decoders (about 13% more per metric at 0.3 and 0.6 CPUs) and the fused region (stateless work and aggregation
+  together, about 28% more at 0.6), and none at 1.2. One region task behind the decoders changes how often they wake and
+  hand off under throttling. That is a hypothesis for the in-process harness to test, not a measurement.
+- **A telemetry oddity.** In 10 of 24 candidate runs at 100,000 contexts, `aggregate_flushes_total` reads 6 to 9 for a
+  run where plan's reads 5, with the same metrics flushed, and the lane's flush histogram records fewer completed drains
+  than flushes (in one run none), so `plan_lane_flush_blocked_seconds` cannot be read for those runs. The runs where it
+  can be read miss G6 as badly, so this does not explain the miss, but the count needs a look.
+
+**What it points to.** The stall that N2 targeted is gone; what remains is the flush's CPU at a full quota and where a
+burst waits. In order: cap a pass at its pace rather than running steps whenever the region is idle, so its drain and
+encoding spread over the third of the interval as V7b intended; then N4's encode cost per metric and the datagram
+pool's growth (G5, bounded by G4); and rerun G1 at 3,000 contexts with the in-process harness to find whether the
+decoder cost is real. G6's thresholds should also be revisited: native itself reaches only 0.61 and 0.66.
+
 ### N2 and N3: one region from decode to encode, with an interleaved flush
 
 - **Status (2026-10-21):** built as version 2's step V7b ([design and as built](programmable-metrics-v7b.md),
   amendments 203 to 206): without lanes the metrics path is one region, `dsd_pre_aggregation`, R1's cost model is
   gone, lanes are opt-in, and a tick or boundary flush interleaves with admission, paced to a third of the flush
   interval. Approach items 1 to 3 are done; item 4 (decoding inside the region, encoding as a terminal kernel) is V8's.
-  The exit's measurements, the N1 candidate runs against the gates, come next.
+  The N1 candidate runs ([results](#v7b-candidate-results)) found the stall gone but the exit not met: G5 and G6 miss
+  at 0.3 CPUs, G6 at 1.2, and G1 at 3,000 contexts at 0.3 and 0.6.
 - **Goal:** at one core or less, run the whole metrics path between its I/O as one region, one task, with admission
   that never stalls on a flush, no sharding, and no fixed overhead at low load.
 - **Why it is possible now.** Only I/O still needs a task of its own: the sources' sockets in, and delivery's HTTP,
@@ -328,4 +413,5 @@ Each is a small part, measured by N1 at the production limits:
 - Which workloads and burst shapes to model in N1: ideally traces from Nodeless and from the clusters at 1.2 cores.
 - What counts as acceptable during a crunch: which drops, how much latency, how much memory.
 - Whether SMP experiments can run at 0.3 cores, so that N1's gates also run in CI.
-- How much of N2's turn should go to draining against admission, and whether it should adapt to the CPU quota (V7b's answer: a pace of a third of the flush interval, at least a step every 100 ms, which never reads the quota; the candidate runs say whether it holds).
+- How much of N2's turn should go to draining against admission, and whether it should adapt to the CPU quota (V7b's answer: a pace of a third of the flush interval, at least a step every 100 ms, which never reads the quota). The candidate runs say it does not spread the flush: the pace is a floor, and passes
+  run ahead whenever the region is idle, completing in 0.07 to 0.6 s ([results](#v7b-candidate-results)).

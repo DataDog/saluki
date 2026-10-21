@@ -67,8 +67,10 @@ ADP's artifact channel and given its headless check in stage 5, and extended in 
   configuration is a front end and the program is the system, and the machinery of coexistence is being removed step
   by step. V2 (resources artifacts), V3 (native configuration lowers to literals), V4 (programs are whole), V5 (one program
   document), V6 (elaboration as a phase), V10 (names and a compatibility analysis), V7a (state owners in any region), and
-  V7b (one region with an interleaved flush, amendments 203 to 206) are done but for V7b's N1 candidate runs, which come
-  next; V8, V9, and V1 wait. The plan's
+  V7b (one region with an interleaved flush, amendments 203 to 206) are built. V7b's N1 candidate runs (2026-10-21,
+  [results](programmable-metrics-next.md#v7b-candidate-results)) found the flush stall gone, with G1, G3, and G4 holding
+  at 100,000 contexts, but missed the exit: G5 and G6 at 0.3 CPUs, G6 at 1.2, and G1 at 3,000 contexts at 0.3 and 0.6.
+  V8, V9, and V1 wait. The plan's
   [handoff](programmable-metrics-v2.md#handing-off) says how to continue.
 - DogStatsD processing runs on **lanes** (stage 9), tasks inside one component, fixed at boot: `dsd_pre_aggregation`
   runs a producer lane per decoder, each the only stamper of its own admission point; `dsd_agg` runs state lanes, each
@@ -137,7 +139,7 @@ since the repository sets `commit.gpgsign=true`). No CI pipeline has run on the 
 | (V7a commit) | V7a | State owners in any region: a sub-region for a state owner placement puts outside the boot state slots, made at installation and retired with its last generation; a watermark over several sources, chained owners with derived points and boundary flushes, cuts and telemetry by node, heartbeats on every routed point (amendments 200 and 201). |
 | `7b1e126d16`, `64fe645ca9`, (V10 commit) | V10 | Names and a compatibility analysis: operators describe what they report, the telemetry contract as validation warnings and a status section, every node reporting under its name; the node namespace, `single_aggregation`, and the adoption of `dsd_agg` removed (amendment 199). |
 
-**Next.** V7b's N1 candidate runs ([V7b validation](programmable-metrics-v7b.md#64-validation)), then the [version 2
+**Next.** The owner's decision on V7b's missed gates ([candidate results](programmable-metrics-next.md#v7b-candidate-results)), then the [version 2
 simplifications](programmable-metrics-v2.md) that remain. Beside them, the stage 9
 gate on a Linux host with at least 20 homogeneous cores (plan 8.5,
 [Q2](programmable-metrics-stages-7-and-9.md#12-open-questions)): its items 1 to 4, with the per-buffer cost of lanes as

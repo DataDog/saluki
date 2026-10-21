@@ -238,7 +238,7 @@ version 2's notes are.
 | V5 | done: amendment 197 | `53cd99b576` |
 | V6 | done: amendment 198 | `9fb3990648` |
 | V7a | done: amendments 200 and 201 | (V7a commit) |
-| V7b | done: amendments 203 to 206 ([design](programmable-metrics-v7b.md)); the N1 candidate runs come next | `ed58c17def` (interfaces), `a4412d5884`, `e5318f28dd`, `19cb393167`, `e087239c37` (parts), `7e6b437476` (integration) |
+| V7b | built, not done: amendments 203 to 206 ([design](programmable-metrics-v7b.md)); the N1 candidate runs (2026-10-21) found the flush stall gone but missed the exit: G5 and G6 at 0.3 CPUs, G6 at 1.2, G1 at 3,000 contexts at 0.3 and 0.6 ([results](programmable-metrics-next.md#v7b-candidate-results)) | `ed58c17def` (interfaces), `a4412d5884`, `e5318f28dd`, `19cb393167`, `e087239c37` (parts), `7e6b437476` (integration) |
 | V8 | not started | |
 | V9 | not started | |
 | V10 | done: amendment 199 | `7b1e126d16` (additive), `64fe645ca9` (wiring), (V10 commit) (deletions) |
@@ -294,10 +294,13 @@ the results.
 
 ### What is left
 
-Version 2's steps V2 to V7b and V10 are done. V7b's exit is the N1 candidate runs
-([V7b validation](programmable-metrics-v7b.md#64-validation)), which come next; then V8, V9, and V1. A new session
-starts from the log's V7b section, the V7b design's [as built](programmable-metrics-v7b.md#65-as-built), and the status
-document's [changes users can see](programmable-metrics-status.md#changes-users-can-see).
+Version 2's steps V2 to V7a and V10 are done, and V7b is built. V7b's exit, the N1 candidate runs ([V7b
+validation](programmable-metrics-v7b.md#64-validation)), is not met
+([results](programmable-metrics-next.md#v7b-candidate-results)): the flush no longer stalls admission, but at a full
+quota its CPU still lands in the 2 s after it, a pass runs ahead of its pace whenever the region is idle, and the
+candidate parks less of a burst than native. What to do about the gates is the owner's call; then V8, V9, and V1. A
+new session starts from the log's V7b section, the V7b design's [as built](programmable-metrics-v7b.md#65-as-built),
+and the status document's [changes users can see](programmable-metrics-status.md#changes-users-can-see).
 
 **Left by V7b, for later:**
 

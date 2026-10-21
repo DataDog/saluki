@@ -1,0 +1,11 @@
+cpus: 0.05 0.3 0.6 1.2
+labels: native-a native-b plan-a plan-b candidate-a candidate-b
+rounds: 3
+native_image: saluki-images/agent-data-plane:legacy-b940bf1f8b (sha256:03109eef3d3ebe2b58796edd93010b79159a7f2547ab5b3733e37d83e1af16be)
+plan_image: saluki-images/agent-data-plane:plan-n1 (sha256:d0b13f91c1aa4b85e38196ca854b901d02824e2eb6b421a2ca7e59c77f85d373)
+plan_config: /Users/luke.steensen/code/saluki/test/scaling/adp/lanes-off.yaml
+candidate_image: saluki-images/agent-data-plane:candidate-v7b (sha256:7e8a8dd6c9462165055ebfd58252fcbfbbe3429922d1676bf8c4f630971b601e), config /Users/luke.steensen/code/saluki/test/scaling/adp/lanes-off.yaml
+contexts: 100000 (context limit 1001000), cache 2000 Mb, transport unix_datagram
+steady_rate_per_cpu: 60 MiB; burst_factor: 4; steady_rates (KiB/s): 0.05:739 0.3:11840 0.6:43470 1.2:166110
+warmup 20 s, steady 30 s, burst lead 3 s, burst 8 s, recovery 12 s
+adp cpuset 0-1, 2 workers, 2 decoders; lading 2-3

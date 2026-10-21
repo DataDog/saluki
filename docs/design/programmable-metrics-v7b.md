@@ -495,6 +495,23 @@ What integration decided, found, or left, against the text above:
 - **Left as is:** the room check counts every event of a batch as a new context, so a small, full table makes every
   batch wait for the pass; production tables have room to grow. The test-only `AdmittingStandIn` stays: the traces'
   `room: Some(0)` cases use it.
+- **The N1 candidate (2026-10-21): the exit is not met** ([results](programmable-metrics-next.md#v7b-candidate-results),
+  `test/scaling/results/v7b-20261021/`). Per gate, candidate / plan unless stated:
+  - G1 (CPU per metric) passes at 100,000 contexts (0.94 to 1.02) and fails at 3,000: 1.115 steady at 0.3 CPUs, 1.144
+    steady and 1.104 burst at 0.6 (limit 1.10). It passes at 0.05 and 1.2.
+  - G3 (burst throughput) passes: 0.967 and 1.003 at 0.3 CPUs, 1.012 and 0.983 at 1.2.
+  - G4 (peak memory) passes: at most 1.044.
+  - G5 (shortfall, 100,000 contexts) fails at 0.05 CPUs (0.67 against native's 0.60) and at 0.3 (0.375 against
+    native's 0.30, above the owner's 0.31). It passes at 1.2 (0.16).
+  - G6 (admission after / before the flush, 100,000 contexts) fails at 0.3 CPUs (0.44, limit 0.85; plan 0.51) and at
+    1.2 (0.73, limit 0.90; plan 0.65).
+
+  The interleaving works: `plan_lane_flush_blocked_seconds` is 0 wherever drains completed, and no pass fell back to
+  blocking. Two things remain. First, the CPU that a flush's drain, encoding, and new contexts take at a full quota
+  falls in the 2 s G6 reads, for native too (0.61 and 0.66). Second, the pace is a floor, not a ceiling: a pass runs a
+  step whenever no batch waits, so it completes in 0.07 to 0.6 s instead of spreading over a third of the interval. At
+  0.3 CPUs the candidate's datagram pool stays at 129 buffers, against 5,708 for native, so G5 is section 4's question
+  of where a burst waits.
 
 ## 7. Owner questions
 
