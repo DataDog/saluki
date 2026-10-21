@@ -332,6 +332,34 @@ mod tests {
     }
 
     #[test]
+    fn decodes_values_the_agent_accepts() {
+        // Each of these once aborted the boot or produced a different value than the Agent reads.
+        let vars = [
+            ("DD_DOGSTATSD_PORT", "0x10"),
+            ("DD_AGENT_IPC_GRPC_MAX_MESSAGE_SIZE", "0o20"),
+            ("DD_DOGSTATSD_BUFFER_SIZE", "010"),
+            ("DD_APM_ERROR_TPS", "0x1p4"),
+            ("DD_APM_OBFUSCATION_ELASTICSEARCH_KEEP_VALUES", r#"["cr-a","cr-b"]"#),
+        ];
+        let mut base = json!({});
+        apply_datadog_env_vars(
+            &mut base,
+            vars.map(|(name, value)| (name.to_string(), value.to_string())),
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(at(&base, &["dogstatsd_port"]), Some(&json!(16)));
+        assert_eq!(at(&base, &["agent_ipc", "grpc_max_message_size"]), Some(&json!(16)));
+        assert_eq!(at(&base, &["dogstatsd_buffer_size"]), Some(&json!(8)));
+        assert_eq!(at(&base, &["apm_config", "errors_per_second"]), Some(&json!(16.0)));
+        assert_eq!(
+            at(&base, &["apm_config", "obfuscation", "elasticsearch", "keep_values"]),
+            Some(&json!(["cr-a", "cr-b"]))
+        );
+    }
+
+    #[test]
     fn malformed_value_propagates() {
         let _guard = ENV_MUTEX.lock().unwrap();
         std::env::set_var("DD_DOGSTATSD_PORT", "not-a-number");

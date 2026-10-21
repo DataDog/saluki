@@ -8,6 +8,7 @@ repository = { workspace = true }
 [dependencies]
 figment = { workspace = true }
 go-duration = { workspace = true }
+go-strconv = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 

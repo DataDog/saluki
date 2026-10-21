@@ -51,7 +51,8 @@ pub enum EnvDecode {
     Integer,
     /// Type fallback: a floating-point number.
     Float,
-    /// Type fallback: a string list, split on whitespace (the Agent's `[]string` cast).
+    /// Type fallback: a string list, a JSON list of strings or else split on whitespace (the
+    /// Agent's `[]string` cast).
     StringList,
     /// Type fallback: a duration, carried through as a string for `crate::duration_de`.
     DurationString,
@@ -81,7 +82,7 @@ pub fn decode(raw: &str, how: EnvDecode) -> Result<Value, String> {
         EnvDecode::Float => cast_de::parse_f64(raw)
             // `parse_f64` rejects the non-finite values, which are the only ones JSON cannot hold.
             .map(|parsed| Value::Number(Number::from_f64(parsed).expect("a finite float is a JSON number"))),
-        EnvDecode::StringList => Ok(whitespace_list(raw)),
+        EnvDecode::StringList => Ok(string_array(cast_de::parse_string_slice(raw))),
     }
 }
 
@@ -154,11 +155,6 @@ fn traces_span(raw: &str) -> Result<Value, String> {
         map.insert(name.to_string(), Value::Number(rate));
     }
     Ok(Value::Object(map))
-}
-
-/// The `[]string` type fallback (`cast.ToStringSliceE`): split on whitespace, dropping empties.
-fn whitespace_list(raw: &str) -> Value {
-    string_array(raw.split_whitespace())
 }
 
 /// Collects strings into a JSON array of strings.
@@ -264,12 +260,30 @@ mod tests {
     }
 
     #[test]
+    fn numbers_use_go_literal_syntax() {
+        assert_eq!(decode("0x10", EnvDecode::Integer).unwrap(), json!(16));
+        assert_eq!(decode("010", EnvDecode::Integer).unwrap(), json!(8));
+        assert_eq!(decode("0b1_0000", EnvDecode::Integer).unwrap(), json!(16));
+        assert_eq!(decode("0x1p4", EnvDecode::Float).unwrap(), json!(16.0));
+        assert!(decode("08", EnvDecode::Integer).is_err());
+    }
+
+    #[test]
     fn string_list_splits_on_whitespace() {
         assert_eq!(
             decode("env:prod  team:core", EnvDecode::StringList).unwrap(),
             arr(&["env:prod", "team:core"])
         );
         assert_eq!(decode("   ", EnvDecode::StringList).unwrap(), Value::Array(vec![]));
+    }
+
+    #[test]
+    fn string_list_decodes_a_json_list_first() {
+        assert_eq!(
+            decode(r#"["cr-a","cr-b"]"#, EnvDecode::StringList).unwrap(),
+            arr(&["cr-a", "cr-b"])
+        );
+        assert_eq!(decode("[1,2]", EnvDecode::StringList).unwrap(), arr(&["[1,2]"]));
     }
 
     #[test]
