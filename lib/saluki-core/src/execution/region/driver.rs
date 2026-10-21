@@ -38,9 +38,10 @@ use crate::{
 /// The host runs every method that can run kernel code under [`catch_unwind`][std::panic::catch_unwind]. When one
 /// panics, the host discards whatever the call wrote to the exit sink, counts the lost events, and calls
 /// [`reset_after_panic`][Self::reset_after_panic], which decides whether the region continues or fails.
-/// [`start`][Self::start], [`accepts_input`][Self::accepts_input], [`next_deadline`][Self::next_deadline], and
-/// [`end_turn`][Self::end_turn] only set or read driver state, or send output the driver already holds: they must not
-/// run kernel code, and a panic in any of them, or in `reset_after_panic` itself, fails the component.
+/// [`start`][Self::start], [`accepts_input`][Self::accepts_input], [`next_deadline`][Self::next_deadline],
+/// [`has_background_work`][Self::has_background_work], and [`end_turn`][Self::end_turn] only set or read driver state,
+/// or send output the driver already holds: they must not run kernel code, and a panic in any of them, or in
+/// `reset_after_panic` itself, fails the component.
 pub trait RegionDriver: Send + 'static {
     /// The control messages this driver understands, such as preparing or aborting a generation.
     type Control: Send + 'static;
@@ -127,6 +128,30 @@ pub trait RegionDriver: Send + 'static {
     /// The default does nothing.
     fn advance_time(&mut self, _turn: &mut RegionTurn<'_>, _exits: &mut ExitSink) -> Progress {
         Progress::Done
+    }
+
+    /// Returns `true` if the driver has time-driven work it would do now, though none is due yet: work the host runs
+    /// when it has nothing else to do.
+    ///
+    /// While this returns `true`, the host's input is open, and no call is yielded, the host also calls
+    /// [`advance_time`][Self::advance_time] before [`next_deadline`][Self::next_deadline] passes, whenever nothing
+    /// else is ready: no control message, no timer that is due, and no batch waiting that the driver
+    /// [accepts][Self::accepts_input]. It lets other tasks run before each such call, as it does between the turns of
+    /// a yielded call, so that background work never holds the runtime's thread. `advance_time` then does a bounded
+    /// step of that work, and the step need not complete it: the driver keeps returning `true` until it does.
+    ///
+    /// Background work never delays what is due: a deadline that has passed still runs ahead of input. A driver that
+    /// must not fall behind on some work, such as a drain due by a deadline, keeps its deadline at the instant it falls
+    /// behind, and at the present while it is behind, so that the host runs it before input. A call the host makes for
+    /// background work rather than for a deadline is not checked for progress, since no deadline fired (see
+    /// [`next_deadline`][Self::next_deadline]).
+    ///
+    /// The host reads this after every call, as it does `next_deadline`, so it may change only as a result of a call
+    /// into the driver. It must not run kernel code.
+    ///
+    /// The default has no background work.
+    fn has_background_work(&self) -> bool {
+        false
     }
 
     /// Ends a turn of input: the host calls this after the batches it processed back to back, once no call is yielded,

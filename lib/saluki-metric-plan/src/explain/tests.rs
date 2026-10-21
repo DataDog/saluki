@@ -1415,7 +1415,7 @@ mod lanes {
             &namer,
             &default_program_hosts(),
             &lanes,
-            FrameOptions { pipelining: false },
+            FrameOptions::ON_LANES,
         )
         .unwrap();
         let report = Validator::new(&registry, &default_program_resources_catalog()).validate(&plan);

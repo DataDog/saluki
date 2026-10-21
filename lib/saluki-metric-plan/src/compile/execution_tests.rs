@@ -782,7 +782,7 @@ fn compiled_programs_on_lanes_deliver_what_the_interpreter_delivers_and_keep_eac
             .unwrap();
         let _guard = runtime.enter();
         for lanes in policies {
-            let mut executor = Executor::on_lanes(&plan, lanes, FrameOptions { pipelining: false });
+            let mut executor = Executor::on_lanes(&plan, lanes, FrameOptions::ON_LANES);
             executor.run(lane_events(timestamped, lanes.dogstatsd));
             if let Err(mismatch) = compare(&expected, &executor.outputs) {
                 panic!(

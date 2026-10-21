@@ -45,6 +45,9 @@ use super::{
 ///   read-only, and may arrive while another call is yielded, which it does not disturb.
 /// - [`control`][Kernel::control] with [`TakeSuppressed`] takes the counts of records skipped by an emission filter
 ///   since the last time; it too may arrive while another call is yielded, and does not disturb it.
+/// - [`control`][Kernel::control] with [`RoomToAdmit`] or [`PassProgress`] answers whether new contexts fit and how
+///   far a pending flush has come. Both are read-only. The kernel does not [admit while
+///   advancing][Kernel::admits_while_advancing] yet, so it answers that nothing fits and that no flush is pending.
 /// - [`finish`][Kernel::finish] with [`DrainPolicy::Retire`] flushes at the watermark and then drains, as a reset
 ///   does, so the kernel holds nothing afterwards. With [`DrainPolicy::Shutdown`] it runs the final flush at the
 ///   watermark, as native aggregation's last flush, and then discards what remains, the open buckets, recording it as
@@ -122,6 +125,41 @@ pub struct AggregateKernel {
 pub struct TakeSuppressed {
     /// The counts taken so far.
     pub counts: SuppressedBySite,
+}
+
+/// A read-only control message that asks an aggregation instance whether `contexts` new contexts fit, so that a batch
+/// admitted while a flush is pending can be refused nothing.
+///
+/// The kernel sets [`fits`][Self::fits] when that many new contexts fit in its table without growing it, and would
+/// leave the contexts it holds strictly below the context limit of the turn's parameters and below what its shared
+/// budgets allow, so that none of them can be refused. It answers whatever call is pending, which it does not
+/// disturb. A host that interleaves admission with a pending flush ([`Kernel::admits_while_advancing`]) asks before it
+/// delivers a batch that reaches the instance, with the batch's events that can reach it, and holds the batch until
+/// the flush completes if they do not fit. A kernel that does not know the message leaves `fits` false, so the host
+/// waits.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RoomToAdmit {
+    /// The new contexts asked about: an upper bound on those one batch can create.
+    pub contexts: usize,
+
+    /// Whether they fit; set by the kernel.
+    pub fits: bool,
+}
+
+/// A read-only control message that asks an aggregation instance how far its pending flush has come.
+///
+/// The kernel sets [`total`][Self::total] to the contexts the pending flush visits, those its table held when the
+/// flush started, and [`visited`][Self::visited] to those it has visited so far, by its cursor or because admission
+/// reached them first. It answers whatever call is pending, which it does not disturb. Both stay zero when no flush is
+/// pending, and in a kernel that does not know the message. A host that paces a flush over time reads it when the
+/// flush starts and after each step.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PassProgress {
+    /// The contexts the pending flush has visited.
+    pub visited: usize,
+
+    /// The contexts the pending flush visits in all.
+    pub total: usize,
 }
 
 impl AggregateKernel {
@@ -470,6 +508,16 @@ impl Kernel for AggregateKernel {
                 .filter(|entry| self.core.holds(entry.context()))
                 .count();
             count.held += held as u64;
+            return Progress::Done;
+        }
+        // The interleaved flush's read-only questions. The kernel admits nothing while a flush is pending yet, so no
+        // context fits and no flush has visited anything.
+        if let Some(room) = control.downcast_mut::<RoomToAdmit>() {
+            room.fits = false;
+            return Progress::Done;
+        }
+        if let Some(progress) = control.downcast_mut::<PassProgress>() {
+            *progress = PassProgress::default();
             return Progress::Done;
         }
         Progress::Done

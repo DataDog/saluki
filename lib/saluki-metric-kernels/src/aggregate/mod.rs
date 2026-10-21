@@ -116,7 +116,7 @@ mod histogram;
 pub use self::histogram::{HistogramConfiguration, HistogramStatistic};
 
 mod kernel;
-pub use self::kernel::{AggregateKernel, TakeSuppressed};
+pub use self::kernel::{AggregateKernel, PassProgress, RoomToAdmit, TakeSuppressed};
 
 pub mod lanes;
 pub use self::lanes::LaneShared;

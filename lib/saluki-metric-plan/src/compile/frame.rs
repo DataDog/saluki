@@ -340,11 +340,33 @@ pub struct FrameOptions {
     /// Without it, fusion is maximal between fences: every connected set of synchronous nodes at one fence depth is one
     /// slot, and lanes give the parallelism. A frame with lanes needs it off. On by default.
     pub pipelining: bool,
+
+    /// Whether every state owner runs in a slot of its own, apart from its synchronous neighbors.
+    ///
+    /// With it, a state owner is a fence for fusion and its node gets an isolation slot, as before version 2's step
+    /// V7b. Without it, a state owner fuses with its synchronous neighbors like any other node, only fixed components,
+    /// I/O hosts, and opaque hosts are fences, and a state owner runs in the region of its inputs when that region runs
+    /// no other, else in a sub-region. A frame with lanes needs it on. On by default.
+    ///
+    /// The layout does not read it yet: every frame isolates its state owners.
+    pub isolate_state: bool,
+}
+
+impl FrameOptions {
+    /// The layout a frame with lanes needs: without R1's pipelining, so that fusion is maximal between fences, and
+    /// with every state owner in a slot of its own.
+    pub const ON_LANES: Self = Self {
+        pipelining: false,
+        isolate_state: true,
+    };
 }
 
 impl Default for FrameOptions {
     fn default() -> Self {
-        Self { pipelining: true }
+        Self {
+            pipelining: true,
+            isolate_state: true,
+        }
     }
 }
 
@@ -1490,7 +1512,7 @@ fn check_supported(graph: &Graph<'_>, roles: &[Role]) -> Result<(), FrameError> 
 }
 
 /// Checks that every lane count is between one and [`MAX_LANES`][crate::limits::values::MAX_LANES], and that a frame
-/// with lanes fuses maximally: R1's pipelined slots get no lanes.
+/// with lanes fuses maximally and isolates its state owners: R1's pipelined slots and fused state owners get no lanes.
 fn check_lane_policy(lanes: &LanePolicy, options: FrameOptions) -> Result<(), FrameError> {
     let max = crate::limits::values::MAX_LANES;
     for (what, count) in [
@@ -1512,6 +1534,14 @@ fn check_lane_policy(lanes: &LanePolicy, options: FrameOptions) -> Result<(), Fr
             message: "R1's cost model pipelines slots, and slots with lanes need fusion to be maximal between fences. \
                       Lay the frame out without pipelining, or on one lane."
                 .to_string(),
+        });
+    }
+    if !options.isolate_state && !lanes.is_one() {
+        return Err(FrameError::Lanes {
+            message:
+                "State owners fuse with their neighbors, and slots with lanes need every state owner in a slot of \
+                      its own. Lay the frame out isolating state, or on one lane."
+                    .to_string(),
         });
     }
     Ok(())

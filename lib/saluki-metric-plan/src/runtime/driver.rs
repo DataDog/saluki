@@ -107,6 +107,10 @@ pub struct RegionConfig {
 
     /// The handles one state lane publishes its own telemetry to, for a state owner's region on several lanes.
     pub(crate) state_lane_telemetry: Option<StateLaneTelemetry>,
+
+    /// Whether the region admits batches while a tick or boundary flush of a state owner not on lanes is pending
+    /// ([`with_interleaving`][Self::with_interleaving]).
+    pub(crate) interleaving: bool,
 }
 
 /// The state owner a region holds: its own, which it ticks, stamps the time-driven output of, and keeps the lineages
@@ -194,6 +198,7 @@ impl RegionConfig {
             lane: None,
             routing: RoutingTelemetry::noop(),
             state_lane_telemetry: None,
+            interleaving: false,
         }
     }
 
@@ -207,6 +212,22 @@ impl RegionConfig {
     /// the lanes share through `lanes` (see [`SlotLanes`]).
     pub fn with_lane(mut self, lane: LaneContext, lanes: Arc<SlotLanes>) -> Self {
         self.lane = Some((lane, lanes));
+        self
+    }
+
+    /// Sets whether the region interleaves its flushes with admission: whether, while a tick or boundary flush of its
+    /// state owner is pending, it keeps admitting batches, and runs the flush in steps paced to complete within
+    /// [`FLUSH_SPREAD`] of the flush interval, with a step at least every [`FLUSH_STEP_PERIOD`]. A state owner on
+    /// lanes, and every reset, final retirement, and shutdown, still blocks admission until its drain completes. What
+    /// the region delivers is the same either way, apart from the order in which records leave.
+    ///
+    /// Off by default: every drain blocks admission. A host gives the slot's sub-regions the setting of its main
+    /// region.
+    ///
+    /// [`FLUSH_SPREAD`]: crate::limits::values::FLUSH_SPREAD
+    /// [`FLUSH_STEP_PERIOD`]: crate::limits::values::FLUSH_STEP_PERIOD
+    pub fn with_interleaving(mut self, interleaving: bool) -> Self {
+        self.interleaving = interleaving;
         self
     }
 
@@ -293,6 +314,7 @@ impl fmt::Debug for RegionConfig {
             .field("slot_lanes", &self.slot_lanes)
             .field("keyed", &self.keyed.len())
             .field("lane", &self.lane.as_ref().map(|(lane, _)| lane))
+            .field("interleaving", &self.interleaving)
             .finish_non_exhaustive()
     }
 }
@@ -1208,6 +1230,8 @@ impl MetricRegionDriver {
             lane,
             routing,
             state_lane_telemetry,
+            // Not read yet: every drain blocks admission.
+            interleaving: _,
         } = config;
         let (lane, lanes, ledger) = match lane {
             Some((lane, lanes)) => {

@@ -3163,7 +3163,7 @@ impl LanedFrameHarness {
             &namer,
             &FrameHosts::new(),
             &lanes,
-            FrameOptions { pipelining: false },
+            FrameOptions::ON_LANES,
         )
         .map_err(|error| format!("the boot plan has no frame on {:?}: {}", lanes, error))?;
         check_realized_lanes(plan, &registry, &frame, &lanes)?;

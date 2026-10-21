@@ -43,7 +43,10 @@ fn frame_on(lanes: LanePolicy, pipelining: bool) -> Result<Frame, FrameError> {
         &namer,
         &FrameHosts::new(),
         &lanes,
-        FrameOptions { pipelining },
+        FrameOptions {
+            pipelining,
+            isolate_state: true,
+        },
     )
 }
 
@@ -325,6 +328,23 @@ fn lane_counts_are_bounded_and_need_maximal_fusion() {
     assert!(frame_on(lanes(64, 64, 64), false).is_ok());
     let error = frame_on(lanes(2, 1, 1), true).unwrap_err().to_string();
     assert!(error.contains("pipelines slots"), "{}", error);
+    let fused = FrameOptions {
+        pipelining: false,
+        isolate_state: false,
+    };
+    let compute = |policy: LanePolicy| {
+        Frame::compute_with(
+            &default_program(),
+            &OperatorRegistry::native(),
+            &namer,
+            &FrameHosts::new(),
+            &policy,
+            fused,
+        )
+    };
+    let error = compute(lanes(2, 1, 1)).unwrap_err().to_string();
+    assert!(error.contains("slot of its own"), "{}", error);
+    assert!(compute(LanePolicy::ONE).is_ok());
 }
 
 #[test]
@@ -430,7 +450,7 @@ fn laned_with(plan: &Plan, registry: &OperatorRegistry, lanes: LanePolicy) -> Re
         &namer,
         &FrameHosts::new(),
         &lanes,
-        FrameOptions { pipelining: false },
+        FrameOptions::ON_LANES,
     )
 }
 

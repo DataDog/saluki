@@ -55,7 +55,7 @@ fn laid_out(lanes: LanePolicy) -> (Frame, CompiledPlan) {
         &namer,
         &FrameHosts::new(),
         &lanes,
-        FrameOptions { pipelining: false },
+        FrameOptions::ON_LANES,
     )
     .unwrap();
     let report = Validator::new(&registry, &default_program_catalog()).validate(&plan);

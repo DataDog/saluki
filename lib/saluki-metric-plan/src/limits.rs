@@ -112,6 +112,25 @@ pub mod values {
     /// The most state entries a state owner visits in one step of a drain before it yields.
     pub const DRAIN_STEP_CONTEXTS: u64 = 4_096;
 
+    /// The share of its flush interval within which an interleaved flush is due to complete: a flush of `N` contexts
+    /// that started `e` ago is behind its pace while it has visited fewer than `N * e / D` of them, where `D` is its
+    /// flush interval times this share.
+    ///
+    /// Decision log: new with V7b's interleaved flush (owner, 2026-10-21: a third). A large flush spreads its cost over
+    /// five seconds of a 15-second interval rather than landing at once; under saturation, aggregated points leave up
+    /// to that much later. A flush behind its pace runs ahead of admission until it completes, and the next tick waits
+    /// for it, so that a starved region flushes rather than admits. Below one, so that a pass completes before the
+    /// next tick is due.
+    pub const FLUSH_SPREAD: f64 = 1.0 / 3.0;
+
+    /// The longest an interleaved flush goes without a step: a flush is also behind its pace while it has run fewer
+    /// steps than this period fits in the time since it started.
+    ///
+    /// Decision log: new with V7b's interleaved flush. It bounds a small flush, which a few steps complete, to a few
+    /// hundred milliseconds even when input never runs out, and a step every period keeps a large flush's output
+    /// moving; equal to the progress period.
+    pub const FLUSH_STEP_PERIOD: Duration = Duration::from_millis(100);
+
     /// The period at which the installer polls the admission points while a cut is in flight.
     pub const CUT_POLL: Duration = Duration::from_millis(100);
 
@@ -232,7 +251,7 @@ pub enum LimitValue {
     /// A set of allowed lengths of time.
     Durations(&'static [Duration]),
 
-    /// A relative tolerance.
+    /// A ratio, such as a relative tolerance or a share of an interval.
     Ratio(f64),
 }
 
@@ -520,6 +539,25 @@ pub const DRAIN_STEP_CONTEXTS: LimitSpec = LimitSpec {
                   drain before it yields.",
 };
 
+/// The share of its flush interval within which an interleaved flush is due to complete.
+pub const FLUSH_SPREAD: LimitSpec = LimitSpec {
+    name: "flush_spread",
+    default: LimitValue::Ratio(values::FLUSH_SPREAD),
+    source: LimitSource::Fixed,
+    description: "Share of its flush interval within which an interleaved flush is due to complete. A flush runs \
+                  whenever its region has no input waiting, and ahead of input while it is behind that pace, until it \
+                  completes; the next tick waits for it.",
+};
+
+/// The longest an interleaved flush goes without a step.
+pub const FLUSH_STEP_PERIOD: LimitSpec = LimitSpec {
+    name: "flush_step_period",
+    default: LimitValue::Duration(values::FLUSH_STEP_PERIOD),
+    source: LimitSource::Fixed,
+    description: "Longest an interleaved flush goes without a step: a flush that has run fewer steps than this period \
+                  fits in the time since it started is behind its pace, and runs ahead of input.",
+};
+
 /// The period at which the installer polls the admission points while a cut is in flight.
 pub const CUT_POLL: LimitSpec = LimitSpec {
     name: "cut_poll",
@@ -713,6 +751,8 @@ pub const LIMITS: &[LimitSpec] = &[
     TICK_GRACE,
     DRAIN_STEP_EVENTS,
     DRAIN_STEP_CONTEXTS,
+    FLUSH_SPREAD,
+    FLUSH_STEP_PERIOD,
     CUT_POLL,
     CUT_LOCK_TIMEOUT,
     CUT_ARM_RETRY,
@@ -803,6 +843,8 @@ mod tests {
         assert_eq!(duration(&TICK_GRACE), Duration::from_secs(2));
         assert_eq!(count(&DRAIN_STEP_EVENTS), 1024);
         assert_eq!(count(&DRAIN_STEP_CONTEXTS), 4096);
+        assert_eq!(FLUSH_SPREAD.default, LimitValue::Ratio(1.0 / 3.0));
+        assert_eq!(duration(&FLUSH_STEP_PERIOD), Duration::from_millis(100));
         assert_eq!(duration(&CUT_POLL), Duration::from_millis(100));
         assert_eq!(duration(&CUT_LOCK_TIMEOUT), Duration::from_secs(1));
         assert_eq!(duration(&CUT_ARM_RETRY), Duration::from_secs(1));
@@ -844,6 +886,8 @@ mod tests {
         assert_eq!(count(&WORK_PER_INPUT), values::WORK_PER_INPUT);
         assert_eq!(duration(&PREPARE_TIMEOUT), values::PREPARE_TIMEOUT);
         assert_eq!(FLOAT_TOLERANCE.default, LimitValue::Ratio(values::FLOAT_TOLERANCE));
+        assert_eq!(FLUSH_SPREAD.default, LimitValue::Ratio(values::FLUSH_SPREAD));
+        assert_eq!(duration(&FLUSH_STEP_PERIOD), values::FLUSH_STEP_PERIOD);
         // The reservation block is enforced in `saluki-core`, which knows nothing of plans.
         assert_eq!(
             values::CONTEXT_RESERVATION_BLOCK,
@@ -874,6 +918,13 @@ mod tests {
         // One drain step emits at most one batch, and visits more contexts than it emits records.
         assert_eq!(count(&DRAIN_STEP_EVENTS), count(&BATCH_SIZE));
         assert!(count(&DRAIN_STEP_CONTEXTS) >= count(&DRAIN_STEP_EVENTS));
+
+        // An interleaved flush is due before the next tick, and steps more often than a heartbeat arrives.
+        let LimitValue::Ratio(spread) = FLUSH_SPREAD.default else {
+            panic!("flush_spread is a ratio");
+        };
+        assert!(spread > 0.0 && spread < 1.0);
+        assert!(duration(&FLUSH_STEP_PERIOD) < duration(&HEARTBEAT_PERIOD));
 
         // A blob fits in an artifact.
         assert!(count(&BLOB_SIZE) <= count(&ARTIFACT_SIZE));

@@ -82,7 +82,7 @@ const PORT_BUFFER_INITIAL_CAPACITY: usize = 16;
 /// batch is delivered to a kernel whose [`advance_time`][Self::advance_time], [`control`][Self::control], or
 /// [`finish`][Self::finish] is yielded. Events the kernel already wrote to its ports may be delivered in between.
 ///
-/// Three refinements apply:
+/// Four refinements apply:
 ///
 /// - **Read-only control messages.** A control message whose type documents it as read-only, such as a request for a
 ///   snapshot of the kernel's state, may be delivered while another call of the kernel is yielded. The kernel answers
@@ -95,6 +95,13 @@ const PORT_BUFFER_INITIAL_CAPACITY: usize = 16;
 /// - **Abandoned calls.** A host may end a yielded call without resuming it, for example after a panic in another
 ///   kernel ended the host's own call. The kernel keeps its cursor, and the next call of the same method resumes the
 ///   abandoned work before doing anything new.
+/// - **Admission while advancing.** A kernel whose [`admits_while_advancing`][Self::admits_while_advancing] returns
+///   `true` may be given batches while its [`advance_time`][Self::advance_time] is yielded, never while a
+///   [`control`][Self::control] or a [`finish`][Self::finish] is. Over the yielded call and those batches together, it
+///   produces exactly the output, losses, and state it would have had the call completed before the first of the
+///   batches. Its [`consume`][Self::consume] writes nothing of its own, so whatever it writes while `advance_time` is
+///   yielded is output of that call, which the host delivers with it. A host still completes the yielded call before
+///   it sends a control message that is not read-only, such as a [`ClockReset`], or calls `finish`.
 ///
 /// # Time
 ///
@@ -182,6 +189,17 @@ pub trait Kernel: Send {
     ///
     /// The default does nothing, which is correct for kernels that write their telemetry as they go, or have none.
     fn publish_telemetry(&mut self) {}
+
+    /// Returns `true` if the kernel may be given batches while its [`advance_time`][Self::advance_time] is yielded.
+    ///
+    /// See [Admission while advancing](Kernel#yielding) for what such a kernel guarantees. A host reads this when it
+    /// decides whether to deliver a batch, so the answer may change only as a result of a call into the kernel; a host
+    /// that does not interleave admission with time-driven work never reads it.
+    ///
+    /// The default returns `false`: no batch arrives while any call is yielded.
+    fn admits_while_advancing(&self) -> bool {
+        false
+    }
 }
 
 /// A control message that tells a [`Kernel`] that the clock upstream of it restarted.

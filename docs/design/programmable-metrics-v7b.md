@@ -4,8 +4,9 @@ The design of version 2's step V7b ([version 2](programmable-metrics-v2.md#the-s
 [N2 and N3](programmable-metrics-next.md#n2-and-n3-one-region-from-decode-to-encode-with-an-interleaved-flush) of the
 next chunk of work. It builds on V7a as built ([state owners in any
 region](programmable-metrics-v2.md#v7a-state-owners-in-any-region)) and is judged by N1's gates G1 to G6
-([gates](programmable-metrics-next.md#gates-for-n2-to-n4)). For review by the owner; nothing here is built. Line
-references are to `3a871929f3`. Amendments 203 to 206 are proposed in [section 8](#8-proposed-amendments).
+([gates](programmable-metrics-next.md#gates-for-n2-to-n4)). The owner decided its questions on 2026-10-21
+([section 7](#7-owner-questions)), and the interfaces step ([6.1](#61-interfaces-step-i)) is built. Line references
+are to `3a871929f3`. Amendments 203 to 206 are proposed in [section 8](#8-proposed-amendments).
 
 ## Contents
 
@@ -106,7 +107,7 @@ sub-regions on one lane), blocking drains, and no new work that partitions state
 | | Today, lanes off, two workers | After V7b |
 |---|---|---|
 | Source `dsd_in` | a reader per socket, two decoders, the pool shrinker | unchanged |
-| Slots | `dsd_pre_aggregation` (515 buffers), `dsd_agg` (128), `metrics_enrich` (257); with mapper or gateway profiles R1 adds `dsd_prefix_filter_region`, `dsd_no_agg_split_region`, or `dsd_post_agg_filter_region` | one slot and one task (its name is [question 2](#7-owner-questions)), 902 buffers |
+| Slots | `dsd_pre_aggregation` (515 buffers), `dsd_agg` (128), `metrics_enrich` (257); with mapper or gateway profiles R1 adds `dsd_prefix_filter_region`, `dsd_no_agg_split_region`, or `dsd_post_agg_filter_region` | one slot and one task, `dsd_pre_aggregation` ([question 2](#7-owner-questions)), 902 buffers |
 | An aggregated metric | three region tasks, two channel hops | one task, no hop |
 | A timestamped metric (passthrough) | a hop from `dsd_pre_aggregation` to `metrics_enrich` | a register |
 | Hosts | `dd_metrics_encode`, `mrf_metrics_encode`, `dd_out`, `mrf_dd_out` (and `af_*` with a Cluster Agent) | unchanged |
@@ -223,7 +224,7 @@ A refinement of [Yielding](../../lib/saluki-core/src/execution/kernel.rs) in the
 - **Instances on lanes**, whose flushes resolve in the lanes' shared record. Interleaving them would be new lane work.
 - **A batch that must wait**: one for which the room check fails, or one that reaches an instance whose queued pass
   has not started.
-- **A pass behind its pace**, which runs before input until it catches up.
+- **A pass behind its pace**, which runs before input until it completes ([3.7](#37-how-much-of-a-turn-drains)).
 
 ### 3.7 How much of a turn drains
 
@@ -240,8 +241,16 @@ ways).
   flush interval of its stamping generation times `FLUSH_SPREAD`, a third by default
   ([question 1](#7-owner-questions)). The pace is the faster of two: the whole pass within `D`, and one step per
   `FLUSH_STEP_PERIOD` (100 ms). The pass is **behind** while it has visited fewer contexts than that pace has reached.
-- **Behind**: `next_deadline` is now, and the host's deadline branch, ahead of input in its biased `select!`, runs one
-  step under the drain-step budget (4,096 contexts or 1,024 records).
+- **Behind.** A pass is behind once it misses its deadline by a whole step: it has visited fewer contexts than the
+  pace had reached a step earlier, which a pass whose steps run at their deadlines never has. A starved region
+  prefers flushing to admitting more ([question 1](#7-owner-questions)): **once behind, a pass runs ahead of
+  admission until it completes**, not only until it catches up. The region accepts no input (`accepts_input` is
+  false), `next_deadline` is now, and the host's deadline branch, ahead of input in its biased `select!`, runs one step
+  after another under the drain-step budget (4,096 contexts or 1,024 records), as a blocking drain does today. So under
+  starvation flushes never back up behind admitted data.
+- **One pass at a time.** A new pass never starts while one is pending: the instance's next tick waits for its pass to
+  complete ([3.9](#39-watermark-and-ticks-while-a-pass-is-pending)), and the tick or boundary flush of another
+  instance waits in the drain queue, as today.
 - **On pace**: `next_deadline` is when it would fall a step behind, and the driver's new `has_background_work` is
   true, so the host runs a step whenever no batch waits: a new last branch of the same `select!`, through
   `consume_budget` like the branch that resumes a yielded call, so that other tasks run between steps.
@@ -250,8 +259,8 @@ ways).
   once when the region has a moment idle.
 - **Under a CPU quota.** `D` is wall time, so a flush completes within `D` at any quota, and when input never runs out
   it takes its cost spread over `D`: at 100,000 contexts, about 21 ms of drain plus the region's work on its output,
-  over five seconds instead of at once. When a quota cannot fit the pace, the pass stays behind and runs first, which
-  is today's behavior with input read whenever it catches up. The pace never reads the quota.
+  over five seconds instead of at once. When a quota cannot fit the pace, the pass falls behind and then runs first
+  until it completes, which is today's behavior from that point on. The pace never reads the quota.
 - **Touch counts.** Visits on touch are progress, so a burst over the pass's contexts does much of the flush through
   admission, and the cursor skips what it did.
 
@@ -446,6 +455,19 @@ REGIME_PLAN_IMAGE=saluki-images/agent-data-plane:plan-n1 \
 
 ## 7. Owner questions
 
+Decided by the owner on 2026-10-21, all as recommended:
+
+1. `FLUSH_SPREAD` is a third of the flush interval, with a step at least every 100 ms. In addition, a starved region
+   prefers flushing to admitting: once a pass is behind its pace it runs ahead of admission until it completes, and a
+   new pass never starts while one is pending ([3.7](#37-how-much-of-a-turn-drains)).
+2. The fused component is named `dsd_pre_aggregation`.
+3. Several state owners in one region come later.
+4. The datagram pool is unchanged in V7b.
+5. If the candidate meets G6 but misses G5 at 0.3 CPUs, V7b is done and G5's gap moves to N4, provided the shortfall
+   is no worse than 0.31.
+
+The questions as asked:
+
 | # | Question | Options | Recommended default |
 |---|---|---|---|
 | 1 | How long a flush may take under saturation, `FLUSH_SPREAD` | a third of the flush interval (5 s at 15 s); a half; or a share of the region's time instead of a deadline | **A third**, with a step at least every 100 ms, tuned by the candidate runs at 0.3 and 1.2 CPUs. It delays aggregated points by up to `D` only while input never runs out; G6 needs a large flush spread over several seconds |
@@ -472,7 +494,8 @@ The next free number is 203 ([status](programmable-metrics-status.md#spec-amendm
      before the batches, apart from the order in which records leave. A batch that could be refused, or that needs the
      context table to grow, waits for the flush. Resets, final retirements, and shutdown still stop admission. A flush
      is due to finish within a third of its flush interval, and to run at least a step every 100 ms; it runs whenever
-     the region has no input waiting, and before input only when behind that pace.
+     the region has no input waiting, and once behind that pace it runs before input until it completes. A new flush
+     never starts while one is pending.
 206. **Admission while advancing** (EXE, C; refines the kernel contract). A kernel that says so may receive batches
      while its `advance_time` is yielded, never while a `control` or `finish` is; what it writes then is output of the
      yielded call. A region driver may have background work, which its host runs only while no batch waits.

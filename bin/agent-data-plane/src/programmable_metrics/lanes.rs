@@ -102,37 +102,38 @@ pub struct LaneCounts {
     /// The lanes of each kind of slot.
     pub lanes: LanePolicy,
 
-    /// Whether R1's cost model pipelines the slots, as it does with lanes off: the stage 6 layout.
-    pub pipelining: bool,
+    /// Whether the metrics path runs on lanes, whatever their number: the DogStatsD source's producer lanes then stamp
+    /// their own admission points, and the frame isolates every state owner. Without lanes, R1's cost model pipelines
+    /// the slots: the stage 6 layout.
+    pub lanes_on: bool,
 }
 
 impl LaneCounts {
     /// Lanes off: one lane per slot, and the slots R1's cost model pipelines.
     pub const OFF: Self = Self {
         lanes: LanePolicy::ONE,
-        pipelining: true,
+        lanes_on: false,
     };
 
     /// Returns the counts of a metrics path on lanes, `lanes`, laid out without R1's pipelining, so that fusion is
     /// maximal between fences.
     pub const fn on(lanes: LanePolicy) -> Self {
-        Self {
-            lanes,
-            pipelining: false,
-        }
+        Self { lanes, lanes_on: true }
     }
 
     /// Returns the options the frame is laid out with.
     pub fn frame_options(&self) -> FrameOptions {
-        FrameOptions {
-            pipelining: self.pipelining,
+        if self.lanes_on {
+            FrameOptions::ON_LANES
+        } else {
+            FrameOptions::default()
         }
     }
 
     /// Returns `true` if the metrics path runs on lanes, whatever their number: the DogStatsD source's producer lanes
     /// then stamp their own admission points, and R1's cost model is off.
     pub fn lanes_on(&self) -> bool {
-        !self.pipelining
+        self.lanes_on
     }
 
     /// Describes the counts for logs and errors: the lanes of each kind, or that the metrics path runs without lanes.
@@ -525,7 +526,7 @@ pub fn log_booted_lanes(config: &SalukiConfiguration, counts: &LaneCounts, worke
     info!(
         lanes = %counts.describe(),
         mode,
-        pipelining = counts.pipelining,
+        pipelining = !counts.lanes_on,
         workers,
         decoders,
         cpu_time_sampling = sampling.get(),
@@ -591,7 +592,7 @@ mod tests {
         let producer = automatic_producer_lanes(decoders, 8);
         assert_eq!(settings.counts, on(producer, 4, automatic_post_lanes(producer)));
         assert!(settings.counts.lanes_on());
-        assert_eq!(settings.counts.frame_options(), FrameOptions { pipelining: false });
+        assert_eq!(settings.counts.frame_options(), FrameOptions::ON_LANES);
         assert!(!settings.explicit_state && !settings.explicit_post);
 
         let counts = LaneSettings::from_config(&config(LanesMode::Off, 0, 0, 6), 8).counts;
@@ -694,7 +695,7 @@ mod tests {
     /// in which every lane of a kind adds the same kernels, memos, and buffers.
     fn linear_bound(base: u64, producer: u64, state: u64, post: u64) -> impl Fn(LaneCounts) -> u64 {
         move |counts| {
-            if counts.pipelining {
+            if !counts.lanes_on {
                 return base;
             }
             let lanes = counts.lanes;
@@ -822,7 +823,7 @@ mod tests {
         // The lane runtime adds 5 bytes even at one lane per slot: a grant of 1,002 fits the layout without lanes only,
         // which the automatic counts come to, rather than one lane each on lanes, which verification would refuse.
         let on_lanes = linear_bound(1_005, 10, 100, 1);
-        let bound = |counts: LaneCounts| if counts.pipelining { 1_000 } else { on_lanes(counts) };
+        let bound = |counts: LaneCounts| if counts.lanes_on { on_lanes(counts) } else { 1_000 };
         assert_eq!(
             fit(automatic(on(6, 4, 6)), 1_002, bound).unwrap(),
             LaneFit::Lowered(LaneCounts::OFF)
@@ -904,7 +905,7 @@ mod tests {
             asked.borrow_mut().push(counts);
             Ok(LaneBound {
                 firm: bound(counts),
-                overlap: if counts.pipelining { 0 } else { 1_000 },
+                overlap: if counts.lanes_on { 1_000 } else { 0 },
             })
         }))
         .unwrap();

@@ -158,7 +158,7 @@ impl Lanes {
                 state: p,
                 post: 1,
             },
-            FrameOptions { pipelining: false },
+            FrameOptions::ON_LANES,
         )
         .unwrap();
         let compiled = Direct::compiled(&registry, &frame, plan);
