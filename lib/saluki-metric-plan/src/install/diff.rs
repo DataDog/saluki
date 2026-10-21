@@ -66,7 +66,8 @@ pub enum StateOwnerChange {
     /// the cut.
     Added,
 
-    /// The node keeps keyed state only in the active plan: the candidate leaves it out. Its lineage ends at the cut.
+    /// The node keeps keyed state only in the active plan: the candidate leaves it out, or it keeps no state there. Its
+    /// lineage ends at the cut.
     Removed,
 }
 
@@ -82,8 +83,8 @@ pub struct StateOwnerDiff {
     /// |---|---|---|
     /// | keyed | keyed, same operator | what the contracts give ([`ConfiguredOperator::transition_to`]) |
     /// | absent, or no state | keyed | `cut`: the new lineage starts at the cut |
-    /// | keyed | absent | `cut`: the old lineage ends at the cut |
-    /// | keyed | another operator, or no keyed state | `reject` |
+    /// | keyed | absent, or no state | `cut`: the old lineage ends at the cut |
+    /// | keyed | another operator, or opaque state | `reject` |
     /// | opaque | opaque | what the contracts give |
     /// | opaque | keyed | `reject` |
     ///
@@ -653,11 +654,13 @@ fn state_owner_diff(
             (StateContract::Keyed(_), StateContract::Keyed(_)) if old_op.name() == new_op.name() => {
                 (old_op.transition_to(new_op), StateOwnerChange::Kept)
             }
-            // Another operator, or no keyed state, cannot take the state over.
+            // A stateless node in place of a state owner, or in its place, is as if removed or added.
+            (StateContract::None, StateContract::Keyed(_)) => (TransitionClass::Cut, StateOwnerChange::Added),
+            (StateContract::Keyed(_), StateContract::None) => (TransitionClass::Cut, StateOwnerChange::Removed),
+            // Another operator with state cannot take the state over.
             (StateContract::Keyed(_), _) | (StateContract::Opaque, StateContract::Keyed(_)) => {
                 (TransitionClass::Reject, StateOwnerChange::Kept)
             }
-            (StateContract::None, StateContract::Keyed(_)) => (TransitionClass::Cut, StateOwnerChange::Added),
             (StateContract::Opaque, StateContract::Opaque) => (old_op.transition_to(new_op), StateOwnerChange::Kept),
             (StateContract::None | StateContract::Opaque, StateContract::None | StateContract::Opaque) => return None,
         },

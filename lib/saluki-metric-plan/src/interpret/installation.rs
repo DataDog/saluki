@@ -173,6 +173,19 @@ impl Run<'_, '_> {
                             transition.widths.extend(node.bucket_width());
                         }
                     }
+                    // A stateless node that becomes a state owner starts a lineage at the cut, and a state owner that
+                    // becomes a stateless node ends its own there, as if added or removed.
+                    Some((_, previous)) if !previous.is_stateful() => {
+                        transition.added.push(to);
+                        transition.widths.extend(node.bucket_width());
+                    }
+                    Some((_, previous)) if !node.is_stateful() => {
+                        let Some(index) = previous.instance() else {
+                            return Err(internal(&format!("state owner `{}` binds no instance", node.id)));
+                        };
+                        transition.retiring.push(index);
+                        transition.widths.extend(previous.bucket_width());
+                    }
                     Some(_) => {
                         return unsupported(
                             format!(

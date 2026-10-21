@@ -643,6 +643,71 @@ fn trace_12_an_added_state_owner_starts_its_lineage_at_the_cut() {
     );
 }
 
+/// [`split_aggregation`] with `agg_b` a node without state: it drops the split's other port.
+fn split_aggregation_without_state_in_agg_b() -> Plan {
+    plan(
+        vec![
+            dogstatsd("untimestamped"),
+            node("by_name", "split", json!({"predicate": {"name": {"prefix": "a."}}})),
+            node("agg_a", "aggregate", aggregation("10s")),
+            node("out_a", "emit", json!({"output": "a"})),
+            node("agg_b", "drop", json!({})),
+        ],
+        &[
+            "src.metrics -> by_name.in",
+            "by_name.true -> agg_a.in",
+            "agg_a.out -> out_a.in",
+            "by_name.false -> agg_b.in",
+        ],
+        &["a"],
+    )
+}
+
+#[test]
+fn a_state_owner_that_becomes_a_node_without_state_ends_its_lineage_at_the_cut_and_the_other_way_round_starts_one() {
+    let removed = run_with_heartbeats(
+        Trace::new()
+            .install(split_aggregation(true))
+            .admit(src(), t(95), vec![counter("a.x", 1.0), counter("b.y", 1.0)])
+            .heartbeat(src(), ms(98_500))
+            .install(split_aggregation_without_state_in_agg_b())
+            .admit(src(), t(101), vec![counter("a.x", 1.0), counter("b.y", 1.0)])
+            .advance(t(111)),
+    );
+    let added = run_with_heartbeats(
+        Trace::new()
+            .install(split_aggregation_without_state_in_agg_b())
+            .admit(src(), t(95), vec![counter("a.x", 1.0), counter("b.y", 1.0)])
+            .heartbeat(src(), ms(98_500))
+            .install(split_aggregation(true))
+            .admit(src(), t(101), vec![counter("a.x", 1.0), counter("b.y", 1.0)])
+            .advance(t(111)),
+    );
+    // `agg_b`'s lineage ends at the cut at 100, as a removed state owner's does: its final flush is the old
+    // generation's, and from the cut on `agg_b` drops `b.y`. `agg_a` is retained throughout.
+    assert_eq!(installs(&removed), outcomes(&[(0, "active 1"), (3, "cut 2 at 100000")]));
+    assert_eq!(
+        delivered(&removed, "b"),
+        expected(&[(1, 100_000, "b.y rate/10s [90:1]")])
+    );
+    // The other way round, `agg_b` drops `b.y` before the cut, and its new lineage aggregates it from the cut on.
+    assert_eq!(installs(&added), outcomes(&[(0, "active 1"), (3, "cut 2 at 100000")]));
+    assert_eq!(
+        delivered(&added, "b"),
+        expected(&[(2, 111_000, "b.y rate/10s [100:1]")])
+    );
+    for run in [&removed, &added] {
+        assert_eq!(
+            delivered(run, "a"),
+            expected(&[(2, 111_000, "a.x rate/10s [90:1, 100:1]")])
+        );
+        assert_eq!(
+            run.loss(&id("agg_b")).loss(LossClass::Policy),
+            LossCount { events: 1, points: 1 }
+        );
+    }
+}
+
 #[test]
 fn trace_13_a_retain_after_the_cut_flushes_the_old_lineage_under_the_generation_it_served() {
     // The cut at 100 finalizes at 100.1, where the old lineage makes its final flush, under generation 1 that it

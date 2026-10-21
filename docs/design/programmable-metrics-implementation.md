@@ -3006,8 +3006,8 @@ hold `InstanceHandle { index, tag }`, the tag incrementing on every insert, and 
 |---|---|---|
 | keyed `k1` | keyed `k2`, same operator | `ConfiguredOperator::transition_to` (unchanged): reducer key or reducer differs → `reject`; time contract (width) or admission policy differs, or time unknown → `cut`; else `retain` |
 | absent, or stateless | keyed | `cut` (added: its lineage starts at `T`) |
-| keyed | absent | `cut` (removed: its lineage ends at `T`) |
-| keyed | other operator, or no keyed state | `reject` |
+| keyed | absent, or stateless | `cut` (removed: its lineage ends at `T`; stateless since amendment 202) |
+| keyed | other operator, or opaque | `reject` |
 | opaque | keyed | `reject` |
 | opaque | opaque | `transition_to` (stage 3 behavior) |
 

@@ -829,6 +829,74 @@ fn a_width_only_edit_installs_through_the_installer_core_as_a_cut() {
 }
 
 #[test]
+fn a_published_aggregation_named_as_the_default_programs_enrichment_is_revoked_at_a_cut() {
+    // The published program names its aggregation `metrics`, which in the default program is the host-tags enrichment,
+    // and the enrichment `host_tags`. Installing it, `metrics` becomes a state owner: its lineage starts at the cut.
+    let document = edited(|document| {
+        rename_node(document, "metrics", "host_tags");
+        rename_node(document, "dsd_agg", "metrics");
+    });
+    let mut host = Host::new();
+    let performed = host.deliver(1, document);
+    assert_eq!(
+        performed.last().map(String::as_str),
+        Some("candidate 2 generation 2: pending"),
+        "{:?}",
+        performed
+    );
+    host.acknowledge();
+    let performed = host.run_cut(1_700_000_130);
+    assert!(
+        performed.contains(&"candidate 2 generation 2: active".to_string()),
+        "{:?}",
+        performed
+    );
+    assert_eq!(
+        host.active_plan().node(&id("metrics")).unwrap().op.as_str(),
+        "aggregate"
+    );
+
+    // Revoked, the default program's `metrics` is a node without state: the published aggregation's lineage ends at a
+    // cut, as a removed state owner's does, and `dsd_agg`'s starts there.
+    let changes = diff(&host.active_plan(), &unified_plan(), &registry());
+    let owners = changes
+        .state_owners
+        .iter()
+        .map(|owner| (owner.node.to_string(), owner.class, owner.change))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        owners,
+        [
+            ("dsd_agg".to_string(), TransitionClass::Cut, StateOwnerChange::Added),
+            ("metrics".to_string(), TransitionClass::Cut, StateOwnerChange::Removed),
+        ]
+    );
+    let performed = host.revoke();
+    assert!(
+        performed.contains(&"install the default program".to_string()),
+        "{:?}",
+        performed
+    );
+    assert_eq!(
+        performed.last().map(String::as_str),
+        Some("candidate 3 generation 3: pending"),
+        "{:?}",
+        performed
+    );
+    host.acknowledge();
+    let performed = host.run_cut(1_700_000_160);
+    assert!(
+        performed.contains(&"candidate 3 generation 3: active".to_string()),
+        "{:?}",
+        performed
+    );
+    assert_eq!(host.schedule.id(), GenerationId::new(3));
+    let plan = host.active_plan();
+    assert_eq!(plan.node(&id("metrics")).unwrap().op.as_str(), "host_tags");
+    assert_eq!(plan.node(&id("dsd_agg")).unwrap().op.as_str(), "aggregate");
+}
+
+#[test]
 fn a_width_and_routing_edit_installs_as_one_generation_through_one_cut_with_the_routing_in_effect() {
     let mut host = Host::new();
     let performed = host.deliver(

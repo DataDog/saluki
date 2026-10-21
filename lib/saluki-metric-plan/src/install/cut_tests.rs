@@ -466,11 +466,39 @@ fn state_owners_are_classified_with_their_lineages_and_widths() {
         (TransitionClass::Cut, StateOwnerChange::Removed, (secs(10), None))
     );
 
-    // Another operator cannot take the state over, even one without state.
+    // A node without state in its place is as if the state owner were removed: its lineage ends at the cut.
     let replaced = edited(|value| {
         let aggregation = node_mut(value, "dsd_agg");
         aggregation["op"] = json!("drop");
         aggregation.as_object_mut().unwrap().remove("params");
+    });
+    let changes = diff(&boot_plan(), &replaced, &registry);
+    let aggregation = owner(&changes, "dsd_agg");
+    assert_eq!(
+        (aggregation.class, aggregation.change, aggregation.widths),
+        (TransitionClass::Cut, StateOwnerChange::Removed, (secs(10), None))
+    );
+    assert!(aggregation.lineage.0.is_some() && aggregation.lineage.1.is_none());
+    let cut = changes.cut().unwrap();
+    assert_eq!(
+        (cut.owners, cut.widths, cut.unknown_widths),
+        (vec![id("dsd_agg")], vec![Duration::from_secs(10)], Vec::new())
+    );
+
+    // And the other way round, as if it were added.
+    let changes = diff(&replaced, &boot_plan(), &registry);
+    let aggregation = owner(&changes, "dsd_agg");
+    assert_eq!(
+        (aggregation.class, aggregation.change, aggregation.widths),
+        (TransitionClass::Cut, StateOwnerChange::Added, (None, secs(10)))
+    );
+
+    // Another operator with state cannot take the state over.
+    let replaced = edited(|value| {
+        let gateway = node_mut(value, "mrf_metrics_gateway").clone();
+        let aggregation = node_mut(value, "dsd_agg");
+        aggregation["op"] = gateway["op"].clone();
+        aggregation["params"] = gateway["params"].clone();
     });
     let changes = diff(&boot_plan(), &replaced, &registry);
     assert_eq!(owner(&changes, "dsd_agg").class, TransitionClass::Reject);

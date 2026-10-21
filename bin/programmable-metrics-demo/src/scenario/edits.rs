@@ -669,8 +669,8 @@ pub fn width_change(source: &str, width: &str) -> Result<String, GenericError> {
 /// `rollup`. A program may have any number of aggregations; ADP runs this one in a region of its own, a
 /// sub-region it makes when the generation installs. Its one-second windows are no longer than the default program's,
 /// so each family still arrives about once a second. It has a name of its own, rather than ending `let metrics` as the
-/// node `metrics`, which the default program's enrichment is: a state owner whose ID a later program gives a stateless
-/// node cannot change to it (transition class `reject`), so that revoking would be refused.
+/// node `metrics`, which the default program's enrichment is: revoking would then end its lineage at a cut, as for a
+/// removed aggregation, and the enrichment would take the name back.
 pub fn second_aggregation(source: &str) -> Result<String, GenericError> {
     append_to_metrics(
         source,
