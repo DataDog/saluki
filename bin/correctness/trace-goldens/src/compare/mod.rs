@@ -22,7 +22,7 @@ mod stats;
 pub use self::stats::{compare_stats, GroupKey, StatsSummary, Totals};
 
 mod traces;
-pub use self::traces::{compare_traces, TraceSummary};
+pub use self::traces::{compare_traces, normalize_start, TraceSummary};
 
 mod wire;
 pub use self::wire::{

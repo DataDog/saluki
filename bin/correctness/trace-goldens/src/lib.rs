@@ -9,6 +9,9 @@
 //!   are compared after aggregating across buckets, and trace payloads are compared independently of string table
 //!   ordering and absolute span start times.
 //!
+//! The v1.0 encoder is hand-written to match the Go encoder exactly; see the [`cases`] encoder docs for why the
+//! `libdd-trace-utils` v1 encoder isn't used.
+//!
 //! The fixtures are bundled under `testdata/v1/`; see the `README.md` there for their provenance.
 #![deny(warnings)]
 #![deny(missing_docs)]

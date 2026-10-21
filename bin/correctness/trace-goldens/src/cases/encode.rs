@@ -8,6 +8,18 @@
 //!   the `u32` index of that first occurrence. Indexes start at `1`; the empty string is always index `0`.
 //! - Attribute maps are flat arrays with three entries per attribute: key (streaming string), `u32` value type
 //!   (`1` string, `3` double), and the value.
+//!
+//! # Design
+//!
+//! This encoder is deliberately hand-written instead of using the v1 encoder in `libdd-trace-utils`
+//! (`msgpack_encoder::v1`). At the pinned revision, that encoder can't reproduce the Go harness's inputs:
+//!
+//! - Its span kind has no unset value (`0`) and is always written, defaulting to `Internal`. Most cases leave the kind
+//!   unset, so every such span would reach the agent as `internal`, changing the stats groups the golden files pin.
+//! - It stores durations as `i64` and clamps negative values to `0`, so the `malformed_times` duration above
+//!   `i64::MAX` would be sent as `0` and the agent's overflow repair would never run.
+//!
+//! A possible follow-up is to fix both upstream (an omitted `Unspecified` kind and `u64` durations) and then switch.
 
 use std::collections::{BTreeMap, HashMap};
 

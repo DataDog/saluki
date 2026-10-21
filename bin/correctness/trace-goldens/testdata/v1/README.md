@@ -30,6 +30,11 @@ Each `cases/<name>.json` file describes one scenario, and `cases/defaults.json` 
 - Span `duration` is either a Go duration string (for example, `"80ms"`) or a JSON integer of nanoseconds.
 - Attribute values are strings (string `AnyValue`) or numbers (double `AnyValue`).
 
+## Encoding
+
+The crate encodes cases with its own v1.0 MessagePack encoder rather than the one in `libdd-trace-utils`, which can't
+send an unset span kind or a duration above `i64::MAX` (needed by `malformed_times`).
+
 ## Golden outputs
 
 - `golden/v1_<name>.json`: the stats payloads flushed by the concentrator, as `protojson`. Bucket starts are replaced by
