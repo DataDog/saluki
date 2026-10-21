@@ -1,0 +1,29 @@
+{
+  "comment": "Error branch: error root span with error metadata. Pins errorSummary/errors in stats and error attribute propagation. Priority 1 so the priority sampler keeps it.",
+  "payload": {
+    "chunks": [
+      {
+        "priority": 1,
+        "spans": [
+          {
+            "span_id": 1,
+            "parent_id": 0,
+            "service": "web",
+            "name": "web.request",
+            "resource": "GET /checkout",
+            "type": "web",
+            "start": "-2s",
+            "duration": "120ms",
+            "error": true,
+            "attributes": {
+              "error.msg": "connection refused",
+              "error.type": "*net.OpError",
+              "error.stack": "goroutine 1:\nmain.main()"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "name": "error_span"
+}

@@ -1,0 +1,36 @@
+{
+  "comment": "Multi-chunk payload: two traces in one payload with distinct services. Pins multi-chunk stats aggregation into a single bucket and the per-chunk processing loop.",
+  "payload": {
+    "chunks": [
+      {
+        "priority": 1,
+        "spans": [
+          {
+            "span_id": 1,
+            "parent_id": 0,
+            "service": "svc-a",
+            "name": "a.request",
+            "resource": "GET /a",
+            "start": "-2s",
+            "duration": "60ms"
+          }
+        ]
+      },
+      {
+        "priority": 1,
+        "spans": [
+          {
+            "span_id": 3,
+            "parent_id": 0,
+            "service": "svc-b",
+            "name": "b.request",
+            "resource": "GET /b",
+            "start": "-1.995s",
+            "duration": "40ms"
+          }
+        ]
+      }
+    ]
+  },
+  "name": "two_chunks"
+}

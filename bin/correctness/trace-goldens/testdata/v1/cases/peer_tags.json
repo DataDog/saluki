@@ -1,0 +1,28 @@
+{
+  "comment": "Peer entity tags: peer.service/db.system attributes are matched against the default peer-tag set — but only for client/producer/consumer span kinds (peerTagKeysToAggregateForSpan), hence the CLIENT kind.",
+  "payload": {
+    "chunks": [
+      {
+        "priority": 1,
+        "spans": [
+          {
+            "span_id": 1,
+            "parent_id": 0,
+            "service": "web",
+            "name": "db.query",
+            "resource": "SELECT * FROM orders",
+            "type": "sql",
+            "kind": "client",
+            "start": "-2s",
+            "duration": "45ms",
+            "attributes": {
+              "peer.service": "orders-db",
+              "db.system": "postgres"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "name": "peer_tags"
+}
