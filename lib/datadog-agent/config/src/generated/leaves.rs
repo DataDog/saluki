@@ -1190,6 +1190,21 @@ pub static LEAVES: &[Leaf] = &[
         get: |config| LeafValue::StringList(config.proxy.no_proxy.as_slice()),
     },
     Leaf {
+        key: "remote_configuration.apm_sampling.enabled",
+        aliases: &[],
+        get: |config| LeafValue::Bool(config.remote_configuration.apm_sampling.enabled),
+    },
+    Leaf {
+        key: "remote_configuration.apm_semantics.enabled",
+        aliases: &[],
+        get: |config| LeafValue::Bool(config.remote_configuration.apm_semantics.enabled),
+    },
+    Leaf {
+        key: "remote_configuration.enabled",
+        aliases: &[],
+        get: |config| LeafValue::Bool(config.remote_configuration.enabled),
+    },
+    Leaf {
         key: "run_path",
         aliases: &[],
         get: |config| LeafValue::Str(config.run_path.as_str()),
