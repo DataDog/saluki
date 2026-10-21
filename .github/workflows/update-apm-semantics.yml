@@ -1,13 +1,12 @@
 name: Update APM Semantic Mappings
 
 # ADP embeds a copy of the Agent's APM semantic mappings and falls back to it when Remote Configuration has not supplied
-# a registry. When the Agent changes the mappings, that fallback silently falls behind, and a concept ADP does not model
-# is rejected when the embedded registry is parsed.
+# a registry. When the Agent changes the mappings, that fallback silently falls behind.
 #
 # This workflow runs `ci/tooling/update-apm-semantics.sh` every week and opens a pull request when the mappings on the
-# Agent's `main` branch have changed. Nothing here builds or parses the result with Rust. The pull request fails CI
-# when the update needs code changes, which is the point: the failure is the notification, and the fix lands on the
-# same branch. A human reviews and merges every pull request.
+# Agent's `main` branch have changed. Nothing here builds or parses the result with Rust. The embedded registry ignores
+# concepts that ADP does not model, so an ordinary update passes CI as it stands. CI fails only when ADP cannot use the
+# update, and the fix lands on the same branch. A human reviews and merges every pull request.
 #
 # Subscribe to workflow-failure notifications through Slack's GitHub integration so failed update checks are noticed.
 
@@ -18,7 +17,8 @@ on:
   pull_request:
     paths:
       - ci/tooling/update-apm-semantics*
-      - ci/tooling/test_update_apm_semantics.cjs
+      - ci/tooling/update_apm_semantics_pr.py
+      - ci/tooling/test_update_apm_semantics.py
       - .github/workflows/update-apm-semantics.yml
       - .github/chainguard/self.update-apm-semantics.*.sts.yaml
       - Makefile
@@ -32,9 +32,6 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
       - run: make test-update-apm-semantics
 
   update:
@@ -104,16 +101,12 @@ jobs:
       - name: Check whether this change was already reported
         id: reported
         if: steps.update.outputs.needs_update == 'true'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           BRANCH: "${{ steps.update.outputs.branch }}"
-        with:
-          github-token: "${{ steps.octo-sts.outputs.token }}"
-          # Without this, the result is JSON-quoted and never equals 'publish' below.
-          result-encoding: string
-          script: |
-            const { findReport } = require('./ci/tooling/update-apm-semantics-pr.cjs');
-            return await findReport({ github, context, core, branch: process.env.BRANCH });
+          GITHUB_TOKEN: "${{ steps.octo-sts.outputs.token }}"
+        run: |
+          result=$(python3 ci/tooling/update_apm_semantics_pr.py find-report --branch "$BRANCH")
+          echo "result=$result" >> "$GITHUB_OUTPUT"
 
       # The branch is created at the commit the run began from, and the script's unsigned commit is replayed on top as
       # a signed one.
@@ -130,24 +123,16 @@ jobs:
 
       - name: Create pull request
         if: steps.reported.outputs.result == 'publish'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           BRANCH: "${{ steps.update.outputs.branch }}"
           TITLE: "${{ steps.update.outputs.title }}"
           PREVIOUS: "${{ steps.update.outputs.previous }}"
           SOURCE: "${{ steps.update.outputs.source }}"
-        with:
-          github-token: "${{ steps.octo-sts.outputs.token }}"
-          script: |
-            const fs = require('fs');
-            const { openPullRequest } = require('./ci/tooling/update-apm-semantics-pr.cjs');
-            await openPullRequest({
-              github,
-              context,
-              core,
-              branch: process.env.BRANCH,
-              title: process.env.TITLE,
-              commitBody: fs.readFileSync(`${process.env.RUNNER_TEMP}/commit-body.txt`, 'utf8').trim(),
-              previous: process.env.PREVIOUS,
-              source: process.env.SOURCE,
-            });
+          GITHUB_TOKEN: "${{ steps.octo-sts.outputs.token }}"
+        run: |
+          python3 ci/tooling/update_apm_semantics_pr.py open-pr \
+            --branch "$BRANCH" \
+            --title "$TITLE" \
+            --commit-body-file "$RUNNER_TEMP/commit-body.txt" \
+            --previous "$PREVIOUS" \
+            --source "$SOURCE"
