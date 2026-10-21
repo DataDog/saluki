@@ -137,6 +137,11 @@ render_lading_config() {
     entry_cache=$(divide_bytes "$cache" "$connections" $((1 << 20)))
     framing=$'\n          length_prefix_framed: true'
   fi
+  # lading's UDP generator sends to an address and has no block cache method; the Unix ones write to the socket file.
+  local target=$'path: /var/run/dsd/dsd.sock\n      block_cache_method: Fixed'
+  if [[ "$transport" == udp ]]; then
+    target=$'addr: "adp:8125"\n      bind_addr: "0.0.0.0:0"'
+  fi
   local weights names timestamp=""
   weights=$(render_metric_weights)
   names=$(render_metric_names)
@@ -153,8 +158,7 @@ render_lading_config() {
   - $transport:
       seed: [$((2 + index)), 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97,
         101, 103, 107, 109, 113, 127, 131]
-      path: /var/run/dsd/dsd.sock
-      block_cache_method: Fixed
+      $target
       parallel_connections: $connections
       variant:
         dogstatsd:
@@ -330,4 +334,7 @@ main() {
   fi
 }
 
-main "$@"
+# `run-regime.sh` sources this file for its helpers.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

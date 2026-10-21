@@ -125,3 +125,64 @@ resolver caps them.
 `docker compose --file test/scaling/compose.yaml config --quiet` checks the compose file and that the environment files
 it names exist, and `SCALING_DRY_RUN=1 test/scaling/run-curves.sh` renders every lading configuration and prints the
 commands of a series. Neither needs a running Docker daemon.
+
+## The production regime (N1)
+
+`run-regime.sh` measures ADP at production CPU limits instead of saturated throughput across cores
+(`docs/design/programmable-metrics-next.md`, N1). It uses the same compose file with the `regime` profile, which adds a
+second generator for bursts (`burst`) and a sampler (`sampler`, `regime_sampler.py`), and reuses `run-curves.sh`'s
+helpers to render lading's configurations.
+
+| Container | Cores | What it does |
+|---|---|---|
+| `adp` | `--cpus L --cpuset-cpus 0-1` | The image under test with two workers and two decoders: what ADP picks under any CPU quota up to two cores. The plan image runs `adp/lanes-off.yaml`. |
+| `lading`, `burst` | 2 and 3 | The steady generator, and the burst generator, which the script pauses and resumes (`docker compose pause` and `unpause`). Both use one generator entry over the same contexts. |
+| `blackhole`, `sampler` | 4 and 5 | The intake, and a privileged container with the host's PID and cgroup namespaces that reads ADP's cgroup (`cpu.stat`, `memory.current`, `memory.stat`, `memory.peak`) and both generators' bytes written every 100 ms, from outside ADP's cgroup, so that sampling spends none of ADP's quota. Its timeline and the phase the script tells it stay in a volume of the VM (a bind mount polled every 100 ms made the dory VM restart) and are copied out after each run. |
+
+One run is: warm up; a steady window (ADP's telemetry and lading's counters read at both ends); then a burst of
+`REGIME_BURST_FACTOR` times the steady rate for `REGIME_BURST_SECONDS`, starting `REGIME_BURST_LEAD_SECONDS` before an
+aggregation flush (the flush timer starts at the log line `Agent Data Plane running.`; `aggregate_flushes_total` read
+at the burst's start and end checks it); then a recovery window. For each limit in `REGIME_CPUS` and each round, every
+label in `REGIME_LABELS` runs once, in an order that rotates by round: the default `native-a native-b plan-a plan-b`
+gives an A/A pair of each image beside the comparison. `summarize-regime.py <dir>` derives the measures per run
+(`derived.csv`) and prints, per limit, each image's median, the ratios between images, and each image's A/A ratio and
+spread; its documentation comment defines every measure. A rerun with the same `REGIME_OUT` resumes a series where it
+stopped.
+
+```sh
+REGIME_PLAN_IMAGE=saluki-images/agent-data-plane:plan REGIME_CONTEXTS=3000 \
+  REGIME_STEADY_RATES="0.05:2947 0.3:23295 0.6:66020 1.2:209900" test/scaling/run-regime.sh
+```
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `REGIME_CPUS` | `0.05 0.3 0.6 1.2` | the CPU limits |
+| `REGIME_LABELS`, `REGIME_ROUNDS` | `native-a native-b plan-a plan-b`, 3 | the labels (a `native`, `plan`, or `candidate` prefix picks the image) and rounds |
+| `REGIME_NATIVE_IMAGE`, `REGIME_PLAN_IMAGE` | `...:legacy-b940bf1f8b`, `...:plan` | the images |
+| `REGIME_CANDIDATE_IMAGE`, `REGIME_CANDIDATE_CONFIG` | none, the plan image's configuration | a change judged against the plan image: `REGIME_LABELS="plan-a plan-b candidate-a candidate-b"` (N1's gates for N2 to N4) |
+| `REGIME_STEADY_RATES` | none | the steady rate per limit, `cpus:KiB/s` pairs; N1 uses 30% of the native image's saturated rate at that limit |
+| `REGIME_STEADY_RATE_PER_CPU` | `60 MiB` | the steady rate per CPU for a limit `REGIME_STEADY_RATES` does not list |
+| `REGIME_BURST_FACTOR` | 4 | the total rate during a burst, in multiples of the steady rate |
+| `REGIME_WARMUP_SECONDS`, `REGIME_STEADY_SECONDS` | 20, 30 | the warm-up and the steady window |
+| `REGIME_FLUSH_SECONDS`, `REGIME_BURST_LEAD_SECONDS`, `REGIME_BURST_SECONDS`, `REGIME_RECOVERY_SECONDS` | 15, 3, 8, 12 | the flush interval, how long before a flush the burst starts, its length, and the recovery window after it |
+| `REGIME_CONTEXTS`, `REGIME_CACHE` | 3000, `500 Mb` | lading's contexts and block cache; a cache must hold more metrics than there are contexts (about 860 bytes a metric), so 100,000 contexts need `2000 Mb` |
+| `REGIME_TRANSPORT` | `unix_datagram` | `unix_datagram` or `udp` (see below) |
+| `REGIME_OUT` | `results/regime-<time>` | where `series.txt`, `runs.csv`, `derived.csv`, `summary.md`, and each run's timeline, scrapes, and log go |
+
+For a saturation calibration, set `REGIME_STEADY_RATE_PER_CPU="3 GiB" REGIME_BURST_FACTOR=1` and read the steady
+window's decoded rate.
+
+**Why Unix datagrams, not UDP.** lading's throttle (0.33) releases each second's bytes at the start of the second, so
+the generator sends a second's datagrams in one clump of under 100 ms; neither `timeout_micros` nor the `linear`
+throttle changes that. Over UDP that clump overflows the socket's receive buffer (212,992 bytes by default) at any
+rate, and the kernel's `RcvbufErrors` then measure lading rather than ADP. Over a Unix datagram socket the sender
+blocks while the socket is full and ADP drains each clump at its own pace, so the `shortfall` (what lading was
+configured to send and did not write) is what a non-blocking client would have dropped. `REGIME_TRANSPORT=udp`
+remains for a generator that paces evenly (`adp/udp.env`; the sampler reads `RcvbufErrors` and the socket's queue).
+
+**What it cannot measure.** Per-metric latency (containers have no markers to time; the in-process harness has), the
+Unix socket's queue depth, and admission inside ADP directly: `longest stall` is the longest stretch over which the
+generators' bytes did not grow during the overloaded burst, at the sampler's 100 ms resolution.
+
+Raw results stay local (`results/` is ignored); N1's summaries were added with `git add -f`
+(`results/n1-20261021/*/{series.txt,runs.csv,derived.csv,summary.md}`).

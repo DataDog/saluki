@@ -24,7 +24,8 @@ services:
       DD_LOG_FORMAT_JSON: "true"
       DD_DATA_PLANE_STANDALONE_MODE: "true"
       DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-      DD_DOGSTATSD_PORT: "0"
+      # 0 (no UDP listener) unless the transport is `udp` (`run-regime.sh`).
+      DD_DOGSTATSD_PORT: "${DOGSTATSD_PORT:-0}"
       # The native default reads the host's vCPUs, not the CPUs the container may use: set the decoders explicitly,
       # `max(2, N - 2)` unless `SCALING_DECODERS` says otherwise.
       DD_DOGSTATSD_WORKERS_COUNT: "${DECODERS:-2}"
@@ -40,10 +41,14 @@ services:
     ports:
       - "127.0.0.1:${ADP_TELEMETRY_PORT:-15100}:5100"
     healthcheck:
-      # The generator connects once the socket exists.
-      test: ["CMD", "test", "-S", "/var/run/dsd/dsd.sock"]
-      interval: 1s
-      timeout: 1s
+      # The generator connects once the socket exists (Unix sockets) or the UDP listener is bound (8125 is 1FBD in
+      # /proc/net/udp). A check runs inside ADP's cgroup and spends its CPU quota, which matters at a fraction of a CPU:
+      # every second until healthy, then only hourly.
+      test: ["CMD-SHELL", "test -S /var/run/dsd/dsd.sock || grep -q ':1FBD ' /proc/net/udp"]
+      interval: 3600s
+      start_period: 300s
+      start_interval: 1s
+      timeout: 5s
       retries: 60
     depends_on:
       blackhole:
@@ -89,6 +94,48 @@ services:
     ports:
       - "127.0.0.1:${BLACKHOLE_TELEMETRY_PORT:-19230}:9229"
 
+  # `run-regime.sh` only (the `regime` profile): a second generator for bursts, which the script pauses and unpauses
+  # (`docker compose pause`), on lading's cores.
+  burst:
+    profiles: [regime]
+    image: ghcr.io/datadog/lading:${LADING_VERSION:-0.33.0}
+    command:
+      - --config-path
+      - /etc/lading/lading.yaml
+      - --no-target
+      - --warmup-duration-seconds
+      - "1"
+      - --experiment-duration-seconds
+      - "${LADING_DURATION_SECONDS:-3600}"
+      - --prometheus-addr
+      - 0.0.0.0:9229
+    cpuset: "${LADING_CPUSET:-4-5}"
+    volumes:
+      - dsd-socket:/var/run/dsd
+      - ${BURST_CONFIG:-./lading/generator.yaml}:/etc/lading/lading.yaml:ro
+    ports:
+      - "127.0.0.1:${BURST_TELEMETRY_PORT:-19231}:9229"
+    depends_on:
+      adp:
+        condition: service_healthy
+
+  # `run-regime.sh` only: samples ADP's cgroup (`cpu.stat`, `memory.*`), its network namespace's UDP counters and
+  # socket queue, and the generators' bytes written from outside ADP's container, every 100 ms, so that sampling spends
+  # none of ADP's CPU quota; on the blackholes' cores. See `regime_sampler.py`. Its timeline and the phase file the
+  # script writes (`docker compose exec`) live in a volume of the VM, not a bind mount of the host: a file the host
+  # writes while the VM reads it every 100 ms made the Docker VM restart (dory's host-share coherence check).
+  sampler:
+    profiles: [regime]
+    image: python:3.12-alpine
+    command: ["python3", "-I", "/regime_sampler.py", "/out/timeline.csv"]
+    privileged: true
+    pid: host
+    cgroup: host
+    cpuset: "${BLACKHOLE_CPUSET:-6-7}"
+    volumes:
+      - ./regime_sampler.py:/regime_sampler.py:ro
+      - sampler-out:/out
+
   # Optional: `docker compose --profile observe up` adds a Prometheus that scrapes all three every second, for
   # watching a run live. `run-curves.sh` reads the endpoints directly and does not need it.
   prometheus:
@@ -102,3 +149,4 @@ services:
 
 volumes:
   dsd-socket:
+  sampler-out:

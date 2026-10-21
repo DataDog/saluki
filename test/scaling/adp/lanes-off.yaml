@@ -1,0 +1,7 @@
+# The plan image with lanes off (`run-regime.sh`'s default for the plan image): the layout ADP runs at every CPU limit
+# up to two cores, where `lanes.mode: auto` also runs without lanes, set explicitly so that the measurement does not
+# depend on the automatic choice.
+experimental:
+  programmable_metrics:
+    lanes:
+      mode: "off"
