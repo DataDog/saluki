@@ -116,6 +116,34 @@ impl Source for StuckSource {
     }
 }
 
+/// A source that marks itself ready, and reports that its shutdown handle fired before it returns.
+struct ShutdownReportingSource {
+    shutdown_seen: oneshot::Sender<()>,
+}
+
+#[async_trait]
+impl Source for ShutdownReportingSource {
+    async fn run(self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
+        let shutdown = context.take_shutdown_handle();
+        let mut health = context.take_health_handle();
+        health.mark_ready();
+
+        shutdown.await;
+        let _ = self.shutdown_seen.send(());
+        Ok(())
+    }
+}
+
+/// Returns a [`ShutdownReportingSource`], and the receiver it reports to.
+fn shutdown_reporting_source() -> (PrebuiltSource, oneshot::Receiver<()>) {
+    let (shutdown_seen, seen) = oneshot::channel();
+    let source = PrebuiltSource::new(
+        Box::new(ShutdownReportingSource { shutdown_seen }),
+        vec![OutputDefinition::default_output(EventType::Metric)],
+    );
+    (source, seen)
+}
+
 /// Builds whichever source it holds.
 struct SourceBuilderFor<S> {
     source: fn() -> S,
@@ -718,4 +746,51 @@ async fn synchronous_transform_stops_with_the_dispatch_error_once_its_output_is_
         .await
         .expect_err("dispatching to a dropped output should fail the run");
     assert_eq!(format!("{error:#}"), "Failed to send to output.");
+}
+
+#[tokio::test]
+async fn withheld_shutdown_leaves_the_source_running_until_the_budget_aborts_it() {
+    let (source, mut shutdown_seen) = shutdown_reporting_source();
+    let (control, _outputs) = TestComponentDriver::options()
+        .with_shutdown_budget(Duration::from_millis(100))
+        .with_shutdown_withheld()
+        .source(source)
+        .await
+        .expect("source should build");
+    control.wait_until_ready().await;
+
+    let error = control
+        .shutdown()
+        .await
+        .expect_err("the source never sees shutdown, so the supervisor should abort it");
+    let supervisor_error = error
+        .downcast_ref::<SupervisorError>()
+        .expect("the error should come from the supervisor");
+    assert!(
+        matches!(supervisor_error, SupervisorError::ShutdownTimedOut { aborted: 1 }),
+        "expected only the source to be aborted, got {supervisor_error:?}"
+    );
+
+    // Aborting the source dropped its sender before its shutdown handle fired.
+    assert!(matches!(
+        shutdown_seen.try_recv(),
+        Err(oneshot::error::TryRecvError::Closed)
+    ));
+}
+
+#[tokio::test]
+async fn withheld_shutdown_fires_once_the_control_is_dropped() {
+    let (source, shutdown_seen) = shutdown_reporting_source();
+    let (control, _outputs) = TestComponentDriver::options()
+        .with_shutdown_withheld()
+        .source(source)
+        .await
+        .expect("source should build");
+    control.wait_until_ready().await;
+
+    drop(control);
+    tokio::time::timeout(Duration::from_secs(5), shutdown_seen)
+        .await
+        .expect("the source should stop once the control is dropped")
+        .expect("the source should see its shutdown handle fire");
 }

@@ -198,6 +198,7 @@ pub struct DriverOptions {
     wait_timeout: Duration,
     shutdown_budget: Duration,
     resource_registry: ResourceRegistry,
+    withhold_shutdown: bool,
 }
 
 impl Default for DriverOptions {
@@ -208,6 +209,7 @@ impl Default for DriverOptions {
             wait_timeout: DEFAULT_WAIT_TIMEOUT,
             shutdown_budget: TEST_SHUTDOWN_BUDGET,
             resource_registry: ResourceRegistry::new(),
+            withhold_shutdown: false,
         }
     }
 }
@@ -272,10 +274,25 @@ impl DriverOptions {
         self
     }
 
+    /// Withholds the shutdown signal of its supervisor from a source or relay.
+    ///
+    /// The component gets a shutdown handle that the [`ComponentControl`] owns, in place of the one from its worker, so
+    /// it behaves like a component that ignores shutdown: [`ComponentControl::signal_shutdown`] only reaches the
+    /// supervisor, which aborts the component and every child still running once the shutdown budget runs out. Use it
+    /// to check what happens to the children of a component that is cut off. The handle only fires once the control is
+    /// dropped, or once [`ComponentControl::wait`] returns.
+    ///
+    /// Has no effect on other component types, which stop once their input closes.
+    pub fn with_shutdown_withheld(mut self) -> Self {
+        self.withhold_shutdown = true;
+        self
+    }
+
     /// Builds and runs a source.
     ///
     /// Each output the builder declares gets its own channel. The source's shutdown handle fires when its shutdown is
-    /// signalled through the returned [`ComponentControl`].
+    /// signalled through the returned [`ComponentControl`], unless
+    /// [`with_shutdown_withheld`][Self::with_shutdown_withheld] withholds it.
     ///
     /// # Errors
     ///
@@ -310,7 +327,8 @@ impl DriverOptions {
     /// Builds and runs a relay.
     ///
     /// Each output the builder declares gets its own channel. The relay's shutdown handle fires when its shutdown is
-    /// signalled through the returned [`ComponentControl`].
+    /// signalled through the returned [`ComponentControl`], unless
+    /// [`with_shutdown_withheld`][Self::with_shutdown_withheld] withholds it.
     ///
     /// # Errors
     ///
@@ -692,7 +710,18 @@ impl Harness {
     {
         let (outcome_tx, outcome) = oneshot::channel();
         let (exit_tx, exit) = oneshot::channel();
-        let worker = ComponentWorker::new(self.component_context.clone(), Reporting { runnable, outcome_tx });
+        let (withheld_shutdown, shutdown) = if self.options.withhold_shutdown {
+            let (coordinator, shutdown) = ShutdownHandle::paired();
+            (Some(coordinator), Some(shutdown))
+        } else {
+            (None, None)
+        };
+        let reporting = Reporting {
+            runnable,
+            outcome_tx,
+            shutdown,
+        };
+        let worker = ComponentWorker::new(self.component_context.clone(), reporting);
         let worker = runtime::supervisable(worker)
             .needed()
             .observing_exit(ExitObserver::new(exit_tx))
@@ -712,6 +741,7 @@ impl Harness {
             input,
             outcome,
             exit,
+            withheld_shutdown,
             wait_timeout: self.options.wait_timeout,
             shutdown_budget: self.options.shutdown_budget,
         }
@@ -729,14 +759,21 @@ pub(super) type RunOutcome = std::thread::Result<Result<(), GenericError>>;
 struct Reporting<C> {
     runnable: C,
     outcome_tx: oneshot::Sender<RunOutcome>,
+
+    /// The shutdown handle to run the component with in place of the one from its worker, when shutdown is withheld.
+    shutdown: Option<ShutdownHandle>,
 }
 
 impl<C: RunnableComponent> RunnableComponent for Reporting<C> {
     const WANTS_SHUTDOWN_SIGNAL: bool = C::WANTS_SHUTDOWN_SIGNAL;
 
     fn run_with_shutdown(self, process_shutdown: ShutdownHandle) -> SupervisorFuture {
-        let Self { runnable, outcome_tx } = self;
-        let mut run = runnable.run_with_shutdown(process_shutdown);
+        let Self {
+            runnable,
+            outcome_tx,
+            shutdown,
+        } = self;
+        let mut run = runnable.run_with_shutdown(shutdown.unwrap_or(process_shutdown));
 
         Box::pin(async move {
             // Catch a panic in any poll of `run`, rather than letting it unwind into the supervisor.

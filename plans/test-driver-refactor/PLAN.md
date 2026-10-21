@@ -53,9 +53,10 @@ Each pull request checks off its own item.
     dispatch stops it with the dispatch error.
   - The adapter accepts every event type, as `ChainedConfiguration` does. No conversion needs it yet; its consumers
     are follow-ups.
-- [ ] **5. F4: shutdown separate from the supervisor.**
-  - A `DriverOptions` setting for sources and relays. The component then gets a shutdown handle that the control owns,
-    in place of the one from its worker, and signalling shutdown stops only the supervisor.
+- [x] **5. F4: shutdown separate from the supervisor.**
+  - `DriverOptions::with_shutdown_withheld`, for sources and relays. The component then gets a shutdown handle that
+    the control owns, in place of the one from its worker, so signalling shutdown stops only the supervisor, which
+    aborts the component once the budget runs out. The handle fires once the control is dropped.
   - The substitution happens in the driver, so production code doesn't change.
 - [ ] **6. F5: contexts without running.**
   - One `DriverOptions` method per component type. Each builds the context that the driver would have passed to `run`,

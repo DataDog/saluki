@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use saluki_common::sync::shutdown::ShutdownCoordinator;
 use saluki_error::{generic_error, GenericError};
 use tokio::sync::{mpsc, oneshot};
 
@@ -37,6 +38,10 @@ pub struct ComponentControl<I> {
     /// How the worker of the component ended, after its scope closed. This differs from `outcome` when a child that the
     /// component needs fails.
     pub(super) exit: oneshot::Receiver<Result<(), String>>,
+
+    /// Fires the shutdown handle that the component runs with in place of its worker's, if shutdown is withheld.
+    pub(super) withheld_shutdown: Option<ShutdownCoordinator>,
+
     pub(super) wait_timeout: Duration,
     pub(super) shutdown_budget: Duration,
 }
@@ -122,8 +127,9 @@ impl<I> ComponentControl<I> {
     ///
     /// Signals the component's supervisor first, then closes the component's input. This is the order production uses:
     /// stopping a topology signals every component's supervisor at once, while each component's upstream closes as that
-    /// upstream stops. Sources and relays stop on the signal; every other kind of component stops once its input
-    /// closes.
+    /// upstream stops. Sources and relays stop on the signal, unless
+    /// [`with_shutdown_withheld`][super::DriverOptions::with_shutdown_withheld] withholds it from them; every other kind
+    /// of component stops once its input closes.
     ///
     /// Pair this with [`wait`][Self::wait] when the test needs to act between the signal and the component stopping.
     /// Calling this more than once has no further effect.
@@ -169,11 +175,12 @@ impl<I> ComponentControl<I> {
     /// [`SupervisorError`]: crate::runtime::SupervisorError
     pub async fn wait(self) -> Result<(), GenericError> {
         // Keep the input open while waiting: a component that is expected to stop on its own shouldn't be stopped by
-        // its input closing instead.
+        // its input closing instead. A withheld shutdown signal stays withheld for the same reason.
         let Self {
             component_context,
             supervisor,
             input: _input,
+            withheld_shutdown: _withheld_shutdown,
             mut outcome,
             mut exit,
             wait_timeout,
