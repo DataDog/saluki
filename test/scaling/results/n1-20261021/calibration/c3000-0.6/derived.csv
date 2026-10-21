@@ -1,0 +1,3 @@
+cpus,round,label,steady_decoded_per_s,steady_cpu_ns_per_metric,steady_cores,steady_throttled_share,steady_throttled_ms_per_s,steady_shortfall,steady_anon_mib,burst_decoded_per_s,burst_cpu_ns_per_metric,burst_throttled_share,burst_throttled_ms_per_s,burst_shortfall,burst_longest_stall_ms,flush_admission_ratio,burst_anon_peak_mib,burst_pool_capacity,burst_pool_created,memory_peak_mib,flushes_in_burst
+0.6,1,native,377007.7250,1582.7107,0.5967,1.0000,1168.6035,0.8307,71.3633,425051.1978,1530.2775,1.0000,1161.8905,0.8480,0.0000,0.6188,78.5977,4692.0000,1413.0000,87.9727,0.0000
+0.6,1,plan,436957.7458,1369.7378,0.5985,1.0000,1175.2553,0.8042,39.3086,557452.6395,1270.7353,1.0000,1145.6228,0.8008,0.0000,0.5334,40.6719,819.0000,690.0000,63.8750,0.0000

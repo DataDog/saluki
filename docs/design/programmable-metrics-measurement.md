@@ -1,6 +1,8 @@
 # Programmable metric processing: measurements
 
-**Status:** how to run the measurements of stages 7 and 9 on branch `luke/programmable-metrics`, after stage 9. The
+**Status:** how to run the measurements of stages 7 and 9 on branch `luke/programmable-metrics`, after stage 9, and
+N1's measurements at production CPU limits ([next steps](programmable-metrics-next.md#n1-measure-in-the-production-regime),
+whose results and gates are recorded there). The
 design that defines them is [the stages 7 and 9 plan](programmable-metrics-stages-7-and-9.md): section
 [8.6](programmable-metrics-stages-7-and-9.md#86-measurement-harness-and-what-is-measured-first) lists M1 to M11 and
 records their results, [8.5](programmable-metrics-stages-7-and-9.md#85-stage-9-integration-increments-and-gate) the
@@ -19,8 +21,9 @@ documentation comment names its knobs and defaults.
 5. [Scaling curves in process](#scaling-curves-in-process)
 6. [Stage 7 gate measurements](#stage-7-gate-measurements)
 7. [Scaling curves in containers](#scaling-curves-in-containers)
-8. [Linux on a Mac: the Docker VM](#linux-on-a-mac-the-docker-vm)
-9. [The gate host](#the-gate-host)
+8. [The production regime in containers (N1)](#the-production-regime-in-containers-n1)
+9. [Linux on a Mac: the Docker VM](#linux-on-a-mac-the-docker-vm)
+10. [The gate host](#the-gate-host)
 
 ## What is measured
 
@@ -476,6 +479,57 @@ p25 to p75 against the median; then the plan's throughput, scaling, and CPU rati
   If both flatten below the top N, M2 in process shows whether the datagram receiver or the resolvers cap them.
 - What stays in process: the paced p99 of item 3 and the live filterlist change (containers have no markers to time
   and no configuration stream), and the mapper profile's tag filterlist (lading's tag keys are random).
+
+## The production regime in containers (N1)
+
+`test/scaling/run-regime.sh` measures ADP under the CPU limits production uses (0.05, 0.3, 0.6, and 1.2 CPUs), at a
+paced steady rate and through a burst timed across an aggregation flush, rather than saturated throughput across
+cores. [The README](../../test/scaling/README.md#the-production-regime-n1) is the reference for its containers and
+variables; N1's results and the gates for N2 to N4 are in [next steps](programmable-metrics-next.md#n1-results). The
+procedure:
+
+1. **Images.** The native image is the merge base's (`make scaling-images` builds it as
+   `saluki-images/agent-data-plane:legacy-b940bf1f8b`); the plan image is this tree's (`make build-adp-image-release`,
+   then tag it). The plan image runs `test/scaling/adp/lanes-off.yaml`.
+2. **Calibrate** each cardinality at each limit: `REGIME_STEADY_RATE_PER_CPU="3 GiB" REGIME_BURST_FACTOR=1
+   REGIME_LABELS="native plan" REGIME_ROUNDS=1` saturates ADP, and the steady window's decoded rate is its capacity.
+   Capacity per CPU is not linear in the limit (CPU per metric grows as the limit falls), so calibrate every limit:
+   N1 interpolated 0.6 from 0.3 and 1.2 and underestimated it, so its burst there did not overload ADP.
+3. **Run** one series per cardinality with `REGIME_STEADY_RATES` at 30% of the native capacity per limit (in KiB/s, at
+   about 862 bytes a metric) and the default burst of four times that: 120% of capacity for 8 s, from 3 s before a
+   flush. The default labels give an A/A pair of each image; three rounds of four labels at four limits take about
+   1 h 45 min per series in the Docker VM.
+4. **Judge a change** against the plan image of N1 (or of the last accepted change) with the same rates:
+   `REGIME_LABELS="plan-a plan-b candidate-a candidate-b"` and `REGIME_CANDIDATE_IMAGE`; `summarize-regime.py` prints
+   candidate / plan, and the gates in [next steps](programmable-metrics-next.md#gates-for-n2-to-n4) say which ratios
+   must hold.
+
+What the earlier container runs did not show, and what to watch for:
+
+- **lading clumps a second's bytes.** lading's throttle (0.33) releases each second's bytes at the start of the second;
+  `timeout_micros` and the `linear` throttle do not change it. Over UDP the clump overflows the socket's 212,992-byte
+  receive buffer at any rate, so the kernel's drops measure lading. The series run over Unix datagrams, where the
+  sender blocks while the socket is full: a paced run is a clump a second that ADP drains at its pace, and drops are
+  lading's shortfall against its configured rate.
+- **Anything run inside ADP's container spends its quota.** `docker compose exec` and a health check run in ADP's
+  cgroup: at 50 millicores a check every second costs a few percent of the quota. The health check runs every second
+  only until ADP is healthy, then hourly, and the sampler reads the cgroup and the generators from its own container
+  on other cores. ADP's own telemetry is scraped only at the phase boundaries (five times a run).
+- **The flush's phase.** Both images start the aggregation's flush timer when the topology starts, and flush every
+  15 s from it; the script reads the time from the log line `Agent Data Plane running.`, and `aggregate_flushes_total`
+  at the burst's ends confirms that exactly one flush fell inside it (it did in every N1 run).
+- **The Docker VM restarted under N1's series**, twice in four hours: dory's log said "host-share reverse invalidation
+  failed; restarting VM", because the sampler then wrote its timeline into a bind mount of the host and read a phase
+  file the host rewrote, every 100 ms. Both now live in a volume of the VM, written with `docker compose exec` and
+  copied out with `docker compose cp` (checked with a calibration series afterwards). Keep files the host writes and
+  the VM polls, or the reverse, off bind mounts. A series also resumes where it stopped when rerun with the same
+  `REGIME_OUT`, and a run cut short is redone.
+- **Noise.** Each image's A/A ratio and spread per limit are the tolerance; with three rounds per label, a ratio
+  inside the larger of the two images' A/A distance from 1 is not a difference. 0.05 CPUs and the burst's shortfall
+  at low cardinality are the noisiest (A/A distances up to 0.35 and 1.4).
+- **CPU per metric is not a constant across limits.** It grows from about 1.5 µs at 1.2 CPUs to 6.4 µs at 0.05 at low
+  cardinality, and to 50 µs at 0.05 with 100,000 contexts, so compare images at one limit, never a rate measured at
+  one limit against another, and calibrate every limit.
 
 ## Linux on a Mac: the Docker VM
 

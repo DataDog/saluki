@@ -71,7 +71,7 @@ only facts and signals; and one aggregation that keeps its state whatever its no
 | Stage 7: live outputs and recipients | Neutral on CPU: per metric within 1.01 of native, allocations 0.56 to 0.89, p99 0.27 to 0.65 ([stage 7 gate](programmable-metrics-stages-7-and-9.md#83-stage-7-gate)). Its value is operational. |
 | Stage 9: lanes | **Little production value, and correctly off at these sizes.** ADP's worker count is the process's available parallelism, with a minimum of two (`saluki-app` `util.rs`), and on Linux that follows the cgroup's CPU quota, so every limit up to two cores gives two workers; `lanes.mode: auto` then runs the layout without lanes ([lanes as built](programmable-metrics-stages-7-and-9.md#stage-9-as-built)). Its static key sharding is the fixed-overhead scheme the team wants to avoid for aggregation. |
 | R1's fusion cost model | **Wrong for these deployments.** It splits a chain into pipelined regions when one region would exceed the cost of the costliest native component, to buy pipeline parallelism across tasks ([pipelining](programmable-metrics-implementation.md#physical-frame-and-region-programs)). At one core or less that buys nothing and adds a hop and a queue per split. |
-| Our measurements | **The wrong regime.** They were saturated throughput at 1 to 16 unconstrained workers. None ran under a CPU quota, with CFS throttling, with bursts during a CPU crunch, or at 50 millicores ([measurement runbook](programmable-metrics-measurement.md)). |
+| Our measurements | **The wrong regime, until N1.** They were saturated throughput at 1 to 16 unconstrained workers. None ran under a CPU quota, with CFS throttling, with bursts during a CPU crunch, or at 50 millicores ([measurement runbook](programmable-metrics-measurement.md)). [N1](#n1-results) now measures that regime. |
 | The stage 9 gate host ([Q2](programmable-metrics-stages-7-and-9.md#12-open-questions)) | No longer a priority: what it would decide does not apply to production. |
 
 **Aggregation today.** Stage 6 made aggregation a kernel whose flush runs in budgeted steps
@@ -106,6 +106,140 @@ In order. Each item has its goal, the approach, and the evidence that ends it.
   latency, peak and anonymous memory, and admission stalls during a flush. Add an A/A series per limit, as the gate's
   method requires. Linux is required; the dory VM is enough for these limits.
 - **Exit:** a results table in this document, and the gate thresholds for N2 to N4 stated at these limits.
+- **Status:** measured on 2026-10-21; results, findings, and gates below. The harness is `test/scaling/run-regime.sh`
+  ([README](../../test/scaling/README.md#the-production-regime-n1),
+  [runbook](programmable-metrics-measurement.md#the-production-regime-in-containers-n1)); the summaries are under
+  `test/scaling/results/n1-20261021/`.
+
+#### N1 method
+
+- **Images.** Native is the `main` image at the branch's merge base (`legacy-b940bf1f8b`, the native metrics path as
+  production runs it). Plan is this branch at `99a2209a0b` (version 2 through V7a) running the default program, with
+  `lanes.mode: off`.
+- **The container.** ADP runs under `--cpus` 0.05, 0.3, 0.6, or 1.2 on two cores, with two workers and two DogStatsD
+  decoders, which is what ADP picks under any quota up to two CPUs. The host is the dory VM (6 vCPUs on an M5 Pro,
+  kernel 6.12, cgroup v2, CFS period 100 ms): lading and the blackhole run on cores of their own, and a sampler reads
+  ADP's cgroup every 100 ms from outside it.
+- **Traffic.** DogStatsD over a Unix datagram socket, the SMP case's metric shape (about 860 bytes a metric), at 3,000
+  contexts (low cardinality) and 100,000 (high). Per limit, a 30 s steady window at 30% of the native image's saturated
+  rate at that limit, then a burst of four times the steady rate (120% of native capacity) for 8 s, starting 3 s before
+  an aggregation flush, then 12 s of recovery. Exactly one flush fell inside every burst.
+- **Repetitions.** Labels native-a, native-b, plan-a, and plan-b, three rounds each in a rotating order: 96 runs, six
+  per image, limit, and cardinality, so each image has an A/A pair at every limit. The noise column below is the larger
+  of the two images' A/A distances from 1.
+- **Drops.** Over a Unix datagram socket the sender blocks while the socket is full, so drops are lading's
+  **shortfall**: what it was configured to send and did not write, which is what a non-blocking client would have
+  dropped. UDP was tried first, but lading sends each second's bytes in one clump at the start of the second, and over
+  UDP that overflows the default 212,992-byte receive buffer at any rate, so kernel drops would measure lading.
+- **Calibration.** Saturated rates (one run per image): at low cardinality 11,700, 92,300, 288,000, and 831,000
+  metrics/s for native at 0.05, 0.3, 0.6, and 1.2 CPUs; at high cardinality 2,900, 46,900, 377,000, and 658,000. The 0.6
+  calibration came after the series (the series interpolated 0.6 and underestimated it), so at 0.6 the burst was at or
+  below capacity and is not an overload measurement.
+
+#### N1 results
+
+Medians of six runs per image. **Noise** is the larger A/A distance from 1 of the two images, for the ratio beside it.
+
+Steady window, at 30% of native capacity:
+
+| Limit | Contexts | Metrics/s | CPU ns/metric, native / plan | Plan / native (noise) | CPU used, cores (plan) | Throttled periods, native / plan | Anonymous memory MiB, native / plan |
+|---|---|---|---|---|---|---|---|
+| 0.05 | 3,000 | 3,520 | 6,363 / 5,955 | 0.936 (0.017) | 0.021 | 0.56 / 0.52 | 28.8 / 24.0 |
+| 0.3 | 3,000 | 27,700 | 3,716 / 3,628 | 0.976 (0.036) | 0.102 | 0.36 / 0.35 | 42.5 / 31.6 |
+| 0.6 | 3,000 | 78,500 | 2,011 / 1,945 | 0.967 (0.032) | 0.153 | 0.27 / 0.26 | 56.0 / 35.1 |
+| 1.2 | 3,000 | 250,000 | 1,591 / 1,492 | 0.938 (0.044) | 0.373 | 0.33 / 0.25 | 60.2 / 36.4 |
+| 0.05 | 100,000 | 830 | 50,001 / 48,166 | 0.963 (0.055) | 0.040 | 0.89 / 0.85 | 65.9 / 67.7 |
+| 0.3 | 100,000 | 14,200 | 11,530 / 10,844 | 0.941 (0.014) | 0.156 | 0.62 / 0.59 | 337 / 318 |
+| 0.6 | 100,000 | 51,200 | 3,195 / 3,184 | 0.997 (0.083) | 0.164 | 0.32 / 0.35 | 318 / 294 |
+| 1.2 | 100,000 | 196,000 | 2,062 / 1,914 | 0.928 (0.030) | 0.382 | 0.33 / 0.37 | 331 / 302 |
+
+Burst across a flush (the burst window for throughput and drops; burst and recovery for memory):
+
+| Limit | Contexts | Decoded/s, plan / native (noise) | Shortfall, native / plan | Admission after / before the flush, native / plan (noise) | Peak memory MiB, native / plan | Pool buffers at burst end, native / plan |
+|---|---|---|---|---|---|---|
+| 0.05 | 3,000 | 1.078 (0.144) | 0.21 / 0.22 | 0.65 / 0.83 (1.4) | 79 / 43 | 3,721 / 129 |
+| 0.3 | 3,000 | 1.053 (0.061) | 0.20 / 0.15 | 1.04 / 1.02 (0.23) | 69 / 44 | 3,118 / 733 |
+| 0.6 | 3,000 | 1.002 (0.021) | 0 / 0 (not overloaded) | 0.98 / 0.96 (0.23) | 80 / 52 | 4,290 / 1,290 |
+| 1.2 | 3,000 | 1.081 (0.036) | 0.21 / 0.15 | 0.97 / 1.00 (0.03) | 90 / 64 | 4,582 / 1,563 |
+| 0.05 | 100,000 | 0.882 (0.35) | 0.56 / 0.67 | 0.35 / 0.88 (1.0) | 113 / 107 | 1,080 / 128 |
+| 0.3 | 100,000 | 0.977 (0.034) | **0.25 / 0.31** | **0.64 / 0.47** (0.15) | 467 / 396 | 6,995 / 418 |
+| 0.6 | 100,000 | 0.996 (0.040) | 0 / 0 (not overloaded) | 0.79 / 0.74 (0.22) | 498 / 353 | 18,851 / 1,180 |
+| 1.2 | 100,000 | 1.067 (0.011) | 0.21 / 0.16 | 0.66 / 0.71 (0.08) | 603 / 359 | 28,250 / 2,676 |
+
+Throttled periods during an overloaded burst are 0.89 to 1.00 for both images at every limit. The full tables, with
+throttled time, CPU per metric through the burst and recovery, the pool's growth, and each image's A/A ratio and spread
+per measure, are each series' `summary.md`.
+
+#### What N1 says
+
+- **The plan path costs no more CPU per metric than native in the production regime.** Steady CPU per metric is 0.93
+  to 1.00 of native at every limit and cardinality, and through the burst and recovery 0.91 to 0.98 except at 0.05 CPUs
+  with high cardinality (1.10, inside that cell's noise of 0.10). Plan's overloaded throughput is 1.05 to 1.08 of native
+  at low cardinality and 1.07 at 1.2 CPUs with high cardinality.
+- **CPU per metric grows steeply as the limit falls, on both paths.** At low cardinality it is 1.5 µs at 1.2 CPUs, 2.0
+  at 0.6, 3.7 at 0.3, and 6.4 at 0.05; at saturation 1.4, 3.2, and 4.2 µs at 1.2, 0.3, and 0.05. Under a quota the
+  process runs in slices of the 100 ms period, and fixed per-second work weighs more as the budget shrinks.
+- **High cardinality at 50 millicores is dominated by per-context cost.** At 830 metrics/s over 100,000 contexts, ADP
+  uses 0.040 of its 0.05 CPUs, about 50 µs per metric, is throttled in 85 to 89% of periods, and already falls behind
+  (shortfall 4 to 5% in the steady window). Calibration's 2,900 metrics/s held only while few contexts existed; the
+  cost grows with live contexts. This is the first thing to profile for N4 (context resolution and interning, the idle
+  counters' zeros, expiry).
+- **Throttling follows arrival, not average load.** At 30% of capacity and 3,000 contexts, 35 to 56% of periods are
+  throttled at 0.3 and 0.05 CPUs, because lading delivers a second's metrics in one clump and ADP's two workers spend the period's quota in
+  parallel. Production traffic from many clients is smoother, so these shares are an upper bound for the same average
+  rate.
+- **A flush stalls admission at high cardinality, and the plan stalls more.** At 3,000 contexts a flush costs too
+  little to see. At 100,000, admission in the 2 s after the flush falls to 0.47 to 0.88 of the 2 s before for plan and
+  0.35 to 0.79 for native. At 0.3 CPUs, the regime most clusters run, plan's admission falls further than native's
+  (0.47 against 0.64, noise 0.15) and it drops more of the burst (shortfall 0.31 against 0.25, noise 0.03). At 0.05 the
+  shortfall is also worse for plan (0.67 against 0.56, noise 0.08). This is the stall the [aggregation
+  today](#what-it-means-for-what-we-built) paragraph predicts: the region host reads no input while a drain is
+  pending, and plan does not absorb the stall in the datagram pool as native does (below). Everywhere else plan drops
+  the same or less than native.
+- **Plan holds less memory, because the datagram pool barely grows.** Peak memory is 0.54 to 0.71 of native at low
+  cardinality and 0.60 to 0.95 at high. In a burst native's `dsd_packet_bufs` pool grows to 1,080 to 28,000 buffers
+  (8 KiB each, up to 220 MiB); plan's to 128 to 2,700. Native keeps reading into the pool while aggregation is busy,
+  which is memory spent for fewer drops; plan pushes back to the socket sooner. N2's interleaved flush should give
+  plan native's drops at plan's memory.
+- **Not measured.** Per-metric latency, p99 included: containers have no markers to time, so latency stays with the
+  in-process paced curves, and the admission ratio around the flush is its container proxy. Also not measured: the
+  Unix socket's queue depth, and admission inside ADP directly (the harness's `longest stall`, at 100 ms resolution,
+  only says that stalls of 100 to 600 ms occur in an overloaded burst at 0.05 and 0.3 CPUs on both paths). UDP socket
+  drops need a generator that paces within the second. 0.6 CPUs was never overloaded.
+- **Noise.** Steady CPU per metric and overloaded throughput at 0.3 and 1.2 CPUs are within 2 to 6%. At 0.05 CPUs and
+  for the shortfall at low cardinality, the A/A distance reaches 0.14 to 1.4, too noisy for a ratio gate: there the
+  gates below use absolute thresholds or none. The admission ratio's noise is 0.08 at 1.2 CPUs and 0.15 at 0.3.
+
+#### Gates for N2 to N4
+
+**Method.** Judge a change in the same harness on the same host, with N1's steady rates (the `REGIME_STEADY_RATES`
+in each series' `series.txt`) and burst, against N1's plan image (or the last accepted change's):
+`REGIME_LABELS="plan-a plan-b candidate-a candidate-b"`, `REGIME_CANDIDATE_IMAGE`, three rounds, one series per
+cardinality (about 1 h 45 min each in the dory VM). Add `native-a native-b` when a gate compares with native. A ratio is the medians'
+candidate / plan; it passes when it meets the threshold, and the candidate's own A/A distance must stay within the
+noise column above, or the series is rerun. Each threshold is 1 plus or minus the largest A/A distance N1 measured for
+that measure at that limit (over both images, both cardinalities, and for G1 both windows), rounded up to the next 5%;
+where that distance exceeds 0.25 the cell has no ratio gate.
+
+| Gate | Measure | 0.05 CPUs | 0.3 CPUs | 0.6 CPUs | 1.2 CPUs | Applies to |
+|---|---|---|---|---|---|---|
+| G1 | CPU ns/metric, steady and burst plus recovery, both cardinalities | at most 1.15 | at most 1.10 | at most 1.10 | at most 1.05 | N2, N3, N4 (no regression) |
+| G2 | An improvement claimed by N4 (the same measure) | below 0.85 | below 0.90 | below 0.90 | below 0.95 | N4 |
+| G3 | Overloaded throughput (burst decoded/s) | none (noise up to 0.35) | at least 0.90 | none (not overloaded) | at least 0.95 | N2, N3, N4 |
+| G4 | Peak memory | at most 1.15 | at most 1.10 | at most 1.10 | at most 1.20 | N2, N3 (memory in flight during a drain), N4's allocator setting |
+| G5 | Shortfall in the burst, 100,000 contexts | at most native's (0.56 in N1) | at most native's (0.25 in N1) | none | at most plan's + 0.02 | N2, N3 exit |
+| G6 | Admission after / before the flush, 100,000 contexts | none (noise 1.0) | at least 0.85 | none | at least 0.90 | N2, N3 exit |
+
+- **N2 and N3** exit with G1, G3, and G4 holding, and G5 and G6 met. N1 sets today's values to beat: at 0.3 CPUs plan's
+  admission ratio is 0.47 and its shortfall 0.31; at 1.2 CPUs 0.71 and 0.16. G6's 0.85 at 0.3 CPUs is the noise floor
+  below 1, which is what "admission never stalls on a flush" can mean at this resolution. The p99 half of N2 and N3's
+  exit stays in process.
+- **N4** parts each pass G1 and G4, and claim a gain only by G2. The allocator decision reads G1 and G4 at 0.3 and 1.2
+  CPUs. The datagram pool's worst case reads the pool and peak memory columns at 0.05 and 0.3 CPUs with 100,000
+  contexts, where native grows its pool to 1,080 to 7,000 buffers in an 8 s burst and plan to 128 to 418.
+- **What no gate covers yet.** 0.6 CPUs under overload (recalibrate the burst against its measured capacity, 288,000
+  and 377,000 metrics/s, first), overloaded throughput at 0.05 CPUs, and any change smaller than G1's tolerance: a
+  5% CPU saving at 0.3 CPUs, for instance, needs more rounds or the in-process harness to show.
 
 ### N2 and N3: one region from decode to encode, with an interleaved flush
 

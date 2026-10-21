@@ -67,7 +67,7 @@ ADP's artifact channel and given its headless check in stage 5, and extended in 
   configuration is a front end and the program is the system, and the machinery of coexistence is being removed step
   by step. V2 (resources artifacts), V3 (native configuration lowers to literals), V4 (programs are whole), V5 (one program
   document), V6 (elaboration as a phase), V10 (names and a compatibility analysis), and V7a (state owners in any region) are done;
-  V7b, V8, V9, and V1 wait on the N1 measurements and the lanes decision. The plan's
+  V7b, V8, V9, and V1 wait on the owner's reading of N1 and the lanes decision. The plan's
   [handoff](programmable-metrics-v2.md#handing-off) says how to continue.
 - DogStatsD processing runs on **lanes** (stage 9), tasks inside one component, fixed at boot: `dsd_pre_aggregation`
   runs a producer lane per decoder, each the only stamper of its own admission point; `dsd_agg` runs state lanes, each
@@ -96,6 +96,10 @@ ADP's artifact channel and given its headless check in stage 5, and extended in 
   layout without lanes wherever every count comes to one, as below three workers. R1's own evidence, the mapper profile,
   is equal at one and two workers, and its deletion waits for the mapper and gateways profiles at W = 1 to 3 on the gate
   host.
+- **N1 is measured** (2026-10-21, [results and gates](programmable-metrics-next.md#n1-results)): at 0.05 to 1.2 CPUs
+  with lanes off, the plan's CPU per metric is 0.93 to 1.00 of native and its peak memory 0.54 to 0.95, but at 100,000
+  contexts a flush stalls its admission more than native's at 0.3 CPUs (0.47 against 0.64 of the rate before the
+  flush) and it drops more of a burst there and at 0.05 CPUs. Gates G1 to G6 for N2 to N4 are stated at these limits.
 - Stages 8 and 10 are not built. Their extension-point types exist, only native defaults are accepted, and each
   unsupported case is a capability error that names a stage (see [Deferred work by stage](#deferred-work-by-stage)).
 
