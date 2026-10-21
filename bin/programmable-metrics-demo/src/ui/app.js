@@ -1703,6 +1703,21 @@
     followExport(s);
   }
 
+  let compiledGen;
+  async function refreshCompiled() {
+    const pre = document.getElementById("compiled-text");
+    const hint = document.getElementById("compiled-hint");
+    try {
+      const r = await fetch("/api/adp/explain-text");
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      pre.textContent = await r.text();
+      hint.textContent = "";
+    } catch (e) {
+      hint.textContent = `Could not load the compiled plan: ${e.message}`;
+    }
+  }
+  document.getElementById("compiled-refresh").addEventListener("click", refreshCompiled);
+
   let polling = false;
   async function poll() {
     if (polling) return;
@@ -1713,6 +1728,8 @@
         state = data;
         firstSeenMs = Math.min(firstSeenMs, data.now_ms);
         render(data);
+        const g = data.status && data.status.active_generation;
+        if (g !== compiledGen) { compiledGen = g; refreshCompiled(); }
       }
     } catch (_) {
       ui.banner.replaceChildren(el("strong", { text: "The demo server is not answering." }),
