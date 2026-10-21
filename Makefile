@@ -960,6 +960,10 @@ PYTHON = $(if $(wildcard $(VENV_PYTHON)),$(VENV_PYTHON),python3)
 test-release-notes: ## Runs unit tests for release-note tooling
 	@$(PYTHON) -m unittest ci/tooling/test_release_notes.py -v
 
+.PHONY: test-update-apm-semantics
+test-update-apm-semantics: ## Runs tests for the APM semantic mappings update tooling
+	@node --test ci/tooling/test_update_apm_semantics.cjs
+
 .PHONY: check-release-notes
 check-release-notes: ## Validates committed Reno release-note files
 	@$(PYTHON) ci/tooling/release_notes.py check $$(find releasenotes/notes -type f -name '*.yaml' 2>/dev/null)
@@ -982,6 +986,10 @@ update-protos: ## Updates all vendored Protocol Buffers definitions from their s
 	CONTAINERD_GIT_TAG=$(PROTOBUF_SRC_REPO_CONTAINERD) \
 	SKETCHES_GO_GIT_TAG=$(PROTOBUF_SRC_REPO_SKETCHES_GO) \
 	./ci/tooling/update-protos.sh
+
+.PHONY: update-apm-semantics
+update-apm-semantics: ## Refreshes the vendored APM semantic mappings from the Agent and commits them (REF=<ref>, default main)
+	@./ci/tooling/update-apm-semantics.sh "$(REF)"
 
 .PHONY: clean
 clean: check-rust-build-tools clean-test-logs
