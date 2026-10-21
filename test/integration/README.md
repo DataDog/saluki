@@ -352,16 +352,35 @@ The assertion accepts only `https://localhost:55101` or `https://127.0.0.1:55101
 
 Polls the Datadog intake sidecar until it holds a metric matching every criterion given, or until `timeout` elapses. Requires `intake.enabled: true` on the test case. Polling, rather than a single check, absorbs the target's aggregation and flush window without a fixed sleep.
 
-Only `name` is required, and it must match exactly. `metric_type` (`count`, `rate`, `gauge`, or `sketch`) and `value` must both hold for the same metric value. `tags` is a subset requirement: every listed tag must be present, and additional tags, such as the environment-derived ones the Agent adds, are allowed.
+Each poll normalizes the intake's metrics per context (name and tags) and type, the same way correctness analysis does: counts and rates are summed, a gauge takes its latest value, and sketches are merged. A counter flushed as one `0.6` rate point or as two `0.3` points over equal intervals therefore matches `value: 0.6`. Contexts are never combined: the assertion passes when one context meets every criterion by itself. Expect totals, since a partial sum can match an early poll before the rest arrives.
+
+Only `name` is required, and it must match exactly. The other criteria are:
+
+- `metric_type`: `count`, `rate`, `gauge`, or `sketch`.
+- `value`: compared with the normalized value, using the same approximate float equality as correctness analysis. A rate is compared at its own interval. `value` can't be combined with `metric_type: sketch`; the test fails with a configuration error.
+- `tags`: compared as `tags_match` directs. Both sides are sorted and deduplicated first.
+- `tags_match`: `subset` (the default) requires every listed tag and allows extras, such as the environment-derived ones the Agent adds. `exact` requires the context's tags to equal the list. The intake reports a metric's host as a `host:<value>` tag, so under `exact`, `tags: []` means no tags and no host.
+
+`exact` constrains the one matching context. It doesn't prove that no other contexts arrived.
 
 ```yaml
 - assertion: intake_has_metric
   name: "example.counter"
-  metric_type: count
-  value: 3
+  metric_type: rate
+  value: 0.6
   tags: ["source:integration-test"]
   timeout: 120s
+
+- assertion: intake_has_metric
+  name: "hosttag.metric"
+  metric_type: gauge
+  value: 4
+  tags: ["host:custom"]
+  tags_match: exact
+  timeout: 120s
 ```
+
+On failure, the message lists the contexts that share the expected name, with each one's type, normalized value, point count, and the first criterion it failed. When no context has that name, it lists other observed names instead.
 
 #### `file_contains`
 
@@ -380,6 +399,10 @@ Polls a file inside the container (via `docker exec cat`) until it exists and, o
   regex: false           # Optional: treat pattern as regex (default: false)
   timeout: 30s
 ```
+
+### Intake artifacts
+
+A test with an intake sidecar captures what the intake holds after its assertions finish, under `traffic/` in the test's log directory. `traffic/manifest.json` describes the capture. The decoded capture, `traffic/target-decoded.jsonl.zst`, is kept unless the test passed. It is diagnostic evidence collected after the assertions, not necessarily the snapshot an assertion decided on. If the capture could not be collected or written, `decoded_unavailable` in the manifest says why. A test that is cancelled or reaches its overall `timeout` skips or abandons the capture rather than spending cleanup time on it.
 
 ### Duration Format
 

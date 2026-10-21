@@ -1,13 +1,14 @@
-//! Traffic artifacts for a correctness test: what went in, and what each side decoded out of it.
+//! Traffic artifacts for a test: what went in, and what the intake decoded out of it.
 //!
-//! A failed correctness test says two sides disagreed, but not what they were fed or what they produced. These
-//! artifacts answer both, under a test's `traffic/` directory:
+//! A failed test says what went wrong, but not what the system was fed or what it produced. These artifacts answer
+//! both, under a test's `traffic/` directory:
 //!
-//! - `input.jsonl.zst` and `input-manifest.json`: the input payload stream, written by one Millstone run. Both
-//!   arms are fed byte-identical payloads from the same seed, so capturing one arm describes both.
-//! - `baseline-decoded.jsonl.zst` and `comparison-decoded.jsonl.zst`: the telemetry each side's `datadog-intake`
-//!   decoded, as the analysis saw it.
-//! - `manifest.json`: what each artifact is and whether it is still on disk.
+//! - `input.jsonl.zst` and `input-manifest.json`: the input payload stream of a correctness test, written by one
+//!   Millstone run. Both arms are fed byte-identical payloads from the same seed, so capturing one arm describes both.
+//! - `<side>-decoded.jsonl.zst`: the telemetry a side's `datadog-intake` decoded. A correctness test writes one per
+//!   arm, as the analysis saw it. An integration test writes one for its target, collected after its assertions
+//!   finish, so it is not necessarily the snapshot an assertion decided on.
+//! - `manifest.json`: what each artifact is, whether it is still on disk, and why any capture is missing.
 //!
 //! # Retention
 //!
@@ -23,14 +24,16 @@ use std::{
     fs::File,
     io::BufWriter,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Serialize;
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
-use crate::correctness::analysis::CollectedData;
+use crate::intake::{CollectedData, IntakeClient};
 use crate::reporter::TestOutcome;
 
 const TRAFFIC_DIR_NAME: &str = "traffic";
@@ -43,6 +46,10 @@ const INPUT_MANIFEST_FILE_NAME: &str = "input-manifest.json";
 
 /// File a runtime writes to explain why it produced no input capture.
 const INPUT_UNAVAILABLE_FILE_NAME: &str = "input-unavailable.txt";
+
+/// Why an integration test has no input capture.
+const INTEGRATION_INPUT_UNAVAILABLE_REASON: &str =
+    "Integration procedures send input through actions, so no input capture is written.";
 
 /// The merged manifest, the one artifact every completed test keeps.
 const MANIFEST_FILE_NAME: &str = "manifest.json";
@@ -65,7 +72,7 @@ const DECODED_ORDERING: &str = "grouped_by_kind_then_intake_dump_order";
 const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
-/// Which side of a correctness comparison a decoded capture came from.
+/// Which test target a decoded capture came from.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Side {
     /// The core Agent alone, which the comparison side is measured against.
@@ -73,14 +80,20 @@ pub(crate) enum Side {
 
     /// The Agent and ADP working together.
     Comparison,
+
+    /// The target of an integration test.
+    Integration,
 }
 
 impl Side {
+    const ALL: [Self; 3] = [Self::Baseline, Self::Comparison, Self::Integration];
+
     /// Returns the side's name, used as its file-name prefix and reported in its manifest.
     pub(crate) const fn name(&self) -> &'static str {
         match self {
             Self::Baseline => "baseline",
             Self::Comparison => "comparison",
+            Self::Integration => "target",
         }
     }
 
@@ -89,6 +102,15 @@ impl Side {
         match self {
             Self::Baseline => "core Agent alone (reference side)",
             Self::Comparison => "core Agent with ADP (side under test)",
+            Self::Integration => "integration test target (system under test)",
+        }
+    }
+
+    /// Returns where and when the side's capture was collected.
+    const fn source(&self) -> &'static str {
+        match self {
+            Self::Baseline | Self::Comparison => "datadog-intake dump endpoints",
+            Self::Integration => "datadog-intake dump endpoints, collected after assertions",
         }
     }
 
@@ -98,6 +120,10 @@ impl Side {
 
     fn manifest_file_name(&self) -> String {
         format!("{}-decoded-manifest.json", self.name())
+    }
+
+    fn unavailable_file_name(&self) -> String {
+        format!("{}-decoded-unavailable.txt", self.name())
     }
 }
 
@@ -177,15 +203,31 @@ struct TrafficManifest {
 
     /// One entry per decoded capture, each with its file's state folded in.
     decoded: Vec<Value>,
+
+    /// One entry per side whose decoded capture is missing or unusable.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    decoded_unavailable: Vec<DecodedUnavailable>,
+}
+
+/// Why a side has no usable decoded capture.
+#[derive(Debug, Serialize)]
+struct DecodedUnavailable {
+    side: &'static str,
+    reason: String,
 }
 
 /// Writes one side's decoded telemetry into `dir`, creating it if necessary.
 ///
-/// # Errors
-///
-/// If the directory can't be created, or either file can't be written, an error is returned. Callers treat this as
-/// non-fatal: a missing artifact is a lost diagnostic, not a failed verdict.
-pub(crate) fn write_decoded(dir: &Path, side: Side, data: &CollectedData) -> Result<(), GenericError> {
+/// A failure is logged and recorded as the side's unavailable reason, never fatal: a missing artifact is a lost
+/// diagnostic, not a failed verdict.
+pub(crate) fn write_decoded(dir: &Path, side: Side, data: &CollectedData) {
+    if let Err(e) = try_write_decoded(dir, side, data) {
+        warn!(side = side.name(), error = %format!("{:#}", e), "Failed to write decoded telemetry capture.");
+        record_decoded_unavailable(dir, side, &format!("Failed to write the decoded capture: {:#}", e));
+    }
+}
+
+fn try_write_decoded(dir: &Path, side: Side, data: &CollectedData) -> Result<(), GenericError> {
     std::fs::create_dir_all(dir)
         .with_error_context(|| format!("Failed to create traffic directory '{}'.", dir.display()))?;
 
@@ -237,7 +279,7 @@ fn write_decoded_records(path: &Path, side: Side, data: &CollectedData) -> Resul
         records_file: side.records_file_name(),
         compression: "zstd",
         ordering: DECODED_ORDERING,
-        source: "datadog-intake dump endpoints",
+        source: side.source(),
         records,
         records_by_kind: counts,
         uncompressed_bytes,
@@ -252,10 +294,58 @@ fn write_decoded_records(path: &Path, side: Side, data: &CollectedData) -> Resul
 ///
 /// Failures are logged, never fatal.
 pub(crate) fn record_input_unavailable(dir: &Path, reason: &str) {
-    if let Err(e) =
-        std::fs::create_dir_all(dir).and_then(|()| std::fs::write(dir.join(INPUT_UNAVAILABLE_FILE_NAME), reason))
-    {
-        warn!(path = %dir.display(), error = %e, "Failed to record missing input capture.");
+    write_marker(dir, INPUT_UNAVAILABLE_FILE_NAME, reason);
+}
+
+/// Records why `side` has no decoded capture, for [`finalize`] to fold into the manifest.
+///
+/// Failures are logged, never fatal.
+fn record_decoded_unavailable(dir: &Path, side: Side, reason: &str) {
+    write_marker(dir, &side.unavailable_file_name(), reason);
+}
+
+fn write_marker(dir: &Path, file_name: &str, reason: &str) {
+    if let Err(e) = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(dir.join(file_name), reason)) {
+        warn!(path = %dir.display(), file = file_name, error = %e, "Failed to record missing traffic capture.");
+    }
+}
+
+/// Captures an integration test's intake output into `dir`, after its assertions finish.
+///
+/// Records that the test has no input capture, then collects every telemetry kind from the intake within `budget` and
+/// writes it as the [`Side::Integration`] decoded capture. The capture is skipped if `cancel` is already cancelled, and
+/// abandoned if it is cancelled or `budget` runs out first. Whatever stops it is recorded as the capture's unavailable
+/// reason. Failures are logged, never fatal: the capture is a diagnostic and must not change a verdict.
+pub(crate) async fn capture_intake(dir: &Path, client: &IntakeClient, cancel: &CancellationToken, budget: Duration) {
+    record_input_unavailable(dir, INTEGRATION_INPUT_UNAVAILABLE_REASON);
+
+    let collected = if cancel.is_cancelled() {
+        Err(
+            "The test was cancelled before the post-assertion intake capture, so the intake was not queried."
+                .to_string(),
+        )
+    } else {
+        tokio::select! {
+            result = tokio::time::timeout(budget, CollectedData::collect(client)) => match result {
+                Ok(Ok(data)) => Ok(data),
+                Ok(Err(e)) => Err(format!("Failed to collect the post-assertion intake capture: {:#}", e)),
+                Err(_) => Err(format!(
+                    "The post-assertion intake capture did not finish within {:?}, so it was abandoned.",
+                    budget
+                )),
+            },
+            _ = cancel.cancelled() => Err(
+                "The test was cancelled during the post-assertion intake capture, so it was abandoned.".to_string()
+            ),
+        }
+    };
+
+    match collected {
+        Ok(data) => write_decoded(dir, Side::Integration, &data),
+        Err(reason) => {
+            warn!(path = %dir.display(), reason = %reason, "No post-assertion intake capture.");
+            record_decoded_unavailable(dir, Side::Integration, &reason);
+        }
     }
 }
 
@@ -279,11 +369,17 @@ pub(crate) fn finalize(log_dir: &Path, outcome: TestOutcome) {
     }
 
     let mut decoded_manifests = Vec::new();
-    for side in [Side::Baseline, Side::Comparison] {
+    let mut decoded_unavailable = Vec::new();
+    for side in Side::ALL {
         let sidecar = dir.join(side.manifest_file_name());
         if let Some(manifest) = read_json_file(&sidecar) {
             decoded_manifests.push((side, manifest));
             sidecars.push(sidecar);
+        } else if let Some(reason) = missing_decoded_reason(&dir, side) {
+            decoded_unavailable.push(DecodedUnavailable {
+                side: side.name(),
+                reason,
+            });
         }
     }
 
@@ -298,7 +394,7 @@ pub(crate) fn finalize(log_dir: &Path, outcome: TestOutcome) {
 
     if !retain {
         remove_file(&input_records);
-        for side in [Side::Baseline, Side::Comparison] {
+        for side in Side::ALL {
             remove_file(&dir.join(side.records_file_name()));
         }
     }
@@ -331,6 +427,7 @@ pub(crate) fn finalize(log_dir: &Path, outcome: TestOutcome) {
         input,
         input_unavailable_reason,
         decoded,
+        decoded_unavailable,
     };
 
     if let Err(e) = write_json_file(&dir.join(MANIFEST_FILE_NAME), &manifest) {
@@ -343,6 +440,9 @@ pub(crate) fn finalize(log_dir: &Path, outcome: TestOutcome) {
         remove_file(&sidecar);
     }
     remove_file(&dir.join(INPUT_UNAVAILABLE_FILE_NAME));
+    for side in Side::ALL {
+        remove_file(&dir.join(side.unavailable_file_name()));
+    }
 }
 
 /// Explains an unusable input capture: a runtime's own note if it left one, otherwise what the directory shows.
@@ -354,6 +454,20 @@ fn missing_input_reason(dir: &Path, has_orphaned_records: bool) -> String {
             INPUT_RECORDS_FILE_NAME, INPUT_MANIFEST_FILE_NAME
         ),
         Err(_) => "No input capture was written for this test.".to_string(),
+    }
+}
+
+/// Explains a side with no readable decoded manifest: its runtime's note if it left one, otherwise what the directory
+/// shows. Returns `None` for a side that left nothing behind.
+fn missing_decoded_reason(dir: &Path, side: Side) -> Option<String> {
+    match std::fs::read_to_string(dir.join(side.unavailable_file_name())) {
+        Ok(reason) => Some(reason.trim().to_string()),
+        Err(_) if dir.join(side.records_file_name()).exists() => Some(format!(
+            "'{}' has no readable '{}', so the capture cannot be interpreted.",
+            side.records_file_name(),
+            side.manifest_file_name()
+        )),
+        Err(_) => None,
     }
 }
 
@@ -519,9 +633,12 @@ mod tests {
         assert_eq!(manifest["input"]["file"]["compressed_bytes"], 16);
         assert_eq!(manifest["input"]["file"]["present"], true);
         assert!(manifest["input_unavailable_reason"].is_null());
+        assert_eq!(manifest["version"], MANIFEST_FORMAT_VERSION);
         assert_eq!(manifest["decoded"][0]["side"], "baseline");
         assert_eq!(manifest["decoded"][1]["side"], "comparison");
         assert_eq!(manifest["decoded"][0]["file"]["present"], true);
+        // Captures that were written leave no unavailable reasons behind.
+        assert!(manifest.get("decoded_unavailable").is_none(), "{}", manifest);
 
         assert!(dir.join(INPUT_RECORDS_FILE_NAME).exists());
         assert!(dir.join(Side::Baseline.records_file_name()).exists());
@@ -659,8 +776,286 @@ mod tests {
     fn each_side_names_itself_and_its_role() {
         assert_eq!(Side::Baseline.records_file_name(), "baseline-decoded.jsonl.zst");
         assert_eq!(Side::Comparison.records_file_name(), "comparison-decoded.jsonl.zst");
+        assert_eq!(Side::Integration.records_file_name(), "target-decoded.jsonl.zst");
         assert_ne!(Side::Baseline.role(), Side::Comparison.role());
         assert!(Side::Baseline.role().contains("reference"));
         assert!(Side::Comparison.role().contains("ADP"));
+        assert_eq!(Side::Integration.role(), "integration test target (system under test)");
+    }
+
+    fn read_json(path: &Path) -> Value {
+        let raw = std::fs::read_to_string(path).expect("file should be readable");
+        serde_json::from_str(&raw).expect("file should be valid JSON")
+    }
+
+    #[test]
+    fn each_side_writes_its_own_decoded_capture() {
+        let log_dir = tempfile::tempdir().expect("temp dir should be created");
+        let dir = traffic_dir(log_dir.path());
+
+        write_decoded(&dir, Side::Baseline, &CollectedData::default());
+        write_decoded(&dir, Side::Integration, &CollectedData::default());
+
+        let baseline = read_json(&dir.join("baseline-decoded-manifest.json"));
+        assert_eq!(baseline["format"], DECODED_FORMAT);
+        assert_eq!(baseline["version"], DECODED_FORMAT_VERSION);
+        assert_eq!(baseline["side"], "baseline");
+        assert_eq!(baseline["source"], "datadog-intake dump endpoints");
+        assert!(dir.join("baseline-decoded.jsonl.zst").exists());
+
+        let target = read_json(&dir.join("target-decoded-manifest.json"));
+        assert_eq!(target["format"], DECODED_FORMAT);
+        assert_eq!(target["version"], DECODED_FORMAT_VERSION);
+        assert_eq!(target["side"], "target");
+        assert_eq!(target["role"], "integration test target (system under test)");
+        assert_eq!(target["records_file"], "target-decoded.jsonl.zst");
+        assert_eq!(
+            target["source"],
+            "datadog-intake dump endpoints, collected after assertions"
+        );
+        assert!(dir.join("target-decoded.jsonl.zst").exists());
+    }
+
+    #[test]
+    fn an_integration_capture_is_kept_on_failure_and_deleted_on_pass() {
+        for (outcome, retained) in [(TestOutcome::Failed, true), (TestOutcome::Passed, false)] {
+            let log_dir = tempfile::tempdir().expect("temp dir should be created");
+            let dir = traffic_dir(log_dir.path());
+            write_decoded(&dir, Side::Integration, &CollectedData::default());
+
+            finalize(log_dir.path(), outcome);
+
+            let manifest = read_manifest(&dir);
+            assert_eq!(manifest["captures_retained"], retained);
+            assert_eq!(manifest["decoded"].as_array().map(Vec::len), Some(1));
+            assert_eq!(manifest["decoded"][0]["side"], "target");
+            assert_eq!(manifest["decoded"][0]["file"]["name"], "target-decoded.jsonl.zst");
+            assert_eq!(manifest["decoded"][0]["file"]["present"], retained);
+            assert!(manifest.get("decoded_unavailable").is_none(), "{}", manifest);
+            assert_eq!(dir.join("target-decoded.jsonl.zst").exists(), retained);
+            assert!(!dir.join("target-decoded-manifest.json").exists());
+        }
+    }
+
+    #[test]
+    fn a_failed_decoded_write_is_reported_as_unavailable() {
+        let log_dir = tempfile::tempdir().expect("temp dir should be created");
+        let dir = traffic_dir(log_dir.path());
+        // A directory where the sidecar belongs makes the sidecar write fail after the records are written.
+        std::fs::create_dir_all(dir.join(Side::Integration.manifest_file_name())).expect("dir should be created");
+
+        write_decoded(&dir, Side::Integration, &CollectedData::default());
+        assert!(dir.join(Side::Integration.unavailable_file_name()).exists());
+
+        finalize(log_dir.path(), TestOutcome::Failed);
+
+        let manifest = read_manifest(&dir);
+        assert_eq!(manifest["decoded"].as_array().map(Vec::len), Some(0));
+        assert_eq!(manifest["decoded_unavailable"][0]["side"], "target");
+        let reason = manifest["decoded_unavailable"][0]["reason"]
+            .as_str()
+            .expect("reason should be a string");
+        assert!(
+            reason.starts_with("Failed to write the decoded capture: Failed to write '"),
+            "{}",
+            reason
+        );
+        // The chain continues past the outer context to the I/O cause.
+        assert!(reason.contains("target-decoded-manifest.json'.: "), "{}", reason);
+        assert!(dir.join("target-decoded.jsonl.zst").exists());
+        assert!(!dir.join(Side::Integration.unavailable_file_name()).exists());
+    }
+
+    #[test]
+    fn an_orphaned_decoded_capture_is_reported_as_uninterpretable() {
+        for outcome in [TestOutcome::Failed, TestOutcome::Passed] {
+            let log_dir = tempfile::tempdir().expect("temp dir should be created");
+            let dir = seed_traffic_dir(log_dir.path(), true);
+            std::fs::remove_file(dir.join(Side::Comparison.manifest_file_name())).expect("sidecar should be removed");
+
+            finalize(log_dir.path(), outcome);
+
+            let manifest = read_manifest(&dir);
+            assert_eq!(manifest["decoded"].as_array().map(Vec::len), Some(1));
+            assert_eq!(manifest["decoded"][0]["side"], "baseline");
+            assert_eq!(
+                manifest["decoded_unavailable"],
+                serde_json::json!([{
+                    "side": "comparison",
+                    "reason": "'comparison-decoded.jsonl.zst' has no readable 'comparison-decoded-manifest.json', so \
+                               the capture cannot be interpreted.",
+                }])
+            );
+            assert_eq!(
+                dir.join(Side::Comparison.records_file_name()).exists(),
+                !outcome.is_passed()
+            );
+        }
+    }
+
+    #[test]
+    fn unavailable_markers_stay_until_the_manifest_is_written() {
+        let log_dir = tempfile::tempdir().expect("temp dir should be created");
+        let dir = traffic_dir(log_dir.path());
+        record_decoded_unavailable(&dir, Side::Integration, "collection failed");
+        // A directory where the merged manifest belongs makes its write fail.
+        std::fs::create_dir_all(dir.join(MANIFEST_FILE_NAME)).expect("dir should be created");
+
+        finalize(log_dir.path(), TestOutcome::Failed);
+        assert!(dir.join(Side::Integration.unavailable_file_name()).exists());
+
+        std::fs::remove_dir(dir.join(MANIFEST_FILE_NAME)).expect("dir should be removed");
+        finalize(log_dir.path(), TestOutcome::Failed);
+
+        let manifest = read_manifest(&dir);
+        assert_eq!(
+            manifest["decoded_unavailable"],
+            serde_json::json!([{"side": "target", "reason": "collection failed"}])
+        );
+        assert!(!dir.join(Side::Integration.unavailable_file_name()).exists());
+    }
+
+    mod capture_intake {
+        use std::time::Duration;
+
+        use serde_json::json;
+        use tokio_util::sync::CancellationToken;
+
+        use super::super::{capture_intake, finalize, traffic_dir, Side, INTEGRATION_INPUT_UNAVAILABLE_REASON};
+        use super::{read_json, read_manifest};
+        use crate::intake::test_server::{closed_port, install_crypto_provider, MockIntake};
+        use crate::intake::IntakeClient;
+        use crate::reporter::TestOutcome;
+
+        /// Runs a capture into a fresh log directory, finalizes it as failed, and returns the merged manifest.
+        async fn capture(port: u16, cancel: &CancellationToken, budget: Duration) -> serde_json::Value {
+            install_crypto_provider();
+            let log_dir = tempfile::tempdir().expect("temp dir should be created");
+            let dir = traffic_dir(log_dir.path());
+
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                capture_intake(&dir, &IntakeClient::new(port), cancel, budget),
+            )
+            .await
+            .expect("capture should finish within its budget");
+
+            finalize(log_dir.path(), TestOutcome::Failed);
+            let manifest = read_manifest(&dir);
+            assert_eq!(manifest["input"], serde_json::Value::Null);
+            assert_eq!(
+                manifest["input_unavailable_reason"],
+                INTEGRATION_INPUT_UNAVAILABLE_REASON
+            );
+            manifest
+        }
+
+        fn unavailable_reason(manifest: &serde_json::Value) -> String {
+            assert_eq!(manifest["decoded"].as_array().map(Vec::len), Some(0), "{}", manifest);
+            assert_eq!(manifest["decoded_unavailable"][0]["side"], Side::Integration.name());
+            manifest["decoded_unavailable"][0]["reason"]
+                .as_str()
+                .expect("reason should be a string")
+                .to_string()
+        }
+
+        #[tokio::test]
+        async fn a_reachable_intake_is_captured_for_the_target() {
+            let intake = MockIntake::serving(json!([{
+                "context": {"name": "some.metric", "tags": []},
+                "values": [[10, {"mtype": "Count", "value": 1.0}]],
+            }]))
+            .await;
+            install_crypto_provider();
+            let log_dir = tempfile::tempdir().expect("temp dir should be created");
+            let dir = traffic_dir(log_dir.path());
+
+            capture_intake(
+                &dir,
+                &IntakeClient::new(intake.port()),
+                &CancellationToken::new(),
+                Duration::from_secs(5),
+            )
+            .await;
+
+            let decoded = read_json(&dir.join(Side::Integration.manifest_file_name()));
+            assert_eq!(decoded["side"], "target");
+            assert_eq!(decoded["records_by_kind"][1], json!({"kind": "metric", "count": 1}));
+
+            finalize(log_dir.path(), TestOutcome::Failed);
+            let manifest = read_manifest(&dir);
+            assert_eq!(manifest["decoded"][0]["side"], "target");
+            assert_eq!(manifest["decoded"][0]["file"]["present"], true);
+            assert!(manifest.get("decoded_unavailable").is_none(), "{}", manifest);
+            assert_eq!(
+                manifest["input_unavailable_reason"],
+                INTEGRATION_INPUT_UNAVAILABLE_REASON
+            );
+        }
+
+        #[tokio::test]
+        async fn an_unreachable_intake_records_the_full_collection_error() {
+            let manifest = capture(closed_port(), &CancellationToken::new(), Duration::from_secs(5)).await;
+
+            let reason = unavailable_reason(&manifest);
+            assert!(
+                reason.starts_with(
+                    "Failed to collect the post-assertion intake capture: Failed to call events dump endpoint on \
+                     datadog-intake server.: "
+                ),
+                "{}",
+                reason
+            );
+        }
+
+        #[tokio::test]
+        async fn an_unresponsive_intake_is_abandoned_when_the_budget_runs_out() {
+            let intake = MockIntake::unresponsive().await;
+
+            let manifest = capture(intake.port(), &CancellationToken::new(), Duration::from_millis(50)).await;
+
+            assert_eq!(
+                unavailable_reason(&manifest),
+                "The post-assertion intake capture did not finish within 50ms, so it was abandoned."
+            );
+        }
+
+        #[tokio::test]
+        async fn an_already_cancelled_test_skips_the_capture() {
+            let intake = MockIntake::unresponsive().await;
+            let cancel = CancellationToken::new();
+            cancel.cancel();
+
+            let manifest = capture(intake.port(), &cancel, Duration::from_secs(10)).await;
+
+            assert_eq!(
+                unavailable_reason(&manifest),
+                "The test was cancelled before the post-assertion intake capture, so the intake was not queried."
+            );
+            assert_eq!(intake.connections(), 0);
+        }
+
+        #[tokio::test]
+        async fn cancellation_during_the_capture_abandons_it() {
+            let intake = MockIntake::unresponsive().await;
+            let cancel = CancellationToken::new();
+            // Cancel only once the intake holds the capture's request, so the capture is underway.
+            let cancel_once_requested = async {
+                while intake.connections() == 0 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                cancel.cancel();
+            };
+
+            let (manifest, ()) = tokio::join!(
+                capture(intake.port(), &cancel, Duration::from_secs(10)),
+                cancel_once_requested
+            );
+
+            assert_eq!(
+                unavailable_reason(&manifest),
+                "The test was cancelled during the post-assertion intake capture, so it was abandoned."
+            );
+        }
     }
 }
