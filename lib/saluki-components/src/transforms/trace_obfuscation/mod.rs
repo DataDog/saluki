@@ -16,13 +16,15 @@ use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{transforms::*, BuildContext},
     data_model::event::{
-        trace::{AttributeValue, Span},
+        trace::{AttributeValue, AttributeValueExt as _, Span},
         Event,
     },
     topology::EventsBuffer,
 };
 use saluki_error::GenericError;
 use stringtheory::MetaString;
+  use libdd_trace_obfuscation::obfuscate::obfuscate_span as libdd_obfuscate_span;
+  use libdd_trace_obfuscation::obfuscation_config::{ObfuscationConfig as LibddObfuscationConfig};
 
 pub use self::obfuscator::{tags, ObfuscationConfig, Obfuscator};
 
@@ -46,6 +48,7 @@ impl SynchronousTransformBuilder for TraceObfuscationConfiguration {
     async fn build(&self, _context: BuildContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         Ok(Box::new(TraceObfuscation {
             obfuscator: Obfuscator::new(self.config.clone()),
+            libdd_config: Default::default(),
         }))
     }
 }
@@ -61,13 +64,15 @@ impl MemoryBounds for TraceObfuscationConfiguration {
 /// The obfuscation transform that processes traces.
 pub struct TraceObfuscation {
     obfuscator: Obfuscator,
+    libdd_config: LibddObfuscationConfig,
 }
 
 impl TraceObfuscation {
     fn obfuscate_span(&mut self, span: &mut Span) {
-        if self.obfuscator.config.credit_cards.enabled {
-            self.obfuscate_credit_cards_in_span(span);
-        }
+        libdd_obfuscate_span(span, &self.libdd_config);
+        // if self.obfuscator.config.credit_cards.enabled {
+        //     self.obfuscate_credit_cards_in_span(span);
+        // }
 
         match span.span_type() {
             "http" | "web" => self.obfuscate_http_span(span),
@@ -80,18 +85,18 @@ impl TraceObfuscation {
         }
     }
 
-    fn obfuscate_credit_cards_in_span(&mut self, span: &mut Span) {
-        for (key, value) in span.attributes.iter_mut() {
-            if let AttributeValue::String(str_val) = value {
-                if let Some(replacement) = self
-                    .obfuscator
-                    .obfuscate_credit_card_number(key.as_ref(), str_val.as_ref())
-                {
-                    *str_val = replacement;
-                }
-            }
-        }
-    }
+    // fn obfuscate_credit_cards_in_span(&mut self, span: &mut Span) {
+    //     for (key, value) in span.attributes.iter_mut() {
+    //         if let AttributeValue::String(str_val) = value {
+    //             if let Some(replacement) = self
+    //                 .obfuscator
+    //                 .obfuscate_credit_card_number(key.as_ref(), str_val.as_ref())
+    //             {
+    //                 *str_val = replacement;
+    //             }
+    //         }
+    //     }
+    // }
 
     fn obfuscate_http_span(&mut self, span: &mut Span) {
         // Every URL goes through the algorithm. Screening with a cheap byte scan first would save the work on URLs
@@ -301,6 +306,7 @@ mod tests {
 
         TraceObfuscation {
             obfuscator: Obfuscator::new(config),
+            libdd_config: Default::default(),            
         }
     }
 
@@ -337,5 +343,19 @@ mod tests {
             obfuscated_url("https://example.com:port/x", false, false),
             "https://example.com:port/x"
         );
+    }
+
+    use libdd_trace_obfuscation::obfuscate::obfuscate_span as libdd_obfuscate_span;
+    use libdd_trace_obfuscation::obfuscation_config::{HttpConfig, ObfuscationConfig as LibddObfuscationConfig};
+
+    #[test]
+    fn libdd_generic_obfuscation_on_saluki_span() {
+        let mut span = http_span("http://example.com/users/123?token=abc");
+        let config = LibddObfuscationConfig {
+            http: HttpConfig { remove_query_string: true, remove_path_digits: true},
+            ..Default::default()
+        };
+        libdd_obfuscate_span(&mut span, &config);
+        assert_eq!(span.attributes.get(tags::HTTP_URL).unwrap().as_string().unwrap(), "http://example.com/users/??");
     }
 }

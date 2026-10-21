@@ -2,34 +2,61 @@
 
 use std::sync::Arc;
 
+use libdd_trace_model::{TraceText, ValueMap, ValueTypes};
 use saluki_common::collections::FastHashMap;
 use stringtheory::MetaString;
 
-/// Typed value for attributes at every level of the trace model: span attributes,
-/// span event attributes, span link attributes, and trace-level attributes.
-///
-/// Covers all variants carried by the V1 APM `idx` wire format (`RawAnyValue`).
-#[derive(Clone, Debug, PartialEq)]
-pub enum AttributeValue {
-    /// String-valued attribute.
-    String(MetaString),
-    /// Boolean attribute.
-    Bool(bool),
-    /// Integer attribute.
-    Int(i64),
-    /// Floating-point attribute.
-    Float(f64),
-    /// Raw bytes attribute.
-    Bytes(Vec<u8>),
-    /// Array of attribute values (may be heterogeneous).
-    Array(Vec<AttributeValue>),
-    /// List of key-value pairs.
-    KeyValueList(Vec<(MetaString, AttributeValue)>),
+/// Type marker selecting concrete types for `libdd_trace_model::ValueTypes`
+pub enum SalukiValues {}
+
+impl ValueTypes for SalukiValues {
+    type Text = MetaString;
+    type Bytes = Vec<u8>;
+    type Array = Vec<AttributeValue>;
+    type Map = Vec<(MetaString, AttributeValue)>;
 }
 
-impl AttributeValue {
+/// The libdd-trace-model AttributeValue using Saluki's concrete types
+pub type AttributeValue = libdd_trace_model::AttributeValue<SalukiValues>;
+
+impl ValueMap<SalukiValues> for Vec<(MetaString, AttributeValue)> {
+    fn try_get(&self, key: &str) -> Option<&AttributeValue> {
+        self.as_slice().iter().find(|(k, _)| k.as_ref() == key).map(|(_, v)| v)
+    }
+
+    fn iter<'a>(&'a self) -> impl Iterator<Item = (&'a str, &'a AttributeValue)>
+    where
+        SalukiValues: 'a,
+    {
+        self.as_slice().iter().map(|(k, v)| (k.as_str(), v))
+    }
+}
+
+/// Convenience methods for the libdd-trace-model AttributeValue type
+pub trait AttributeValueExt {
     /// Returns the inner string if this is a `String` variant.
-    pub fn as_string(&self) -> Option<&MetaString> {
+    fn as_string(&self) -> Option<&MetaString>;
+    /// Returns the inner float if this is a `Float` variant.
+    ///
+    /// Returns `Some` only when the stored variant is `Float`. For numeric semantic tags
+    /// where the source may store an integer (for example, sampling priority, `_sample_rate`,
+    /// `_top_level`), use [`as_num`][AttributeValue::as_num] instead.
+    fn as_float(&self) -> Option<f64>;
+    /// Returns the inner bool if this is a `Bool` variant.
+    fn as_bool(&self) -> Option<bool>;
+    /// Returns the inner integer if this is an `Int` variant.
+    fn as_int(&self) -> Option<i64>;
+    /// Returns a numeric value as `f64` for either `Float` or `Int` variants.
+    ///
+    /// Use this when the caller only needs a number and doesn't care whether
+    /// the stored type is integral or floating-point (for example, sampling priority).
+    fn as_num(&self) -> Option<f64>;
+    /// Returns the inner bytes if this is a `Bytes` variant.
+    fn as_bytes(&self) -> Option<&[u8]>;
+}
+
+impl AttributeValueExt for AttributeValue {
+    fn as_string(&self) -> Option<&MetaString> {
         if let AttributeValue::String(s) = self {
             Some(s)
         } else {
@@ -37,12 +64,7 @@ impl AttributeValue {
         }
     }
 
-    /// Returns the inner float if this is a `Float` variant.
-    ///
-    /// Returns `Some` only when the stored variant is `Float`. For numeric semantic tags
-    /// where the source may store an integer (for example, sampling priority, `_sample_rate`,
-    /// `_top_level`), use [`as_num`][AttributeValue::as_num] instead.
-    pub fn as_float(&self) -> Option<f64> {
+    fn as_float(&self) -> Option<f64> {
         if let AttributeValue::Float(f) = self {
             Some(*f)
         } else {
@@ -50,8 +72,7 @@ impl AttributeValue {
         }
     }
 
-    /// Returns the inner bool if this is a `Bool` variant.
-    pub fn as_bool(&self) -> Option<bool> {
+    fn as_bool(&self) -> Option<bool> {
         if let AttributeValue::Bool(b) = self {
             Some(*b)
         } else {
@@ -59,8 +80,7 @@ impl AttributeValue {
         }
     }
 
-    /// Returns the inner integer if this is an `Int` variant.
-    pub fn as_int(&self) -> Option<i64> {
+    fn as_int(&self) -> Option<i64> {
         if let AttributeValue::Int(i) = self {
             Some(*i)
         } else {
@@ -68,11 +88,7 @@ impl AttributeValue {
         }
     }
 
-    /// Returns a numeric value as `f64` for either `Float` or `Int` variants.
-    ///
-    /// Use this when the caller only needs a number and doesn't care whether
-    /// the stored type is integral or floating-point (for example, sampling priority).
-    pub fn as_num(&self) -> Option<f64> {
+    fn as_num(&self) -> Option<f64> {
         match self {
             AttributeValue::Float(f) => Some(*f),
             AttributeValue::Int(i) => Some(*i as f64),
@@ -80,8 +96,7 @@ impl AttributeValue {
         }
     }
 
-    /// Returns the inner bytes if this is a `Bytes` variant.
-    pub fn as_bytes(&self) -> Option<&[u8]> {
+    fn as_bytes(&self) -> Option<&[u8]> {
         if let AttributeValue::Bytes(b) = self {
             Some(b)
         } else {
@@ -445,6 +460,50 @@ impl Span {
     /// Returns a mutable reference to the span events collection.
     pub fn span_events_mut(&mut self) -> &mut Vec<SpanEvent> {
         &mut self.span_events
+    }
+}
+
+impl libdd_trace_model::Span for Span {
+    fn service(&self) -> &str {
+        self.service.as_str()
+    }
+
+    fn resource(&self) -> &str {
+        Span::resource(self)
+    }
+
+    fn r#type(&self) -> &str {
+        self.span_type.as_str()
+    }
+
+    fn set_service(&mut self, value: impl Into<Self::Text>) {
+        self.service = value.into();
+    }
+
+    fn set_resource(&mut self, value: impl Into<Self::Text>) {
+        self.resource = value.into();
+    }
+}
+
+impl libdd_trace_model::Attributes for Span {
+    type Text = MetaString;
+    type Bytes = Vec<u8>;
+    type Values = SalukiValues;
+
+    fn attribute(&self, key: &str) -> Option<&libdd_trace_model::Value<Self>> {
+        self.attributes.get(key)
+    }
+
+    fn retain_attributes(&mut self, f: impl FnMut(&Self::Text, &mut libdd_trace_model::Value<Self>) -> bool) {
+        self.attributes.retain(f);
+    }
+
+    fn attribute_mut(&mut self, key: &str) -> Option<&mut libdd_trace_model::Value<Self>> {
+        self.attributes.get_mut(key)
+    }
+
+    fn set_attribute(&mut self, key: impl Into<Self::Text>, value: libdd_trace_model::Value<Self>) {
+        self.attributes.insert(key.into(), value);
     }
 }
 

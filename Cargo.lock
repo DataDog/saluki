@@ -3772,8 +3772,8 @@ checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
 
 [[package]]
 name = "libdd-capabilities"
-version = "4.0.1"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=2b4587ed49cbc539ff861ef549c9689baf86b920#2b4587ed49cbc539ff861ef549c9689baf86b920"
+version = "4.0.0"
+source = "git+https://github.com/DataDog/libdatadog.git?branch=andrew.glaude%2FtraceTrait#f80bb1e0ce1eb99f88d9456002383cff0ac12fd0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3785,8 +3785,8 @@ dependencies = [
 
 [[package]]
 name = "libdd-common"
-version = "8.0.0"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=2b4587ed49cbc539ff861ef549c9689baf86b920#2b4587ed49cbc539ff861ef549c9689baf86b920"
+version = "7.0.0"
+source = "git+https://github.com/DataDog/libdatadog.git?branch=andrew.glaude%2FtraceTrait#f80bb1e0ce1eb99f88d9456002383cff0ac12fd0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3809,16 +3809,24 @@ dependencies = [
 
 [[package]]
 name = "libdd-tinybytes"
-version = "1.1.5"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=2b4587ed49cbc539ff861ef549c9689baf86b920#2b4587ed49cbc539ff861ef549c9689baf86b920"
+version = "1.1.4"
+source = "git+https://github.com/DataDog/libdatadog.git?branch=andrew.glaude%2FtraceTrait#f80bb1e0ce1eb99f88d9456002383cff0ac12fd0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
+name = "libdd-trace-model"
+version = "0.1.0"
+source = "git+https://github.com/DataDog/libdatadog.git?branch=andrew.glaude%2FtraceTrait#f80bb1e0ce1eb99f88d9456002383cff0ac12fd0"
+dependencies = [
+ "libdd-tinybytes",
+]
+
+[[package]]
 name = "libdd-trace-normalization"
-version = "4.2.0"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=2b4587ed49cbc539ff861ef549c9689baf86b920#2b4587ed49cbc539ff861ef549c9689baf86b920"
+version = "4.1.0"
+source = "git+https://github.com/DataDog/libdatadog.git?branch=andrew.glaude%2FtraceTrait#f80bb1e0ce1eb99f88d9456002383cff0ac12fd0"
 dependencies = [
  "anyhow",
  "libdd-trace-protobuf",
@@ -3826,12 +3834,13 @@ dependencies = [
 
 [[package]]
 name = "libdd-trace-obfuscation"
-version = "10.0.0"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=2b4587ed49cbc539ff861ef549c9689baf86b920#2b4587ed49cbc539ff861ef549c9689baf86b920"
+version = "9.0.0"
+source = "git+https://github.com/DataDog/libdatadog.git?branch=andrew.glaude%2FtraceTrait#f80bb1e0ce1eb99f88d9456002383cff0ac12fd0"
 dependencies = [
  "anyhow",
  "fluent-uri",
  "libdd-common",
+ "libdd-trace-model",
  "libdd-trace-protobuf",
  "libdd-trace-utils",
  "log",
@@ -3843,8 +3852,8 @@ dependencies = [
 
 [[package]]
 name = "libdd-trace-protobuf"
-version = "5.1.0"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=2b4587ed49cbc539ff861ef549c9689baf86b920#2b4587ed49cbc539ff861ef549c9689baf86b920"
+version = "5.0.1"
+source = "git+https://github.com/DataDog/libdatadog.git?branch=andrew.glaude%2FtraceTrait#f80bb1e0ce1eb99f88d9456002383cff0ac12fd0"
 dependencies = [
  "prost",
  "serde",
@@ -3853,8 +3862,8 @@ dependencies = [
 
 [[package]]
 name = "libdd-trace-utils"
-version = "14.0.0"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=2b4587ed49cbc539ff861ef549c9689baf86b920#2b4587ed49cbc539ff861ef549c9689baf86b920"
+version = "13.0.0"
+source = "git+https://github.com/DataDog/libdatadog.git?branch=andrew.glaude%2FtraceTrait#f80bb1e0ce1eb99f88d9456002383cff0ac12fd0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3871,6 +3880,7 @@ dependencies = [
  "libdd-capabilities",
  "libdd-common",
  "libdd-tinybytes",
+ "libdd-trace-model",
  "libdd-trace-normalization",
  "libdd-trace-protobuf",
  "prost",
@@ -5726,6 +5736,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "indexmap",
+ "libdd-trace-model",
  "loom",
  "memchr",
  "metrics",
@@ -6477,6 +6488,7 @@ name = "stringtheory"
 version = "0.1.0"
 dependencies = [
  "foldhash 0.2.0",
+ "libdd-trace-model",
  "loom",
  "proptest",
  "protobuf",
