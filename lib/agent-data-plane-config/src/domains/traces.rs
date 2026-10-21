@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize, Serializer};
 
 use crate::defaults::{
     DEFAULT_ERROR_SAMPLING_ENABLED, DEFAULT_MAX_RESOURCE_LEN, DEFAULT_RARE_SAMPLER_CARDINALITY,
-    DEFAULT_RARE_SAMPLER_COOLDOWN_SECS, DEFAULT_RARE_SAMPLER_TPS, DEFAULT_TRACE_ENV,
+    DEFAULT_RARE_SAMPLER_COOLDOWN_SECS, DEFAULT_RARE_SAMPLER_TPS,
 };
 
 /// A beta APM feature flag.
@@ -55,12 +55,23 @@ impl Serialize for ApmFeature {
 /// Resolved traces configuration.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Domain {
-    /// Environment tag applied to traces.
-    pub env: String,
+    /// Trace environment configured by `apm_config.env` (`DD_APM_ENV`).
+    ///
+    /// `None` when no input set the key. An explicit empty value is kept as `Some("")`, which is
+    /// distinct from `None`: it still takes precedence over `env` and the `env:` global tags.
+    ///
+    /// Defaults to `None`. The value is not normalized; the trace pipeline resolves its environment
+    /// from this, `env`, and the global tags.
+    pub apm_env: Option<String>,
 
-    /// Environment used for traces that carry no explicit environment. (not in Datadog Agent config
-    /// schema)
-    pub default_env: String,
+    /// Agent environment configured by the top-level `env` key (`DD_ENV`).
+    ///
+    /// `None` when no input set the key. An explicit empty value is kept as `Some("")`, which still
+    /// takes precedence over the `env:` global tags.
+    ///
+    /// Defaults to `None`. The value is not normalized; the trace pipeline uses it when `apm_env` is
+    /// `None`.
+    pub env: Option<String>,
 
     /// Whether trace stats are computed separately per span kind.
     pub compute_stats_by_span_kind: bool,
@@ -178,7 +189,8 @@ impl Default for Domain {
     fn default() -> Self {
         Self {
             // Witnessed fields start as placeholders and are overwritten by Datadog `drive`.
-            env: String::new(),
+            apm_env: None,
+            env: None,
             compute_stats_by_span_kind: false,
             peer_tags: Vec::new(),
             peer_tags_aggregation: false,
@@ -195,7 +207,6 @@ impl Default for Domain {
             probabilistic_sampler: ProbabilisticSampler::default(),
             obfuscation: Obfuscation::default(),
             // Saluki-only fields own their absent-key behavior here.
-            default_env: DEFAULT_TRACE_ENV.to_owned(),
             max_resource_len: DEFAULT_MAX_RESOURCE_LEN,
             replace_tags: Vec::new(),
             error_sampling_enabled: DEFAULT_ERROR_SAMPLING_ENABLED,

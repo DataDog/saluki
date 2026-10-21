@@ -349,22 +349,39 @@ mod tests {
     }
 
     #[test]
-    fn dd_env_reaches_traces_env_without_setting_default_env() {
-        // Trace sampling selects remote settings by `traces.env`, so `DD_ENV` must reach it without changing
-        // `traces.default_env`.
-        use agent_data_plane_config::defaults::DEFAULT_TRACE_ENV;
-
+    fn trace_env_environment_variables_reach_the_model() {
+        // The trace environment picks its source by whether a key was configured. An empty variable is
+        // unset, as in the Agent, so it must not block a lower-precedence source. Global tags reach
+        // their lists unchanged; nothing here derives an environment from them.
         let _guard = test_env_lock();
-        let path = std::env::temp_dir().join(format!("adp_dd_env_{}.yaml", std::process::id()));
+        let path = std::env::temp_dir().join(format!("adp_trace_env_{}.yaml", std::process::id()));
         std::fs::write(&path, "{}\n").unwrap();
+        std::env::set_var("DD_TAGS", "a:b env:tagged");
+        std::env::set_var("DD_EXTRA_TAGS", "env:extra");
+
+        std::env::set_var("DD_APM_ENV", "apm");
         std::env::set_var("DD_ENV", "prod");
+        let set = block_on(LoadedConfiguration::load(&path, EnvPrecedence::AfterFile)).expect("local sources load");
 
-        let loaded = block_on(LoadedConfiguration::load(&path, EnvPrecedence::AfterFile)).expect("local sources load");
+        std::env::set_var("DD_APM_ENV", "");
+        std::env::set_var("DD_ENV", "");
+        let empty = block_on(LoadedConfiguration::load(&path, EnvPrecedence::AfterFile)).expect("local sources load");
 
-        std::env::remove_var("DD_ENV");
+        for var in ["DD_APM_ENV", "DD_ENV", "DD_TAGS", "DD_EXTRA_TAGS"] {
+            std::env::remove_var(var);
+        }
         std::fs::remove_file(&path).ok();
-        assert_eq!(loaded.local().domains.traces.env, "prod");
-        assert_eq!(loaded.local().domains.traces.default_env, DEFAULT_TRACE_ENV);
+
+        let traces = &set.local().domains.traces;
+        assert_eq!(traces.apm_env.as_deref(), Some("apm"));
+        assert_eq!(traces.env.as_deref(), Some("prod"));
+
+        let traces = &empty.local().domains.traces;
+        assert_eq!(traces.apm_env, None);
+        assert_eq!(traces.env, None);
+        let tags = &empty.local().shared.tags;
+        assert_eq!(tags.tags, ["a:b", "env:tagged"]);
+        assert_eq!(tags.extra_tags, ["env:extra"]);
     }
 
     #[test]

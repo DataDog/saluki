@@ -32,6 +32,7 @@ use stringtheory::MetaString;
 use super::DatadogTraceConfiguration;
 use crate::common::otlp::traces::translator::OtlpTracesTranslator;
 use crate::common::otlp::Metrics;
+use crate::config::AgentEnv;
 use crate::decoders::datadog::decode_v1_payload;
 use crate::transforms::TraceSamplerConfiguration;
 
@@ -178,7 +179,8 @@ async fn sample_and_encode(traces_domain: domains::traces::Domain, traces: Vec<T
     shared.endpoints.compression.compressor_kind = "zstd".to_string();
     shared.metrics_encoding.flush_timeout = Duration::from_millis(10);
 
-    let sampler = TraceSamplerConfiguration::from_configuration(&traces_domain, &downstream_otlp);
+    let agent_env = AgentEnv::resolve(None, None, &[], &[]);
+    let sampler = TraceSamplerConfiguration::from_configuration(&traces_domain, &downstream_otlp, agent_env.clone());
     let (sampler, mut sampler_outputs) = TestComponentDriver::transform(sampler)
         .await
         .expect("trace sampler should build");
@@ -186,7 +188,7 @@ async fn sample_and_encode(traces_domain: domains::traces::Domain, traces: Vec<T
     sampler.shutdown().await.expect("trace sampler should stop cleanly");
     let sampled = sampler_outputs.default_output().collect_events().await;
 
-    let encoder = DatadogTraceConfiguration::from_configuration(&traces_domain, &downstream_otlp, &shared);
+    let encoder = DatadogTraceConfiguration::from_configuration(&traces_domain, &downstream_otlp, &shared, agent_env);
     let (encoder, mut payloads) = TestComponentDriver::encoder(encoder)
         .await
         .expect("trace encoder should build");

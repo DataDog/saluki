@@ -209,9 +209,8 @@ impl SamplerConfig {
     /// examples of rarely seen operations.
     ///
     /// `env` identifies the Agent's deployment environment, such as `prod`, not an individual trace's environment.
-    /// The caller supplies a normalized tag value. The trace sampler first substitutes `none` for an empty configured
-    /// `env`, then normalizes the result. This method neither normalizes names nor supplies an environment default:
-    /// a remote name of `Prod` does not match `prod`.
+    /// The caller supplies the Agent's resolved, normalized environment. This method neither derives that environment
+    /// nor normalizes names: a remote name of `Prod` does not match `prod`.
     ///
     /// This method selects the last `by_env` entry whose name exactly matches `env`. Earlier matching entries
     /// contribute nothing, even if the selected entry leaves fields unset. For each setting independently, it uses:

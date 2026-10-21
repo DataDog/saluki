@@ -1,6 +1,6 @@
 use std::{borrow::Cow, fmt::Write, time::Duration};
 
-use agent_data_plane_config::{defaults::DEFAULT_TRACE_ENV, domains, SharedConfiguration};
+use agent_data_plane_config::{domains, SharedConfiguration};
 use async_trait::async_trait;
 use datadog_protos::traces::builders::{idx::SpanKind, AgentPayloadBuilder};
 use http::{uri::PathAndQuery, HeaderName, HeaderValue, Method, Uri};
@@ -47,6 +47,7 @@ use crate::common::otlp::util::{
     attributes_to_source, extract_container_tags_from_attributes_map, Source as OtlpSource,
     SourceKind as OtlpSourceKind, KEY_DATADOG_CONTAINER_TAGS,
 };
+use crate::config::AgentEnv;
 
 const CONTAINER_TAGS_META_KEY: &str = "_dd.tags.container";
 const MAX_TRACES_PER_PAYLOAD: usize = 10000;
@@ -117,8 +118,8 @@ pub struct DatadogTraceConfiguration {
     /// A zero duration is treated as "flush almost immediately" during `build`.
     flush_timeout: Duration,
 
-    /// Global environment tag applied to emitted payloads.
-    env: String,
+    /// Agent environment of emitted payloads.
+    agent_env: AgentEnv,
 
     /// Target sampled traces per second, forwarded to the intake as `target_tps`.
     target_traces_per_second: f64,
@@ -143,28 +144,21 @@ impl DatadogTraceConfiguration {
     /// Creates a new `DatadogTraceConfiguration` from the resolved traces and shared configuration.
     ///
     /// The OTLP trace settings live in their own domain, so they arrive as a separate slice rather
-    /// than through the traces domain.
+    /// than through the traces domain. Each payload carries `agent_env` as its agent environment.
     pub fn from_configuration(
         traces: &domains::traces::Domain, otlp_traces: &domains::otlp::Traces, shared: &SharedConfiguration,
+        agent_env: AgentEnv,
     ) -> Self {
         let app_details = saluki_metadata::get_app_details();
         let version = format!("agent-data-plane/{}", app_details.version().raw());
 
         let compression = &shared.endpoints.compression;
 
-        // ADP defaults the global environment tag to `none` rather than the Core Agent's empty
-        // string, so normalize an empty resolved value back to `none`.
-        let env = if traces.env.is_empty() {
-            DEFAULT_TRACE_ENV.to_owned()
-        } else {
-            traces.env.clone()
-        };
-
         Self {
             compressor_kind: compression.compressor_kind.clone(),
             zstd_compressor_level: compression.effective_zstd_level(),
             flush_timeout: shared.metrics_encoding.flush_timeout,
-            env,
+            agent_env,
             target_traces_per_second: traces.target_traces_per_second,
             errors_per_second: traces.errors_per_second,
             error_tracking_standalone: traces.error_tracking_standalone_enabled,
@@ -184,6 +178,18 @@ impl DatadogTraceConfiguration {
         self.default_hostname = Some(hostname);
         Ok(self)
     }
+
+    fn endpoint_encoder(&self) -> TraceEndpointEncoder {
+        TraceEndpointEncoder::new(
+            MetaString::from(self.default_hostname.clone().unwrap_or_default()),
+            self.version.clone(),
+            self.agent_env.as_str().to_owned(),
+            self.target_traces_per_second,
+            self.errors_per_second,
+            self.error_tracking_standalone,
+            self.ignore_missing_datadog_fields,
+        )
+    }
 }
 
 #[async_trait]
@@ -201,25 +207,9 @@ impl EncoderBuilder for DatadogTraceConfiguration {
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
 
-        let default_hostname = self.default_hostname.clone().unwrap_or_default();
-        let default_hostname = MetaString::from(default_hostname);
-
         // Create request builder for traces which is used to generate HTTP requests.
-
-        let mut trace_rb = RequestBuilder::new(
-            TraceEndpointEncoder::new(
-                default_hostname,
-                self.version.clone(),
-                self.env.clone(),
-                self.target_traces_per_second,
-                self.errors_per_second,
-                self.error_tracking_standalone,
-                self.ignore_missing_datadog_fields,
-            ),
-            compression_scheme,
-            RB_BUFFER_CHUNK_SIZE,
-        )
-        .await?;
+        let mut trace_rb =
+            RequestBuilder::new(self.endpoint_encoder(), compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
         trace_rb.with_max_inputs_per_payload(MAX_TRACES_PER_PAYLOAD);
 
         let flush_timeout = if self.flush_timeout.is_zero() {
@@ -1177,6 +1167,32 @@ mod tests {
         assert_eq!(None, resolve_container_tags_from_attrs(&attributes, None, true));
         // Honoring fields but with no container attributes and no Fargate source still yields nothing.
         assert_eq!(None, resolve_container_tags_from_attrs(&attributes, None, false));
+    }
+
+    #[test]
+    fn agent_payload_env_is_the_agent_env() {
+        // The encoder sends the resolved agent environment unchanged: one that normalizes to empty does not become
+        // `none`.
+        let cases = [
+            (AgentEnv::resolve(None, Some("Prod"), &[], &[]), "prod"),
+            (AgentEnv::resolve(Some("!!!"), None, &[], &[]), ""),
+        ];
+        for (agent_env, expected) in cases {
+            let config = DatadogTraceConfiguration::from_configuration(
+                &domains::traces::Domain::default(),
+                &domains::otlp::Traces::default(),
+                &SharedConfiguration::default(),
+                agent_env,
+            );
+            let mut buf = Vec::new();
+            config
+                .endpoint_encoder()
+                .encode(&make_trace(TraceIngestInfo::Datadog), &mut buf)
+                .expect("encode should succeed");
+
+            let payload = AgentPayload::parse_from_bytes(&buf).expect("AgentPayload should decode");
+            assert_eq!(payload.env, expected);
+        }
     }
 
     /// Only OTLP traces get the `otlp-` tracer version prefix and `_dd.otlp_sr`, as in the Go trace agent's OTLP

@@ -53,6 +53,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
+        env_vars: &["DD_APM_ENV"],
+        path: &["apm_config", "env"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
         env_vars: &["DD_APM_ERROR_TRACKING_STANDALONE_ENABLED"],
         path: &["apm_config", "error_tracking_standalone", "enabled"],
         decode: EnvDecode::Bool,

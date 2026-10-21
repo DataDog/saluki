@@ -361,6 +361,13 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.traces.enable_rare_sampler = value;
     }
 
+    fn consume_apm_config_env(&mut self, value: String) {
+        // The trace environment falls back to `env` only when this key is unset, so an explicit empty
+        // value must stay distinguishable from the schema default.
+        let configured = self.sources.provenance("apm_config.env") == Provenance::Explicit;
+        self.config.domains.traces.apm_env = configured.then_some(value);
+    }
+
     fn consume_apm_config_error_tracking_standalone_enabled(&mut self, value: bool) {
         self.config.domains.traces.error_tracking_standalone_enabled = value;
     }
@@ -933,7 +940,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_env(&mut self, value: String) {
-        self.config.domains.traces.env = value;
+        // The trace environment falls back to the `env:` global tags only when this key is unset, so
+        // an explicit empty value must stay distinguishable from the schema default.
+        let configured = self.sources.provenance("env") == Provenance::Explicit;
+        self.config.domains.traces.env = configured.then_some(value);
     }
 
     fn consume_eks_fargate(&mut self, value: bool) {
@@ -2419,6 +2429,56 @@ mod tests {
         // The effective value survives, so a consumer that wants the URL need not restate it.
         assert_defaulted(&config.shared.endpoints.dd_url, "https://app.datadoghq.com");
         assert_explicit(&config.shared.endpoints.site, "datadoghq.eu");
+    }
+
+    #[test]
+    fn trace_env_keys_record_configured_values() {
+        // The trace environment selects by whether a key was configured, not by whether it is empty,
+        // so each key records its value only when an input set it.
+        #[track_caller]
+        fn assert_trace_env(config: &SalukiConfiguration, apm_env: Option<&str>, env: Option<&str>) {
+            let traces = &config.domains.traces;
+            assert_eq!((traces.apm_env.as_deref(), traces.env.as_deref()), (apm_env, env));
+        }
+
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert_trace_env(&config, None, None);
+
+        let (config, errors) = translate_explicit(json!({ "apm_config": { "env": "Staging" } }));
+        assert!(errors.is_none());
+        assert_trace_env(&config, Some("Staging"), None);
+
+        let (config, errors) = translate_explicit(json!({ "env": "Prod" }));
+        assert!(errors.is_none());
+        assert_trace_env(&config, None, Some("Prod"));
+
+        // An explicit empty file value is configured.
+        let (config, errors) = translate_explicit(json!({ "apm_config": { "env": "" }, "env": "" }));
+        assert!(errors.is_none());
+        assert_trace_env(&config, Some(""), Some(""));
+
+        // A streamed default is not configured, even when it is nonempty.
+        let (config, errors) = translate_stream(&[
+            ("apm_config.env", json!("staging"), StreamProvenance::Default),
+            ("env", json!("prod"), StreamProvenance::Default),
+        ]);
+        assert!(errors.is_none());
+        assert_trace_env(&config, None, None);
+
+        let (config, errors) = translate_stream(&[
+            ("apm_config.env", json!(""), StreamProvenance::Default),
+            ("env", json!("prod"), StreamProvenance::Explicit),
+        ]);
+        assert!(errors.is_none());
+        assert_trace_env(&config, None, Some("prod"));
+
+        let (config, errors) = translate_stream(&[
+            ("apm_config.env", json!(""), StreamProvenance::Explicit),
+            ("env", json!("prod"), StreamProvenance::Explicit),
+        ]);
+        assert!(errors.is_none());
+        assert_trace_env(&config, Some(""), Some("prod"));
     }
 
     #[test]
