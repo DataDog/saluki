@@ -356,6 +356,8 @@ fn check_required(has_concepts: bool, content_hash: &str) -> Result<(), GenericE
     Ok(())
 }
 
+// Do not edit `mappings.json` by hand: `make update-apm-semantics` overwrites it from upstream and records the source
+// commit in `_version.txt`. Fix a mismatch with the `Concept` enum in Rust instead.
 const MAPPINGS_JSON: &str = include_str!("mappings.json");
 
 /// Hashes a raw registry document for change detection.

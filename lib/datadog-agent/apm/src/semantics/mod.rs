@@ -61,6 +61,8 @@ pub enum Concept {
     HttpMethod,
     /// The `http.route` concept.
     HttpRoute,
+    /// The `url.template` concept.
+    UrlTemplate,
     /// The `rpc.grpc.status_code` concept.
     RpcGrpcStatusCode,
     /// The `span.kind` concept.
@@ -195,6 +197,7 @@ impl Concept {
         Concept::HttpStatusCode,
         Concept::HttpMethod,
         Concept::HttpRoute,
+        Concept::UrlTemplate,
         Concept::RpcGrpcStatusCode,
         Concept::SpanKind,
         Concept::DdBaseService,
@@ -274,6 +277,7 @@ impl Concept {
             Concept::HttpStatusCode => "http.status_code",
             Concept::HttpMethod => "http.method",
             Concept::HttpRoute => "http.route",
+            Concept::UrlTemplate => "url.template",
             Concept::RpcGrpcStatusCode => "rpc.grpc.status_code",
             Concept::SpanKind => "span.kind",
             Concept::DdBaseService => "_dd.base_service",
@@ -350,7 +354,7 @@ mod tests {
         // added without being added to ALL, this test should start failing
         // (once you add a matching test below). The primary guard is compiler:
         // `match` on Concept forces exhaustiveness in as_str().
-        assert_eq!(Concept::ALL.len(), 67);
+        assert_eq!(Concept::ALL.len(), 68);
     }
 
     #[test]
