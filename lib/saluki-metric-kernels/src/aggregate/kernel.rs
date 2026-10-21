@@ -587,6 +587,8 @@ impl Kernel for AggregateKernel {
         }
 
         let batch = std::mem::replace(input, EventsBuffer::with_capacity(0));
+        // Everything that enters the step counts as received, as a native component's input counts it.
+        self.core.state.telemetry_mut().add_events_received(batch.len());
         let Some(admitted_at) = turn.admitted_at() else {
             // Without an admission time there is no bucket to put the batch in.
             let events = batch.len() as u64;

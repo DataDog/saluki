@@ -1017,9 +1017,10 @@ release-noted**; amendment 199):
   component, `dsd_pre_aggregation`, one task with one input of 902 buffers: the `dsd_agg` and `metrics_enrich`
   components merge into it, and so do R1's `dsd_prefix_filter_region`, `dsd_no_agg_split_region`, and
   `dsd_post_agg_filter_region`. Their component, health, and task series go, as every fused component's did:
-  `component_id:dsd_agg`'s among them, and with it the Datadog Agent's `aggregator.processed` for DogStatsD metrics,
-  which the remapper derives from what entered the native aggregation component (accepted). Aggregation's kernel keeps
-  its own series under `dsd_agg`, and its resource group and bounds stay `dsd_agg`, beside the region, so the sizing
+  `component_id:dsd_agg`'s among them, but for its `component_events_received_total`, which aggregation's kernel now
+  counts at its step's entry (`Recorder::StepInput`; its region's input counts it on lanes), so the Datadog Agent's
+  `aggregator.processed` for DogStatsD metrics keeps its native value. Aggregation's kernel keeps its own series under
+  `dsd_agg`, and its resource group and bounds stay `dsd_agg`, beside the region, so the sizing
   guide's `dsd_agg.aggregate_context_limit` still resolves.
 - **`lanes.mode` defaults to `off`** (amendment 157 reversed). `auto` and explicit counts keep their meaning, with
   aggregation in `dsd_agg` and its flushes blocking admission, as before. At production's two workers `auto` already

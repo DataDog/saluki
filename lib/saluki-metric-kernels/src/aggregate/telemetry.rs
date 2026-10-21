@@ -57,6 +57,7 @@ struct Handles {
     active_contexts_by_type: MetricTypedGauge,
     active_contexts_bytes_by_type: MetricTypedGauge,
     events_dropped: Counter,
+    events_received: Counter,
     flushes: Counter,
     series_flushed: Counter,
     sketches_flushed: Counter,
@@ -70,6 +71,7 @@ struct Pending {
     active_contexts_by_type: [i64; KINDS],
     active_contexts_bytes_by_type: [i64; KINDS],
     events_dropped: u64,
+    events_received: u64,
     flushes: u64,
     series_flushed: u64,
     sketches_flushed: u64,
@@ -85,6 +87,8 @@ struct Pending {
 ///   contexts held and the memory their contexts take, by the kind of their first value. A context whose kind changes
 ///   is added under its first kind and removed under its last.
 /// - `component_events_dropped_total`, tagged `intentional:true`: the metrics dropped at the context limit.
+/// - `component_events_received_total`, only if [counting what it receives][Self::counting_received]: the events
+///   aggregation received, which a native component's input counts.
 /// - `aggregate_flushes_total`: the flushes run.
 /// - `aggregate_flushed_total`, tagged `data_type:series` or `data_type:sketches`: the contexts whose closed buckets a
 ///   flush emitted, before histograms expand.
@@ -119,6 +123,7 @@ impl AggregateTelemetry {
                 ),
                 events_dropped: builder
                     .register_counter_with_tags("component_events_dropped_total", ["intentional:true"]),
+                events_received: Counter::noop(),
                 flushes: builder.register_counter("aggregate_flushes_total"),
                 series_flushed: builder.register_counter_with_tags("aggregate_flushed_total", ["data_type:series"]),
                 sketches_flushed: builder.register_counter_with_tags("aggregate_flushed_total", ["data_type:sketches"]),
@@ -135,6 +140,13 @@ impl AggregateTelemetry {
         telemetry
     }
 
+    /// Also counts the events aggregation receives, as `component_events_received_total`, for a host whose input does
+    /// not count them under the component `builder` registers for, as a native component's input does.
+    pub fn counting_received(mut self, builder: &MetricsBuilder) -> Self {
+        self.handles.events_received = builder.register_counter("component_events_received_total");
+        self
+    }
+
     /// Returns telemetry that records nothing, for hosts outside a topology, such as the reference interpreter.
     pub fn noop() -> Self {
         Self {
@@ -143,6 +155,7 @@ impl AggregateTelemetry {
                 active_contexts_by_type: MetricTypedGauge::noop(),
                 active_contexts_bytes_by_type: MetricTypedGauge::noop(),
                 events_dropped: Counter::noop(),
+                events_received: Counter::noop(),
                 flushes: Counter::noop(),
                 series_flushed: Counter::noop(),
                 sketches_flushed: Counter::noop(),
@@ -171,6 +184,7 @@ impl AggregateTelemetry {
             );
         }
         increment_counter(&handles.events_dropped, pending.events_dropped);
+        increment_counter(&handles.events_received, pending.events_received);
         increment_counter(&handles.flushes, pending.flushes);
         increment_counter(&handles.series_flushed, pending.series_flushed);
         increment_counter(&handles.sketches_flushed, pending.sketches_flushed);
@@ -207,6 +221,14 @@ impl AggregateTelemetry {
         match self.pending.as_mut() {
             Some(pending) => pending.events_dropped += 1,
             None => self.handles.events_dropped.increment(1),
+        }
+    }
+
+    /// Counts `events` received, if the telemetry [counts what it receives][Self::counting_received].
+    pub(super) fn add_events_received(&mut self, events: usize) {
+        match self.pending.as_mut() {
+            Some(pending) => pending.events_received += events as u64,
+            None => increment_counter(&self.handles.events_received, events as u64),
         }
     }
 

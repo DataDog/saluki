@@ -329,8 +329,13 @@ impl OperatorDef for Aggregate {
             // interpreter's, owns its contexts alone, as native aggregation does.
             let budget = context.state_budget().cloned().unwrap_or_else(ContextBudget::exclusive);
             // A region publishes its kernels' telemetry once a second: the kernel writes no shared handle per metric.
-            let telemetry =
-                AggregateTelemetry::accumulating(&MetricsBuilder::from_component_context(context.component()));
+            let builder = MetricsBuilder::from_component_context(context.component());
+            let telemetry = AggregateTelemetry::accumulating(&builder);
+            // The events that enter aggregation are the native component's input (`aggregator.processed`).
+            let telemetry = match context.counts_step_input() {
+                true => telemetry.counting_received(&builder),
+                false => telemetry,
+            };
             let kernel = AggregateKernel::new(params, flush_interval, budget, telemetry);
             // Every lane's instance of one lineage shares the record of the rules that couple its contexts; a kernel
             // built without lanes keeps them itself.

@@ -328,16 +328,22 @@ impl RegionTelemetry {
         } else {
             context
         };
+        let accounted = match self.slots.get(&program.slot()) {
+            Some(slot) => kernel_accounting_in(slot, program, node),
+            None => KernelAccounting::Under(kernel_accounting_name(node)),
+        };
+        // A region that stands for the node's native component counts what enters it under that component, as the
+        // native component's input did: the kernel does not count it again.
+        let context = match accounted {
+            KernelAccounting::Region => context.with_input_counted_by_region(),
+            _ => context,
+        };
         let group = self.accounting.as_ref().and_then(|accounting| {
             let region = accounting.regions.get(program.slot().get())?.clone();
             let region = if lane.is_only() {
                 region
             } else {
                 region.child(lane_group_name(lane))
-            };
-            let accounted = match self.slots.get(&program.slot()) {
-                Some(slot) => kernel_accounting_in(slot, program, node),
-                None => KernelAccounting::Under(kernel_accounting_name(node)),
             };
             let group = match accounted {
                 KernelAccounting::Region => region,

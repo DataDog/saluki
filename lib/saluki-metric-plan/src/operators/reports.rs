@@ -53,8 +53,9 @@ pub enum Recorder {
     /// kernel.
     Port(&'static str),
 
-    /// The events entering the node's region: its region's component, or the host of a sub-region.
-    RegionInput,
+    /// The node's kernel, counting the events that enter its step, labeled with the node's component; or, where the
+    /// region running it is named after it and its input counts them under that component, the region's input.
+    StepInput,
 
     /// The installer, from the plan of the generation that commits.
     Plan(PlanValue),
@@ -144,9 +145,8 @@ pub(super) const AGGREGATE: &[ReportedSeries] = {
         ReportedSeries::counter("aggregate_flushes_total", Kernel),
         ReportedSeries::counter("aggregate_flushed_total", Kernel).with_tags(&["data_type:series"]),
         ReportedSeries::counter("aggregate_flushed_total", Kernel).with_tags(&["data_type:sketches"]),
-        // Remapped `aggregator.processed`: what enters the aggregation's region, when it runs in a region of its own; a
-        // region fused around it counts what enters the whole region, under the region's name.
-        ReportedSeries::counter("component_events_received_total", RegionInput),
+        // Remapped `aggregator.processed`: what enters aggregation, wherever it runs.
+        ReportedSeries::counter("component_events_received_total", StepInput),
     ]
 };
 
@@ -193,10 +193,10 @@ mod tests {
             reporting,
             [names::TIMESTAMP_SPLIT, names::TAG_PROJECTION, names::AGGREGATE]
         );
-        // What enters a region is the region's to count, and a cache's series are labeled with the cache's identifier.
+        // A cache's series are labeled with the cache's identifier.
         assert!(AGGREGATE
             .iter()
-            .all(|series| matches!(series.recorder, Recorder::Kernel | Recorder::RegionInput)));
+            .all(|series| matches!(series.recorder, Recorder::Kernel | Recorder::StepInput)));
         assert!(TAG_PROJECTION
             .iter()
             .all(|series| matches!(series.recorder, Recorder::Kernel | Recorder::Cache)));

@@ -319,6 +319,10 @@ const DETACHED_TOPOLOGY: &str = "plan";
 ///
 /// A kernel names its caches through [`cache_id`][Self::cache_id]: under its component, unless the host gives the node
 /// another identifier ([`with_cache_id`][Self::with_cache_id]), such as the native cache's that a reader selects on.
+///
+/// A kernel that reports the events entering its step (`Recorder::StepInput`) counts them, unless the host says its
+/// region's input already counts them under the kernel's component
+/// ([`with_input_counted_by_region`][Self::with_input_counted_by_region]).
 #[derive(Clone)]
 pub struct KernelBuildContext {
     node: NodeId,
@@ -328,6 +332,7 @@ pub struct KernelBuildContext {
     lanes: Option<LaneBinding>,
     cache_gauges: GaugeMode,
     cache_id: Option<String>,
+    input_counted_by_region: bool,
 }
 
 impl fmt::Debug for KernelBuildContext {
@@ -340,6 +345,7 @@ impl fmt::Debug for KernelBuildContext {
             .field("lanes", &self.lanes)
             .field("cache_gauges", &self.cache_gauges)
             .field("cache_id", &self.cache_id)
+            .field("input_counted_by_region", &self.input_counted_by_region)
             .finish()
     }
 }
@@ -355,6 +361,7 @@ impl KernelBuildContext {
             lanes: None,
             cache_gauges: GaugeMode::Set,
             cache_id: None,
+            input_counted_by_region: false,
         }
     }
 
@@ -423,6 +430,20 @@ impl KernelBuildContext {
             Some(id) => id.clone(),
             None => format!("{}/{}", self.component.component_id(), default),
         }
+    }
+
+    /// Says that the input of the region running the kernel counts the events entering it under the kernel's component,
+    /// as the region of an isolation slot named after its state owner does: the kernel then leaves out what it would
+    /// count of the events entering its step (`Recorder::StepInput`), which would count them twice.
+    pub fn with_input_counted_by_region(mut self) -> Self {
+        self.input_counted_by_region = true;
+        self
+    }
+
+    /// Returns `true` if the kernel counts the events entering its step (see
+    /// [`with_input_counted_by_region`][Self::with_input_counted_by_region]).
+    pub fn counts_step_input(&self) -> bool {
+        !self.input_counted_by_region
     }
 
     /// Returns how the kernel's caches and context resolvers report their gauges (see

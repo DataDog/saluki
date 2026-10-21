@@ -219,7 +219,8 @@ fn framework_series((kind, component_type): (&str, &str), id: &str, outputs: &[&
 
 /// The series of the legacy topology that the plan-driven one does not report, written by hand: everything the
 /// topology reports about a fused transform, enrichment, and aggregation as a component of its own (its interconnects,
-/// its health, its task), and the no-aggregation split's passthrough batcher, which the plan does not have.
+/// its health, its task), but what enters aggregation, which its kernel counts, and the no-aggregation split's
+/// passthrough batcher, which the plan does not have.
 fn removed_series() -> BTreeSet<Series> {
     let mut removed = BTreeSet::new();
     for id in FUSED.into_iter().chain(["metrics_enrich", "dsd_agg"]) {
@@ -229,6 +230,10 @@ fn removed_series() -> BTreeSet<Series> {
         };
         removed.extend(component_series(id, outputs));
     }
+    removed.remove(&series(
+        "component_events_received_total",
+        &["component_id:dsd_agg", "component_type:transform"],
+    ));
     removed.insert(series(
         "aggregate_passthrough_batch_duration_secs",
         &["component_id:dsd_no_agg_split", "component_type:transform"],
@@ -538,10 +543,7 @@ async fn the_gateways_keep_their_native_metrics_and_lose_only_their_component_se
     };
     assert_eq!(
         without_flushes(render(get_datadog_agent_remappings(), &plan)),
-        without_flushes(without_aggregation_input(render(
-            get_datadog_agent_remappings(),
-            &legacy
-        )))
+        without_flushes(render(get_datadog_agent_remappings(), &legacy))
     );
     assert_eq!(
         render(get_compat_remappings(), &plan),
@@ -600,7 +602,7 @@ async fn the_datadog_agent_and_the_compatibility_endpoint_see_the_fused_componen
             rendered
         );
     }
-    let native = without_aggregation_input(render(get_datadog_agent_remappings(), &legacy));
+    let native = render(get_datadog_agent_remappings(), &legacy);
     assert_eq!(
         rendered.replace("no_aggregation__flush 2", "no_aggregation__flush 1"),
         native,
@@ -608,8 +610,7 @@ async fn the_datadog_agent_and_the_compatibility_endpoint_see_the_fused_componen
     );
 
     // The compatibility endpoint renders the same, and no series the plan-driven topology no longer reports is
-    // remapped by either rule set: nothing either consumer reads is lost, but what entered the native aggregation
-    // component (see `without_aggregation_input`).
+    // remapped by either rule set: nothing either consumer reads is lost.
     assert_eq!(
         render(get_compat_remappings(), &plan),
         render(get_compat_remappings(), &legacy)
@@ -621,7 +622,7 @@ async fn the_datadog_agent_and_the_compatibility_endpoint_see_the_fused_componen
         .collect::<BTreeMap<_, _>>();
     assert!(!removed.is_empty());
     for rules in [get_datadog_agent_remappings(), get_compat_remappings()] {
-        let rendered = without_aggregation_input(render(rules, &removed));
+        let rendered = render(rules, &removed);
         assert!(
             rendered.lines().all(|line| line.starts_with('#') || line.is_empty()),
             "removed series are remapped:\n{}",
@@ -952,19 +953,6 @@ fn the_installer_reports_every_cut_outcome_from_creation() {
     assert_eq!(cuts("cancel_refused"), None, "a refusal is no outcome of a cut");
 }
 
-/// Returns `rendered`, remapped telemetry of the legacy topology, without what the plan-driven path no longer reports
-/// without lanes: `aggregator.processed` for DogStatsD metrics, remapped from the events that entered the native
-/// aggregation component, a component series, which goes when aggregation fuses into `dsd_pre_aggregation`. On lanes,
-/// aggregation's region of its own reports it.
-fn without_aggregation_input(rendered: String) -> String {
-    rendered
-        .lines()
-        .filter(|line| !line.starts_with("aggregator__processed{data_type=\"dogstatsd_metrics\"} "))
-        .collect::<Vec<_>>()
-        .join("\n")
-        + if rendered.ends_with('\n') { "\n" } else { "" }
-}
-
 /// The series an `aggregate` node's kernel records: the native aggregation component's.
 fn aggregate_kernel_series() -> impl Iterator<Item = &'static ReportedSeries> {
     OperatorRegistry::native()
@@ -972,7 +960,7 @@ fn aggregate_kernel_series() -> impl Iterator<Item = &'static ReportedSeries> {
         .unwrap()
         .reports()
         .iter()
-        .filter(|series| series.recorder == Recorder::Kernel)
+        .filter(|series| matches!(series.recorder, Recorder::Kernel | Recorder::StepInput))
 }
 
 #[tokio::test]
@@ -991,7 +979,6 @@ async fn aggregation_in_its_region_keeps_the_native_aggregation_components_serie
     }
     // So does every metric the Datadog Agent's `aggregator.*` metrics are remapped from, the post-aggregation filter's
     // among them: aggregation emits nothing the filter would drop (R5b), and counts what it suppressed as the filter's.
-    // All but what entered the native component, a component series (see `without_aggregation_input`).
     let aggregator = |rendered: String| {
         rendered
             .lines()
@@ -1001,16 +988,11 @@ async fn aggregation_in_its_region_keeps_the_native_aggregation_components_serie
     };
     let remapped = aggregator(render(get_datadog_agent_remappings(), &plan));
     assert!(!remapped.is_empty());
-    assert_eq!(
-        remapped,
-        aggregator(without_aggregation_input(render(
-            get_datadog_agent_remappings(),
-            &legacy
-        )))
-    );
+    assert_eq!(remapped, aggregator(render(get_datadog_agent_remappings(), &legacy)));
 
-    // Aggregation fuses into `dsd_pre_aggregation`, so no component reports as `dsd_agg`: the native transform had a
-    // default output, and the plan-driven path has none of its component series.
+    // Aggregation fuses into `dsd_pre_aggregation`, so no component sends as `dsd_agg`: the native transform had a
+    // default output, and the plan-driven path has none of its outputs' series. What enters aggregation, its kernel
+    // counts as `dsd_agg`'s input.
     let dsd_agg_outputs = |telemetry: &BTreeMap<Series, String>| {
         telemetry
             .keys()
@@ -1526,7 +1508,7 @@ async fn the_hosts_report_the_telemetry_of_the_native_encoders_and_forwarders_an
         };
         let (plan, legacy) = (
             without_flushes(render(rules(), plan)),
-            without_flushes(without_aggregation_input(render(rules(), legacy))),
+            without_flushes(render(rules(), legacy)),
         );
         let lines = |rendered: &str| rendered.lines().map(str::to_string).collect::<BTreeSet<_>>();
         let (plan_lines, legacy_lines) = (lines(&plan), lines(&legacy));

@@ -489,8 +489,9 @@ What integration decided, found, or left, against the text above:
 - **Telemetry.** Without lanes, the state slot's one lane publishes the state lane series (`plan_lane_flush_seconds`,
   `plan_lane_flush_blocked_seconds`, the new `plan_lane_flush_touched_contexts_total`, and the others), under
   `component_id:dsd_pre_aggregation` and `lane:0`, where ADP published them only on lanes. The Datadog Agent's
-  `aggregator.processed` for DogStatsD metrics, remapped from what entered the native `dsd_agg` component, goes away
-  without lanes with the component's other series (accepted).
+  `aggregator.processed` for DogStatsD metrics, remapped from what entered the native `dsd_agg` component, stays:
+  aggregation's kernel counts the events entering its step as `dsd_agg`'s `component_events_received_total` wherever it
+  runs (`Recorder::StepInput`), and leaves it to the region's input where the region is `dsd_agg`, on lanes.
 - **Left as is:** the room check counts every event of a batch as a new context, so a small, full table makes every
   batch wait for the pass; production tables have room to grow. The test-only `AdmittingStandIn` stays: the traces'
   `room: Some(0)` cases use it.

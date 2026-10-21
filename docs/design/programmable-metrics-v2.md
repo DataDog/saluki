@@ -308,8 +308,8 @@ document's [changes users can see](programmable-metrics-status.md#changes-users-
   task, input channel, and budget credit.
 - **Boot-generation sub-regions in the frame harness.** The harness starts a slot's sub-regions only for candidates, so
   a chain in the boot plan runs there only on the layout that isolates state (transition traces 17 to 19 and i17).
-- **The `aggregator.processed` remap** for DogStatsD metrics goes away without lanes, with the native `dsd_agg`
-  component's series; a kernel series of aggregation's own could bring it back.
+- **The `aggregator.processed` remap** for DogStatsD metrics stays without lanes: aggregation's kernel counts what
+  enters its step as `dsd_agg`'s `component_events_received_total`.
 - **A chained owner under saturation.** An upstream pass may spread over up to a third of its interval (5 s at 15 s),
   longer than a downstream owner's tick waits for its watermark (2 s), so its tick may expire its grace and flush at
   the watermark it has, as any late tick does today (`plan_state_tick_grace_expired_total`). The default program has

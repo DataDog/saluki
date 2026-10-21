@@ -330,7 +330,7 @@ async fn series_recorded_outside_kernels_name_ports_and_parameters_of_their_node
             for series in reported(&node.id, node.op.as_str()) {
                 let what = format!("`{}` of `{}`", series.name, node.id);
                 match series.recorder {
-                    Recorder::Kernel | Recorder::Cache | Recorder::RegionInput => continue,
+                    Recorder::Kernel | Recorder::Cache | Recorder::StepInput => continue,
                     Recorder::Port(port) => assert!(
                         plan.edges
                             .iter()

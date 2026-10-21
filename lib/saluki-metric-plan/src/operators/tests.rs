@@ -1751,7 +1751,8 @@ fn described<'a>(series: impl Iterator<Item = &'a ReportedSeries>, scope: &[(&st
 /// Every kernel registers exactly the series its operator reports that kernels record, under its node's name, and its
 /// cache's counters under the identifier its build context gives the cache, whatever the node is called: no other
 /// series reports under the node's name, not even one that would stay zero. A cache's gauges depend on the host's gauge
-/// mode and are not listed.
+/// mode and are not listed. A kernel whose region's input counts what enters it under the node's name registers no
+/// series of what enters its step.
 #[test]
 fn every_kernel_registers_exactly_the_series_its_operator_reports_under_its_nodes_name() {
     let runtime = runtime();
@@ -1763,7 +1764,7 @@ fn every_kernel_registers_exactly_the_series_its_operator_reports_under_its_node
             continue;
         }
         checked.push(op);
-        for cache_id in [None, Some("native/context_cache")] {
+        for (cache_id, counted_by_region) in [(None, false), (Some("native/context_cache"), false), (None, true)] {
             let recorder = saluki_metrics::test::TestRecorder::default();
             let _local = metrics::set_default_local_recorder(&recorder);
             let node = "some_node";
@@ -1772,11 +1773,19 @@ fn every_kernel_registers_exactly_the_series_its_operator_reports_under_its_node
                 Some(id) => context.with_cache_id(id),
                 None => context,
             };
+            let context = match counted_by_region {
+                true => context.with_input_counted_by_region(),
+                false => context,
+            };
             let _kernel = configured.kernel().unwrap().build(&context).unwrap();
 
             let reports = configured.reports();
             let kernel = described(
-                reports.iter().filter(|series| series.recorder == Recorder::Kernel),
+                reports.iter().filter(|series| match series.recorder {
+                    Recorder::Kernel => true,
+                    Recorder::StepInput => !counted_by_region,
+                    _ => false,
+                }),
                 &[("component_id", node), ("component_type", "transform")],
             );
             assert!(!kernel.is_empty(), "`{}` reports kernel series", op);
