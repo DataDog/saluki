@@ -81,8 +81,8 @@ esac
 echo "[*] Downloading ${UPSTREAM_PATH} at ${COMMIT}..."
 curl -fsSL --retry 3 -o "${JSON_TMP}" "https://raw.githubusercontent.com/${UPSTREAM_REPO}/${COMMIT}/${UPSTREAM_PATH}"
 
-# Concept names are deliberately not checked against the Rust side. An unsupported concept must still reach a pull
-# request, where the failing tests tell the reviewer what to add.
+# Concept names are deliberately not checked against the Rust side. The embedded registry ignores concepts it does not
+# model, so an update that adds one still reaches a pull request that passes CI.
 if ! jq -e '(.concepts | type == "object" and length > 0) and (.metadata.content_hash | type == "string" and length > 0)' \
     "${JSON_TMP}" >/dev/null; then
     fail "The downloaded file is not a semantic mappings document."

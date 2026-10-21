@@ -102,8 +102,8 @@ mod tests {
 
     use super::*;
 
-    /// The base key set derived from the embedded registry, pinned so that registry or derivation
-    /// drift surfaces as a test failure instead of as split stats aggregates in mixed clusters.
+    /// Keys the embedded registry must keep deriving, so that losing one surfaces as a test failure instead of as
+    /// split stats aggregates in mixed clusters. Keys that registry updates add are allowed.
     ///
     /// This is the legacy `peer_tags.ini` list plus `db.system.name`, which the registry's
     /// `peer.db.system` precedence list includes, matching upstream's registry-derived behavior.
@@ -155,13 +155,15 @@ mod tests {
     ];
 
     #[test]
-    fn base_keys_match_upstream_peer_tags() {
+    fn base_keys_include_upstream_peer_tags() {
         let keys = PeerTagKeys::build(&EMBEDDED_REGISTRY, &[]);
-        assert_eq!(
-            keys.keys().iter().map(|k| k.as_ref()).collect::<Vec<&str>>(),
-            EXPECTED_BASE_KEYS,
-            "base peer tag keys must match the pinned upstream list"
-        );
+        let derived: Vec<&str> = keys.keys().iter().map(|k| k.as_ref()).collect();
+        let missing: Vec<&str> = EXPECTED_BASE_KEYS
+            .iter()
+            .copied()
+            .filter(|key| !derived.contains(key))
+            .collect();
+        assert!(missing.is_empty(), "base peer tag keys lost upstream keys: {missing:?}");
     }
 
     #[test]

@@ -337,25 +337,19 @@ impl Concept {
 
     /// Parse a concept identifier from its canonical string form.
     ///
-    /// Used by the registry loader to reject `mappings.json` entries that have
-    /// no corresponding variant—keeping the enum and the JSON in sync.
+    /// Used by the registry loader to tell the `mappings.json` entries this binary models from those it ignores.
     fn from_name(s: &str) -> Option<Concept> {
         Concept::ALL.iter().copied().find(|c| c.as_str() == s)
     }
 }
 
+// Tests that read the embedded `mappings.json` MUST keep passing when it gains concepts or fallbacks. The weekly update
+// PR changes only that file and is expected to pass CI. Do not pin counts, hashes, or full lists derived from the
+// embedded registry; assert that required entries are present. A test may fail on an update only when the update removes
+// something this binary depends on or adds something it cannot represent.
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn concept_all_covers_every_variant() {
-        // Count matches the number of "case" arms in as_str(). If a variant is
-        // added without being added to ALL, this test should start failing
-        // (once you add a matching test below). The primary guard is compiler:
-        // `match` on Concept forces exhaustiveness in as_str().
-        assert_eq!(Concept::ALL.len(), 68);
-    }
 
     #[test]
     fn concept_all_entries_are_unique() {

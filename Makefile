@@ -962,7 +962,7 @@ test-release-notes: ## Runs unit tests for release-note tooling
 
 .PHONY: test-update-apm-semantics
 test-update-apm-semantics: ## Runs tests for the APM semantic mappings update tooling
-	@node --test ci/tooling/test_update_apm_semantics.cjs
+	@$(PYTHON) -m unittest ci/tooling/test_update_apm_semantics.py -v
 
 .PHONY: check-release-notes
 check-release-notes: ## Validates committed Reno release-note files
