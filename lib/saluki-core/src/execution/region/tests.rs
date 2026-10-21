@@ -76,6 +76,8 @@ enum Call {
     Resume,
     Control(&'static str),
     AdvanceTime,
+    /// A call to `advance_time` that did a step of background work, since no deadline of the driver had passed.
+    Background,
     Finish(DrainPolicy),
     Reset {
         site: PanicSite,
@@ -224,11 +226,20 @@ struct ScriptedDriver {
     held: VecDeque<(EventsBuffer, std::time::Instant)>,
     on_process: Option<Arc<dyn Fn() + Send + Sync>>,
     panics_at_start: bool,
+    ticks_left: Option<usize>,
+    background: usize,
+    background_observer: Option<Observer>,
 }
 
 /// A drain of `turns` turns that writes nothing, recording a shared counter at each turn.
 struct Spin {
     turns: usize,
+    counter: Arc<AtomicUsize>,
+    observed: Arc<Mutex<Vec<usize>>>,
+}
+
+/// A shared counter that each step of background work records, writing nothing.
+struct Observer {
     counter: Arc<AtomicUsize>,
     observed: Arc<Mutex<Vec<usize>>>,
 }
@@ -257,7 +268,34 @@ impl ScriptedDriver {
             held: VecDeque::new(),
             on_process: None,
             panics_at_start: false,
+            ticks_left: None,
+            background: 0,
+            background_observer: None,
         }
+    }
+
+    /// Keeps the driver's deadline at the present for `ticks` calls to `advance_time`, as a driver that is behind on
+    /// work due by a deadline does, and then withdraws it.
+    fn behind_for(mut self, ticks: usize) -> Self {
+        self = self.ticking(Duration::ZERO, Some(Duration::ZERO));
+        self.ticks_left = Some(ticks);
+        self
+    }
+
+    /// Gives the driver `steps` steps of background work, each a call to `advance_time` while no deadline has passed,
+    /// which writes one event named `step`.
+    fn with_background(mut self, steps: usize) -> Self {
+        self.background = steps;
+        self
+    }
+
+    /// Makes every step of background work write nothing, and record `counter` instead.
+    fn observing_background(mut self, counter: &Arc<AtomicUsize>, observed: &Arc<Mutex<Vec<usize>>>) -> Self {
+        self.background_observer = Some(Observer {
+            counter: Arc::clone(counter),
+            observed: Arc::clone(observed),
+        });
+        self
     }
 
     /// Makes the driver hold every event whose name starts with `held` for `hold` after the call that received it, as
@@ -492,6 +530,10 @@ impl RegionDriver for ScriptedDriver {
         self.deadline
     }
 
+    fn has_background_work(&self) -> bool {
+        self.background > 0
+    }
+
     fn end_turn(
         &mut self, turn: &mut RegionTurn<'_>, input_idle: bool, exits: &mut ExitSink,
     ) -> Option<std::time::Instant> {
@@ -504,6 +546,18 @@ impl RegionDriver for ScriptedDriver {
     }
 
     fn advance_time(&mut self, turn: &mut RegionTurn<'_>, exits: &mut ExitSink) -> Progress {
+        let due = self.deadline.is_some_and(|deadline| deadline <= turn.now());
+        if !due && self.background > 0 {
+            self.log.push(Call::Background);
+            self.background -= 1;
+            if let Some(Observer { counter, observed }) = &self.background_observer {
+                observed.lock().unwrap().push(counter.load(Ordering::Relaxed));
+                return Progress::Done;
+            }
+            self.queue.push_back(metric("step"));
+            return self.write(turn, exits);
+        }
+
         self.log.push(Call::AdvanceTime);
         self.panic_if(PanicSite::AdvanceTime, exits);
         if !self.keeps_its_deadline {
@@ -512,6 +566,12 @@ impl RegionDriver for ScriptedDriver {
                 Some(period) => Some(turn.now() + period),
                 None => None,
             };
+        }
+        if let Some(ticks) = &mut self.ticks_left {
+            *ticks -= 1;
+            if *ticks == 0 {
+                self.deadline = None;
+            }
         }
         self.queue
             .extend(TICK_EVENTS[..self.tick_events].iter().map(|name| metric(name)));
@@ -1961,6 +2021,169 @@ async fn a_long_drain_lets_other_tasks_on_its_thread_run_between_its_turns() {
         observed.last() > observed.first(),
         "other tasks must run during the drain, but the counter stayed at {:?}",
         observed.first()
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn background_work_runs_only_while_no_batch_waits() {
+    let log = Log::default();
+    let (_control, mailbox) = control_mailbox();
+    let (out, mut out_rx) = downstream(1);
+    let driver = ScriptedDriver::new(&log).with_background(3);
+    let mut region = start(Setup::new(&["out"]).connect(0, &out), mailbox, driver).await;
+
+    // A batch waiting when the region starts runs first. Background work then runs, until its first step's output
+    // waits to be sent behind the batch's.
+    region.send(batch(&["a"]));
+    settle().await;
+    assert_eq!(log.work(), vec![process(&["a"]), Call::Background]);
+
+    // A batch that arrives meanwhile runs before the next step.
+    region.send(batch(&["b"]));
+    assert_eq!(
+        receive_names(&mut out_rx, 5).await,
+        expected(&[&["a"], &["step"], &["b"], &["step"], &["step"]])
+    );
+    assert_eq!(
+        log.work(),
+        vec![
+            process(&["a"]),
+            Call::Background,
+            process(&["b"]),
+            Call::Background,
+            Call::Background,
+        ]
+    );
+
+    // Once the driver has no background work, the host waits.
+    sleep(Duration::from_secs(10)).await;
+    assert_eq!(log.work().len(), 5);
+
+    region.close_input();
+    region.stopped().await.expect("the region should stop cleanly");
+}
+
+#[tokio::test]
+async fn background_work_lets_other_tasks_on_its_thread_run_between_its_steps() {
+    // The test runtime runs every task on one thread, so the counter only advances while the region yields.
+    let counter = Arc::new(AtomicUsize::new(0));
+    let ticker = tokio::spawn({
+        let counter = Arc::clone(&counter);
+        async move {
+            loop {
+                counter.fetch_add(1, Ordering::Relaxed);
+                tokio::task::yield_now().await;
+            }
+        }
+    });
+
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let log = Log::default();
+    let (_control, mailbox) = control_mailbox();
+    let (out, _out_rx) = downstream(16);
+    let driver = ScriptedDriver::new(&log)
+        .with_background(2_000)
+        .observing_background(&counter, &observed);
+    let mut region = start(Setup::new(&["out"]).connect(0, &out), mailbox, driver).await;
+    timeout(PATIENCE, async {
+        while observed.lock().unwrap().len() < 2_000 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the background work should complete");
+    region.close_input();
+    region.stopped().await.expect("the region should stop cleanly");
+    ticker.abort();
+
+    let observed = observed.lock().unwrap();
+    assert_eq!(observed.len(), 2_000);
+    assert!(
+        observed.last() > observed.first(),
+        "other tasks must run during background work, but the counter stayed at {:?}",
+        observed.first()
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_deadline_of_now_runs_ahead_of_input_and_background_work_behind_it() {
+    let log = Log::default();
+    let (_control, mailbox) = control_mailbox();
+    let (out, mut out_rx) = downstream(16);
+    let driver = ScriptedDriver::new(&log).behind_for(3).with_background(2);
+    let mut region = start(Setup::new(&["out"]).connect(0, &out), mailbox, driver).await;
+
+    // The driver accepts input, but its deadline is the present for three calls: they run before the waiting batch,
+    // and its background work after.
+    region.send(batch(&["a"]));
+    assert_eq!(
+        receive_names(&mut out_rx, 6).await,
+        expected(&[&["tick"], &["tick"], &["tick"], &["a"], &["step"], &["step"]])
+    );
+    assert_eq!(
+        log.work(),
+        vec![
+            Call::AdvanceTime,
+            Call::AdvanceTime,
+            Call::AdvanceTime,
+            process(&["a"]),
+            Call::Background,
+            Call::Background,
+        ]
+    );
+
+    region.close_input();
+    region.stopped().await.expect("the region should stop cleanly");
+}
+
+#[tokio::test(start_paused = true)]
+async fn background_work_waits_for_a_yielded_call_and_never_runs_after_the_input_ends() {
+    // One event per turn: the batch's call yields twice, and background work runs only once it completes.
+    let log = Log::default();
+    let (_control, mailbox) = control_mailbox();
+    let (out, mut out_rx) = downstream(16);
+    let driver = ScriptedDriver::new(&log).with_background(2);
+    let setup = Setup::new(&["out"]).connect(0, &out).events_per_turn(1);
+    let mut region = start(setup, mailbox, driver).await;
+
+    region.send(batch(&["a", "b", "c"]));
+    assert_eq!(
+        receive_names(&mut out_rx, 5).await,
+        expected(&[&["a"], &["b"], &["c"], &["step"], &["step"]])
+    );
+    assert_eq!(
+        log.work(),
+        vec![
+            process(&["a", "b", "c"]),
+            Call::Resume,
+            Call::Resume,
+            Call::Background,
+            Call::Background,
+        ]
+    );
+    region.close_input();
+    region.stopped().await.expect("the region should stop cleanly");
+
+    // A driver that still has background work when its input ends finishes without it, after the yielded call.
+    let log = Log::default();
+    let (_control, mailbox) = control_mailbox();
+    let (out, mut out_rx) = downstream(16);
+    let driver = ScriptedDriver::new(&log).with_background(2);
+    let setup = Setup::new(&["out"]).connect(0, &out).events_per_turn(1);
+    let mut region = start(setup, mailbox, driver).await;
+
+    region.send(batch(&["a", "b", "c"]));
+    region.close_input();
+    region.stopped().await.expect("the region should stop cleanly");
+    assert_eq!(names_of_all(&waiting(&mut out_rx)), expected(&[&["a"], &["b"], &["c"]]));
+    assert_eq!(
+        log.work(),
+        vec![
+            process(&["a", "b", "c"]),
+            Call::Resume,
+            Call::Resume,
+            Call::Finish(DrainPolicy::Shutdown),
+        ]
     );
 }
 

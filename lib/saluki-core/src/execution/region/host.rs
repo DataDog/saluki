@@ -1790,6 +1790,9 @@ where
                 armed_deadline = wanted_deadline;
             }
 
+            // Background work runs only while the input is open and no call is yielded, as time-driven work does.
+            let background = input_open && self.runner.pending.is_none() && self.runner.driver.has_background_work();
+
             let wanted_publish = self.runner.publish_deadline();
             if wanted_publish != armed_publish {
                 if let Some(at) = wanted_publish {
@@ -1878,6 +1881,13 @@ where
                         turn_owed = true;
                     }
                     None => input_open = false,
+                },
+
+                // Background work is always possible, so, as for resuming, consume the task's cooperative budget to
+                // let other tasks run between its steps. Last, so that it runs only when nothing else is ready.
+                _ = consume_budget(), if background => {
+                    self.runner.advance_in_background()?;
+                    self.dispatch(dispatcher, liveness, control).await?;
                 },
             }
         }
@@ -2396,6 +2406,17 @@ where
             );
         }
         Ok(())
+    }
+
+    /// Runs a step of background work, which the driver has though none is due.
+    ///
+    /// No deadline fired, so the call is not checked for progress: the driver keeps reporting background work until
+    /// it completes, and the host lets other tasks run between steps.
+    fn advance_in_background(&mut self) -> Result<(), GenericError> {
+        let called = self.call(PanicSite::AdvanceTime, None, |driver, turn, exits| {
+            driver.advance_time(turn, exits)
+        });
+        self.completed(called, Pending::Time)
     }
 
     fn finish(&mut self, policy: DrainPolicy) -> Result<(), GenericError> {
