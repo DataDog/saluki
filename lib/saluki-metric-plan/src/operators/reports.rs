@@ -144,7 +144,8 @@ pub(super) const AGGREGATE: &[ReportedSeries] = {
         ReportedSeries::counter("aggregate_flushes_total", Kernel),
         ReportedSeries::counter("aggregate_flushed_total", Kernel).with_tags(&["data_type:series"]),
         ReportedSeries::counter("aggregate_flushed_total", Kernel).with_tags(&["data_type:sketches"]),
-        // Remapped `aggregator.processed`: what enters the aggregation's region.
+        // Remapped `aggregator.processed`: what enters the aggregation's region, when it runs in a region of its own; a
+        // region fused around it counts what enters the whole region, under the region's name.
         ReportedSeries::counter("component_events_received_total", RegionInput),
     ]
 };

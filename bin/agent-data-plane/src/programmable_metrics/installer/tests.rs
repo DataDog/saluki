@@ -238,11 +238,12 @@ impl Transform for ForwardingTransform {
 /// What runs DogStatsD aggregation in a test topology.
 #[derive(Clone, Copy)]
 enum Aggregation {
-    /// Aggregation as a kernel in its `dsd_agg` region, configured as the configuration says.
+    /// Aggregation as a kernel in the region that holds it, configured as the configuration says.
     Native,
 
-    /// A transform that forwards what it receives, in place of aggregation's region. It answers no control message,
-    /// so a topology with it installs no generation but the boot one.
+    /// A transform that forwards what it receives, in place of aggregation's region `dsd_agg`, which the metrics path
+    /// has on lanes, one of each kind: without lanes aggregation fuses with the rest of the path. It answers no control
+    /// message, so a topology with it installs no generation but the boot one.
     Forwarding,
 }
 
@@ -294,7 +295,13 @@ impl Running {
         let config = configuration(yaml).await;
         let cell = ConfigCell::new(config.clone());
         let registry = ComponentRegistry::default();
-        let mut metrics = programmable_metrics(&config, cell.live(), &registry).unwrap();
+        let mut metrics = match aggregation {
+            Aggregation::Native => programmable_metrics(&config, cell.live(), &registry),
+            Aggregation::Forwarding => {
+                programmable_metrics_on(&config, cell.live(), &registry, LaneCounts::on(LanePolicy::ONE))
+            }
+        }
+        .unwrap();
 
         let (batches, receiver) = mpsc::channel(16);
         let mut blueprint = TopologyBlueprint::new(PRIMARY_TOPOLOGY, &registry);
@@ -644,7 +651,7 @@ async fn a_preparation_no_region_acknowledges_is_aborted_and_retried_with_backof
     assert_eq!(state_of(&retried, 2), Some(GenerationState::Rejected));
     assert_eq!(
         reason_of(&retried, 2).as_deref(),
-        Some("the regions `dsd_pre_aggregation`, `dsd_agg`, `metrics_enrich` did not acknowledge within 10s")
+        Some("the regions `dsd_pre_aggregation` did not acknowledge within 10s")
     );
     assert_eq!(active(&retried), Some(1));
     status_where(&status, |status| {
@@ -711,7 +718,7 @@ async fn a_restarted_installer_continues_the_preparation_it_left() {
     assert_eq!(retried.config_changes, 1);
     assert_eq!(
         reason_of(&retried, 2).as_deref(),
-        Some("the regions `dsd_pre_aggregation`, `dsd_agg`, `metrics_enrich` did not acknowledge within 10s")
+        Some("the regions `dsd_pre_aggregation` did not acknowledge within 10s")
     );
     let generations = retried
         .installer
@@ -785,8 +792,8 @@ async fn live_change_credits(before: &str, after: &str, lanes: LaneCounts) -> (B
 
 #[tokio::test]
 async fn kernel_instances_on_lanes_are_admitted_once_for_every_lane_that_builds_them() {
-    // Every slot on three lanes against every slot on one, both laid out without R1's pipelining, so that the slots
-    // are the same: each lane builds its own instances, from the same specs.
+    // Every slot on three lanes against every slot on one, both on lanes, which isolate every state owner, so that the
+    // slots are the same: each lane builds its own instances, from the same specs.
     let one = LaneCounts::on(LanePolicy::ONE);
     let three = LaneCounts::on(LanePolicy {
         dogstatsd: 3,

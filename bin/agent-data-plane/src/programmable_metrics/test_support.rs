@@ -36,10 +36,9 @@ data_plane:
   standalone_mode: true
 ";
 
-/// The lanes every test runs the metrics path on unless its configuration sets them: none, the layout before lanes,
-/// rather than the default automatic counts, which follow the cores and decoders of the host running the test. Tests
-/// of lanes set `lanes.mode: auto` and the counts they need, and
-/// [`configuration_system_with_default_lanes`] keeps the defaults.
+/// The lanes every test runs the metrics path on unless its configuration sets them: none, the default, set
+/// explicitly so that a test's layout does not follow the default. Tests of lanes set `lanes.mode: auto` and the counts
+/// they need, and [`configuration_system_with_default_lanes`] keeps the defaults.
 const LANES_OFF: &str = "
 experimental:
   programmable_metrics:
@@ -95,7 +94,7 @@ pub(super) async fn layered_configuration_system(layers: &[&str]) -> Configurati
 }
 
 /// Loads the configuration system for the YAML configuration `yaml`, as [`configuration_system`] does, but with the
-/// default lanes rather than none ([`LANES_OFF`]): the automatic counts unless `yaml` sets others.
+/// default lanes rather than none set explicitly ([`LANES_OFF`]): lanes off unless `yaml` sets them.
 pub(super) async fn configuration_system_with_default_lanes(yaml: &str) -> ConfigurationSystem {
     load_over(BASE, &[yaml])
         .await

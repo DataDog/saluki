@@ -133,38 +133,36 @@ async fn every_admission_point_registers_for_cuts_and_every_routed_one_heartbeat
 }
 
 #[tokio::test]
-async fn aggregation_runs_as_a_kernel_in_the_dsd_agg_region_and_every_routed_point_heartbeats_toward_its_route() {
+async fn aggregation_runs_as_a_kernel_in_the_one_region_and_every_routed_point_heartbeats_toward_its_route() {
     let options = Options::new(MetricsPath::Plan, Aggregation::Native);
     let (topology, frame, registry) = start("data_plane: {otlp: {enabled: true}}", options).await;
 
-    // Aggregation is the `dsd_agg` region, a transform with the native component's ID; no fixed component runs it.
-    let slot = aggregation_slot(&frame).expect("aggregation runs in a state slot of its own");
-    assert_eq!(slot.name.as_str(), "dsd_agg");
+    // Without lanes, aggregation runs in `dsd_pre_aggregation`, the one region of the metrics path, a state slot; no
+    // fixed component runs it, and no component has the native component's ID.
+    let slot = aggregation_slot(&frame).expect("aggregation runs in a state slot");
+    assert_eq!(slot.name.as_str(), "dsd_pre_aggregation");
+    assert_eq!(frame.slots().len(), 1);
     assert!(frame
         .fixed()
         .iter()
         .all(|fixed| fixed.operator.as_str() == names::SOURCE));
-    let component = topology
-        .snapshot()
-        .components()
+    let components = topology.snapshot().components();
+    let component = components
         .iter()
-        .find(|component| &**component.id() == "dsd_agg")
-        .expect("the topology has `dsd_agg`");
+        .find(|component| &**component.id() == "dsd_pre_aggregation")
+        .expect("the topology has `dsd_pre_aggregation`");
     assert_eq!(component.component_type(), ComponentType::Transform);
+    assert!(components.iter().all(|component| &**component.id() != DSD_AGG));
     let edges = edges(topology.snapshot());
     assert!(
-        edges.contains(&("dsd_pre_aggregation.dsd_agg".to_string(), "dsd_agg".to_string())),
-        "{:?}",
-        edges
-    );
-    assert!(
-        edges.iter().any(|(from, _)| from.starts_with("dsd_agg.")),
+        edges.contains(&("dsd_in.metrics".to_string(), "dsd_pre_aggregation".to_string()))
+            && edges.contains(&("otlp_in.metrics".to_string(), "dsd_pre_aggregation".to_string())),
         "{:?}",
         edges
     );
 
-    // Every routed point heartbeats every second toward its route: the DogStatsD source's toward the region that leads
-    // to aggregation, and not toward the DogStatsD taps, and OTLP's toward enrichment.
+    // Every routed point heartbeats every second toward its route: the DogStatsD source's and OTLP's toward the region
+    // that holds aggregation, and not toward the DogStatsD taps.
     let dogstatsd = frame
         .admission_points()
         .iter()
@@ -205,16 +203,16 @@ async fn aggregations_kernel_draws_on_the_shared_budget_of_state_sized_by_the_na
     assert!(budget.global.shares_with(boot.state_budgets.global()));
     assert!(budget.node.shares_with(&boot.state_budgets.node(&node)));
 
-    // No kernel of a region without a state owner draws on the budgets.
+    // No kernel but the state owner's draws on the budgets, in its region or another.
     let mut kernels = 0;
-    for fused in boot.programs.iter().filter(|program| program.slot() != slot) {
-        for kernel in fused.kernels() {
+    for fused in &boot.programs {
+        for kernel in fused.kernels().iter().filter(|kernel| kernel.key.node != node) {
             let context = boot.telemetry.kernel_context(fused, &kernel.key.node);
             assert!(context.state_budget().is_none(), "`{}`", kernel.key.node);
             kernels += 1;
         }
     }
-    assert!(kernels > 0, "fused regions have kernels");
+    assert!(kernels > 0, "the stateless steps have kernels");
 }
 
 /// Builds the legacy topology of `yaml` and the plan-driven one, whose metrics path runs `operators`, and returns the
@@ -355,11 +353,17 @@ fn live_bytes() -> BTreeMap<String, usize> {
     groups
 }
 
+/// Lanes on, one lane each: aggregation isolated in a state slot of its own, `dsd_agg`.
+const ISOLATED_AGGREGATION: &str =
+    "dogstatsd_workers_count: 1\nexperimental: {programmable_metrics: {lanes: {mode: auto, state: 1, post: 1}}}";
+
 #[tokio::test]
-async fn aggregation_in_its_region_keeps_the_native_components_health_resource_group_and_bounds() {
-    // The memory bounds: the region declares aggregation's state and snapshot terms at its own top level, as the native
-    // component does, and nothing below it for the kernel, so that the sizing guide's input stays the native one.
-    let (legacy, plan) = bounds("", OperatorRegistry::native()).await;
+async fn aggregation_in_a_region_of_its_own_keeps_the_native_components_health_resource_group_and_bounds() {
+    // On lanes, which isolate aggregation in `dsd_agg`, the region declares aggregation's state and snapshot terms at
+    // its own top level, as the native component does, and nothing below it for the kernel, so that the sizing guide's
+    // input stays the native one. Without lanes, aggregation fuses into `dsd_pre_aggregation` and keeps the native
+    // component's group and bounds beside it (the next test).
+    let (legacy, plan) = bounds(ISOLATED_AGGREGATION, OperatorRegistry::native()).await;
     let native = aggregation_terms(&legacy);
     assert!(
         !native.is_empty(),
@@ -379,7 +383,7 @@ async fn aggregation_in_its_region_keeps_the_native_components_health_resource_g
     for path in [MetricsPath::Legacy, MetricsPath::Plan] {
         let options = Options::new(path, Aggregation::Native);
         let health = options.health.clone();
-        let system = configuration_system("").await;
+        let system = configuration_system(ISOLATED_AGGREGATION).await;
         let topology = TestTopology::start(&system, options, |_| {}).await;
         let metric = Metric::counter(Context::from_static_parts("requests", &[]), 1.0);
         topology.feed("dsd_in.metrics", vec![metric]);
@@ -409,12 +413,49 @@ async fn aggregation_in_its_region_keeps_the_native_components_health_resource_g
 }
 
 #[tokio::test]
+async fn without_lanes_aggregation_keeps_its_native_components_resource_group_and_bounds_beside_the_one_region() {
+    // Without lanes the region of the whole metrics path registers its health, and aggregation's kernel, a state owner
+    // fused with its neighbors, is accounted under its own name wherever it runs: in the native component's group and
+    // bounds, `dsd_agg`, beside the region, rather than below it. Only the native component's health goes.
+    let (legacy, plan) = bounds("", OperatorRegistry::native()).await;
+    let native = aggregation_terms(&legacy);
+    assert!(
+        !native.is_empty(),
+        "the native component's bounds read its context limit"
+    );
+    assert_eq!(aggregation_terms(&plan), native);
+
+    let region = "topology.primary.transforms.dsd_pre_aggregation";
+    let options = Options::new(MetricsPath::Plan, Aggregation::Native);
+    let health = options.health.clone();
+    let system = configuration_system("").await;
+    let topology = TestTopology::start(&system, options, |_| {}).await;
+    topology.feed(
+        "dsd_in.metrics",
+        vec![Metric::counter(Context::from_static_parts("requests", &[]), 1.0)],
+    );
+    tokio::time::timeout(PATIENCE, async {
+        while readiness(&health).get(region) != Some(&true)
+            || live_bytes().get(DSD_AGG_COMPONENT).copied().unwrap_or_default() == 0
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{:?} {:?}", readiness(&health), live_bytes()));
+    assert!(!readiness(&health).contains_key(DSD_AGG_COMPONENT));
+    let below = format!("{}.{}", region, DSD_AGG);
+    assert!(!live_bytes().contains_key(&below), "{:?}", live_bytes());
+    topology.stop().await;
+}
+
+#[tokio::test]
 async fn the_context_dump_api_lists_what_aggregation_holds_in_its_region_as_it_does_natively() {
     use saluki_components::transforms::AggregateMetricType;
 
     // On the plan-driven path the request travels as `run.rs` wires it: from the context dump API's handle, which the
-    // topology created when it added the DogStatsD pipeline, through the snapshot bridge to the `dsd_agg` region, whose
-    // aggregation kernel answers it.
+    // topology created when it added the DogStatsD pipeline, through the snapshot bridge to the region holding
+    // aggregation, `dsd_pre_aggregation` without lanes, whose aggregation kernel answers it.
     for path in [MetricsPath::Legacy, MetricsPath::Plan] {
         let system = configuration_system("").await;
         let topology = TestTopology::start(&system, Options::new(path, Aggregation::Native), |_| {}).await;

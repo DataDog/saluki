@@ -18,7 +18,7 @@ use saluki_core::{
     support::SubsystemIdentifier,
 };
 use saluki_metric_plan::{
-    compile::{RewriteId, RewriteOutcome, RewriteRecord},
+    compile::{LanePolicy, RewriteId, RewriteOutcome, RewriteRecord},
     ir::NodeId,
     operators::{names, OperatorRegistry, Recorder, ReportedSeries},
 };
@@ -29,8 +29,11 @@ use super::{
 };
 use crate::{
     programmable_metrics::{
+        lanes::LaneCounts,
         test_intake::{Intake, ZSTD},
-        test_support::{configuration, layered_configuration_system, programmable_metrics, ConfigCell},
+        test_support::{
+            configuration, layered_configuration_system, programmable_metrics, programmable_metrics_on, ConfigCell,
+        },
         test_topology::{Aggregation, Encoders, MetricsPath, Options, Recipients, TestTopology},
     },
     state::metrics::{get_compat_remappings, get_datadog_agent_remappings},
@@ -158,7 +161,7 @@ fn render(rules: Vec<RemapperRule>, series: &BTreeMap<Series, String>) -> String
     TelemetryProcessor::new().with_remapper_rules(rules).process(&state)
 }
 
-/// The legacy transforms whose work the regions do, besides `metrics_enrich`, whose ID the enrichment region keeps.
+/// The legacy transforms whose work the region does, besides enrichment and aggregation.
 const FUSED: [&str; 5] = [
     "dsd_enrich",
     "dsd_prefix_filter",
@@ -215,29 +218,16 @@ fn framework_series((kind, component_type): (&str, &str), id: &str, outputs: &[&
 }
 
 /// The series of the legacy topology that the plan-driven one does not report, written by hand: everything the
-/// topology reports about a fused transform as a component of its own (its interconnects, its health, its task), the
-/// one output `metrics_enrich` and `dsd_agg` had before each had one per exit, and the no-aggregation split's
-/// passthrough batcher, which the plan does not have.
+/// topology reports about a fused transform, enrichment, and aggregation as a component of its own (its interconnects,
+/// its health, its task), and the no-aggregation split's passthrough batcher, which the plan does not have.
 fn removed_series() -> BTreeSet<Series> {
     let mut removed = BTreeSet::new();
-    for id in FUSED {
+    for id in FUSED.into_iter().chain(["metrics_enrich", "dsd_agg"]) {
         let outputs: &[&str] = match id {
             "dsd_no_agg_split" => &["output:_default", "output:passthrough"],
             _ => &["output:_default"],
         };
         removed.extend(component_series(id, outputs));
-    }
-    for name in [
-        "component_events_sent_total",
-        "component_send_latency_seconds",
-        "component_events_discarded_total",
-    ] {
-        for component in ["component_id:metrics_enrich", "component_id:dsd_agg"] {
-            removed.insert(series(
-                name,
-                &[component, "component_type:transform", "output:_default"],
-            ));
-        }
     }
     removed.insert(series(
         "aggregate_passthrough_batch_duration_secs",
@@ -255,21 +245,17 @@ fn removed_series() -> BTreeSet<Series> {
     removed
 }
 
-/// The regions the plan-driven topology runs for [`CONFIG`]: its mapper profile makes the pre-aggregation chain costly
-/// enough that R1's cost model pipelines it over two regions, the mapper's and the rest's, and the enrichment region
-/// keeps the native `metrics_enrich` ID.
-const NEW_REGIONS: [&str; 2] = ["dsd_pre_aggregation", "dsd_prefix_filter_region"];
+/// The regions the plan-driven topology runs for [`CONFIG`]: without lanes, the metrics path is one region.
+const NEW_REGIONS: [&str; 1] = ["dsd_pre_aggregation"];
 
 /// Returns `true` if a series the plan-driven topology adds is one it is expected to add: what the topology reports
-/// about each of the regions `new_regions` as a component, the outputs (one per exit) of the regions that keep a
-/// native ID, enrichment's and aggregation's, and the region hosts' failure counters, the plan-level metrics, the
-/// installer's task, the snapshot bridge's task, and the heartbeat task of the admission point that feeds aggregation's
-/// state.
+/// about each of the regions `new_regions` as a component, with an output per exit, and the region hosts' failure
+/// counters, the plan-level metrics, the installer's task, the snapshot bridge's task, and the heartbeat task of the
+/// admission point that feeds aggregation's state.
 fn expected_addition(new_regions: &[&str], (name, tags): &Series) -> bool {
     let has = |tag: &str| tags.iter().any(|candidate| candidate == tag);
     let region = new_regions
         .iter()
-        .chain(&["metrics_enrich", "dsd_agg"])
         .any(|region| has(&format!("component_id:{}", region)));
     let new_component = new_regions.iter().any(|region| {
         let identity = format!("topology.primary.transforms.{}", region);
@@ -370,11 +356,9 @@ async fn the_fused_components_keep_their_native_metrics_and_lose_only_their_comp
         .collect::<Vec<_>>();
     assert!(unexpected.is_empty(), "unexpected series: {:?}", unexpected);
 
-    // Every native metric the fused components report keeps its name, its `component_id`, and its value, with two
-    // exceptions, written by hand: the timestamp split counts one passthrough flush per batch that has timestamped
-    // metrics (the second and third), where the native batcher flushed once, or twice in a slow run; and the
-    // enrichment region, which runs the post-aggregation filter, receives the statistic the filter blocks (10 events
-    // reach the filter, 11 with it).
+    // Every native metric the fused components report keeps its name, its `component_id`, and its value, with one
+    // exception, written by hand: the timestamp split counts one passthrough flush per batch that has timestamped
+    // metrics (the second and third), where the native batcher flushed once, or twice in a slow run.
     for (series, legacy_value) in &legacy {
         let fused = series.1.iter().any(|tag| {
             tag.strip_prefix("component_id:")
@@ -394,10 +378,6 @@ async fn the_fused_components_keep_their_native_metrics_and_lose_only_their_comp
                     legacy_value
                 );
                 "counter 2"
-            }
-            ("component_events_received_total", Some("metrics_enrich")) => {
-                assert_eq!(legacy_value, "counter 10");
-                "counter 11"
             }
             _ => legacy_value.as_str(),
         };
@@ -465,10 +445,9 @@ const GATEWAY_COMPONENTS: [&str; 4] = [
     "af_metrics_gateway",
 ];
 
-/// The regions the plan-driven topology runs for [`GATEWAYS`], besides `metrics_enrich`: the policy fan-out and the
-/// four gateways are one decision, which runs in the enrichment region, and whose five-way fan-out keeps enrichment
-/// from the post-aggregation filter.
-const GATEWAY_REGIONS: [&str; 2] = ["dsd_pre_aggregation", "dsd_post_agg_filter_region"];
+/// The regions the plan-driven topology runs for [`GATEWAYS`]: the policy fan-out and the four gateways are one
+/// decision of the one region.
+const GATEWAY_REGIONS: [&str; 1] = ["dsd_pre_aggregation"];
 
 #[tokio::test]
 async fn the_gateways_keep_their_native_metrics_and_lose_only_their_component_series() {
@@ -559,7 +538,10 @@ async fn the_gateways_keep_their_native_metrics_and_lose_only_their_component_se
     };
     assert_eq!(
         without_flushes(render(get_datadog_agent_remappings(), &plan)),
-        without_flushes(render(get_datadog_agent_remappings(), &legacy))
+        without_flushes(without_aggregation_input(render(
+            get_datadog_agent_remappings(),
+            &legacy
+        )))
     );
     assert_eq!(
         render(get_compat_remappings(), &plan),
@@ -618,7 +600,7 @@ async fn the_datadog_agent_and_the_compatibility_endpoint_see_the_fused_componen
             rendered
         );
     }
-    let native = render(get_datadog_agent_remappings(), &legacy);
+    let native = without_aggregation_input(render(get_datadog_agent_remappings(), &legacy));
     assert_eq!(
         rendered.replace("no_aggregation__flush 2", "no_aggregation__flush 1"),
         native,
@@ -626,7 +608,8 @@ async fn the_datadog_agent_and_the_compatibility_endpoint_see_the_fused_componen
     );
 
     // The compatibility endpoint renders the same, and no series the plan-driven topology no longer reports is
-    // remapped by either rule set: nothing either consumer reads is lost.
+    // remapped by either rule set: nothing either consumer reads is lost, but what entered the native aggregation
+    // component (see `without_aggregation_input`).
     assert_eq!(
         render(get_compat_remappings(), &plan),
         render(get_compat_remappings(), &legacy)
@@ -638,9 +621,9 @@ async fn the_datadog_agent_and_the_compatibility_endpoint_see_the_fused_componen
         .collect::<BTreeMap<_, _>>();
     assert!(!removed.is_empty());
     for rules in [get_datadog_agent_remappings(), get_compat_remappings()] {
-        let rendered = render(rules, &removed);
+        let rendered = without_aggregation_input(render(rules, &removed));
         assert!(
-            rendered_names(&rendered).is_empty(),
+            rendered.lines().all(|line| line.starts_with('#') || line.is_empty()),
             "removed series are remapped:\n{}",
             rendered
         );
@@ -695,15 +678,18 @@ async fn each_fused_kernel_is_accounted_in_a_resource_group_of_its_own_under_its
     topology.stop().await;
 
     // Every kernel of a region has a group named after its node, under its region's, as the region's bounds declare
-    // the kernel's bounds; what the kernel holds is accounted there.
+    // the kernel's bounds; what the kernel holds is accounted there. Aggregation, a state owner, keeps its native
+    // component's group beside the region instead.
     let group = |region: &str, node: &str| format!("topology.primary.transforms.{}.{}", region, node);
     let kernels = [
         ("dsd_pre_aggregation", "dsd_enrich"),
-        ("dsd_prefix_filter_region", "dsd_prefix_filter_namespace_prefix"),
-        ("dsd_prefix_filter_region", "dsd_no_agg_split"),
-        ("dsd_prefix_filter_region", "dsd_tag_filterlist"),
-        ("metrics_enrich", "metrics"),
+        ("dsd_pre_aggregation", "dsd_prefix_filter_namespace_prefix"),
+        ("dsd_pre_aggregation", "dsd_no_agg_split"),
+        ("dsd_pre_aggregation", "dsd_tag_filterlist"),
+        ("dsd_pre_aggregation", "metrics"),
     ];
+    assert!(status.contains_key("topology.primary.transforms.dsd_agg"));
+    assert!(!status.contains_key(&group("dsd_pre_aggregation", "dsd_agg")));
     for (region, node) in kernels {
         assert!(
             status.contains_key(&group(region, node)),
@@ -714,7 +700,7 @@ async fn each_fused_kernel_is_accounted_in_a_resource_group_of_its_own_under_its
     }
     // The tag filterlist's group compares with its own bounds, as the native component's did: a firm limit of 64
     // bytes for each of the 100,000 contexts its memo holds by default; and its memo and rules are accounted to it.
-    let (minimum, firm, live) = status[&group("dsd_prefix_filter_region", "dsd_tag_filterlist")];
+    let (minimum, firm, live) = status[&group("dsd_pre_aggregation", "dsd_tag_filterlist")];
     assert_eq!((minimum, firm), (0, 100_000 * 64));
     assert!(live > 0, "the tag filterlist's kernel holds nothing");
     let (_, _, mapper_live) = status[&group("dsd_pre_aggregation", "dsd_enrich")];
@@ -786,10 +772,13 @@ async fn on_lanes_each_lanes_kernels_are_accounted_in_resource_groups_of_their_o
 async fn a_state_owner_in_a_slot_named_after_it_is_accounted_in_its_regions_own_group_and_its_region_draws_on_state() {
     // How much a kernel's build allocates, at least, in the group its context names.
     const HELD: usize = 8 << 20;
+    // On lanes, one of each kind, which isolate aggregation in a slot named after it; without lanes, aggregation fuses
+    // into `dsd_pre_aggregation` and keeps its native component's group beside it (see `isolation_tests`).
     let registry = saluki_core::accounting::ComponentRegistry::default();
     let config = configuration("").await;
     let cell = ConfigCell::new(config.clone());
-    let mut path = programmable_metrics(&config, cell.live(), &registry).expect("a metrics pipeline is required");
+    let mut path = programmable_metrics_on(&config, cell.live(), &registry, LaneCounts::on(LanePolicy::ONE))
+        .expect("a metrics pipeline is required");
     let boot = path.boot_topology();
     let slot_of = |name: &str| {
         boot.frame
@@ -821,7 +810,11 @@ async fn a_state_owner_in_a_slot_named_after_it_is_accounted_in_its_regions_own_
         let what = format!("`{}` in slot {}, renamed {:?}", node, program.slot(), renamed);
         let mut telemetry = boot.telemetry.clone();
         if let Some(name) = renamed {
-            telemetry.slot_names.insert(program.slot(), name.to_string());
+            let slot = telemetry
+                .slots
+                .get_mut(&program.slot())
+                .expect("the frame has the slot");
+            slot.name = saluki_metric_plan::ir::NativeComponentId::new(name).unwrap();
         }
         let context = telemetry.kernel_context(program, node);
         match context.state_budget() {
@@ -959,6 +952,19 @@ fn the_installer_reports_every_cut_outcome_from_creation() {
     assert_eq!(cuts("cancel_refused"), None, "a refusal is no outcome of a cut");
 }
 
+/// Returns `rendered`, remapped telemetry of the legacy topology, without what the plan-driven path no longer reports
+/// without lanes: `aggregator.processed` for DogStatsD metrics, remapped from the events that entered the native
+/// aggregation component, a component series, which goes when aggregation fuses into `dsd_pre_aggregation`. On lanes,
+/// aggregation's region of its own reports it.
+fn without_aggregation_input(rendered: String) -> String {
+    rendered
+        .lines()
+        .filter(|line| !line.starts_with("aggregator__processed{data_type=\"dogstatsd_metrics\"} "))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + if rendered.ends_with('\n') { "\n" } else { "" }
+}
+
 /// The series an `aggregate` node's kernel records: the native aggregation component's.
 fn aggregate_kernel_series() -> impl Iterator<Item = &'static ReportedSeries> {
     OperatorRegistry::native()
@@ -985,6 +991,7 @@ async fn aggregation_in_its_region_keeps_the_native_aggregation_components_serie
     }
     // So does every metric the Datadog Agent's `aggregator.*` metrics are remapped from, the post-aggregation filter's
     // among them: aggregation emits nothing the filter would drop (R5b), and counts what it suppressed as the filter's.
+    // All but what entered the native component, a component series (see `without_aggregation_input`).
     let aggregator = |rendered: String| {
         rendered
             .lines()
@@ -994,10 +1001,16 @@ async fn aggregation_in_its_region_keeps_the_native_aggregation_components_serie
     };
     let remapped = aggregator(render(get_datadog_agent_remappings(), &plan));
     assert!(!remapped.is_empty());
-    assert_eq!(remapped, aggregator(render(get_datadog_agent_remappings(), &legacy)));
+    assert_eq!(
+        remapped,
+        aggregator(without_aggregation_input(render(
+            get_datadog_agent_remappings(),
+            &legacy
+        )))
+    );
 
-    // The region's outputs are named after what they feed, where the native transform had a default one: enrichment,
-    // and the client telemetry tap and each encode host, idle exits every slot has.
+    // Aggregation fuses into `dsd_pre_aggregation`, so no component reports as `dsd_agg`: the native transform had a
+    // default output, and the plan-driven path has none of its component series.
     let dsd_agg_outputs = |telemetry: &BTreeMap<Series, String>| {
         telemetry
             .keys()
@@ -1009,8 +1022,25 @@ async fn aggregation_in_its_region_keeps_the_native_aggregation_components_serie
             .collect::<BTreeSet<_>>()
     };
     assert_eq!(dsd_agg_outputs(&legacy), ["_default".to_string()].into_iter().collect());
-    assert!(dsd_agg_outputs(&plan).contains("metrics_enrich"));
-    assert!(!dsd_agg_outputs(&plan).contains("_default"));
+    assert!(dsd_agg_outputs(&plan).is_empty());
+
+    // The region's one state lane times aggregation's flushes, how long they held admission, and counts the contexts
+    // admission flushed on touch, as each state lane does on lanes.
+    for name in [
+        "plan_lane_flush_seconds",
+        "plan_lane_flush_blocked_seconds",
+        "plan_lane_flush_touched_contexts_total",
+    ] {
+        let labels = ["component_id:dsd_pre_aggregation", "lane:0"];
+        assert!(
+            plan.contains_key(&series(name, &labels)),
+            "`{}` is not reported: {:?}",
+            name,
+            plan.keys()
+                .filter(|(series, _)| series.starts_with("plan_lane_"))
+                .collect::<Vec<_>>()
+        );
+    }
 }
 
 /// Runs the plan-driven path with the configuration `config`, on lanes as `lanes` says, over the batches, batch `i` fed
@@ -1496,7 +1526,7 @@ async fn the_hosts_report_the_telemetry_of_the_native_encoders_and_forwarders_an
         };
         let (plan, legacy) = (
             without_flushes(render(rules(), plan)),
-            without_flushes(render(rules(), legacy)),
+            without_flushes(without_aggregation_input(render(rules(), legacy))),
         );
         let lines = |rendered: &str| rendered.lines().map(str::to_string).collect::<BTreeSet<_>>();
         let (plan_lines, legacy_lines) = (lines(&plan), lines(&legacy));

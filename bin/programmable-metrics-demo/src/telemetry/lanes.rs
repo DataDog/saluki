@@ -99,8 +99,7 @@ pub struct SlotLayout {
 /// The lanes ADP's metrics path was laid out on at boot, from its explain document.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct LaneLayout {
-    /// The lane counts and whether R1's cost model pipelines the slots: `None` for a frame on one lane per slot laid
-    /// out with pipelining, the layout before lanes.
+    /// The lane counts: `None` for a frame on one lane per slot, the layout before lanes.
     pub policy: Option<LayoutEntry>,
 
     /// The slots, in frame order.
@@ -255,7 +254,7 @@ pub struct LanesView {
     /// Whether ADP's metrics path runs on lanes: its frame was laid out on them, or it publishes lane series.
     pub on: bool,
 
-    /// The lane counts and whether R1 pipelines the slots, as the explain document says.
+    /// The lane counts, as the explain document says.
     pub policy: Option<LayoutEntry>,
 
     /// Whether the layout is known: ADP served an explain document with physical sections.
@@ -433,7 +432,7 @@ mod tests {
         json!({
             "explain_version": 1,
             "physical": {
-                "layout": {"dogstatsd_lanes": 2, "state_lanes": 2, "post_lanes": 3, "pipelining": false},
+                "layout": {"dogstatsd_lanes": 2, "state_lanes": 2, "post_lanes": 3},
                 "fixed": [
                     {"node": "dsd_in", "op": "source", "boundary": "io_host", "input": null, "idle": false,
                      "admission_points": [{"id": 0, "lanes": 2, "port": "metrics", "mode": "admit",
@@ -537,13 +536,8 @@ mod tests {
         let layout = LaneLayout::of_explain(&explain()).unwrap().unwrap();
         let policy = layout.policy.clone().unwrap();
         assert_eq!(
-            (
-                policy.dogstatsd_lanes,
-                policy.state_lanes,
-                policy.post_lanes,
-                policy.pipelining
-            ),
-            (2, 2, 3, false)
+            (policy.dogstatsd_lanes, policy.state_lanes, policy.post_lanes),
+            (2, 2, 3)
         );
         let roles = layout
             .slots

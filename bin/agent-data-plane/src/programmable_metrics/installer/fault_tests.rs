@@ -222,8 +222,9 @@ async fn a_preparation_completes_while_a_region_waits_to_send_to_a_full_downstre
 
 #[tokio::test(start_paused = true)]
 async fn a_region_that_never_acknowledges_times_out_and_its_unread_preparations_stay_within_the_overlap_budget() {
-    // The enrichment region runs with a mailbox of its own, and the installer's sender for it reaches a mailbox that
-    // nobody reads: the region never acknowledges a preparation, as a region that stopped reading control messages.
+    // The region that runs enrichment, the whole metrics path without lanes, runs with a mailbox of its own, and the
+    // installer's sender for it reaches a mailbox that nobody reads: the region never acknowledges a preparation, as a
+    // region that stopped reading control messages.
     let unread = std::sync::Arc::new(std::sync::Mutex::new(None));
     let mut options = Options::new(MetricsPath::Plan, Aggregation::Native);
     options.before_topology = Some(Box::new({
@@ -233,8 +234,8 @@ async fn a_region_that_never_acknowledges_times_out_and_its_unread_preparations_
                 .frame
                 .slots()
                 .iter()
-                .position(|slot| slot.name.as_str() == "metrics_enrich")
-                .expect("the frame has an enrichment region");
+                .position(|slot| slot.nodes.iter().any(|node| node.to_string() == "metrics"))
+                .expect("the frame has a region that runs enrichment");
             let (sender, mailbox) = control_mailbox::<RegionControl>();
             let original = boot.mailboxes[slot].replace(mailbox);
             // The unread mailbox stands for a region that runs, so the installer starts sending it preparations.
@@ -263,7 +264,7 @@ async fn a_region_that_never_acknowledges_times_out_and_its_unread_preparations_
         record(&aborted, 2),
         Some((
             GenerationState::Rejected,
-            Some("the regions `metrics_enrich` did not acknowledge within 10s".to_string())
+            Some("the regions `dsd_pre_aggregation` did not acknowledge within 10s".to_string())
         ))
     );
     assert_eq!(active(&aborted), Some(1));
@@ -487,13 +488,11 @@ pub(super) async fn wait_until_healthy(health: &HealthRegistry) {
     tokio::time::timeout(PATIENCE, async {
         loop {
             let components = health_components(health);
-            let registered = ["dsd_pre_aggregation", "dsd_agg", "metrics_enrich"]
-                .iter()
-                .all(|region| {
-                    components
-                        .iter()
-                        .any(|(component, _, _)| *component == format!("topology.primary.transforms.{}", region))
-                });
+            let registered = ["dsd_pre_aggregation"].iter().all(|region| {
+                components
+                    .iter()
+                    .any(|(component, _, _)| *component == format!("topology.primary.transforms.{}", region))
+            });
             if registered
                 && ready(health).await == StatusCode::OK
                 && components.iter().all(|(_, live, ready)| *live && *ready)

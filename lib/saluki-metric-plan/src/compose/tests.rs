@@ -776,8 +776,9 @@ fn composed_plans_that_break_a_validation_rule_are_composed_with_the_finding() {
 #[test]
 fn an_artifact_whose_nodes_declare_more_memory_than_the_limit_is_invalid() {
     let fixture = Fixture::default_program();
-    // The program's DogStatsD mapper, kept from the default program, declares this much of its memory.
-    const KEPT: u64 = 6_547_112;
+    // The nodes kept from the default program declare this much of the program's memory, aggregation's kernel struct
+    // among them, which counts the pass of an interleaved flush.
+    const KEPT: u64 = 6_547_160;
     // (what, the added mapper's interner bytes, the memory the error says the artifact declares, if it is invalid)
     let cases: [(&str, u64, Option<u64>); 4] = [
         ("the native default interner", 64 * 1024, None),

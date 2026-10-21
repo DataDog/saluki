@@ -1757,11 +1757,9 @@ fn touched(harness: &mut FrameHarness) -> u64 {
     names
         .iter()
         .map(|name| {
-            harness.telemetry().lane_value(
-                name,
-                crate::runtime::telemetry::PLAN_LANE_FLUSH_TOUCHED_CONTEXTS_TOTAL,
-                0,
-            )
+            harness
+                .telemetry()
+                .lane_value(name, crate::runtime::PLAN_LANE_FLUSH_TOUCHED_CONTEXTS_TOTAL, 0)
         })
         .sum()
 }
@@ -1884,6 +1882,48 @@ fn trace_i16_a_pass_is_pending_at_a_crossing_and_at_a_reset_and_a_boundary_flush
     assert!(
         touched(&mut replay.harness) > 0,
         "the boundary flush's pass flushed a context on touch"
+    );
+}
+
+#[test]
+fn trace_i17_a_chained_state_owner_in_another_region_sees_a_pass_in_several_parts_only_once_it_completes() {
+    // `first`'s tick at 61 is a pass over four gauges, one per step, whose first part reaches `second` in another
+    // region while the rest is still pending. No part raises `first`'s point at `second`: its progress comes in the
+    // header-only batch `first` sends once the pass completed, so `second`'s tick at 61, gated on the point, waits for
+    // the whole pass and flushes [0, 60) with every gauge of the bucket [50, 60) in it, as the interpreter does; were
+    // the first part's stamp progress, it would close the bucket before the rest arrived, and deliver it at its next
+    // flush. (On the layout that isolates state, where each
+    // owner has a slot of its own: the harness starts a slot's sub-regions only for candidates.)
+    let four = |value: f64| ["g", "h", "i", "j"].map(|name| gauge(name, value)).to_vec();
+    let trace = Trace::new()
+        .install(chain("10s", "1m"))
+        .admit(src(), t(1), four(1.0))
+        .advance(t(11))
+        .advance(t(21))
+        .advance(t(31))
+        .advance(t(41))
+        .admit(src(), t(55), four(4.0))
+        .advance(t(51))
+        .advance(t(61))
+        .advance(t(71))
+        .advance(t(121))
+        .close();
+    let mut split = false;
+    let options = interleaved_steps(Interleaving::TOUCH_ONLY);
+    let (run, replay) = Replay::run_observed(&trace, true, t(1), options, &mut |_, harness| {
+        split |= pass_pending(harness);
+    });
+    let records = interpreted(&run, "a");
+    assert!(
+        records.contains(&(1, 61_000, "g gauge [0:1, 50:4]".to_string())),
+        "the interpreter flushes both buckets at 61: {:?}",
+        records
+    );
+    assert!(split, "a pass of `first` is pending between batches");
+    assert_eq!(
+        framed(&replay.harness, "a"),
+        records,
+        "the frame's `a`, flushes interleaved"
     );
 }
 

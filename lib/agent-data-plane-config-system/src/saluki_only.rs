@@ -1403,12 +1403,12 @@ mod tests {
     }
 
     #[test]
-    fn lanes_are_automatic_by_default_and_a_count_of_zero_is_the_automatic_count() {
+    fn lanes_are_off_by_default_and_a_count_of_zero_is_the_automatic_count() {
         let saluki_only: SalukiOnly = serde_json::from_value(json!({})).expect("the source deserializes");
         let mut config = SalukiConfiguration::default();
         saluki_only.seed(&mut config);
         let lanes = config.control.programmable_metrics.lanes;
-        assert_eq!(lanes.mode, LanesMode::Auto);
+        assert_eq!(lanes.mode, LanesMode::Off);
         assert_eq!((lanes.state, lanes.post), (None, None));
 
         for (source, mode, state, post) in [
@@ -1425,7 +1425,13 @@ mod tests {
                 None,
                 NonZeroU16::new(5),
             ),
-            (json!({ "state": 2 }), LanesMode::Auto, NonZeroU16::new(2), None),
+            (json!({ "state": 2 }), LanesMode::Off, NonZeroU16::new(2), None),
+            (
+                json!({ "mode": "auto", "post": 4 }),
+                LanesMode::Auto,
+                None,
+                NonZeroU16::new(4),
+            ),
             // The booleans a YAML 1.1 tool writes for `off` and for `on`, in every form the Agent's casting reads.
             (json!({ "mode": false }), LanesMode::Off, None, None),
             (json!({ "mode": "false" }), LanesMode::Off, None, None),

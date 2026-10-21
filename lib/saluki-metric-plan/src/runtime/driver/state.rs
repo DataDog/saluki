@@ -1118,7 +1118,7 @@ impl MetricRegionDriver {
         let state = state
             .as_deref_mut()
             .expect("only a state owner's region runs its state");
-        if state.tracker.observe(&header) == Observation::Fault {
+        if state.tracker.observe_with(&header, batch.is_empty()) == Observation::Fault {
             // A batch whose generation runs no state owner in the region only passes through its stateless steps, as
             // during a cut that moves the state owner, and a header-only one only carries the progress of its point,
             // as one forwarded while the generations that list it are being released: neither needs its point upstream
@@ -1367,10 +1367,11 @@ impl MetricRegionDriver {
             }
         }
         self.forward_progress(&header, header_only, turn.now(), exits);
+        // A derived point's progress comes only in the header-only batch its state owner sends once a drain completed.
         let derived = header
             .admission_point
             .is_some_and(|point| self.state().derived.contains(&point));
-        if !derived {
+        if !derived || !header_only {
             return Progress::Done;
         }
         let Self { generations, state, .. } = self;
@@ -2084,9 +2085,10 @@ impl MetricRegionDriver {
         *cursor = Cursor::default();
     }
 
-    /// Forwards the progress of the state owner's derived point after a drain step that flushed, at its stamp: on every
-    /// exit toward a state owner downstream that lists the point and the step wrote nothing to, so that its watermark
-    /// reaches the flush time even when the flush emits nothing there. A step that sends progress moves the output
+    /// Forwards the progress of the state owner's derived point after a drain step that flushed, at its stamp, as a
+    /// header-only batch: on every exit toward a state owner downstream that lists the point, which counts the point's
+    /// time only from such a batch, so that its watermark reaches the flush time once the drain's whole output has, and
+    /// even when the flush emits nothing there. A step that sends progress moves the output
     /// clock as one that emits does, so that the point's stamps only grow.
     ///
     /// After a lineage's last drain under the generation a cut replaces, its boundary flush or its final retirement,
@@ -2100,17 +2102,13 @@ impl MetricRegionDriver {
         let Some(step) = state.drain.as_ref().and_then(|drain| drain.current.as_ref()) else {
             return;
         };
-        if matches!(step.kind, DrainKind::Reset { .. } | DrainKind::Shutdown { .. }) {
-            return;
-        }
-        // Not while another lineage of the state owner retires before its final flush: a state owner downstream would
-        // see the new generation at the point before the retiring lineage's last output.
+        // A reset's and a shutdown's drains forward their stamp only where they wrote, as do drains while another
+        // lineage of the state owner retires before its final flush: a state owner downstream would otherwise see the
+        // new generation at the point before the retiring lineage's last output.
+        let closing = matches!(step.kind, DrainKind::Reset { .. } | DrainKind::Shutdown { .. });
         let retiring = state.instances.iter().any(|(handle, instance)| {
             handle != step.instance && instance.retiring.is_some() && !instance.retired && !instance.removed
         });
-        if retiring {
-            return;
-        }
         let Some(mark) = SentMark::of(&step.stamp) else { return };
         let point = state.output.point();
         let mut sent = false;
@@ -2118,16 +2116,24 @@ impl MetricRegionDriver {
             let Some(position) = exit.points.iter().position(|upstream| *upstream == point) else {
                 continue;
             };
-            if !step.written.get(exit.exit.get()).copied().unwrap_or(false) {
-                let mut header = step.stamp.clone();
-                header.entry = None;
-                exits.emit(exit.exit, EventsBuffer::with_capacity(0).with_header(header));
-                sent = true;
+            let wrote = step.written.get(exit.exit.get()).copied().unwrap_or(false);
+            if (closing || retiring) && !wrote {
+                continue;
             }
+            // What the drain wrote carries no progress downstream ([`WatermarkTracker::observe_after`]): the drain's
+            // progress goes once, now that its whole output has, so that a state owner downstream never closes a bucket
+            // the rest of the output still reaches.
+            let mut header = step.stamp.clone();
+            header.entry = None;
+            exits.emit(exit.exit, EventsBuffer::with_capacity(0).with_header(header));
+            sent = true;
             exit.last[position] = Some(mark);
         }
         if sent {
             state.output = step.latch;
+        }
+        if closing || retiring {
+            return;
         }
 
         let by = match step.kind {

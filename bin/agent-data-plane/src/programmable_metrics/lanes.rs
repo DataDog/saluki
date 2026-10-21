@@ -6,9 +6,13 @@
 //! decoders, and fit the memory grant in `Strict` mode ([`LaneSettings::fit`]). Every count is read at startup and
 //! changes at restart.
 //!
+//! Lanes are opt-in: with `lanes.mode: off`, the default, every slot runs one lane, and the frame fuses state owners
+//! with their neighbors, so that the default program's metrics path is one region, `dsd_pre_aggregation`, whose flushes
+//! interleave with admission.
+//!
 //! # Automatic counts
 //!
-//! With `lanes.mode: auto`, the default, the counts are, for a primary runtime of `W` workers and `decoders` DogStatsD
+//! With `lanes.mode: auto`, the counts are, for a primary runtime of `W` workers and `decoders` DogStatsD
 //! decoders (`dogstatsd_workers_count`, or the source's default from the host's vCPUs):
 //!
 //! - producer lanes `D = min(decoders, PRODUCER_LANES_MAX)`, and one below three workers, so decoder `d` feeds lane
@@ -23,8 +27,7 @@
 //! The automatic counts stop at what the first measurements support: state lanes at
 //! [`AUTOMATIC_STATE_LANES_MAX`] (4) until per-batch budget reservations and a worker-time sweep raise it, and
 //! post-aggregation lanes at [`AUTOMATIC_POST_LANES_MAX`] (8). An explicit `lanes.state` or `lanes.post` above
-//! [`MAX_LANES`][saluki_metric_plan::limits::values::MAX_LANES] (64) is lowered to it, with a warning. With
-//! `lanes.mode: off`, every slot runs one lane and R1's cost model pipelines the slots: the layout before lanes.
+//! [`MAX_LANES`][saluki_metric_plan::limits::values::MAX_LANES] (64) is lowered to it, with a warning.
 //!
 //! # The memory grant
 //!
@@ -103,35 +106,34 @@ pub struct LaneCounts {
     pub lanes: LanePolicy,
 
     /// Whether the metrics path runs on lanes, whatever their number: the DogStatsD source's producer lanes then stamp
-    /// their own admission points, and the frame isolates every state owner. Without lanes, R1's cost model pipelines
-    /// the slots: the stage 6 layout.
+    /// their own admission points, and the frame isolates every state owner. Without lanes, state owners fuse with
+    /// their neighbors.
     pub lanes_on: bool,
 }
 
 impl LaneCounts {
-    /// Lanes off: one lane per slot, and the slots R1's cost model pipelines.
+    /// Lanes off: one lane per slot, and state owners fused with their neighbors.
     pub const OFF: Self = Self {
         lanes: LanePolicy::ONE,
         lanes_on: false,
     };
 
-    /// Returns the counts of a metrics path on lanes, `lanes`, laid out without R1's pipelining, so that fusion is
-    /// maximal between fences.
+    /// Returns the counts of a metrics path on lanes, `lanes`, laid out with every state owner isolated in a slot of
+    /// its own.
     pub const fn on(lanes: LanePolicy) -> Self {
         Self { lanes, lanes_on: true }
     }
 
-    /// Returns the options the frame is laid out with.
+    /// Returns the options the frame is laid out with: state owners isolated exactly when the metrics path runs on
+    /// lanes.
     pub fn frame_options(&self) -> FrameOptions {
-        if self.lanes_on {
-            FrameOptions::ON_LANES
-        } else {
-            FrameOptions::default()
+        FrameOptions {
+            isolate_state: self.lanes_on,
         }
     }
 
     /// Returns `true` if the metrics path runs on lanes, whatever their number: the DogStatsD source's producer lanes
-    /// then stamp their own admission points, and R1's cost model is off.
+    /// then stamp their own admission points, and the frame isolates every state owner.
     pub fn lanes_on(&self) -> bool {
         self.lanes_on
     }
@@ -139,7 +141,7 @@ impl LaneCounts {
     /// Describes the counts for logs and errors: the lanes of each kind, or that the metrics path runs without lanes.
     pub fn describe(&self) -> String {
         if !self.lanes_on() {
-            return "without lanes (one lane per slot, R1's pipelining)".to_string();
+            return "without lanes (one lane per slot, state fused)".to_string();
         }
         let lanes = &self.lanes;
         format!(
@@ -526,7 +528,6 @@ pub fn log_booted_lanes(config: &SalukiConfiguration, counts: &LaneCounts, worke
     info!(
         lanes = %counts.describe(),
         mode,
-        pipelining = !counts.lanes_on,
         workers,
         decoders,
         cpu_time_sampling = sampling.get(),
@@ -583,26 +584,29 @@ mod tests {
     }
 
     #[test]
-    fn lanes_are_automatic_by_default_and_off_with_mode_off_whatever_the_counts_say() {
-        // By default the counts are automatic: at eight workers, four state lanes, and the producer and
-        // post-aggregation lanes of the host's default decoder count.
-        let defaults = SalukiConfiguration::default();
-        let settings = LaneSettings::from_config(&defaults, 8);
-        let decoders = dogstatsd_decoder_workers(defaults.domains.dogstatsd.listeners.workers_count).get();
-        let producer = automatic_producer_lanes(decoders, 8);
-        assert_eq!(settings.counts, on(producer, 4, automatic_post_lanes(producer)));
-        assert!(settings.counts.lanes_on());
-        assert_eq!(settings.counts.frame_options(), FrameOptions::ON_LANES);
+    fn lanes_are_off_by_default_and_with_mode_off_whatever_the_counts_say() {
+        // By default the metrics path runs without lanes, its state owners fused with their neighbors.
+        let settings = LaneSettings::from_config(&SalukiConfiguration::default(), 8);
+        assert_eq!(settings.counts, LaneCounts::OFF);
         assert!(!settings.explicit_state && !settings.explicit_post);
 
         let counts = LaneSettings::from_config(&config(LanesMode::Off, 0, 0, 6), 8).counts;
         assert_eq!(counts, LaneCounts::OFF);
         assert!(counts.lanes.is_one());
         assert!(!counts.lanes_on());
-        assert_eq!(counts.frame_options(), FrameOptions::default());
+        assert!(!counts.frame_options().isolate_state);
 
         let settings = LaneSettings::from_config(&config(LanesMode::Off, 4, 3, 6), 8);
         assert_eq!(settings.counts, LaneCounts::OFF);
+        assert!(!settings.explicit_state && !settings.explicit_post);
+
+        // With `auto`, the counts are automatic: at eight workers, four state lanes, and the producer and
+        // post-aggregation lanes of the host's default decoder count, every state owner isolated.
+        let settings = LaneSettings::from_config(&config(LanesMode::Auto, 0, 0, 0), 8);
+        let producer = automatic_producer_lanes(dogstatsd_decoder_workers(0).get(), 8);
+        assert_eq!(settings.counts, on(producer, 4, automatic_post_lanes(producer)));
+        assert!(settings.counts.lanes_on());
+        assert!(settings.counts.frame_options().isolate_state);
         assert!(!settings.explicit_state && !settings.explicit_post);
     }
 
@@ -639,7 +643,7 @@ mod tests {
         let settings = LaneSettings::from_config(&config(LanesMode::Auto, 0, 0, 2), 2);
         assert_eq!(settings.counts, LaneCounts::OFF);
         assert!(!settings.counts.lanes_on());
-        assert_eq!(settings.counts.frame_options(), FrameOptions::default());
+        assert!(!settings.counts.frame_options().isolate_state);
         // A count the configuration sets, even of one, keeps the lanes asked for.
         for (state, post) in [(1, 0), (0, 1), (1, 1)] {
             let settings = LaneSettings::from_config(&config(LanesMode::Auto, state, post, 2), 2);

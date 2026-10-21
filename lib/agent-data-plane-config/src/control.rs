@@ -186,7 +186,8 @@ pub struct ProgrammableMetrics {
 pub struct ProgrammableMetricsLanes {
     /// Whether the slots of the metrics path run on lanes.
     ///
-    /// Defaults to [`LanesMode::Auto`]: lanes, with the automatic counts unless the counts below are set.
+    /// Defaults to [`LanesMode::Off`]: one lane per slot, and the metrics path fused into one region. With
+    /// [`LanesMode::Auto`], lanes with the automatic counts unless the counts below are set.
     pub mode: LanesMode,
 
     /// The state lanes of DogStatsD aggregation, or `None` for the automatic count, which follows the primary
@@ -204,10 +205,10 @@ pub struct ProgrammableMetricsLanes {
 pub enum LanesMode {
     /// The slots run on lanes: the producer lanes follow the DogStatsD decoders, and the state and post-aggregation
     /// lanes are as configured, or automatic.
-    #[default]
     Auto,
 
-    /// One lane per slot, laid out as before lanes existed; the lane counts are ignored.
+    /// One lane per slot, with state steps fused beside their neighbors; the lane counts are ignored.
+    #[default]
     Off,
 }
 

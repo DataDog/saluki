@@ -141,8 +141,8 @@ impl Destination for DrainingSink {
     }
 }
 
-/// A running topology with one region, `dsd_agg`, whose driver holds `held`; the bridge between its region and a
-/// snapshot channel; and the handle that requests go through.
+/// A running topology with one region, `dsd_pre_aggregation`, as without lanes, whose driver holds `held`; the bridge
+/// between its region and a snapshot channel; and the handle that requests go through.
 struct Running {
     handle: AggregateContextSnapshotHandle,
     bridge: Arc<SnapshotBridge>,
@@ -159,7 +159,7 @@ impl Running {
             held,
             targets: Arc::clone(&targets),
         };
-        let host = RegionHostBuilder::from_driver(["metrics_enrich"], NonZeroUsize::MIN, mailbox, driver).unwrap();
+        let host = RegionHostBuilder::from_driver(["dd_metrics_encode"], NonZeroUsize::MIN, mailbox, driver).unwrap();
         let registry = ComponentRegistry::default();
         let mut blueprint = TopologyBlueprint::new("snapshot-bridge-test", &registry);
         blueprint
@@ -170,13 +170,13 @@ impl Running {
                 },
             )
             .unwrap()
-            .add_transform("dsd_agg", host)
+            .add_transform("dsd_pre_aggregation", host)
             .unwrap()
-            .add_destination("metrics_enrich", DrainingSinkBuilder)
+            .add_destination("dd_metrics_encode", DrainingSinkBuilder)
             .unwrap()
-            .connect_components("dsd_in.metrics", "dsd_agg")
+            .connect_components("dsd_in.metrics", "dsd_pre_aggregation")
             .unwrap()
-            .connect_components("dsd_agg.metrics_enrich", "metrics_enrich")
+            .connect_components("dsd_pre_aggregation.dd_metrics_encode", "dd_metrics_encode")
             .unwrap()
             .with_health_registry(HealthRegistry::new())
             .with_memory_limiter(MemoryLimiter::noop())

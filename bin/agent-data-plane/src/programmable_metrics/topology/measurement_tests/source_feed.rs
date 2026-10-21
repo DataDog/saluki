@@ -1418,8 +1418,7 @@ fn print_probes(label: &str, measured: &Measured, prefixes: &[&str]) {
 #[ignore = "a measurement: run it in release mode, as the module documentation says"]
 fn one_saturated_stream_connection() {
     // M1: one Unix stream connection, decoded by its own task, saturated. Legacy pipelines the pre-aggregation chain
-    // over its transforms' tasks, and the plan over R1's regions today; without R1 (stage 9), the plan runs the chain
-    // on one lane per connection.
+    // over its transforms' tasks, and the plan runs the whole metrics path in one region, without lanes.
     let knobs = Knobs::from_env(Knobs {
         workers: vec![4],
         transport: Transport::UnixStream,

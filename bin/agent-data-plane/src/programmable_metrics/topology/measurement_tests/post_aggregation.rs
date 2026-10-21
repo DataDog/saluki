@@ -43,7 +43,7 @@ enum Path {
     /// The legacy topology.
     Legacy,
 
-    /// The plan-driven topology without lanes: one post-aggregation lane, R1's layout.
+    /// The plan-driven topology without lanes: one region, the whole metrics path.
     Plan,
 
     /// The plan-driven topology on one producer lane, one state lane, and this many post-aggregation lanes.

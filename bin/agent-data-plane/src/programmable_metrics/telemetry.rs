@@ -37,7 +37,7 @@ use std::{
 use async_trait::async_trait;
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_core::{
-    accounting::ComponentRegistry,
+    accounting::{ComponentRegistry, MemoryBounds},
     cache::GaugeMode,
     components::ComponentContext,
     execution::{GenerationId, LaneContext, LaneStats, LossClass},
@@ -52,7 +52,7 @@ use saluki_metric_kernels::{
     tag_projection::{TagProjectionRules, ValueRules},
 };
 use saluki_metric_plan::{
-    compile::{Frame, RegionKey, RegionProgram, RewriteId, RewriteRecord, SlotId},
+    compile::{Frame, RegionProgram, RewriteId, RewriteRecord, Slot, SlotId},
     ir::{NativeComponentId, Node, NodeId, OutputId, Plan, PortName},
     operators::{
         decode_tag_filter_rules, decode_tag_value_rules, KernelBuildContext, OperatorRegistry, PlanValue, Recorder,
@@ -60,7 +60,7 @@ use saluki_metric_plan::{
     },
     predicate::{Predicate, StringMatch},
     runtime::{
-        kernel_accounting_name, kernel_accounting_path, PlanTelemetry, RegisterTelemetry, StateBudgets,
+        kernel_accounting_in, kernel_accounting_name, KernelAccounting, PlanTelemetry, RegisterTelemetry, StateBudgets,
         StateLaneTelemetry, StateTelemetry,
     },
 };
@@ -216,8 +216,8 @@ pub struct RegionTelemetry {
     topology: SubsystemIdentifier,
     accounting: Option<Accounting>,
     state_budgets: StateBudgets,
-    /// The name of each slot's region, by slot.
-    slot_names: BTreeMap<SlotId, String>,
+    /// Each slot of the frame, by slot.
+    slots: BTreeMap<SlotId, Slot>,
 }
 
 impl RegionTelemetry {
@@ -228,7 +228,7 @@ impl RegionTelemetry {
             topology,
             accounting: None,
             state_budgets: StateBudgets::unlimited(),
-            slot_names: BTreeMap::new(),
+            slots: BTreeMap::new(),
         }
     }
 
@@ -240,16 +240,32 @@ impl RegionTelemetry {
     }
 
     /// Builds the kernels of every region that holds a state owner with the budgets of state of `budgets`, which every
-    /// lineage of every state owner shares, and accounts a state owner in its region's own group when a slot of `frame`
-    /// named after it runs it in its main region.
+    /// lineage of every state owner shares, and accounts each state owner where the slot of `frame` running it says
+    /// (`kernel_accounting_in`).
     pub fn with_state(mut self, budgets: StateBudgets, frame: &Frame) -> Self {
         self.state_budgets = budgets;
-        self.slot_names = frame
-            .slots()
-            .iter()
-            .map(|slot| (slot.id, slot.name.to_string()))
-            .collect();
+        self.slots = frame.slots().iter().map(|slot| (slot.id, slot.clone())).collect();
         self
+    }
+
+    /// Declares the bounds of a kernel accounted beside its region (`KernelAccounting::Beside`), `bounds`, as those of
+    /// the component `name`, whose resource group the kernel is accounted to: a state owner fused with its neighbors,
+    /// declared where its native component's were, such as `dsd_agg.aggregate_context_limit`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `name` is not a valid component ID.
+    pub fn declare_bounds_beside(&self, name: &str, bounds: &dyn MemoryBounds) -> Result<(), GenericError> {
+        let Some(accounting) = &self.accounting else {
+            return Ok(());
+        };
+        let component_id = ComponentId::try_from(name)
+            .map_err(|error| generic_error!("Kernel `{}` cannot be accounted as a component: {}", name, error))?;
+        let identity = ComponentContext::transform(&self.topology, component_id).identity();
+        let mut builder = accounting.registry.bounds_builder(&identity);
+        builder.reset();
+        bounds.specify_bounds(&mut builder);
+        Ok(())
     }
 
     /// Returns the component a node reports its telemetry as: a transform named after the node, by its ID.
@@ -267,11 +283,13 @@ impl RegionTelemetry {
     /// says, with its cache named as the node's role says, if it has one, and accounted to the resource group
     /// `<region>.<node>`, whose bounds `RegionBounds` declares under the same name.
     ///
-    /// A kernel of a region that holds a state owner, the slot's main region or a sub-region of the slot, draws on the
-    /// budgets of state ([`with_state`][Self::with_state]): the global budget and its node's. If the slot is named
-    /// after a state owner its main region runs, as `dsd_agg` is after DogStatsD aggregation, the region stands for the
-    /// node's native component, and the kernel is accounted in the region's own group (see `kernel_accounting_path`).
-    /// A sub-region's kernels are accounted under the slot's region, as `<region>.<node>`, the sub-region's own group.
+    /// The kernel of a state owner, in the slot's main region or a sub-region of the slot, draws on the budgets of
+    /// state ([`with_state`][Self::with_state]): the global budget and its node's. A state owner accounts under its own
+    /// node's name wherever it runs (see `kernel_accounting_path`): if an isolation slot is named after it, as
+    /// `dsd_agg` is after DogStatsD aggregation on lanes, the region stands for the node's native component, and the
+    /// kernel is accounted in the region's own group; fused with its neighbors in a slot's main region, as aggregation
+    /// is without lanes, it is accounted to the group of the component it reports as, beside the region. A sub-region's
+    /// kernels are accounted under the slot's region, as `<region>.<node>`, the sub-region's own group.
     pub fn kernel_context(&self, program: &RegionProgram, node: &NodeId) -> KernelBuildContext {
         self.kernel_context_in(program, node, LaneContext::ONE)
     }
@@ -287,7 +305,12 @@ impl RegionTelemetry {
             .iter()
             .find(|kernel| &kernel.key.node == node)
             .map_or("", |kernel| kernel.operator);
-        let holds_state = program.kernels().iter().any(|kernel| kernel.lineage.is_some());
+        // Only the state owner's kernel draws on the budgets: a region fused around it runs stateless kernels beside
+        // it.
+        let owns_state = program
+            .kernels()
+            .iter()
+            .any(|kernel| &kernel.key.node == node && kernel.lineage.is_some());
         let context = KernelBuildContext::new(node.clone(), self.component(node));
         // A role may name the kernel's cache after the native one, which the remapper selects on.
         let context = match roles::of(node, operator).and_then(|role| role.cache_id) {
@@ -300,15 +323,10 @@ impl RegionTelemetry {
         } else {
             context.with_cache_gauges(GaugeMode::Summed)
         };
-        let context = if holds_state {
+        let context = if owns_state {
             context.with_state_budget(self.state_budgets.context_budget(node))
         } else {
             context
-        };
-        // The slot's own name, when its main region holds a state owner, which the slot may be named after.
-        let state_slot = match program.region() {
-            RegionKey::Main if holds_state => self.slot_names.get(&program.slot()),
-            RegionKey::Main | RegionKey::State(_) => None,
         };
         let group = self.accounting.as_ref().and_then(|accounting| {
             let region = accounting.regions.get(program.slot().get())?.clone();
@@ -317,13 +335,15 @@ impl RegionTelemetry {
             } else {
                 region.child(lane_group_name(lane))
             };
-            let name = match state_slot {
-                Some(region_name) => kernel_accounting_path(region_name, node),
-                None => Some(kernel_accounting_name(node)),
+            let accounted = match self.slots.get(&program.slot()) {
+                Some(slot) => kernel_accounting_in(slot, program, node),
+                None => KernelAccounting::Under(kernel_accounting_name(node)),
             };
-            let group = match name {
-                Some(name) => region.child(name),
-                None => region,
+            let group = match accounted {
+                KernelAccounting::Region => region,
+                KernelAccounting::Under(name) => region.child(name),
+                // The component it reports as, whose bounds `declare_bounds_beside` declares.
+                KernelAccounting::Beside(_) => self.component(node).identity(),
             };
             Some(accounting.registry.get_resource_group_token(&group))
         });

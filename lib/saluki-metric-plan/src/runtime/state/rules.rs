@@ -126,7 +126,10 @@ pub enum Observation {
 /// its header releases. [`observe`][Self::observe] of a derived point's header therefore records its epoch and
 /// generation but not its time, within an epoch, and [`observe_after`][Self::observe_after], once the batch was
 /// admitted, raises the point's latest time: whatever a host decides between the two by the watermark, such as the
-/// ticks the header releases, reads the watermark as it was before the header.
+/// ticks the header releases, reads the watermark as it was before the header. A host counts a derived point's time
+/// only from the header-only batch its state owner sends once a drain completed, so that the drain's output, which
+/// may reach the host in several batches with the drain's stamp, all arrives before the ticks its time releases
+/// ([`observe_with`][Self::observe_with]).
 ///
 /// A point is found by its ID in constant time when the upstream points' IDs follow one another, as the lane points of
 /// one source do, and by binary search otherwise.
@@ -331,11 +334,24 @@ impl WatermarkTracker {
 
     /// Observes one header that reached the state owner, in arrival order.
     pub fn observe(&mut self, header: &BatchHeader) -> Observation {
-        let (Some(admitted_at), Some(point)) = (header.admitted_at, header.admission_point) else {
+        self.observe_with(header, true)
+    }
+
+    /// Observes one header that reached the state owner, in arrival order, as [`observe`][Self::observe] does; with
+    /// `counts_time` false, the header of a batch with events, the first header of a derived point, or of a new epoch
+    /// of it, starts the point's progress at the start of the timeline rather than at its time: the batch is part of a
+    /// drain whose progress comes once it completed (see [derived points](Self#derived-points)).
+    pub fn observe_with(&mut self, header: &BatchHeader, counts_time: bool) -> Observation {
+        let (Some(stamped), Some(point)) = (header.admitted_at, header.admission_point) else {
             return Observation::Fault;
         };
         let Some(index) = self.index_of(point) else {
             return Observation::Fault;
+        };
+        let admitted_at = if counts_time || !self.derived[index] {
+            stamped
+        } else {
+            AdmissionTime::UNIX_EPOCH
         };
         let generation = header.generation_id();
         let known = match self.points[index].1 {
@@ -354,10 +370,10 @@ impl WatermarkTracker {
         };
         let observation = if known.epoch == header.epoch {
             debug_assert!(
-                admitted_at >= known.latest,
+                stamped >= known.latest,
                 "admission point {} stamped {} after {} in one epoch, which one path in stamping order rules out",
                 point.get(),
-                admitted_at,
+                stamped,
                 known.latest
             );
             Observation::Ok

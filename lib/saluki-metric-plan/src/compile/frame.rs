@@ -849,6 +849,7 @@ pub struct Frame {
     lanes: LanePolicy,
     options: FrameOptions,
     boot_output_points: BTreeMap<NodeId, Vec<AdmissionPointId>>,
+    boot_state_owners: BTreeSet<NodeId>,
     next_point: u32,
 }
 
@@ -1165,6 +1166,10 @@ impl Frame {
             }
         }
         transitional_state_upstream(&mut admission_points, &mut slots);
+        let boot_state_owners = (0..roles.len())
+            .filter(|&node| roles[node] == Role::Isolated)
+            .map(|node| graph.id(node).clone())
+            .collect();
 
         // The routing of every edge into a slot with lanes.
         route_lanes(&mut admission_points, &producers, &mut slots)?;
@@ -1247,6 +1252,7 @@ impl Frame {
             lanes: *lanes,
             options,
             boot_output_points,
+            boot_state_owners,
             next_point,
         })
     }
@@ -1272,6 +1278,12 @@ impl Frame {
     /// never registered. `None` for a node that is no state owner of the boot plan.
     pub fn boot_output_points(&self, node: &NodeId) -> Option<&[AdmissionPointId]> {
         self.boot_output_points.get(node).map(Vec::as_slice)
+    }
+
+    /// Returns `true` if `node` is a state owner of the boot plan, isolated in a slot of its own or fused with its
+    /// neighbors.
+    pub fn is_boot_state_owner(&self, node: &NodeId) -> bool {
+        self.boot_state_owners.contains(node)
     }
 
     /// Returns the first ID after every admission point of the fixed components and every boot state owner's output

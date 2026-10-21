@@ -178,6 +178,41 @@ fn the_default_program_runs_aggregation_alone_in_its_slots_main_region_fed_by_do
 }
 
 #[test]
+fn without_isolating_state_a_renamed_aggregation_opens_a_sub_region_since_the_main_region_holds_the_boot_owners_state()
+{
+    // A region holds the state of the owner it first ran for as long as it runs: the one slot's main region holds
+    // `dsd_agg`'s, so a candidate that renames it runs the new lineage in a sub-region, even with `dsd_agg` gone.
+    let plan = default_program();
+    let registry = OperatorRegistry::native();
+    let frame = fused_frame_of(&plan).unwrap();
+    let renamed = Plan::from_json(
+        &DEFAULT_PROGRAM_JSON
+            .replace("\"dsd_agg\"", "\"dsd_agg_v2\"")
+            .replace("\"dsd_agg.", "\"dsd_agg_v2."),
+    )
+    .unwrap();
+    let compiled = compile_unvalidated(
+        &renamed,
+        &registry,
+        &frame,
+        &DerivedPoints::for_plan(&frame, &renamed, &registry),
+    )
+    .unwrap();
+    let [slot] = frame.slots() else {
+        panic!("one slot: {:?}", frame.slots());
+    };
+    let placed = compiled.placement.slot(slot.id).unwrap();
+    let keys = placed
+        .regions
+        .iter()
+        .map(|region| region.key.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(keys, [RegionKey::Main, RegionKey::State(id("dsd_agg_v2"))]);
+    assert_eq!(placed.regions[0].state_owner, None);
+    assert_eq!(placed.regions[1].state_owner, Some(id("dsd_agg_v2")));
+}
+
+#[test]
 fn without_isolating_state_the_default_program_runs_aggregation_in_its_one_slots_main_region_after_the_chain() {
     let plan = default_program();
     let registry = OperatorRegistry::native();

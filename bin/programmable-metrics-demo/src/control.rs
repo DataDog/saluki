@@ -756,7 +756,7 @@ mod tests {
         let status = |generation: u64| Surface::Available(serde_json::json!({ "active_generation": generation }));
         let explain = |state_lanes: u16| {
             serde_json::json!({"physical": {
-                "layout": {"dogstatsd_lanes": 2, "state_lanes": state_lanes, "post_lanes": 3, "pipelining": false},
+                "layout": {"dogstatsd_lanes": 2, "state_lanes": state_lanes, "post_lanes": 3},
                 "fixed": [], "slots": [], "edges": [], "fusion": [], "segments": [], "output_bindings": []
             }})
         };

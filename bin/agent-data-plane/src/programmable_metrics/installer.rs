@@ -626,7 +626,8 @@ impl ProgrammableMetrics {
     }
 
     /// Returns the worker that answers DogStatsD aggregation's context snapshot requests from the state slot that
-    /// runs aggregation, `dsd_agg`, or `None` if the topology has no DogStatsD pipeline.
+    /// runs aggregation (`dsd_pre_aggregation` without lanes, `dsd_agg` on lanes), or `None` if the topology has no
+    /// DogStatsD pipeline.
     ///
     /// Call it once the topology is built: the topology takes the requests when it adds the DogStatsD pipeline.
     pub fn snapshot_bridge(&self) -> Option<SnapshotBridge> {

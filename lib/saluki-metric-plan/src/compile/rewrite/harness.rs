@@ -285,13 +285,19 @@ pub(crate) fn node(local: &str, op: &str, params: Value, native: bool) -> Value 
 }
 
 /// Returns [`catalog`] with a telemetry contract that names every native filter of `plan`, a `split` [`node_id`] names
-/// as native: a host's, whose filters rewrites move only whole.
+/// as native, and every native `drop`: a host's, whose filters rewrites move only whole. A native drop is named too, so
+/// that an author's filter left dropping into one, once R3 folded the native `split` before it, is moved only whole as
+/// well, keeping every native node as [`Case::check_structure`] asks.
 pub(crate) fn contract_catalog(plan: &Plan) -> MemoryCatalog {
     let filters = plan
         .nodes
         .iter()
-        .filter(|node| node.op.as_str() == names::SPLIT && is_native(&node.id))
-        .map(|node| (node.id.to_string(), names::SPLIT))
+        .filter(|node| is_native(&node.id))
+        .filter_map(|node| match node.op.as_str() {
+            names::SPLIT => Some((node.id.to_string(), names::SPLIT)),
+            names::DROP => Some((node.id.to_string(), names::DROP)),
+            _ => None,
+        })
         .collect::<Vec<_>>();
     let filters = filters.iter().map(|(id, op)| (id.as_str(), *op)).collect::<Vec<_>>();
     catalog_with_contract(&filters)

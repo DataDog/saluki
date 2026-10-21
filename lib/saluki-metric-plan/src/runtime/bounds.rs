@@ -11,7 +11,8 @@ use saluki_core::{
 use super::{driver::routed_buffer_events, RegionError};
 use crate::{
     compile::{
-        DecisionMemo, ExitRouting, ExitSet, ExitSetCounts, RegionProgram, SharedPredicate, Slot, COUNTED_EXIT_SETS,
+        DecisionMemo, ExitRouting, ExitSet, ExitSetCounts, RegionKey, RegionProgram, SharedPredicate, Slot,
+        COUNTED_EXIT_SETS,
     },
     ir::{NodeId, Plan},
     limits,
@@ -24,28 +25,52 @@ pub fn kernel_accounting_name(node: &NodeId) -> String {
     node.local().to_string()
 }
 
-/// Returns the name, under the component of `region`, a slot whose region holds a state owner, of the subcomponent a
-/// kernel is accounted under, or `None` if the kernel is accounted in the region's own group, with its bounds at the
-/// region's top level.
-///
-/// A slot named after the state owner its region holds stands for that node's native component, as the slot of
-/// aggregation stands for the native `dsd_agg` transform: its kernel keeps that component's resource group and bounds
-/// path, such as `dsd_agg.aggregate_context_limit`. Every other kernel is accounted under [`kernel_accounting_name`].
-/// A slot whose region holds no state owner accounts every kernel under [`kernel_accounting_name`], even one named
-/// after the node it runs; [`kernel_accounting_in`] applies both rules.
-pub fn kernel_accounting_path(region: &str, node: &NodeId) -> Option<String> {
-    (node.local().as_str() != region).then(|| kernel_accounting_name(node))
+/// Where a kernel's memory and CPU time are accounted, and its bounds declared, relative to the component of the
+/// region that runs it ([`kernel_accounting_in`]).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum KernelAccounting {
+    /// In the region's own group, with its bounds at the region's top level: the state owner of an isolation slot
+    /// named after it, as the slot of aggregation stands for the native `dsd_agg` transform.
+    Region,
+
+    /// Under a subcomponent of the region, named after the node ([`kernel_accounting_name`]).
+    Under(String),
+
+    /// As a component of its own beside the region, named after the node: a state owner fused with its neighbors in a
+    /// slot's main region, which keeps the resource group and bounds path of the component it would have in a slot of
+    /// its own, such as `dsd_agg.aggregate_context_limit`. The region's bounds leave it out
+    /// ([`RegionBounds::beside`]).
+    Beside(String),
 }
 
-/// Returns the name, under the component of `slot`'s region running `program`, of the subcomponent the kernel of
-/// `node` is accounted under, or `None` if it is accounted in the region's own group: [`kernel_accounting_path`] when
-/// the program holds a state owner, and [`kernel_accounting_name`] otherwise.
-pub fn kernel_accounting_in(slot: &Slot, program: &RegionProgram, node: &NodeId) -> Option<String> {
-    if holds_state(program) {
-        kernel_accounting_path(slot.name.as_str(), node)
-    } else {
-        Some(kernel_accounting_name(node))
+/// Returns where the kernel of `node` is accounted in the region of a slot named `region` that runs it in `program`,
+/// a program of the slot's main region or of a sub-region of the slot; `isolation` says whether the slot isolates a
+/// state owner (see [`Slot::is_isolation`]).
+///
+/// A state owner accounts under its own node's name wherever it runs: in the region's own group when the slot isolates
+/// it and is named after it, as the slot of aggregation is on lanes; beside the region, as a component of its own,
+/// when it is fused with its neighbors in a slot's main region, as aggregation is without lanes, so that its resource
+/// group and bounds stay those of its native component; and under the region otherwise, a sub-region included. Every
+/// other kernel is accounted under [`kernel_accounting_name`].
+pub fn kernel_accounting_path(
+    region: &str, isolation: bool, program: &RegionProgram, node: &NodeId,
+) -> KernelAccounting {
+    let name = kernel_accounting_name(node);
+    let owner = program
+        .kernels()
+        .iter()
+        .any(|kernel| &kernel.key.node == node && kernel.lineage.is_some());
+    match program.region() {
+        RegionKey::Main if owner && isolation && name == region => KernelAccounting::Region,
+        RegionKey::Main if owner && !isolation => KernelAccounting::Beside(name),
+        RegionKey::Main | RegionKey::State(_) => KernelAccounting::Under(name),
     }
+}
+
+/// Returns where the kernel of `node` is accounted in the region of `slot` running `program`:
+/// [`kernel_accounting_path`] for the slot.
+pub fn kernel_accounting_in(slot: &Slot, program: &RegionProgram, node: &NodeId) -> KernelAccounting {
+    kernel_accounting_path(slot.name.as_str(), slot.is_isolation(), program, node)
 }
 
 /// Returns `true` if a region program holds a state owner: it has a kernel with a lineage.
@@ -84,13 +109,14 @@ struct PredicateBounds {
 /// The bounds of a region holding a state owner ([`for_slot`][Self::for_slot]) also hold one step of a drain of its
 /// state owner's time-driven output, which the region holds at once: at most [`DRAIN_STEP_EVENTS`][limits::values::DRAIN_STEP_EVENTS]
 /// events, and one context's whole expansion beyond them; and its state owner's kernel is accounted at the region's
-/// top level when the region is named after it ([`kernel_accounting_in`]). The bounds of a slot with keyed exits, into
+/// top level when the region isolates it and is named after it, and beside the region when it is fused with its
+/// neighbors ([`kernel_accounting_in`]). The bounds of a slot with keyed exits, into
 /// a state owner on several lanes, hold the routed buffer each such exit keeps open for each target lane, with room for
 /// the events it takes before it is sent.
 #[derive(Clone, Debug)]
 pub struct RegionBounds {
-    /// Each kernel's node, operator, and the subcomponent it is accounted under, if not the region's own group.
-    kernels: Vec<(NodeId, ConfiguredOperator, Option<String>)>,
+    /// Each kernel's node, operator, and where it is accounted.
+    kernels: Vec<(NodeId, ConfiguredOperator, KernelAccounting)>,
     /// Whether the region drains state owners' time-driven output.
     drains: bool,
     predicates: Vec<PredicateBounds>,
@@ -115,7 +141,9 @@ impl RegionBounds {
     /// Returns an error if a kernel's node is not in the plan, or its operator cannot be configured with the node's
     /// parameters.
     pub fn new(plan: &Plan, registry: &OperatorRegistry, program: &RegionProgram) -> Result<Self, RegionError> {
-        Self::accounted(plan, registry, program, |node| Some(kernel_accounting_name(node)))
+        Self::accounted(plan, registry, program, |node| {
+            KernelAccounting::Under(kernel_accounting_name(node))
+        })
     }
 
     /// Returns the bounds of the region of `slot` running `program`, a program compiled from `plan`, on one of the
@@ -143,11 +171,23 @@ impl RegionBounds {
         Ok(bounds)
     }
 
+    /// Returns the bounds of each kernel accounted as a component of its own beside the region
+    /// ([`KernelAccounting::Beside`]), which the region's own bounds leave out: the component's name, and its bounds,
+    /// which its operator and its state declare at the component's top level.
+    pub fn beside(&self) -> impl Iterator<Item = (&str, KernelBounds)> + '_ {
+        self.kernels
+            .iter()
+            .filter_map(|(_, operator, accounted)| match accounted {
+                KernelAccounting::Beside(name) => Some((name.as_str(), KernelBounds(operator.clone()))),
+                KernelAccounting::Region | KernelAccounting::Under(_) => None,
+            })
+    }
+
     fn accounted<A>(
         plan: &Plan, registry: &OperatorRegistry, program: &RegionProgram, accounting: A,
     ) -> Result<Self, RegionError>
     where
-        A: Fn(&NodeId) -> Option<String>,
+        A: Fn(&NodeId) -> KernelAccounting,
     {
         let kernels = program
             .kernels()
@@ -204,6 +244,17 @@ impl RegionBounds {
     }
 }
 
+/// The bounds of one kernel accounted beside its region ([`RegionBounds::beside`]): its operator's and its state's.
+#[derive(Clone, Debug)]
+pub struct KernelBounds(ConfiguredOperator);
+
+impl MemoryBounds for KernelBounds {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        self.0.specify_bounds(builder);
+        self.0.specify_state_bounds(builder);
+    }
+}
+
 impl MemoryBounds for RegionBounds {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         for (_, operator, accounted) in &self.kernels {
@@ -214,8 +265,10 @@ impl MemoryBounds for RegionBounds {
                 operator.specify_state_bounds(builder);
             };
             match accounted {
-                Some(name) => specify(&mut builder.subcomponent(name)),
-                None => specify(builder),
+                KernelAccounting::Region => specify(builder),
+                KernelAccounting::Under(name) => specify(&mut builder.subcomponent(name)),
+                // Declared by the component beside the region (`beside`).
+                KernelAccounting::Beside(_) => {}
             }
         }
         if self.drains {
@@ -304,61 +357,59 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_a_slot_named_after_the_state_owner_its_region_holds_accounts_it_in_its_own_group() {
-        // `dsd_agg` stands for the native transform of that name; `metrics_enrich` is a fused slot, in which host
-        // enrichment's kernel keeps its own subcomponent.
+    fn a_state_owner_accounts_under_its_own_name_wherever_it_runs() {
+        // Isolated, `dsd_agg` stands for the native transform of that name; `metrics_enrich` is a fused slot, in which
+        // host enrichment's kernel keeps its own subcomponent.
         let plan = Plan::from_json(crate::testing::DEFAULT_PROGRAM_JSON).unwrap();
         let registry = crate::operators::OperatorRegistry::native();
-        let frame =
-            crate::compile::Frame::compute(&plan, &registry, &crate::testing::default_program_slot_name).unwrap();
-        let derived = crate::compile::DerivedPoints::for_plan(&frame, &plan, &registry);
-        let compiled = crate::compile::compile_unvalidated(&plan, &registry, &frame, &derived).unwrap();
-        let slot = |name: &str| {
-            frame
-                .slots()
-                .iter()
-                .find(|slot| slot.name.as_str() == name)
-                .unwrap()
-                .clone()
-        };
         let node = |id: &str| id.parse::<NodeId>().unwrap();
-        let accounting =
-            |slot: Slot, node: NodeId| kernel_accounting_in(&slot, &compiled.programs[slot.id.get()], &node);
-        assert_eq!(accounting(slot("dsd_agg"), node("dsd_agg")), None);
-        // Any other state owner in it accounts under its own name.
-        assert_eq!(
-            accounting(slot("dsd_agg"), node("second_agg")),
-            Some("second_agg".to_string())
-        );
-        assert_eq!(
-            accounting(slot("metrics_enrich"), node("metrics_host_enrichment")),
-            Some("metrics_host_enrichment".to_string())
-        );
-        // So does a node named like the slot without a state owner it runs in.
-        assert_eq!(
-            accounting(slot("metrics_enrich"), node("metrics_enrich")),
-            Some("metrics_enrich".to_string())
-        );
-    }
-
-    #[test]
-    fn a_kernel_is_accounted_in_its_region_only_when_the_region_is_named_after_its_node() {
-        // (region, node, subcomponent)
-        let cases = [
-            ("dsd_agg", "dsd_agg", None),
-            ("dsd_pre_aggregation", "dsd_enrich", Some("dsd_enrich")),
-            ("dsd_agg", "agg", Some("agg")),
-            ("dsd_agg", "second_agg", Some("second_agg")),
-        ];
-        for (region, node, expected) in cases {
-            let node: NodeId = node.parse().unwrap();
-            assert_eq!(
-                kernel_accounting_path(region, &node).as_deref(),
-                expected,
-                "{} in {}",
-                node,
-                region
-            );
+        let under = |id: &str| KernelAccounting::Under(id.to_string());
+        for isolate_state in [true, false] {
+            let options = crate::compile::FrameOptions { isolate_state };
+            let frame = crate::compile::Frame::compute_with(
+                &plan,
+                &registry,
+                &crate::testing::default_program_slot_name,
+                &crate::compile::FrameHosts::new(),
+                &crate::compile::LanePolicy::ONE,
+                options,
+            )
+            .unwrap();
+            let derived = crate::compile::DerivedPoints::for_plan(&frame, &plan, &registry);
+            let compiled = crate::compile::compile_unvalidated(&plan, &registry, &frame, &derived).unwrap();
+            let slot = |name: &str| frame.slots().iter().find(|slot| slot.name.as_str() == name).unwrap();
+            let accounting =
+                |slot: &Slot, node: NodeId| kernel_accounting_in(slot, &compiled.programs[slot.id.get()], &node);
+            if isolate_state {
+                assert_eq!(accounting(slot("dsd_agg"), node("dsd_agg")), KernelAccounting::Region);
+                // A node that is no state owner of the region's program accounts under its own name.
+                assert_eq!(accounting(slot("dsd_agg"), node("second_agg")), under("second_agg"));
+                assert_eq!(
+                    accounting(slot("metrics_enrich"), node("metrics_host_enrichment")),
+                    under("metrics_host_enrichment")
+                );
+                // So does a node named like the slot without a state owner it runs in.
+                assert_eq!(
+                    accounting(slot("metrics_enrich"), node("metrics_enrich")),
+                    under("metrics_enrich")
+                );
+            } else {
+                // Fused, aggregation keeps its native component's group beside the one region.
+                let region = slot("dsd_pre_aggregation");
+                assert_eq!(
+                    accounting(region, node("dsd_agg")),
+                    KernelAccounting::Beside("dsd_agg".to_string())
+                );
+                assert_eq!(accounting(region, node("dsd_enrich")), under("dsd_enrich"));
+                assert_eq!(
+                    accounting(region, node("metrics_host_enrichment")),
+                    under("metrics_host_enrichment")
+                );
+                // The region's bounds leave aggregation out, which the component beside it declares.
+                let bounds =
+                    RegionBounds::for_slot(&plan, &registry, &compiled.programs[region.id.get()], region).unwrap();
+                assert_eq!(bounds.beside().map(|(name, _)| name).collect::<Vec<_>>(), ["dsd_agg"]);
+            }
         }
     }
 }

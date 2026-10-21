@@ -209,7 +209,7 @@ impl RegionConfig {
             lane: None,
             routing: RoutingTelemetry::noop(),
             state_lane_telemetry: None,
-            interleaving: false,
+            interleaving: true,
             #[cfg(any(test, feature = "test-util"))]
             state_kernel_wrap: None,
         }
@@ -234,7 +234,7 @@ impl RegionConfig {
     /// lanes, and every reset, final retirement, and shutdown, still blocks admission until its drain completes. What
     /// the region delivers is the same either way, apart from the order in which records leave.
     ///
-    /// Off by default: every drain blocks admission. A host gives the slot's sub-regions the setting of its main
+    /// On by default; off, every drain blocks admission. A host gives the slot's sub-regions the setting of its main
     /// region.
     ///
     /// [`FLUSH_SPREAD`]: crate::limits::values::FLUSH_SPREAD

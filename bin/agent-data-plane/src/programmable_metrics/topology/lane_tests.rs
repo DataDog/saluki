@@ -28,6 +28,7 @@ use saluki_metric_plan::{
 };
 use saluki_metrics::test::TestRecorder;
 
+use super::aggregation_slot;
 use crate::{
     cli::run::{boot_metrics, create_topology, fit_lanes_to_memory, BuiltTopology, LaneFitInputs},
     internal::env::ADPEnvironmentProvider,
@@ -93,7 +94,7 @@ experimental:
       post: 3
 "#;
 
-/// Lanes on, one lane each: the metrics path laid out without R1's pipelining.
+/// Lanes on, one lane each: the metrics path laid out with aggregation isolated.
 const ONE_LANE_EACH: &str = r#"
 dogstatsd_workers_count: 1
 experimental:
@@ -209,7 +210,7 @@ async fn on_lanes_each_slot_runs_its_lanes_and_each_edge_into_lanes_routes_as_it
     let Built { plan, frame, lanes, .. } = built(THREE_TWO_TWO).await;
     assert!(lanes.lanes_on());
 
-    // Without R1's pipelining, the metrics path is three slots, each on its lanes.
+    // On lanes, aggregation is isolated: the metrics path is three slots, each on its lanes.
     let slots = frame
         .slots()
         .iter()
@@ -286,7 +287,7 @@ async fn on_lanes_each_slot_runs_its_lanes_and_each_edge_into_lanes_routes_as_it
 async fn on_one_producer_lane_the_source_keeps_its_metrics_output_and_its_lane_stamps_it() {
     let Built { plan, frame, .. } = built(ONE_LANE_EACH).await;
     assert!(frame.slots().iter().all(|slot| slot.lanes == 1));
-    assert_eq!(frame.slots().len(), 3, "R1's pipelining is off on lanes");
+    assert_eq!(frame.slots().len(), 3, "lanes isolate aggregation");
     let outputs = plan
         .component("dsd_in")
         .unwrap()
@@ -1189,10 +1190,35 @@ async fn a_test_stand_in_for_aggregation_is_refused_on_several_state_lanes() {
 }
 
 #[tokio::test]
-async fn by_default_the_metrics_path_runs_on_the_automatic_lanes_without_r1s_pipelining() {
-    // Increment 9.5: with only the decoder count set, three decoders on the tests' four workers give three producer
-    // lanes, two state lanes, and three post-aggregation lanes, laid out without R1's pipelining.
+async fn by_default_the_metrics_path_runs_without_lanes_in_one_region_and_with_mode_auto_on_the_automatic_lanes() {
+    // V7b: lanes are opt-in. By default the metrics path runs without lanes, fused into one slot whose region holds
+    // aggregation, whatever the decoders and workers.
     let system = configuration_system_with_default_lanes("dogstatsd_workers_count: 3").await;
+    let config = system.config();
+    let settings = LaneSettings::from_config(&config, TEST_WORKERS);
+    assert_eq!(settings.counts, LaneCounts::OFF);
+    let cell = ConfigCell::new(config.as_ref().clone());
+    let registry = ComponentRegistry::default();
+    let mut metrics = programmable_metrics(&config, cell.live(), &registry).expect("a metrics pipeline is required");
+    assert_eq!(metrics.boot_lanes(), LaneCounts::OFF);
+    let frame = &metrics.boot_topology().frame;
+    let slots = frame
+        .slots()
+        .iter()
+        .map(|slot| (slot.name.as_str(), slot.lanes))
+        .collect::<Vec<_>>();
+    assert_eq!(slots, [("dsd_pre_aggregation", 1)]);
+    assert_eq!(
+        aggregation_slot(frame).map(|slot| slot.name.as_str()),
+        Some("dsd_pre_aggregation")
+    );
+
+    // Increment 9.5: with `mode: auto` and only the decoder count set, three decoders on the tests' four workers give
+    // three producer lanes, two state lanes, and three post-aggregation lanes, every state owner isolated.
+    let system = configuration_system_with_default_lanes(
+        "dogstatsd_workers_count: 3\nexperimental: {programmable_metrics: {lanes: {mode: auto}}}",
+    )
+    .await;
     let config = system.config();
     let settings = LaneSettings::from_config(&config, TEST_WORKERS);
     let expected = LaneCounts::on(LanePolicy {

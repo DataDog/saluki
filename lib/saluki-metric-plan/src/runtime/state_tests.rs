@@ -996,7 +996,9 @@ impl Direct {
             &telemetry,
         );
         let wall = HarnessClock::new(t(0));
+        // Every drain blocks admission unless `configure` interleaves.
         let config = RegionConfig::for_slot(&slot, &telemetry)
+            .with_interleaving(false)
             .with_schedule(Arc::clone(&schedule))
             .with_wall_clock(Arc::new(wall.clone()))
             .with_state_lane_telemetry(telemetry.state_lane(slot.name.as_str(), 0));
@@ -1769,12 +1771,12 @@ fn an_isolation_slots_bounds_hold_its_state_owners_state_at_its_top_level_and_on
     let node: NodeId = "dsd_agg".parse().unwrap();
     assert_eq!(
         super::kernel_accounting_in(slot, program, &node),
-        None,
+        super::KernelAccounting::Region,
         "the region stands for the native `dsd_agg`"
     );
     assert_eq!(
         super::kernel_accounting_in(&frame.slots()[1], &compiled.programs[1], &"out".parse().unwrap()),
-        Some("out".to_string()),
+        super::KernelAccounting::Under("out".to_string()),
         "the kernels of a region without a state owner are accounted under their nodes"
     );
 

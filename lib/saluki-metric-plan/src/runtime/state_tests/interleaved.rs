@@ -25,8 +25,8 @@ use crate::{
     operators::OperatorRegistry,
     runtime::{
         harness::{HarnessOptions, Interleaving},
-        telemetry::PLAN_LANE_FLUSH_TOUCHED_CONTEXTS_TOTAL,
         transition_tests::{self, aggregation, dogstatsd, node, Replay},
+        PLAN_LANE_FLUSH_TOUCHED_CONTEXTS_TOTAL,
     },
     testing::arb_metrics_with_kind_siblings,
 };

@@ -72,7 +72,7 @@ use saluki_core::{
 use saluki_error::{generic_error, GenericError};
 use saluki_metric_kernels::aggregate::{AggregateCore, AggregateParams, AggregateTelemetry};
 use saluki_metric_plan::{
-    compile::{EntryKey, Step, StepExit},
+    compile::{EntryKey, LanePolicy, Step, StepExit},
     equivalence::OutputPoints,
     ir::OutputId,
     operators::OperatorRegistry,
@@ -87,10 +87,10 @@ use tokio::{
 
 use super::{
     installer::{BootTopology, InstallerWorker, PlanStatus, ProgrammableMetrics},
-    lanes::LaneCounts,
+    lanes::{LaneCounts, LaneSettings},
     test_support::{
         environment_provider, init_test_tls, programmable_metrics_with_operators,
-        programmable_metrics_with_operators_on,
+        programmable_metrics_with_operators_on, TEST_WORKERS,
     },
     topology::{aggregation_slot, HostDoubles},
 };
@@ -140,11 +140,12 @@ pub(super) enum Aggregation {
     Clocked,
 
     /// A transform that reads nothing until its gate, `dsd_agg`, [opens](TestTopology::open_gate), so that what is sent
-    /// to aggregation backs up, and then sends what it reads on unchanged. On one state lane only.
+    /// to aggregation backs up, and then sends what it reads on unchanged. On one state lane only; on the plan-driven
+    /// path without lanes, the metrics path runs on one lane of each kind, so that aggregation has a slot of its own.
     Gated,
 
     /// A scripted transform that drops what it reads and sends each batch the test feeds it on `dsd_agg`, as
-    /// aggregation's output. On one state lane only.
+    /// aggregation's output. On one state lane only, and on one lane of each kind without lanes, as gated aggregation.
     Scripted,
 }
 
@@ -409,6 +410,7 @@ impl TestTopology {
         // The encode hosts and delivery hosts the plan-driven path builds, which run as in production with doubles at
         // their edges, so that the installer controls them.
         let mut hosts = BTreeSet::new();
+        // Whether aggregation runs as a kernel in a state slot, of its own on lanes or fused without them.
         let mut isolated_aggregation = false;
         // How the state slot of aggregation stamps its time-driven output, for a scripted stand-in.
         let mut aggregation_stamp = None;
@@ -428,6 +430,16 @@ impl TestTopology {
                 (blueprint, control_surfaces, None)
             }
             MetricsPath::Plan => {
+                // A stand-in replaces the region of aggregation's slot, so it needs aggregation in a slot of its own:
+                // without lanes aggregation fuses with the rest of the metrics path, so a stand-in runs it on one lane
+                // of each kind, where the frame isolates every state owner.
+                let stands_in = matches!(aggregation, Aggregation::Gated | Aggregation::Scripted);
+                let lanes = match lanes {
+                    None if stands_in && !LaneSettings::from_config(&config, TEST_WORKERS).counts.lanes_on() => {
+                        Some(LaneCounts::on(LanePolicy::ONE))
+                    }
+                    lanes => lanes,
+                };
                 let boot = |config: &SalukiConfiguration| {
                     let live = system.live(|config| config);
                     match lanes {
@@ -459,7 +471,8 @@ impl TestTopology {
                         Some(ManualWallClock::new(AdmissionTime::from_unix_secs(ADMITTED_AT)));
                     topology.wall_clock = Arc::new(ManualWallClock::new(AdmissionTime::from_unix_secs(FLUSHED_AT)));
                 }
-                if isolated_aggregation {
+                // Only a stand-in reads them, for a slot of aggregation's own.
+                if isolated_aggregation && stands_in {
                     aggregation_stamp = Some(time_driven_stamp(metrics.boot_topology()));
                     aggregation_exit = Some(time_driven_exit(metrics.boot_topology()));
                 }

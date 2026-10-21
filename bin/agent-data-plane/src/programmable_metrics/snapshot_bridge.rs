@@ -1,11 +1,12 @@
 //! The snapshot bridge: answers the DogStatsD context dump API from aggregation running in a region.
 //!
 //! Natively, the aggregation transform answers context snapshot requests itself, between batches. When aggregation runs
-//! as a stateful kernel in the `dsd_agg` state slot, no component holds the requests: the topology takes them when
-//! it adds the DogStatsD pipeline ([`SnapshotBridgeState`]), and the [`SnapshotBridge`] worker hands each request to
-//! the region as a kernel control message, which every lineage of every state owner in the region answers in turn,
-//! between batches and between the steps of a flush. The requester sees what it sees natively: the contexts aggregation
-//! holds, or, if the region has stopped, that the owner stopped before responding.
+//! as a stateful kernel in a state slot (`dsd_pre_aggregation` without lanes, `dsd_agg` on lanes), no component holds
+//! the requests: the topology takes them when it adds the DogStatsD pipeline ([`SnapshotBridgeState`]), and the
+//! [`SnapshotBridge`] worker hands each request to the region as a kernel control message, which every lineage of every
+//! state owner in the region answers in turn, between batches and between the steps of a flush. The requester sees what
+//! it sees natively: the contexts aggregation holds, or, if the region has stopped, that the owner stopped before
+//! responding.
 //!
 //! When aggregation runs on state lanes, each lane holds a disjoint share of the contexts: the bridge asks every lane
 //! in turn, one request each, and answers with every lane's entries, concatenated, once each lane has answered. If a
@@ -122,7 +123,7 @@ async fn answer(region: &ControlSender<RegionControl>, pending: AggregateContext
     let control = KernelControl {
         target: KernelTarget::Stateful,
         // A region on one lane takes kernel control messages without naming a lane; aggregation runs in its slot's
-        // main region, not in a sub-region.
+        // main region, beside the stateless steps without lanes, not in a sub-region.
         lane: None,
         sub_region: None,
         message: Box::new(ContextSnapshot::default()),

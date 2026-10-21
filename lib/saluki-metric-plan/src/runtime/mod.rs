@@ -42,7 +42,9 @@ use crate::{
 };
 
 mod bounds;
-pub use self::bounds::{kernel_accounting_in, kernel_accounting_name, kernel_accounting_path, RegionBounds};
+pub use self::bounds::{
+    kernel_accounting_in, kernel_accounting_name, kernel_accounting_path, KernelAccounting, KernelBounds, RegionBounds,
+};
 
 mod code;
 
@@ -68,10 +70,10 @@ mod telemetry;
 pub use self::telemetry::{
     NoTelemetry, PlanTelemetry, RegisterTelemetry, StateLaneTelemetry, StateTelemetry, PLAN_CLOCK_RESETS_TOTAL,
     PLAN_LANE_CONTEXTS, PLAN_LANE_CROSSINGS_TOTAL, PLAN_LANE_CROSSING_OVERLAP_CONTEXTS,
-    PLAN_LANE_FLUSH_BLOCKED_SECONDS, PLAN_LANE_FLUSH_SECONDS, PLAN_LANE_MISROUTED_TOTAL,
-    PLAN_LANE_RESET_OVERFLOW_TOTAL, PLAN_LANE_TICK_DIVERGENCE_TOTAL, PLAN_LANE_TICK_STRAGGLER_TOTAL,
-    PLAN_LANE_WATERMARK_LAG_SECONDS, PLAN_LOSS_TOTAL, PLAN_NODE_EVENTS_TOTAL, PLAN_STATE_LINEAGES,
-    PLAN_STATE_TICK_GRACE_EXPIRED_TOTAL, PLAN_STATE_WATERMARK_LAG_SECONDS,
+    PLAN_LANE_FLUSH_BLOCKED_SECONDS, PLAN_LANE_FLUSH_SECONDS, PLAN_LANE_FLUSH_TOUCHED_CONTEXTS_TOTAL,
+    PLAN_LANE_MISROUTED_TOTAL, PLAN_LANE_RESET_OVERFLOW_TOTAL, PLAN_LANE_TICK_DIVERGENCE_TOTAL,
+    PLAN_LANE_TICK_STRAGGLER_TOTAL, PLAN_LANE_WATERMARK_LAG_SECONDS, PLAN_LOSS_TOTAL, PLAN_NODE_EVENTS_TOTAL,
+    PLAN_STATE_LINEAGES, PLAN_STATE_TICK_GRACE_EXPIRED_TOTAL, PLAN_STATE_WATERMARK_LAG_SECONDS,
 };
 
 /// An error creating a region driver, building its kernels, or preparing a generation in it.

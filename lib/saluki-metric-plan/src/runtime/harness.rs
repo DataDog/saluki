@@ -497,6 +497,14 @@ impl Interleaving {
         }))
     }
 
+    /// Returns `config` interleaving as `interleaving` says, and blocking admission for every drain without it.
+    fn apply(interleaving: Option<Self>, config: RegionConfig) -> RegionConfig {
+        match interleaving {
+            Some(interleaving) => interleaving.configure(config),
+            None => config.with_interleaving(false),
+        }
+    }
+
     /// Returns `config` interleaving as this says.
     fn configure(self, config: RegionConfig) -> RegionConfig {
         let config = config.with_interleaving(true);
@@ -876,9 +884,7 @@ impl FrameHarness {
                     .with_failure_reporter(Arc::clone(&reporter));
                 // Every lane records what it counts, a slot's only lane too: its reset window overflows alike.
                 config = config.with_state_lane_telemetry(telemetry.state_lane(slot.name.as_str(), lane));
-                if let Some(interleaving) = options.interleaving {
-                    config = interleaving.configure(config);
-                }
+                config = Interleaving::apply(options.interleaving, config);
                 if slot.lanes > 1 {
                     config = config.with_lane(
                         LaneContext {
@@ -1462,9 +1468,7 @@ impl FrameHarness {
             .with_state_budgets(self.budgets.clone())
             .with_failure_reporter(Arc::clone(&self.reporter));
         // A sub-region interleaves as its slot's main region does.
-        if let Some(interleaving) = self.options.interleaving {
-            config = interleaving.configure(config);
-        }
+        config = Interleaving::apply(self.options.interleaving, config);
         let mut driver = MetricRegionDriver::for_sub_region(config, start)
             .map_err(|error| format!("the sub-region {} of `{}` is not created: {}", key, slot.name, error))?;
         let mut budget = self.options.turn_budget;

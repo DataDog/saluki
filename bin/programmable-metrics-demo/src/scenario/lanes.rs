@@ -393,12 +393,6 @@ impl Runner {
                 }
             }
         }
-        if policy["pipelining"] != false {
-            return Err(generic_error!(
-                "R1's cost model still pipelines the slots on lanes: {}",
-                policy
-            ));
-        }
         let count = |member: &str| policy[member].as_u64().unwrap_or(1) as u16;
         let (producer_lanes, state_lanes, post_lanes) =
             (count("dogstatsd_lanes"), count("state_lanes"), count("post_lanes"));

@@ -10,11 +10,10 @@
 //! input, when its markers arrive (see [`Encoders::Real`]). The feeding runs on the test's own thread. The workload is
 //! the 1,024-metric DogStatsD-like batch of the plan crate's `region_driver` bench (mapped counters, a blocked name,
 //! distributions whose `user_id` tag the tag filterlist removes, gauges, and timestamped counters for the passthrough),
-//! with one timestamped sentinel per batch, which reaches the main output through every region. Its mapper profile
-//! makes the pre-aggregation chain costly enough that R1's cost model pipelines it over two regions. A second
-//! configuration, [`GATEWAYS`], adds two endpoint routing groups and Multi-Region Failover mirroring an allowlist,
-//! whose gateways the legacy topology runs as components of their own and the plan-driven one as `split`s of its policy
-//! region, one decision of the enrichment region. Four phases are measured:
+//! with one timestamped sentinel per batch, which reaches the main output through the region. Without lanes, the
+//! plan-driven metrics path is one region. A second configuration, [`GATEWAYS`], adds two endpoint routing groups and
+//! Multi-Region Failover mirroring an allowlist, whose gateways the legacy topology runs as components of their own and
+//! the plan-driven one as `split`s of its policy region, one decision of the region. Four phases are measured:
 //!
 //! - **Saturation**: batches are fed as fast as the topology takes them; throughput is metrics per second until the
 //!   last sentinel arrives.
@@ -627,7 +626,7 @@ async fn the_plan_driven_topology_is_no_slower_and_no_costlier_than_the_legacy_o
 #[ignore = "a measurement: run it in release mode, as the module documentation says"]
 async fn the_plan_driven_topology_is_no_slower_and_no_costlier_than_the_legacy_one_on_four_workers() {
     // With workers to spare, one saturated stream is bounded by the slowest stage of the chain: the legacy chain runs
-    // its transforms as tasks of their own, and R1's cost model pipelines the regions so that none costs more.
+    // its transforms as tasks of their own, and the plan-driven path runs the whole chain in one region's task.
     let (legacy, plan) = compare(MetricsPath::Legacy, MetricsPath::Plan, 4, CONFIG).await;
     check_gate(&legacy, &plan);
 }

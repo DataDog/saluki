@@ -1497,7 +1497,7 @@
     }
     ui.lanesHint.textContent = policy
       ? `${policy.dogstatsd_lanes} producer · ${policy.state_lanes} state · ${policy.post_lanes} post-aggregation `
-        + `lanes${policy.pipelining ? " · R1 pipelines slots" : ""} · per second, averaged over 5 s`
+        + `lanes · per second, averaged over 5 s`
       : "layout not known yet: lanes from their series";
     for (const slot of view.slots) {
       const role = slot.role ? ROLE_LABELS[slot.role] : "lanes";

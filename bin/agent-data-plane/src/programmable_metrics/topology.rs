@@ -8,17 +8,19 @@
 //!   context snapshot channel, for the bridge below. Each source output is an admission point, which admits from the
 //!   one schedule the installer commits to. Every admission point registers in the installer's admission registry,
 //!   through which cuts lock and poll it.
-//! - **Slots** each run in one region host, named by [`slot_name`]: `dsd_pre_aggregation` (the DogStatsD mapper
-//!   through the tag filterlist) and `metrics_enrich` (the post-aggregation filter through the policy region, whose
-//!   gateways select what reaches each output, as one decision R1 never cuts), and the regions R1's cost model cuts
-//!   from them so that a costly chain pipelines, such as the post-aggregation filter when it does not fit beside
-//!   enrichment (`dsd_post_agg_filter_region`). A region host's outputs are its slot's exits, in order. Its input
-//!   holds what the input queues of the native components it replaces held together (see
-//!   [`region_input_capacity`]), so that a burst backs up to its source no sooner than natively.
-//! - **State slots**: the boot layout gives a boot state owner a slot of its own: DogStatsD aggregation as a stateful
-//!   kernel, in `dsd_agg`, which keeps the native aggregation component's ID, health, resource group, and telemetry,
-//!   and works through flushes in bounded steps; the bridge of [`snapshot_bridge`](super::snapshot_bridge) answers
-//!   aggregation's context snapshot requests from it. Any other state owner a generation runs, such as a second
+//! - **Slots** each run in one region host, named by [`slot_name`]. Without lanes, the frame fuses everything between
+//!   the sources and the encode hosts into one slot, `dsd_pre_aggregation`: the DogStatsD mapper through the tag
+//!   filterlist, DogStatsD aggregation, and the post-aggregation filter through the policy region, whose gateways
+//!   select what reaches each output. A region host's outputs are its slot's exits, in order. Its input holds what
+//!   the input queues of the native components it replaces held together (see [`region_input_capacity`]), so that a
+//!   burst backs up to its source no sooner than natively.
+//! - **State slots**: a slot that runs a boot state owner, DogStatsD aggregation as a stateful kernel, is a state
+//!   slot: it works through flushes in bounded steps, and the bridge of [`snapshot_bridge`](super::snapshot_bridge)
+//!   answers aggregation's context snapshot requests from it. Without lanes that is `dsd_pre_aggregation`, where
+//!   aggregation keeps reporting under its own node, `dsd_agg`; on lanes the frame isolates aggregation in a state
+//!   slot of its own, `dsd_agg`, which keeps the native aggregation component's ID, health, resource group, and
+//!   telemetry, between `dsd_pre_aggregation` and `metrics_enrich`. Any other state owner a generation runs, such as a
+//!   second
 //!   aggregation after enrichment, runs in a **sub-region** of the slot placement gives it: a task inside the slot's
 //!   component, started when the first generation that has it is prepared and retired with the last, whose input
 //!   buffers the installer draws from the resource budget. Every region reads the schedule, a wall clock, and the
@@ -45,8 +47,8 @@
 //!   lane, `dsd_in.metrics_<d>` (`metrics` with one), each feeding its lane of `dsd_pre_aggregation`; the lane, not the
 //!   source's dispatcher, stamps its own admission point, every lane's point sharing one source clock. Every edge into
 //!   a slot on several lanes routes as the frame says: by key into aggregation's state lanes, by the sender's lane
-//!   from the producer lanes, and spread over the lanes from aggregation and the other sources. Without lanes, the
-//!   metrics path is laid out as before lanes existed.
+//!   from the producer lanes, and spread over the lanes from aggregation and the other sources. Lanes are opt-in
+//!   (`lanes.mode: auto`).
 //!
 //! The DogStatsD taps on the source's metrics outputs (`dsd_stats_out`, `dsd_debug_log_out`) and everything outside the
 //! metrics path keep their native construction, in `run.rs`.
@@ -88,8 +90,8 @@ use saluki_metric_plan::{
     limits,
     operators::{names, ConfiguredOperator, LaneBinding, LaneCell, OperatorRegistry},
     runtime::{
-        build_kernels, kernel_accounting_in, state::lanes::SlotLanes, MetricRegionDriver, PanicBudget, PrepareRegion,
-        RegionBounds, RegionConfig, RegionControl, RoutingTelemetry,
+        build_kernels, kernel_accounting_in, state::lanes::SlotLanes, KernelAccounting, MetricRegionDriver,
+        PanicBudget, PrepareRegion, RegionBounds, RegionConfig, RegionControl, RoutingTelemetry,
     },
 };
 use saluki_metrics::{Counter, Gauge};
@@ -108,24 +110,25 @@ use crate::cli::run::{autoscaling_failover_wired, mrf_metrics_endpoint};
 
 /// Names the region host of a slot of the default program's frame, after the native components it replaces.
 ///
-/// The slot holding the DogStatsD mapper is `dsd_pre_aggregation`, and the slot holding the enriched metrics (`metrics`,
-/// the last node of the enrichment chain: host tags when enabled, host enrichment otherwise) is `metrics_enrich`, so
-/// that its name does not depend on whether host tags are enabled. It keeps the native ID that the components feeding metrics enrichment have always been
-/// connected to. The state slot of DogStatsD aggregation is `dsd_agg`, the native aggregation transform's ID. A
-/// slot that R1's cost model cuts from one of them, so that a costly chain pipelines across regions, is named after the
-/// native component it starts with: `<first node>_region`, without the `_in` of a merge that starts it, such as
-/// `dsd_post_agg_filter_region`. A slot that the namespace prefix or the enrichment merge starts is named for the
-/// native component that node stands for: `dsd_prefix_filter_region` or `metrics_enrich_region`.
+/// The slot holding the DogStatsD mapper is `dsd_pre_aggregation`, whatever else it holds: without lanes, the one slot
+/// of the metrics path, DogStatsD aggregation and enrichment included. On lanes, the state slot of DogStatsD
+/// aggregation is `dsd_agg`, the native aggregation transform's ID, and the slot holding the enriched metrics
+/// (`metrics`, the last node of the enrichment chain: host tags when enabled, host enrichment otherwise) is
+/// `metrics_enrich`, so that its name does not depend on whether host tags are enabled; it keeps the native ID that the
+/// components feeding metrics enrichment have always been connected to. Any other slot is named after the native
+/// component it starts with: `<first node>_region`, without the `_in` of a merge that starts it. A slot that the
+/// namespace prefix or the enrichment merge starts is named for the native component that node stands for:
+/// `dsd_prefix_filter_region` or `metrics_enrich_region`.
 ///
 /// # Errors
 ///
 /// Returns an error for a slot without nodes, which no frame has.
 pub fn slot_name(nodes: &[NodeId]) -> Result<NativeComponentId, String> {
     let has = |id: &str| nodes.iter().any(|node| node.to_string() == id);
-    let name = if has(ids::DSD_AGG) {
-        ids::DSD_AGG.to_string()
-    } else if has(ids::DSD_ENRICH) {
+    let name = if has(ids::DSD_ENRICH) {
         "dsd_pre_aggregation".to_string()
+    } else if has(ids::DSD_AGG) {
+        ids::DSD_AGG.to_string()
     } else if has(ids::METRICS) {
         components::METRICS_ENRICH.to_string()
     } else {
@@ -317,9 +320,9 @@ impl<'a> PlanTopology<'a> {
     /// Registers the DogStatsD source's metrics output and keeps aggregation's context snapshot requests; returns the
     /// handle of aggregation's context snapshots.
     ///
-    /// Aggregation runs as a stateful kernel in the frame's `dsd_agg` state slot, whose region is added with the
-    /// others (see [`finish`][Self::finish]): the snapshot requests are kept for the
-    /// [snapshot bridge](ProgrammableMetrics::snapshot_bridge), which answers them from the region.
+    /// Aggregation runs as a stateful kernel in a state slot of the frame (`dsd_pre_aggregation` without lanes,
+    /// `dsd_agg` on lanes), whose region is added with the others (see [`finish`][Self::finish]): the snapshot requests
+    /// are kept for the [snapshot bridge](ProgrammableMetrics::snapshot_bridge), which answers them from the region.
     ///
     /// # Errors
     ///
@@ -729,15 +732,17 @@ impl MemoryBounds for LaneRegionBounds {
 }
 
 /// The bounds of the state that state owners keep in entries drawn from the host's state budget, each under the
-/// subcomponent its kernel is accounted under, or at the region's own level.
-struct StateBounds(Vec<(ConfiguredOperator, Option<String>)>);
+/// subcomponent its kernel is accounted under, or at the region's own level; a state owner accounted beside the region
+/// declares its state there instead.
+struct StateBounds(Vec<(ConfiguredOperator, KernelAccounting)>);
 
 impl MemoryBounds for StateBounds {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         for (operator, accounted) in &self.0 {
             match accounted {
-                Some(name) => operator.specify_state_bounds(&mut builder.subcomponent(name)),
-                None => operator.specify_state_bounds(builder),
+                KernelAccounting::Region => operator.specify_state_bounds(builder),
+                KernelAccounting::Under(name) => operator.specify_state_bounds(&mut builder.subcomponent(name)),
+                KernelAccounting::Beside(_) => {}
             }
         }
     }
@@ -794,8 +799,9 @@ fn state_owners(
 /// another component's
 /// nodes. The components the plan-driven topology still builds are not replaced, and their interconnects remain: the
 /// sources (the frame's fixed components), and the encoders and destinations of the outputs, which the `emit`s and the
-/// client telemetry tap's fan-out are lowered from. Aggregation, which runs in its state slot `dsd_agg`, is one of
-/// the components a region replaces.
+/// client telemetry tap's fan-out are lowered from. Aggregation, which runs in a state slot, is one of the components
+/// a region replaces: without lanes, the region of the whole metrics path replaces seven on its longest path, and holds
+/// 7 × 129 − 1 = 902 buffers by default.
 ///
 /// The capacity follows the boot program: later generations run in the same regions.
 ///
@@ -1101,8 +1107,12 @@ fn region_host(
             )
         })?;
     // A state slot accounts the state owner it is named after in its own group, with its bounds at its top level,
-    // as the native component it stands for did, and bounds one drain step. Each lane holds a driver of its own.
+    // as the native component it stands for did, and bounds one drain step; a state owner fused with its neighbors
+    // keeps its native component's group and bounds beside the region. Each lane holds a driver of its own.
     let bounds = RegionBounds::for_slot(&boot.plan, &boot.registry, &program, slot)?;
+    for (name, kernel) in bounds.beside() {
+        boot.telemetry.declare_bounds_beside(name, &kernel)?;
+    }
     let bounds = LaneRegionBounds::new(bounds, slot, state_owners(&boot.plan, &boot.registry, &program, slot)?);
     let work_per_turn = usize::try_from(limits::values::WORK_PER_TURN)
         .ok()
@@ -1198,6 +1208,9 @@ fn region_host(
                 lane_telemetry.contexts = Gauge::from_arc(Arc::clone(&driver.contexts));
                 config = config.with_state_lane_telemetry(lane_telemetry);
             }
+        } else if state_slot {
+            // Without lanes, the state slot's one lane still times its flushes and how long they held admission.
+            config = config.with_state_lane_telemetry(telemetry.state_lane(slot_config.name.as_str(), lane.index));
         }
         Ok(MetricRegionDriver::new(config, prepare)?)
     };
@@ -1233,10 +1246,11 @@ fn drain_step_budget() -> Budget {
         .with_limit(WorkKind::StateWork, limits::values::DRAIN_STEP_CONTEXTS)
 }
 
-/// Returns `true` if the boot layout gave `slot` to a boot state owner, as it gives `dsd_agg` to DogStatsD
-/// aggregation: the slot runs on the state lanes, and its lanes hold shares of that state owner's state.
+/// Returns `true` if the boot layout gave `slot` a boot state owner, as it gives DogStatsD aggregation
+/// `dsd_pre_aggregation` without lanes and `dsd_agg` on lanes: the slot's region works through flushes in drain steps,
+/// and on lanes, the slot runs on the state lanes, and its lanes hold shares of that state owner's state.
 pub(super) fn is_state_slot(frame: &Frame, slot: &Slot) -> bool {
-    slot.nodes.iter().any(|node| frame.boot_output_points(node).is_some())
+    slot.nodes.iter().any(|node| frame.is_boot_state_owner(node))
 }
 
 /// Returns the state slot that runs DogStatsD aggregation, if the frame has one: it does exactly when DogStatsD is

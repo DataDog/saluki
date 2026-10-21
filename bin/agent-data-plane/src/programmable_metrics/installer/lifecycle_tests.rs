@@ -163,7 +163,7 @@ fn aggregation() -> &'static dyn OperatorDef {
 
 /// Native aggregation, under its own name, whose kernel panics on a metric named [`PANIC_STATE`] before it consumes
 /// the batch, as a state owner with a bug would: everything else is native aggregation's, its parameters, ports,
-/// contract, state, bounds, cost, and partition key. It replaces native aggregation in [`panicking_state_operators`],
+/// contract, state, bounds, and partition key. It replaces native aggregation in [`panicking_state_operators`],
 /// so that the boot program's state owner runs it, since a state owner cannot change its operator across generations.
 struct TestPanickingAggregate;
 
@@ -174,10 +174,6 @@ impl OperatorDef for TestPanickingAggregate {
 
     fn summary(&self) -> &'static str {
         "Aggregates as native aggregation does, and panics on a metric with the name a test gives it."
-    }
-
-    fn cost(&self, params: &DecodedParams) -> u32 {
-        aggregation().cost(params)
     }
 
     fn params(&self) -> &'static [ParamSpec] {
@@ -820,9 +816,8 @@ async fn routing_catalog() -> AdpCatalog {
 // Reading the status.
 
 /// Returns whether the active generation of `status` runs every `emit` to the tap in another region than `node`: only
-/// then does the tap still receive a batch that `node` panics on. Which nodes share a region is the frame's choice,
-/// which R1's cost model makes at boot: a cheap enough post-aggregation filter, which feeds the tap, fuses with
-/// enrichment and the policy, and so does the tap's `emit`.
+/// then does the tap still receive a batch that `node` panics on. Which nodes share a region is the frame's choice at
+/// boot: without lanes, every node of the metrics path, the tap's `emit` included, shares one region.
 fn tap_apart_from(status: &PlanStatus, node: &str) -> bool {
     let active = status.active.as_ref().expect("a generation is active");
     let physical = active
@@ -2406,7 +2401,8 @@ async fn a_second_aggregation_after_enrichment_runs_in_a_sub_region_and_flushes_
     feed_counts(&mut lifecycle, 1, &mut sent).await;
 
     // The second aggregation is a state owner of its own, which no slot of the boot layout runs: it runs in a
-    // sub-region of the slot its input comes from, `metrics_enrich`, beside the slot's own region.
+    // sub-region of the slot its input comes from, `dsd_pre_aggregation`, whose main region runs DogStatsD
+    // aggregation.
     lifecycle.deliver(vec![config(1, &second_aggregation(&export))]);
     let installed = loop {
         let status = lifecycle.status.load_full();
@@ -2419,11 +2415,11 @@ async fn a_second_aggregation_after_enrichment_runs_in_a_sub_region_and_flushes_
     };
     assert_eq!(
         state_region_of(&installed, "agg"),
-        Some(("metrics_enrich".to_string(), "state `agg`".to_string()))
+        Some(("dsd_pre_aggregation".to_string(), "state `agg`".to_string()))
     );
     assert_eq!(
         state_region_of(&installed, "dsd_agg"),
-        Some(("dsd_agg".to_string(), "main".to_string()))
+        Some(("dsd_pre_aggregation".to_string(), "main".to_string()))
     );
 
     // Timestamped gauges take the passthrough around DogStatsD aggregation, and the second aggregation holds them
@@ -2528,8 +2524,9 @@ async fn a_renamed_aggregation_runs_in_a_sub_region_and_installs_at_a_cut_where_
     feed_counts(&mut lifecycle, 3, &mut sent).await;
 
     // A renamed aggregation is a new lineage: the old one ends at the cut, and the new one starts empty there, in a
-    // sub-region of the slot its input comes from, since the boot layout gave `dsd_agg` its slot. The cut is at 10,
-    // the first multiple of 10 seconds a second away from the latest stamp.
+    // sub-region of the slot its input comes from, `dsd_pre_aggregation`, whose main region holds the state of the
+    // slot's boot owner, `dsd_agg`, for as long as it runs. The cut is at 10, the first multiple of 10 seconds a second
+    // away from the latest stamp.
     lifecycle.deliver(vec![config(1, &artifact)]);
     let cut = armed_cut(&lifecycle).await;
     assert_eq!((cut.generation, cut.at), (GenerationId::new(2), Some(at(5))));
