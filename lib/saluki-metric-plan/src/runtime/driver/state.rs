@@ -53,13 +53,15 @@ use saluki_core::{
 };
 use saluki_metric_kernels::aggregate::{
     lanes::{ContextCount, CountHeld, Restarted, TakeLaneFallbacks},
-    ContextSnapshot, TakeSuppressed,
+    ContextSnapshot, PassProgress, RoomToAdmit, TakeSuppressed,
 };
 use tracing::{debug, error, warn};
 
+#[cfg(any(test, feature = "test-util"))]
+use super::StateKernelWrap;
 use super::{
     add_loss, fold_loss, keyed::SentMark, points_in, Cursor, Fault, KernelBinding, KernelControl, KernelTarget,
-    LiveGeneration, MetricRegionDriver, NodeRef, Run,
+    LiveGeneration, MetricRegionDriver, NodeRef, Op, Run,
 };
 #[cfg(any(test, feature = "test-util"))]
 use crate::runtime::harness::LaneTimeEvent;
@@ -67,7 +69,7 @@ use crate::{
     compile::{KernelIndex, KernelKey, KeyGroups, LineageKey, ProgramKernel, StateParamsIndex, UpstreamPoint},
     install::StateBinding,
     ir::NodeId,
-    limits::values::MAX_OPEN_EPOCHS,
+    limits::values::{FLUSH_SPREAD, FLUSH_STEP_PERIOD, MAX_OPEN_EPOCHS},
     runtime::{
         kernels::{KernelSlot, PreparedKernel},
         state::{
@@ -114,6 +116,8 @@ pub(super) struct StateSlot {
     pub started: bool,
     /// Whether the shutdown drain was queued.
     pub shutting_down: bool,
+    /// Whether the host called `finish`: once a drain pending then completes, the shutdown drains follow.
+    pub finishing: bool,
     /// Whether the shutdown drains follow the drain in progress: a lane whose input ends inside a reset window closes
     /// the window first.
     pub shutdown_after_drain: bool,
@@ -139,6 +143,13 @@ pub(super) struct StateSlot {
     /// continuations past a reset window.
     #[cfg(any(test, feature = "test-util"))]
     pub time_events: Vec<LaneTimeEvent>,
+    /// Whether the region interleaves its flushes with admission ([`RegionConfig::with_interleaving`]).
+    ///
+    /// [`RegionConfig::with_interleaving`]: super::RegionConfig::with_interleaving
+    pub interleaving: bool,
+    /// What wraps every kernel of the slot's instances when it is built or rebuilt, for tests.
+    #[cfg(any(test, feature = "test-util"))]
+    pub wrap: Option<StateKernelWrap>,
 }
 
 /// What a state lane counts between publications.
@@ -159,6 +170,8 @@ pub(super) struct LaneCounts {
     pub cut_crossings: u64,
     /// Reset windows closed.
     pub reset_crossings: u64,
+    /// Contexts interleaved flushes visited because admission reached them first.
+    pub touched: u64,
 }
 
 impl StateSlot {
@@ -191,6 +204,7 @@ impl StateSlot {
             stashed: None,
             started: false,
             shutting_down: false,
+            finishing: false,
             shutdown_after_drain: false,
             clock_resets: 0,
             grace_expired: 0,
@@ -203,6 +217,9 @@ impl StateSlot {
             lane_telemetry,
             #[cfg(any(test, feature = "test-util"))]
             time_events: Vec::new(),
+            interleaving: false,
+            #[cfg(any(test, feature = "test-util"))]
+            wrap: None,
         }
     }
 
@@ -224,6 +241,35 @@ impl StateSlot {
     /// Returns `true` if the state holds no instance and runs no drain: the region can let it go.
     pub fn is_idle(&self) -> bool {
         self.instances.is_empty() && self.drain.is_none() && self.stashed.is_none()
+    }
+
+    /// Returns the drain in progress if its current step is a pass that does not hold admission: on pace, with no batch
+    /// waiting for it and no panic having ended the call that ran it.
+    fn interleaved_pass(&self) -> Option<&DrainCursor> {
+        self.drain
+            .as_ref()
+            .filter(|drain| drain.pass.is_some() && drain.current.is_some() && !drain.blocking && !drain.orphaned)
+    }
+
+    /// Returns `true` if a drain step is a pass, which admission interleaves with: a tick or boundary flush, while the
+    /// region interleaves, of an instance not on lanes whose kernel admits while advancing.
+    fn passes(&self, step: &DrainStep) -> bool {
+        self.interleaving
+            && self.lanes.is_none()
+            && matches!(step.kind, DrainKind::Tick { .. } | DrainKind::Boundary { .. })
+            && self
+                .instances
+                .get(step.instance)
+                .is_some_and(|instance| instance.lanes.is_none() && instance.kernel.kernel.admits_while_advancing())
+    }
+
+    /// Wraps an instance's kernel as the region's tests ask, if they do.
+    #[cfg_attr(not(any(test, feature = "test-util")), allow(clippy::unused_self))]
+    fn wrap_kernel(&self, _slot: &mut KernelSlot) {
+        #[cfg(any(test, feature = "test-util"))]
+        if let Some(wrap) = &self.wrap {
+            wrap_kernel(wrap, _slot);
+        }
     }
 
     /// Returns `true` if the drain in progress refers to the instance.
@@ -479,38 +525,144 @@ pub(super) struct DrainCursor {
     pub orphaned: bool,
     /// How long the drain has taken so far, for the lane's flush telemetry: kept for a drain of flush ticks only.
     pub timing: Option<FlushTiming>,
+    /// The pace of the current step, if it is a pass: a tick or boundary flush that admission interleaves with.
+    pub pass: Option<Pass>,
+    /// Whether the drain runs ahead of admission until it completes, every entry left included: once its pass fell
+    /// behind its pace, once a batch waits for it, or once input ended.
+    pub blocking: bool,
 }
 
-/// How long a drain of flush ticks has taken so far: since it started, and in the calls that ran its steps.
-///
-/// Between two calls the host sends what the last one emitted, waiting for room downstream when its output channels
-/// are full, and runs nothing else of the region while a drain is pending, so the time outside the calls is the time
-/// the flush was blocked on its output.
-#[derive(Clone, Copy, Debug)]
-pub(super) struct FlushTiming {
-    started: Instant,
-    in_steps: Duration,
-}
-
-impl FlushTiming {
-    /// Starts timing a flush at `now`.
-    pub(super) fn start(now: Instant) -> Self {
+impl DrainCursor {
+    /// Returns a drain of `queue`, of which `resets` entries are clock resets, timed as `timing` says.
+    fn new(queue: VecDeque<(InstanceHandle, DrainKind)>, resets: usize, timing: Option<FlushTiming>) -> Self {
         Self {
-            started: now,
-            in_steps: Duration::ZERO,
+            queue,
+            current: None,
+            resets,
+            orphaned: false,
+            timing,
+            pass: None,
+            blocking: false,
         }
     }
 
-    /// Records that a call ran the flush's steps for `ran`.
-    pub(super) fn ran(&mut self, ran: Duration) {
-        self.in_steps += ran;
+    /// Makes the drain run ahead of admission until it completes, from `now` on.
+    fn block(&mut self, now: Instant) {
+        self.blocking = true;
+        if let Some(timing) = self.timing.as_mut() {
+            timing.hold(now);
+        }
+    }
+}
+
+/// How far a call ran the drain in progress.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DrainProgress {
+    /// The drain completed.
+    Done,
+
+    /// The drain's current step is a pass on pace, pending: the region lets batches in, and runs its next step when it
+    /// is due or the region is idle.
+    Paused,
+
+    /// The drain yielded, holding admission: the host resumes it.
+    Yielded,
+}
+
+/// The pace of a pass: a flush of `total` contexts started at `started` is due to have visited them all within
+/// `spread`, [`FLUSH_SPREAD`] of its flush interval, and to run a step at least every [`FLUSH_STEP_PERIOD`], whichever
+/// is faster.
+///
+/// The pass is due for a step once either pace reaches what it has done: the instant the contexts pace reaches the
+/// contexts it visited, by its cursor or on touch, or the instant the steps pace reaches the steps it ran. It is behind
+/// once it missed that instant by a whole step period, which a pass whose steps run when they are due never does.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Pass {
+    started: Instant,
+    spread: Duration,
+    /// The contexts the pass visits, as its kernel reports them ([`PassProgress`]); zero while it does not know.
+    total: usize,
+    /// The contexts it visited so far.
+    visited: usize,
+    /// The steps it ran.
+    steps: u32,
+}
+
+impl Pass {
+    /// Starts the pace of a pass at `now`, flushing an instance whose flush interval is `interval`.
+    fn start(now: Instant, interval: Duration) -> Self {
+        Self {
+            started: now,
+            spread: interval.mul_f64(FLUSH_SPREAD),
+            total: 0,
+            visited: 0,
+            steps: 0,
+        }
     }
 
-    /// Returns how long the flush took, from its start to `now`, and how much of it was spent outside the calls that
-    /// ran its steps: blocked on its output.
-    pub(super) fn finish(&self, now: Instant) -> (Duration, Duration) {
-        let took = now.saturating_duration_since(self.started);
-        (took, took.saturating_sub(self.in_steps))
+    /// Returns when the pass is due for its next step: when either pace reaches what it has done.
+    fn due(&self) -> Instant {
+        let by_steps = self.started + FLUSH_STEP_PERIOD * self.steps;
+        if self.total == 0 || self.visited >= self.total {
+            return by_steps;
+        }
+        let by_contexts = self.started + self.spread.mul_f64(self.visited as f64 / self.total as f64);
+        by_steps.min(by_contexts)
+    }
+
+    /// Returns `true` if the pass is behind its pace at `now`: it missed its due step by a whole step period.
+    fn behind(&self, now: Instant) -> bool {
+        now >= self.due() + FLUSH_STEP_PERIOD
+    }
+
+    /// Records what the kernel reports of the pass's progress, and returns the contexts it visited since the last
+    /// report.
+    fn progress(&mut self, progress: PassProgress) -> usize {
+        let visited = progress.visited.saturating_sub(self.visited);
+        self.total = progress.total;
+        self.visited = progress.visited;
+        visited
+    }
+}
+
+/// How long a drain of flush ticks has taken so far, and how long it held admission: the time the region took no input
+/// because of it.
+///
+/// A drain holds admission from its start, and for as long as its current step is no pass, or a pass that runs ahead
+/// of admission; a pass on pace lets batches in, and holds nothing.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct FlushTiming {
+    started: Instant,
+    held_since: Option<Instant>,
+    held: Duration,
+}
+
+impl FlushTiming {
+    /// Starts timing a flush at `now`, holding admission.
+    pub(super) fn start(now: Instant) -> Self {
+        Self {
+            started: now,
+            held_since: Some(now),
+            held: Duration::ZERO,
+        }
+    }
+
+    /// Records that the flush holds admission from `now`, if it did not already.
+    pub(super) fn hold(&mut self, now: Instant) {
+        self.held_since.get_or_insert(now);
+    }
+
+    /// Records that the flush lets batches in from `now`.
+    pub(super) fn release(&mut self, now: Instant) {
+        if let Some(since) = self.held_since.take() {
+            self.held += now.saturating_duration_since(since);
+        }
+    }
+
+    /// Returns how long the flush took, from its start to `now`, and how long it held admission.
+    pub(super) fn finish(&mut self, now: Instant) -> (Duration, Duration) {
+        self.release(now);
+        (now.saturating_duration_since(self.started), self.held)
     }
 }
 
@@ -538,6 +690,11 @@ pub(super) struct DrainStep {
     pub latch: OutputClock,
     /// Which shared flush of its lineage the step is, for an instance on several lanes.
     pub lane_tick: Option<LaneTick>,
+    /// Whether the step wrote to each exit, over every call that ran it and every batch that flushed contexts of its
+    /// pass on touch, for its progress: apart from what a batch writes ([`Scratch::written`]).
+    ///
+    /// [`Scratch::written`]: super::Scratch
+    pub written: Vec<bool>,
 }
 
 /// How a preparation binds one state owner of its program.
@@ -576,8 +733,12 @@ impl<'a> StateAdmission<'a> {
     /// of that epoch, created empty if the lane has none.
     ///
     /// Returns `None` if the generation binds no instance, or if the lineage's instance of the header's epoch could not
-    /// be built ([`unbuilt`][Self::unbuilt]): the step's batches are then invalid.
-    pub fn instance(&mut self, bound: InstanceHandle, header: &BatchHeader) -> Option<(InstanceHandle, &mut Instance)> {
+    /// be built ([`unbuilt`][Self::unbuilt]): the step's batches are then invalid. Otherwise returns, with the
+    /// instance, whether a pass of it is pending: its kernel's `advance_time` is yielded, and what the kernel writes
+    /// while it admits is output of that call.
+    pub fn instance(
+        &mut self, bound: InstanceHandle, header: &BatchHeader,
+    ) -> Option<(InstanceHandle, &mut Instance, bool)> {
         let epoch = self.state.tracker.epoch_of(header);
         self.unbuilt = false;
         let handle = match self.state.instances.get(bound) {
@@ -594,7 +755,15 @@ impl<'a> StateAdmission<'a> {
             },
             None => return None,
         };
-        self.state.instances.get_mut(handle).map(|instance| (handle, instance))
+        let advancing = self
+            .state
+            .interleaved_pass()
+            .and_then(|drain| drain.current.as_ref())
+            .is_some_and(|step| step.instance == handle);
+        self.state
+            .instances
+            .get_mut(handle)
+            .map(|instance| (handle, instance, advancing))
     }
 
     /// Returns `true` if the last [`instance`][Self::instance] asked for was a lineage's instance of another epoch that
@@ -625,7 +794,7 @@ impl<'a> StateAdmission<'a> {
 /// lane cell, and joined to the record of the lineage in that epoch. Returns `None` if its kernel cannot be built.
 fn fresh_instance(state: &mut StateSlot, bound: InstanceHandle, epoch: u32, now: Instant) -> Option<InstanceHandle> {
     let primary = state.instances.get(bound)?;
-    let kernel = match primary.kernel.build_fresh() {
+    let mut kernel = match primary.kernel.build_fresh() {
         Ok(kernel) => kernel,
         Err(reason) => {
             warn!(
@@ -638,6 +807,8 @@ fn fresh_instance(state: &mut StateSlot, bound: InstanceHandle, epoch: u32, now:
             return None;
         }
     };
+    state.wrap_kernel(&mut kernel);
+    let primary = state.instances.get(bound)?;
     // An older epoch than the lane's newest is one the window is closing.
     let reset_retiring = epoch != state.window.target();
     let predecessor = predecessor_deadline(state, bound, epoch);
@@ -1033,39 +1204,150 @@ impl MetricRegionDriver {
             self.reject(Fault::NotUpstream, &header, &batch);
             batch = EventsBuffer::with_capacity(0);
         }
+        let window_moved = epoch_newer(target, previous_target) || !closed.is_empty();
         let state = self.state_mut();
-        if queue.is_empty() {
+        if queue.is_empty() && state.drain.is_none() {
             if resets == 0 && !closing.is_empty() {
                 self.continue_lineages();
             }
             return self.admit_isolated(turn, header, batch, exits);
         }
-        // The batch is admitted, and its progress forwarded, once the drain completes.
+        // While a pass is pending, a batch enters at once unless it starts a drain of its own, moves the reset window,
+        // finds an entry of the drain not started yet, or could need more room than the state owner has without
+        // growing its table or refusing a context.
+        if queue.is_empty() && !window_moved && self.admits_during_pass(&header, batch.len()) {
+            return self.admit_isolated(turn, header, batch, exits);
+        }
+        // The batch waits: the drain runs ahead of admission until its last entry started, and the batch enters then
+        // if that entry is a pass on pace it may enter during, or else once the drain completed. A header that moved
+        // the reset window makes the drain complete first.
+        let state = self.state_mut();
         batch.set_header(header);
         state.stashed = Some(batch);
-        state.drain = Some(DrainCursor {
-            queue,
-            current: None,
-            resets,
-            orphaned: false,
-            timing: None,
-        });
+        match state.drain.as_mut() {
+            Some(drain) => {
+                drain.queue.extend(queue);
+                drain.resets += resets;
+                if window_moved {
+                    drain.block(Instant::now());
+                } else if let Some(timing) = drain.timing.as_mut() {
+                    timing.hold(Instant::now());
+                }
+            }
+            None => {
+                let mut drain = DrainCursor::new(queue, resets, None);
+                if window_moved {
+                    drain.block(Instant::now());
+                }
+                state.drain = Some(drain);
+            }
+        }
         if resets == 0 && !closing.is_empty() {
             self.continue_lineages();
         }
         self.continue_isolated(turn, exits)
     }
 
+    /// Returns `true` if a batch with header `header` and `events` events may be admitted at once while the drain's
+    /// current step is a pass: the pass is on pace, no entry of the drain waits to start, the pass's kernel admits
+    /// while advancing, and the new contexts the batch can create fit in its table without growing it, strictly below
+    /// its context limit and its budgets ([`RoomToAdmit`]), asked with the batch's events times the paths from its
+    /// entry to the state step.
+    fn admits_during_pass(&mut self, header: &BatchHeader, events: usize) -> bool {
+        let live = header
+            .generation_id()
+            .and_then(|id| self.generations.iter().find(|live| live.id == id));
+        let entry = live.and_then(|live| Some(&live.code.entries[live.code.entry_index(header)?]));
+        let contexts = entry.map_or(0, |entry| entry.state_paths.saturating_mul(events));
+        // The batch's own parameters for the state step, whose context limit the room is checked against.
+        let params = live.zip(entry).and_then(|(live, entry)| {
+            entry.ops.iter().find_map(|op| match op {
+                Op::State { params, .. } => live
+                    .program
+                    .state_params()
+                    .get(*params)
+                    .map(|entry| Arc::clone(&entry.params)),
+                _ => None,
+            })
+        });
+        // The lineages the batch's generation binds, whose instances of any epoch it can reach.
+        let reached = live
+            .map(|live| {
+                live.kernels
+                    .iter()
+                    .filter_map(|binding| match binding {
+                        KernelBinding::Instance(handle) => Some(*handle),
+                        KernelBinding::Slab(_) => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let Self { state, .. } = self;
+        let state = state
+            .as_deref_mut()
+            .expect("only a state owner's region runs its state");
+        let Some(drain) = state.interleaved_pass() else {
+            return false;
+        };
+        if drain
+            .queue
+            .iter()
+            .any(|(queued, _)| reached.contains(&state.bound(*queued)))
+        {
+            return false;
+        }
+        let Some(handle) = drain.current.as_ref().map(|step| step.instance) else {
+            return false;
+        };
+        let Some(instance) = state.instances.get_mut(handle) else {
+            return false;
+        };
+        if !instance.kernel.kernel.admits_while_advancing() {
+            return false;
+        }
+        if contexts == 0 {
+            return true;
+        }
+        let mut room = RoomToAdmit { contexts, fits: false };
+        ask_with(&mut instance.kernel, &mut room, params.as_deref());
+        room.fits
+    }
+
     /// Continues the drain in progress, then admits the batch that started it, if any.
+    ///
+    /// A pass on pace runs one step and lets batches in again: the call is done, with the pass pending. A batch that
+    /// waited for the drain's entries to start, such as for the boundary flush its own header started, enters then
+    /// if it may while the pass is pending, and otherwise the drain runs ahead of admission until it completes.
     pub(super) fn continue_isolated(&mut self, turn: &mut RegionTurn<'_>, exits: &mut ExitSink) -> Progress {
-        if self.run_drain(turn, exits) == Progress::Yielded {
-            return Progress::Yielded;
+        loop {
+            match self.run_drain(turn, exits) {
+                DrainProgress::Yielded => return Progress::Yielded,
+                DrainProgress::Done => break,
+                DrainProgress::Paused => {
+                    let Some(mut batch) = self.state_mut().stashed.take() else {
+                        return Progress::Done;
+                    };
+                    let header = batch.take_header();
+                    if self.admits_during_pass(&header, batch.len()) {
+                        return self.admit_isolated(turn, header, batch, exits);
+                    }
+                    batch.set_header(header);
+                    let state = self.state_mut();
+                    state.stashed = Some(batch);
+                    if let Some(drain) = state.drain.as_mut() {
+                        drain.block(Instant::now());
+                    }
+                }
+            }
         }
         match self.state_mut().stashed.take() {
             Some(mut batch) => {
                 let header = batch.take_header();
                 self.admit_isolated(turn, header, batch, exits)
             }
+            // A finish that completed a drain first, over calls its host resumed, goes on with the shutdown drains
+            // in the call that completed it: the host takes that call's end as the finish's.
+            None if self.state().finishing && !self.state().shutting_down => self.finish_isolated(turn, exits),
             None => Progress::Done,
         }
     }
@@ -1080,6 +1362,9 @@ impl MetricRegionDriver {
         self.forward_final_headers(&header, exits);
         if !header_only {
             self.run_isolated(turn, &header, batch, exits);
+            if self.state().interleaved_pass().is_some() {
+                self.deliver_touched(turn, exits);
+            }
         }
         self.forward_progress(&header, header_only, turn.now(), exits);
         let derived = header
@@ -1098,14 +1383,56 @@ impl MetricRegionDriver {
         if queue.is_empty() {
             return Progress::Done;
         }
-        state.drain = Some(DrainCursor {
-            queue: queue.into_iter().collect(),
-            current: None,
-            resets: 0,
-            orphaned: false,
-            timing: Some(FlushTiming::start(Instant::now())),
-        });
+        // A pass pending runs first: the released ticks start once it completes, one pass at a time.
+        if let Some(drain) = state.drain.as_mut() {
+            drain.queue.extend(queue);
+            return Progress::Done;
+        }
+        state.drain = Some(DrainCursor::new(
+            queue.into_iter().collect(),
+            0,
+            Some(FlushTiming::start(Instant::now())),
+        ));
         self.continue_isolated(turn, exits)
+    }
+
+    /// Delivers what the batch just admitted flushed on touch, the output of the pending pass's call, through the
+    /// step's output entry as the step's own, with what its emission filter skipped, and counts the contexts it
+    /// visited.
+    fn deliver_touched(&mut self, turn: &mut RegionTurn<'_>, exits: &mut ExitSink) {
+        self.deliver_step_output(turn, exits);
+        let Self { generations, state, .. } = self;
+        let Some(state) = state.as_deref_mut() else { return };
+        let StateSlot {
+            drain,
+            instances,
+            counts,
+            ..
+        } = state;
+        let Some(drain) = drain.as_mut() else { return };
+        let (Some(step), Some(pass)) = (drain.current.as_ref(), drain.pass.as_mut()) else {
+            return;
+        };
+        let Some(instance) = instances.get_mut(step.instance) else {
+            return;
+        };
+        let mut progress = PassProgress::default();
+        ask(&mut instance.kernel, &mut progress);
+        counts.touched += pass.progress(progress) as u64;
+        let Some(live) = generations.iter_mut().find(|live| live.id == step.generation.id()) else {
+            return;
+        };
+        if live.telemetry.has_pushed_filter(step.kernel) {
+            let mut take = TakeSuppressed::default();
+            ask(&mut instance.kernel, &mut take);
+            for (_, suppressed) in take.counts {
+                add_loss(
+                    &mut live.counts.pushed[step.kernel],
+                    suppressed.records,
+                    suppressed.points,
+                );
+            }
+        }
     }
 
     /// Runs a batch through its generation's program, admitting what its state steps reach into the instances of the
@@ -1166,7 +1493,9 @@ impl MetricRegionDriver {
     /// Runs time-driven work: resumes a drain a panic ended, or fires, gates, or skips every tick now due.
     pub(super) fn advance_isolated(&mut self, turn: &mut RegionTurn<'_>, exits: &mut ExitSink) -> Progress {
         if let Some(drain) = self.state_mut().drain.as_mut() {
-            // Only a drain a panic ended can be left when the host calls this: a yielded one is resumed.
+            // Only a drain a panic ended, or a pass that lets batches in, can be left when the host calls this: a
+            // yielded one is resumed. A pass runs its next step, as its pace or the host's idle time says, and its
+            // instance ticks no more until it completes.
             drain.orphaned = false;
             return self.continue_isolated(turn, exits);
         }
@@ -1260,21 +1589,18 @@ impl MetricRegionDriver {
         if queue.is_empty() {
             return Progress::Done;
         }
-        state.drain = Some(DrainCursor {
-            queue,
-            current: None,
-            resets: 0,
-            orphaned: false,
-            timing: Some(FlushTiming::start(Instant::now())),
-        });
+        state.drain = Some(DrainCursor::new(queue, 0, Some(FlushTiming::start(Instant::now()))));
         self.continue_isolated(turn, exits)
     }
 
     /// Finishes the state owner's region after its input ended: completes a drain a panic ended, closes a reset window still
     /// open, and then runs the shutdown drain of every instance.
     pub(super) fn finish_isolated(&mut self, turn: &mut RegionTurn<'_>, exits: &mut ExitSink) -> Progress {
+        self.state_mut().finishing = true;
         if let Some(drain) = self.state_mut().drain.as_mut() {
+            // A pass pending completes ahead of everything else once input ended.
             drain.orphaned = false;
+            drain.block(Instant::now());
             if self.continue_isolated(turn, exits) == Progress::Yielded {
                 return Progress::Yielded;
             }
@@ -1293,13 +1619,7 @@ impl MetricRegionDriver {
             if queue.is_empty() {
                 return Progress::Done;
             }
-            state.drain = Some(DrainCursor {
-                queue,
-                current: None,
-                resets: 0,
-                orphaned: false,
-                timing: None,
-            });
+            state.drain = Some(DrainCursor::new(queue, 0, None));
             return self.continue_isolated(turn, exits);
         }
         let mut queue = VecDeque::new();
@@ -1307,13 +1627,7 @@ impl MetricRegionDriver {
         open_window(generations, state, &closing, &mut queue);
         let resets = queue_resets(generations, state, &closed, None, &mut queue);
         state.shutdown_after_drain = true;
-        state.drain = Some(DrainCursor {
-            queue,
-            current: None,
-            resets,
-            orphaned: false,
-            timing: None,
-        });
+        state.drain = Some(DrainCursor::new(queue, resets, None));
         if resets == 0 {
             self.continue_lineages();
         }
@@ -1330,12 +1644,16 @@ impl MetricRegionDriver {
             .unwrap_or_default()
     }
 
-    /// Returns when the state owner's region next has time-driven work: at once for a drain a panic ended, never while a
-    /// drain is pending otherwise, and else the earliest tick deadline or end of a grace.
+    /// Returns when the state owner's region next has time-driven work: at once for a drain a panic ended or a pass
+    /// that runs ahead of admission, when its next step is due for a pass that lets batches in, never while another
+    /// drain is pending, and else the earliest tick deadline or end of a grace.
     pub(super) fn next_deadline_isolated(&self) -> Option<Instant> {
         let state = self.state();
         if let Some(drain) = &state.drain {
-            return drain.orphaned.then(|| self.now.unwrap_or_else(Instant::now));
+            if drain.orphaned || (drain.blocking && drain.pass.is_some()) {
+                return Some(self.now.unwrap_or_else(Instant::now));
+            }
+            return drain.pass.as_ref().filter(|_| drain.current.is_some()).map(Pass::due);
         }
         // The lane's ticks wait for its reset window to close, which only its input does.
         if state.window.is_open() {
@@ -1353,13 +1671,13 @@ impl MetricRegionDriver {
             .min()
     }
 
-    /// Runs the drain in progress until it completes, returning [`Progress::Done`], or until the turn's budget runs
-    /// out, returning [`Progress::Yielded`].
-    fn run_drain(&mut self, turn: &mut RegionTurn<'_>, exits: &mut ExitSink) -> Progress {
-        let entered = Instant::now();
+    /// Runs the drain in progress until it completes, returning [`DrainProgress::Done`], or until the turn's budget
+    /// runs out: a pass on pace then lets batches in again ([`DrainProgress::Paused`]), and any other step, a pass that
+    /// runs ahead of admission included, yields ([`DrainProgress::Yielded`]).
+    fn run_drain(&mut self, turn: &mut RegionTurn<'_>, exits: &mut ExitSink) -> DrainProgress {
         loop {
             let Some(drain) = self.state_mut().drain.as_mut() else {
-                return Progress::Done;
+                return DrainProgress::Done;
             };
             if drain.current.is_none() {
                 let Some((handle, kind)) = drain.queue.pop_front() else {
@@ -1375,21 +1693,28 @@ impl MetricRegionDriver {
                     }
                     let state = self.state_mut();
                     if let Some(mut timing) = state.drain.take().and_then(|drain| drain.timing) {
-                        timing.ran(entered.elapsed());
-                        let (took, blocked) = timing.finish(Instant::now());
+                        let (took, held) = timing.finish(Instant::now());
                         state.lane_telemetry.flush_seconds.record(took.as_secs_f64());
-                        state.lane_telemetry.flush_blocked_seconds.record(blocked.as_secs_f64());
+                        state.lane_telemetry.flush_blocked_seconds.record(held.as_secs_f64());
                     }
                     self.collect_instances();
-                    return Progress::Done;
+                    return DrainProgress::Done;
                 };
                 let step = self.start_step(handle, kind);
                 match step {
                     Some(step) => {
-                        let drain = self.state_mut().drain.as_mut().expect("the drain is in progress");
+                        let now = turn.now();
+                        let state = self.state_mut();
+                        let pass = state.passes(&step).then(|| Pass::start(now, step.interval));
+                        let drain = state.drain.as_mut().expect("the drain is in progress");
                         drain.current = Some(step);
-                        // What the step writes to each exit, over every call that runs it, for its progress.
-                        self.scratch.written.fill(false);
+                        drain.pass = pass;
+                        // A pass on pace lets batches in from its first step on.
+                        if pass.is_some() && !drain.blocking {
+                            if let Some(timing) = drain.timing.as_mut() {
+                                timing.release(Instant::now());
+                            }
+                        }
                     }
                     None => {
                         if let DrainKind::Reset { ends_epochs, .. } = kind {
@@ -1400,14 +1725,47 @@ impl MetricRegionDriver {
                 }
             }
             if self.run_step(turn, exits) == Progress::Yielded {
-                if let Some(timing) = self.state_mut().drain.as_mut().and_then(|drain| drain.timing.as_mut()) {
-                    timing.ran(entered.elapsed());
-                }
-                return Progress::Yielded;
+                return self.step_yielded(turn.now());
             }
             self.forward_drain_progress(exits);
             self.complete_step();
         }
+    }
+
+    /// Accounts for a drain step that yielded at `now`: a pass records how far it has come, and lets batches in again
+    /// while it is on pace, unless a batch waits for an entry of the drain behind it to start; once behind its pace,
+    /// the pass runs ahead of admission until it completes, as every other step does.
+    fn step_yielded(&mut self, now: Instant) -> DrainProgress {
+        let StateSlot {
+            drain,
+            instances,
+            stashed,
+            ..
+        } = self.state_mut();
+        let waiting = stashed.is_some();
+        let Some(drain) = drain.as_mut() else {
+            return DrainProgress::Yielded;
+        };
+        if let (Some(pass), Some(step)) = (drain.pass.as_mut(), drain.current.as_ref()) {
+            pass.steps = pass.steps.saturating_add(1);
+            if let Some(instance) = instances.get_mut(step.instance) {
+                let mut progress = PassProgress::default();
+                ask(&mut instance.kernel, &mut progress);
+                pass.progress(progress);
+            }
+            let behind = pass.behind(now);
+            if !drain.blocking && behind {
+                drain.block(Instant::now());
+            }
+            let waits_behind = waiting && !drain.queue.is_empty();
+            if !drain.blocking && !waits_behind {
+                return DrainProgress::Paused;
+            }
+        }
+        if let Some(timing) = drain.timing.as_mut() {
+            timing.hold(Instant::now());
+        }
+        DrainProgress::Yielded
     }
 
     /// Decides the drain of one instance: its generation, flush time, parameters, and stamp. Returns `None` for an
@@ -1443,6 +1801,7 @@ impl MetricRegionDriver {
     }
 
     fn decide_step(&mut self, handle: InstanceHandle, kind: DrainKind) -> Option<DrainStep> {
+        let exits = self.scratch.written.len();
         let Self { generations, state, .. } = self;
         let state = state
             .as_deref_mut()
@@ -1564,13 +1923,13 @@ impl MetricRegionDriver {
             stamp,
             latch,
             lane_tick,
+            written: vec![false; exits],
         })
     }
 
     /// Runs the current drain step's kernel call once, and its time-driven output through the generation's entry.
     fn run_step(&mut self, turn: &mut RegionTurn<'_>, exits: &mut ExitSink) -> Progress {
         let Self {
-            kernels,
             generations,
             scratch,
             cursor,
@@ -1628,7 +1987,54 @@ impl MetricRegionDriver {
         };
         cursor.instance = None;
 
-        // The kernel's output runs the generation's entry for it, which hands it to the exit its edge leaves by.
+        let live = &mut generations[index];
+        fold_loss(&mut live.counts.kernel_loss[step.kernel], &mut scratch.counters);
+        // Each suppressed record is one the filter would have received and sent to its `drop`: counted in the
+        // filter's own series, under the generation whose filter judged it.
+        for (_, suppressed) in suppressed {
+            add_loss(
+                &mut live.counts.pushed[step.kernel],
+                suppressed.records,
+                suppressed.points,
+            );
+        }
+        *cursor = Cursor::default();
+        self.deliver_step_output(turn, exits);
+        progress
+    }
+
+    /// Runs what the current drain step's kernel wrote, in a call of the step or while it admitted a batch with the
+    /// step's call yielded, through the step's generation's entry for its time-driven output, which hands it to the
+    /// exit its edge leaves by, stamped with the step's header. What it writes to each exit is the step's own.
+    fn deliver_step_output(&mut self, turn: &mut RegionTurn<'_>, exits: &mut ExitSink) {
+        let Self {
+            kernels,
+            generations,
+            scratch,
+            cursor,
+            state,
+            ..
+        } = self;
+        let Some(state) = state.as_deref_mut() else { return };
+        let StateSlot {
+            drain,
+            instances,
+            output: clock,
+            ..
+        } = state;
+        let Some(step) = drain.as_mut().and_then(|drain| drain.current.as_mut()) else {
+            return;
+        };
+        let Some(index) = generations.iter().position(|live| live.id == step.generation.id()) else {
+            return;
+        };
+        let Some(instance) = instances.get_mut(step.instance) else {
+            return;
+        };
+        let slot = &mut instance.kernel;
+        if slot.ports.is_empty() {
+            return;
+        }
         let LiveGeneration {
             program,
             code,
@@ -1644,7 +2050,12 @@ impl MetricRegionDriver {
             .drain(PortIndex::PRIMARY)
             .inspect(|buffer| events += buffer.len() as u64);
         let entry = &code.entries[step.output];
-        cursor.node = None;
+        *cursor = Cursor {
+            generation: Some(step.generation.id()),
+            node: None,
+            instance: None,
+        };
+        std::mem::swap(&mut scratch.written, &mut step.written);
         Run {
             layout,
             kernel_slots,
@@ -1662,24 +2073,15 @@ impl MetricRegionDriver {
             exits,
         }
         .entry(entry, output);
+        std::mem::swap(&mut scratch.written, &mut step.written);
+        slot.ports.clear();
         if events > 0 {
             // The output's admission time is the latest of what the slot emitted, never of a step that emitted nothing.
-            state.output = step.latch;
+            *clock = step.latch;
         }
         let live = &mut generations[index];
         live.counts.kernel_ports[live.layout.kernel_ports[step.kernel]] += events;
-        fold_loss(&mut live.counts.kernel_loss[step.kernel], &mut scratch.counters);
-        // Each suppressed record is one the filter would have received and sent to its `drop`: counted in the
-        // filter's own series, under the generation whose filter judged it.
-        for (_, suppressed) in suppressed {
-            add_loss(
-                &mut live.counts.pushed[step.kernel],
-                suppressed.records,
-                suppressed.points,
-            );
-        }
         *cursor = Cursor::default();
-        progress
     }
 
     /// Forwards the progress of the state owner's derived point after a drain step that flushed, at its stamp: on every
@@ -1693,12 +2095,7 @@ impl MetricRegionDriver {
     /// which has received everything the replaced generation sends it at the point, crosses at it rather than at the
     /// state owner's next drain, which may be a flush interval away.
     fn forward_drain_progress(&mut self, exits: &mut ExitSink) {
-        let Self {
-            state,
-            progress,
-            scratch,
-            ..
-        } = self;
+        let Self { state, progress, .. } = self;
         let Some(state) = state.as_deref_mut() else { return };
         let Some(step) = state.drain.as_ref().and_then(|drain| drain.current.as_ref()) else {
             return;
@@ -1721,7 +2118,7 @@ impl MetricRegionDriver {
             let Some(position) = exit.points.iter().position(|upstream| *upstream == point) else {
                 continue;
             };
-            if !scratch.written.get(exit.exit.get()).copied().unwrap_or(false) {
+            if !step.written.get(exit.exit.get()).copied().unwrap_or(false) {
                 let mut header = step.stamp.clone();
                 header.entry = None;
                 exits.emit(exit.exit, EventsBuffer::with_capacity(0).with_header(header));
@@ -1769,6 +2166,7 @@ impl MetricRegionDriver {
         let state = self.state_mut();
         let Some(drain) = state.drain.as_mut() else { return };
         let Some(step) = drain.current.take() else { return };
+        drain.pass = None;
         let retiring = state.retiring_of(step.instance).is_some();
         if let Some(instance) = state.instances.get_mut(step.instance) {
             complete_instance(instance, &step, retiring);
@@ -2154,10 +2552,12 @@ impl MetricRegionDriver {
                 at: now + lineage.flush_interval,
             },
         };
+        let mut kernel = KernelSlot::new(prepared, ports);
+        state.wrap_kernel(&mut kernel);
         let handle = state.instances.insert(Instance {
             key: lineage.key.clone(),
             created_by: generation,
-            kernel: KernelSlot::new(prepared, ports),
+            kernel,
             users: 1,
             interval: lineage.flush_interval,
             tick,
@@ -2325,6 +2725,8 @@ impl MetricRegionDriver {
             return Ok(());
         };
         let bound = state.bound(handle);
+        #[cfg(any(test, feature = "test-util"))]
+        let wrap = state.wrap.clone();
         let Some(instance) = state.instances.get_mut(handle) else {
             return Ok(());
         };
@@ -2339,6 +2741,10 @@ impl MetricRegionDriver {
             live.counts.kernel_loss[index].record_loss(LossClass::Invalid, held.events, held.points);
         }
         kernel.rebuild()?;
+        #[cfg(any(test, feature = "test-util"))]
+        if let Some(wrap) = &wrap {
+            wrap_kernel(wrap, kernel);
+        }
         if instance.lanes.is_some() {
             let header = BatchHeader::default();
             let (mut budget, mut counters) = (Budget::unlimited(), TurnCounters::default());
@@ -2423,6 +2829,7 @@ impl MetricRegionDriver {
             overflows,
             cut_crossings,
             reset_crossings,
+            touched,
         } = std::mem::take(&mut state.counts);
         let lane = &state.lane_telemetry;
         for (counter, value) in [
@@ -2432,6 +2839,7 @@ impl MetricRegionDriver {
             (&lane.reset_overflows, overflows),
             (&lane.cut_crossings, cut_crossings),
             (&lane.reset_crossings, reset_crossings),
+            (&lane.flush_touched_contexts, touched),
         ] {
             if value > 0 {
                 counter.increment(value);
@@ -2440,9 +2848,16 @@ impl MetricRegionDriver {
         lane.crossing_overlap.set(overlap as f64);
     }
 
-    /// Returns `true` if the state owner's region can take input: not while a drain is left to complete.
+    /// Returns `true` if the state owner's region can take input: not while a drain is left to complete, unless its
+    /// current step is a pass on pace, which lets batches in.
     pub(super) fn accepts_isolated(&self) -> bool {
-        self.state().drain.is_none()
+        let state = self.state();
+        state.drain.is_none() || state.interleaved_pass().is_some()
+    }
+
+    /// Returns `true` if a pass on pace is pending: its host runs its next step whenever no batch waits.
+    pub(super) fn has_background_work_isolated(&self) -> bool {
+        self.state().interleaved_pass().is_some()
     }
 
     /// Checks that a state owner's kernel was built with the host's state budgets, if the region has any, and, in a
@@ -2841,13 +3256,37 @@ fn crossing_overlap(state: &mut StateSlot) -> u64 {
     overlap
 }
 
+/// Wraps an instance's kernel in what `wrap` returns for it.
+#[cfg(any(test, feature = "test-util"))]
+fn wrap_kernel(wrap: &StateKernelWrap, slot: &mut KernelSlot) {
+    /// What an instance holds for the moment its kernel is being wrapped.
+    struct Unwrapped;
+
+    impl saluki_core::execution::Kernel for Unwrapped {
+        fn consume(&mut self, _: &mut Turn<'_>, _: &mut EventsBuffer) -> Progress {
+            Progress::Done
+        }
+    }
+
+    let kernel = std::mem::replace(&mut slot.kernel, Box::new(Unwrapped));
+    slot.kernel = wrap(kernel);
+}
+
 /// Asks an instance's kernel a read-only control message, in the kernel's resource group: answered at once, it leaves
 /// a call of the kernel that yielded in place, and writes nothing.
 fn ask(slot: &mut KernelSlot, message: &mut dyn Any) {
+    ask_with(slot, message, None);
+}
+
+/// Asks an instance's kernel a read-only control message as [`ask`] does, with per-call parameters, if given.
+fn ask_with(slot: &mut KernelSlot, message: &mut dyn Any, param: Option<&(dyn Any + Send + Sync)>) {
     let header = BatchHeader::default();
     let (mut budget, mut counters) = (Budget::unlimited(), TurnCounters::default());
     slot.context.accounted(|| {
         let mut turn = Turn::new(&header, Instant::now(), &mut budget, &mut slot.ports, &mut counters);
+        if let Some(param) = param {
+            turn = turn.with_param(param);
+        }
         slot.kernel.control(&mut turn, message)
     });
 }
@@ -2956,19 +3395,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_flush_is_blocked_for_the_time_it_spent_outside_the_calls_that_ran_its_steps() {
+    fn a_flush_holds_admission_from_its_start_except_while_a_pass_lets_batches_in() {
+        let ms = |millis: u64| Duration::from_millis(millis);
         let started = Instant::now();
+        // A flush that never interleaves holds admission throughout.
         let mut timing = FlushTiming::start(started);
-        timing.ran(Duration::from_millis(5));
-        timing.ran(Duration::from_millis(3));
+        assert_eq!(timing.finish(started + ms(30)), (ms(30), ms(30)));
+        // A pass lets batches in from 2 ms, falls behind at 20 ms, and completes at 30 ms; holding again is idempotent.
+        let mut timing = FlushTiming::start(started);
+        timing.release(started + ms(2));
+        timing.release(started + ms(5));
+        timing.hold(started + ms(20));
+        timing.hold(started + ms(25));
+        assert_eq!(timing.finish(started + ms(30)), (ms(30), ms(12)));
+    }
+
+    #[test]
+    fn a_pass_is_due_when_either_pace_reaches_what_it_did_and_behind_a_step_period_later() {
+        let ms = |millis: u64| Duration::from_millis(millis);
+        let started = Instant::now();
+        // A flush interval of 15 s spreads a pass over 5 s.
+        let mut pass = Pass::start(started, Duration::from_secs(15));
+        // Before its kernel says how many contexts it visits, the step pace alone: one step done, the next due at
+        // 100 ms, and behind from 200 ms.
+        pass.steps = 1;
+        assert_eq!(pass.due(), started + ms(100));
+        assert!(!pass.behind(started + ms(199)));
+        assert!(pass.behind(started + ms(200)));
+        // 100,000 contexts, 4,096 of them visited: the step pace is still the faster.
+        pass.progress(PassProgress {
+            visited: 4_096,
+            total: 100_000,
+        });
+        assert_eq!(pass.due(), started + ms(100));
+        // Contexts visited on touch move the contexts pace past the step pace, which then decides alone.
+        pass.steps = 30;
         assert_eq!(
-            timing.finish(started + Duration::from_millis(30)),
-            (Duration::from_millis(30), Duration::from_millis(22))
+            pass.progress(PassProgress {
+                visited: 10_000,
+                total: 100_000
+            }),
+            5_904
         );
-        // A flush that took no longer than its steps ran, as on a coarse clock, was never blocked.
-        assert_eq!(
-            timing.finish(started + Duration::from_millis(6)),
-            (Duration::from_millis(6), Duration::ZERO)
-        );
+        assert_eq!(pass.due(), started + ms(500));
+        assert!(pass.behind(started + ms(600)));
     }
 }

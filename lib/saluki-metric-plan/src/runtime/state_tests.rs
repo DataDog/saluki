@@ -841,9 +841,9 @@ fn branched_plan(two: bool, second: &str) -> Plan {
 
 #[test]
 fn a_candidate_aggregates_each_branch_with_its_own_width_in_a_region_of_its_own() {
-    // The second state owner runs in a sub-region of the split's slot, which the split's main region feeds through an
-    // internal exit; the merge after both runs in the boot state owner's slot, which both exits lead to. Each flushes on
-    // its own width: `a.` metrics in 10-second buckets, the rest in 20-second ones.
+    // The second state owner runs in the main region of the split's slot, which holds no other; the merge after both
+    // runs in the boot state owner's slot, which both exits lead to. Each flushes on its own width: `a.` metrics in
+    // 10-second buckets, the rest in 20-second ones.
     let boot = branched_plan(false, "20s");
     let candidate = branched_plan(true, "20s");
     let mut harness = panicking_harness(&boot, with_heartbeats());
@@ -857,14 +857,13 @@ fn a_candidate_aggregates_each_branch_with_its_own_width_in_a_region_of_its_own(
         .placement()
         .region_of(&second)
         .expect("the second state owner runs in a slot");
-    assert_eq!(region, crate::compile::RegionKey::State(second.clone()));
+    assert_eq!(region, crate::compile::RegionKey::Main);
     assert_ne!(slot, harness.slot_named("dsd_agg"));
     let name = harness.frame().slot(slot).expect("the frame's slot").name.to_string();
-    let sub_region = harness
-        .sub_region(&name, "second")
-        .expect("the second state owner's sub-region runs");
-    assert_eq!(sub_region.state_owner(), Some(&second));
-    assert_eq!(sub_region.lineages().len(), 1);
+    assert!(harness.sub_region(&name, "second").is_none(), "no sub-region runs");
+    let region = harness.driver(&name);
+    assert_eq!(region.state_owner(), Some(&second));
+    assert_eq!(region.lineages().len(), 1);
     assert_eq!(harness.driver("dsd_agg").lineages().len(), 1);
 
     harness.admit("src", t(3_000), vec![counter("a.c", 1.0), counter("b.c", 2.0)]);
@@ -967,6 +966,14 @@ impl Direct {
     /// Creates the driver of the one isolation slot of `plan` under `registry`, for generation 1 with the default
     /// program's panic budget.
     fn with(plan: &Plan, registry: OperatorRegistry) -> Self {
+        Self::configured(plan, registry, |config| config)
+    }
+
+    /// Creates the driver of the one isolation slot of `plan` under `registry`, as [`with`][Self::with] does, with the
+    /// region's configuration as `configure` returns it. The slot's lane records its own telemetry.
+    fn configured(
+        plan: &Plan, registry: OperatorRegistry, configure: impl FnOnce(RegionConfig) -> RegionConfig,
+    ) -> Self {
         let frame = Frame::compute(plan, &registry, &crate::testing::default_program_slot_name).unwrap();
         let compiled = Self::compiled(&registry, &frame, plan);
         let slot = frame
@@ -991,8 +998,9 @@ impl Direct {
         let wall = HarnessClock::new(t(0));
         let config = RegionConfig::for_slot(&slot, &telemetry)
             .with_schedule(Arc::clone(&schedule))
-            .with_wall_clock(Arc::new(wall.clone()));
-        let mut driver = MetricRegionDriver::new(config, boot).unwrap();
+            .with_wall_clock(Arc::new(wall.clone()))
+            .with_state_lane_telemetry(telemetry.state_lane(slot.name.as_str(), 0));
+        let mut driver = MetricRegionDriver::new(configure(config), boot).unwrap();
         let start = Instant::now();
         driver.start(&mut RegionTurn::new(start, &mut Budget::unlimited()));
         Self {
@@ -1143,9 +1151,9 @@ fn one_context_per_call() -> Budget {
 #[test]
 fn a_snapshot_lists_every_context_held_and_is_answered_between_the_steps_of_a_yielded_drain() {
     // Three gauges held; the tick at 15 flushes [0, 10) one context per call. Between the calls of the yielded flush,
-    // a snapshot lists every context still held: a flush removes the contexts it leaves empty only once it completes,
-    // so all three, and the drain resumes where it stopped, emitting each context once. Input waits while it is
-    // pending.
+    // a snapshot lists every context still held: the flush, a pass, removes each gauge it leaves empty at its visit, so
+    // one fewer after each call, and the drain resumes where it stopped, emitting each context once. With interleaving
+    // off, input waits while it is pending.
     let mut direct = Direct::new(&plan());
     let names = ["a", "b", "c"];
     direct.process(t(3_000), names.iter().map(|name| gauge(name, 1.0)).collect());
@@ -1161,7 +1169,7 @@ fn a_snapshot_lists_every_context_held_and_is_answered_between_the_steps_of_a_yi
         None,
         "no deadline while a drain is pending"
     );
-    assert_eq!(direct.snapshot(), strings(&names));
+    assert_eq!(direct.snapshot().len(), 2);
     let mut calls = 1;
     loop {
         let (progress, written) = direct.resume(Duration::from_secs(15), one_context_per_call());
@@ -1170,7 +1178,7 @@ fn a_snapshot_lists_every_context_held_and_is_answered_between_the_steps_of_a_yi
         if progress != Progress::Yielded {
             break;
         }
-        assert_eq!(direct.snapshot(), strings(&names));
+        assert_eq!(direct.snapshot().len(), 3 - emitted);
     }
     assert_eq!(emitted, 3, "each context's gauge once");
     assert!(calls >= 3, "one context per call: {} calls", calls);
@@ -2043,4 +2051,5 @@ fn a_preparation_that_overtakes_queued_batches_creates_a_second_instance_of_a_li
     );
 }
 
+mod interleaved;
 mod lanes;

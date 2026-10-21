@@ -8,6 +8,8 @@ use std::{
     time::Instant,
 };
 
+#[cfg(any(test, feature = "test-util"))]
+use saluki_core::execution::Kernel;
 use saluki_core::{
     data_model::event::Event,
     execution::{
@@ -111,7 +113,16 @@ pub struct RegionConfig {
     /// Whether the region admits batches while a tick or boundary flush of a state owner not on lanes is pending
     /// ([`with_interleaving`][Self::with_interleaving]).
     pub(crate) interleaving: bool,
+
+    /// What wraps every kernel of the region's state owner's instances when it is built or rebuilt, for tests that
+    /// stand a kernel in for another.
+    #[cfg(any(test, feature = "test-util"))]
+    pub(crate) state_kernel_wrap: Option<StateKernelWrap>,
 }
+
+/// Wraps a state owner's kernel in another, for tests: see [`RegionConfig::with_state_kernel_wrap`].
+#[cfg(any(test, feature = "test-util"))]
+pub(crate) type StateKernelWrap = Arc<dyn Fn(Box<dyn Kernel>) -> Box<dyn Kernel> + Send + Sync>;
 
 /// The state owner a region holds: its own, which it ticks, stamps the time-driven output of, and keeps the lineages
 /// of.
@@ -199,6 +210,8 @@ impl RegionConfig {
             routing: RoutingTelemetry::noop(),
             state_lane_telemetry: None,
             interleaving: false,
+            #[cfg(any(test, feature = "test-util"))]
+            state_kernel_wrap: None,
         }
     }
 
@@ -296,6 +309,14 @@ impl RegionConfig {
     #[cfg(any(test, feature = "test-util"))]
     pub fn with_memo_entries(mut self, entries: usize) -> Self {
         self.memo_entries = entries;
+        self
+    }
+
+    /// Wraps every kernel of the region's state owner's instances in what `wrap` returns for it, whenever one is
+    /// built or rebuilt: for tests that stand a kernel in for another, such as one that admits while advancing.
+    #[cfg(any(test, feature = "test-util"))]
+    pub(crate) fn with_state_kernel_wrap(mut self, wrap: StateKernelWrap) -> Self {
+        self.state_kernel_wrap = Some(wrap);
         self
     }
 }
@@ -1091,6 +1112,18 @@ struct InvalidLoss {
 ///   a state owner downstream that the drain wrote nothing to receives a header-only batch of its stamp, unless another
 ///   lineage of the state owner is retiring before its final flush. A drain yields when the turn's budget runs out, and
 ///   the host resumes it; no input is read until it completes, and the batch that started it is admitted afterwards.
+/// - **Passes.** With interleaving ([`RegionConfig::with_interleaving`]), a tick or boundary flush of an instance not
+///   on lanes whose kernel admits while advancing is a **pass**: a step that runs out of budget lets batches in again,
+///   with the pass pending. A batch enters during it unless its header starts a drain of its own or moves the reset
+///   window, an entry of the drain for a lineage the batch reaches has not started, or the state owner's kernel says
+///   the new contexts it could create, its events times the paths from its entry to the state step, may not fit
+///   (`RoomToAdmit`); a batch that cannot enter waits, and the drain runs ahead of admission until its last entry
+///   started, or completed. What the kernel writes while admitting is the pass's output, delivered with the step's
+///   stamp, and the step keeps its own record of the exits it wrote. The pass runs a step when its pace says one is
+///   due (`next_deadline`), or whenever the host is idle (`has_background_work`), and once it falls a step period
+///   behind its pace it runs ahead of admission until it completes: [`FLUSH_SPREAD`] of its flush interval for its
+///   contexts, a step at least every [`FLUSH_STEP_PERIOD`]. One pass runs at a time, and its instance ticks no more
+///   until it completes.
 /// - **Shutdown.** When input ends, every instance makes its final flush at the later of the latest admission time and
 ///   the wall clock, and discards its open buckets as shutdown loss.
 /// - **Several points and lanes.** With several upstream points of one source clock, a clock reset opens a reset
@@ -1106,6 +1139,10 @@ struct InvalidLoss {
 /// input has ended, resumes it.
 ///
 /// [`stamping_generation`]: crate::runtime::state::rules::stamping_generation
+/// [`FLUSH_SPREAD`]: crate::limits::values::FLUSH_SPREAD
+/// [`FLUSH_STEP_PERIOD`]: crate::limits::values::FLUSH_STEP_PERIOD
+/// [`FLUSH_SPREAD`]: crate::limits::values::FLUSH_SPREAD
+/// [`FLUSH_STEP_PERIOD`]: crate::limits::values::FLUSH_STEP_PERIOD
 pub struct MetricRegionDriver {
     slot: SlotId,
     name: NativeComponentId,
@@ -1146,6 +1183,9 @@ struct StateSetup {
     budgets: Option<StateBudgets>,
     lanes: Option<Arc<SlotLanes>>,
     lane_telemetry: StateLaneTelemetry,
+    interleaving: bool,
+    #[cfg(any(test, feature = "test-util"))]
+    wrap: Option<StateKernelWrap>,
 }
 
 impl fmt::Debug for MetricRegionDriver {
@@ -1230,8 +1270,9 @@ impl MetricRegionDriver {
             lane,
             routing,
             state_lane_telemetry,
-            // Not read yet: every drain blocks admission.
-            interleaving: _,
+            interleaving,
+            #[cfg(any(test, feature = "test-util"))]
+            state_kernel_wrap,
         } = config;
         let (lane, lanes, ledger) = match lane {
             Some((lane, lanes)) => {
@@ -1279,6 +1320,9 @@ impl MetricRegionDriver {
                 budgets: state_budgets,
                 lanes,
                 lane_telemetry: state_lane_telemetry.unwrap_or_else(StateLaneTelemetry::noop),
+                interleaving,
+                #[cfg(any(test, feature = "test-util"))]
+                wrap: state_kernel_wrap,
             },
             started: false,
             lane,
@@ -1635,6 +1679,11 @@ impl MetricRegionDriver {
             self.setup.lane_telemetry.clone(),
         ));
         state.started = self.started;
+        state.interleaving = self.setup.interleaving;
+        #[cfg(any(test, feature = "test-util"))]
+        {
+            state.wrap = self.setup.wrap.clone();
+        }
         self.state = Some(state);
         Ok(())
     }
@@ -2229,6 +2278,10 @@ impl RegionDriver for MetricRegionDriver {
         self.state.is_none() || self.accepts_isolated()
     }
 
+    fn has_background_work(&self) -> bool {
+        self.state.is_some() && self.has_background_work_isolated()
+    }
+
     fn process(&mut self, turn: &mut RegionTurn<'_>, mut batch: EventsBuffer, exits: &mut ExitSink) -> Progress {
         // Retired generations are released off the data path: a batch holds its own generation, so the program it
         // needs is never released under it.
@@ -2446,11 +2499,13 @@ fn consume(
 
 /// Hands one buffer to a state owner's kernel, with the per-call parameters of the batch's generation.
 ///
-/// A state owner takes what it receives into its state and emits nothing while it does: anything it leaves in its
-/// input or writes to its ports is counted as invalid loss and dropped.
+/// A state owner takes what it receives into its state and emits nothing of its own while it does: anything it leaves
+/// in its input or writes to its ports is counted as invalid loss and dropped, unless its `advance_time` is yielded
+/// (`advancing`), when what it writes is output of that call, flushed on touch, which the region delivers as the
+/// drain step's once the batch has run.
 fn consume_state(
     slot: &mut KernelSlot, header: &BatchHeader, turn: &mut RegionTurn<'_>, counters: &mut TurnCounters,
-    param: &(dyn Any + Send + Sync), mut buffer: EventsBuffer,
+    param: &(dyn Any + Send + Sync), advancing: bool, mut buffer: EventsBuffer,
 ) {
     let KernelSlot {
         key,
@@ -2480,7 +2535,7 @@ fn consume_state(
         }
     });
     ports.complete(buffer);
-    if !ports.is_empty() {
+    if !advancing && !ports.is_empty() {
         debug_assert!(false, "state owner `{}` emitted while admitting a batch", key.node);
         for buffer in ports.drain(PortIndex::PRIMARY) {
             counters.record_loss(LossClass::Invalid, buffer.len() as u64, points_in(&buffer));
@@ -2679,7 +2734,7 @@ impl Run<'_, '_> {
                         (Some(admission), KernelBinding::Instance(handle)) => admission.instance(handle, header),
                         _ => None,
                     };
-                    let Some((handle, instance)) = instance else {
+                    let Some((handle, instance, advancing)) = instance else {
                         // Unless the lineage's instance of another clock epoch could not be built.
                         debug_assert!(
                             instances.as_ref().is_some_and(StateAdmission::unbuilt),
@@ -2694,7 +2749,7 @@ impl Run<'_, '_> {
                     let param = state_params[*params].params.as_ref();
                     std::mem::swap(pending, &mut registers[*register]);
                     for buffer in pending.drain(..) {
-                        consume_state(&mut instance.kernel, header, turn, counters, param, buffer);
+                        consume_state(&mut instance.kernel, header, turn, counters, param, advancing, buffer);
                     }
                     cursor.instance = None;
                     fold_loss(&mut counts.kernel_loss[*kernel], counters);

@@ -1857,7 +1857,7 @@ impl Lanes {
 }
 
 /// The operator `test_slow_aggregate`: aggregates natively, and every flush tick's call of its kernel takes at least
-/// [`SLOW_STEP`] before it runs, so that a drain's time in the calls that ran its steps is known.
+/// [`SLOW_STEP`] before it runs, so that a drain takes at least as long as the calls that ran its steps.
 struct SlowAggregate;
 
 const SLOW: &str = "test_slow_aggregate";
@@ -1960,12 +1960,13 @@ impl Kernel for SlowKernel {
 static SLOW_AGGREGATE: SlowAggregate = SlowAggregate;
 
 #[test]
-fn each_state_lane_times_its_flushes_and_the_part_of_them_blocked_on_its_output() {
+fn each_state_lane_times_its_flushes_and_how_long_they_held_admission() {
     // Two points, two state lanes, 40 counters on each lane at 1. Both watermarks pass 15, and the tick at 15 fires
     // in both lanes, in drain calls of at most 8 events each, each call taking at least 5 ms in the kernel: the host
     // sends what a call emitted before it resumes the drain, here 20 ms later each time, as if it waited for room
-    // downstream. Each lane records one flush, and the time between its calls as blocked, within the flush, never the
-    // time its calls ran; a tick with nothing due records nothing.
+    // downstream. Each lane records one flush, at least as long as its calls and the waits between them; a flush on
+    // lanes never interleaves with admission, so it held admission throughout. A tick with nothing due records
+    // nothing.
     use crate::runtime::{PLAN_LANE_FLUSH_BLOCKED_SECONDS, PLAN_LANE_FLUSH_SECONDS};
     const PAUSE: Duration = Duration::from_millis(20);
     static OPERATORS: OnceLock<Vec<&'static dyn OperatorDef>> = OnceLock::new();
@@ -2016,17 +2017,15 @@ fn each_state_lane_times_its_flushes_and_the_part_of_them_blocked_on_its_output(
             "lane {} records one flush",
             lane
         );
-        let waited = (PAUSE * (calls - 1)).as_secs_f64();
-        let in_steps = (SLOW_STEP * calls).as_secs_f64();
+        let took = (PAUSE * (calls - 1) + SLOW_STEP * calls).as_secs_f64();
         assert!(
-            blocked[0] >= waited && blocked[0] <= flushes[0] - in_steps,
-            "lane {}: blocked {} s of a {} s flush, after waiting {} s between its {} calls, which ran {} s at least",
+            flushes[0] >= took && blocked[0] == flushes[0],
+            "lane {}: held admission {} s of a {} s flush, after {} calls and the waits between them, {} s at least",
             lane,
             blocked[0],
             flushes[0],
-            waited,
             calls,
-            in_steps
+            took
         );
     }
     lanes.advance(Duration::from_millis(15_700));

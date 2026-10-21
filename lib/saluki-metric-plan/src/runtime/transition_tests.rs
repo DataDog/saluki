@@ -30,13 +30,13 @@ use saluki_core::{
         event::metric::{context::Context, Metric, MetricMetadata, MetricValues},
         tags::TagSet,
     },
-    execution::{AdmissionPointId, AdmissionTime, GenerationId, LossClass},
+    execution::{AdmissionPointId, AdmissionTime, Budget, GenerationId, LossClass, RegionDriver, WorkKind},
 };
 use serde_json::{json, Value};
 use stringtheory::MetaString;
 
 use super::harness::{
-    DeliveredRecord, DeliverySchedule, FrameHarness, HarnessOptions, LaneTimeEvent, LanedFrameHarness,
+    DeliveredRecord, DeliverySchedule, FrameHarness, HarnessOptions, Interleaving, LaneTimeEvent, LanedFrameHarness,
 };
 use crate::{
     compile::{KeyGroups, LanePolicy},
@@ -337,9 +337,31 @@ impl Replay {
                 DeliverySchedule::TraceOrder,
             );
         }
+        let options = interleaved(options);
         let boot = boot_of(trace);
         let harness = FrameHarness::starting_at(&boot, &report(&boot), OperatorRegistry::native(), options, start);
         Self::run_on(trace, heartbeats_at_ticks, options, harness)
+    }
+
+    /// Runs `trace` as [`run_with`][Self::run_with] does, on one lane per slot, calling `observe` with each event's
+    /// position and the harness before the event runs.
+    fn run_observed(
+        trace: &Trace, heartbeats_at_ticks: bool, start: AdmissionTime, options: HarnessOptions,
+        observe: &mut dyn FnMut(usize, &FrameHarness),
+    ) -> (RunOutput, Self) {
+        let options = interleaved(options);
+        let boot = boot_of(trace);
+        let harness = FrameHarness::starting_at(&boot, &report(&boot), OperatorRegistry::native(), options, start);
+        let (registry, catalog) = (OperatorRegistry::native(), catalog());
+        let run = Interpreter::new(&registry, &catalog);
+        let run = if heartbeats_at_ticks {
+            run.with_heartbeats_at_ticks()
+        } else {
+            run
+        };
+        let run = run.run(trace).unwrap();
+        let replay = Self::follow(trace, &run, heartbeats_at_ticks, harness, BTreeMap::new(), observe);
+        (run, replay)
     }
 
     /// Runs `trace` as [`run_with`][Self::run_with] does, through a frame laid out on `lanes` without pipelining,
@@ -390,14 +412,16 @@ impl Replay {
             interpreter
         };
         let run = interpreter.run(trace).unwrap();
-        let replay = Self::follow(trace, &run, heartbeats_at_ticks, harness, lanes);
+        let replay = Self::follow(trace, &run, heartbeats_at_ticks, harness, lanes, &mut |_, _| {});
         (run, replay)
     }
 
     /// Replays `trace` through the frame harness, following the interpreter's `run`: each installation as the
-    /// interpreter decided it (committed, armed at its cut, waiting, cancelled, or refused).
+    /// interpreter decided it (committed, armed at its cut, waiting, cancelled, or refused). `observe` sees the harness
+    /// before each event.
     fn follow(
         trace: &Trace, run: &RunOutput, heartbeats_at_ticks: bool, harness: FrameHarness, lanes: BTreeMap<NodeId, u16>,
+        observe: &mut dyn FnMut(usize, &FrameHarness),
     ) -> Self {
         let outcomes = run
             .installs()
@@ -419,6 +443,7 @@ impl Replay {
             heartbeats_at_ticks,
         };
         for (position, event) in events.iter().enumerate().skip(1) {
+            observe(position, &replay.harness);
             match event {
                 TraceEvent::Admit {
                     source,
@@ -701,7 +726,7 @@ fn trace_5_a_small_backward_jump_is_absorbed_by_the_admission_clock() {
         &boot,
         &report(&boot),
         OperatorRegistry::native(),
-        HarnessOptions::default(),
+        interleaved(HarnessOptions::default()),
         t(100),
     );
     harness.admit("src", t(103), vec![counter("c", 1.0)]);
@@ -899,7 +924,7 @@ fn filtered_harness(boot: &Plan, start: AdmissionTime) -> FrameHarness {
         boot,
         &report(boot),
         OperatorRegistry::native(),
-        HarnessOptions::default(),
+        interleaved(HarnessOptions::default()),
         start,
     )
 }
@@ -1608,6 +1633,258 @@ fn stage_6_traces_deliver_their_expectations_through_the_laned_harness_on_one_la
     trace_14_a_revocation_cancels_an_armed_cut_and_the_default_program_retains_its_lineage();
     trace_15_re_compositions_during_a_cut_wait_and_the_last_commits_as_retain();
     LANES.with(|lanes| lanes.set(None));
+}
+
+// The traces with interleaved flushes (V7b, 5): every tick and boundary flush of an instance not on lanes is a pass
+// that admission interleaves with, run a context at a time, so that every flush spans the batches after its tick.
+
+thread_local! {
+    /// How [`Replay::run_with`] and the traces' own harnesses interleave flushes with admission, while a test replays
+    /// the traces that way; `None` runs them as written, every drain holding admission.
+    static INTERLEAVED: std::cell::Cell<Option<(Interleaving, bool)>> = const { std::cell::Cell::new(None) };
+}
+
+/// Returns `options` as the traces run while [`INTERLEAVED`] is set: interleaving as it says, each step of a drain
+/// visiting one context, on the layout it says, isolating state owners or not.
+fn interleaved(options: HarnessOptions) -> HarnessOptions {
+    match INTERLEAVED.with(std::cell::Cell::get) {
+        Some((interleaving, isolate_state)) => HarnessOptions {
+            interleaving: Some(interleaving),
+            turn_budget: Budget::unlimited().with_limit(WorkKind::StateWork, 1),
+            isolate_state,
+            ..options
+        },
+        None => options,
+    }
+}
+
+/// Each step of a drain visits one context, so a pass of even one context yields once, and stays pending until a
+/// batch touches it, the harness runs a step between batches, or the next tick finds it behind its pace.
+fn interleaved_steps(interleaving: Interleaving) -> HarnessOptions {
+    HarnessOptions {
+        interleaving: Some(interleaving),
+        turn_budget: Budget::unlimited().with_limit(WorkKind::StateWork, 1),
+        ..HarnessOptions::default()
+    }
+}
+
+/// The ways the traces interleave: aggregation's own kernel, flushing on touch what batches reach; a stand-in that
+/// says no batch that reaches the state owner fits, so that it waits for the pass; and aggregation's own kernel with
+/// steps between batches.
+const INTERLEAVINGS: [Interleaving; 3] = [
+    Interleaving::TOUCH_ONLY,
+    Interleaving {
+        room: Some(0),
+        background: None,
+    },
+    Interleaving {
+        room: None,
+        background: Some(0x5eed),
+    },
+];
+
+#[test]
+fn stage_6_traces_deliver_their_expectations_with_every_flush_interleaved_with_the_batches_after_its_tick() {
+    // Traces 1 to 15, their queued forms, and the traces on a frame (16 to 19), with each flush a pass of one context
+    // per step: each trace's own expectations hold, as the interpreter, which runs every flush whole, delivers them.
+    for interleaving in INTERLEAVINGS {
+        INTERLEAVED.with(|cell| cell.set(Some((interleaving, true))));
+        trace_1_a_backlog_at_the_cut_lands_in_the_old_lineage();
+        trace_2_a_late_batch_without_a_cut_lands_in_its_open_bucket();
+        trace_3_a_changed_width_cuts_at_the_common_boundary();
+        trace_4_a_changed_destination_retains_and_flushes_through_the_new_plan();
+        trace_5_a_small_backward_jump_is_absorbed_by_the_admission_clock();
+        trace_6_a_large_backward_jump_resets_and_closes_every_open_bucket();
+        trace_7_a_rollback_is_a_new_installation_with_its_own_cut();
+        trace_8_a_late_timestamped_point_belongs_to_the_new_generation();
+        trace_9_a_future_timestamped_point_is_flushed_at_the_old_lineages_retirement();
+        trace_10_a_cut_is_cancelled_only_before_its_first_new_stamp();
+        trace_11_a_reset_after_publication_switches_the_point_to_the_new_generation();
+        trace_11_queued_epoch_zero_batches_are_the_old_lineages_and_flushed_unclamped();
+        trace_12_an_added_state_owner_starts_its_lineage_at_the_cut();
+        trace_13_a_retain_after_the_cut_flushes_the_old_lineage_under_the_generation_it_served();
+        trace_13_queued_the_old_lineage_crosses_after_a_later_retain_and_still_flushes_under_its_own_generation();
+        trace_14_a_revocation_cancels_an_armed_cut_and_the_default_program_retains_its_lineage();
+        trace_15_re_compositions_during_a_cut_wait_and_the_last_commits_as_retain();
+        trace_16_on_a_frame_a_state_owner_over_two_sources_flushes_at_the_earliest_of_their_watermarks();
+        trace_17_on_a_frame_a_second_aggregation_after_the_first_runs_in_its_slots_main_region_and_follows_both();
+        trace_18_on_a_frame_a_chain_flushes_every_contribution_of_the_first_in_the_seconds_bucket();
+        trace_19_on_a_frame_a_cut_through_a_chain_delivers_every_point_once_under_the_expected_generation();
+        INTERLEAVED.with(|cell| cell.set(None));
+    }
+}
+
+#[test]
+fn stage_6_traces_deliver_their_expectations_on_the_fused_layout_with_every_flush_interleaved() {
+    // Traces 1 to 16 on the layout V7b runs, every state owner fused with its neighbors, each flush a pass of one
+    // context per step. The queued forms hold batches between two slots, which this layout does not have; the chains
+    // of 17 to 19 boot with a sub-region, which the harness starts only for a candidate.
+    for interleaving in INTERLEAVINGS {
+        INTERLEAVED.with(|cell| cell.set(Some((interleaving, false))));
+        trace_1_a_backlog_at_the_cut_lands_in_the_old_lineage();
+        trace_2_a_late_batch_without_a_cut_lands_in_its_open_bucket();
+        trace_3_a_changed_width_cuts_at_the_common_boundary();
+        trace_4_a_changed_destination_retains_and_flushes_through_the_new_plan();
+        trace_5_a_small_backward_jump_is_absorbed_by_the_admission_clock();
+        trace_6_a_large_backward_jump_resets_and_closes_every_open_bucket();
+        trace_7_a_rollback_is_a_new_installation_with_its_own_cut();
+        trace_8_a_late_timestamped_point_belongs_to_the_new_generation();
+        trace_9_a_future_timestamped_point_is_flushed_at_the_old_lineages_retirement();
+        trace_10_a_cut_is_cancelled_only_before_its_first_new_stamp();
+        trace_11_a_reset_after_publication_switches_the_point_to_the_new_generation();
+        trace_12_an_added_state_owner_starts_its_lineage_at_the_cut();
+        trace_13_a_retain_after_the_cut_flushes_the_old_lineage_under_the_generation_it_served();
+        trace_14_a_revocation_cancels_an_armed_cut_and_the_default_program_retains_its_lineage();
+        trace_15_re_compositions_during_a_cut_wait_and_the_last_commits_as_retain();
+        trace_16_on_a_frame_a_state_owner_over_two_sources_flushes_at_the_earliest_of_their_watermarks();
+        INTERLEAVED.with(|cell| cell.set(None));
+    }
+}
+
+/// Returns `true` if a pass is pending in a region of the harness that holds a state owner: its host would run its
+/// next step whenever no batch waits.
+fn pass_pending(harness: &FrameHarness) -> bool {
+    harness.drivers().iter().any(|driver| driver.has_background_work())
+}
+
+/// Returns the contexts the state slots' interleaved flushes visited on touch, as their regions last published.
+fn touched(harness: &mut FrameHarness) -> u64 {
+    harness.publish();
+    let names = harness
+        .state_slots()
+        .map(|slot| slot.name.to_string())
+        .collect::<Vec<_>>();
+    names
+        .iter()
+        .map(|name| {
+            harness.telemetry().lane_value(
+                name,
+                crate::runtime::telemetry::PLAN_LANE_FLUSH_TOUCHED_CONTEXTS_TOTAL,
+                0,
+            )
+        })
+        .sum()
+}
+
+#[test]
+fn trace_i16_a_pass_is_pending_at_a_crossing_and_at_a_reset_and_a_boundary_flush_interleaves() {
+    // V7b's trace 16, through regions whose flushes are passes of one context per step, over aggregation's own kernel.
+    //
+    // The cut from 10 s to 30 s is at 7,320. The old lineage's tick at 7,311 starts a pass of four counters that is
+    // still pending when the batch at 7,321 crosses the cut: the batch waits, the pass completes, the final retirement
+    // runs at 7,320, and the batch enters the new lineage. Its tick at 7,351 starts a pass of `a` that is still pending
+    // when the batch at 3,751 resets the clock: the batch waits, the pass completes, and the reset drain runs before
+    // it. A batch admitted between, at 7,305, enters while the tick at 7,301 is pending, and flushes on touch the
+    // counters it reaches that the pass's first step left. (Four contexts leave room in aggregation's table for the
+    // batch's three, which the room check counts as new.)
+    let four = || ["a", "b", "c", "d"].map(|name| counter(name, 1.0)).to_vec();
+    let trace = Trace::new()
+        .install(aggregated("10s", "a"))
+        .admit(src(), t(7_295), four())
+        .install(aggregated("30s", "a"))
+        .advance(t(7_301))
+        .admit(src(), t(7_305), ["a", "b", "c"].map(|name| counter(name, 1.0)).to_vec())
+        .advance(t(7_311))
+        .admit(src(), t(7_321), vec![counter("a", 1.0)])
+        .advance(t(7_351))
+        .admit(src(), t(3_751), vec![counter("a", 2.0)])
+        .advance(t(3_761))
+        .advance(t(3_791))
+        .close();
+    let crossing = 6;
+    let reset = 8;
+    let options = interleaved_steps(Interleaving::TOUCH_ONLY);
+    let mut pending = Vec::new();
+    let (run, mut replay) = Replay::run_observed(&trace, true, t(7_290), options, &mut |position, harness| {
+        if pass_pending(harness) {
+            pending.push(position);
+        }
+    });
+    assert!(
+        pending.contains(&crossing),
+        "a pass is pending at the crossing: {:?}",
+        pending
+    );
+    assert!(
+        pending.contains(&reset),
+        "a pass is pending at the reset: {:?}",
+        pending
+    );
+    let (_, blocking) = Replay::run_with(&trace, true, t(7_290), HarnessOptions::default());
+    let records = interpreted(&run, "a");
+    for record in [
+        (1, 7_320_000, "a rate/10s [7310:0]"),
+        (2, 7_351_000, "a rate/30s [7320:1]"),
+        (2, 3_791_000, "a rate/30s [3750:2]"),
+    ] {
+        assert!(
+            records.contains(&(record.0, record.1, record.2.to_string())),
+            "the interpreter delivers {:?}: {:?}",
+            record,
+            records
+        );
+    }
+    assert_eq!(
+        framed(&blocking.harness, "a"),
+        records,
+        "the frame's `a`, every drain blocking"
+    );
+    assert_eq!(
+        framed(&replay.harness, "a"),
+        records,
+        "the frame's `a`, flushes interleaved"
+    );
+    assert!(touched(&mut replay.harness) > 0, "a batch flushed a context on touch");
+
+    // The downstream cut of a chain, at 7,320: `first` keeps its lineage and makes a boundary flush at 7,320 when the
+    // batch at 7,325 reaches it, a pass of four gauges that the batch enters once it started, flushing on touch those
+    // of the three it reaches that the first step left. All reach `second`'s old lineage before it crosses at the
+    // progress `first` sends once the pass completes. (`first`'s ticks before hold one context, so that each of their
+    // passes emits its whole output in its first step: a downstream state owner in another region ticks on the stamp
+    // of a pass's first output, and would close its buckets before the rest arrived.)
+    let trace = Trace::new()
+        .install(chain("10s", "30s"))
+        .admit(src(), t(7_285), vec![gauge("g", 1.0)])
+        .advance(t(7_291))
+        .admit(src(), t(7_295), vec![gauge("g", 2.0)])
+        .heartbeat(src(), ms(7_298_500))
+        .install(chain("10s", "1m"))
+        .advance(t(7_301))
+        .admit(src(), t(7_305), vec![gauge("g", 4.0)])
+        .advance(t(7_311))
+        .admit(
+            src(),
+            t(7_315),
+            ["g", "h", "i", "j"].map(|name| gauge(name, 8.0)).to_vec(),
+        )
+        .admit(src(), t(7_325), ["g", "h", "i"].map(|name| gauge(name, 16.0)).to_vec())
+        .advance(t(7_331))
+        .advance(t(7_381))
+        .close();
+    let (run, mut replay) = Replay::run_observed(&trace, true, t(7_291), options, &mut |_, _| {});
+    let (_, blocking) = Replay::run_with(&trace, true, t(7_291), HarnessOptions::default());
+    let records = interpreted(&run, "a");
+    assert_eq!(
+        framed(&blocking.harness, "a"),
+        records,
+        "the frame's `a`, every drain blocking"
+    );
+    assert_eq!(
+        framed(&replay.harness, "a"),
+        records,
+        "the frame's `a`, flushes interleaved"
+    );
+    assert!(
+        records
+            .iter()
+            .any(|(generation, at, _)| *generation == 1 && *at == 7_320_000),
+        "the boundary flush reaches `second`'s old lineage: {:?}",
+        records
+    );
+    assert!(
+        touched(&mut replay.harness) > 0,
+        "the boundary flush's pass flushed a context on touch"
+    );
 }
 
 /// Returns a counter of a context named `prefix` and a number, the first whose key the key groups of `lanes` state
@@ -2337,10 +2614,10 @@ fn aggregated_after(again: bool) -> Plan {
 }
 
 #[test]
-fn trace_17_on_a_frame_a_second_aggregation_after_the_first_runs_in_a_sub_region_and_follows_both() {
-    // `again`, added at a cut at 60, runs in a sub-region of the slot it receives from, over `otlp`'s point and
-    // `dsd_agg`'s derived point, which its region admits before the ticks it releases. What every output receives is
-    // what the interpreter delivers.
+fn trace_17_on_a_frame_a_second_aggregation_after_the_first_runs_in_its_slots_main_region_and_follows_both() {
+    // `again`, added at a cut at 60, runs in the main region of the slot it receives from, which holds no other state
+    // owner, over `otlp`'s point and `dsd_agg`'s derived point, which its region admits before the ticks it releases.
+    // What every output receives is what the interpreter delivers.
     let trace = Trace::new()
         .install(aggregated_after(false))
         .admit(id("dsd"), t(5), vec![gauge("g", 1.0)])
@@ -2367,12 +2644,13 @@ fn trace_17_on_a_frame_a_second_aggregation_after_the_first_runs_in_a_sub_region
         .placement()
         .region_of(&again)
         .expect("`again` runs in a slot");
-    assert_eq!(region, crate::compile::RegionKey::State(again.clone()));
+    assert_eq!(region, crate::compile::RegionKey::Main);
     let name = replay.harness.frame().slot(slot).expect("its slot").name.to_string();
     assert!(
-        replay.harness.sub_region(&name, "again").is_some(),
-        "its sub-region runs"
+        replay.harness.sub_region(&name, "again").is_none(),
+        "no sub-region runs"
     );
+    assert_eq!(replay.harness.driver(&name).state_owner(), Some(&again));
     assert_eq!(framed(&replay.harness, "a"), interpreted(&run, "a"));
     assert_eq!(framed(&replay.harness, "b"), interpreted(&run, "b"));
     assert!(

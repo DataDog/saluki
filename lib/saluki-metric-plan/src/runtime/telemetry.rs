@@ -76,10 +76,15 @@ pub const PLAN_LANE_CONTEXTS: &str = "plan_lane_contexts";
 /// from a tick firing to its drain's last step, one sample per drain of the ticks due together.
 pub const PLAN_LANE_FLUSH_SECONDS: &str = "plan_lane_flush_seconds";
 
-/// The name of the histogram of how much of each of a state lane's flushes was spent blocked on its output, in
-/// seconds, tagged `component_id` and `lane`: the flush's time outside the calls that ran its steps, while its host
-/// sent what they emitted and waited for room downstream.
+/// The name of the histogram of how long each of a state lane's flushes held admission, in seconds, tagged
+/// `component_id` and `lane`: the time the region took no input because of it. A flush that does not interleave with
+/// admission (on lanes, or with interleaving off) holds it from its tick to its last step; an interleaved one only
+/// while it runs ahead of admission, once behind its pace or while a batch waits for it to complete.
 pub const PLAN_LANE_FLUSH_BLOCKED_SECONDS: &str = "plan_lane_flush_blocked_seconds";
+
+/// The name of the counter of contexts a state lane's interleaved flushes visited because admission reached them
+/// first, flushing them on touch, tagged `component_id` and `lane`.
+pub const PLAN_LANE_FLUSH_TOUCHED_CONTEXTS_TOTAL: &str = "plan_lane_flush_touched_contexts_total";
 
 /// The handles an isolation slot publishes its own telemetry to: its watermark lag, its lineages, its clock resets, and
 /// its flush ticks whose grace ended.
@@ -148,6 +153,9 @@ pub struct StateLaneTelemetry {
 
     /// [`PLAN_LANE_FLUSH_BLOCKED_SECONDS`].
     pub flush_blocked_seconds: Histogram,
+
+    /// [`PLAN_LANE_FLUSH_TOUCHED_CONTEXTS_TOTAL`].
+    pub flush_touched_contexts: Counter,
 }
 
 impl StateLaneTelemetry {
@@ -165,6 +173,7 @@ impl StateLaneTelemetry {
             contexts: Gauge::noop(),
             flush_seconds: Histogram::noop(),
             flush_blocked_seconds: Histogram::noop(),
+            flush_touched_contexts: Counter::noop(),
         }
     }
 }
@@ -256,6 +265,9 @@ impl PlanTelemetry {
             flush_blocked_seconds: self
                 .builder
                 .register_histogram_with_tags(PLAN_LANE_FLUSH_BLOCKED_SECONDS, tags()),
+            flush_touched_contexts: self
+                .builder
+                .register_counter_with_tags(PLAN_LANE_FLUSH_TOUCHED_CONTEXTS_TOTAL, tags()),
         }
     }
 }

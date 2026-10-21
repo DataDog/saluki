@@ -85,6 +85,9 @@ pub(super) struct EntryCode {
     pub key: EntryKey,
     pub registers: usize,
     pub ops: Vec<Op>,
+    /// How many times one event of the entry's batch can reach a state step: the paths from the entry's first register
+    /// to its state steps ([`state_paths`]). A batch of `n` events creates at most `n` times this many new contexts.
+    pub state_paths: usize,
 }
 
 /// One decision of a program, compiled to its function.
@@ -396,6 +399,7 @@ impl ProgramCode {
             entries.push(EntryCode {
                 key: entry.key,
                 registers: entry.registers,
+                state_paths: state_paths(&ops, entry.registers),
                 ops,
             });
         }
@@ -468,5 +472,106 @@ impl ProgramCode {
             (None, None) => return None,
         };
         self.entries.iter().position(|entry| entry.key == key)
+    }
+}
+
+/// Returns how many times one event of an entry's batch can reach its state steps, the paths from the entry's first
+/// register to them: an upper bound on the new contexts one event can create, which bounds what a batch admitted while
+/// a flush is pending can ask of the state owner.
+///
+/// Stateless kernels emit at most one event per event they receive, so a map keeps its register's count and each port
+/// of an expansion gets at most its input's; a decision sends an event to every exit of its set, so each register it
+/// leads to gets its input's count; a merge adds its inputs' counts. A register handed on is empty afterwards.
+fn state_paths(ops: &[Op], registers: usize) -> usize {
+    let mut copies = vec![0usize; registers.max(1)];
+    copies[0] = 1;
+    let take = |copies: &mut Vec<usize>, register: usize| std::mem::take(&mut copies[register]);
+    let mut reached = 0usize;
+    for op in ops {
+        match op {
+            Op::Map { .. } => {}
+            Op::Expand {
+                input, ports: targets, ..
+            }
+            | Op::Decide { input, targets, .. } => {
+                let count = take(&mut copies, *input);
+                for target in targets {
+                    if let Target::Register(register) = target {
+                        copies[*register] = copies[*register].saturating_add(count);
+                    }
+                }
+            }
+            Op::Concat { inputs, output } => {
+                let count = inputs
+                    .iter()
+                    .filter(|input| *input != output)
+                    .fold(0usize, |count, input| count.saturating_add(take(&mut copies, *input)));
+                copies[*output] = copies[*output].saturating_add(count);
+            }
+            Op::Exit { register, .. } | Op::Drop { register, .. } => {
+                take(&mut copies, *register);
+            }
+            Op::State { register, .. } => reached = reached.saturating_add(take(&mut copies, *register)),
+        }
+    }
+    reached
+}
+
+#[cfg(test)]
+mod tests {
+    use saluki_core::execution::ExitId;
+
+    use super::*;
+    use crate::compile::ExitSet;
+
+    #[test]
+    fn an_entry_counts_the_paths_from_its_batch_to_its_state_steps() {
+        let decide = |input: usize, targets: Vec<Target>| Op::Decide {
+            decision: 0,
+            input,
+            targets,
+            registers: ExitSet::EMPTY,
+            drops: ExitSet::EMPTY,
+        };
+        let state = |register: usize| Op::State {
+            kernel: 0,
+            register,
+            params: 0,
+        };
+        // A filter, then aggregation: one path.
+        let filtered = [
+            Op::Map { kernel: 1, register: 0 },
+            decide(0, vec![Target::Register(0), Target::Drop(0)]),
+            state(0),
+        ];
+        assert_eq!(state_paths(&filtered, 1), 1);
+        // A split whose two exits merge again before aggregation: an event can take both, so two paths.
+        let rejoined = [
+            decide(0, vec![Target::Register(1), Target::Register(2)]),
+            Op::Concat {
+                inputs: vec![1, 2],
+                output: 1,
+            },
+            state(1),
+        ];
+        assert_eq!(state_paths(&rejoined, 3), 2);
+        // One exit to aggregation and the other to an exit: one path.
+        let forked = [
+            decide(0, vec![Target::Register(1), Target::Register(2)]),
+            Op::Exit {
+                register: 2,
+                exit: ExitId::new(0),
+                entry: None,
+            },
+            state(1),
+        ];
+        assert_eq!(state_paths(&forked, 3), 1);
+        // No state step: no path.
+        let passed = [Op::Exit {
+            register: 0,
+            exit: ExitId::new(0),
+            entry: None,
+        }];
+        assert_eq!(state_paths(&passed, 1), 0);
     }
 }

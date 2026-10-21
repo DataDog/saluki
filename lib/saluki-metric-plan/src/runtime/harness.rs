@@ -39,16 +39,18 @@ use saluki_core::{
     data_model::event::{metric::Metric, Event},
     execution::{
         AdmissionClock, AdmissionMode, AdmissionPointId, AdmissionSchedule, AdmissionTime, BatchHeader, Budget,
-        CutBoundary, DrainPolicy, EntryId, ExitSink, GenerationId, GenerationRef, GenerationToken, LaneContext,
+        CutBoundary, DrainPolicy, EntryId, ExitSink, GenerationId, GenerationRef, GenerationToken, Kernel, LaneContext,
         LaneSplit, LossClass, PanicOutcome, PanicSite, Progress, RegionDriver, RegionPanic, RegionTurn, ScheduleHandle,
-        WallClock,
+        Turn, WallClock, WorkKind,
     },
     topology::EventsBuffer,
 };
+use saluki_metric_kernels::aggregate::{lanes::ContextCount, PassProgress, RoomToAdmit};
 use saluki_metrics::{Counter, Gauge, Histogram};
 
 use super::{
     build_kernels,
+    driver::StateKernelWrap,
     kernels::panic_message,
     state::{lanes::SlotLanes, BudgetRecordings},
     telemetry::StateTelemetry,
@@ -162,7 +164,7 @@ impl RecordingTelemetry {
     pub fn state_lane(&self, region: &str, lane: u16) -> StateLaneTelemetry {
         use super::telemetry::{
             PLAN_LANE_CONTEXTS, PLAN_LANE_CROSSINGS_TOTAL, PLAN_LANE_CROSSING_OVERLAP_CONTEXTS,
-            PLAN_LANE_MISROUTED_TOTAL, PLAN_LANE_WATERMARK_LAG_SECONDS,
+            PLAN_LANE_FLUSH_TOUCHED_CONTEXTS_TOTAL, PLAN_LANE_MISROUTED_TOTAL, PLAN_LANE_WATERMARK_LAG_SECONDS,
         };
         let counter = |name: &str| self.counter(region.to_string(), lane_tag(name, lane));
         let gauge = |name: &str| self.gauge(region.to_string(), lane_tag(name, lane));
@@ -178,6 +180,7 @@ impl RecordingTelemetry {
             contexts: gauge(PLAN_LANE_CONTEXTS),
             flush_seconds: Histogram::noop(),
             flush_blocked_seconds: Histogram::noop(),
+            flush_touched_contexts: counter(PLAN_LANE_FLUSH_TOUCHED_CONTEXTS_TOTAL),
         }
     }
 }
@@ -417,6 +420,13 @@ pub struct HarnessOptions {
     /// round, as tasks that run together do.
     pub deadlines_lane_by_lane: bool,
 
+    /// Whether the regions interleave their flushes with admission, and how: `None` blocks admission for every drain.
+    pub interleaving: Option<Interleaving>,
+
+    /// Whether the frame runs every state owner in a slot of its own ([`FrameOptions::isolate_state`]), as by
+    /// default; without it, state owners fuse with their neighbors. A [`LanedFrameHarness`] always isolates them.
+    pub isolate_state: bool,
+
     /// Whether programs are compiled with the decision-time rewrites (R2, R3's folding of bound constants, R4), as
     /// production compiles them.
     #[cfg(test)]
@@ -440,11 +450,168 @@ impl Default for HarnessOptions {
             record_budgets: false,
             monotonic_across_jumps: None,
             deadlines_lane_by_lane: false,
+            interleaving: None,
+            isolate_state: true,
             #[cfg(test)]
             decision_rewrites: true,
             #[cfg(test)]
             pushed_filters: true,
         }
+    }
+}
+
+/// How a [`FrameHarness`]'s regions interleave their flushes with admission ([`RegionConfig::with_interleaving`]).
+///
+/// The harness's turn budget bounds each step of a pass; a small one makes every flush span the batches that arrive
+/// after its tick.
+#[derive(Clone, Copy, Debug)]
+pub struct Interleaving {
+    /// With `Some(room)`, every state owner's kernel runs inside a stand-in ([`AdmittingStandIn`]) that completes a
+    /// pending pass when a batch reaches it, and says that at most `room` new contexts fit while a pass is pending
+    /// ([`RoomToAdmit`]), so that a batch that could create more waits for the pass. With `None`, the kernels run as
+    /// they are, aggregation's flushing on touch only the contexts a batch reaches.
+    pub room: Option<usize>,
+
+    /// Seeds how many steps of a pending pass the harness runs after each buffer a region processes, from none to two,
+    /// as a host runs them whenever no batch waits; `None` runs none, so that a pass progresses only at its deadlines
+    /// and through the batches that touch its contexts.
+    pub background: Option<u64>,
+}
+
+impl Interleaving {
+    /// Interleaving of the kernels as they are, where the harness runs no step of a pass between batches.
+    pub const TOUCH_ONLY: Self = Self {
+        room: None,
+        background: None,
+    };
+
+    /// Returns the wrap that stands every state owner's kernel in an [`AdmittingStandIn`], if the kernels run in one.
+    pub(crate) fn stand_in(self) -> Option<StateKernelWrap> {
+        let room = self.room?;
+        Some(Arc::new(move |inner| {
+            Box::new(AdmittingStandIn {
+                inner,
+                room,
+                pass: None,
+            })
+        }))
+    }
+
+    /// Returns `config` interleaving as this says.
+    fn configure(self, config: RegionConfig) -> RegionConfig {
+        let config = config.with_interleaving(true);
+        match self.stand_in() {
+            Some(wrap) => config.with_state_kernel_wrap(wrap),
+            None => config,
+        }
+    }
+}
+
+/// A stand-in for a state owner's kernel that admits while its `advance_time` is yielded: it wraps the kernel, and
+/// completes a yielded pass before it admits a batch, writing the rest of the pass's output then, as output of the
+/// yielded call, and returning [`Progress::Done`] at once when the region next calls `advance_time` to resume it. That
+/// is what the kernel contract asks of a kernel that admits while advancing, with every context of the pass flushed on
+/// the batch's touch, and what aggregation's own kernel does in its fallback.
+///
+/// It answers [`RoomToAdmit`] with whether the contexts asked about are at most `room`, and [`PassProgress`] with the
+/// contexts the wrapped kernel's pass charged to the budget as state work, one per context it visits, of those it held
+/// when the pass started ([`ContextCount`]).
+pub struct AdmittingStandIn {
+    inner: Box<dyn Kernel>,
+    room: usize,
+    pass: Option<StandInPass>,
+}
+
+/// What an [`AdmittingStandIn`] knows of its pending pass.
+#[derive(Clone, Copy, Debug)]
+struct StandInPass {
+    visited: usize,
+    total: usize,
+    /// Whether a batch completed it: the next `advance_time` only says so.
+    completed: bool,
+}
+
+impl AdmittingStandIn {
+    /// Runs the wrapped kernel's `advance_time`, counting the contexts its pass visits.
+    fn advance_inner(&mut self, turn: &mut Turn<'_>) -> Progress {
+        let before = turn.budget_mut().remaining(WorkKind::StateWork);
+        let progress = self.inner.advance_time(turn);
+        let visited = before.saturating_sub(turn.budget_mut().remaining(WorkKind::StateWork));
+        if let Some(pass) = self.pass.as_mut() {
+            pass.visited = pass
+                .visited
+                .saturating_add(usize::try_from(visited).unwrap_or(usize::MAX))
+                .min(pass.total);
+        }
+        progress
+    }
+}
+
+impl Kernel for AdmittingStandIn {
+    fn consume(&mut self, turn: &mut Turn<'_>, input: &mut EventsBuffer) -> Progress {
+        if self.pass.is_some_and(|pass| !pass.completed) {
+            while self.advance_inner(turn) == Progress::Yielded {}
+            if let Some(pass) = self.pass.as_mut() {
+                pass.completed = true;
+                pass.visited = pass.total;
+            }
+        }
+        self.inner.consume(turn, input)
+    }
+
+    fn advance_time(&mut self, turn: &mut Turn<'_>) -> Progress {
+        match self.pass {
+            Some(pass) if pass.completed => {
+                self.pass = None;
+                return Progress::Done;
+            }
+            Some(_) => {}
+            None => {
+                let mut count = ContextCount::default();
+                self.inner.control(turn, &mut count);
+                self.pass = Some(StandInPass {
+                    visited: 0,
+                    total: count.contexts.unwrap_or(0),
+                    completed: false,
+                });
+            }
+        }
+        let progress = self.advance_inner(turn);
+        if progress != Progress::Yielded {
+            self.pass = None;
+        }
+        progress
+    }
+
+    fn control(&mut self, turn: &mut Turn<'_>, control: &mut dyn std::any::Any) -> Progress {
+        if let Some(room) = control.downcast_mut::<RoomToAdmit>() {
+            room.fits = room.contexts <= self.room;
+            return Progress::Done;
+        }
+        if let Some(progress) = control.downcast_mut::<PassProgress>() {
+            *progress = self.pass.map_or_else(PassProgress::default, |pass| PassProgress {
+                visited: pass.visited,
+                total: pass.total,
+            });
+            return Progress::Done;
+        }
+        self.inner.control(turn, control)
+    }
+
+    fn finish(&mut self, turn: &mut Turn<'_>, policy: DrainPolicy) -> Progress {
+        self.inner.finish(turn, policy)
+    }
+
+    fn held(&self) -> saluki_core::execution::LossCount {
+        self.inner.held()
+    }
+
+    fn publish_telemetry(&mut self) {
+        self.inner.publish_telemetry();
+    }
+
+    fn admits_while_advancing(&self) -> bool {
+        true
     }
 }
 
@@ -546,6 +713,8 @@ pub struct FrameHarness {
     recorder: Option<LaneRecorder>,
     /// What every state lane reported of its time, by driver index, in the order the harness took it.
     time_events: Vec<(usize, LaneTimeEvent)>,
+    /// The state of the generator that draws how many steps of a pending pass run after a buffer.
+    background: u64,
 }
 
 /// The leases the harness gives outputs, standing in for the installer and the encode hosts: one per output, the first
@@ -637,7 +806,11 @@ impl FrameHarness {
         plan: &Plan, report: &ValidationReport, registry: OperatorRegistry, options: HarnessOptions,
         start: AdmissionTime, hosts: &FrameHosts,
     ) -> Self {
-        let frame = Frame::compute_with_hosts(plan, &registry, &namer, hosts).expect("the boot plan has a frame");
+        let layout = FrameOptions {
+            isolate_state: options.isolate_state,
+        };
+        let frame = Frame::compute_with(plan, &registry, &namer, hosts, &LanePolicy::ONE, layout)
+            .expect("the boot plan has a frame");
         Self::on_frame(frame, plan, report, registry, options, start).unwrap_or_else(|error| panic!("{}", error))
     }
 
@@ -703,6 +876,9 @@ impl FrameHarness {
                     .with_failure_reporter(Arc::clone(&reporter));
                 // Every lane records what it counts, a slot's only lane too: its reset window overflows alike.
                 config = config.with_state_lane_telemetry(telemetry.state_lane(slot.name.as_str(), lane));
+                if let Some(interleaving) = options.interleaving {
+                    config = interleaving.configure(config);
+                }
                 if slot.lanes > 1 {
                     config = config.with_lane(
                         LaneContext {
@@ -809,6 +985,10 @@ impl FrameHarness {
             delivery: Delivery::new(DeliverySchedule::TraceOrder),
             recorder: None,
             time_events: Vec::new(),
+            background: options
+                .interleaving
+                .and_then(|interleaving| interleaving.background)
+                .map_or(0, |seed| seed | 1),
         })
     }
 
@@ -1275,12 +1455,16 @@ impl FrameHarness {
     /// Creates the driver of a sub-region of `slot`, started, from the preparation that starts it, as a region host
     /// does with its factory.
     fn start_sub_region(&mut self, slot: &Slot, key: u16, start: &RegionControl) -> Result<(), String> {
-        let config = RegionConfig::for_slot(slot, &self.telemetry)
+        let mut config = RegionConfig::for_slot(slot, &self.telemetry)
             .with_memo_entries(self.options.memo_entries)
             .with_schedule(Arc::clone(&self.schedule))
             .with_wall_clock(Arc::new(self.wall.clone()))
             .with_state_budgets(self.budgets.clone())
             .with_failure_reporter(Arc::clone(&self.reporter));
+        // A sub-region interleaves as its slot's main region does.
+        if let Some(interleaving) = self.options.interleaving {
+            config = interleaving.configure(config);
+        }
         let mut driver = MetricRegionDriver::for_sub_region(config, start)
             .map_err(|error| format!("the sub-region {} of `{}` is not created: {}", key, slot.name, error))?;
         let mut budget = self.options.turn_budget;
@@ -1614,7 +1798,12 @@ impl FrameHarness {
     /// round, so that when time jumps over several ticks no lane resolves all of them before another resolved the
     /// first, which would make the others stragglers behind the ticks their lineage's records keep. With
     /// [`HarnessOptions::deadlines_lane_by_lane`], each lane runs all of its passed deadlines before the next.
+    ///
+    /// A pass pending runs to its end first: between two advances the regions' input is idle, and a host whose input
+    /// is idle runs a pass's steps one after another, so that it completes before the instance's next tick is due, as
+    /// a pass spread over a third of its flush interval does.
     fn run_deadlines(&mut self, slot: SlotId, arrival: AdmissionTime) {
+        self.finish_passes(slot, arrival);
         self.run_lane_deadlines(slot, arrival);
         // A sub-region ticks on its own driver's deadlines, after the lanes that feed it.
         let lanes = self.lanes_of(slot);
@@ -2073,6 +2262,57 @@ impl FrameHarness {
         if let Some(recorder) = &mut self.recorder {
             recorder.processed(observed);
         }
+        self.background_steps(slot, lane, arrival);
+    }
+
+    /// Runs from none to two steps of a pass pending in lane `lane` of `slot`, as many as the seeded generator draws,
+    /// when [`Interleaving::background`] seeds one.
+    fn background_steps(&mut self, slot: SlotId, lane: u16, arrival: AdmissionTime) {
+        if self.background == 0 {
+            return;
+        }
+        let mut drawn = self.background;
+        drawn ^= drawn << 13;
+        drawn ^= drawn >> 7;
+        drawn ^= drawn << 17;
+        self.background = drawn;
+        for _ in 0..drawn % 3 {
+            let pending = self
+                .region_mut(slot, lane)
+                .is_some_and(|driver| driver.has_background_work());
+            if !pending || self.failed.contains_key(&slot) {
+                return;
+            }
+            self.call(slot, lane, Call::Advance, arrival);
+        }
+    }
+
+    /// Runs every pending pass of every region to its end, a step at a time, as hosts whose input is idle do.
+    pub fn run_background(&mut self) {
+        let arrival = self.wall.now();
+        for slot in self.order.clone() {
+            self.finish_passes(slot, arrival);
+        }
+        self.pump();
+    }
+
+    /// Runs every pending pass of every region of `slot` to its end, a step at a time, as hosts whose input is idle do.
+    fn finish_passes(&mut self, slot: SlotId, arrival: AdmissionTime) {
+        let lanes = self.lanes_of(slot);
+        let regions = (0..lanes)
+            .chain(self.sub_lanes(slot).into_iter().map(|key| lanes + key))
+            .collect::<Vec<_>>();
+        for lane in regions {
+            for _ in 0..MAX_DEADLINES {
+                let pending = self
+                    .region_mut(slot, lane)
+                    .is_some_and(|driver| driver.has_background_work());
+                if !pending || self.failed.contains_key(&slot) {
+                    break;
+                }
+                self.call(slot, lane, Call::Advance, arrival);
+            }
+        }
     }
 
     /// Delivers what the schedule lets through of what is in flight between lanes: in trace order nothing waits; a
@@ -2168,13 +2408,16 @@ impl FrameHarness {
         &self.drivers[self.driver_index(slot, lane)]
     }
 
-    /// Returns the boot slots of the boot plan's state owners, in slot order: the slots whose main region holds a state
-    /// owner from boot.
+    /// Returns the slots whose main region holds a state owner in the active generation's programs, in slot order: an
+    /// isolation slot, or, in a frame that does not isolate state owners, a fused slot that runs one.
     pub fn state_slots(&self) -> impl Iterator<Item = &Slot> {
-        self.frame
-            .slots()
-            .iter()
-            .filter(|slot| is_state_slot(&self.frame, slot))
+        self.frame.slots().iter().filter(|slot| {
+            is_state_slot(&self.frame, slot)
+                || self
+                    .programs
+                    .get(slot.id.get())
+                    .is_some_and(|program| program.kernels().iter().any(|kernel| kernel.lineage.is_some()))
+        })
     }
 
     /// Returns the slot named `name`.
@@ -2284,7 +2527,9 @@ fn state_points<'a>(placements: impl IntoIterator<Item = &'a Placement>) -> BTre
         .collect()
 }
 
-/// Returns `true` if `slot` is the boot slot of a state owner of the boot plan.
+/// Returns `true` if `slot` is the isolation slot of a state owner of the boot plan, which the frame gives an output
+/// point; a fused slot that runs a state owner, in a frame that does not isolate them, is not one (see
+/// [`FrameHarness::state_slots`]).
 pub(crate) fn is_state_slot(frame: &Frame, slot: &Slot) -> bool {
     slot.nodes
         .first()
