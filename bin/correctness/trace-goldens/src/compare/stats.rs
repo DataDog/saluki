@@ -631,14 +631,59 @@ mod tests {
         p
     }
 
-    /// Builds the `default` case's stats as a real proto, with golden sketch bytes and a real bucket start.
+    fn b64(s: &str) -> Vec<u8> {
+        crate::compare::protojson::decode_base64(s).unwrap()
+    }
+
+    /// Hand-builds the `default` case's stats as a real proto, independently of the golden parser, with a real bucket
+    /// start, a non-zero sequence, and a real agent version.
     fn default_actual() -> StatsPayload {
-        let golden: Vec<GoldenStatsPayload> =
-            serde_json::from_str(&std::fs::read_to_string(golden_stats_path("default")).unwrap()).unwrap();
-        let mut p = golden.into_iter().next().unwrap().into_proto().unwrap();
+        const EMPTY_SKETCH: &str = "CgkJ/UqBWr9S8D8SABoA";
+        let mut root = ClientGroupedStats::new();
+        root.service = "web".into();
+        root.name = "web.request".into();
+        root.resource = "GET /home".into();
+        root.type_ = "web".into();
+        root.HTTP_status_code = 200;
+        root.hits = 1;
+        root.topLevelHits = 1;
+        root.duration = 100_000_000;
+        root.okSummary = b64("CgkJ/UqBWr9S8D8SDRIIAAAAAAAA8D8YsA4aAA==");
+        root.errorSummary = b64(EMPTY_SKETCH);
+        root.span_kind = "unknown".into();
+        root.is_trace_root = EnumOrUnknown::new(Trilean::TRUE);
+
+        let mut child = ClientGroupedStats::new();
+        child.service = "web-db".into();
+        child.name = "sql.query".into();
+        child.resource = "SELECT * FROM users".into();
+        child.type_ = "sql".into();
+        child.hits = 1;
+        child.topLevelHits = 1;
+        child.duration = 50_000_000;
+        child.okSummary = b64("CgkJ/UqBWr9S8D8SDRIIAAAAAAAA8D8Y7A0aAA==");
+        child.errorSummary = b64(EMPTY_SKETCH);
+        child.span_kind = "unknown".into();
+        child.is_trace_root = EnumOrUnknown::new(Trilean::FALSE);
+
+        let mut bucket = ClientStatsBucket::new();
+        bucket.start = 1_700_000_000_000_000_000;
+        bucket.duration = 10_000_000_000;
+        bucket.stats = vec![root, child];
+
+        let mut c = ClientStatsPayload::new();
+        c.hostname = "agent-host".into();
+        c.env = "prod".into();
+        c.version = "1.2.3".into();
+        c.lang = "python".into();
+        c.sequence = 42;
+        c.stats.push(bucket);
+
+        let mut p = StatsPayload::new();
+        p.agentHostname = "agent-host".into();
+        p.agentEnv = "none".into();
         p.agentVersion = "7.99.0".into();
-        p.stats[0].stats[0].start = 1_700_000_000_000_000_000;
-        p.stats[0].sequence = 42;
+        p.stats.push(c);
         p
     }
 

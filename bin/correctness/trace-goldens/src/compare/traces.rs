@@ -689,6 +689,21 @@ fn diff_chunk(out: &mut Mismatches, path: &str, e: &Chunk, a: &Chunk) {
     );
     out.check(format!("{}.trace_id", path), &e.trace_id, &a.trace_id);
 
+    // Span IDs must occur the same number of times on both sides; otherwise a duplicated span would be hidden by the
+    // first-match lookup below.
+    let mut counts: BTreeMap<u64, (usize, usize)> = BTreeMap::new();
+    for s in &e.spans {
+        counts.entry(s.span_id).or_default().0 += 1;
+    }
+    for s in &a.spans {
+        counts.entry(s.span_id).or_default().1 += 1;
+    }
+    for (id, (ec, ac)) in counts {
+        if ec > 0 && ac > 0 && ec != ac {
+            out.push(format!("{}.span[{}].count", path, id), ec.to_string(), ac.to_string());
+        }
+    }
+
     for es in &e.spans {
         let sp = format!("{}.span[{}]", path, es.span_id);
         let Some(s) = a.spans.iter().find(|s| s.span_id == es.span_id) else {
@@ -954,6 +969,15 @@ pub(crate) mod tests {
         let mut p = default_agent_payload();
         p.idxTracerPayloads[0].chunks[0].spans.retain(|s| s.spanID != 2);
         expect_mismatch(compare_default(p), "span[2]: expected span present, got span missing");
+    }
+
+    #[test]
+    fn duplicate_span_is_reported() {
+        let mut p = default_agent_payload();
+        let spans = &mut p.idxTracerPayloads[0].chunks[0].spans;
+        let dup = spans[0].clone();
+        spans.push(dup);
+        expect_mismatch(compare_default(p), ".count: expected 1, got 2");
     }
 
     #[test]
