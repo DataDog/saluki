@@ -1097,6 +1097,9 @@ The following settings work in ADP with the same behavior as the core agent.
 | `proxy.http`                                                                               | HTTP proxy URL                                     |
 | `proxy.https`                                                                              | HTTPS proxy URL                                    |
 | `proxy.no_proxy`                                                                           | Hosts bypassing proxy                              |
+| `remote_configuration.apm_sampling.enabled`                                                | Apply APM_SAMPLING remote configurations           |
+| `remote_configuration.apm_semantics.enabled`                                               | Apply APM_SEMANTIC_CORE_DD remote configurations   |
+| `remote_configuration.enabled`                                                             | Enable Remote Configuration                        |
 | `run_path`                                                                                 | Runtime state directory                            |
 | `serializer_compressor_kind`                                                               | Payload compression algorithm                      |
 | `serializer_experimental_use_v3_api.compression_level`                                     | V3 API zstd compression level                      |

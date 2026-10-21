@@ -33,6 +33,7 @@ mod components;
 mod config;
 mod dogstatsd_contexts;
 mod internal;
+mod remote_config;
 
 pub(crate) mod state;
 
