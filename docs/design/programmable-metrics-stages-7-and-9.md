@@ -4061,6 +4061,11 @@ After detached programs, phase 2 ([as built](programmable-metrics-detached-progr
      and a downstream one is cut, the upstream owner makes a boundary flush at the cut's time `T`, under the
      generation it served; this adds one flush to it, and the cut lines up with its width. Two aggregations over one
      point, which shared a slot's one output clock, now stamp by owner.
+202. **A state owner that becomes a stateless node is a cut** (INS, D; decided by the owner, 2026-10-21). A candidate
+     whose node of a state owner's ID keeps no state classifies that owner `cut` with the change `removed`: its lineage
+     ends at the cut, as a removed owner's does, and the stateless node is simply added; the reverse, already `cut`, is
+     an added owner. Only another operator with state, keyed or opaque, is `reject`. The interpreter agrees. The check
+     is one local case of how the plan diff classifies state owners, so it can be changed later.
 
 ## 11. Risks
 

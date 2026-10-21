@@ -305,8 +305,19 @@ measurements and on the lanes decision. A new session starts from the log's V7a 
   when the last generation with the node retires.
 - **Explain of why an owner is cut.** Explain shows regions, upstream points, and internal exits, but not why a moved
   or re-sourced owner is cut.
-- **The 128-buffer input size** of a sub-region is ADP's choice; confirm it against N1.
-- **Untouched:** R1 and its cost model, lanes, and V7b to V9.
+- **Untouched:** R1 and its cost model, and V7b to V9.
+
+**Decided by the owner after V7a (2026-10-21):**
+
+- A state owner that becomes a stateless node is a cut that ends its lineage (amendment 202), where it was refused, so
+  a published aggregation named `metrics` can be revoked.
+- A panic in a published program's region may also lose the DogStatsD client-telemetry tap's batch, which R1 may fuse
+  with the policy region; panics are not guarded against.
+- A sub-region's input of 128 buffers and one per slot exit is accepted.
+- **Left undone on purpose:** lanes do not matter to production configurations, so nothing partitions state across
+  lanes: no lanes for sub-regions, the two lane refusals stay (an owner fed by an owner on several lanes; an owner over
+  several clocks, one of them with several points), and a renamed aggregation runs on one lane.
+- No release notes at this stage: the work is still proving out concepts.
 
 ### Also deferred by the owner
 

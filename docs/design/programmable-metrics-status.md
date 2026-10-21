@@ -406,7 +406,7 @@ lane (`plan_lane_misrouted_total` above 0) fails the check.
 | S3a, S3b | S2's route widened with `or tag("team") == "platform"`; then, on the default program as loaded, `split(tag("team") == "checkout")` ahead of the `tee`, `true` to team B only. | Team B also receives the platform family; then exclusive routing: checkout reaches team B and neither the primary endpoint nor team C. |
 | S4a to S4c | The failover gateway gains `and name in ["demo.checkout.requests"]`; then `failover_metrics: true` in the file; then `false`. | Nothing mirrored while failover is off; with it on, the failover endpoint receives that family alone, with no new revision (a signal read live); off again, nothing. |
 | S5a, S5b, S5e, S5f | A duplicate branch to the main `emit`'s recipients; `emit to [primary, mrf]`; a policy binding (the aggregation's percentiles bound to `config("metrics_encoding.histogram.percentiles")`); `emit to [team_z]`. | Rejected, each naming the problem (`duplicate_contribution`; "more than one delivery host"; "not a configuration binding the host declares"), and the last held `pending` ("waiting for recipient `team_z`"), while the active generation keeps running. The editor flags each. |
-| S5c, S5d | A second, full `aggregate` (1 s windows) after enrichment, named `rollup`; then, on the default program as loaded, the aggregation moved after enrichment, keeping the name `dsd_agg` (`as dsd_agg`). | V7a: a state owner after enrichment runs in a sub-region of `metrics_enrich`. The second aggregation installs in a new generation and the endpoints receive what they did, or, where `dsd_agg` runs on several state lanes (ADP's automatic lanes on a runtime of four workers or more), is rejected ("a state owner fed by another on several lanes is not supported"). The moved one installs at a cut (`plan_cuts_total{outcome="completed"}` grows), the editor flagging nothing, and the endpoints receive what they did. Each has a name of its own: ending `let metrics` would make it the node `metrics`, which is the default program's enrichment, and revoking would then be refused (a state owner cannot become a stateless node, transition class `reject`). Before V7a, placement refused both. |
+| S5c, S5d | A second, full `aggregate` (1 s windows) after enrichment, named `rollup`; then, on the default program as loaded, the aggregation moved after enrichment, keeping the name `dsd_agg` (`as dsd_agg`). | V7a: a state owner after enrichment runs in a sub-region of `metrics_enrich`. The second aggregation installs in a new generation and the endpoints receive what they did, or, where `dsd_agg` runs on several state lanes (ADP's automatic lanes on a runtime of four workers or more), is rejected ("a state owner fed by another on several lanes is not supported"). The moved one installs at a cut (`plan_cuts_total{outcome="completed"}` grows), the editor flagging nothing, and the endpoints receive what they did. Each has a name of its own: ending `let metrics` would make it the node `metrics`, which is the default program's enrichment, and revoking would end its lineage at a cut, as for a removed aggregation (amendment 202; before it, revoking was refused with transition class `reject`). Before V7a, placement refused both. |
 | S6 | Revoke (an empty snapshot). | The default program, the boot plan, again; it adopts the running generation only when that one is the default program as written (since amendment 191 the generations before it were built from programs without what does nothing, so S6 makes a generation; the check accepts either). |
 | S8a, S8b | Add destination D under the default program; remove it. | D receives every family, canaries included (dual shipping); removed, its recipient drains and retires, its intake stops, and the others are unchanged. |
 | S9a to S9c | Publish the recipe again; add destination E; route `team:platform` to E. | E is declared (in ADP's directory) and not addressed, and receives nothing, until the program routes to it; then it receives the platform family alone. |
@@ -989,6 +989,13 @@ release-noted**; amendment 199):
   lanes, and an owner over several clocks one of which has several points. Both run with lanes off, the demo's and
   production's setting at two workers.
 
+**After version 2: a state owner that becomes a stateless node** (**not release-noted**; amendment 202):
+
+- A candidate that gives a state owner's name to a node without state installs at a cut, where the owner's lineage
+  ends, as a removed owner's does; it was refused ("cannot keep its state across the change (transition class
+  `reject`)"). So a published program whose aggregation is named `metrics`, the default program's enrichment, can be
+  revoked. A state owner replaced by another operator with state is still refused.
+
 **Telemetry** (all release-noted): the fused components' and gateways' component, health, and task series are gone;
 `metrics_enrich` and `dsd_agg` report sent counts per output instead of `_default`; accounting paths nest under the
 slot; `dsd_agg` no longer counts sent metrics twice, no longer emits what R5b suppresses, and counts one extra flush
@@ -1122,6 +1129,7 @@ editor validates against stand-ins for the outputs ADP adds. No release note for
 | **The pipeline syntax's two whitespace rules** (built 2026-10-16) | Statements have no separators, so an operator's arguments must follow its name directly (`op(...)`; after a space, `(` starts a tuple), and an `as` or stream name that could continue a stage starts a statement only at the start of a line. The printer always writes both forms. | Accept, or make line breaks end statements, which would retire both rules for one. |
 | **Normalized filter drops are renamed** (amendment 193) | Normalization moves the two DogStatsD filters' drops from their `true` port to `false`, so the derived terminals are `dsd_prefix_filter_false` and `dsd_post_agg_filter_false`. Native series are unchanged (since V10 the prefix filter's `split` is itself named `dsd_prefix_filter`); the program-mode `plan_node_events_total` and `plan_loss_total` series see the new names. | Accept. |
 | **Names in printed programs** (decided by the owner on 2026-10-16) | Decided: if something needs a specific name, a `let` gives it. `fork` is removed (reuse is the one way to fan out), the printer names nodes with `let` and keeps `as` for sinks with IDs of their own, and native lowering gives the silent nodes it invented the IDs the syntax derives (`metrics_in`, `metrics`, `metrics_fanout`, ...), keeping the IDs whose native telemetry identity matters (`dsd_agg`, `dsd_enrich`, the routing filters and gateways, ...). Native series are unchanged; since V10 the telemetry contract reads them by those IDs. | Nothing. |
+| **After version 2** (decided by the owner on 2026-10-21) | Decided: (a) a panic in a published program's region may also lose the batch of the DogStatsD client-telemetry tap, which R1 may fuse with the policy region since V3; panics are not guarded against. (b) A sub-region's input of 128 buffers and one per slot exit is accepted. (c) Lanes do not matter to production configurations, so the work that would partition state across lanes is left undone on purpose: lanes for sub-regions, the two lane refusals (an owner fed by an owner on several lanes; an owner over several clocks, one of them with several points), and a renamed aggregation that runs on one lane. (d) No release notes yet: the work is still proving out concepts. A state owner that becomes a stateless node is a cut (amendment 202). | Nothing. |
 | **The specification's Vale errors** | The specification, which only its author edits, adds 12 errors to `make check-docs`, a CI job (see [Environment notes](#environment-notes)). | Before CI runs: add the 11 flagged words to the Vale vocabulary, and edit or exempt the hyphenated `Exactly-once`. |
 
 ## Spec amendments index
@@ -1232,15 +1240,15 @@ the shutdown row, the expiry row, and the timestamped row.
 
 Totals: kinds C 49, D 26, N 9, L 3; themes STA 20, ART 16, NAT 12, INS 9, IR 8, VER 8, FRM 7, TEL 4, EXE 3.
 
-Amendments 88 to 192 and 195 to 201 are in [the stages 7 and 9 plan's section
+Amendments 88 to 192 and 195 to 202 are in [the stages 7 and 9 plan's section
 10](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments): 88 to 107 from its stage 7 design, 108 to 128
 from its stage 9 design, 129 to 138 from stage 7's parts and integration, 139 and 140 from stage 9's foundations (P9.F),
 141 to 162 from stage 9's parts and integration, 163 to 167 from stage 9's review, 168 and 169 from the one-scope
 change after stage 9, 170 to 182 from the detached-programs design, 183 to 188 from its phase 2, 189 and 190 from its
 phase 3, 191 from leaving out what does nothing, 192 from version 2's step V2, 195 from version 2's design for
 many aggregations, 196 from its step V3, 197 from its steps V4 and V5, 198 from its step V6, 199 from its step
-V10, and 200 and 201 from its step V7a. 193 and 194 come from the [pipeline syntax](programmable-metrics-pipeline-syntax.md) and are indexed below only.
-The next is 202.
+V10, 200 and 201 from its step V7a, and 202 from the owner's decisions after it. 193 and 194 come from the [pipeline syntax](programmable-metrics-pipeline-syntax.md) and are indexed below only.
+The next is 203.
 Stage 7's:
 
 | # | Short title | Theme | Kind | Owner |
@@ -1420,6 +1428,12 @@ After version 2's step V7a (built, not committed):
 |---|---|---|---|---|
 | 200 | Regions made at installation: a state owner in a sub-region of any slot, created and retired with its generations; cuts, lineages, and telemetry by node; a moved or re-sourced owner is cut; heartbeats on every point | FRM | D | version 2, decided by the owner (2026-10-20: V7a questions 1, 4, 5, 6) |
 | 201 | Time across several sources and chains: the watermark is the minimum over upstream points by clock; derived points, one output clock per owner, closed before their stamp; a boundary flush at a cut | STA | D | version 2, decided by the owner (2026-10-20: V7a questions 2, 3) |
+
+After version 2:
+
+| # | Short title | Theme | Kind | Owner |
+|---|---|---|---|---|
+| 202 | A state owner that becomes a stateless node is a cut that ends its lineage, as a removed one's | INS | D | decided by the owner (2026-10-21) |
 
 Wording proposed for adoption: amendment 49 ("under the reference interpreter's delivery order"), 51 ("a maximal
 group of `split` and `tee` operators joined directly by edges within one region"), and 52 ("operator parameters,
