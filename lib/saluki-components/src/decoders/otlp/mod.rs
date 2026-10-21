@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use agent_data_plane_config::domains;
@@ -14,6 +15,7 @@ use saluki_core::{
     data_model::{event::EventType, payload::PayloadType},
     topology::interconnect::EventBufferManager,
 };
+use saluki_env::workload::WorkloadProvider;
 use saluki_error::GenericError;
 use tokio::{
     select,
@@ -21,6 +23,7 @@ use tokio::{
 };
 use tracing::{debug, error, warn};
 
+use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::traces::translator::OtlpTracesTranslator;
 use crate::common::otlp::{
     build_metrics, Metrics, OTLP_LOGS_GRPC_SERVICE_PATH, OTLP_METRICS_GRPC_SERVICE_PATH, OTLP_TRACES_GRPC_SERVICE_PATH,
@@ -30,6 +33,9 @@ use crate::common::otlp::{
 pub struct OtlpDecoderConfiguration {
     /// Resolved OTLP trace ingestion settings.
     traces: domains::otlp::Traces,
+
+    /// Resolves entity and global tags for a resource's container.
+    origin_tag_resolver: OtlpOriginTagResolver,
 
     /// Maximum length of a span's resource name, in bytes.
     ///
@@ -42,9 +48,13 @@ pub struct OtlpDecoderConfiguration {
 
 impl OtlpDecoderConfiguration {
     /// Creates a new `OtlpDecoderConfiguration` from the resolved OTLP trace configuration.
-    pub fn from_configuration(traces: &domains::otlp::Traces) -> Self {
+    pub fn from_configuration<W>(traces: &domains::otlp::Traces, workload_provider: W) -> Self
+    where
+        W: WorkloadProvider + Send + Sync + 'static,
+    {
         Self {
             traces: traces.clone(),
+            origin_tag_resolver: OtlpOriginTagResolver::new(Arc::new(workload_provider)),
             max_resource_len: usize::MAX,
             semantic_registry: SemanticRegistryProvider::default(),
         }
@@ -86,6 +96,7 @@ impl DecoderBuilder for OtlpDecoderConfiguration {
 
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Decoder + Send>, GenericError> {
         let metrics = build_metrics(context.component_context());
+
         Ok(Box::new(OtlpDecoder {
             traces_translator: self.traces_translator(),
             metrics,
@@ -99,6 +110,7 @@ impl OtlpDecoderConfiguration {
             self.traces.clone(),
             self.max_resource_len,
             self.semantic_registry.clone(),
+            self.origin_tag_resolver.clone(),
         )
     }
 }
@@ -221,9 +233,12 @@ mod tests {
             string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
             ..Default::default()
         };
-        let mut translator = OtlpDecoderConfiguration::from_configuration(&traces)
-            .with_semantic_registry(provider)
-            .traces_translator();
+        let mut translator = OtlpDecoderConfiguration::from_configuration(
+            &traces,
+            saluki_env::workload::providers::NoopWorkloadProvider,
+        )
+        .with_semantic_registry(provider)
+        .traces_translator();
         let metrics = Metrics::for_tests();
         assert_eq!(translate_custom_status_code(&mut translator, &metrics), None);
 

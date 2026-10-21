@@ -139,8 +139,8 @@ pub struct OtlpConfiguration {
     /// Supplies attribute mappings for trace translation. Defaults to embedded mappings without remote updates.
     semantic_registry: SemanticRegistryProvider,
 
-    /// Workload provider to utilize for origin detection/enrichment.
-    workload_provider: Arc<dyn WorkloadProvider + Send + Sync>,
+    /// Resolves entity and global tags for trace enrichment.
+    origin_tag_resolver: OtlpOriginTagResolver,
 }
 
 impl OtlpConfiguration {
@@ -150,12 +150,13 @@ impl OtlpConfiguration {
     where
         W: WorkloadProvider + Send + Sync + 'static,
     {
+        let origin_tag_resolver = OtlpOriginTagResolver::new(Arc::new(workload_provider));
         Self {
             default_hostname: MetaString::default(),
             otlp: otlp.clone(),
             max_resource_len: usize::MAX,
             semantic_registry: SemanticRegistryProvider::default(),
-            workload_provider: Arc::new(workload_provider),
+            origin_tag_resolver,
         }
     }
 
@@ -170,6 +171,7 @@ impl OtlpConfiguration {
             self.otlp.traces.clone(),
             self.max_resource_len,
             self.semantic_registry.clone(),
+            self.origin_tag_resolver.clone(),
         )
     }
 
@@ -254,7 +256,7 @@ impl SourceBuilder for OtlpConfiguration {
             .next()
             .ok_or_else(|| generic_error!("No addresses resolved for HTTP endpoint '{}'", http_endpoint_str))?;
 
-        let origin_tag_resolver = OtlpOriginTagResolver::new(Arc::clone(&self.workload_provider));
+        let origin_tag_resolver = self.origin_tag_resolver.clone();
 
         // Metrics resolve their full OTLP entity list at the resource boundary. Keep the context resolver free of an
         // origin resolver so it cannot apply the legacy RawOrigin-only lookup a second time. Logs retain that resolver.

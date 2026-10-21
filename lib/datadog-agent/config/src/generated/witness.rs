@@ -222,6 +222,8 @@ pub trait DatadogConfigWitness {
     fn consume_otlp_config_receiver_protocols_http_tls_cert_file(&mut self, value: Option<String>);
     fn consume_otlp_config_receiver_protocols_http_tls_key_file(&mut self, value: Option<String>);
     fn consume_otlp_config_traces_enabled(&mut self, value: bool);
+    fn consume_otlp_config_traces_infra_attributes_container_tag_promotion(&mut self, value: String);
+    fn consume_otlp_config_traces_infra_attributes_enabled(&mut self, value: bool);
     fn consume_otlp_config_traces_internal_port(&mut self, value: i64);
     fn consume_otlp_config_traces_probabilistic_sampler_sampling_percentage(&mut self, value: f64);
     fn consume_provider_kind(&mut self, value: String);
@@ -622,6 +624,17 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
         config.otlp_config.receiver.protocols.http.tls.key_file.clone(),
     );
     consumer.consume_otlp_config_traces_enabled(config.otlp_config.traces.enabled.clone());
+    consumer.consume_otlp_config_traces_infra_attributes_container_tag_promotion(
+        config
+            .otlp_config
+            .traces
+            .infra_attributes
+            .container_tag_promotion
+            .clone(),
+    );
+    consumer.consume_otlp_config_traces_infra_attributes_enabled(
+        config.otlp_config.traces.infra_attributes.enabled.clone(),
+    );
     consumer.consume_otlp_config_traces_internal_port(config.otlp_config.traces.internal_port.clone());
     consumer.consume_otlp_config_traces_probabilistic_sampler_sampling_percentage(
         config

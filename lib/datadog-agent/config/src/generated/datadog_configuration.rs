@@ -1926,6 +1926,9 @@ pub struct OtlpConfigTraces {
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 
+    #[serde(default)]
+    pub infra_attributes: OtlpConfigTracesInfraAttributes,
+
     #[serde(default = "defaults::default_u64::<i64, 5003>")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub internal_port: i64,
@@ -1938,8 +1941,31 @@ impl Default for OtlpConfigTraces {
     fn default() -> Self {
         Self {
             enabled: defaults::default_bool::<true>(),
+            infra_attributes: Default::default(),
             internal_port: defaults::default_u64::<i64, 5003>(),
             probabilistic_sampler: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct OtlpConfigTracesInfraAttributes {
+    #[serde(
+        default = "defaults::datadog_configuration_otlp_config_traces_infra_attributes_container_tag_promotion"
+    )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub container_tag_promotion: String,
+
+    #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub enabled: bool,
+}
+
+impl Default for OtlpConfigTracesInfraAttributes {
+    fn default() -> Self {
+        Self {
+            container_tag_promotion: defaults::datadog_configuration_otlp_config_traces_infra_attributes_container_tag_promotion(),
+            enabled: defaults::default_bool::<true>(),
         }
     }
 }
@@ -2309,6 +2335,9 @@ pub mod defaults {
     }
     pub(super) fn datadog_configuration_otlp_config_receiver_protocols_http_endpoint() -> String {
         "localhost:4318".to_string()
+    }
+    pub(super) fn datadog_configuration_otlp_config_traces_infra_attributes_container_tag_promotion() -> String {
+        "off".to_string()
     }
     pub(super) fn datadog_configuration_otlp_config_traces_probabilistic_sampler_sampling_percentage() -> f64 {
         100_f64

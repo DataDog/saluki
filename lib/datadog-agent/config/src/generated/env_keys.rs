@@ -1074,6 +1074,16 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_TRACES_INFRA_ATTRIBUTES_CONTAINER_TAG_PROMOTION"],
+        path: &["otlp_config", "traces", "infra_attributes", "container_tag_promotion"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_TRACES_INFRA_ATTRIBUTES_ENABLED"],
+        path: &["otlp_config", "traces", "infra_attributes", "enabled"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
         env_vars: &["DD_OTLP_CONFIG_TRACES_INTERNAL_PORT"],
         path: &["otlp_config", "traces", "internal_port"],
         decode: EnvDecode::Integer,

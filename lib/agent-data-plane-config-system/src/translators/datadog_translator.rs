@@ -26,8 +26,8 @@ use agent_data_plane_config::domains::dogstatsd::{
     FilterAction, MapperProfile, MetricMapping, MetricTagFilterEntry, OriginTagCardinality,
 };
 use agent_data_plane_config::domains::otlp::{
-    CumulativeMonotonicMode, GrpcTransport, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
-    DEFAULT_GRPC_KEEPALIVE_TIME, DEFAULT_GRPC_KEEPALIVE_TIMEOUT, DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
+    ContainerTagPromotion, CumulativeMonotonicMode, GrpcTransport, HistogramMode, InitialCumulativeMonotonicValue,
+    SummaryMode, DEFAULT_GRPC_KEEPALIVE_TIME, DEFAULT_GRPC_KEEPALIVE_TIMEOUT, DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
 };
 use agent_data_plane_config::domains::traces::{ApmFeature, ReplaceRule};
 use agent_data_plane_config::shared::{ForwarderHttpProtocol, V3SeriesMode};
@@ -1431,6 +1431,22 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_otlp_config_traces_enabled(&mut self, value: bool) {
         self.config.domains.otlp.traces.enabled = value;
+    }
+
+    fn consume_otlp_config_traces_infra_attributes_container_tag_promotion(&mut self, value: String) {
+        match value.parse::<ContainerTagPromotion>() {
+            Ok(mode) => self.config.domains.otlp.traces.container_tag_promotion = mode,
+            Err(error) => {
+                self.record_error(TranslateError::new(
+                    "otlp_config.traces.infra_attributes.container_tag_promotion",
+                    error,
+                ));
+            }
+        }
+    }
+
+    fn consume_otlp_config_traces_infra_attributes_enabled(&mut self, value: bool) {
+        self.config.domains.otlp.traces.infra_attributes_enabled = value;
     }
 
     fn consume_otlp_config_traces_internal_port(&mut self, value: i64) {

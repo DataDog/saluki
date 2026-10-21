@@ -4,10 +4,12 @@
 
 use std::sync::LazyLock;
 
+use agent_data_plane_config::domains::otlp::ContainerTagPromotion;
 use opentelemetry_semantic_conventions::resource::*;
 use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common, any_value::Value};
 use saluki_common::collections::{FastHashMap, FastHashSet};
-use saluki_core::data_model::{event::trace::AttributeValue, tags::TagSet};
+use saluki_core::data_model::{event::trace::AttributeValue, tags::SharedTagSet, tags::TagSet};
+use stringtheory::interning::Interner;
 use stringtheory::MetaString;
 
 // ============================================================================
@@ -94,6 +96,22 @@ static CONTAINER_MAPPINGS: LazyLock<FastHashMap<&'static str, &'static str>> = L
     m
 });
 
+// The Datadog tag names produced by the container mappings; an attribute with one of these keys is
+// already a container tag.
+static CONTAINER_DD_TAG_KEYS: LazyLock<FastHashSet<&'static str>> = LazyLock::new(|| {
+    let mut s = FastHashSet::with_capacity_and_hasher(CONTAINER_MAPPINGS.len(), Default::default());
+    for datadog_key in CONTAINER_MAPPINGS.values() {
+        s.insert(*datadog_key);
+    }
+    s
+});
+
+// Tag sources in increasing precedence: a Datadog-convention key, then a
+// `datadog.container.tag.` prefixed attribute, then a semantic-convention mapping.
+const TAG_SOURCE_DATADOG_CONVENTION: u8 = 1;
+const TAG_SOURCE_CUSTOM: u8 = 2;
+const TAG_SOURCE_SEMANTIC_CONVENTION: u8 = 3;
+
 // ============================================================================
 // Attribute helper functions
 // ============================================================================
@@ -114,63 +132,149 @@ pub fn get_string_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &s
 }
 
 /// Extracts container tags from OTLP resource attributes and inserts them into the provided TagSet.
-/// This function is based on the agent implementation here
-/// https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/attributes/attributes.go#L277
+///
+/// Tags come from semantic-convention mappings and `datadog.container.tag.` prefixed attributes,
+/// ranked by the `TAG_SOURCE_*` precedences; empty values produce no tag.
 pub fn extract_container_tags_from_resource_attributes(attributes: &[otlp_common::KeyValue], tags: &mut TagSet) {
-    let mut extracted_tags = FastHashSet::default();
+    let mut resolved: FastHashMap<String, (u8, String)> = FastHashMap::default();
 
     for kv in attributes {
-        if let Some(Value::StringValue(s_val)) = kv.value.as_ref().and_then(|v| v.value.as_ref()) {
-            // Semantic Conventions
-            if let Some(datadog_key) = CONTAINER_MAPPINGS.get(kv.key.as_str()) {
-                tags.insert_tag(format!("{}:{}", datadog_key, s_val));
-                extracted_tags.insert(*datadog_key);
-            }
+        let Some(Value::StringValue(s_val)) = kv.value.as_ref().and_then(|v| v.value.as_ref()) else {
+            continue;
+        };
+        if s_val.is_empty() {
+            continue;
+        }
 
-            // Custom (datadog.container.tag namespace)
-            if kv.key.starts_with(CUSTOM_CONTAINER_TAG_PREFIX) {
-                if let Some(custom_key) = kv.key.get(CUSTOM_CONTAINER_TAG_PREFIX.len()..) {
-                    if !custom_key.is_empty() {
-                        // Do not replace if set via semantic conventions mappings.
-                        if !extracted_tags.insert(custom_key) {
-                            tags.insert_tag(format!("{}:{}", custom_key, s_val));
-                        }
-                    }
-                }
+        // Semantic Conventions
+        if let Some(datadog_key) = CONTAINER_MAPPINGS.get(kv.key.as_str()) {
+            insert_winning_tag(&mut resolved, datadog_key, TAG_SOURCE_SEMANTIC_CONVENTION, s_val);
+        }
+
+        // Custom (datadog.container.tag namespace)
+        if let Some(custom_key) = kv.key.strip_prefix(CUSTOM_CONTAINER_TAG_PREFIX) {
+            if !custom_key.is_empty() {
+                insert_winning_tag(&mut resolved, custom_key, TAG_SOURCE_CUSTOM, s_val);
+            }
+        }
+    }
+
+    for (tag_key, (_, value)) in resolved {
+        tags.insert_tag(format!("{}:{}", tag_key, value));
+    }
+}
+
+/// Extracts container tags from a typed attributes map and inserts them into the provided TagSet.
+///
+/// Tags come from three sources, ranked by the `TAG_SOURCE_*` precedences; empty values produce no
+/// tag.
+pub fn extract_container_tags_from_attributes_map(
+    attributes: &FastHashMap<MetaString, AttributeValue>, tags: &mut TagSet,
+) {
+    // One entry per resolved tag key: its source precedence and value.
+    let mut resolved: FastHashMap<String, (u8, String)> = FastHashMap::default();
+
+    for (key, value) in attributes {
+        let Some(str_val) = value.as_string() else { continue };
+        if str_val.is_empty() {
+            continue;
+        }
+
+        // Semantic Conventions
+        if let Some(datadog_key) = CONTAINER_MAPPINGS.get(key.as_ref()) {
+            insert_winning_tag(
+                &mut resolved,
+                datadog_key,
+                TAG_SOURCE_SEMANTIC_CONVENTION,
+                str_val.as_ref(),
+            );
+        }
+
+        // Pre-mapped Datadog-convention tag name
+        if CONTAINER_DD_TAG_KEYS.contains(key.as_ref()) {
+            insert_winning_tag(
+                &mut resolved,
+                key.as_ref(),
+                TAG_SOURCE_DATADOG_CONVENTION,
+                str_val.as_ref(),
+            );
+        }
+
+        // Custom (datadog.container.tag namespace)
+        if let Some(custom_key) = key.strip_prefix(CUSTOM_CONTAINER_TAG_PREFIX) {
+            if !custom_key.is_empty() {
+                insert_winning_tag(&mut resolved, custom_key, TAG_SOURCE_CUSTOM, str_val.as_ref());
+            }
+        }
+    }
+
+    for (tag_key, (_, value)) in resolved {
+        tags.insert_tag(format!("{}:{}", tag_key, value));
+    }
+}
+
+/// Records a tag for `tag_key` unless a higher-precedence source already claimed it.
+fn insert_winning_tag(resolved: &mut FastHashMap<String, (u8, String)>, tag_key: &str, source: u8, value: &str) {
+    let outranks = resolved
+        .get(tag_key)
+        .is_none_or(|(existing_source, _)| *existing_source < source);
+    if outranks {
+        resolved.insert(tag_key.to_string(), (source, value.to_string()));
+    }
+}
+
+/// Writes resolved infrastructure tags into a resource attribute map as string attributes.
+///
+/// Keys already recognized by container-tag extraction are written as-is; every other key follows
+/// `promotion`. Writes replace existing entries with the same key, except for generated prefixed
+/// copies, which never replace a value the sender provided. Valueless tags are skipped.
+pub fn write_infra_tag_attributes<I: Interner>(
+    tags: SharedTagSet, promotion: ContainerTagPromotion, interner: &I,
+    attributes: &mut FastHashMap<MetaString, AttributeValue>,
+) {
+    for tag in &tags {
+        let key = tag.name();
+        let Some(value) = tag.value() else { continue };
+
+        let write_attribute = |attributes: &mut FastHashMap<MetaString, AttributeValue>, key: &str| {
+            attributes.insert(
+                MetaString::from_interner(key, interner),
+                AttributeValue::String(MetaString::from_interner(value, interner)),
+            );
+        };
+
+        if key.starts_with(CUSTOM_CONTAINER_TAG_PREFIX) || is_recognized_tag_key(key) {
+            write_attribute(attributes, key);
+            continue;
+        }
+
+        match promotion {
+            ContainerTagPromotion::Off => write_attribute(attributes, key),
+            ContainerTagPromotion::Duplicate => {
+                write_attribute(attributes, key);
+                write_prefixed_if_absent(attributes, key, value, interner);
+            }
+            ContainerTagPromotion::Rename => {
+                write_prefixed_if_absent(attributes, key, value, interner);
             }
         }
     }
 }
 
-/// Extracts container tags from a typed attributes map and inserts them into the provided TagSet.
-pub fn extract_container_tags_from_attributes_map(
-    attributes: &FastHashMap<MetaString, AttributeValue>, tags: &mut TagSet,
+/// Writes the prefixed copy of a custom tag without replacing an entry the sender provided.
+fn write_prefixed_if_absent<I: Interner>(
+    attributes: &mut FastHashMap<MetaString, AttributeValue>, key: &str, value: &str, interner: &I,
 ) {
-    let mut extracted_tags = FastHashSet::default();
+    attributes
+        .entry(MetaString::from_interner(
+            &format!("{CUSTOM_CONTAINER_TAG_PREFIX}{key}"),
+            interner,
+        ))
+        .or_insert_with(|| AttributeValue::String(MetaString::from_interner(value, interner)));
+}
 
-    for (key, value) in attributes {
-        let Some(str_val) = value.as_string() else {
-            continue;
-        };
-
-        // Semantic Conventions
-        if let Some(datadog_key) = CONTAINER_MAPPINGS.get(key.as_ref()) {
-            tags.insert_tag(format!("{}:{}", datadog_key, str_val));
-            extracted_tags.insert(*datadog_key);
-        }
-
-        // Custom (datadog.container.tag namespace)
-        if key.starts_with(CUSTOM_CONTAINER_TAG_PREFIX) {
-            if let Some(custom_key) = key.get(CUSTOM_CONTAINER_TAG_PREFIX.len()..) {
-                if !custom_key.is_empty() {
-                    // Do not replace if set via semantic conventions mappings.
-                    if !extracted_tags.insert(custom_key) {
-                        tags.insert_tag(format!("{}:{}", custom_key, str_val));
-                    }
-                }
-            }
-        }
-    }
+fn is_recognized_tag_key(key: &str) -> bool {
+    CONTAINER_MAPPINGS.contains_key(key) || CONTAINER_DD_TAG_KEYS.contains(key)
 }
 
 const ATTRIBUTE_DATADOG_HOSTNAME: &str = "datadog.host.name";
@@ -381,6 +485,7 @@ mod tests {
         common::v1::{any_value::Value, AnyValue, KeyValue},
         resource::v1::Resource,
     };
+    use stringtheory::interning::GenericMapInterner;
 
     use super::*;
 
@@ -404,6 +509,253 @@ mod tests {
         let source = metric_source(attributes).expect("hostname source should resolve");
         assert_eq!(source.kind, SourceKind::HostnameKind);
         assert_eq!(source.identifier, expected);
+    }
+
+    #[test]
+    fn map_extraction_promotes_all_three_tag_sources() {
+        let mut attributes = FastHashMap::default();
+        attributes.insert(
+            MetaString::from("container.id"),
+            AttributeValue::String(MetaString::from("abc123")),
+        );
+        attributes.insert(
+            MetaString::from("datadog.container.tag.team"),
+            AttributeValue::String(MetaString::from("checkout")),
+        );
+        attributes.insert(
+            MetaString::from("kube_namespace"),
+            AttributeValue::String(MetaString::from("payments")),
+        );
+
+        let mut tags = TagSet::default();
+        extract_container_tags_from_attributes_map(&attributes, &mut tags);
+
+        let mut got: Vec<String> = tags.into_iter().map(|tag| tag.as_str().to_string()).collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec!["container_id:abc123", "kube_namespace:payments", "team:checkout"]
+        );
+    }
+
+    #[test]
+    fn map_extraction_resolves_source_collisions_by_precedence() {
+        let mut attributes = FastHashMap::default();
+        attributes.insert(
+            MetaString::from("container.id"),
+            AttributeValue::String(MetaString::from("from-semconv")),
+        );
+        attributes.insert(
+            MetaString::from("datadog.container.tag.container_id"),
+            AttributeValue::String(MetaString::from("from-custom")),
+        );
+        attributes.insert(
+            MetaString::from("kube_namespace"),
+            AttributeValue::String(MetaString::from("from-convention")),
+        );
+        attributes.insert(
+            MetaString::from("datadog.container.tag.kube_namespace"),
+            AttributeValue::String(MetaString::from("from-custom")),
+        );
+
+        let mut tags = TagSet::default();
+        extract_container_tags_from_attributes_map(&attributes, &mut tags);
+
+        let mut got: Vec<String> = tags.into_iter().map(|tag| tag.as_str().to_string()).collect();
+        got.sort();
+        assert_eq!(got, vec!["container_id:from-semconv", "kube_namespace:from-custom"]);
+    }
+
+    #[test]
+    fn map_extraction_ignores_empty_values() {
+        let mut attributes = FastHashMap::default();
+        attributes.insert(
+            MetaString::from("datadog.container.tag.team"),
+            AttributeValue::String(MetaString::from("")),
+        );
+
+        let mut tags = TagSet::default();
+        extract_container_tags_from_attributes_map(&attributes, &mut tags);
+
+        assert_eq!(tags.into_iter().count(), 0);
+    }
+
+    fn test_interner() -> GenericMapInterner {
+        GenericMapInterner::new(std::num::NonZeroUsize::new(64 * 1024).expect("non-zero interner size"))
+    }
+
+    fn shared_tags(tags: &[&str]) -> SharedTagSet {
+        let mut set = TagSet::default();
+        for tag in tags {
+            set.insert_tag(tag.to_string());
+        }
+        set.into_shared()
+    }
+
+    fn attr_str(attributes: &FastHashMap<MetaString, AttributeValue>, key: &str) -> Option<String> {
+        attributes
+            .get(key)
+            .and_then(|value| value.as_string())
+            .map(|value| value.as_ref().to_string())
+    }
+
+    fn written_attributes(attributes: &FastHashMap<MetaString, AttributeValue>) -> Vec<String> {
+        let mut keys: Vec<String> = attributes
+            .iter()
+            .map(|(key, value)| {
+                format!(
+                    "{}={}",
+                    key.as_ref(),
+                    value.as_string().map(|v| v.as_ref().to_string()).unwrap_or_default()
+                )
+            })
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    #[test]
+    fn write_infra_tag_attributes_follows_each_promotion_mode() {
+        let tags = shared_tags(&["kube_namespace:payments", "team:checkout"]);
+
+        let mut off = FastHashMap::default();
+        write_infra_tag_attributes(tags.clone(), ContainerTagPromotion::Off, &test_interner(), &mut off);
+        assert_eq!(
+            written_attributes(&off),
+            vec!["kube_namespace=payments", "team=checkout"]
+        );
+
+        let mut duplicate = FastHashMap::default();
+        write_infra_tag_attributes(
+            tags.clone(),
+            ContainerTagPromotion::Duplicate,
+            &test_interner(),
+            &mut duplicate,
+        );
+        assert_eq!(
+            written_attributes(&duplicate),
+            vec![
+                "datadog.container.tag.team=checkout",
+                "kube_namespace=payments",
+                "team=checkout"
+            ]
+        );
+
+        let mut rename = FastHashMap::default();
+        write_infra_tag_attributes(tags, ContainerTagPromotion::Rename, &test_interner(), &mut rename);
+        assert_eq!(
+            written_attributes(&rename),
+            vec!["datadog.container.tag.team=checkout", "kube_namespace=payments"]
+        );
+    }
+
+    #[test]
+    fn write_infra_tag_attributes_skips_tags_without_values() {
+        let tags = shared_tags(&["valueless"]);
+
+        let mut attributes = FastHashMap::default();
+        write_infra_tag_attributes(
+            tags,
+            ContainerTagPromotion::Duplicate,
+            &test_interner(),
+            &mut attributes,
+        );
+
+        assert!(attributes.is_empty());
+    }
+
+    #[test]
+    fn write_infra_tag_attributes_preserves_already_prefixed_keys() {
+        let tags = shared_tags(&["datadog.container.tag.env:prod"]);
+
+        let mut attributes = FastHashMap::default();
+        write_infra_tag_attributes(tags, ContainerTagPromotion::Rename, &test_interner(), &mut attributes);
+
+        assert_eq!(written_attributes(&attributes), vec!["datadog.container.tag.env=prod"]);
+    }
+
+    #[test]
+    fn resource_extraction_prefers_semantic_conventions_regardless_of_order() {
+        let attributes = vec![
+            string_attribute("datadog.container.tag.container_id", "from-custom"),
+            string_attribute("container.id", "from-semconv"),
+        ];
+
+        let mut tags = TagSet::default();
+        extract_container_tags_from_resource_attributes(&attributes, &mut tags);
+
+        let mut got: Vec<String> = tags.into_iter().map(|tag| tag.as_str().to_string()).collect();
+        got.sort();
+        assert_eq!(got, vec!["container_id:from-semconv"]);
+    }
+
+    #[test]
+    fn write_infra_tag_attributes_preserves_sender_provided_prefixed_values() {
+        // The sender pinned the prefixed form, so the generated copy must not replace it.
+        let mut attributes = FastHashMap::default();
+        attributes.insert(
+            MetaString::from("datadog.container.tag.team"),
+            AttributeValue::String(MetaString::from("sender-value")),
+        );
+
+        let tags = shared_tags(&["team:tagger-value"]);
+        write_infra_tag_attributes(
+            tags,
+            ContainerTagPromotion::Duplicate,
+            &test_interner(),
+            &mut attributes,
+        );
+
+        // The unprefixed form is written with replace semantics; the prefixed copy is not.
+        assert_eq!(attr_str(&attributes, "team"), Some("tagger-value".to_string()));
+        assert_eq!(
+            attr_str(&attributes, "datadog.container.tag.team"),
+            Some("sender-value".to_string())
+        );
+    }
+
+    #[test]
+    fn write_infra_tag_attributes_rename_preserves_sender_provided_prefixed_values() {
+        let mut attributes = FastHashMap::default();
+        attributes.insert(
+            MetaString::from("datadog.container.tag.team"),
+            AttributeValue::String(MetaString::from("sender-value")),
+        );
+
+        let tags = shared_tags(&["team:tagger-value"]);
+        write_infra_tag_attributes(tags, ContainerTagPromotion::Rename, &test_interner(), &mut attributes);
+
+        assert_eq!(
+            attr_str(&attributes, "datadog.container.tag.team"),
+            Some("sender-value".to_string())
+        );
+    }
+
+    #[test]
+    fn resource_extraction_promotes_fresh_custom_tags() {
+        let attributes = vec![string_attribute("datadog.container.tag.team", "checkout")];
+
+        let mut tags = TagSet::default();
+        extract_container_tags_from_resource_attributes(&attributes, &mut tags);
+
+        let mut got: Vec<String> = tags.into_iter().map(|tag| tag.as_str().to_string()).collect();
+        got.sort();
+        assert_eq!(got, vec!["team:checkout"]);
+    }
+
+    #[test]
+    fn resource_extraction_prefers_semantic_conventions_for_duplicate_keys() {
+        let attributes = vec![
+            string_attribute("container.id", "from-semconv"),
+            string_attribute("datadog.container.tag.container_id", "from-custom"),
+        ];
+
+        let mut tags = TagSet::default();
+        extract_container_tags_from_resource_attributes(&attributes, &mut tags);
+
+        let mut got: Vec<String> = tags.into_iter().map(|tag| tag.as_str().to_string()).collect();
+        got.sort();
+        assert_eq!(got, vec!["container_id:from-semconv"]);
     }
 
     #[test]

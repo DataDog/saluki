@@ -426,6 +426,39 @@ pub struct Cors {
     pub max_age: u64,
 }
 
+/// How custom infrastructure tags are promoted into container tags on OTLP traces.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ContainerTagPromotion {
+    /// Writes tags as-is. Only convention keys reach container tags; custom keys remain plain resource
+    /// attributes.
+    #[default]
+    Off,
+
+    /// Writes both the original key and a `datadog.container.tag.` prefixed copy, so custom keys reach
+    /// container tags while the unprefixed form survives for consumers that read it.
+    Duplicate,
+
+    /// Writes only the `datadog.container.tag.` form. Smaller payloads, but consumers reading the
+    /// unprefixed form lose access to the tag.
+    Rename,
+}
+
+impl FromStr for ContainerTagPromotion {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "off" => Ok(Self::Off),
+            "duplicate" => Ok(Self::Duplicate),
+            "rename" => Ok(Self::Rename),
+            other => Err(Error::new_without_source(format!(
+                "unknown container tag promotion mode `{other}`; expected `off`, `duplicate`, or `rename`"
+            ))),
+        }
+    }
+}
+
 /// OTLP trace ingestion settings.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Traces {
@@ -450,6 +483,17 @@ pub struct Traces {
     /// Whether spans missing intake-required fields are ingested rather than rejected. (not in
     /// Datadog Agent config schema)
     pub ignore_missing_datadog_fields: bool,
+
+    /// Whether entity and global tags from the workload metadata store are enriched onto OTLP traces.
+    ///
+    /// Defaults to `true`. When `false`, traces carry only the resource attributes the sender provided.
+    pub infra_attributes_enabled: bool,
+
+    /// How custom infrastructure tags are promoted into container tags on OTLP traces.
+    ///
+    /// Defaults to `off`, which leaves custom tags as plain resource attributes. Convention keys and
+    /// already-prefixed keys are exempt in every mode.
+    pub container_tag_promotion: ContainerTagPromotion,
 }
 
 impl Default for Traces {
@@ -461,6 +505,8 @@ impl Default for Traces {
             string_interner_size: DEFAULT_STRING_INTERNER_SIZE_BYTES,
             enable_compute_top_level_by_span_kind: true,
             ignore_missing_datadog_fields: false,
+            infra_attributes_enabled: true,
+            container_tag_promotion: ContainerTagPromotion::default(),
         }
     }
 }
@@ -514,7 +560,38 @@ impl Default for Contexts {
 
 #[cfg(test)]
 mod tests {
-    use super::{CumulativeMonotonicMode, GrpcReceiver, GrpcTransport, HttpReceiver, InitialCumulativeMonotonicValue};
+    use super::{
+        ContainerTagPromotion, CumulativeMonotonicMode, GrpcReceiver, GrpcTransport, HttpReceiver,
+        InitialCumulativeMonotonicValue,
+    };
+
+    #[test]
+    fn container_tag_promotion_parses_known_values() {
+        for (value, expected) in [
+            ("off", ContainerTagPromotion::Off),
+            ("duplicate", ContainerTagPromotion::Duplicate),
+            ("rename", ContainerTagPromotion::Rename),
+        ] {
+            assert_eq!(
+                value
+                    .parse::<ContainerTagPromotion>()
+                    .expect("known value should parse"),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn container_tag_promotion_rejects_unknown_values() {
+        let error = "unsupported"
+            .parse::<ContainerTagPromotion>()
+            .expect_err("unsupported mode should be rejected");
+
+        assert_eq!(
+            error.to_string(),
+            "unknown container tag promotion mode `unsupported`; expected `off`, `duplicate`, or `rename`"
+        );
+    }
 
     #[test]
     fn grpc_transport_parses_known_values() {
