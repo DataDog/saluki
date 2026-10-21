@@ -3,7 +3,7 @@
 use std::{any::Any, sync::Arc, time::Duration};
 
 use saluki_core::{
-    data_model::event::Event,
+    data_model::event::{metric::Metric, Event},
     execution::{ClockReset, DrainPolicy, Kernel, LossClass, LossCount, PortIndex, Progress, Turn, WorkKind},
     topology::EventsBuffer,
 };
@@ -12,8 +12,8 @@ use tracing::{debug, info, warn};
 use super::{
     count_suppressed,
     lanes::{ContextCount, CountHeld, FlushRecord, Previous, Resolution, Restarted, TakeLaneFallbacks},
-    AggregateCore, AggregateParams, AggregateStepParams, AggregateTelemetry, ContextBudget, ContextSnapshot,
-    FlushParams, FlushState, LaneShared, LastSeen, SuppressedBySite,
+    AdmitOutcome, AdmitParams, AggregateCore, AggregateParams, AggregateStepParams, AggregateTelemetry, ContextBudget,
+    ContextSnapshot, FlushParams, FlushState, LaneShared, LastSeen, SuppressedBySite,
 };
 
 /// Native aggregation as a [`Kernel`], driven by admission time and watermarks instead of a clock.
@@ -26,18 +26,20 @@ use super::{
 /// # Calls
 ///
 /// - [`consume`][Kernel::consume] admits the batch at `floor(t_a)`, with the context limit of the turn's parameters.
-///   It writes nothing, and never yields. A held context's last update, which counter expiry is measured from, is the
-///   latest admission time it was admitted at ([`LastSeen::Latest`]): the batches of one admission point arrive in
-///   stamp order, so with one upstream point this is the time of its last batch, as natively, and with several, a
-///   batch stamped earlier that arrives late never moves a counter's expiry earlier. A batch without an admission
-///   time cannot be bucketed, and is recorded as [`LossClass::Invalid`], as is any event that is not a metric.
-///   Metrics dropped at the context limit are recorded as [`LossClass::Capacity`], and the first drop since the limit
-///   was last clear logs a warning, as native aggregation does. A metric whose kind, or rate interval, differs from
-///   the points its context holds replaces them; the replaced points are recorded as [`LossClass::Policy`], one event
-///   per metric that replaced any.
+///   It writes nothing of its own, and never yields; what it writes while a flush is pending is the flush's output
+///   (see [Admission while advancing](Self#admission-while-advancing)). A held context's last update, which counter
+///   expiry is measured from, is the latest admission time it was admitted at ([`LastSeen::Latest`]): the batches of
+///   one admission point arrive in stamp order, so with one upstream point this is the time of its last batch, as
+///   natively, and with several, a batch stamped earlier that arrives late never moves a counter's expiry earlier. A
+///   batch without an admission time cannot be bucketed, and is recorded as [`LossClass::Invalid`], as is any event
+///   that is not a metric. Metrics dropped at the context limit are recorded as [`LossClass::Capacity`], and the first
+///   drop since the limit was last clear logs a warning, as native aggregation does. A metric whose kind, or rate
+///   interval, differs from the points its context holds replaces them; the replaced points are recorded as
+///   [`LossClass::Policy`], one event per metric that replaced any.
 /// - [`advance_time`][Kernel::advance_time] flushes at `floor(watermark)`: it emits every bucket that ended by then,
 ///   with idle-counter zeros. Without a watermark, or while the core holds nothing, nothing happens. A flush that
-///   brings the contexts below the limit logs that metrics are accepted again, as native aggregation does.
+///   brings the contexts below the limit logs that metrics are accepted again, as native aggregation does. A kernel
+///   not on lanes [admits while it advances](Self#admission-while-advancing).
 /// - [`control`][Kernel::control] with a [`ClockReset`] flushes at `floor(watermark)` as `advance_time` does, then
 ///   drains: it emits every point still held, whatever its bucket, and the kernel continues empty, as if it had never
 ///   flushed, so its next flush adds no idle-counter zeros.
@@ -45,9 +47,9 @@ use super::{
 ///   read-only, and may arrive while another call is yielded, which it does not disturb.
 /// - [`control`][Kernel::control] with [`TakeSuppressed`] takes the counts of records skipped by an emission filter
 ///   since the last time; it too may arrive while another call is yielded, and does not disturb it.
-/// - [`control`][Kernel::control] with [`RoomToAdmit`] or [`PassProgress`] answers whether new contexts fit and how
-///   far a pending flush has come. Both are read-only. The kernel does not [admit while
-///   advancing][Kernel::admits_while_advancing] yet, so it answers that nothing fits and that no flush is pending.
+/// - [`control`][Kernel::control] with [`RoomToAdmit`] or [`PassProgress`] answers whether new contexts fit without
+///   anything being refused or the table growing, and how far a pending flush has come. Both are read-only, and may
+///   arrive while another call is yielded, which they do not disturb. A kernel on lanes answers that nothing fits.
 /// - [`finish`][Kernel::finish] with [`DrainPolicy::Retire`] flushes at the watermark and then drains, as a reset
 ///   does, so the kernel holds nothing afterwards. With [`DrainPolicy::Shutdown`] it runs the final flush at the
 ///   watermark, as native aggregation's last flush, and then discards what remains, the open buckets, recording it as
@@ -56,6 +58,27 @@ use super::{
 /// - [`held`][Kernel::held] counts the contexts that hold points, and their points.
 /// - [`publish_telemetry`][Kernel::publish_telemetry] writes what the core's telemetry counted since it last
 ///   published, when it was built [accumulating][AggregateTelemetry::accumulating], as a kernel in a region is.
+///
+/// # Admission while advancing
+///
+/// A kernel not on lanes [admits while advancing][Kernel::admits_while_advancing]: its host may deliver batches while
+/// a flush tick, an `advance_time`, is yielded. The flush is an [interleaved
+/// flush][AggregateCore::begin_interleaved_flush], fixed when it starts, and each batch admitted while it is pending
+/// is admitted [during it][AggregateCore::admit_during]: a metric whose context the flush has not visited yet makes it
+/// visit that context first, writing what the visit releases to the primary port as output of the pending flush, which
+/// the host delivers with it. So over the flush and the batches, the output, losses, state, breach flag and its log
+/// lines, and suppressed counts are those of the flush completed before the first batch; only the order of records
+/// differs. Records a visit on touch skips at emission are counted when the `consume` that visited returns.
+///
+/// While the flush is pending, nothing is refused and the context table never grows. A host asks [`RoomToAdmit`]
+/// before it delivers a batch, and holds the batch until the flush completes if it does not fit. Should a batch reach
+/// a new context that would be refused, or that the table has no room for without growing, `consume` completes the
+/// flush itself, writing the rest of it, and then admits the metric; the flush tick stays pending, with nothing left
+/// to do, and the host's next `advance_time`, which resumes it, returns [`Progress::Done`] at once without flushing
+/// again. Visits by the flush's steps and on touch both count in [`PassProgress`].
+///
+/// A reset, a retirement, and shutdown still need the pending call completed first, and no batch arrives while they
+/// are pending.
 ///
 /// # Lanes
 ///
@@ -80,7 +103,9 @@ use super::{
 /// context visited and [`WorkKind::Events`] one unit per record emitted, and checks the budget only between contexts,
 /// so one context's records, a histogram's whole expansion included, are never split across calls. When the budget is
 /// exhausted the call returns [`Progress::Yielded`] and keeps its place: calling the same method again resumes it, a
-/// reset included (see [`ClockReset`]). Every call visits at least one context, so a drain always progresses.
+/// reset included (see [`ClockReset`]). Every call visits at least one context, so a drain always progresses, unless
+/// the batches admitted during a flush tick visited every context left, when it completes the flush at once. Visits on
+/// touch charge nothing: `consume` checks no budget.
 ///
 /// # Parameters
 ///
@@ -112,6 +137,20 @@ pub struct AggregateKernel {
     /// The flushes, on lanes, that started their idle-counter zeros from the core's own last flush because the lanes'
     /// record could not say where the lanes left them, since the host last took them ([`TakeLaneFallbacks`]).
     fallbacks: u64,
+    /// The log lines about the context limit the kernel has written, for tests to compare.
+    #[cfg(test)]
+    limit_logs: LimitLogs,
+    /// How far the last pass that completed had come when it completed, for tests to check.
+    #[cfg(test)]
+    last_completed: Option<PassProgress>,
+}
+
+/// The log lines about the context limit a kernel has written: that it was reached, and that it no longer is.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct LimitLogs {
+    pub(crate) reached: u64,
+    pub(crate) recovered: u64,
 }
 
 /// A control message that takes the counts of records an [`AggregateKernel`] skipped at emission, by filter site.
@@ -137,6 +176,11 @@ pub struct TakeSuppressed {
 /// delivers a batch that reaches the instance, with the batch's events that can reach it, and holds the batch until
 /// the flush completes if they do not fit. A kernel that does not know the message leaves `fits` false, so the host
 /// waits.
+///
+/// The answer reads the instance as it stands, and the shared budgets' counts, which other instances can change: it
+/// holds for a batch delivered next, with the same parameters, while no other instance admits against the budgets in
+/// between. Should a batch reach a context that does not fit anyway, the kernel completes the flush itself first, so
+/// that nothing it admits or emits differs.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RoomToAdmit {
     /// The new contexts asked about: an upper bound on those one batch can create.
@@ -153,6 +197,9 @@ pub struct RoomToAdmit {
 /// reached them first. It answers whatever call is pending, which it does not disturb. Both stay zero when no flush is
 /// pending, and in a kernel that does not know the message. A host that paces a flush over time reads it when the
 /// flush starts and after each step.
+///
+/// `visited` equals `total` once every context has been visited, which a batch can do before the flush's next step.
+/// The flush is still pending then: the host completes it with one more call, which emits nothing more.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PassProgress {
     /// The contexts the pending flush has visited.
@@ -183,6 +230,10 @@ impl AggregateKernel {
             suppressed: SuppressedBySite::new(),
             restarted: false,
             fallbacks: 0,
+            #[cfg(test)]
+            limit_logs: LimitLogs::default(),
+            #[cfg(test)]
+            last_completed: None,
         }
     }
 
@@ -219,6 +270,47 @@ impl AggregateKernel {
         self.pending.is_some()
     }
 
+    /// Returns `true` if a call yielded and its pass is still in progress, rather than completed by a batch that
+    /// arrived while the call was pending.
+    #[cfg(test)]
+    pub fn has_pass_in_progress(&self) -> bool {
+        self.pending.as_ref().is_some_and(|operation| operation.pass.is_some())
+    }
+
+    /// Returns the log lines about the context limit the kernel has written.
+    #[cfg(test)]
+    pub(crate) fn limit_logs(&self) -> LimitLogs {
+        self.limit_logs
+    }
+
+    /// Takes how far the last pass that completed had come when it completed.
+    #[cfg(test)]
+    pub(crate) fn take_last_completed(&mut self) -> Option<PassProgress> {
+        self.last_completed.take()
+    }
+
+    /// Returns the core the kernel runs, to change it.
+    #[cfg(test)]
+    pub(crate) fn core_mut(&mut self) -> &mut AggregateCore {
+        &mut self.core
+    }
+
+    /// Returns `true` if the pending call, if any, is a flush tick that batches may be admitted during.
+    fn admits_during_pending(&self) -> bool {
+        self.core.lanes().is_none()
+            && self
+                .pending
+                .as_ref()
+                .is_some_and(|operation| operation.kind == OperationKind::Tick)
+    }
+
+    /// Returns how far the pending pass has come, or zeros if no call is pending.
+    fn pass_progress(&self) -> PassProgress {
+        self.pending.as_ref().map_or_else(PassProgress::default, |operation| {
+            operation.pass.as_ref().map_or(operation.ended, FlushState::progress)
+        })
+    }
+
     /// Starts the operation of `kind`, with the flush parameters of the turn, or the kernel's own.
     fn start(&mut self, turn: &Turn<'_>, kind: OperationKind) -> Operation {
         let params = match turn.param::<AggregateStepParams>() {
@@ -233,6 +325,10 @@ impl AggregateKernel {
         let now = turn.watermark().map(|watermark| watermark.as_unix_secs());
         let pass = match self.resolve_lane(turn, now) {
             Some(record) => now.and_then(|now| self.core.begin_flush_with(now, last, &params, record)),
+            // A flush tick off lanes is the one call that batches may be admitted during.
+            None if kind == OperationKind::Tick && self.core.lanes().is_none() => {
+                now.and_then(|now| self.core.begin_interleaved_flush(now, &params))
+            }
             None => now.and_then(|now| self.core.begin_flush(now, last, &params)),
         };
         if pass.is_some() {
@@ -244,6 +340,7 @@ impl AggregateKernel {
             pass,
             then,
             params,
+            ended: PassProgress::default(),
         }
     }
 
@@ -334,6 +431,10 @@ impl AggregateKernel {
                     return Progress::Yielded;
                 }
 
+                #[cfg(test)]
+                {
+                    self.last_completed = Some(pass.progress());
+                }
                 let outcome = self.core.end_flush(pass);
                 debug_assert!(
                     outcome.discarded == 0 && outcome.suppressed.is_empty(),
@@ -352,7 +453,7 @@ impl AggregateKernel {
                     None => outcome.recovered && !discarding,
                 };
                 if recovered {
-                    info!("Context limit no longer exceeded, metrics are being accepted again.");
+                    self.log_recovered();
                 }
             }
 
@@ -386,6 +487,79 @@ impl AggregateKernel {
         }
     }
 
+    /// Logs that the context limit is no longer exceeded, as native aggregation does at the end of the flush that ends
+    /// a breach.
+    fn log_recovered(&mut self) {
+        #[cfg(test)]
+        {
+            self.limit_logs.recovered += 1;
+        }
+        info!("Context limit no longer exceeded, metrics are being accepted again.");
+    }
+
+    /// Logs that the context limit was reached, as native aggregation does at the first drop since it was last clear.
+    fn log_limit_reached(&mut self, context_limit: usize) {
+        #[cfg(test)]
+        {
+            self.limit_logs.reached += 1;
+        }
+        warn!(
+            context_limit,
+            "Context limit reached, dropping metrics. Consider increasing `aggregate_context_limit`."
+        );
+    }
+
+    /// Admits `metrics`, which arrived at `now`, with `params`, while the flush tick `operation` is pending: during its
+    /// pass, if it is still in progress, writing what visits on touch release to the primary port as the flush's
+    /// output, and adding what they skip at emission to `skipped`.
+    ///
+    /// If admission completes the pass, the operation stays pending with nothing left to do, so that the host's next
+    /// `advance_time`, which resumes it, completes it at once.
+    fn admit_during_tick(
+        &mut self, turn: &mut Turn<'_>, now: u64, metrics: impl Iterator<Item = Metric>, params: &AdmitParams,
+        skipped: &mut SuppressedBySite,
+    ) -> AdmitOutcome {
+        let operation = self.pending.as_mut().expect("a flush tick is pending");
+        debug_assert_eq!(
+            operation.kind,
+            OperationKind::Tick,
+            "batches arrive only during a flush tick"
+        );
+        let started = operation.pass.as_ref().map(FlushState::progress);
+        let (outcome, ended) = self
+            .core
+            .admit_during(now, metrics, params, &mut operation.pass, |metric| {
+                turn.push(PortIndex::PRIMARY, Event::Metric(metric))
+            });
+        if let Some(pass) = operation.pass.as_mut() {
+            for (site, suppressed) in pass.take_counted().suppressed {
+                count_suppressed(skipped, site, suppressed);
+            }
+        }
+        let Some(ended) = ended else {
+            return outcome;
+        };
+
+        // Admission completed the pass: it visited every context it started with.
+        let total = started.map_or(0, |started| started.total);
+        operation.ended = PassProgress { visited: total, total };
+        debug_assert!(
+            ended.discarded == 0 && operation.then == Then::Done,
+            "a flush tick discards nothing and is done when its pass is"
+        );
+        for (site, suppressed) in ended.suppressed {
+            count_suppressed(skipped, site, suppressed);
+        }
+        #[cfg(test)]
+        {
+            self.last_completed = Some(PassProgress { visited: total, total });
+        }
+        if ended.recovered {
+            self.log_recovered();
+        }
+        outcome
+    }
+
     /// Completes pending work whatever the budget, for a batch that arrived while it was pending, adding what it skips
     /// at emission to `skipped`.
     fn complete_pending(&mut self, turn: &mut Turn<'_>, skipped: &mut SuppressedBySite) {
@@ -398,15 +572,19 @@ impl AggregateKernel {
 
 impl Kernel for AggregateKernel {
     fn consume(&mut self, turn: &mut Turn<'_>, input: &mut EventsBuffer) -> Progress {
-        // A host never delivers a batch while a call is yielded. Should it, the pending pass completes first: it visits
-        // contexts by their position in the core's table, which admitting could move.
+        // A host delivers a batch while a call is yielded only if it is a flush tick, which admission continues
+        // during. Should it deliver one during any other call, the pending pass completes first: it visits contexts by
+        // their position in the core's table, which admitting could move.
+        let during_tick = self.admits_during_pending();
         debug_assert!(
-            self.pending.is_none(),
-            "a host delivered a batch to a kernel whose call was yielded"
+            self.pending.is_none() || during_tick,
+            "a host delivered a batch to a kernel whose call was yielded and does not admit while it is"
         );
         let mut skipped = SuppressedBySite::new();
-        self.complete_pending(turn, &mut skipped);
-        self.commit(skipped);
+        if !during_tick {
+            self.complete_pending(turn, &mut skipped);
+            self.commit(std::mem::take(&mut skipped));
+        }
 
         let batch = std::mem::replace(input, EventsBuffer::with_capacity(0));
         let Some(admitted_at) = turn.admitted_at() else {
@@ -432,7 +610,13 @@ impl Kernel for AggregateKernel {
             }
             metric
         });
-        let outcome = self.core.admit_with(admitted_at.as_unix_secs(), metrics, &params);
+        let outcome = if during_tick {
+            self.admit_during_tick(turn, admitted_at.as_unix_secs(), metrics, &params, &mut skipped)
+        } else {
+            self.core.admit_with(admitted_at.as_unix_secs(), metrics, &params)
+        };
+        // What visits on touch skipped is counted with the call that wrote what they emitted.
+        self.commit(skipped);
 
         if invalid > 0 {
             turn.counters().record_loss(LossClass::Invalid, invalid, 0);
@@ -459,16 +643,18 @@ impl Kernel for AggregateKernel {
         };
         if limit_reached {
             // First drop since the last recovery: warn once, as native aggregation does.
-            warn!(
-                context_limit = params.context_limit,
-                "Context limit reached, dropping metrics. Consider increasing `aggregate_context_limit`."
-            );
+            self.log_limit_reached(params.context_limit);
         }
         Progress::Done
     }
 
     fn advance_time(&mut self, turn: &mut Turn<'_>) -> Progress {
         self.call(turn, OperationKind::Tick)
+    }
+
+    fn admits_while_advancing(&self) -> bool {
+        // On lanes, a flush resolves in the record the lanes share, at once: it does not interleave.
+        self.core.lanes().is_none()
     }
 
     fn control(&mut self, turn: &mut Turn<'_>, control: &mut dyn Any) -> Progress {
@@ -510,14 +696,17 @@ impl Kernel for AggregateKernel {
             count.held += held as u64;
             return Progress::Done;
         }
-        // The interleaved flush's read-only questions. The kernel admits nothing while a flush is pending yet, so no
-        // context fits and no flush has visited anything.
+        // The interleaved flush's read-only questions: whatever pass is pending keeps its place.
         if let Some(room) = control.downcast_mut::<RoomToAdmit>() {
-            room.fits = false;
+            let context_limit = match turn.param::<AggregateStepParams>() {
+                Some(step) => step.admit.context_limit,
+                None => self.defaults.admit.context_limit,
+            };
+            room.fits = self.core.lanes().is_none() && self.core.has_room_for(room.contexts, context_limit);
             return Progress::Done;
         }
         if let Some(progress) = control.downcast_mut::<PassProgress>() {
-            *progress = PassProgress::default();
+            *progress = self.pass_progress();
             return Progress::Done;
         }
         Progress::Done
@@ -550,6 +739,9 @@ struct Operation {
     pass: Option<FlushState>,
     then: Then,
     params: FlushParams,
+    /// How far the flush tick's pass had come when a batch admitted during it completed it, which the operation keeps
+    /// reporting until the host resumes it.
+    ended: PassProgress,
 }
 
 /// What a call of the kernel does with what it holds.

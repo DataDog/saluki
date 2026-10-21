@@ -53,6 +53,14 @@
 //! core empty and as if it had never flushed ([`AggregateCore::begin_drain`]), and a **discard**, which removes
 //! everything without emitting it ([`AggregateCore::begin_discard`]). Both remove each context as they visit it.
 //!
+//! An **interleaved flush** ([`AggregateCore::begin_interleaved_flush`]) lets the host keep admitting while it is in
+//! progress, through [`AggregateCore::admit_during`]: a metric whose context the flush has not visited yet makes the
+//! flush visit it first, on the spot, so every context sees the flush and then the later metrics, and the output,
+//! losses, and state are those of the flush completed before the batches; only the order in which records leave
+//! differs. The flush never visits a context created after it started, removes what it empties or expires as it
+//! visits it, and, while it is in progress, nothing is refused and the table never grows: a metric that would need
+//! either makes admission complete the flush first.
+//!
 //! # Parameters per call
 //!
 //! The bucket width defines the state, so it is fixed when the core is created ([`LineageParams`]). Every other
@@ -126,7 +134,9 @@ mod snapshot;
 pub use self::snapshot::{AggregateContextSnapshotEntry, AggregateMetricType, ContextSnapshot};
 
 mod state;
-use self::state::{AggregatedMetric, AggregationState, ContextLimit, FlushCursor, FlushMode, Insertion};
+use self::state::{
+    AggregatedMetric, AggregationState, ContextLimit, FlushCursor, FlushMode, Insertion, Touch, Touched,
+};
 
 mod telemetry;
 pub use self::telemetry::AggregateTelemetry;
@@ -397,8 +407,9 @@ pub struct FlushOutcome {
 /// completed by [`AggregateCore::end_flush`], or given up with [`AggregateCore::abandon_flush`]. It carries the
 /// parameters it started with, so a flush resumed in a later call applies the same ones throughout.
 ///
-/// Until the flush ends, its core must not admit anything: the flush visits contexts by their position in the core's
-/// table, which an insertion can move. A state is only meaningful to the core that created it.
+/// Until the flush ends, its core must not admit anything, except through [`AggregateCore::admit_during`] while the
+/// flush is [interleaved][AggregateCore::begin_interleaved_flush]: the flush visits contexts by their position in the
+/// core's table, which an insertion can move. A state is only meaningful to the core that created it.
 #[must_use = "a flush must be ended or abandoned"]
 #[derive(Debug)]
 pub struct FlushState {
@@ -423,6 +434,20 @@ impl FlushState {
     /// Returns the parameters the flush applies.
     pub fn params(&self) -> &FlushParams {
         &self.params
+    }
+
+    /// Returns `true` if admission may continue while the flush is in progress: it was started by
+    /// [`begin_interleaved_flush`][AggregateCore::begin_interleaved_flush].
+    pub fn is_interleaved(&self) -> bool {
+        self.cursor.is_interleaved()
+    }
+
+    /// Returns how far the pass has come: the contexts it has visited so far, by its steps or, for an interleaved
+    /// flush, because admission reached them first, and those it visits in all, the contexts the core held when it
+    /// started.
+    pub fn progress(&self) -> PassProgress {
+        let (visited, total) = self.cursor.progress();
+        PassProgress { visited, total }
     }
 
     /// Takes what the pass has counted since it started, or since the last take: the contexts a discard removed while
@@ -621,19 +646,104 @@ impl AggregateCore {
     where
         I: IntoIterator<Item = Metric>,
     {
+        let (outcome, ended) = self.admit_inner(now, metrics, params, &mut None, |_| {});
+        debug_assert!(ended.is_none(), "no flush is in progress");
+        outcome
+    }
+
+    /// Admits a batch of metrics that arrived at `now`, in whole Unix seconds, with the given parameters, while the
+    /// flush `flush`, if any, is in progress, and returns what admitting did, with the outcome of the flush if
+    /// admitting completed it.
+    ///
+    /// The flush must be [interleaved][Self::begin_interleaved_flush]. Admitting then produces exactly the output,
+    /// state, and outcomes of the flush completed before the batch: each metric whose context the flush has not visited
+    /// yet first makes the flush visit it, on the spot, emitting into `sink` what the visit releases, with the flush's
+    /// parameters, its emission filter included, and then is inserted, creating the context anew if the visit removed
+    /// it. Contexts created meanwhile are never visited by the flush.
+    ///
+    /// Nothing is refused while the flush is in progress, and the table never grows, which would move the contexts the
+    /// flush has yet to visit. A metric for a new context that the limit would refuse, or that the table has no room
+    /// for without growing, makes admission complete the flush first, emitting the rest of it into `sink`, and then
+    /// inserts it, admitting or refusing it as after a flush that completed first; `flush` is then `None`, and the
+    /// flush's outcome is returned with the batch's. [`has_room_for`][Self::has_room_for] tells a host beforehand that
+    /// no metric of a batch can do this.
+    ///
+    /// Without a flush, this is [`admit_with`][Self::admit_with].
+    pub fn admit_during<I, F>(
+        &mut self, now: u64, metrics: I, params: &AdmitParams, flush: &mut Option<FlushState>, sink: F,
+    ) -> (AdmitOutcome, Option<FlushOutcome>)
+    where
+        I: IntoIterator<Item = Metric>,
+        F: FnMut(Metric),
+    {
+        debug_assert!(
+            flush.as_ref().is_none_or(FlushState::is_interleaved),
+            "admission continues only during an interleaved flush"
+        );
+        self.admit_inner(now, metrics, params, flush, sink)
+    }
+
+    fn admit_inner<I, F>(
+        &mut self, now: u64, metrics: I, params: &AdmitParams, flush: &mut Option<FlushState>, mut sink: F,
+    ) -> (AdmitOutcome, Option<FlushOutcome>)
+    where
+        I: IntoIterator<Item = Metric>,
+        F: FnMut(Metric),
+    {
+        let Self {
+            state,
+            budget,
+            shared,
+            lanes,
+            admitted_last_batch,
+            ..
+        } = self;
+        let shared_budget = shared.then_some(&*budget);
+
         // The limit holds the batch's reservation of budget units, if the core shares budgets. The lanes of a state
         // owner on several lanes admit at once, on tasks of their own, so a lane takes its new contexts' units in
         // blocks, starting with as many as its previous batch admitted; a core on one lane takes each unit as it
         // admits its context, so that it never holds a unit another state owner could be refused for.
-        let mut limit = context_limit(&self.budget, self.shared, params.context_limit);
-        if self.lanes.as_ref().is_some_and(|lanes| lanes.lanes() > 1) {
-            limit = limit.in_blocks(self.admitted_last_batch);
+        let mut limit = context_limit(budget, *shared, params.context_limit);
+        if lanes.as_ref().is_some_and(|lanes| lanes.lanes() > 1) {
+            limit = limit.in_blocks(*admitted_last_batch);
         }
         let mut outcome = AdmitOutcome::default();
+        let mut ended = None;
         for metric in metrics {
-            let was_breached = self.state.context_limit_breached();
+            let mut was_breached = state.context_limit_breached();
             let points = metric.values().len();
-            match self.state.insert(now, metric, &mut limit) {
+            let inserted = match flush.as_mut() {
+                Some(pending) => {
+                    let mut touch = Touch {
+                        cursor: &mut pending.cursor,
+                        hist_config: &pending.params.histograms,
+                        filter: pending.params.filter.as_deref(),
+                        budget: shared_budget,
+                        sink: &mut sink,
+                    };
+                    state.insert_touching(now, metric, &mut limit, &mut touch)
+                }
+                None => Touched::Done(state.insert(now, metric, &mut limit)),
+            };
+            let insertion = match inserted {
+                Touched::Done(insertion) => insertion,
+                Touched::HandedBack(metric) => {
+                    // The flush completes first, and the metric is then admitted, or refused, as after it.
+                    let mut pending = flush.take().expect("only a flush in progress hands a metric back");
+                    while state.flush_next(
+                        &mut pending.cursor,
+                        &pending.params.histograms,
+                        pending.params.filter.as_deref(),
+                        shared_budget,
+                        &mut sink,
+                    ) {}
+                    ended = Some(end_pass(state, budget, *shared, pending));
+                    was_breached = state.context_limit_breached();
+                    state.insert(now, metric, &mut limit)
+                }
+            };
+            match insertion {
                 Insertion::Inserted { replaced_points } => {
                     outcome.accepted += 1;
                     if replaced_points > 0 {
@@ -647,16 +757,16 @@ impl AggregateCore {
                         // First drop since the last recovery.
                         outcome.limit_reached = true;
                     }
-                    self.state.telemetry_mut().increment_events_dropped();
+                    state.telemetry_mut().increment_events_dropped();
                     outcome.dropped += 1;
                     outcome.dropped_points += points;
                 }
             }
         }
         // The batch is admitted: the units it reserved and no new context took go back to the budgets.
-        self.admitted_last_batch = limit.admitted();
+        *admitted_last_batch = limit.admitted();
         drop(limit);
-        outcome
+        (outcome, ended)
     }
 
     /// Starts a flush at `now`, in whole Unix seconds, with the parameters the core was created with, or returns `None`
@@ -694,6 +804,71 @@ impl AggregateCore {
     /// [`end_flush`][Self::end_flush] or [`abandon_flush`][Self::abandon_flush] before anything is admitted.
     pub fn begin_flush(&mut self, now: u64, last: bool, params: &FlushParams) -> Option<FlushState> {
         self.start(FlushMode::Closed, now, last, params.clone())
+    }
+
+    /// Starts a flush at `now`, in whole Unix seconds, with the given parameters, that admission may continue during,
+    /// or returns `None` if the core holds no contexts.
+    ///
+    /// The flush emits the closed buckets, as [`begin_flush`][Self::begin_flush] does for a flush that is not the
+    /// host's last, and is driven and ended the same way; but until it ends, the core admits batches through
+    /// [`admit_during`][Self::admit_during], and the outcome, the output, and the state are those of the flush
+    /// completed before every batch admitted during it. Only the order in which records leave differs.
+    ///
+    /// The flush is fixed when it starts: its time, its parameters, its idle-counter zeros, and the contexts it visits,
+    /// those the core holds now. It visits each of them exactly once, by its steps or because admission reached them
+    /// first, and removes those it empties or expires as it visits them, releasing their budget units then, rather
+    /// than when it ends. A core with [lanes][Self::with_lanes] does not interleave its flushes.
+    pub fn begin_interleaved_flush(&mut self, now: u64, params: &FlushParams) -> Option<FlushState> {
+        debug_assert!(self.lanes.is_none(), "a core on lanes does not interleave its flushes");
+        if self.state.is_empty() {
+            return None;
+        }
+        let was_breached = self.state.context_limit_breached();
+        let cursor = self.state.start_interleaved_flush(now, params.counter_expiry);
+        Some(FlushState {
+            cursor,
+            was_breached,
+            counted: true,
+            params: params.clone(),
+        })
+    }
+
+    /// Returns `true` if `contexts` new contexts fit in the core without growing its table, and would leave it
+    /// strictly below the context limit `limit`, and, for a core that shares budgets, below the limit in its node's
+    /// budget and within the global budget's capacity: so that a batch that creates at most that many, admitted while
+    /// an interleaved flush is in progress, is refused nothing and never makes admission complete the flush.
+    ///
+    /// The budgets' counts can change as other cores admit against them, so a host asks just before it delivers the
+    /// batch.
+    pub fn has_room_for(&self, contexts: usize, limit: usize) -> bool {
+        self.state
+            .has_room_for(contexts, &context_limit(&self.budget, self.shared, limit))
+    }
+
+    /// Returns the time of the core's last flush, in whole Unix seconds, or `0` if it never flushed since it was
+    /// created or last forgot its flushes.
+    #[cfg(test)]
+    pub fn last_flush(&self) -> u64 {
+        self.state.last_flush()
+    }
+
+    /// Returns the number of buckets of the core's table and its capacity.
+    #[cfg(test)]
+    pub fn table_geometry(&self) -> (usize, usize) {
+        self.state.table_geometry()
+    }
+
+    /// Returns the position of every context the core holds in its table, and whether the last interleaved flush
+    /// started has visited it.
+    #[cfg(test)]
+    pub fn positions(&self) -> Vec<(usize, Context, bool)> {
+        self.state.positions()
+    }
+
+    /// Numbers the core's interleaved passes as if `passes` of them had run.
+    #[cfg(test)]
+    pub fn set_passes(&mut self, passes: u32) {
+        self.state.set_passes(passes);
     }
 
     /// Starts a flush as [`begin_flush`][Self::begin_flush] does, as one lane's flush of a lineage on several lanes,
@@ -808,24 +983,8 @@ impl AggregateCore {
     /// of a tick another lane counted ([`begin_flush_with`][Self::begin_flush_with]). A drain or a discard, which
     /// removed each context as it visited it, leaves the core as if it had never flushed, and is not counted as a
     /// flush. The outcome holds what the pass counted since the last [take][FlushState::take_counted], if any.
-    pub fn end_flush(&mut self, mut state: FlushState) -> FlushOutcome {
-        let counted = state.take_counted();
-        let FlushState {
-            cursor,
-            was_breached,
-            counted: counts_as_flush,
-            params,
-        } = state;
-        let mode = cursor.mode();
-        let limit = context_limit(&self.budget, self.shared, params.context_limit);
-        self.state.finish_flush(cursor, limit);
-        if mode == FlushMode::Closed && counts_as_flush {
-            self.state.telemetry_mut().increment_flushes();
-        }
-        FlushOutcome {
-            recovered: was_breached && !self.state.context_limit_breached(),
-            ..counted
-        }
+    pub fn end_flush(&mut self, state: FlushState) -> FlushOutcome {
+        end_pass(&mut self.state, &self.budget, self.shared, state)
     }
 
     /// Gives up on a flush after a failed delivery: nothing more is removed or recorded.
@@ -850,6 +1009,28 @@ impl Drop for AggregateCore {
             let removed = self.state.release_all();
             self.budget.release(removed);
         }
+    }
+}
+
+/// Completes the pass `flush` of a core's `state`, which draws on `budget` if `shared`; see
+/// [`AggregateCore::end_flush`].
+fn end_pass(state: &mut AggregationState, budget: &ContextBudget, shared: bool, mut flush: FlushState) -> FlushOutcome {
+    let counted = flush.take_counted();
+    let FlushState {
+        cursor,
+        was_breached,
+        counted: counts_as_flush,
+        params,
+    } = flush;
+    let mode = cursor.mode();
+    let limit = context_limit(budget, shared, params.context_limit);
+    state.finish_flush(cursor, limit);
+    if mode == FlushMode::Closed && counts_as_flush {
+        state.telemetry_mut().increment_flushes();
+    }
+    FlushOutcome {
+        recovered: was_breached && !state.context_limit_breached(),
+        ..counted
     }
 }
 

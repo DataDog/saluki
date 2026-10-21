@@ -3,7 +3,7 @@
 use std::{hash::BuildHasher as _, num::NonZeroU64, time::Duration};
 
 use ddsketch::DDSketch;
-use hashbrown::HashTable;
+use hashbrown::{hash_table::OccupiedEntry, HashTable};
 use saluki_core::{
     data_model::event::metric::{context::Context, *},
     execution::BudgetReservation,
@@ -20,12 +20,16 @@ use super::{
     ContextBudget, LastSeen,
 };
 
-/// One context's aggregated values, the metadata of its first insertion, and when it was last updated.
+/// One context's aggregated values, the metadata of its first insertion, when it was last updated, and the last
+/// interleaved pass that visited it.
 #[derive(Clone)]
 pub(super) struct AggregatedMetric {
     values: MetricValues,
     metadata: MetricMetadata,
     last_seen: u64,
+    /// The number of the last interleaved pass that visited the context, or, for a context created while one was in
+    /// progress, of that pass, which never visits it; see [Interleaved passes](AggregationState#interleaved-passes).
+    pass: u32,
 }
 
 /// The hasher of the context table: randomly seeded per state, as the native map's is.
@@ -35,9 +39,29 @@ type ContextHasher = foldhash::quality::RandomState;
 ///
 /// Contexts are held in a hash table keyed by context identity, its 64-bit hash, so colliding contexts merge into the
 /// first one inserted. The table is a [`HashTable`] rather than a map so that a flush can visit its entries one at a
-/// time by bucket position and resume between them. Positions stay valid because nothing is inserted while a flush is
-/// in progress, and the only entries removed then, by a drain or a discard, are the ones it visits: removing an entry
-/// leaves every other one where it is.
+/// time by bucket position and resume between them. Positions stay valid because the table never rehashes while a
+/// flush is in progress: nothing is inserted during one, except during an interleaved pass, which inserts only while
+/// the table has room without growing; and the only entries removed then are the ones it visits, while removing an
+/// entry leaves every other one where it is.
+///
+/// # Interleaved passes
+///
+/// A flush started with [`start_interleaved_flush`][Self::start_interleaved_flush] lets admission continue while it is
+/// in progress. It is fixed when it starts: its plan, and the contexts it visits, those the table holds then. It visits
+/// each of them exactly once, before anything admitted later touches it, and never visits a context created after it
+/// started. To know which, the state numbers its interleaved passes: pass `k` visits the entries whose `pass` is below
+/// `k` and sets it to `k`, and an entry created while it is in progress is created with `k`, so the pass skips it.
+/// Admission that reaches an entry the pass has not visited yet visits it first, on the spot, with the pass's plan
+/// ([`insert_touching`][Self::insert_touching]), and then applies the metric, creating the entry anew if the visit
+/// removed it. So every context sees the flush and then the metrics admitted after it started, in arrival order, as it
+/// would had the flush completed before them.
+///
+/// An interleaved pass removes each context it empties or expires at its visit, in place, and gives back its budget
+/// units then, rather than queueing it for its end. While it is in progress, admission never refuses a new context and
+/// never grows the table: a new context that the limit would refuse, or that the table has no room for without
+/// growing, is handed back, so that the caller completes the pass first and then inserts it. The end of the pass
+/// judges the breach flag by the contexts the pass left, without those created while it was in progress, so the flag
+/// ends as it would had the pass completed before them.
 ///
 /// The state keeps only what defines its buckets, the bucket width. Every other parameter is passed to the call it
 /// applies to, so that one state can serve batches and flushes whose parameters differ: the context limit to each
@@ -54,6 +78,8 @@ pub(super) struct AggregationState {
     contexts_remove_buf: Vec<Context>,
     bucket_width_secs: NonZeroU64,
     last_flush: u64,
+    /// The number of the last interleaved pass started, which every context created now is created with.
+    passes: u32,
     /// How a held context's last update follows the times it is updated at.
     last_seen: LastSeen,
     telemetry: AggregateTelemetry,
@@ -158,11 +184,33 @@ impl<'a> ContextLimit<'a> {
     /// and does not use, fewer than [`BudgetReservation::MAX_BLOCK`], and can keep the flag for a later pass to clear:
     /// a drop before that pass belongs to the episode it continues, which warned already. It never clears the flag
     /// while the held contexts fill a budget.
-    fn is_below(&self, len: usize) -> bool {
+    ///
+    /// `born` of the held contexts were created while the pass that ends was in progress, which an interleaved pass
+    /// allows. The pass judges the state without them, as it would had it completed before they were admitted: they
+    /// count neither in `len` nor in the budgets.
+    fn is_below(&self, len: usize, born: usize) -> bool {
+        let born_units = limit_units(born);
         match self.shared {
-            None => len < self.limit,
+            None => len.saturating_sub(born) < self.limit,
             Some(budget) => {
-                budget.node.used() < limit_units(self.limit) && budget.global.used() < budget.global.capacity()
+                budget.node.used().saturating_sub(born_units) < limit_units(self.limit)
+                    && budget.global.used().saturating_sub(born_units) < budget.global.capacity()
+            }
+        }
+    }
+
+    /// Returns `true` if `contexts` new contexts admitted to a state holding `len` would leave it strictly below the
+    /// limit: none of them can be refused, and a pass that ends after them finds the state below the limit.
+    ///
+    /// A state that shares budgets reads their counts, which other states can change at once: the answer holds for as
+    /// long as no other state admits against them.
+    fn has_room_below(&self, len: usize, contexts: usize) -> bool {
+        let units = limit_units(contexts);
+        match self.shared {
+            None => len.checked_add(contexts).is_some_and(|after| after < self.limit),
+            Some(budget) => {
+                budget.node.used().saturating_add(units) < limit_units(self.limit)
+                    && budget.global.used().saturating_add(units) < budget.global.capacity()
             }
         }
     }
@@ -182,6 +230,16 @@ pub(super) enum Insertion {
     /// The metric was inserted. Its context held `replaced_points` points of another kind, or of a rate over another
     /// interval, which the metric's values replaced.
     Inserted { replaced_points: usize },
+}
+
+/// What inserting a metric while an interleaved pass is in progress did.
+pub(super) enum Touched {
+    /// The metric was inserted.
+    Done(Insertion),
+
+    /// The metric was for a new context that the limit would refuse, or that the table has no room for without
+    /// growing: nothing was inserted, and the metric is handed back, to insert once the pass has completed.
+    HandedBack(Metric),
 }
 
 /// What a pass over the state counted as it visited contexts.
@@ -230,7 +288,8 @@ pub(super) struct FlushPlan {
 /// In a native flush, a context is queued for removal only once its metrics have been emitted and the next context is
 /// visited, or the flush finishes, so a flush abandoned while its last context's metrics are being delivered leaves
 /// that context queued exactly as the native flush, which stopped at the failed delivery, did. A drain or a discard
-/// instead removes each context as it visits it, so that its removals, like its emissions, are spread over its steps.
+/// instead removes each context as it visits it, so that its removals, like its emissions, are spread over its steps,
+/// and so does an interleaved pass, so that admission never finds a context the pass has removed.
 #[derive(Debug)]
 pub(super) struct FlushCursor {
     plan: FlushPlan,
@@ -238,9 +297,32 @@ pub(super) struct FlushCursor {
     pending_removal: Option<usize>,
     removed: usize,
     counts: PassCounts,
+    /// The number of the pass, if it is an interleaved pass; see [Interleaved
+    /// passes](AggregationState#interleaved-passes).
+    pass: Option<u32>,
+    /// The contexts the table held when the pass started, which it visits.
+    total: usize,
+    /// The contexts the pass has visited, by its cursor or on touch.
+    visited: usize,
+    /// The contexts created while the pass was in progress, which it never visits.
+    born: usize,
 }
 
 impl FlushCursor {
+    fn new(plan: FlushPlan, total: usize) -> Self {
+        Self {
+            plan,
+            next_bucket: 0,
+            pending_removal: None,
+            removed: 0,
+            counts: PassCounts::default(),
+            pass: None,
+            total,
+            visited: 0,
+            born: 0,
+        }
+    }
+
     pub(super) fn mode(&self) -> FlushMode {
         self.plan.mode
     }
@@ -249,10 +331,31 @@ impl FlushCursor {
         self.plan.current_time
     }
 
+    /// Returns `true` if the pass is an interleaved pass, which admission may continue during.
+    pub(super) fn is_interleaved(&self) -> bool {
+        self.pass.is_some()
+    }
+
+    /// Returns the contexts the pass has visited, by its cursor or on touch, and those it visits in all: the contexts
+    /// the table held when it started.
+    pub(super) fn progress(&self) -> (usize, usize) {
+        (self.visited, self.total)
+    }
+
     /// Takes what the pass has counted since its counts were last taken.
     pub(super) fn take_counts(&mut self) -> PassCounts {
         std::mem::take(&mut self.counts)
     }
+}
+
+/// What admission needs to visit, on touch, the contexts of an interleaved pass in progress that it reaches before the
+/// pass does: the pass, how it emits, the budgets the state shares, if any, and where its records go.
+pub(super) struct Touch<'a, F> {
+    pub(super) cursor: &'a mut FlushCursor,
+    pub(super) hist_config: &'a HistogramConfiguration,
+    pub(super) filter: Option<&'a dyn EmissionFilter>,
+    pub(super) budget: Option<&'a ContextBudget>,
+    pub(super) sink: &'a mut F,
 }
 
 impl AggregationState {
@@ -263,6 +366,7 @@ impl AggregationState {
             contexts_remove_buf: Vec::new(),
             bucket_width_secs,
             last_flush: 0,
+            passes: 0,
             last_seen: LastSeen::default(),
             telemetry,
             context_limit_breached: false,
@@ -303,7 +407,40 @@ impl AggregationState {
     /// Returns `true` if the state, holding what it holds now, is below `limit`, as the end of a flush judges it to
     /// clear its breach flag.
     pub(super) fn is_below_limit(&self, limit: &ContextLimit<'_>) -> bool {
-        limit.is_below(self.contexts.len())
+        limit.is_below(self.contexts.len(), 0)
+    }
+
+    /// Returns `true` if `contexts` new contexts fit in the table without growing it, and would leave the state
+    /// strictly below `limit`, so that admitting them during an interleaved pass hands none of them back.
+    pub(super) fn has_room_for(&self, contexts: usize, limit: &ContextLimit<'_>) -> bool {
+        let len = self.contexts.len();
+        len.checked_add(contexts)
+            .is_some_and(|after| after <= self.contexts.capacity())
+            && limit.has_room_below(len, contexts)
+    }
+
+    /// Returns the table's number of buckets and its capacity.
+    #[cfg(test)]
+    pub(super) fn table_geometry(&self) -> (usize, usize) {
+        (self.contexts.num_buckets(), self.contexts.capacity())
+    }
+
+    /// Returns the position of every context held, and whether the last interleaved pass started has visited it,
+    /// which, while that pass is in progress, is whether it still needs to.
+    #[cfg(test)]
+    pub(super) fn positions(&self) -> Vec<(usize, Context, bool)> {
+        (0..self.contexts.num_buckets())
+            .filter_map(|index| {
+                let (context, aggregated) = self.contexts.get_bucket(index)?;
+                Some((index, context.clone(), aggregated.pass >= self.passes))
+            })
+            .collect()
+    }
+
+    /// Sets the number of the last interleaved pass started, as if that many had run.
+    #[cfg(test)]
+    pub(super) fn set_passes(&mut self, passes: u32) {
+        self.passes = passes;
     }
 
     /// Returns `true` if the state holds `context`, idle or not.
@@ -342,18 +479,92 @@ impl AggregationState {
 
     /// Inserts `metric`, which arrived at `timestamp`, unless it is for a new context and `limit` leaves no room for
     /// it.
+    ///
+    /// No interleaved pass may be in progress; see [`insert_touching`][Self::insert_touching].
     pub(super) fn insert(&mut self, timestamp: u64, metric: Metric, limit: &mut ContextLimit<'_>) -> Insertion {
+        match self.insert_inner(timestamp, metric, limit, None::<&mut Touch<'_, fn(Metric)>>) {
+            Touched::Done(insertion) => insertion,
+            Touched::HandedBack(_) => unreachable!("only an interleaved pass hands a metric back"),
+        }
+    }
+
+    /// Inserts `metric`, which arrived at `timestamp`, while the interleaved pass of `touch` is in progress: visits its
+    /// context first, on the spot, if the pass has not visited it yet, emitting what the visit releases into the
+    /// touch's sink, and then inserts the metric, creating the context anew if the visit removed it.
+    ///
+    /// A new context is never refused while the pass is in progress, and never grows the table, which would move the
+    /// entries the pass has yet to visit: if `limit` leaves no room for it, or the table none without growing, the
+    /// metric is handed back, with nothing inserted, and the caller completes the pass before it inserts it.
+    pub(super) fn insert_touching<F>(
+        &mut self, timestamp: u64, metric: Metric, limit: &mut ContextLimit<'_>, touch: &mut Touch<'_, F>,
+    ) -> Touched
+    where
+        F: FnMut(Metric),
+    {
+        debug_assert_eq!(
+            touch.cursor.pass,
+            Some(self.passes),
+            "only the last interleaved pass started is touched"
+        );
+        self.insert_inner(timestamp, metric, limit, Some(touch))
+    }
+
+    fn insert_inner<F>(
+        &mut self, timestamp: u64, metric: Metric, limit: &mut ContextLimit<'_>, mut touch: Option<&mut Touch<'_, F>>,
+    ) -> Touched
+    where
+        F: FnMut(Metric),
+    {
         let hash = self.hasher.hash_one(metric.context());
 
-        // If we haven't seen this context yet, and it would put us over the limit to insert it, then return early.
-        if self
+        let mut held = false;
+        if let Ok(mut entry) = self
             .contexts
-            .find(hash, |(context, _)| context == metric.context())
-            .is_none()
-            && !limit.try_admit(self.contexts.len())
+            .find_entry(hash, |(context, _)| context == metric.context())
         {
-            self.context_limit_breached = true;
-            return Insertion::Rejected;
+            held = true;
+            if let Some(touch) = touch.as_deref_mut() {
+                // Flush on touch: a context the pass has not visited yet sees the flush before the metric.
+                let pass = touch.cursor.pass.expect("an interleaved pass is numbered");
+                let (context, aggregated) = entry.get_mut();
+                if aggregated.pass < pass {
+                    aggregated.pass = pass;
+                    touch.cursor.visited += 1;
+                    let emission = Emission {
+                        bucket_width_secs: self.bucket_width_secs,
+                        hist_config: touch.hist_config,
+                        filter: touch.filter,
+                    };
+                    let removes = visit_closed(
+                        &touch.cursor.plan,
+                        context,
+                        aggregated,
+                        &emission,
+                        &mut self.telemetry,
+                        &mut touch.cursor.counts,
+                        touch.sink,
+                    );
+                    if removes {
+                        remove_visited(entry, &mut self.telemetry, &mut touch.cursor.removed, touch.budget);
+                        held = false;
+                    }
+                }
+            }
+        }
+
+        // If we haven't seen this context yet, and it would put us over the limit to insert it, then return early. While
+        // an interleaved pass is in progress, hand the metric back instead, so that the pass completes first, and do so
+        // as well when the table has no room for it without growing.
+        if !held {
+            if touch.is_some() {
+                let len = self.contexts.len();
+                if len >= self.contexts.capacity() || !limit.try_admit(len) {
+                    return Touched::HandedBack(metric);
+                }
+            } else if !limit.try_admit(self.contexts.len()) {
+                self.context_limit_breached = true;
+                return Touched::Done(Insertion::Rejected);
+            }
         }
 
         let (context, mut values, metadata) = metric.into_parts();
@@ -389,11 +600,20 @@ impl AggregationState {
                     0
                 };
                 aggregated.values.merge(values);
-                Insertion::Inserted { replaced_points }
+                Touched::Done(Insertion::Inserted { replaced_points })
             }
             None => {
                 self.telemetry.increment_contexts(&context, &values);
 
+                // A context created while an interleaved pass is in progress carries the pass's number, so the pass
+                // never visits it.
+                if let Some(touch) = touch {
+                    debug_assert!(
+                        self.contexts.len() < self.contexts.capacity(),
+                        "an insertion during an interleaved pass would grow the table"
+                    );
+                    touch.cursor.born += 1;
+                }
                 let hasher = &self.hasher;
                 self.contexts.insert_unique(
                     hash,
@@ -403,13 +623,14 @@ impl AggregationState {
                             values,
                             metadata,
                             last_seen: timestamp,
+                            pass: self.passes,
                         },
                     ),
                     |(context, _)| hasher.hash_one(context),
                 );
 
                 self.check_bounds(limit);
-                Insertion::Inserted { replaced_points: 0 }
+                Touched::Done(Insertion::Inserted { replaced_points: 0 })
             }
         }
     }
@@ -543,19 +764,36 @@ impl AggregationState {
         // Iterate over each context we're tracking, and flush any values that are in buckets which are now closed.
         debug!(timestamp = current_time, "Flushing buckets.");
 
-        FlushCursor {
-            plan: FlushPlan {
-                mode: FlushMode::Closed,
-                current_time,
-                split_timestamp,
-                counter_expire_secs,
-                zero_value_buckets,
-            },
-            next_bucket: 0,
-            pending_removal: None,
-            removed: 0,
-            counts: PassCounts::default(),
+        let plan = FlushPlan {
+            mode: FlushMode::Closed,
+            current_time,
+            split_timestamp,
+            counter_expire_secs,
+            zero_value_buckets,
+        };
+        FlushCursor::new(plan, self.contexts.len())
+    }
+
+    /// Starts an interleaved flush at `current_time`, which admission may continue during: a flush that is not a final
+    /// one, with idle-counter zeros starting from the state's last flush. See [Interleaved
+    /// passes](Self#interleaved-passes).
+    ///
+    /// `counter_expiry` is how long after it was last updated an idle counter keeps emitting zeros, or `None` to keep
+    /// counters forever.
+    pub(super) fn start_interleaved_flush(
+        &mut self, current_time: u64, counter_expiry: Option<NonZeroU64>,
+    ) -> FlushCursor {
+        if self.passes == u32::MAX {
+            // Out of numbers: every context counts as visited by pass zero, and passes are numbered from one again.
+            for (_, aggregated) in self.contexts.iter_mut() {
+                aggregated.pass = 0;
+            }
+            self.passes = 0;
         }
+        self.passes += 1;
+        let mut cursor = self.start_flush_since(current_time, self.last_flush, false, counter_expiry);
+        cursor.pass = Some(self.passes);
+        cursor
     }
 
     /// Starts a pass that removes every context: a drain, which emits every point held, or a discard, which emits
@@ -565,19 +803,14 @@ impl AggregationState {
     pub(super) fn start_drain(&self, mode: FlushMode) -> FlushCursor {
         debug_assert!(mode != FlushMode::Closed, "a drain removes every context");
         debug!(mode = ?mode, "Draining aggregation state.");
-        FlushCursor {
-            plan: FlushPlan {
-                mode,
-                current_time: self.last_flush,
-                split_timestamp: u64::MAX,
-                counter_expire_secs: 0,
-                zero_value_buckets: SmallVec::new(),
-            },
-            next_bucket: 0,
-            pending_removal: None,
-            removed: 0,
-            counts: PassCounts::default(),
-        }
+        let plan = FlushPlan {
+            mode,
+            current_time: self.last_flush,
+            split_timestamp: u64::MAX,
+            counter_expire_secs: 0,
+            zero_value_buckets: SmallVec::new(),
+        };
+        FlushCursor::new(plan, self.contexts.len())
     }
 
     /// Queues the context whose removal the flush deferred, if any.
@@ -593,8 +826,10 @@ impl AggregationState {
     /// Flushes the next context of a flush in progress, emitting the metrics of its closed buckets into `sink`, with
     /// histograms expanded by `hist_config`, except the records `filter` drops, which are counted instead.
     ///
-    /// A drain or a discard removes the context it visits, and releases its units of `budget`, the budgets the state
-    /// shares, if any. Returns `false`, without emitting anything, once every context has been visited.
+    /// A drain or a discard removes the context it visits, and so does an interleaved pass that empties or expires it,
+    /// and each releases the context's units of `budget`, the budgets the state shares, if any. An interleaved pass
+    /// skips the contexts admission visited first and those created since it started. Returns `false`, without
+    /// emitting anything, once every context has been visited.
     pub(super) fn flush_next<F>(
         &mut self, cursor: &mut FlushCursor, hist_config: &HistogramConfiguration, filter: Option<&dyn EmissionFilter>,
         budget: Option<&ContextBudget>, mut sink: F,
@@ -623,6 +858,7 @@ impl AggregationState {
                 // nothing it emits can leave the state holding a context, or a budget unit, that it no longer counts.
                 let ((context, mut am), _) = entry.remove();
                 cursor.removed += 1;
+                cursor.visited += 1;
                 self.telemetry.decrement_contexts(&context, &am.values);
                 if let Some(budget) = budget {
                     budget.release(1);
@@ -643,68 +879,34 @@ impl AggregationState {
                 return true;
             }
 
-            let Some((context, am)) = self.contexts.get_bucket_mut(index) else {
+            let Ok(mut entry) = self.contexts.get_bucket_entry(index) else {
                 continue;
             };
-
-            // Figure out if we should remove this metric or not if it has no values in open buckets.
-            //
-            // We have a special carve-out for counters here, which we have the ability to keep alive after they are
-            // flushed, based on a configured expiration period. This allows us to continue emitting a zero value for
-            // counters when they're idle, which can make them appear "live" in downstream systems, even when they're
-            // not.
-            //
-            // This is useful for sparsely-updated counters.
-            let should_expire_if_empty = match &am.values {
-                MetricValues::Counter(..) => {
-                    saluki_antithesis::always_le!(
-                        am.last_seen,
-                        u64::MAX - plan.counter_expire_secs,
-                        "aggregate counter expiry add does not overflow",
-                        { "last_seen": am.last_seen, "counter_expire_secs": plan.counter_expire_secs }
-                    );
-                    plan.counter_expire_secs != 0
-                        && am.last_seen.saturating_add(plan.counter_expire_secs) < plan.current_time
+            let (context, am) = entry.get_mut();
+            if let Some(pass) = cursor.pass {
+                // Admission visited this context first, or created it after the pass started.
+                if am.pass >= pass {
+                    continue;
                 }
-                _ => true,
-            };
+                am.pass = pass;
+            }
+            cursor.visited += 1;
 
-            // If we're dealing with a counter, we'll merge in our calculated set of zero values. We only merge in the
-            // values that represent now-closed buckets.
-            //
-            // This is also safe to do even when there are real values in those buckets since adding zero to anything is
-            // a no-op from the perspective of what we end up flushing, and it doesn't mess with the "last seen" time.
-            if let MetricValues::Counter(..) = &mut am.values {
-                let expires_at = am.last_seen.saturating_add(plan.counter_expire_secs);
-                for (zv_bucket_start, zero_value) in &plan.zero_value_buckets {
-                    if expires_at > *zv_bucket_start {
-                        am.values.merge(zero_value.clone());
-                    } else {
-                        // Since zero-value buckets are in order, we can break early if this bucket is past the
-                        // expiration cutoff of the counter. No other bucket will be within the expiration range.
-                        break;
-                    }
+            let removes = visit_closed(
+                plan,
+                context,
+                am,
+                &emission,
+                &mut self.telemetry,
+                &mut cursor.counts,
+                &mut sink,
+            );
+            if removes {
+                if cursor.pass.is_some() {
+                    remove_visited(entry, &mut self.telemetry, &mut cursor.removed, budget);
+                } else {
+                    cursor.pending_removal = Some(index);
                 }
-            }
-
-            // Finally, figure out if the current metric can be removed.
-            //
-            // For any metric with values that are in open buckets, we split off the values that are in closed buckets
-            // and keep the metric alive. When all the values are in closed buckets, or there are no values, we'll
-            // remove the metric if `should_remove_if_empty` is `true`.
-            //
-            // This means we'll always remove all-closed/empty non-counter metrics, and we _may_ remove all-closed/empty
-            // counters.
-            if let Some(closed_bucket_values) = am.values.split_at_timestamp(plan.split_timestamp) {
-                self.telemetry.increment_flushed(&closed_bucket_values);
-
-                // We got some closed bucket values, so flush those out.
-                let suppressed = emission.emit(context, closed_bucket_values, &am.metadata, &mut sink);
-                cursor.counts.suppressed.add(suppressed);
-            }
-
-            if am.values.is_empty() && should_expire_if_empty {
-                cursor.pending_removal = Some(index);
             }
             return true;
         }
@@ -712,7 +914,8 @@ impl AggregationState {
     }
 
     /// Completes a flush: removes the contexts it emptied or expired, releasing their budget units, clears the breach
-    /// flag if the state is below `limit`, and records the flush.
+    /// flag if the state, without the contexts created while an interleaved pass was in progress, is below `limit`,
+    /// and records the flush.
     ///
     /// A native flush is recorded as the last flush; after a drain or a discard, which removed every context as they
     /// visited it, the state is as if it had never flushed. The owner of `cursor` takes what the pass counted from it
@@ -721,6 +924,12 @@ impl AggregationState {
         debug_assert!(
             cursor.next_bucket >= self.contexts.num_buckets(),
             "a flush finished before visiting every context"
+        );
+        debug_assert!(
+            !cursor.is_interleaved() || cursor.visited == cursor.total,
+            "an interleaved pass visited {} of the {} contexts it started with",
+            cursor.visited,
+            cursor.total
         );
         self.queue_pending_removal(&mut cursor);
 
@@ -738,7 +947,7 @@ impl AggregationState {
         self.contexts
             .shrink_to(target_contexts_capacity, |(context, _)| hasher.hash_one(context));
 
-        if self.context_limit_breached && limit.is_below(self.contexts.len()) {
+        if self.context_limit_breached && limit.is_below(self.contexts.len(), cursor.born) {
             self.context_limit_breached = false;
         }
         if limit.shared.is_some() {
@@ -778,6 +987,88 @@ impl AggregationState {
         let held = self.contexts.len();
         self.contexts.clear();
         queued + held
+    }
+}
+
+/// Visits one context for a native flush, by the flush's cursor or on touch: merges the idle-counter zeros its expiry
+/// reaches, emits its closed buckets by `emission` into `sink`, counting in `counts` what the emission filter skips,
+/// and returns `true` if the flush removes the context, which it emptied, and which is not a counter kept alive.
+fn visit_closed<F>(
+    plan: &FlushPlan, context: &Context, am: &mut AggregatedMetric, emission: &Emission<'_>,
+    telemetry: &mut AggregateTelemetry, counts: &mut PassCounts, sink: &mut F,
+) -> bool
+where
+    F: FnMut(Metric),
+{
+    // Figure out if we should remove this metric or not if it has no values in open buckets.
+    //
+    // We have a special carve-out for counters here, which we have the ability to keep alive after they are flushed,
+    // based on a configured expiration period. This allows us to continue emitting a zero value for counters when
+    // they're idle, which can make them appear "live" in downstream systems, even when they're not.
+    //
+    // This is useful for sparsely-updated counters.
+    let should_expire_if_empty = match &am.values {
+        MetricValues::Counter(..) => {
+            saluki_antithesis::always_le!(
+                am.last_seen,
+                u64::MAX - plan.counter_expire_secs,
+                "aggregate counter expiry add does not overflow",
+                { "last_seen": am.last_seen, "counter_expire_secs": plan.counter_expire_secs }
+            );
+            plan.counter_expire_secs != 0 && am.last_seen.saturating_add(plan.counter_expire_secs) < plan.current_time
+        }
+        _ => true,
+    };
+
+    // If we're dealing with a counter, we'll merge in our calculated set of zero values. We only merge in the values
+    // that represent now-closed buckets.
+    //
+    // This is also safe to do even when there are real values in those buckets since adding zero to anything is a
+    // no-op from the perspective of what we end up flushing, and it doesn't mess with the "last seen" time.
+    if let MetricValues::Counter(..) = &mut am.values {
+        let expires_at = am.last_seen.saturating_add(plan.counter_expire_secs);
+        for (zv_bucket_start, zero_value) in &plan.zero_value_buckets {
+            if expires_at > *zv_bucket_start {
+                am.values.merge(zero_value.clone());
+            } else {
+                // Since zero-value buckets are in order, we can break early if this bucket is past the expiration
+                // cutoff of the counter. No other bucket will be within the expiration range.
+                break;
+            }
+        }
+    }
+
+    // Finally, figure out if the current metric can be removed.
+    //
+    // For any metric with values that are in open buckets, we split off the values that are in closed buckets and keep
+    // the metric alive. When all the values are in closed buckets, or there are no values, we'll remove the metric if
+    // `should_remove_if_empty` is `true`.
+    //
+    // This means we'll always remove all-closed/empty non-counter metrics, and we _may_ remove all-closed/empty
+    // counters.
+    if let Some(closed_bucket_values) = am.values.split_at_timestamp(plan.split_timestamp) {
+        telemetry.increment_flushed(&closed_bucket_values);
+
+        // We got some closed bucket values, so flush those out.
+        let suppressed = emission.emit(context, closed_bucket_values, &am.metadata, sink);
+        counts.suppressed.add(suppressed);
+    }
+
+    am.values.is_empty() && should_expire_if_empty
+}
+
+/// Removes a context an interleaved pass visited and emptied or expired, in place: every other entry stays where it is.
+/// Counts it as removed, takes it out of the context gauges, and releases its units of `budget`, the budgets the state
+/// shares, if any.
+fn remove_visited(
+    entry: OccupiedEntry<'_, (Context, AggregatedMetric)>, telemetry: &mut AggregateTelemetry, removed: &mut usize,
+    budget: Option<&ContextBudget>,
+) {
+    let ((context, am), _) = entry.remove();
+    *removed += 1;
+    telemetry.decrement_contexts(&context, &am.values);
+    if let Some(budget) = budget {
+        budget.release(1);
     }
 }
 

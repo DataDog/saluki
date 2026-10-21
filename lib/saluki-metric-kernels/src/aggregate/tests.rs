@@ -1210,12 +1210,17 @@ impl GeneratedMetric {
 }
 
 fn arb_generated_metric() -> impl Strategy<Value = GeneratedMetric> {
+    arb_generated_metric_named(&["a", "b", "c", "d"])
+}
+
+/// A generated metric named one of `names`, with zero to two tags, so of one of four contexts per name.
+pub(super) fn arb_generated_metric_named(names: &'static [&'static str]) -> impl Strategy<Value = GeneratedMetric> {
     let piece = (
         prop_oneof![3 => Just(None), 1 => (-40i64..40).prop_map(Some)],
         vec(-3i8..10, 1..4),
     );
     (
-        proptest::sample::select(&["a", "b", "c", "d"][..]),
+        proptest::sample::select(names),
         proptest::sample::subsequence(&["t:1", "t:2"][..], 0..=2),
         proptest::sample::select(&["", "millisecond"][..]),
         0u8..6,
