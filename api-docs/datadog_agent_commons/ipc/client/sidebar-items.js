@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["RemoteAgentClient","StreamingResponse"]};
+window.SIDEBAR_ITEMS = {"fn":["client_name"],"struct":["RemoteAgentClient","StreamingResponse"]};
