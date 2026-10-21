@@ -349,6 +349,25 @@ mod tests {
     }
 
     #[test]
+    fn dd_env_reaches_traces_env_without_setting_default_env() {
+        // Trace sampling selects remote settings by `traces.env`, so `DD_ENV` must reach it without changing
+        // `traces.default_env`.
+        use agent_data_plane_config::defaults::DEFAULT_TRACE_ENV;
+
+        let _guard = test_env_lock();
+        let path = std::env::temp_dir().join(format!("adp_dd_env_{}.yaml", std::process::id()));
+        std::fs::write(&path, "{}\n").unwrap();
+        std::env::set_var("DD_ENV", "prod");
+
+        let loaded = block_on(LoadedConfiguration::load(&path, EnvPrecedence::AfterFile)).expect("local sources load");
+
+        std::env::remove_var("DD_ENV");
+        std::fs::remove_file(&path).ok();
+        assert_eq!(loaded.local().domains.traces.env, "prod");
+        assert_eq!(loaded.local().domains.traces.default_env, DEFAULT_TRACE_ENV);
+    }
+
+    #[test]
     fn ottl_filter_error_mode_environment_variable_reaches_the_model() {
         // `DD_OTTL_FILTER_CONFIG_ERROR_MODE` exercises the enum leaf: the environment value is a
         // plain string, decoded as a Saluki-only leaf, then validated during configuration

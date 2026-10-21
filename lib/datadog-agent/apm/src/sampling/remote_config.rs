@@ -41,7 +41,7 @@ struct SamplerEnvConfig {
 /// An environment name and its sampling overrides.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 struct EnvAndConfig {
-    /// Environment to match against the normalized local default; the payload name is used as given.
+    /// Environment to match against the normalized local environment; the payload name is used as given.
     #[serde(default, deserialize_with = "null_as_default")]
     env: String,
 
@@ -201,19 +201,19 @@ pub struct SamplerSettings {
 }
 
 impl SamplerConfig {
-    /// Chooses settings for the local default environment.
+    /// Chooses settings for the local environment.
     ///
     /// For each field, uses the last matching `by_env` entry, then `all_envs`, then `static_settings`. Fields are
     /// chosen independently, so one field can come from `by_env` while another comes from `all_envs`; earlier
     /// matching `by_env` entries are ignored once a later one matches.
     ///
-    /// The caller normalizes `default_env` as a tag value; names in the remote payload are compared as given. A
-    /// payload name such as `Prod` does not match a normalized `prod`.
-    pub fn resolve(&self, default_env: &str, static_settings: &SamplerSettings) -> SamplerSettings {
+    /// The caller normalizes `env` as a tag value; names in the remote payload are compared as given. A payload name
+    /// such as `Prod` does not match a normalized `prod`.
+    pub fn resolve(&self, env: &str, static_settings: &SamplerSettings) -> SamplerSettings {
         let for_env = self
             .by_env
             .iter()
-            .rfind(|entry| entry.env == default_env)
+            .rfind(|entry| entry.env == env)
             .map(|entry| &entry.config);
 
         let pick = |field: fn(&SamplerEnvConfig) -> Option<f64>, fallback: f64| {
