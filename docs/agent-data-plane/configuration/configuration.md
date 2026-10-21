@@ -522,9 +522,10 @@ The core Agent defaults `env` to an empty string and attaches the configured env
 every metric, event, log, trace, and service check it emits.
 
 ADP uses `env` for traces and APM stats only. When `apm_config.env` is not set, a configured
-`env` sets the trace environment. An empty `env` still takes precedence over the `env:` global
-tags, and the trace environment becomes `none`. ADP does not apply this setting directly to the
-DogStatsD metrics path.
+`env` sets the trace environment. An empty `env` in the configuration file still takes
+precedence over the `env:` global tags, and the trace environment becomes `none`. An empty
+`DD_ENV` counts as unset. ADP does not apply this setting directly to the DogStatsD metrics
+path.
 
 ### `forwarder_apikey_validation_interval`
 

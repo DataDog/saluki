@@ -2,7 +2,7 @@
 
 use saluki_common::strings::StringBuilder;
 use stringtheory::MetaString;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::common::otlp::traces::normalize::normalize_tag_value_into_unchecked;
 
@@ -30,7 +30,8 @@ impl AgentEnv {
     /// 3. the value of the first `env:` entry in `tags`, then in `extra_tags`
     ///
     /// When nothing is selected, or the selected value is empty, the environment is `none`. The result is then
-    /// normalized as a tag value, with no further fallback: a value such as `!!!` resolves to an empty environment.
+    /// normalized as a tag value, with no further fallback: a value such as `!!!` resolves to an empty environment, and
+    /// logs a warning.
     pub fn resolve(apm_env: Option<&str>, env: Option<&str>, tags: &[String], extra_tags: &[String]) -> Self {
         let (source, configured) = apm_env
             .map(|value| ("apm_config.env", value))
@@ -50,12 +51,23 @@ impl AgentEnv {
         };
         let mut normalized = StringBuilder::new();
         normalize_tag_value_into_unchecked(selected, &mut normalized);
-        debug!(
-            source,
-            configured,
-            env = normalized.as_str(),
-            "Resolved the trace agent environment."
-        );
+        if normalized.as_str().is_empty() {
+            // Stats aggregation then drops traces without their own environment, logging an error per span. Explain why
+            // once, at startup.
+            warn!(
+                source,
+                configured,
+                "The trace agent environment normalizes to an empty value. Set `apm_config.env`, `env`, or the \
+                 `env:` global tag to a valid tag value, such as `prod`."
+            );
+        } else {
+            debug!(
+                source,
+                configured,
+                env = normalized.as_str(),
+                "Resolved the trace agent environment."
+            );
+        }
 
         Self(MetaString::from(normalized.as_str()))
     }

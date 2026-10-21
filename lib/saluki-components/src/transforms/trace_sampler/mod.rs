@@ -69,7 +69,7 @@ pub struct TraceSamplerConfiguration {
     target_traces_per_second: f64,
     extra_sample_rate: f64,
     max_catalog_entries: usize,
-    /// Environment assigned to traces without one, and used to select a remote `by_env` entry.
+    /// Environment the priority sampler uses for traces without one, and used to select a remote `by_env` entry.
     agent_env: AgentEnv,
     rare_sampler_enabled: bool,
     rare_sampler_tps: f64,
@@ -88,8 +88,8 @@ impl TraceSamplerConfiguration {
     /// Creates a new `TraceSamplerConfiguration` from the resolved traces domain.
     ///
     /// The OTLP trace settings live in their own domain, so they arrive as a separate slice rather
-    /// than through the traces domain. The priority sampler assigns `agent_env` to traces without an
-    /// environment, and remote sampling selects its `by_env` entry with it.
+    /// than through the traces domain. The priority sampler samples traces without an environment
+    /// under `agent_env`, and remote sampling selects its `by_env` entry with it.
     pub fn from_configuration(
         traces: &domains::traces::Domain, otlp_traces: &domains::otlp::Traces, agent_env: AgentEnv,
     ) -> Self {
