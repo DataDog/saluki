@@ -553,12 +553,96 @@ mod tests {
         });
     }
 
+    /// Waits until `system` reports `port` as the DogStatsD port.
+    async fn await_dogstatsd_port(system: &ConfigurationSystem, port: u16) {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while system.config().domains.dogstatsd.listeners.port != port {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the configuration should report the DogStatsD port {port}"));
+    }
+
+    #[test]
+    fn an_invalid_octal_integer_reads_as_zero_from_every_source() {
+        // The Agent starts with these values and its integer getters read them as 0, so ADP must
+        // neither stop at startup nor reject the stream's raw string.
+        let loaded = load_with_environment(
+            "invalid_octal",
+            "api_key: test-api-key\ndogstatsd_buffer_size: \"0128\"\n",
+            &[
+                ("DD_DOGSTATSD_PORT", "08"),
+                ("DD_CMD_PORT", "08.0"),
+                ("DD_AGENT_IPC_GRPC_MAX_MESSAGE_SIZE", "-09"),
+            ],
+        )
+        .expect("an invalid octal integer loads");
+
+        let local = loaded.local();
+        assert_eq!(local.domains.dogstatsd.listeners.port, 0);
+        assert_eq!(local.control.ipc.cmd_port, 0);
+        assert_eq!(local.control.ipc.grpc_max_message_size, 0);
+        assert_eq!(local.domains.dogstatsd.listeners.buffer_size, 0);
+
+        block_on(async {
+            // The stream forwards the Agent's raw strings, which connected startup accepts.
+            let (agent_tx, agent_rx) = mpsc::channel(8);
+            agent_tx
+                .send(ConfigUpdate::snapshot([
+                    ConfigSetting::explicit("dogstatsd_port", json!("010")),
+                    ConfigSetting::explicit("dogstatsd_buffer_size", json!("09")),
+                ]))
+                .await
+                .unwrap();
+            let (system, updates) = loaded.run(agent_rx).await.expect("the initial snapshot is accepted");
+            assert_eq!(system.config().domains.dogstatsd.listeners.port, 8);
+            assert_eq!(system.config().domains.dogstatsd.listeners.buffer_size, 0);
+
+            // A later update applies too. A rejected update would leave the last value in place.
+            tokio::spawn(updates.run());
+            agent_tx
+                .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                    "dogstatsd_port",
+                    json!("0x10"),
+                )))
+                .await
+                .unwrap();
+            await_dogstatsd_port(&system, 16).await;
+            agent_tx
+                .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                    "dogstatsd_port",
+                    json!("-08"),
+                )))
+                .await
+                .unwrap();
+            await_dogstatsd_port(&system, 0).await;
+        });
+    }
+
+    #[test]
+    fn a_malformed_integer_outside_the_invalid_octal_family_still_stops_startup() {
+        let result = load_with_environment("invalid_octal_boundary", "{}\n", &[("DD_DOGSTATSD_PORT", "08.")]);
+        match result {
+            Err(Error::Base { message }) => assert_eq!(
+                message,
+                "environment variable `DD_DOGSTATSD_PORT` (dogstatsd_port): invalid integer `08.`"
+            ),
+            Err(error) => panic!("expected a base error, got {error}"),
+            Ok(_) => panic!("`08.` should be rejected"),
+        }
+    }
+
     #[test]
     fn a_saluki_only_integer_keeps_its_decimal_grammar() {
         // `dogstatsd_tcp_port` has no Agent counterpart, so a leading zero stays decimal.
         let loaded = load_with_environment("saluki_integer", "{}\n", &[("DD_DOGSTATSD_TCP_PORT", "010")])
             .expect("a zero-padded decimal loads");
         assert_eq!(loaded.local().domains.dogstatsd.listeners.tcp_port, 10);
+
+        let loaded = load_with_environment("saluki_invalid_octal", "{}\n", &[("DD_DOGSTATSD_TCP_PORT", "08")])
+            .expect("a zero-padded decimal loads");
+        assert_eq!(loaded.local().domains.dogstatsd.listeners.tcp_port, 8);
 
         let result = load_with_environment("saluki_hex", "{}\n", &[("DD_DOGSTATSD_TCP_PORT", "0x10")]);
         match result {

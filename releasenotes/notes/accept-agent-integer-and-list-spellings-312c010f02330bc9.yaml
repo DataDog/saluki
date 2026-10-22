@@ -2,9 +2,9 @@ upgrade:
   - |
     For settings that the Datadog Agent also reads, an integer with a leading zero, such as
     ``DD_DOGSTATSD_BUFFER_SIZE=010`` or ``dogstatsd_buffer_size: "010"``, now reads as octal (8), matching
-    the Datadog Agent. Previously it read as decimal (10). A leading-zero value that is not valid octal,
-    such as ``08``, now stops Agent Data Plane at startup. Remove the leading zero to keep the decimal
-    value.
+    the Datadog Agent. Previously it read as decimal (10). A leading-zero value with an ``8`` or ``9``
+    digit, such as ``08``, is not valid octal. As in the Datadog Agent, it now reads as 0 and logs a
+    warning; previously it read as decimal. Remove the leading zero to keep the decimal value.
 fixes:
   - |
     For settings that the Datadog Agent also reads, Agent Data Plane now accepts the same integer spellings

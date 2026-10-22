@@ -9,7 +9,7 @@
 //! Supported splitting and delimiter behavior matches the Agent bug-for-bug (see the per-function
 //! notes, which cite the Agent source). Error handling deliberately diverges: the Agent logs a malformed
 //! value and substitutes an empty result, while this module propagates a hard error so the caller
-//! can reject the value instead of silently losing it.
+//! can reject the value instead of silently losing it. [`crate::cast_de`] notes the one exception.
 //!
 //! The scalar type fallbacks are the string half of [`crate::cast_de`], which every configuration
 //! source shares, so an environment variable and a file accept the same spellings for a leaf.
@@ -312,7 +312,9 @@ mod tests {
         ] {
             assert_eq!(decode(raw, EnvDecode::Integer).unwrap(), json!(expected), "{raw}");
         }
-        assert!(decode("08", EnvDecode::Integer).is_err());
+        // An invalid octal digit reads as 0, as with the Agent's integer getter.
+        assert_eq!(decode("08", EnvDecode::Integer).unwrap(), json!(0));
+        assert!(decode("08.", EnvDecode::Integer).is_err());
     }
 
     #[test]

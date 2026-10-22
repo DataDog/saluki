@@ -13,7 +13,9 @@
 //!
 //! - A value `cast` cannot convert is a hard error here. `cast.To*` swallows its error and yields the
 //!   zero value, so the Agent silently reads a malformed setting as `false`/`0`/`""`;
-//!   [`crate::env_decode`] already rejects such a value rather than losing it.
+//!   [`crate::env_decode`] already rejects such a value rather than losing it. The exception is an
+//!   integer string with a leading `0` and an `8` or `9` digit (see [`parse_i64`]), which reads as `0`
+//!   as it does in the Agent.
 //! - Surrounding whitespace is trimmed from a numeric string, which Go's parsers reject.
 //! - A float string must be finite. Go accepts `inf` and `nan`, which a JSON number cannot hold.
 
@@ -40,11 +42,36 @@ pub(crate) fn parse_bool(raw: &str) -> Result<bool, String> {
 /// `_` digit separators where Go allows them; and the full `i64` range. `"0x10.0"` is `16` because the
 /// zero fraction is dropped before the base is read.
 ///
+/// A signed or unsigned run of decimal digits with a leading `0` and an `8` or `9`, such as `"08"`,
+/// `"-09"`, `"0128"` or `"08.0"`, is octal with a digit out of range, so Go rejects it. The Agent
+/// still starts with such a value and reads it as `0` (`GetInt` logs and returns the zero value), so it
+/// reads as `0` here, with a warning.
+///
 /// # Errors
 ///
 /// Returns a message naming the value when it is not an integer in that grammar.
 pub(crate) fn parse_i64(raw: &str) -> Result<i64, String> {
-    parse_go_int(trim_zero_decimal(raw.trim())).ok_or_else(|| format!("invalid integer `{raw}`"))
+    let literal = trim_zero_decimal(raw.trim());
+    if let Some(value) = parse_go_int(literal) {
+        return Ok(value);
+    }
+    if is_invalid_octal(literal) {
+        tracing::warn!(
+            "Integer `{raw}` has a leading 0, so it is octal, but it holds an 8 or 9. Reading it as 0, as the \
+             Datadog Agent does."
+        );
+        return Ok(0);
+    }
+    Err(format!("invalid integer `{raw}`"))
+}
+
+/// Whether `s` is an optionally signed run of decimal digits with a leading `0` and an `8` or `9`.
+fn is_invalid_octal(s: &str) -> bool {
+    let digits = s.strip_prefix(['+', '-']).unwrap_or(s);
+    digits.len() > 1
+        && digits.starts_with('0')
+        && digits.bytes().all(|byte| byte.is_ascii_digit())
+        && digits.bytes().any(|byte| byte >= b'8')
 }
 
 /// A decimal integer, optionally followed by an all-zero fraction.
@@ -1014,12 +1041,29 @@ mod tests {
         }
     }
 
+    // Go rejects each of these, but the Agent's integer getter reads it as 0 and the Agent starts.
     #[test]
-    fn integer_string_rejects_exactly_what_go_rejects() {
+    fn integer_string_with_an_invalid_octal_digit_reads_as_zero() {
+        for raw in [
+            "08", "09", "-09", "+08", "0128", "00009", "08.0", "08.00", "-08.0", " 08 ",
+        ] {
+            assert_eq!(parse_i64(raw), Ok(0), "{raw}");
+            assert_eq!(as_int(json!(raw)), Ok(0), "{raw} through the leaf deserializer");
+        }
+    }
+
+    // Go also rejects each of these. The Agent reads them as 0, but only the invalid octal digit family
+    // above follows it here.
+    #[test]
+    fn integer_string_rejects_other_strings_go_rejects() {
         for raw in [
             "",
             "-",
-            "08",
+            "08.",
+            "08.5",
+            "0_8",
+            "08e1",
+            "0x8g",
             "1__0",
             "_1",
             "1_",
@@ -1051,7 +1095,14 @@ mod tests {
 
     #[test]
     fn decimal_integer_keeps_the_saluki_only_grammar() {
-        let accepted: &[(&str, i64)] = &[("010", 10), ("+5", 5), ("-7", -7), ("8125.0", 8125), (" 10 ", 10)];
+        let accepted: &[(&str, i64)] = &[
+            ("010", 10),
+            ("08", 8),
+            ("+5", 5),
+            ("-7", -7),
+            ("8125.0", 8125),
+            (" 10 ", 10),
+        ];
         for (raw, expected) in accepted {
             assert_eq!(parse_decimal_i64(raw), Ok(*expected), "{raw}");
         }
