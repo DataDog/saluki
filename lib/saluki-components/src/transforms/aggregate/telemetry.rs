@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -94,6 +94,80 @@ pub(super) struct OriginContextGauge {
 #[derive(Clone, Eq, Hash, PartialEq)]
 pub(super) struct OriginTagSetKey(SmallVec<[Tag; 8]>);
 
+const ORIGIN_LABEL_KEY_PREFIX: &str = "origin_tag_";
+const HEX_DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+
+fn encode_origin_tags<'a, I>(tags: I) -> SmallVec<[String; 8]>
+where
+    I: IntoIterator<Item = &'a Tag>,
+{
+    let mut values_by_key: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for tag in tags {
+        if let Some((key, value)) = tag.as_str().split_once(':') {
+            values_by_key.entry(key).or_default().push(value);
+        }
+    }
+
+    let mut encoded_tags = SmallVec::new();
+    for (key, mut values) in values_by_key {
+        values.sort_unstable();
+        values.dedup();
+
+        if values.len() == 1 {
+            let encoded_key = encode_origin_label_key(key, false);
+            let encoded_value = encode_origin_label_value(values[0]);
+            encoded_tags.push(format!("{encoded_key}:{encoded_value}"));
+        } else {
+            let encoded_key = encode_origin_label_key(key, true);
+            for (index, value) in values.into_iter().enumerate() {
+                let encoded_value = encode_origin_label_value(value);
+                encoded_tags.push(format!("{encoded_key}_{index}:{encoded_value}"));
+            }
+        }
+    }
+
+    encoded_tags
+}
+
+fn encode_origin_label_key(key: &str, force_encoding: bool) -> String {
+    let mut chars = key.chars();
+    let valid_start = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+    let valid_rest = chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !force_encoding
+        && valid_start
+        && valid_rest
+        && !key.starts_with("__")
+        && !key.starts_with(ORIGIN_LABEL_KEY_PREFIX)
+    {
+        return key.to_owned();
+    }
+
+    let mut encoded = String::from(ORIGIN_LABEL_KEY_PREFIX);
+    for byte in key.as_bytes() {
+        encoded.push(HEX_DIGITS[(byte >> 4) as usize] as char);
+        encoded.push(HEX_DIGITS[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
+fn encode_origin_label_value(value: &str) -> String {
+    let mut encoded = String::new();
+    append_percent_encoded(value, &mut encoded);
+    encoded
+}
+
+fn append_percent_encoded(value: &str, output: &mut String) {
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            output.push(byte as char);
+        } else {
+            output.push('%');
+            output.push(HEX_DIGITS[(byte >> 4) as usize] as char);
+            output.push(HEX_DIGITS[(byte & 0x0f) as usize] as char);
+        }
+    }
+}
+
 impl OriginTagSetKey {
     fn new(tags: &TagSet) -> Self {
         let mut tags: SmallVec<[Tag; 8]> = tags.into_iter().cloned().collect();
@@ -170,7 +244,7 @@ impl Telemetry {
         let mut contexts = origin_contexts.contexts.lock().unwrap();
         if increment {
             let entry = contexts.entry(key.clone()).or_insert_with(|| {
-                let tags: SmallVec<[String; 8]> = key.0.iter().map(|tag| tag.as_str().to_owned()).collect();
+                let tags = encode_origin_tags(&key.0);
                 OriginContextGauge {
                     gauge: origin_contexts
                         .builder
@@ -214,5 +288,42 @@ impl Telemetry {
 
     pub fn record_last_flush_duration(&self, duration: Duration) {
         self.last_flush_duration.set(duration.as_nanos() as f64);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use saluki_core::data_model::tags::TagSet;
+
+    use super::encode_origin_tags;
+
+    #[test]
+    fn multivalued_origin_tags_have_sorted_unique_label_names() {
+        let mut tags = TagSet::default();
+        tags.insert_tag("team.name:platform\"ops\nline");
+        tags.insert_tag("team_name:owner");
+        tags.insert_tag("kube_service:worker");
+        tags.insert_tag("kube_service:api");
+
+        let encoded_tags = encode_origin_tags(&tags);
+        let encoded: Vec<_> = encoded_tags.iter().map(String::as_str).collect();
+        assert_eq!(
+            encoded,
+            vec![
+                "origin_tag_6B7562655F73657276696365_0:api",
+                "origin_tag_6B7562655F73657276696365_1:worker",
+                "origin_tag_7465616D2E6E616D65:platform%22ops%0Aline",
+                "team_name:owner",
+            ]
+        );
+
+        let mut reversed_tags = TagSet::default();
+        reversed_tags.insert_tag("kube_service:api");
+        reversed_tags.insert_tag("kube_service:worker");
+        reversed_tags.insert_tag("team.name:platform\"ops\nline");
+        reversed_tags.insert_tag("team_name:owner");
+        let reversed_encoded = encode_origin_tags(&reversed_tags);
+        let reversed_encoded: Vec<_> = reversed_encoded.iter().map(String::as_str).collect();
+        assert_eq!(reversed_encoded, encoded);
     }
 }
