@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["RemoteAgentAutodiscoveryProvider","RemoteAgentEnvironmentProvider","RemoteAgentHostProvider","RemoteAgentWorkloadProvider","WorkloadSettings"]};
+window.SIDEBAR_ITEMS = {"struct":["HostSettings","RemoteAgentAutodiscoveryProvider","RemoteAgentEnvironmentProvider","RemoteAgentHostProvider","RemoteAgentWorkloadProvider","WorkloadSettings"]};

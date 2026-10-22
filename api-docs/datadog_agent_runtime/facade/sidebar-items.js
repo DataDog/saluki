@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["stage"],"struct":["RemoteAgent"],"trait":["AuthoritativeConfiguration","LocalConfiguration","RemoteAgentSpecification"]};

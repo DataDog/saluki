@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["control_plane","env","logging","remote_agent"]};
+window.SIDEBAR_ITEMS = {"mod":["control_plane","env","facade","logging","remote_agent"]};
