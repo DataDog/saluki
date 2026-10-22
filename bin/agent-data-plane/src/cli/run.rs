@@ -1,11 +1,10 @@
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use agent_data_plane_config::{
-    control::MemoryMode,
     domains::{dogstatsd, multi_region_failover},
     shared::SharedConfiguration,
     SalukiConfiguration,
@@ -16,14 +15,10 @@ use bytesize::ByteSize;
 use datadog_agent_apm::{sampling::TraceSamplingSubscription, semantics::SemanticRegistryProvider};
 use datadog_agent_commons::{ipc::config::RemoteAgentClientConfiguration, platform::PlatformSettings};
 use datadog_agent_runtime::{
-    control_plane::ConfigUpdatesWorker, env::RemoteAgentEnvironmentProvider, remote_agent::RemoteAgentBootstrap,
+    env::RemoteAgentEnvironmentProvider,
+    facade::{Initialized, RemoteAgent},
 };
-use saluki_app::{
-    accounting::{initialize_memory_bounds, MemoryBoundsConfiguration, MemoryMode as AppMemoryMode},
-    bootstrap::BootstrapGuard,
-    metrics::emit_startup_metrics,
-    util::wait_for_shutdown_signal,
-};
+use saluki_app::bootstrap::BootstrapGuard;
 use saluki_components::{
     config::{
         AutoscalingFailoverConfiguration, ClusterAgentConfiguration, MetricsEndpointRoutingConfiguration,
@@ -55,23 +50,13 @@ use saluki_components::{
         ReplaceRule, TraceObfuscationConfiguration, TraceSamplerConfiguration, TraceTagReplacerConfiguration,
     },
 };
-use saluki_core::{
-    accounting::{ComponentBounds, ComponentRegistry},
-    data_model::origin::OriginTagCardinality,
-    health::HealthRegistry,
-    runtime::{self, state::ResourceRegistry, RestartMode, RestartStrategy, Supervisor, SupervisorError},
-    topology::TopologyBlueprint,
-};
+use saluki_core::{data_model::origin::OriginTagCardinality, runtime::Supervisor, topology::TopologyBlueprint};
 use saluki_env::{features, EnvironmentProvider as _, HostProvider as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::ListenAddress;
 use stringtheory::MetaString;
 use tracing::{debug, info, warn};
 
-use crate::config::{
-    remote_agent_client_configuration, standalone_hostname, workload_settings, DataPlaneConfiguration,
-};
-use crate::remote_config::{self, RemoteConfigSubscriptions};
 use crate::{
     components::{
         apm_onboarding::ApmOnboardingConfiguration, dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
@@ -81,11 +66,13 @@ use crate::{
         ottl_filter_processor::OttlFilterConfiguration, ottl_transform_processor::OttlTransformConfiguration,
         static_tags::resolve_static_tags, tag_filterlist::TagFilterlistConfiguration,
     },
+    config::DataPlaneConfiguration,
     dogstatsd_contexts::DogStatsDContextDumpAPIHandler,
     internal::{
-        create_internal_supervisor, logging::get_translated_logging_config, AdpConfigUpdates, DogStatsDControlSurface,
-        TopologyControlSurfaces,
+        create_control_plane_supervisor, logging::get_logging_translator, AdpLocalConfig, AgentDataPlane,
+        DogStatsDControlSurface, TopologyControlSurfaces,
     },
+    remote_config::{self, RemoteConfigSubscriptions},
 };
 
 /// Runs the data plane.
@@ -102,262 +89,57 @@ pub async fn handle_run_command(
     started: Instant, local_config: LoadedConfiguration, bootstrap_guard: &mut BootstrapGuard,
     bootstrap_supervisor: Supervisor,
 ) -> Result<(), GenericError> {
-    let app_details = saluki_metadata::get_app_details();
-    info!(
-        version = app_details.version().raw(),
-        git_hash = app_details.git_hash(),
-        target_arch = app_details.target_arch(),
-        build_time = app_details.build_time(),
-        process_id = std::process::id(),
-        "Agent Data Plane starting..."
-    );
-
-    // Use local sources for decisions required before the Agent configuration stream is available.
-    let bootstrap_dp_config = DataPlaneConfiguration::from_configuration(local_config.local());
-    let standalone = bootstrap_dp_config.standalone_mode();
-
-    // Resolve the authoritative configuration. Connected mode registers as a remote agent and takes
-    // the Core Agent's config stream as authority; standalone mode treats the local sources as
-    // authoritative. Both terminals block until the first configuration is received, deserialized,
-    // and translated, failing the boot if it cannot be -- the strict startup gate.
-    let (config_sys, ra_bootstrap, config_updates) = if standalone {
-        let config_sys = local_config
-            .standalone()
-            .await
-            .error_context("Failed to load configuration.")?;
-        (config_sys, None, None)
-    } else {
-        // Blocks until the Core Agent acknowledges registration.
-        let client_config = remote_agent_client_configuration(local_config.local())?;
-        let ra_bootstrap = async {
-            let secure_api_listen_address = bootstrap_dp_config.secure_api_listen_address()?;
-            RemoteAgentBootstrap::new(&client_config, &secure_api_listen_address).await
-        }
-        .await
-        .error_context("Failed to bootstrap remote agent state.")?;
-
-        // The configuration system owns the config stream: it reads `ConfigUpdate`s directly to
-        // build the typed model. `create_config_stream` stays on `ra_bootstrap`, which we keep to
-        // build the status/flare/telemetry services below.
-        let config_stream = ra_bootstrap.create_config_stream();
-
-        info!("Waiting for initial configuration from Datadog Agent...");
-        let (config_sys, config_updates) = local_config
-            .run(config_stream)
-            .await
-            .error_context("Failed to load initial configuration from the Datadog Agent.")?;
-        info!("Initial configuration received.");
-
-        (config_sys, Some(ra_bootstrap), Some(config_updates))
-    };
-
-    // Connected mode may have replaced the bootstrap-phase settings with the Agent's authoritative config, so reload
-    // logging to match. Standalone resolves the same local sources seen at bootstrap, making a reload redundant.
-    if !standalone {
-        match get_translated_logging_config(&config_sys.config().control.logging) {
-            Ok(logging_config) => {
-                if let Err(e) = bootstrap_guard.logging_mut().reload(logging_config).await {
-                    warn!(
-                        error = %e,
-                        "Failed to reload logging from Agent configuration; continuing with bootstrap logging settings."
-                    );
-                }
-            }
-            Err(e) => warn!(
-                error = %e,
-                "Failed to translate logging configuration from Agent; continuing with bootstrap logging settings."
-            ),
-        }
-    }
+    // Resolve the authoritative configuration: connected mode registers as a remote agent and waits for the Core
+    // Agent's configuration, while standalone mode treats the local sources as authoritative.
+    let agent = RemoteAgent::<AgentDataPlane>::new(AdpLocalConfig::new(local_config), get_logging_translator().clone())
+        .with_start_time(started)
+        .start(bootstrap_guard, bootstrap_supervisor)
+        .await?;
 
     let (enabled, active_pipelines) = {
-        let config = config_sys.config();
+        let config = agent.config().system().config();
         let dp = DataPlaneConfiguration::from_configuration(&config);
         (dp.enabled(), dp.active_pipelines())
     };
 
-    if !standalone && !enabled {
+    if !agent.is_standalone() && !enabled {
         info!("Agent Data Plane is not enabled. Exiting.");
         return Ok(());
     }
 
-    config_sys
+    agent
+        .config()
+        .system()
         .check_compatibility(&active_pipelines)
         .error_context("Incompatible configuration detected.")?;
 
-    let remote_agent_client_config = if standalone {
-        None
-    } else {
-        Some(remote_agent_client_configuration(&config_sys.config())?)
-    };
-
-    let rc_products = remote_config::enabled_products(&config_sys.config());
-    let (rc_subscriptions, maybe_rc_child) =
-        RemoteConfigSubscriptions::subscribe(rc_products, remote_agent_client_config.as_ref())
-            .await
-            .error_context("Failed to set up Remote Configuration.")?;
-
     // Set up all of the building blocks for building our topologies and launching internal processes.
-    let component_registry = ComponentRegistry::default();
-    let health_registry = HealthRegistry::new();
-    let resource_registry = ResourceRegistry::new();
-    let (env_provider, maybe_env_supervisor) = match remote_agent_client_config.as_ref() {
-        None => {
-            let hostname = standalone_hostname(&config_sys.config());
-            (
-                RemoteAgentEnvironmentProvider::standalone(hostname, &health_registry)?,
-                None,
-            )
-        }
-        Some(client_config) => {
-            let (env_provider, env_supervisor) = RemoteAgentEnvironmentProvider::connected(
-                &workload_settings(&config_sys.config()),
-                client_config,
-                &component_registry,
-                &health_registry,
-            )
-            .await?;
-            (env_provider, Some(env_supervisor))
-        }
-    };
+    let mut agent = agent.initialize().await?;
+
+    let rc_products = remote_config::enabled_products(&agent.config().system().config());
+    let rc_subscriptions = RemoteConfigSubscriptions::subscribe(rc_products, &mut agent)
+        .await
+        .error_context("Failed to set up Remote Configuration.")?;
 
     // Create the blueprint for our primary topology.
-    let (mut blueprint, control_surfaces) = create_topology(
-        &config_sys,
-        remote_agent_client_config.as_ref(),
-        &env_provider,
-        &component_registry,
-        rc_subscriptions,
-    )
-    .await?;
+    let (blueprint, control_surfaces) = create_topology(&agent, rc_subscriptions).await?;
 
-    // Create the root supervisor up front so that a handle to the whole supervision tree can be handed to the
-    // control plane below, which serves it over the API. Nothing is added to it until the rest of the tree is built.
-    let root_restart_strategy = RestartStrategy::new(RestartMode::OneForOne, 0, Duration::from_secs(5));
-    let mut root_supervisor = Supervisor::new("adp-root")?.with_restart_strategy(root_restart_strategy);
-
-    // Create the internal supervisor which drives our control plane and internal observability.
-    let mut internal_supervisor = create_internal_supervisor(
-        &config_sys,
-        &component_registry,
-        health_registry.clone(),
-        control_surfaces,
-        ra_bootstrap,
-        bootstrap_guard.logging().controller(),
-        config_sys.current_handle(),
-        root_supervisor.tree_handle(),
-    )
-    .await
-    .error_context("Failed to create internal supervisor.")?;
-
-    // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
-    let bounds_config = {
-        let control = &config_sys.config().control;
-        MemoryBoundsConfiguration {
-            memory_limit: control.memory_limit.map(ByteSize::b),
-            memory_slop_factor: control.memory_slop_factor,
-            enable_global_limiter: control.enable_global_limiter,
-            memory_mode: match control.memory_mode {
-                MemoryMode::Disabled => AppMemoryMode::Disabled,
-                MemoryMode::Permissive => AppMemoryMode::Permissive,
-                MemoryMode::Strict => AppMemoryMode::Strict,
-            },
-        }
-    };
-    let memory_limiter = initialize_memory_bounds(bounds_config, component_registry.root())?;
-
-    if let Ok(val) = std::env::var("DD_ADP_WRITE_SIZING_GUIDE") {
-        if val != "false" {
-            if let Err(error) = write_sizing_guide(component_registry.as_bounds()) {
-                warn!("Failed to write sizing guide: {}", error);
-            } else {
-                return Ok(());
-            }
-        }
-    }
-
-    // Assemble the full supervision tree and run it.
-    //
-    // We run our internal supervisor (control plane, environment provider, etc) and our topology supervisor
-    // side-by-side, which means everyone has access to the same dataspace. This is crucial for allowing processes
-    // in the topology supervisor to (eventually) interact with components in the control plane, and vise versa.
-    blueprint
-        .with_health_registry(health_registry.clone())
-        .with_memory_limiter(memory_limiter)
-        .with_resource_registry(resource_registry.clone())
-        .with_environment_readiness(env_provider.wait_for_ready());
-
-    // Acquire a readiness handle before handing the blueprint off to the supervisor. This waits until the topology has
-    // registered its components in the health registry and they've all reported ready, rather than racing the supervisor
-    // and potentially observing an empty/already-ready registry before the topology's components even exist.
-    let topology_ready = blueprint.topology_ready();
-
-    root_supervisor.add_worker(bootstrap_supervisor);
-    internal_supervisor.add_worker(resource_registry.worker());
-
-    // Apply configuration updates from the Datadog Agent. Until the supervision tree starts, updates stay queued in the
-    // Agent configuration stream and are not applied.
-    //
-    // A restart of the worker recovers from a panic, but not from a closed configuration stream, which never reopens:
-    // the restarted worker fails again at once. The failure then escalates and stops ADP, rather than leaving ADP to run
-    // on a configuration that can no longer change.
-    if let Some(config_updates) = config_updates {
-        internal_supervisor.add_worker(ConfigUpdatesWorker::new(AdpConfigUpdates::new(config_updates)));
-    }
-
-    if let Some(env_supervisor) = maybe_env_supervisor {
-        internal_supervisor.add_worker(env_supervisor);
-    }
-    root_supervisor.add_worker(internal_supervisor);
-    root_supervisor.add_worker(runtime::supervisable(blueprint).needed().build());
-    if let Some(rc_child) = maybe_rc_child {
-        root_supervisor.add_worker(rc_child);
-    }
-
-    // Once the topology is healthy, log readiness and emit our startup metrics.
-    tokio::spawn(async move {
-        // If the topology is torn down before it ever becomes ready (for example, shutdown during startup), `wait`
-        // returns `false` and we skip reporting readiness.
-        if topology_ready.wait().await {
-            info!(
-                topology_ready_ms = started.elapsed().as_millis(),
-                "Topology healthy. Waiting for interrupt..."
-            );
-
-            emit_startup_metrics();
-        }
-    });
-
-    info!("Agent Data Plane running.");
-    match root_supervisor.run_with_shutdown(wait_for_shutdown_signal()).await {
-        Ok(()) => {
-            info!("Agent Data Plane shut down successfully.");
-            Ok(())
-        }
-        // The shutdown ran to completion, but one or more components ignored graceful shutdown and had to be forcefully
-        // aborted after exceeding the shutdown timeout. Surface that plainly instead of reporting success -- but don't
-        // treat it as a fatal error: the process did stop, and mapping it through the error path would mislabel it as a
-        // boot/setup failure (and trip the boot assertion in `run_inner`).
-        Err(SupervisorError::ShutdownTimedOut { aborted }) => {
-            warn!(
-                aborted,
-                "Agent Data Plane shut down uncleanly: {aborted} component(s) had to be forcefully stopped after \
-                 exceeding the shutdown timeout. Check the preceding warnings for which components were affected."
-            );
-            Ok(())
-        }
-        Err(e) => Err(e.into()),
-    }
+    // Create the control plane, and then run: the remote agent builds the rest of the supervisors, and runs memory
+    // bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
+    let control_plane =
+        create_control_plane_supervisor(&agent, control_surfaces, bootstrap_guard.logging().controller())
+            .await
+            .error_context("Failed to create internal supervisor.")?;
+    agent.run(blueprint, control_plane).await
 }
 
 async fn create_topology(
-    config_system: &ConfigurationSystem, remote_agent_client_config: Option<&RemoteAgentClientConfiguration>,
-    env_provider: &RemoteAgentEnvironmentProvider, component_registry: &ComponentRegistry,
-    rc_subscriptions: RemoteConfigSubscriptions,
+    agent: &RemoteAgent<AgentDataPlane, Initialized>, rc_subscriptions: RemoteConfigSubscriptions,
 ) -> Result<(TopologyBlueprint, TopologyControlSurfaces), GenericError> {
+    let config_system = agent.config().system();
     let config = config_system.config();
     let dp = DataPlaneConfiguration::from_configuration(&config);
-    let mut blueprint = TopologyBlueprint::new("primary", component_registry);
+    let mut blueprint = TopologyBlueprint::new("primary", agent.component_registry());
     blueprint.with_shutdown_timeout(dp.stop_timeout());
     let shared = config.shared.clone();
 
@@ -371,6 +153,9 @@ async fn create_topology(
     if !dp.data_pipelines_enabled() {
         return Err(generic_error!("No data pipelines are enabled. Exiting."));
     }
+
+    let remote_agent_client_config = agent.client_configuration();
+    let env_provider = agent.env_provider();
 
     // Create our baseline pipelines if necessary.
     //
@@ -1224,28 +1009,6 @@ async fn add_otlp_pipeline_to_blueprint(
             .connect_components("otlp_in.logs", "dd_logs_encode")?
             .connect_components("otlp_in.traces", "traces_enrich")?;
     }
-    Ok(())
-}
-
-fn write_sizing_guide(bounds: ComponentBounds) -> Result<(), GenericError> {
-    use std::{
-        fs::File,
-        io::{BufWriter, Write},
-    };
-
-    let template = include_str!("../sizing_guide_template.html");
-    let mut output = BufWriter::new(File::create("sizing_guide.html")?);
-    for line in template.lines() {
-        if line.trim() == "<!-- INSERT GENERATED CONTENT -->" {
-            serde_json::to_writer_pretty(&mut output, &bounds.to_exprs())?;
-        } else {
-            output.write_all(line.as_bytes())?;
-        }
-        output.write_all(b"\n")?;
-    }
-    info!("Wrote sizing guide to sizing_guide.html");
-    output.flush()?;
-
     Ok(())
 }
 

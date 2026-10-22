@@ -20,6 +20,7 @@ async-trait = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true }
 datadog-agent-commons = { workspace = true }
+datadog-agent-remote-config = { workspace = true }
 datadog-protos = { workspace = true }
 futures = { workspace = true }
 process-memory = { workspace = true }

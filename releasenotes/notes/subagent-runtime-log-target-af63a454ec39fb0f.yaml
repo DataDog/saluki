@@ -1,9 +1,10 @@
 ---
 other:
   - |
-    Some logs that used the ``agent_data_plane`` log target now use other targets. Logs from registration
-    with the Datadog Agent, configuration streaming, workload metadata collection, autodiscovery, and the
-    status, flare, and telemetry services use ``datadog_agent_runtime``, and logs about runtime log level
-    changes use ``datadog_agent_runtime`` and ``saluki_app``. A plain ``log_level``, such as ``debug``,
-    covers both targets. If you use targeted directives such as ``agent_data_plane=debug``, add
-    ``datadog_agent_runtime=debug`` and ``saluki_app=debug`` to keep seeing these logs.
+    Some logs that used the ``agent_data_plane`` log target now use other targets. Startup and shutdown
+    messages, and logs from registration with the Datadog Agent, configuration streaming, workload metadata
+    collection, autodiscovery, and the status, flare, and telemetry services, use ``datadog_agent_runtime``,
+    and logs about runtime log level changes use ``datadog_agent_runtime`` and ``saluki_app``. A plain
+    ``log_level``, such as ``debug``, covers both targets. If you use targeted directives such as
+    ``agent_data_plane=debug``, add ``datadog_agent_runtime=debug`` and ``saluki_app=debug`` to keep seeing
+    these logs.
