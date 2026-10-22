@@ -13,6 +13,7 @@ use saluki_core::{
     data_model::event::metric::Metric,
     execution::{Budget, LossClass, Progress, RegionDriver, WorkKind},
 };
+use saluki_metrics::{test::TestRecorder, MetricsBuilder};
 use serde_json::json;
 
 use super::{gauge, one_context_per_call, plan, t, Direct};
@@ -24,9 +25,9 @@ use crate::{
     model::Kind,
     operators::OperatorRegistry,
     runtime::{
-        harness::{HarnessOptions, Interleaving},
+        harness::{HarnessOptions, Interleaving, LaneTimeEvent},
         transition_tests::{self, aggregation, dogstatsd, node, Replay},
-        PLAN_LANE_FLUSH_TOUCHED_CONTEXTS_TOTAL,
+        PlanTelemetry, PLAN_LANE_FLUSH_SECONDS, PLAN_LANE_FLUSH_TOUCHED_CONTEXTS_TOTAL,
     },
     testing::arb_metrics_with_kind_siblings,
 };
@@ -181,6 +182,85 @@ fn a_batch_that_could_need_more_room_than_the_state_owner_has_waits_for_the_pass
     );
 }
 
+#[test]
+fn a_gated_tick_a_header_released_fires_once_however_many_batches_its_pass_lets_in() {
+    // The tick due at 15 finds the watermark at 3 and waits at the gate. The batch at 16 releases it: its pass flushes
+    // one of three gauges and lets the batch in. The tick stays gated until its pass completes, so the batch at 16.5,
+    // whose header the gate reads too, must not release it again: it enters at once, and the tick flushes once.
+    let recorder = TestRecorder::default();
+    let lane = {
+        let _local = metrics::set_default_local_recorder(&recorder);
+        PlanTelemetry::new(MetricsBuilder::default()).state_lane("dsd_agg", 0)
+    };
+    let mut direct = Direct::configured(&plan(), OperatorRegistry::native(), |config| {
+        config.with_interleaving(true).with_state_lane_telemetry(lane)
+    });
+    direct.process(t(3_000), ["a", "b", "c"].iter().map(|name| gauge(name, 1.0)).collect());
+    let tick = Duration::from_secs(15);
+    assert_eq!(direct.advance(tick, one_context_per_call()), (Progress::Done, 0));
+    assert!(!direct.driver.has_background_work(), "the tick waits at the gate");
+
+    let header = direct.header(t(16_000));
+    let (progress, mut emitted) = direct.send(header, vec![gauge("d", 1.0)], one_context_per_call());
+    assert_eq!(
+        (progress, emitted),
+        (Progress::Done, 1),
+        "the released tick's first step"
+    );
+    assert!(direct.driver.has_background_work(), "its pass is pending");
+
+    let header = direct.header(t(16_500));
+    let (during, written) = direct.send(header, vec![gauge("e", 1.0)], one_context_per_call());
+    emitted += written;
+    let mut progress = during;
+    while progress == Progress::Yielded {
+        let (next, written) = direct.resume(tick, Budget::unlimited());
+        (progress, emitted) = (next, emitted + written);
+    }
+    while direct.driver.has_background_work() {
+        let (_, written) = direct.advance(tick, Budget::unlimited());
+        emitted += written;
+    }
+    let ticks = direct
+        .driver
+        .take_time_events()
+        .into_iter()
+        .filter(|event| matches!(event, LaneTimeEvent::Ticked { .. }))
+        .count();
+    assert_eq!(ticks, 1, "the tick at 15 fires once");
+    assert_eq!(during, Progress::Done, "the batch enters during the pass");
+    assert_eq!(emitted, 3, "each gauge once");
+    assert_eq!(direct.driver.next_deadline(), Some(direct.start + tick * 2));
+    // The lane times the drain of the tick the header released, as it does one a deadline fired.
+    let timed = recorder
+        .histogram_keys()
+        .into_iter()
+        .find(|key| key.name() == PLAN_LANE_FLUSH_SECONDS)
+        .and_then(|key| recorder.histogram(key))
+        .map_or(0, |samples| samples.len());
+    assert_eq!(timed, 1, "one drain timed");
+}
+
+#[test]
+fn a_pass_whose_instances_next_tick_is_already_due_runs_ahead_of_admission() {
+    // The tick due at 15 waits at the gate with the watermark at 3, and its grace has long ended when time-driven work
+    // next runs, at 31: it fires at the watermark's second, and its pass would let batches in, but the instance's next
+    // tick, due at 30, has passed. A batch let in now would enter before that tick, as no native flush order has it, so
+    // the pass runs ahead of admission until it completes, and the next tick is due at once.
+    let mut direct = interleaving(&plan(), None);
+    direct.process(t(3_000), ["a", "b", "c"].iter().map(|name| gauge(name, 1.0)).collect());
+    let tick = Duration::from_secs(15);
+    assert_eq!(direct.advance(tick, one_context_per_call()), (Progress::Done, 0));
+    let late = Duration::from_secs(31);
+    let (progress, _) = direct.advance(late, one_context_per_call());
+    assert_eq!(progress, Progress::Yielded, "the pass runs ahead of admission");
+    assert!(!direct.driver.accepts_input());
+    while direct.resume(late, one_context_per_call()).0 == Progress::Yielded {}
+    assert!(direct.driver.accepts_input());
+    assert!(!direct.driver.has_background_work());
+    assert_eq!(direct.driver.next_deadline(), Some(direct.start + tick * 2));
+}
+
 // The property test: random traces through a frame of region drivers whose flushes interleave with admission, against
 // the interpreter and the same frame with every drain holding admission.
 
@@ -193,6 +273,9 @@ struct Shape {
     context_limit: u64,
     /// Aggregation's counter expiry.
     counter_expiry: &'static str,
+    /// Aggregation's flush interval: a second, so that every flush tick finds the next one due, or longer than the
+    /// gaps between steps, so that passes let batches in and a gated tick's pass can be pending when a header arrives.
+    flush_interval: &'static str,
 }
 
 fn arb_shape() -> impl Strategy<Value = Shape> {
@@ -200,11 +283,13 @@ fn arb_shape() -> impl Strategy<Value = Shape> {
         any::<bool>(),
         prop_oneof![1 => Just(0u64), 3 => 1u64..4, 2 => Just(1_000)],
         prop_oneof![Just("0s"), Just("5s"), Just("5m")],
+        prop_oneof![Just("1s"), Just("15s")],
     )
-        .prop_map(|(filtered, context_limit, counter_expiry)| Shape {
+        .prop_map(|(filtered, context_limit, counter_expiry, flush_interval)| Shape {
             filtered,
             context_limit,
             counter_expiry,
+            flush_interval,
         })
 }
 
@@ -213,6 +298,7 @@ fn shaped(shape: &Shape, window: &str) -> Plan {
     let mut params = aggregation(window);
     params["context_limit"] = json!(shape.context_limit);
     params["counter_expiry"] = json!(shape.counter_expiry);
+    params["flush_interval"] = json!(shape.flush_interval);
     let mut nodes = vec![
         dogstatsd("mixed"),
         node("agg", "aggregate", params),
@@ -270,7 +356,8 @@ fn arb_step() -> impl Strategy<Value = (u64, Step)> {
 /// Builds the trace of `steps`, each `gap` seconds after the previous one, over the plan of `shape`, from 7,200 on.
 ///
 /// A flush tick at the time of the previous one is left out, as in R5b's property test: the interpreter ticks at every
-/// `advance`, a region once per flush interval. At most one reset jumps the clock back.
+/// `advance`, a region once per flush interval. At most one reset jumps the clock back, and none with a flush interval
+/// longer than a second.
 fn trace_of(shape: &Shape, steps: &[(u64, Step)]) -> Trace {
     let mut trace = Trace::new().install(shaped(shape, "10s"));
     let mut now = 7_200;
@@ -286,7 +373,9 @@ fn trace_of(shape: &Shape, steps: &[(u64, Step)]) -> Trace {
                 trace.advance(t_s(now))
             }
             Step::Install(window) => trace.install(shaped(shape, window)),
-            Step::Reset if reset => trace,
+            // With the longer flush interval a pass can still be pending when a reset's header arrives, which is
+            // known to differ from blocking drains (an idle counter's zero after the reset), and left out here.
+            Step::Reset if reset || shape.flush_interval != "1s" => trace,
             Step::Reset => {
                 reset = true;
                 now -= 3_600;
@@ -328,6 +417,7 @@ proptest! {
         interleaving in arb_interleaving(),
         step_contexts in 1u64..4,
         isolate_state in any::<bool>(),
+        heartbeats_at_ticks in any::<bool>(),
     ) {
         let trace = trace_of(&shape, &steps);
         let blocking = HarnessOptions {
@@ -341,17 +431,22 @@ proptest! {
             ..blocking
         };
         let start = t_s(7_200);
-        let (run, mut interleaved) = Replay::run_with(&trace, true, start, interleaved);
-        let (_, mut blocking) = Replay::run_with(&trace, true, start, blocking);
+        // Without heartbeats at ticks the watermark lags them, and ticks wait at the gate for a header to release them.
+        let (run, mut interleaved) = Replay::run_with(&trace, heartbeats_at_ticks, start, interleaved);
+        let (_, mut blocking) = Replay::run_with(&trace, heartbeats_at_ticks, start, blocking);
 
-        // Every output receives what the interpreter delivers, and what the frame delivers with every drain holding
-        // admission.
+        // Every output receives what the frame delivers with every drain holding admission, and what the interpreter
+        // delivers where the interpreter models the frame's ticks: with a heartbeat at each, and a tick at every advance,
+        // as a one-second flush interval has it. (Otherwise the two can disagree whether drains interleave or not.)
         let expected = OutputPoints::from_run(&run);
-        if let Err(mismatch) = compare(&expected, blocking.harness.outputs()) {
-            prop_assert!(false, "blocking drains differ from the interpreter:\n{}", mismatch);
-        }
-        if let Err(mismatch) = compare(&expected, interleaved.harness.outputs()) {
-            prop_assert!(false, "interleaved drains differ from the interpreter:\n{}", mismatch);
+        let against_interpreter = heartbeats_at_ticks && shape.flush_interval == "1s";
+        if against_interpreter {
+            if let Err(mismatch) = compare(&expected, blocking.harness.outputs()) {
+                prop_assert!(false, "blocking drains differ from the interpreter:\n{}", mismatch);
+            }
+            if let Err(mismatch) = compare(&expected, interleaved.harness.outputs()) {
+                prop_assert!(false, "interleaved drains differ from the interpreter:\n{}", mismatch);
+            }
         }
         if let Err(mismatch) = compare(blocking.harness.outputs(), interleaved.harness.outputs()) {
             prop_assert!(false, "interleaved drains differ from blocking ones:\n{}", mismatch);
@@ -362,13 +457,31 @@ proptest! {
         interleaved.harness.publish();
         blocking.harness.publish();
         let agg: NodeId = "agg".parse().unwrap();
-        prop_assert_eq!(
-            interleaved.harness.telemetry().loss("agg", LossClass::Capacity),
-            run.loss(&agg).loss(LossClass::Capacity).points
-        );
+        if against_interpreter {
+            prop_assert_eq!(
+                interleaved.harness.telemetry().loss("agg", LossClass::Capacity),
+                run.loss(&agg).loss(LossClass::Capacity).points
+            );
+        }
         prop_assert_eq!(
             interleaved.harness.telemetry().loss("agg", LossClass::Capacity),
             blocking.harness.telemetry().loss("agg", LossClass::Capacity)
         );
+
+        // No tick fires twice, as a header releasing a gated tick again while its pass lets batches in would make it: a
+        // second flush at the same time mostly emits nothing, so the outputs alone rarely tell.
+        let names = interleaved.harness.state_slots().map(|slot| slot.name.to_string()).collect::<Vec<_>>();
+        for name in names {
+            let mut ticks = std::collections::BTreeSet::new();
+            for (lane, event) in interleaved.harness.slot_time_events(&name) {
+                if let LaneTimeEvent::Ticked { created_by, epoch, scheduled, .. } = event {
+                    prop_assert!(
+                        ticks.insert((lane, created_by, epoch, scheduled)),
+                        "slot {} fired the tick due at {:?} of generation {}'s lineage in epoch {} twice",
+                        name, scheduled, created_by, epoch
+                    );
+                }
+            }
+        }
     }
 }

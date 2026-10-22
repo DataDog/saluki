@@ -251,6 +251,50 @@ impl StateSlot {
             .filter(|drain| drain.pass.is_some() && drain.current.is_some() && !drain.blocking && !drain.orphaned)
     }
 
+    /// Returns `true` if a tick is due at `now` that the drain in progress keeps from firing: one scheduled or whose
+    /// grace ended, of an instance the drain holds no tick of, or the next tick of the instance whose tick is the
+    /// drain's current step, one interval after the one it runs.
+    fn tick_due_behind_drain(&self, now: Instant) -> bool {
+        let Some(drain) = self.drain.as_ref() else {
+            return false;
+        };
+        if self.window.is_open() {
+            return false;
+        }
+        let current = drain.current.as_ref().and_then(|step| match step.kind {
+            DrainKind::Tick { scheduled, next, .. } => Some((step.instance, next.unwrap_or(scheduled + step.interval))),
+            _ => None,
+        });
+        self.instances
+            .iter()
+            .filter(|(_, instance)| !instance.retired && !instance.removed && !instance.reset_retiring)
+            .any(|(handle, instance)| match current {
+                Some((ticking, next)) if ticking == handle => next <= now,
+                _ if self.drains(handle, |kind| matches!(kind, DrainKind::Tick { .. })) => false,
+                _ => match instance.tick {
+                    TickState::Scheduled { at } => at <= now,
+                    TickState::Gated { until, .. } => until <= now,
+                    TickState::Unstarted | TickState::Off => false,
+                },
+            })
+    }
+
+    /// Returns `true` if the drain in progress has started or queued an entry of instance `handle` that `is_kind`
+    /// matches. A tick or boundary flush queued or pending is not released again by a later header: the instance's
+    /// tick and boundary change only once its drain completes, which a pass lets batches in before.
+    fn drains(&self, handle: InstanceHandle, is_kind: impl Fn(&DrainKind) -> bool) -> bool {
+        self.drain.as_ref().is_some_and(|drain| {
+            drain
+                .current
+                .as_ref()
+                .is_some_and(|step| step.instance == handle && is_kind(&step.kind))
+                || drain
+                    .queue
+                    .iter()
+                    .any(|(queued, kind)| *queued == handle && is_kind(kind))
+        })
+    }
+
     /// Returns `true` if a drain step is a pass, which admission interleaves with: a tick or boundary flush, while the
     /// region interleaves, of an instance not on lanes whose kernel admits while advancing.
     fn passes(&self, step: &DrainStep) -> bool {
@@ -1001,12 +1045,14 @@ fn in_drain_order(
 }
 
 /// Returns the gated ticks whose second the watermark has now reached, resolved as fires, in drain order: what the
-/// latest header released. Allocates nothing when it releases none.
+/// latest header released. A gated tick the drain in progress already holds stays gated until its drain completes, and
+/// is not released again. Allocates nothing when it releases none.
 fn released_ticks(generations: &[LiveGeneration], state: &mut StateSlot) -> Vec<(InstanceHandle, DrainKind)> {
     let due = state
         .instances
         .iter()
         .filter(|(_, instance)| !instance.reset_retiring && !instance.retired && !instance.removed)
+        .filter(|(handle, _)| !state.drains(*handle, |kind| matches!(kind, DrainKind::Tick { .. })))
         .filter_map(|(handle, instance)| {
             let TickState::Gated { at, second, .. } = instance.tick else {
                 return None;
@@ -1028,8 +1074,8 @@ fn released_ticks(generations: &[LiveGeneration], state: &mut StateSlot) -> Vec<
 }
 
 /// Returns `ticks`, drains in drain order, with the boundary flush of every instance whose cut the watermark has
-/// reached among them: after the ticks that flush by its time, and before the others, so that no flush after the cut's
-/// time runs before it.
+/// reached among them, unless the drain in progress already holds it: after the ticks that flush by its time, and
+/// before the others, so that no flush after the cut's time runs before it.
 fn with_boundaries(
     generations: &[LiveGeneration], state: &StateSlot, ticks: Vec<(InstanceHandle, DrainKind)>,
 ) -> Vec<(InstanceHandle, DrainKind)> {
@@ -1037,6 +1083,7 @@ fn with_boundaries(
         .instances
         .iter()
         .filter(|(_, instance)| !instance.retired && !instance.removed && !instance.reset_retiring)
+        .filter(|(handle, _)| !state.drains(*handle, |kind| matches!(kind, DrainKind::Boundary { .. })))
         .filter_map(|(handle, instance)| {
             let cut = instance.boundary.as_ref()?.by.cut()?;
             let watermark = state.watermark_of(instance)?;
@@ -1196,7 +1243,9 @@ impl MetricRegionDriver {
         // flush by its time. A reset dropped every gated tick of the epochs it closes. A batch from a derived point
         // holds buckets closed before its stamp: its header raises the watermark only once it is admitted.
         let released = released_ticks(generations, state);
-        queue.extend(with_boundaries(generations, state, released));
+        let released = with_boundaries(generations, state, released);
+        let ticks_released = !released.is_empty();
+        queue.extend(released);
 
         if !batch.is_empty() && !state.window.holds(state.tracker.epoch_of(&header)) {
             // A batch of an epoch the lane already closed: one a window closed at once, past the most epochs it keeps
@@ -1235,7 +1284,10 @@ impl MetricRegionDriver {
                 }
             }
             None => {
-                let mut drain = DrainCursor::new(queue, resets, None);
+                // A drain of the ticks the header released is timed for the lane's flush telemetry, as one of the
+                // ticks a deadline fired is.
+                let timing = ticks_released.then(|| FlushTiming::start(Instant::now()));
+                let mut drain = DrainCursor::new(queue, resets, timing);
                 if window_moved {
                     drain.block(Instant::now());
                 }
@@ -1734,9 +1786,12 @@ impl MetricRegionDriver {
     }
 
     /// Accounts for a drain step that yielded at `now`: a pass records how far it has come, and lets batches in again
-    /// while it is on pace, unless a batch waits for an entry of the drain behind it to start; once behind its pace,
-    /// the pass runs ahead of admission until it completes, as every other step does.
+    /// while it is on pace, unless a batch waits for an entry of the drain behind it to start; once behind its pace, or
+    /// once a tick the drain keeps from firing is due, its own instance's next one included, the pass runs ahead of
+    /// admission until it completes, as every other step does, so that no batch admitted after the tick's deadline
+    /// enters before the tick is decided.
     fn step_yielded(&mut self, now: Instant) -> DrainProgress {
+        let overdue = self.state().tick_due_behind_drain(now);
         let StateSlot {
             drain,
             instances,
@@ -1754,7 +1809,7 @@ impl MetricRegionDriver {
                 ask(&mut instance.kernel, &mut progress);
                 pass.progress(progress);
             }
-            let behind = pass.behind(now);
+            let behind = pass.behind(now) || overdue;
             if !drain.blocking && behind {
                 drain.block(Instant::now());
             }
