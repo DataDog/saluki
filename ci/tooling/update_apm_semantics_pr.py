@@ -165,11 +165,27 @@ def open_pull_request(github, branch, title, commit_body, previous, source):
     return pull
 
 
-def close_superseded(github, current):
-    """Closes every open pull request with the marker label other than `current`."""
+def close_superseded(github, current=None):
+    """Closes every open pull request with the marker label other than `current`.
+
+    Without `current`, the caller found the embedded mappings already match upstream, so every open pull request
+    proposes mappings that upstream no longer has.
+    """
     # Listing and filtering is used instead of searching, because the search index lags behind new labels.
     open_pulls = github.list_pulls(state="open", base=BASE_BRANCH)
-    superseded = [other for other in open_pulls if other["number"] != current["number"] and has_marker(other)]
+    keep = None if current is None else current["number"]
+    superseded = [other for other in open_pulls if other["number"] != keep and has_marker(other)]
+
+    if current is None:
+        reason = (
+            "Closing this pull request because the embedded mappings match upstream again. "
+            "If upstream returns to these mappings, a new pull request proposes them."
+        )
+    else:
+        reason = (
+            f"Closing this pull request in favor of a newer mappings update: {current['html_url']}. "
+            "If a fix was pushed to this branch, cherry-pick it onto the new one."
+        )
 
     for other in superseded:
         log(f"Closing superseded pull request: {other['html_url']}")
@@ -177,11 +193,7 @@ def close_superseded(github, current):
         # a closed one that looks declined.
         github.remove_label(other["number"], MARKER_LABEL)
         github.close_pull(other["number"])
-        github.create_comment(
-            other["number"],
-            f"Closing this pull request in favor of a newer mappings update: {current['html_url']}. "
-            "If a fix was pushed to this branch, cherry-pick it onto the new one.",
-        )
+        github.create_comment(other["number"], reason)
 
 
 def pull_request_body(commit_body, previous, source):
@@ -234,11 +246,15 @@ def main(argv=None):
     open_.add_argument("--previous", required=True)
     open_.add_argument("--source", required=True)
 
+    commands.add_parser("close-superseded", help="Close every open update pull request, after a run with no change.")
+
     args = parser.parse_args(argv)
     github = GitHub(os.environ["GITHUB_REPOSITORY"], os.environ["GITHUB_TOKEN"])
 
     if args.command == "find-report":
         print(find_report(github, args.branch))
+    elif args.command == "close-superseded":
+        close_superseded(github)
     else:
         open_pull_request(
             github,

@@ -98,6 +98,14 @@ jobs:
 
           git -C "$GITHUB_WORKSPACE" log -1 --format=%b > "$RUNNER_TEMP/commit-body.txt"
 
+      # Upstream can return to the embedded mappings before an open update merges. Close that update, so nobody merges
+      # mappings that upstream rolled back.
+      - name: Close superseded pull requests
+        if: steps.update.outputs.needs_update == 'false'
+        env:
+          GITHUB_TOKEN: "${{ steps.octo-sts.outputs.token }}"
+        run: python3 ci/tooling/update_apm_semantics_pr.py close-superseded
+
       - name: Check whether this change was already reported
         id: reported
         if: steps.update.outputs.needs_update == 'true'

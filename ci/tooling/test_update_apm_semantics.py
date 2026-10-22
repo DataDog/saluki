@@ -19,6 +19,7 @@ from pathlib import Path
 
 TOOLING = Path(__file__).parent
 SCRIPT = TOOLING / "update-apm-semantics.sh"
+WORKFLOW = TOOLING.parent.parent / ".github/workflows/update-apm-semantics.yml"
 
 spec = importlib.util.spec_from_file_location("update_apm_semantics_pr", TOOLING / "update_apm_semantics_pr.py")
 subject = importlib.util.module_from_spec(spec)
@@ -357,7 +358,8 @@ class FakeGitHub:
     """Records every call as `(name, args)`, in order.
 
     `responses` maps a call name to the value it returns, or to a function that returns it or raises. `list_pulls`
-    filters `pulls` by `head`, `state` and `base` as GitHub does.
+    filters `pulls` by `head`, `state` and `base` as GitHub does. Closing and labelling calls that succeed update
+    `pulls`, so a later call sees their result.
     """
 
     owner = "DataDog"
@@ -392,14 +394,31 @@ class FakeGitHub:
         created = {"number": 99, "html_url": "https://example.test/pull/99"}
         return self._respond("create_pull", {"title": title, "head": head, "body": body}, created)
 
+    def _update(self, number, change):
+        for pull in self.pulls:
+            if pull["number"] == number:
+                change(pull)
+
     def close_pull(self, number):
         self._respond("close_pull", {"number": number})
+        self._update(number, lambda pull: pull.update(state="closed"))
 
     def add_labels(self, number, labels):
         self._respond("add_labels", {"number": number, "labels": labels})
 
+        def add(pull):
+            missing = [label for label in labels if not any(have["name"] == label for have in pull["labels"])]
+            pull["labels"] = pull["labels"] + [{"name": label} for label in missing]
+
+        self._update(number, add)
+
     def remove_label(self, number, label):
         self._respond("remove_label", {"number": number, "label": label})
+
+        def remove(pull):
+            pull["labels"] = [have for have in pull["labels"] if have["name"] != label]
+
+        self._update(number, remove)
 
     def create_comment(self, number, body):
         self._respond("create_comment", {"number": number, "body": body})
@@ -529,6 +548,58 @@ class OpenPullRequestTest(QuietTestCase):
         self.assertEqual(github.names(), ["create_pull"])
 
 
+class CloseSupersededWithoutReplacementTest(QuietTestCase):
+    def test_closes_open_updates_into_main_once_and_leaves_their_content_publishable(self):
+        rolled_back = pull_request(7, labels=[MARKER])
+        declined = older_pull_request(5, state="closed")
+        github = FakeGitHub(
+            pulls=[
+                rolled_back,
+                declined,
+                older_pull_request(6, labels=[{"name": "automated"}]),
+                older_pull_request(8, base={"ref": "release"}),
+            ]
+        )
+
+        subject.close_superseded(github)
+
+        self.assertEqual(github.names(), ["list_pulls", "remove_label", "close_pull", "create_comment"])
+        _, unlabel, close, comment = (args for _, args in github.calls)
+        self.assertEqual(unlabel, {"number": 7, "label": MARKER["name"]})
+        self.assertEqual(close, {"number": 7})
+        self.assertEqual(comment["number"], 7)
+        self.assertIn("match upstream again", comment["body"])
+        self.assertEqual((rolled_back["state"], rolled_back["labels"]), ("closed", []))
+
+        # A second run with no change finds nothing left to close.
+        github.calls.clear()
+        subject.close_superseded(github)
+        self.assertEqual(github.names(), ["list_pulls"])
+
+        # The closure counts as superseded, so the content is proposed again if upstream returns to it, while the
+        # declined pull request still holds back its own content.
+        self.assertEqual(subject.find_report(github, BRANCH), "publish")
+        self.assertEqual(subject.find_report(github, "ci/update-apm-semantics-old5"), "reported")
+        self.assertEqual(declined["labels"], [MARKER])
+
+
+class WorkflowTest(unittest.TestCase):
+    """Checks that the workflow hands each outcome of the script to the pull request module."""
+
+    def step(self, name):
+        [step] = [step for step in WORKFLOW.read_text().split("\n      - name: ") if step.startswith(f"{name}\n")]
+        return step
+
+    def test_a_run_with_no_change_closes_superseded_pull_requests_with_the_write_token(self):
+        refresh = self.step("Refresh the mappings")
+        close = self.step("Close superseded pull requests")
+
+        self.assertIn('echo "needs_update=false" >> "$GITHUB_OUTPUT"', refresh)
+        self.assertIn("if: steps.update.outputs.needs_update == 'false'\n", close)
+        self.assertIn('GITHUB_TOKEN: "${{ steps.octo-sts.outputs.token }}"', close)
+        self.assertIn("run: python3 ci/tooling/update_apm_semantics_pr.py close-superseded\n", close)
+
+
 class GitHubClientTest(unittest.TestCase):
     """Drives the real client with `urlopen` replaced, to check the requests it builds."""
 
@@ -614,6 +685,13 @@ class CommandLineTest(QuietTestCase):
 
     def test_find_report_prints_only_the_decision(self):
         self.assertEqual(self.run_main(FakeGitHub(), "find-report", "--branch", BRANCH), "publish\n")
+
+    def test_close_superseded_closes_every_open_update(self):
+        github = FakeGitHub(pulls=[older_pull_request(5), older_pull_request(6)])
+
+        self.assertEqual(self.run_main(github, "close-superseded"), "")
+
+        self.assertEqual([args for name, args in github.calls if name == "close_pull"], [{"number": 5}, {"number": 6}])
 
     def test_open_pr_reads_the_commit_body_from_a_file(self):
         github = FakeGitHub()
