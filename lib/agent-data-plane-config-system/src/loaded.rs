@@ -49,15 +49,34 @@ impl LoadedConfiguration {
     /// its own is normal here. Whichever authority [`run`](Self::run) or
     /// [`standalone`](Self::standalone) selects applies validation.
     ///
+    /// The file's Datadog keys are read as the Datadog Agent reads them (see [`datadog_yaml`]). If
+    /// that reading cannot be translated but the file read with every key as written can, the second
+    /// reading is used: a respelled key whose value ADP cannot use is ignored rather than failing the
+    /// load.
+    ///
     /// # Errors
     ///
     /// Returns an error if a local source cannot be read, decoded, deserialized, or translated.
     pub async fn load(path: impl AsRef<Path>, env: EnvPrecedence) -> Result<Self, Error> {
+        let path = path.as_ref();
         // Every value the local sources supply was set explicitly: the file set it or an environment
         // variable supplied it.
-        let base = SourceTree::all_explicit(build_base(path.as_ref(), env)?);
-        let local = translate_strict(&base)?;
-        Ok(Self { base, local })
+        let base = SourceTree::all_explicit(build_base(path, env, KeyReading::Datadog)?);
+        let error = match translate_strict(&base) {
+            Ok(local) => return Ok(Self { base, local }),
+            Err(error) => error,
+        };
+
+        let Ok(plain) = build_base(path, env, KeyReading::AsWritten).map(SourceTree::all_explicit) else {
+            return Err(error);
+        };
+        if plain == base {
+            return Err(error);
+        }
+        match translate_strict(&plain) {
+            Ok(local) => Ok(Self { base: plain, local }),
+            Err(_) => Err(error),
+        }
     }
 
     /// Returns the typed snapshot of the local file and environment.
@@ -98,20 +117,33 @@ impl LoadedConfiguration {
     }
 }
 
+/// How [`build_base`] reads the configuration file's keys.
+#[derive(Clone, Copy, Debug)]
+enum KeyReading {
+    /// Datadog keys are resolved as the Datadog Agent resolves them: dotted and differently cased
+    /// spellings land at their canonical paths, and the map keys of a Datadog setting are rendered as
+    /// the Agent renders them.
+    Datadog,
+    /// Every key is read as written.
+    AsWritten,
+}
+
 /// Builds the typed base: the configuration file parsed to its nested shape, with environment
 /// variables read directly and decoded into the schema's shapes on top.
 ///
-/// Datadog keys are resolved as the Datadog Agent resolves them, so dotted and differently cased
-/// spellings land at their canonical paths and the map keys of a Datadog setting are rendered as the
-/// Agent renders them (see [`datadog_yaml`]). A null-valued key is dropped and an empty file is an
+/// `reading` sets how the file's keys are read. A null-valued key is dropped and an empty file is an
 /// empty object. The environment is then overlaid via the generated Datadog reader, the Saluki-only
 /// reader, and the canonical proxy variables. `env` sets whether the environment overwrites the file
 /// (`AfterFile`) or only fills absent keys (`BeforeFile`); `Disabled` skips the environment entirely.
-fn build_base(path: &Path, env: EnvPrecedence) -> Result<Value, Error> {
+fn build_base(path: &Path, env: EnvPrecedence, reading: KeyReading) -> Result<Value, Error> {
     let text = std::fs::read_to_string(path).map_err(|e| Error::Base {
         message: format!("read `{}`: {e}", path.display()),
     })?;
-    let mut base = datadog_yaml::from_str(&text).map_err(|e| Error::Base {
+    let parsed = match reading {
+        KeyReading::Datadog => datadog_yaml::from_str(&text),
+        KeyReading::AsWritten => saluki_config::yaml::from_str(&text).map_err(|e| e.to_string()),
+    };
+    let mut base = parsed.map_err(|e| Error::Base {
         message: format!("parse `{}`: {e}", path.display()),
     })?;
     drop_nulls(&mut base);
@@ -162,17 +194,17 @@ mod tests {
 
         // AfterFile: the environment wins over the file, the decoded value is a real number, an
         // explicitly null key is dropped, and an unrelated file key is preserved.
-        let base = build_base(&path, EnvPrecedence::AfterFile).expect("base builds");
+        let base = build_base(&path, EnvPrecedence::AfterFile, KeyReading::Datadog).expect("base builds");
         assert_eq!(base.get("dogstatsd_port"), Some(&json!(9125)));
         assert_eq!(base.get("dogstatsd_non_local_traffic"), Some(&json!(false)));
         assert!(base.get("empty_key").is_none());
 
         // BeforeFile: the file wins over the environment.
-        let base = build_base(&path, EnvPrecedence::BeforeFile).expect("base builds");
+        let base = build_base(&path, EnvPrecedence::BeforeFile, KeyReading::Datadog).expect("base builds");
         assert_eq!(base.get("dogstatsd_port"), Some(&json!(8125)));
 
         // Disabled: the environment is ignored entirely.
-        let base = build_base(&path, EnvPrecedence::Disabled).expect("base builds");
+        let base = build_base(&path, EnvPrecedence::Disabled, KeyReading::Datadog).expect("base builds");
         assert_eq!(base.get("dogstatsd_port"), Some(&json!(8125)));
 
         std::env::remove_var("DD_DOGSTATSD_PORT");
@@ -728,7 +760,7 @@ mod tests {
         std::fs::write(&path, "dogstatsd_port: 8125\n").unwrap();
         std::env::set_var("DD_DOGSTATSD_PORT", "not-a-number");
 
-        let result = build_base(&path, EnvPrecedence::AfterFile);
+        let result = build_base(&path, EnvPrecedence::AfterFile, KeyReading::Datadog);
 
         std::env::remove_var("DD_DOGSTATSD_PORT");
         std::fs::remove_file(&path).ok();
@@ -742,7 +774,9 @@ mod tests {
         std::fs::write(&path, "{}\n").unwrap();
         std::env::set_var("DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES", "12MiB");
 
-        let base = SourceTree::all_explicit(build_base(&path, EnvPrecedence::AfterFile).expect("base builds"));
+        let base = SourceTree::all_explicit(
+            build_base(&path, EnvPrecedence::AfterFile, KeyReading::Datadog).expect("base builds"),
+        );
         let config = translate_strict(&base).expect("human-readable byte size translates");
 
         std::env::remove_var("DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES");
@@ -758,7 +792,7 @@ mod tests {
     fn base_from_file(test: &str, contents: &str) -> Result<Value, Error> {
         let path = std::env::temp_dir().join(format!("adp_{test}_{}.yaml", std::process::id()));
         std::fs::write(&path, contents).unwrap();
-        let base = build_base(&path, EnvPrecedence::Disabled);
+        let base = build_base(&path, EnvPrecedence::Disabled, KeyReading::Datadog);
         std::fs::remove_file(&path).ok();
         base
     }
@@ -896,67 +930,233 @@ mod tests {
         );
     }
 
+    /// Returns whether `yaml` translates when every key is read as written, without the environment.
+    fn translates_with_keys_as_written(test: &str, yaml: &str) -> bool {
+        translates_with(test, yaml, KeyReading::AsWritten)
+    }
+
+    /// Returns whether `yaml` translates when its keys are read with `reading`, without the environment.
+    fn translates_with(test: &str, yaml: &str, reading: KeyReading) -> bool {
+        let path = std::env::temp_dir().join(format!("adp_{test}_{reading:?}_{}.yaml", std::process::id()));
+        std::fs::write(&path, yaml).unwrap();
+        let base = build_base(&path, EnvPrecedence::Disabled, reading);
+        std::fs::remove_file(&path).ok();
+        base.is_ok_and(|base| translate_strict(&SourceTree::all_explicit(base)).is_ok())
+    }
+
+    /// Loads `yaml` from a temporary file named for `test`, without the environment.
+    fn try_load(test: &str, yaml: &str) -> Result<LoadedConfiguration, Error> {
+        let path = std::env::temp_dir().join(format!("adp_{test}_load_{}.yaml", std::process::id()));
+        std::fs::write(&path, yaml).unwrap();
+        let loaded = block_on(LoadedConfiguration::load(&path, EnvPrecedence::Disabled));
+        std::fs::remove_file(&path).ok();
+        loaded
+    }
+
     #[test]
-    fn conflicting_spellings_of_a_datadog_path_fail_the_load() {
+    fn colliding_spellings_that_loaded_before_still_load_with_a_stable_winner() {
+        // Each pair is one file written in both orders. A key in its canonical place wins; among
+        // respelled keys the one written last wins; a respelled non-map stays where it was written.
         let cases = [
+            // A dotted key and its nested spelling.
             (
                 "data_plane.api_listen_address: a\ndata_plane: {api_listen_address: b}\n",
-                "`data_plane.api_listen_address` is set more than once, as `data_plane > api_listen_address` and as `data_plane.api_listen_address`",
+                "data_plane: {api_listen_address: b}\ndata_plane.api_listen_address: a\n",
+                json!({"data_plane": {"api_listen_address": "b"}}),
+                json!({"data_plane": {"api_listen_address": "b"}}),
             ),
+            // A case alias and the canonical key.
             (
                 "Log_Level: debug\nlog_level: info\n",
-                "`log_level` is set more than once, as `Log_Level` and as `log_level`",
+                "log_level: info\nLog_Level: debug\n",
+                json!({"log_level": "info"}),
+                json!({"log_level": "info"}),
+            ),
+            // Two respellings and no canonical key: the later one wins.
+            (
+                "Log_Level: debug\nLOG_LEVEL: warn\n",
+                "LOG_LEVEL: warn\nLog_Level: debug\n",
+                json!({"log_level": "warn"}),
+                json!({"log_level": "debug"}),
             ),
             (
-                "data_plane: 5\ndata_plane.otlp.enabled: true\n",
-                "`data_plane` is set more than once, as `data_plane` and as `data_plane.otlp.enabled`",
+                "data_plane.api_listen_address: a\nDATA_PLANE: {api_listen_address: b}\n",
+                "DATA_PLANE: {api_listen_address: b}\ndata_plane.api_listen_address: a\n",
+                json!({"data_plane": {"api_listen_address": "b"}}),
+                json!({"data_plane": {"api_listen_address": "a"}}),
             ),
-            (
-                "data_plane: {otlp: 5}\nData_Plane: {otlp: {enabled: true}}\n",
-                "`data_plane.otlp` is set more than once, as `Data_Plane > otlp` and as `data_plane > otlp`",
-            ),
+            // A respelled map-valued leaf does not merge with the canonical one.
             (
                 "additional_endpoints: {a: [k]}\nAdditional_Endpoints: {b: [j]}\n",
-                "`additional_endpoints` is set more than once, as `Additional_Endpoints` and as `additional_endpoints`",
+                "Additional_Endpoints: {b: [j]}\nadditional_endpoints: {a: [k]}\n",
+                json!({"additional_endpoints": {"a": ["k"]}}),
+                json!({"additional_endpoints": {"a": ["k"]}}),
+            ),
+            // A respelled scalar where a section belongs stays put; the section still forms.
+            (
+                "data_plane.otlp.enabled: true\nData_Plane: 5\n",
+                "Data_Plane: 5\ndata_plane.otlp.enabled: true\n",
+                json!({"data_plane": {"otlp": {"enabled": true}}, "Data_Plane": 5}),
+                json!({"data_plane": {"otlp": {"enabled": true}}, "Data_Plane": 5}),
             ),
             (
-                "data_plane: {Extra: 1}\nDATA_PLANE: {Extra: 2}\n",
-                "`data_plane.Extra` is set more than once, as `DATA_PLANE > Extra` and as `data_plane > Extra`",
+                "Data_Plane: {otlp: 5}\ndata_plane.otlp.enabled: true\n",
+                "data_plane.otlp.enabled: true\nData_Plane: {otlp: 5}\n",
+                json!({"data_plane": {"otlp": {"enabled": true}}, "Data_Plane": {"otlp": 5}}),
+                json!({"data_plane": {"otlp": {"enabled": true}}, "Data_Plane": {"otlp": 5}}),
+            ),
+            // Unknown and Saluki-only keys under a respelled section yield to the canonical section.
+            (
+                "data_plane: {Extra: 1, standalone_mode: false}\nDATA_PLANE: {Extra: 2, standalone_mode: true}\n",
+                "DATA_PLANE: {Extra: 2, standalone_mode: true}\ndata_plane: {Extra: 1, standalone_mode: false}\n",
+                json!({"data_plane": {"Extra": 1, "standalone_mode": false}}),
+                json!({"data_plane": {"Extra": 1, "standalone_mode": false}}),
+            ),
+            // A null counts as absent, wherever it is written.
+            (
+                "log_level: ~\nLog_Level: debug\n",
+                "Log_Level: debug\nlog_level: ~\n",
+                json!({"log_level": "debug"}),
+                json!({"log_level": "debug"}),
+            ),
+            (
+                "Log_Level: ~\nlog_level: info\nDATA_PLANE: ~\ndata_plane.otlp.enabled: true\n",
+                "data_plane.otlp.enabled: true\nDATA_PLANE: ~\nlog_level: info\nLog_Level: ~\n",
+                json!({"log_level": "info", "data_plane": {"otlp": {"enabled": true}}}),
+                json!({"log_level": "info", "data_plane": {"otlp": {"enabled": true}}}),
+            ),
+            // Leaf map keys that render the same keep one entry: the key written as its rendered text
+            // wins, and otherwise the later key, including inside a list of maps.
+            (
+                "additional_endpoints: {010: [a], '8': [b], yes: [c], on: [d]}\n",
+                "additional_endpoints: {on: [d], yes: [c], '8': [b], 010: [a]}\n",
+                json!({"additional_endpoints": {"8": ["b"], "true": ["d"]}}),
+                json!({"additional_endpoints": {"8": ["b"], "true": ["c"]}}),
+            ),
+            (
+                "dogstatsd_mapper_profiles: [{name: p, prefix: 'p.', mappings: [{match: 'p.*', name: m, tags: {yes: a, 'true': b}}]}]\n",
+                "dogstatsd_mapper_profiles: [{name: p, prefix: 'p.', mappings: [{match: 'p.*', name: m, tags: {'true': b, yes: a}}]}]\n",
+                json!({"dogstatsd_mapper_profiles": [
+                    {"name": "p", "prefix": "p.", "mappings": [{"match": "p.*", "name": "m", "tags": {"true": "b"}}]},
+                ]}),
+                json!({"dogstatsd_mapper_profiles": [
+                    {"name": "p", "prefix": "p.", "mappings": [{"match": "p.*", "name": "m", "tags": {"true": "b"}}]},
+                ]}),
             ),
         ];
-        for (index, (yaml, expected)) in cases.into_iter().enumerate() {
-            let message = base_error_message(&format!("conflict_{index}"), yaml);
-            assert!(message.starts_with("parse `"), "{message}");
+        for (index, (first, second, first_base, second_base)) in cases.into_iter().enumerate() {
+            for (order, yaml, expected) in [("first", first, first_base), ("second", second, second_base)] {
+                let test = format!("collision_{index}_{order}");
+                assert!(
+                    translates_with_keys_as_written(&test, yaml),
+                    "{yaml:?} did not load before"
+                );
+                assert_eq!(base_from_file(&test, yaml).expect(yaml), expected, "{yaml:?}");
+                let loaded = try_load(&test, yaml);
+                assert!(loaded.is_ok(), "{yaml:?}: {:?}", loaded.err());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn colliding_spellings_reach_the_model_with_the_canonical_value() {
+        let loaded = load_from_file(
+            "collision_model",
+            concat!(
+                "data_plane.api_listen_address: 127.0.0.1:1111\n",
+                "data_plane: {api_listen_address: '127.0.0.1:2222', standalone_mode: false}\n",
+                "DATA_PLANE: {standalone_mode: true}\n",
+                "Log_Level: debug\n",
+                "log_level: warn\n",
+                "additional_endpoints: {010: [a], '8': [b]}\n",
+            ),
+        )
+        .await;
+
+        let config = loaded.local();
+        assert_eq!(config.control.api_listen_address, "127.0.0.1:2222");
+        assert!(!config.control.standalone_mode);
+        assert_eq!(config.control.logging.level, "warn");
+        let endpoints = &config.shared.endpoints.additional_endpoints;
+        assert_eq!(endpoints.keys().collect::<Vec<_>>(), ["8"]);
+        assert_eq!(endpoints["8"], ["b"]);
+    }
+
+    #[test]
+    fn errors_the_plain_yaml_reading_raised_are_still_raised() {
+        // Duplicate keys, including ones the parser compares by value, and null keys inside a
+        // Datadog setting's map failed before this module resolved spellings, and still fail.
+        let cases = [
+            "log_level: info\nlog_level: debug\n",
+            "data_plane:\n  api_listen_address: a\n  api_listen_address: b\n",
+            "additional_endpoints: {010: [a], 8: [b]}\n",
+            "additional_endpoints: {~: [a]}\n",
+        ];
+        for (index, yaml) in cases.into_iter().enumerate() {
             assert!(
-                message.ends_with(&format!("{expected}; remove one of them")),
-                "{yaml:?}: {message}"
+                saluki_config::yaml::from_str::<Value>(yaml).is_err(),
+                "{yaml:?} parsed before"
             );
+            let message = base_error_message(&format!("still_fails_{index}"), yaml);
+            assert!(message.starts_with("parse `"), "{yaml:?}: {message}");
+        }
+
+        // A scalar where the canonical spelling expects a section failed translation before, and a
+        // respelled section does not displace it.
+        let yaml = "data_plane: {otlp: 5}\nData_Plane: {otlp: {enabled: true}}\n";
+        assert!(!translates_with_keys_as_written("still_fails_section", yaml));
+        match try_load("still_fails_section", yaml) {
+            Err(error) => assert!(
+                error
+                    .to_string()
+                    .ends_with("invalid type: integer `5`, expected struct DataPlaneOtlp"),
+                "{error}"
+            ),
+            Ok(_) => panic!("{yaml:?} should still fail"),
         }
     }
 
     #[test]
-    fn a_conflict_does_not_reveal_the_values() {
-        let message = base_error_message(
-            "conflict_redaction",
-            "api_key: sk-first-secret\nAPI_KEY: sk-second-secret\n",
-        );
+    fn a_respelled_key_whose_value_cannot_be_used_falls_back_to_keys_as_written() {
+        let default_level = try_load("fallback_default", "")
+            .expect("an empty file loads")
+            .local()
+            .control
+            .logging
+            .level
+            .clone();
+        // Each file loaded before, when its respelled keys were not read. Read as the Agent reads
+        // them they cannot be translated, so every key is read as written, as for the last file,
+        // whose valid respelling is ignored along with the invalid one.
+        let cases = [
+            "Log_Level: [a]\n",
+            "DATA_PLANE: {standalone_mode: maybe}\n",
+            "data_plane.otlp.enabled: maybe\n",
+            "DogStatsD_Port: abc\nLog_Level: debug\n",
+        ];
+        for (index, yaml) in cases.into_iter().enumerate() {
+            let test = format!("fallback_{index}");
+            assert!(
+                translates_with_keys_as_written(&test, yaml),
+                "{yaml:?} did not load before"
+            );
+            assert!(
+                !translates_with(&test, yaml, KeyReading::Datadog),
+                "{yaml:?} needs no fallback"
+            );
+            let loaded = try_load(&test, yaml).unwrap_or_else(|e| panic!("{yaml:?}: {e}"));
+            let config = loaded.local();
+            assert_eq!(config.control.logging.level, default_level, "{yaml:?}");
+            assert!(!config.control.standalone_mode, "{yaml:?}");
+            assert!(!config.control.otlp, "{yaml:?}");
+            assert_eq!(config.domains.dogstatsd.listeners.port, 8125, "{yaml:?}");
+        }
 
-        assert!(
-            message.ends_with("`api_key` is set more than once, as `API_KEY` and as `api_key`; remove one of them"),
-            "{message}"
-        );
-        assert!(!message.contains("sk-"), "{message}");
-    }
-
-    #[test]
-    fn a_leaf_map_with_keys_rendering_the_same_fails_the_load() {
-        let message = base_error_message("leaf_duplicate", "additional_endpoints:\n  yes: [a]\n  true: [b]\n");
-
-        assert!(message.starts_with("parse `"), "{message}");
-        assert!(
-            message.contains(": duplicate mapping key `true` (unquoted keys are read as YAML values; remove one, or quote it to keep its spelling) at line"),
-            "{message}"
-        );
+        // A file that cannot be translated either way still fails, with the error its Agent reading
+        // raises.
+        let yaml = "dogstatsd_tag_cardinality: bogus\nLog_Level: debug\n";
+        assert!(!translates_with_keys_as_written("fallback_fails", yaml));
+        assert!(matches!(try_load("fallback_fails", yaml), Err(Error::Translate { .. })));
     }
 
     #[tokio::test]
@@ -999,25 +1199,37 @@ mod tests {
     }
 
     #[test]
-    fn the_file_wins_over_the_environment_for_a_dotted_key_before_the_file() {
+    fn the_environment_precedence_applies_to_the_resolved_file_value() {
+        // The file value is the dotted key alone, or the canonical spelling when both are written.
+        let files = [
+            ("data_plane.api_listen_address: 127.0.0.1:1111\n", "127.0.0.1:1111"),
+            (
+                "data_plane.api_listen_address: 127.0.0.1:1111\ndata_plane: {api_listen_address: '127.0.0.1:3333'}\n",
+                "127.0.0.1:3333",
+            ),
+        ];
         let _guard = test_env_lock();
-        let path = std::env::temp_dir().join(format!("adp_dotted_precedence_{}.yaml", std::process::id()));
-        std::fs::write(&path, "data_plane.api_listen_address: 127.0.0.1:1111\n").unwrap();
         std::env::set_var("DD_DATA_PLANE_API_LISTEN_ADDRESS", "127.0.0.1:2222");
+        for (index, (yaml, file_value)) in files.into_iter().enumerate() {
+            let path = std::env::temp_dir().join(format!("adp_dotted_precedence_{index}_{}.yaml", std::process::id()));
+            std::fs::write(&path, yaml).unwrap();
 
-        let before = block_on(LoadedConfiguration::load(&path, EnvPrecedence::BeforeFile));
-        let after = block_on(LoadedConfiguration::load(&path, EnvPrecedence::AfterFile));
+            let before = block_on(LoadedConfiguration::load(&path, EnvPrecedence::BeforeFile));
+            let after = block_on(LoadedConfiguration::load(&path, EnvPrecedence::AfterFile));
 
+            std::fs::remove_file(&path).ok();
+            assert_eq!(
+                before.expect("loads").local().control.api_listen_address,
+                file_value,
+                "{yaml:?}"
+            );
+            assert_eq!(
+                after.expect("loads").local().control.api_listen_address,
+                "127.0.0.1:2222",
+                "{yaml:?}"
+            );
+        }
         std::env::remove_var("DD_DATA_PLANE_API_LISTEN_ADDRESS");
-        std::fs::remove_file(&path).ok();
-        assert_eq!(
-            before.expect("loads").local().control.api_listen_address,
-            "127.0.0.1:1111"
-        );
-        assert_eq!(
-            after.expect("loads").local().control.api_listen_address,
-            "127.0.0.1:2222"
-        );
     }
 
     #[test]

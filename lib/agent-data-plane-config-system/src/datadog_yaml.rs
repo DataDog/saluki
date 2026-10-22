@@ -13,6 +13,21 @@
 //! whose path is neither, including every Saluki-only key, keeps its spelling and its place in its
 //! map. When that map is a Datadog section written in another spelling, the key moves with the
 //! section: `DATA_PLANE: {standalone_mode: true}` sets `data_plane.standalone_mode`.
+//!
+//! # Collisions
+//!
+//! Spellings that resolve to the same place never fail the load. Which one the Agent keeps mostly
+//! depends on Go map order, so ADP applies its own stable rules:
+//!
+//! - A key that is already in its canonical place wins. This is a key in its nested lowercase path,
+//!   or a leaf map key that is already the text it renders to, such as `'8'`. Reading every key as
+//!   written gives the same value.
+//! - Otherwise the spelling written last wins, as the Agent's parser does for a repeated key.
+//! - A respelled key whose value is not a map stays where it was written instead of replacing a
+//!   Datadog section.
+//! - A null counts as absent.
+//!
+//! The other spellings are dropped.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -22,29 +37,6 @@ use datadog_agent_config::datadog_leaf_paths;
 use serde::de::{self, DeserializeSeed, IntoDeserializer as _, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
-use snafu::Snafu;
-
-/// An error reading the configuration file text.
-#[derive(Debug, Snafu)]
-pub(crate) enum Error {
-    /// The text is not valid YAML, or a map holds two keys that are the same key.
-    #[snafu(display("{message}"))]
-    Parse {
-        /// The message from the YAML parser. It carries a location and never any source text.
-        message: String,
-    },
-
-    /// Two spellings of one Datadog path both carry a value.
-    #[snafu(display("`{path}` is set more than once, as `{spelling}` and as `{other}`; remove one of them"))]
-    Conflict {
-        /// The canonical dotted path both spellings resolve to.
-        path: String,
-        /// One spelling, with each nested key separated by ` > `.
-        spelling: String,
-        /// The other spelling, written the same way.
-        other: String,
-    },
-}
 
 /// Parses `text` into the base value, resolving Datadog keys the way the Agent does.
 ///
@@ -54,14 +46,18 @@ pub(crate) enum Error {
 ///
 /// # Errors
 ///
-/// Returns an error if the text is not valid YAML, if two keys of a Datadog leaf's map render to
-/// the same key, or if two spellings of one Datadog path both carry a value.
-pub(crate) fn from_str(text: &str) -> Result<Value, Error> {
-    let Document(value) = saluki_config::yaml::from_str(text).map_err(|e| Error::Parse { message: e.to_string() })?;
-    match value {
-        Value::Object(root) => Normalizer::default().run(root).map(Value::Object),
-        other => Ok(other),
-    }
+/// Returns the YAML error message if the text is not valid YAML, or if a Datadog leaf's map has a null
+/// key.
+pub(crate) fn from_str(text: &str) -> Result<Value, String> {
+    let Document(node) = saluki_config::yaml::from_str(text).map_err(|e| e.to_string())?;
+    Ok(match node {
+        Node::Section(entries) => {
+            let mut placements = Placements::default();
+            placements.collect(entries, &[], &[]);
+            Value::Object(placements.resolve())
+        }
+        Node::Value(value) => value,
+    })
 }
 
 /// The Datadog paths, by kind.
@@ -102,137 +98,175 @@ fn canonical_path(section: &[String], key: &str) -> Vec<String> {
     [section, &segments].concat()
 }
 
+/// A node read at the root or inside a Datadog section.
+enum Node {
+    /// A map at the root or at a Datadog section path, with its keys as written, in document order.
+    Section(Vec<(String, Node)>),
+    /// Any other value.
+    Value(Value),
+}
+
 /// The whole document, read as the root section.
-struct Document(Value);
+struct Document(Node);
 
 impl<'de> Deserialize<'de> for Document {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Shape::Scoped(Scope::Section(Vec::new()))
-            .deserialize(deserializer)
-            .map(Document)
+        deserializer.deserialize_any(SectionVisitor(Vec::new())).map(Document)
     }
 }
 
-/// How a YAML node is read, which depends on where its path falls in the Datadog schema.
+/// How the value at `key` inside the section at `section` is read.
 #[derive(Clone)]
 enum Shape {
     /// Outside the Datadog schema: built exactly as `serde_json::Value` builds it.
     Plain,
-    /// Inside the Datadog schema.
-    Scoped(Scope),
-}
-
-#[derive(Clone)]
-enum Scope {
-    /// A Datadog section at the given canonical path: its keys are read as written, and each value's
-    /// shape follows from the key's canonical path.
+    /// A Datadog section at the given canonical path.
     Section(Vec<String>),
     /// A Datadog leaf's value: every map key, at any depth, is rendered like Go's `%v`.
     Leaf,
 }
 
 impl Shape {
-    /// The shape of the value at `key` inside the section at `section`.
     fn of_child(section: &[String], key: &str) -> Self {
         let path = canonical_path(section, key);
         match DatadogPaths::get().kind(&path) {
-            Some(PathKind::Leaf) => Shape::Scoped(Scope::Leaf),
-            Some(PathKind::Section) => Shape::Scoped(Scope::Section(path)),
+            Some(PathKind::Leaf) => Shape::Leaf,
+            Some(PathKind::Section) => Shape::Section(path),
             None => Shape::Plain,
         }
     }
 }
 
 impl<'de> DeserializeSeed<'de> for Shape {
-    type Value = Value;
+    type Value = Node;
 
-    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Value, D::Error> {
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Node, D::Error> {
         match self {
-            Shape::Plain => Value::deserialize(deserializer),
-            Shape::Scoped(scope) => deserializer.deserialize_any(ScopeVisitor(scope)),
+            Shape::Plain => Value::deserialize(deserializer).map(Node::Value),
+            Shape::Section(path) => deserializer.deserialize_any(SectionVisitor(path)),
+            Shape::Leaf => LeafValue.deserialize(deserializer).map(Node::Value),
         }
     }
 }
 
-/// Builds a `Value` for a node inside the Datadog schema.
-///
-/// Scalars are built by `serde_json::Value`'s own deserializer; only maps and lists differ.
-struct ScopeVisitor(Scope);
+/// Builds scalars exactly as `serde_json::Value`'s own deserializer builds them.
+macro_rules! visit_scalars {
+    ($de:lifetime) => {
+        fn visit_bool<E: de::Error>(self, v: bool) -> Result<Self::Value, E> {
+            Value::deserialize(v.into_deserializer()).map(Into::into)
+        }
 
-impl<'de> Visitor<'de> for ScopeVisitor {
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            Value::deserialize(v.into_deserializer()).map(Into::into)
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            Value::deserialize(v.into_deserializer()).map(Into::into)
+        }
+
+        fn visit_f64<E: de::Error>(self, v: f64) -> Result<Self::Value, E> {
+            Value::deserialize(v.into_deserializer()).map(Into::into)
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            Value::deserialize(v.into_deserializer()).map(Into::into)
+        }
+
+        fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
+            Value::deserialize(v.into_deserializer()).map(Into::into)
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(Value::Null.into())
+        }
+
+        fn visit_some<D: Deserializer<$de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+            deserializer.deserialize_any(self)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(Value::Null.into())
+        }
+    };
+}
+
+impl From<Value> for Node {
+    fn from(value: Value) -> Self {
+        Node::Value(value)
+    }
+}
+
+/// Reads a map at the root or at the Datadog section at its canonical path, keeping keys as written.
+struct SectionVisitor(Vec<String>);
+
+impl<'de> Visitor<'de> for SectionVisitor {
+    type Value = Node;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("any valid YAML value")
+    }
+
+    visit_scalars!('de);
+
+    fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Node, A::Error> {
+        // A list where a section belongs is outside the schema.
+        Value::deserialize(de::value::SeqAccessDeserializer::new(seq)).map(Node::Value)
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Node, A::Error> {
+        let mut entries = Vec::new();
+        while let Some(key) = map.next_key_seed(WrittenKey)? {
+            let value = map.next_value_seed(Shape::of_child(&self.0, &key))?;
+            entries.push((key, value));
+        }
+        Ok(Node::Section(entries))
+    }
+}
+
+/// A Datadog leaf's value, with every map key rendered like Go's `%v`.
+struct LeafValue;
+
+impl<'de> DeserializeSeed<'de> for LeafValue {
+    type Value = Value;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Value, D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl<'de> Visitor<'de> for LeafValue {
     type Value = Value;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         formatter.write_str("any valid YAML value")
     }
 
-    fn visit_bool<E: de::Error>(self, v: bool) -> Result<Value, E> {
-        Value::deserialize(v.into_deserializer())
-    }
-
-    fn visit_i64<E: de::Error>(self, v: i64) -> Result<Value, E> {
-        Value::deserialize(v.into_deserializer())
-    }
-
-    fn visit_u64<E: de::Error>(self, v: u64) -> Result<Value, E> {
-        Value::deserialize(v.into_deserializer())
-    }
-
-    fn visit_f64<E: de::Error>(self, v: f64) -> Result<Value, E> {
-        Value::deserialize(v.into_deserializer())
-    }
-
-    fn visit_str<E: de::Error>(self, v: &str) -> Result<Value, E> {
-        Value::deserialize(v.into_deserializer())
-    }
-
-    fn visit_string<E: de::Error>(self, v: String) -> Result<Value, E> {
-        Value::deserialize(v.into_deserializer())
-    }
-
-    fn visit_none<E: de::Error>(self) -> Result<Value, E> {
-        Ok(Value::Null)
-    }
-
-    fn visit_some<D: Deserializer<'de>>(self, deserializer: D) -> Result<Value, D::Error> {
-        deserializer.deserialize_any(self)
-    }
-
-    fn visit_unit<E: de::Error>(self) -> Result<Value, E> {
-        Ok(Value::Null)
-    }
+    visit_scalars!('de);
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
-        // Keys inside a leaf's list of maps are rendered too; a section's list is outside the schema.
-        let element = match &self.0 {
-            Scope::Leaf => Shape::Scoped(Scope::Leaf),
-            Scope::Section(_) => Shape::Plain,
-        };
         let mut items = Vec::new();
-        while let Some(item) = seq.next_element_seed(element.clone())? {
+        while let Some(item) = seq.next_element_seed(LeafValue)? {
             items.push(item);
         }
         Ok(Value::Array(items))
     }
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
+        // Keys that were written as the text they render to. Such a key keeps its entry when a typed
+        // key renders to the same text; otherwise the later entry wins.
+        let mut written = std::collections::HashSet::new();
         let mut entries = Map::new();
-        match self.0 {
-            Scope::Section(section) => {
-                while let Some(key) = map.next_key_seed(WrittenKey)? {
-                    let value = map.next_value_seed(Shape::of_child(&section, &key))?;
-                    entries.insert(key, value);
+        while let Some(key) = map.next_key_seed(RenderedKey)? {
+            let value = map.next_value_seed(LeafValue)?;
+            match key {
+                Key::Written(text) => {
+                    written.insert(text.clone());
+                    entries.insert(text, value);
                 }
-            }
-            Scope::Leaf => {
-                while let Some(key) = map.next_key_seed(RenderedKey)? {
-                    if entries.contains_key(&key) {
-                        return Err(de::Error::custom(format!(
-                            "duplicate mapping key `{key}` (unquoted keys are read as YAML values; remove one, or quote it to keep its spelling)"
-                        )));
-                    }
-                    entries.insert(key, map.next_value_seed(Shape::Scoped(Scope::Leaf))?);
+                Key::Typed(text) if !written.contains(&text) => {
+                    entries.insert(text, value);
                 }
+                Key::Typed(_) => {}
             }
         }
         Ok(Value::Object(entries))
@@ -266,55 +300,63 @@ impl Visitor<'_> for WrittenKey {
     }
 }
 
-/// A map key typed by YAML 1.1 rules, then rendered like Go's `fmt.Sprintf("%v")`.
+/// A leaf map key, rendered like Go's `fmt.Sprintf("%v")`.
+enum Key {
+    /// A key that is a string in YAML: quoted, or plain text that resolves to no other type.
+    Written(String),
+    /// A key YAML 1.1 types as a boolean or a number, rendered to text.
+    Typed(String),
+}
+
+/// Reads a map key typed by YAML 1.1 rules and renders it like Go's `fmt.Sprintf("%v")`.
 struct RenderedKey;
 
 impl<'de> DeserializeSeed<'de> for RenderedKey {
-    type Value = String;
+    type Value = Key;
 
-    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<String, D::Error> {
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Key, D::Error> {
         deserializer.deserialize_any(self)
     }
 }
 
 impl Visitor<'_> for RenderedKey {
-    type Value = String;
+    type Value = Key;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         formatter.write_str("a scalar mapping key")
     }
 
-    fn visit_bool<E: de::Error>(self, v: bool) -> Result<String, E> {
-        Ok(v.to_string())
+    fn visit_bool<E: de::Error>(self, v: bool) -> Result<Key, E> {
+        Ok(Key::Typed(v.to_string()))
     }
 
-    fn visit_i64<E: de::Error>(self, v: i64) -> Result<String, E> {
-        Ok(v.to_string())
+    fn visit_i64<E: de::Error>(self, v: i64) -> Result<Key, E> {
+        Ok(Key::Typed(v.to_string()))
     }
 
-    fn visit_u64<E: de::Error>(self, v: u64) -> Result<String, E> {
-        Ok(v.to_string())
+    fn visit_u64<E: de::Error>(self, v: u64) -> Result<Key, E> {
+        Ok(Key::Typed(v.to_string()))
     }
 
-    fn visit_f64<E: de::Error>(self, v: f64) -> Result<String, E> {
-        Ok(go_float(v))
+    fn visit_f64<E: de::Error>(self, v: f64) -> Result<Key, E> {
+        Ok(Key::Typed(go_float(v)))
     }
 
-    fn visit_str<E: de::Error>(self, v: &str) -> Result<String, E> {
-        Ok(v.to_owned())
+    fn visit_str<E: de::Error>(self, v: &str) -> Result<Key, E> {
+        Ok(Key::Written(v.to_owned()))
     }
 
-    fn visit_string<E: de::Error>(self, v: String) -> Result<String, E> {
-        Ok(v)
+    fn visit_string<E: de::Error>(self, v: String) -> Result<Key, E> {
+        Ok(Key::Written(v))
     }
 
-    fn visit_none<E: de::Error>(self) -> Result<String, E> {
+    fn visit_none<E: de::Error>(self) -> Result<Key, E> {
         Err(de::Error::custom(
             "null mapping keys are not supported; quote the key to use it as text",
         ))
     }
 
-    fn visit_unit<E: de::Error>(self) -> Result<String, E> {
+    fn visit_unit<E: de::Error>(self) -> Result<Key, E> {
         Err(de::Error::custom(
             "null mapping keys are not supported; quote the key to use it as text",
         ))
@@ -361,100 +403,111 @@ fn go_float(v: f64) -> String {
     format!("{sign}{body}")
 }
 
-/// Moves each Datadog key at the root and in the Datadog sections to its canonical path.
-///
-/// A key whose canonical path is not a Datadog leaf or section stays exactly where and as it was.
-/// The result is assembled in one tree, so spellings that resolve to the same section merge by key.
+/// The values of a document, each at the place it resolves to, gathered before any is written so that
+/// colliding spellings resolve the same way whatever order they were written in.
 #[derive(Default)]
-struct Normalizer {
-    root: Map<String, Value>,
-    // How each placed canonical path was written, for conflict messages.
-    spellings: HashMap<Vec<String>, String>,
+struct Placements {
+    // Values whose written path is the path they resolve to, in document order.
+    in_place: Vec<(Vec<String>, Value)>,
+    // Values a respelling moved, in document order.
+    moved: Vec<(Vec<String>, Value)>,
+    // Null values in place, kept only where nothing else is written.
+    nulls: Vec<Vec<String>>,
+    // Every Datadog section a map was written for, so an empty section is kept.
+    sections: Vec<Vec<String>>,
 }
 
-impl Normalizer {
-    fn run(mut self, input: Map<String, Value>) -> Result<Map<String, Value>, Error> {
-        self.absorb(input, &[], "")?;
-        Ok(self.root)
-    }
-
-    /// Places each entry of `input`, a map written at `spelled` for the section at `section`.
-    fn absorb(&mut self, input: Map<String, Value>, section: &[String], spelled: &str) -> Result<(), Error> {
-        for (key, value) in input {
-            let spelling = if spelled.is_empty() {
-                key.clone()
-            } else {
-                format!("{spelled} > {key}")
-            };
-            let path = canonical_path(section, &key);
-            match (DatadogPaths::get().kind(&path), value) {
-                (Some(PathKind::Section), Value::Object(children)) => {
-                    self.ensure_object(&path, &spelling)?;
-                    self.absorb(children, &path, &spelling)?;
+impl Placements {
+    /// Gathers `entries`, a map written at `written` for the section at `section`.
+    fn collect(&mut self, entries: Vec<(String, Node)>, section: &[String], written: &[String]) {
+        for (key, node) in entries {
+            let written_path = [written, std::slice::from_ref(&key)].concat();
+            let canonical = canonical_path(section, &key);
+            match node {
+                // Only a map at a Datadog section path is read as a section.
+                Node::Section(children) => {
+                    self.collect(children, &canonical, &written_path);
+                    self.sections.push(canonical);
                 }
-                (Some(_), value) => self.place(&path, value, spelling)?,
-                (None, value) => {
-                    let unmoved = [section, &[key]].concat();
-                    self.place(&unmoved, value, spelling)?;
+                Node::Value(value) => {
+                    let path = match DatadogPaths::get().kind(&canonical) {
+                        Some(PathKind::Leaf) => canonical,
+                        // A non-map where a section belongs stays where it was written.
+                        Some(PathKind::Section) => written_path.clone(),
+                        // An unknown key keeps its spelling inside the section it resolves to.
+                        None => [section, &[key]].concat(),
+                    };
+                    match (path == written_path, value) {
+                        (true, Value::Null) => self.nulls.push(path),
+                        (false, Value::Null) => {}
+                        (true, value) => self.in_place.push((path, value)),
+                        (false, value) => self.moved.push((path, value)),
+                    }
                 }
             }
         }
-        Ok(())
     }
 
-    /// Ensures an object exists at `path`, creating it and its parents as needed.
-    ///
-    /// A null counts as absent. Any other value that is not an object conflicts with `spelling`.
-    fn ensure_object(&mut self, path: &[String], spelling: &str) -> Result<(), Error> {
-        let mut current = &mut self.root;
-        for (depth, segment) in path.iter().enumerate() {
-            let entry = current.entry(segment.clone()).or_insert(Value::Null);
-            if entry.is_null() {
-                *entry = Value::Object(Map::new());
-                self.spellings.insert(path[..=depth].to_vec(), spelling.to_owned());
-            }
-            match entry {
-                Value::Object(children) => current = children,
-                _ => return Err(conflict(&self.spellings, &path[..=depth], spelling)),
+    /// Writes the gathered values into one map, applying the collision rules in the module docs.
+    fn resolve(self) -> Map<String, Value> {
+        let mut root = Map::new();
+        // In-place paths cannot collide unless the parser accepted two keys with the same text,
+        // where the later one won before this module existed too.
+        for (path, value) in self.in_place {
+            write(&mut root, &path, value);
+        }
+        for (path, value) in self.moved.into_iter().rev() {
+            if is_vacant(&root, &path) {
+                write(&mut root, &path, value);
             }
         }
-        Ok(())
-    }
-
-    /// Places `value` at `path`, which must not already hold a non-null value unless `value` is null.
-    fn place(&mut self, path: &[String], value: Value, spelling: String) -> Result<(), Error> {
-        let Some((last, parents)) = path.split_last() else {
-            return Ok(());
-        };
-        self.ensure_object(parents, &spelling)?;
-
-        let mut parent = &mut self.root;
-        for segment in parents {
-            parent = match parent.get_mut(segment) {
-                Some(Value::Object(children)) => children,
-                _ => unreachable!("`ensure_object` created an object at every parent"),
-            };
-        }
-        match parent.get_mut(last) {
-            None => {
-                parent.insert(last.clone(), value);
+        for path in self.sections {
+            if is_vacant(&root, &path) {
+                write(&mut root, &path, Value::Object(Map::new()));
             }
-            Some(existing) if existing.is_null() => *existing = value,
-            Some(_) if value.is_null() => return Ok(()),
-            Some(_) => return Err(conflict(&self.spellings, path, &spelling)),
         }
-        self.spellings.insert(path.to_vec(), spelling);
-        Ok(())
+        for path in self.nulls {
+            if is_vacant(&root, &path) {
+                write(&mut root, &path, Value::Null);
+            }
+        }
+        root
     }
 }
 
-fn conflict(spellings: &HashMap<Vec<String>, String>, path: &[String], other: &str) -> Error {
-    let path_text = path.join(".");
-    Error::Conflict {
-        spelling: spellings.get(path).cloned().unwrap_or_else(|| path_text.clone()),
-        other: other.to_owned(),
-        path: path_text,
+/// Returns whether `path` can be written without replacing a value: nothing is at it, and nothing on
+/// the way to it is anything but an object.
+fn is_vacant(root: &Map<String, Value>, path: &[String]) -> bool {
+    let Some((last, parents)) = path.split_last() else {
+        return false;
+    };
+    let mut current = root;
+    for segment in parents {
+        match current.get(segment) {
+            None => return true,
+            Some(Value::Object(children)) => current = children,
+            Some(_) => return false,
+        }
     }
+    !current.contains_key(last)
+}
+
+/// Writes `value` at `path`, making an object of every parent.
+fn write(root: &mut Map<String, Value>, path: &[String], value: Value) {
+    let Some((last, parents)) = path.split_last() else {
+        return;
+    };
+    let mut current = root;
+    for segment in parents {
+        let parent = current
+            .entry(segment.clone())
+            .or_insert_with(|| Value::Object(Map::new()));
+        if !parent.is_object() {
+            *parent = Value::Object(Map::new());
+        }
+        current = parent.as_object_mut().expect("the parent was just made an object");
+    }
+    current.insert(last.clone(), value);
 }
 
 #[cfg(test)]
@@ -468,12 +521,12 @@ mod tests {
 
     impl<'de> Deserialize<'de> for LeafDocument {
         fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-            Shape::Scoped(Scope::Leaf).deserialize(deserializer).map(LeafDocument)
+            LeafValue.deserialize(deserializer).map(LeafDocument)
         }
     }
 
     /// The keys of `additional_endpoints`, a Datadog leaf, in `yaml`.
-    fn leaf_keys(yaml: &str) -> Result<Vec<String>, Error> {
+    fn leaf_keys(yaml: &str) -> Result<Vec<String>, String> {
         let value = from_str(&format!("additional_endpoints:\n{yaml}"))?;
         Ok(value["additional_endpoints"]
             .as_object()
@@ -585,30 +638,27 @@ mod tests {
     }
 
     #[test]
-    fn leaf_map_keys_that_render_the_same_are_a_duplicate_key() {
+    fn leaf_map_keys_that_render_the_same_keep_one_entry() {
+        // A key written as its rendered text keeps its entry in either order; among typed keys the
+        // later one wins.
         let cases = [
-            ("  yes: [a]\n  true: [b]\n", "true"),
-            ("  010: [a]\n  8.0: [b]\n", "8"),
-            ("  on: [a]\n  y: [b]\n", "true"),
-            ("  1e3: [a]\n  1000: [b]\n", "1000"),
+            ("  yes: [a]\n  'true': [b]\n", json!({"true": ["b"]})),
+            ("  'true': [b]\n  yes: [a]\n", json!({"true": ["b"]})),
+            ("  010: [a]\n  '8': [b]\n", json!({"8": ["b"]})),
+            ("  '8': [b]\n  010: [a]\n", json!({"8": ["b"]})),
+            ("  yes: [a]\n  true: [b]\n", json!({"true": ["b"]})),
+            ("  true: [b]\n  yes: [a]\n", json!({"true": ["a"]})),
+            ("  010: [a]\n  8.0: [b]\n", json!({"8": ["b"]})),
+            ("  8.0: [b]\n  010: [a]\n", json!({"8": ["a"]})),
+            (
+                "  on: [a]\n  y: [b]\n  '1000': [c]\n  1e3: [d]\n",
+                json!({"true": ["b"], "1000": ["c"]}),
+            ),
         ];
-        for (yaml, key) in cases {
-            let error = leaf_keys(yaml).expect_err(yaml).to_string();
-            assert!(
-                error.starts_with(&format!(
-                    "duplicate mapping key `{key}` (unquoted keys are read as YAML values"
-                )),
-                "{yaml:?}: {error}"
-            );
+        for (yaml, expected) in cases {
+            let value = from_str(&format!("additional_endpoints:\n{yaml}")).expect(yaml);
+            assert_eq!(value["additional_endpoints"], expected, "{yaml:?}");
         }
-    }
-
-    #[test]
-    fn leaf_map_keys_that_differ_after_rendering_are_both_kept() {
-        assert_eq!(
-            leaf_keys("  010: [a]\n  '010': [b]\n  yes: [c]\n  'on ': [d]\n").unwrap(),
-            ["010", "8", "on ", "true"]
-        );
     }
 
     #[test]
