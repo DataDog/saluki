@@ -558,9 +558,9 @@
 <a href=#558 id=558 data-nosnippet>558</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#559 id=559 data-nosnippet>559</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
 <a href=#560 id=560 data-nosnippet>560</a>    };
-<a href=#561 id=561 data-nosnippet>561</a>    <span class="doccomment">/// `dogstatsd_windows_pipe_security_descriptor`-Windows named pipe ACL descriptor
-<a href=#562 id=562 data-nosnippet>562</a>    </span>DOGSTATSD_WINDOWS_PIPE_SECURITY_DESCRIPTOR = SalukiAnnotation {
-<a href=#563 id=563 data-nosnippet>563</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_WINDOWS_PIPE_SECURITY_DESCRIPTOR,
+<a href=#561 id=561 data-nosnippet>561</a>    <span class="doccomment">/// `dogstatsd_require_listener`-Require an active DogStatsD listener
+<a href=#562 id=562 data-nosnippet>562</a>    </span>DOGSTATSD_REQUIRE_LISTENER = SalukiAnnotation {
+<a href=#563 id=563 data-nosnippet>563</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_REQUIRE_LISTENER,
 <a href=#564 id=564 data-nosnippet>564</a>        support_level: SupportLevel::Full,
 <a href=#565 id=565 data-nosnippet>565</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#566 id=566 data-nosnippet>566</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -569,10 +569,10 @@
 <a href=#569 id=569 data-nosnippet>569</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#570 id=570 data-nosnippet>570</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
 <a href=#571 id=571 data-nosnippet>571</a>    };
-<a href=#572 id=572 data-nosnippet>572</a>    <span class="doccomment">/// `dogstatsd_workers_count`-Number of DSD processing workers
-<a href=#573 id=573 data-nosnippet>573</a>    </span>DOGSTATSD_WORKERS_COUNT = SalukiAnnotation {
-<a href=#574 id=574 data-nosnippet>574</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_WORKERS_COUNT,
-<a href=#575 id=575 data-nosnippet>575</a>        support_level: SupportLevel::Partial,
+<a href=#572 id=572 data-nosnippet>572</a>    <span class="doccomment">/// `dogstatsd_windows_pipe_security_descriptor`-Windows named pipe ACL descriptor
+<a href=#573 id=573 data-nosnippet>573</a>    </span>DOGSTATSD_WINDOWS_PIPE_SECURITY_DESCRIPTOR = SalukiAnnotation {
+<a href=#574 id=574 data-nosnippet>574</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_WINDOWS_PIPE_SECURITY_DESCRIPTOR,
+<a href=#575 id=575 data-nosnippet>575</a>        support_level: SupportLevel::Full,
 <a href=#576 id=576 data-nosnippet>576</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#577 id=577 data-nosnippet>577</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#578 id=578 data-nosnippet>578</a>        used_by: <span class="kw-2">&amp;</span>[structs::TYPED_CONFIG_SYSTEM],
@@ -580,10 +580,10 @@
 <a href=#580 id=580 data-nosnippet>580</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#581 id=581 data-nosnippet>581</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
 <a href=#582 id=582 data-nosnippet>582</a>    };
-<a href=#583 id=583 data-nosnippet>583</a>    <span class="doccomment">/// `telemetry.dogstatsd_origin`-Per-origin processed-metrics telemetry
-<a href=#584 id=584 data-nosnippet>584</a>    </span>TELEMETRY_DOGSTATSD_ORIGIN = SalukiAnnotation {
-<a href=#585 id=585 data-nosnippet>585</a>        schema: <span class="kw-2">&amp;</span>schema::TELEMETRY_DOGSTATSD_ORIGIN,
-<a href=#586 id=586 data-nosnippet>586</a>        support_level: SupportLevel::Full,
+<a href=#583 id=583 data-nosnippet>583</a>    <span class="doccomment">/// `dogstatsd_workers_count`-Number of DSD processing workers
+<a href=#584 id=584 data-nosnippet>584</a>    </span>DOGSTATSD_WORKERS_COUNT = SalukiAnnotation {
+<a href=#585 id=585 data-nosnippet>585</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_WORKERS_COUNT,
+<a href=#586 id=586 data-nosnippet>586</a>        support_level: SupportLevel::Partial,
 <a href=#587 id=587 data-nosnippet>587</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#588 id=588 data-nosnippet>588</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#589 id=589 data-nosnippet>589</a>        used_by: <span class="kw-2">&amp;</span>[structs::TYPED_CONFIG_SYSTEM],
@@ -591,5 +591,16 @@
 <a href=#591 id=591 data-nosnippet>591</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#592 id=592 data-nosnippet>592</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
 <a href=#593 id=593 data-nosnippet>593</a>    };
-<a href=#594 id=594 data-nosnippet>594</a>}
+<a href=#594 id=594 data-nosnippet>594</a>    <span class="doccomment">/// `telemetry.dogstatsd_origin`-Per-origin processed-metrics telemetry
+<a href=#595 id=595 data-nosnippet>595</a>    </span>TELEMETRY_DOGSTATSD_ORIGIN = SalukiAnnotation {
+<a href=#596 id=596 data-nosnippet>596</a>        schema: <span class="kw-2">&amp;</span>schema::TELEMETRY_DOGSTATSD_ORIGIN,
+<a href=#597 id=597 data-nosnippet>597</a>        support_level: SupportLevel::Full,
+<a href=#598 id=598 data-nosnippet>598</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#599 id=599 data-nosnippet>599</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#600 id=600 data-nosnippet>600</a>        used_by: <span class="kw-2">&amp;</span>[structs::TYPED_CONFIG_SYSTEM],
+<a href=#601 id=601 data-nosnippet>601</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#602 id=602 data-nosnippet>602</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#603 id=603 data-nosnippet>603</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
+<a href=#604 id=604 data-nosnippet>604</a>    };
+<a href=#605 id=605 data-nosnippet>605</a>}
 </code></pre></div></section></main></body></html>
