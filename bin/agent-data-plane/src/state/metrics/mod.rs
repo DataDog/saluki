@@ -552,6 +552,10 @@ mod tests {
             Some("Count the number of dogstatsd contexts in the aggregator, by metric type")
         );
         assert_eq!(
+            find("aggregator.dogstatsd_contexts_by_origin"),
+            Some("Count the number of dogstatsd contexts in the aggregator, by origin")
+        );
+        assert_eq!(
             find("aggregator.flush"),
             Some("Number of metrics/service checks/events flushed")
         );
@@ -623,6 +627,25 @@ mod tests {
             find("dogstatsd.uds_origin_detection_error"),
             Some("Dogstatsd UDS origin detection error count")
         );
+    }
+
+    #[test]
+    fn rar_rules_preserve_dynamic_origin_tags_for_aggregator_contexts() {
+        let rules = get_datadog_agent_remappings();
+        let context = Context::from_static_parts(
+            "adp.aggregate_active_contexts_by_origin",
+            &["component_id:dsd_agg", "container_id:abc", "kube_namespace:default"],
+        );
+        let remapped = rules
+            .iter()
+            .find_map(|rule| rule.try_match_no_context(&context))
+            .expect("origin context gauge should have a remapping");
+
+        assert_eq!(remapped.name, "aggregator.dogstatsd_contexts_by_origin");
+        let tags: Vec<_> = remapped.tags.iter().map(|tag| tag.as_ref()).collect();
+        assert_eq!(tags.len(), 2);
+        assert!(tags.contains(&"container_id:abc"));
+        assert!(tags.contains(&"kube_namespace:default"));
     }
 
     #[test]

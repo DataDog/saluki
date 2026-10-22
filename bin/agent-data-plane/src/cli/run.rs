@@ -831,6 +831,7 @@ async fn add_dsd_pipeline_to_blueprint(
         flush_open_windows: aggregation.flush_open_windows,
         counter_expiry_seconds: aggregation.counter_expiry_seconds,
         hist_config: dsd_hist_config,
+        dogstatsd_origin_telemetry_enabled: typed.domains.dogstatsd.telemetry.origin_breakdown,
         context_snapshot_receiver: dsd_context_snapshot_receiver,
     };
     let dsd_no_agg_split_config = DogStatsDNoAggSplitConfiguration::new(aggregation.passthrough_idle_flush_timeout);
