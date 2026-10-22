@@ -74,7 +74,7 @@
 <a href=#74 id=74 data-nosnippet>74</a>    <span class="comment">// logic for these tests are taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/sampler/scoresampler_test.go#L23
 <a href=#75 id=75 data-nosnippet>75</a>    </span><span class="kw">use </span>std::time::{Duration, SystemTime};
 <a href=#76 id=76 data-nosnippet>76</a>
-<a href=#77 id=77 data-nosnippet>77</a>    <span class="kw">use </span>saluki_core::data_model::event::trace::{Span, Trace};
+<a href=#77 id=77 data-nosnippet>77</a>    <span class="kw">use </span>saluki_core::data_model::event::trace::{Span, Trace, TraceIngestInfo};
 <a href=#78 id=78 data-nosnippet>78</a>    <span class="kw">use </span>stringtheory::MetaString;
 <a href=#79 id=79 data-nosnippet>79</a>
 <a href=#80 id=80 data-nosnippet>80</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
@@ -116,7 +116,7 @@
 <a href=#116 id=116 data-nosnippet>116</a>            </span><span class="number">0</span>,      <span class="comment">// error
 <a href=#117 id=117 data-nosnippet>117</a>        </span>);
 <a href=#118 id=118 data-nosnippet>118</a>
-<a href=#119 id=119 data-nosnippet>119</a>        <span class="kw">let </span><span class="kw-2">mut </span>trace = Trace::new(<span class="macro">vec!</span>[root, child]);
+<a href=#119 id=119 data-nosnippet>119</a>        <span class="kw">let </span><span class="kw-2">mut </span>trace = Trace::new(<span class="macro">vec!</span>[root, child], TraceIngestInfo::Datadog);
 <a href=#120 id=120 data-nosnippet>120</a>        trace.trace_id_low = trace_id;
 <a href=#121 id=121 data-nosnippet>121</a>        (trace, <span class="number">0</span>) <span class="comment">// Root is at index 0
 <a href=#122 id=122 data-nosnippet>122</a>    </span>}
@@ -149,7 +149,7 @@
 <a href=#149 id=149 data-nosnippet>149</a>            </span><span class="number">0</span>,      <span class="comment">// error
 <a href=#150 id=150 data-nosnippet>150</a>        </span>);
 <a href=#151 id=151 data-nosnippet>151</a>
-<a href=#152 id=152 data-nosnippet>152</a>        <span class="kw">let </span><span class="kw-2">mut </span>trace = Trace::new(<span class="macro">vec!</span>[root, child]);
+<a href=#152 id=152 data-nosnippet>152</a>        <span class="kw">let </span><span class="kw-2">mut </span>trace = Trace::new(<span class="macro">vec!</span>[root, child], TraceIngestInfo::Datadog);
 <a href=#153 id=153 data-nosnippet>153</a>        trace.trace_id_low = trace_id;
 <a href=#154 id=154 data-nosnippet>154</a>        (trace, <span class="number">0</span>) <span class="comment">// Root is at index 0
 <a href=#155 id=155 data-nosnippet>155</a>    </span>}

@@ -266,7 +266,7 @@
 <a href=#266 id=266 data-nosnippet>266</a>    <span class="kw">use </span>std::time::Duration;
 <a href=#267 id=267 data-nosnippet>267</a>
 <a href=#268 id=268 data-nosnippet>268</a>    <span class="kw">use </span>saluki_common::collections::FastHashMap;
-<a href=#269 id=269 data-nosnippet>269</a>    <span class="kw">use </span>saluki_core::data_model::event::trace::{AttributeValue, Span <span class="kw">as </span>DdSpan, Trace};
+<a href=#269 id=269 data-nosnippet>269</a>    <span class="kw">use </span>saluki_core::data_model::event::trace::{AttributeValue, Span <span class="kw">as </span>DdSpan, Trace, TraceIngestInfo};
 <a href=#270 id=270 data-nosnippet>270</a>    <span class="kw">use </span>stringtheory::MetaString;
 <a href=#271 id=271 data-nosnippet>271</a>
 <a href=#272 id=272 data-nosnippet>272</a>    <span class="kw">use </span><span class="kw">super</span>::<span class="kw">super</span>::telemetry::SamplerCounters;
@@ -310,7 +310,7 @@
 <a href=#310 id=310 data-nosnippet>310</a>    }
 <a href=#311 id=311 data-nosnippet>311</a>
 <a href=#312 id=312 data-nosnippet>312</a>    <span class="kw">fn </span>make_trace(spans: Vec&lt;DdSpan&gt;) -&gt; Trace {
-<a href=#313 id=313 data-nosnippet>313</a>        Trace::new(spans)
+<a href=#313 id=313 data-nosnippet>313</a>        Trace::new(spans, TraceIngestInfo::Datadog)
 <a href=#314 id=314 data-nosnippet>314</a>    }
 <a href=#315 id=315 data-nosnippet>315</a>
 <a href=#316 id=316 data-nosnippet>316</a>    <span class="attr">#[test]
