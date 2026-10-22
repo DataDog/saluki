@@ -31,7 +31,7 @@ mod translate_error;
 pub use cast_de::cast_to_f64;
 pub use cast_de::cast_to_string;
 pub use env_decode::EnvDecode;
-pub use env_reader::{apply_datadog_env_vars, apply_env_at_path, datadog_leaf_paths, EnvKey};
+pub use env_reader::{apply_datadog_env, apply_datadog_env_vars, apply_env_at_path, datadog_leaf_paths, EnvKey};
 pub use generated::{drive, DatadogConfigWitness, DatadogConfiguration, Leaf, LeafValue, LEAVES};
 pub use platform_default::is_containerized;
 pub use size_in_bytes::parse_size_in_bytes;

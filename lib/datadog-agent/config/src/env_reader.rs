@@ -24,6 +24,19 @@ pub struct EnvKey {
     pub decode: EnvDecode,
 }
 
+/// Decodes process environment variables into modeled Datadog paths in `base`.
+///
+/// Same as [`apply_datadog_env_vars`], but reads the process environment.
+///
+/// # Errors
+///
+/// Returns a message naming the environment variable when its value is malformed for the key's
+/// declared shape.
+// This function is in use by action-check-runner, do not delete
+pub fn apply_datadog_env(base: &mut Value, overwrite: bool) -> Result<(), String> {
+    apply_env_snapshot(base, EnvSnapshot::capture(), overwrite)
+}
+
 /// Decodes supplied environment variables into modeled Datadog paths in `base`.
 ///
 /// Also applies `HTTP_PROXY`/`HTTPS_PROXY` as fallbacks for their `DD_` forms. When `overwrite` is
@@ -398,6 +411,12 @@ mod tests {
         apply_proxy_env(base.as_object_mut().unwrap(), &env, true);
 
         assert_eq!(at(&base, &["proxy", "http"]), Some(&json!("http://lower:3128")));
+    }
+
+    #[test]
+    fn apply_datadog_env_signature_is_stable_at_crate_root() {
+        // Pins public API used outside Saluki.
+        let _: fn(&mut Value, bool) -> Result<(), String> = crate::apply_datadog_env;
     }
 
     #[test]
