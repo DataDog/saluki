@@ -51,8 +51,8 @@ impl LoadedConfiguration {
     ///
     /// The file's Datadog keys are read as the Datadog Agent reads them (see [`datadog_yaml`]). If
     /// that reading cannot be built or translated but the file read with every key as written can,
-    /// the second reading is used: a respelled key whose value ADP cannot use is ignored rather than
-    /// failing the load.
+    /// the second reading is used: a respelled key whose value cannot be translated is ignored rather
+    /// than failing the load. A value that translates is kept, even if a component later rejects it.
     ///
     /// # Errors
     ///
