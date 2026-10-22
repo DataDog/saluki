@@ -325,6 +325,7 @@ class UpdateScriptTest(unittest.TestCase):
 
 BRANCH = "ci/update-apm-semantics-0123456789ab"
 MARKER = {"name": "ci/update-apm-semantics"}
+SUPERSEDED = {"name": "ci/update-apm-semantics-superseded"}
 LABELS = ["ci/update-apm-semantics", "automated"]
 
 
@@ -354,21 +355,42 @@ def http_error(status):
     return raise_error
 
 
+def fail_once(status, number=None, effect=None):
+    """A response that fails the first call, or the first for pull request `number`, with HTTP `status`.
+
+    `effect` runs first when given, as when a request takes effect but its response is lost.
+    """
+    pending = [True]
+
+    def respond(**args):
+        if pending and number in (None, args.get("number")):
+            pending.clear()
+            if effect:
+                effect()
+            raise subject.GitHubError(status, f"HTTP {status}")
+
+    return respond
+
+
 class FakeGitHub:
     """Records every call as `(name, args)`, in order.
 
     `responses` maps a call name to the value it returns, or to a function that returns it or raises. `list_pulls`
     filters `pulls` by `head`, `state` and `base` as GitHub does. Closing and labelling calls that succeed update
     `pulls`, so a later call sees their result.
+
+    `labels` names the repository's labels, which start as the ones that exist in DataDog/saluki. Adding a label that is
+    missing fails, because GitHub does not document that it creates one.
     """
 
     owner = "DataDog"
     repo = "saluki"
 
-    def __init__(self, responses=None, pulls=()):
+    def __init__(self, responses=None, pulls=(), labels=tuple(LABELS)):
         self.calls = []
         self.responses = responses or {}
         self.pulls = list(pulls)
+        self.labels = set(labels)
 
     def names(self):
         return [name for name, _ in self.calls]
@@ -403,8 +425,22 @@ class FakeGitHub:
         self._respond("close_pull", {"number": number})
         self._update(number, lambda pull: pull.update(state="closed"))
 
+    def get_label(self, name):
+        self._respond("get_label", {"name": name})
+        if name not in self.labels:
+            raise subject.GitHubError(404, "HTTP 404")
+        return {"name": name}
+
+    def create_label(self, name, color, description):
+        self._respond("create_label", {"name": name, "color": color, "description": description})
+        if name in self.labels:
+            raise subject.GitHubError(422, "HTTP 422")
+        self.labels.add(name)
+
     def add_labels(self, number, labels):
         self._respond("add_labels", {"number": number, "labels": labels})
+        if not self.labels.issuperset(labels):
+            raise subject.GitHubError(422, "HTTP 422")
 
         def add(pull):
             missing = [label for label in labels if not any(have["name"] == label for have in pull["labels"])]
@@ -445,30 +481,36 @@ class FindReportTest(QuietTestCase):
         self.assertEqual(github.calls[1][1], {"branch": BRANCH})
 
     def test_repairs_the_labels_and_closes_older_pull_requests_when_a_pull_request_is_open(self):
-        github = FakeGitHub(pulls=[pull_request(7), older_pull_request(5), older_pull_request(6, labels=[])])
+        github = FakeGitHub(
+            pulls=[pull_request(7), older_pull_request(5), older_pull_request(6, labels=[])],
+            labels=[*LABELS, SUPERSEDED["name"]],
+        )
 
         self.assertEqual(subject.find_report(github, BRANCH), "reported")
 
         self.assertEqual(
             github.names(),
-            ["list_pulls", "add_labels", "list_pulls", "remove_label", "close_pull", "create_comment"],
+            ["list_pulls", "add_labels", "list_pulls", "get_label", "add_labels", "close_pull", "create_comment"],
         )
         self.assertEqual(github.calls[1][1], {"number": 7, "labels": LABELS})
-        self.assertEqual(github.calls[3][1], {"number": 5, "label": MARKER["name"]})
-        self.assertEqual(github.calls[4][1], {"number": 5})
-        self.assertIn("https://example.test/pull/7", github.calls[5][1]["body"])
+        self.assertEqual(github.calls[4][1], {"number": 5, "labels": [SUPERSEDED["name"]]})
+        self.assertEqual(github.calls[5][1], {"number": 5})
+        self.assertIn("https://example.test/pull/7", github.calls[6][1]["body"])
 
-    def test_does_nothing_when_a_reviewer_closed_the_pull_request(self):
-        github = FakeGitHub(pulls=[pull_request(7, state="closed", labels=[MARKER])])
+    def test_leaves_the_pull_request_alone_when_a_reviewer_closed_it(self):
+        declined = pull_request(7, state="closed", labels=[MARKER])
+        github = FakeGitHub(pulls=[declined])
 
         self.assertEqual(subject.find_report(github, BRANCH), "reported")
 
-        self.assertEqual(github.names(), ["list_pulls"])
+        self.assertEqual(github.names(), ["list_pulls", "list_pulls"])
+        self.assertEqual((declined["state"], declined["labels"]), ("closed", [MARKER]))
 
     def test_publishes_again_when_the_only_pull_request_was_merged_or_superseded(self):
         cases = {
             "merged": {"state": "closed", "merged_at": "2026-01-01T00:00:00Z", "labels": [MARKER]},
-            "superseded": {"state": "closed"},
+            "superseded": {"state": "closed", "labels": [MARKER, SUPERSEDED]},
+            "closed without the marker label": {"state": "closed"},
         }
         for name, fields in cases.items():
             with self.subTest(name):
@@ -510,7 +552,8 @@ class OpenPullRequestTest(QuietTestCase):
                 older_pull_request(8, labels=[]),
                 older_pull_request(9, state="closed"),
                 older_pull_request(10, base={"ref": "release"}),
-            ]
+            ],
+            labels=[*LABELS, SUPERSEDED["name"]],
         )
 
         created = subject.open_pull_request(github, **self.INPUTS)
@@ -518,15 +561,15 @@ class OpenPullRequestTest(QuietTestCase):
         self.assertEqual(created["number"], 99)
         self.assertEqual(
             github.names(),
-            ["create_pull", "add_labels", "list_pulls", "remove_label", "close_pull", "create_comment"],
+            ["create_pull", "add_labels", "list_pulls", "get_label", "add_labels", "close_pull", "create_comment"],
         )
-        create, label, _, unlabel, close, comment = (args for _, args in github.calls)
+        create, label, _, _, supersede, close, comment = (args for _, args in github.calls)
         self.assertEqual(create["title"], self.INPUTS["title"])
         self.assertEqual(create["head"], BRANCH)
         self.assertIn(self.INPUTS["commit_body"], create["body"])
         self.assertIn(f"compare/{OLD_COMMIT}...{NEW_COMMIT}", create["body"])
         self.assertEqual(label, {"number": 99, "labels": LABELS})
-        self.assertEqual(unlabel, {"number": 5, "label": MARKER["name"]})
+        self.assertEqual(supersede, {"number": 5, "labels": [SUPERSEDED["name"]]})
         self.assertEqual(close, {"number": 5})
         self.assertEqual(comment["number"], 5)
         self.assertIn("https://example.test/pull/99", comment["body"])
@@ -563,13 +606,15 @@ class CloseSupersededWithoutReplacementTest(QuietTestCase):
 
         subject.close_superseded(github)
 
-        self.assertEqual(github.names(), ["list_pulls", "remove_label", "close_pull", "create_comment"])
-        _, unlabel, close, comment = (args for _, args in github.calls)
-        self.assertEqual(unlabel, {"number": 7, "label": MARKER["name"]})
+        self.assertEqual(
+            github.names(), ["list_pulls", "get_label", "create_label", "add_labels", "close_pull", "create_comment"]
+        )
+        _, _, _, supersede, close, comment = (args for _, args in github.calls)
+        self.assertEqual(supersede, {"number": 7, "labels": [SUPERSEDED["name"]]})
         self.assertEqual(close, {"number": 7})
         self.assertEqual(comment["number"], 7)
         self.assertIn("match upstream again", comment["body"])
-        self.assertEqual((rolled_back["state"], rolled_back["labels"]), ("closed", []))
+        self.assertEqual((rolled_back["state"], rolled_back["labels"]), ("closed", [MARKER, SUPERSEDED]))
 
         # A second run with no change finds nothing left to close.
         github.calls.clear()
@@ -581,6 +626,186 @@ class CloseSupersededWithoutReplacementTest(QuietTestCase):
         self.assertEqual(subject.find_report(github, BRANCH), "publish")
         self.assertEqual(subject.find_report(github, "ci/update-apm-semantics-old5"), "reported")
         self.assertEqual(declined["labels"], [MARKER])
+
+
+def run_main(github, *args):
+    """Runs the command line with `github` as the client and returns what it printed."""
+    env = {"GITHUB_REPOSITORY": "DataDog/saluki", "GITHUB_TOKEN": "secret"}
+    with unittest.mock.patch.dict(os.environ, env), unittest.mock.patch.object(
+        subject, "GitHub", return_value=github
+    ), contextlib.redirect_stdout(io.StringIO()) as stdout:
+        subject.main(list(args))
+    return stdout.getvalue()
+
+
+class PartialSupersessionTest(QuietTestCase):
+    """A run that fails part way through closing an older pull request, and the later run that finishes.
+
+    Regression tests: `close_superseded` used to remove the marker label and then close. When closing failed, the older
+    pull request stayed open without the label that later runs use to find it, so its stale mappings stayed mergeable.
+    """
+
+    STALE_BRANCH = "ci/update-apm-semantics-old5"
+    CURRENT_LABELS = [MARKER, {"name": "automated"}]
+
+    def github(self):
+        """New update #99, not labelled yet, an older open update #5, and pull requests that must be left alone."""
+        self.current = pull_request(99)
+        self.stale = older_pull_request(5)
+        self.untouched = [
+            older_pull_request(6, state="closed"),
+            older_pull_request(8, labels=[]),
+            older_pull_request(10, base={"ref": "release"}),
+        ]
+        self.untouched_before = json.dumps(self.untouched)
+        return FakeGitHub(pulls=[self.current, self.stale, *self.untouched])
+
+    def comments_on(self, github, number):
+        return [args["body"] for name, args in github.calls if name == "create_comment" and args["number"] == number]
+
+    def assert_superseded(self, pull, github):
+        """Asserts that `pull` is closed as superseded, its content is publishable again and nothing else changed."""
+        self.assertEqual(pull["state"], "closed")
+        self.assertIn(MARKER, pull["labels"])
+        self.assertIn(SUPERSEDED, pull["labels"])
+        self.assertEqual(json.dumps(self.untouched), self.untouched_before)
+        branch = pull["head"]["label"].removeprefix("DataDog:")
+        self.assertEqual(subject.find_report(github, branch), "publish")
+
+    def replace_failing(self, call, effect=None):
+        """Opens #99 and fails the first `call` made for #5, after running `effect` if given."""
+        github = self.github()
+        github.responses[call] = fail_once(503, 5, effect and (lambda: effect(github)))
+
+        with self.assertRaises(subject.GitHubError):
+            subject.open_pull_request(github, **OpenPullRequestTest.INPUTS)
+
+        self.assertEqual(self.current["labels"], self.CURRENT_LABELS)
+        return github
+
+    def test_the_next_run_finishes_replacing_the_older_pull_request(self):
+        def close(github):
+            github._update(5, lambda pull: pull.update(state="closed"))
+
+        cases = {
+            "labelling it fails": ("add_labels", None, 1),
+            "closing it fails": ("close_pull", None, 1),
+            # The comment comes after closing, so it is lost along with the response.
+            "closing it takes effect but its response is lost": ("close_pull", close, 0),
+        }
+        for name, (call, effect, comments) in cases.items():
+            with self.subTest(name):
+                github = self.replace_failing(call, effect)
+
+                self.assertEqual(run_main(github, "find-report", "--branch", BRANCH), "reported\n")
+
+                self.assertEqual((self.current["state"], self.current["labels"]), ("open", self.CURRENT_LABELS))
+                self.assertEqual(self.stale["labels"], [MARKER, SUPERSEDED])
+                bodies = self.comments_on(github, 5)
+                self.assertEqual(len(bodies), comments)
+                for body in bodies:
+                    self.assertIn("https://example.test/pull/99", body)
+
+                # Repeating the run changes nothing more.
+                github.calls.clear()
+                self.assertEqual(run_main(github, "find-report", "--branch", BRANCH), "reported\n")
+                self.assertEqual(github.names(), ["list_pulls", "add_labels", "list_pulls"])
+
+                self.assert_superseded(self.stale, github)
+
+    def test_the_next_run_finishes_closing_updates_when_upstream_matches_the_embedded_mappings(self):
+        github = self.github()
+        self.current["labels"] = [MARKER]
+        github.responses["close_pull"] = fail_once(503, 5)
+
+        with self.assertRaises(subject.GitHubError):
+            run_main(github, "close-superseded")
+
+        self.assertEqual((self.stale["state"], self.stale["labels"]), ("open", [MARKER, SUPERSEDED]))
+
+        self.assertEqual(run_main(github, "close-superseded"), "")
+
+        self.assertEqual([len(self.comments_on(github, number)) for number in (99, 5)], [1, 1])
+        self.assert_superseded(self.current, github)
+        self.assert_superseded(self.stale, github)
+
+    def test_the_next_run_finishes_replacing_even_when_a_reviewer_declined_the_replacement(self):
+        github = self.replace_failing("close_pull")
+        self.current["state"] = "closed"
+
+        self.assertEqual(run_main(github, "find-report", "--branch", BRANCH), "reported\n")
+
+        self.assertEqual((self.current["state"], self.current["labels"]), ("closed", self.CURRENT_LABELS))
+        self.assert_superseded(self.stale, github)
+        self.assertEqual(subject.find_report(github, BRANCH), "reported")
+
+    def test_a_pull_request_left_open_is_current_again_when_upstream_returns_to_it(self):
+        github = self.replace_failing("close_pull")
+        self.assertEqual(self.stale["labels"], [MARKER, SUPERSEDED])
+
+        self.assertEqual(run_main(github, "find-report", "--branch", self.STALE_BRANCH), "reported\n")
+
+        self.assertEqual((self.stale["state"], self.stale["labels"]), ("open", self.CURRENT_LABELS))
+        self.assert_superseded(self.current, github)
+
+        # The pull request is an ordinary one again, so a reviewer closing it declines its change.
+        self.stale["state"] = "closed"
+        self.assertEqual(subject.find_report(github, self.STALE_BRANCH), "reported")
+
+
+class SupersededLabelTest(QuietTestCase):
+    """The superseded label is missing from the repository until the first run that closes a pull request creates it."""
+
+    def test_creates_the_label_once_and_only_when_a_pull_request_needs_it(self):
+        github = FakeGitHub(pulls=[pull_request(99, labels=[MARKER])])
+
+        subject.close_superseded(github, github.pulls[0])
+
+        self.assertEqual(github.names(), ["list_pulls"])
+        self.assertNotIn(SUPERSEDED["name"], github.labels)
+
+        github.pulls.append(older_pull_request(5))
+        subject.close_superseded(github, github.pulls[0])
+
+        [create] = [args for name, args in github.calls if name == "create_label"]
+        self.assertEqual(
+            create,
+            {"name": SUPERSEDED["name"], "color": "c5def5", "description": subject.SUPERSEDED_DESCRIPTION},
+        )
+        self.assertLessEqual(len(create["description"]), 100)
+
+        github.pulls.append(older_pull_request(6))
+        github.calls.clear()
+        subject.close_superseded(github, github.pulls[0])
+
+        self.assertEqual(github.names(), ["list_pulls", "get_label", "add_labels", "close_pull", "create_comment"])
+        self.assertEqual([pull["state"] for pull in github.pulls], ["open", "closed", "closed"])
+
+    def test_closes_nothing_until_the_label_exists_and_a_later_run_finishes(self):
+        def create(github):
+            github.labels.add(SUPERSEDED["name"])
+
+        cases = {
+            "looking it up fails": ("get_label", None, 1),
+            "creating it fails": ("create_label", None, 2),
+            "creating it takes effect but its response is lost": ("create_label", create, 1),
+        }
+        for name, (call, effect, creates) in cases.items():
+            with self.subTest(name):
+                stale = older_pull_request(5)
+                github = FakeGitHub(pulls=[stale])
+                github.responses[call] = fail_once(503, effect=effect and (lambda: effect(github)))
+
+                with self.assertRaises(subject.GitHubError):
+                    run_main(github, "close-superseded")
+
+                self.assertEqual((stale["state"], stale["labels"]), ("open", [MARKER]))
+                self.assertNotIn("add_labels", github.names())
+
+                run_main(github, "close-superseded")
+
+                self.assertEqual((stale["state"], stale["labels"]), ("closed", [MARKER, SUPERSEDED]))
+                self.assertEqual(github.names().count("create_label"), creates)
 
 
 class WorkflowTest(unittest.TestCase):
@@ -637,6 +862,25 @@ class GitHubClientTest(unittest.TestCase):
             ],
         )
 
+    def test_gets_and_creates_the_label_by_its_encoded_name(self):
+        github, requests = self.client({"name": "ci/update-apm-semantics-superseded"}, {})
+
+        github.get_label("ci/update-apm-semantics-superseded")
+        github.create_label("ci/update-apm-semantics-superseded", "c5def5", "Closed as superseded.")
+
+        get, create = requests
+        self.assertEqual(
+            (get.get_method(), get.full_url),
+            ("GET", "https://api.github.com/repos/DataDog/saluki/labels/ci%2Fupdate-apm-semantics-superseded"),
+        )
+        self.assertEqual(
+            (create.get_method(), create.full_url), ("POST", "https://api.github.com/repos/DataDog/saluki/labels")
+        )
+        self.assertEqual(
+            json.loads(create.data),
+            {"name": "ci/update-apm-semantics-superseded", "color": "c5def5", "description": "Closed as superseded."},
+        )
+
     def test_sends_the_token_and_a_json_body(self):
         github, requests = self.client({"number": 3})
 
@@ -675,21 +919,13 @@ class GitHubClientTest(unittest.TestCase):
 
 
 class CommandLineTest(QuietTestCase):
-    def run_main(self, github, *args):
-        env = {"GITHUB_REPOSITORY": "DataDog/saluki", "GITHUB_TOKEN": "secret"}
-        with unittest.mock.patch.dict(os.environ, env), unittest.mock.patch.object(
-            subject, "GitHub", return_value=github
-        ), contextlib.redirect_stdout(io.StringIO()) as stdout:
-            subject.main(list(args))
-        return stdout.getvalue()
-
     def test_find_report_prints_only_the_decision(self):
-        self.assertEqual(self.run_main(FakeGitHub(), "find-report", "--branch", BRANCH), "publish\n")
+        self.assertEqual(run_main(FakeGitHub(), "find-report", "--branch", BRANCH), "publish\n")
 
     def test_close_superseded_closes_every_open_update(self):
         github = FakeGitHub(pulls=[older_pull_request(5), older_pull_request(6)])
 
-        self.assertEqual(self.run_main(github, "close-superseded"), "")
+        self.assertEqual(run_main(github, "close-superseded"), "")
 
         self.assertEqual([args for name, args in github.calls if name == "close_pull"], [{"number": 5}, {"number": 6}])
 
@@ -699,7 +935,7 @@ class CommandLineTest(QuietTestCase):
         self.addCleanup(shutil.rmtree, body_file.parent, ignore_errors=True)
         body_file.write_text("Added concepts:\n- added.concept\n")
 
-        self.run_main(
+        run_main(
             github,
             "open-pr",
             "--branch", BRANCH,
