@@ -1,0 +1,9 @@
+upgrade:
+  - |
+    Agent Data Plane now honors ``forwarder_stop_wait_for_inflight``. With the default value,
+    ``false``, Agent Data Plane no longer waits for in-flight forwarder requests to finish when it
+    shuts down. It aborts them and keeps their payloads with the other pending payloads, which are
+    saved to disk when ``forwarder_storage_max_size_in_bytes`` is greater than zero. Before, a slow
+    request that outlived the shutdown timeout stopped Agent Data Plane from saving any pending
+    payloads. An aborted request that the intake already received can be sent again after restart.
+    Set ``forwarder_stop_wait_for_inflight`` to ``true`` to keep the previous behavior.

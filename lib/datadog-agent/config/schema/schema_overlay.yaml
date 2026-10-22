@@ -1921,16 +1921,13 @@ inventory:
         config_registry_filename: get_typed.rs
 
   forwarder_stop_wait_for_inflight:
-    support: none
-    severity: low
-    planned: true
+    support: full
     pipelines: [cross_cutting]
     description: "Wait for in-flight forwarder requests"
-    documentation: |-
-      The core Agent cancels in-flight HTTP requests during shutdown when this setting is false and
-      waits for them when it is true. ADP always allows already-started requests to finish, bounded
-      by its topology-wide shutdown timeout. This setting has no effect in ADP.
-    issue: "#2560"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: forwarder.rs
 
   forwarder_storage_max_disk_ratio:
     support: full

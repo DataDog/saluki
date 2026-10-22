@@ -87,6 +87,7 @@ tokio = { workspace = true, features = [
   "sync",
 ] }
 tokio-rustls = { workspace = true }
+tokio-util = { workspace = true }
 tonic = { workspace = true, features = ["router", "server", "channel"] }
 tower = { workspace = true, features = ["limit", "retry", "timeout", "util"] }
 tower-http = { workspace = true, features = ["cors"] }

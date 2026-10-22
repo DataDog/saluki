@@ -30,7 +30,6 @@ tracking.
 | `dogstatsd_experimental_http.max_concurrent_requests`            | DogStatsD HTTP concurrent request limit   | [#1682] |
 | `dogstatsd_experimental_http.max_payload_size`                   | DogStatsD HTTP request body size limit    | [#1682] |
 | `dogstatsd_experimental_http.read_timeout`                       | DogStatsD HTTP request read timeout       | [#1682] |
-| `forwarder_stop_wait_for_inflight`                               | Wait for in-flight forwarder requests     | [#2560] |
 | `metric_lookback.capacity`                                       | Metric lookback ring capacity             | [#2558] |
 | `metric_lookback.dogstatsd.metric_names`                         | DogStatsD metric lookback selection       | [#2558] |
 | `metric_lookback.egress.post_recovery_window`                    | Lookback post-recovery replay window      | [#2558] |
@@ -1031,6 +1030,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `forwarder_retry_queue_capacity_time_interval_sec`                                         | Retry queue time-based capacity                    |
 | `forwarder_retry_queue_max_size`                                                           | Retry queue max size (deprecated)                  |
 | `forwarder_retry_queue_payloads_max_size`                                                  | Retry queue max size (bytes)                       |
+| `forwarder_stop_wait_for_inflight`                                                         | Wait for in-flight forwarder requests              |
 | `forwarder_storage_max_disk_ratio`                                                         | Max disk usage ratio for retry                     |
 | `forwarder_storage_max_size_in_bytes`                                                      | Max on-disk retry storage size                     |
 | `forwarder_storage_path`                                                                   | On-disk retry storage directory                    |
@@ -1429,4 +1429,3 @@ Both commands scrub recognized secret values before writing JSON to standard out
 [#2557]: https://github.com/DataDog/saluki/issues/2557
 [#2558]: https://github.com/DataDog/saluki/issues/2558
 [#2559]: https://github.com/DataDog/saluki/issues/2559
-[#2560]: https://github.com/DataDog/saluki/issues/2560

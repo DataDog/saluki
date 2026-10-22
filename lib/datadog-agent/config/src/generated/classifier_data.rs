@@ -278,13 +278,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: DefaultValue::Json("100"),
     },
     ClassifierEntry {
-        yaml_path: "forwarder_stop_wait_for_inflight",
-        aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-        default: DefaultValue::Json("false"),
-    },
-    ClassifierEntry {
         yaml_path: "heroku_dyno",
         aliases: &[],
         support_level: SupportLevel::Incompatible(Severity::High),

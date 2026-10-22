@@ -223,6 +223,12 @@ pub struct ForwarderConfiguration {
     /// Connection reset interval, in seconds.
     connection_reset_interval_secs: u64,
 
+    /// Whether in-flight requests are allowed to finish when the forwarder shuts down.
+    ///
+    /// When `false`, in-flight requests are aborted when shutdown begins and their transactions are requeued, so that
+    /// they are persisted along with the other pending transactions.
+    stop_wait_for_inflight: bool,
+
     /// V3 API configuration for per-endpoint V3 support.
     ///
     /// This is shared with the metrics encoder and used by the I/O layer to filter payloads based on
@@ -360,6 +366,7 @@ impl ForwarderConfiguration {
             opw_metrics: routing.opw_metrics,
             http_protocol: forwarder.http_protocol.into(),
             connection_reset_interval_secs: forwarder.connection_reset_interval,
+            stop_wait_for_inflight: forwarder.stop_wait_for_inflight,
             v3_api: routing.v3_api,
             use_v3_api: routing.use_v3_api,
             serializer_compressor_kind: endpoints.compression.compressor_kind.clone(),
@@ -509,6 +516,14 @@ impl ForwarderConfiguration {
     /// Returns the connection reset interval.
     pub const fn connection_reset_interval(&self) -> Duration {
         Duration::from_secs(self.connection_reset_interval_secs)
+    }
+
+    /// Returns whether in-flight requests are allowed to finish when the forwarder shuts down.
+    ///
+    /// When `false`, in-flight requests are aborted when shutdown begins, and their transactions are requeued with the
+    /// other pending transactions before those are flushed to the retry queue.
+    pub const fn stop_wait_for_inflight(&self) -> bool {
+        self.stop_wait_for_inflight
     }
 
     /// Returns a reference to the V3 API configuration.

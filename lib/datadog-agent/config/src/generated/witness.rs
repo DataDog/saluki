@@ -149,6 +149,7 @@ pub trait DatadogConfigWitness {
     fn consume_forwarder_retry_queue_max_size(&mut self, value: i64);
     fn consume_forwarder_retry_queue_payloads_max_size(&mut self, value: i64);
     fn consume_forwarder_stop_timeout(&mut self, value: i64);
+    fn consume_forwarder_stop_wait_for_inflight(&mut self, value: bool);
     fn consume_forwarder_storage_max_disk_ratio(&mut self, value: f64);
     fn consume_forwarder_storage_max_size_in_bytes(&mut self, value: i64);
     fn consume_forwarder_storage_path(&mut self, value: String);
@@ -460,6 +461,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_forwarder_retry_queue_max_size(config.forwarder_retry_queue_max_size.clone());
     consumer.consume_forwarder_retry_queue_payloads_max_size(config.forwarder_retry_queue_payloads_max_size.clone());
     consumer.consume_forwarder_stop_timeout(config.forwarder_stop_timeout.clone());
+    consumer.consume_forwarder_stop_wait_for_inflight(config.forwarder_stop_wait_for_inflight.clone());
     consumer.consume_forwarder_storage_max_disk_ratio(config.forwarder_storage_max_disk_ratio.clone());
     consumer.consume_forwarder_storage_max_size_in_bytes(config.forwarder_storage_max_size_in_bytes.clone());
     consumer.consume_forwarder_storage_path(config.forwarder_storage_path.clone());

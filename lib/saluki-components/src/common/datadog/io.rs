@@ -6,16 +6,25 @@
 //! forwarder component. The tasks make a subtree below the component. The main I/O loop and the background refreshers
 //! are children of the component. Each endpoint has one I/O loop, which is a child of the main I/O loop.
 //!
-//! A drain can outlast the five-second default timeout of a closure-based task: each endpoint loop waits for its
-//! in-flight requests, which the request timeout bounds, and then flushes its retry queue. Thus, the main I/O loop and
-//! the endpoint loops have no timeout of their own, and the component's shutdown timeout bounds them instead.
+//! A drain can outlast the five-second default timeout of a closure-based task: each endpoint loop either waits for or
+//! cancels its in-flight requests, which the request timeout bounds, and then flushes its retry queue. Thus, the main
+//! I/O loop and the endpoint loops have no timeout of their own, and the component's shutdown timeout bounds them instead.
 //!
 //! Shutdown needs no explicit handshake between them, because the tasks are connected by channels and each stops at
 //! its own terminal condition. Dropping [`Handle`] closes the transaction channel, so the main I/O loop finishes and
-//! drops its per-endpoint senders, so each endpoint loop completes its in-flight requests and flushes its retry queue.
+//! drops its per-endpoint senders, so each endpoint loop settles its in-flight requests and flushes its retry queue.
 //! Each owner waits for its children. Thus, the drain occurs in order, but no task needs to know the order. The
 //! refreshers have no terminal condition at all and are therefore
 //! [`Brutal`][saluki_core::runtime::ShutdownStrategy::Brutal].
+//!
+//! How an endpoint loop settles its in-flight requests depends on
+//! [`stop_wait_for_inflight`][ForwarderConfiguration::stop_wait_for_inflight]. When it is `true`, the loop waits for
+//! them to complete, which can take up to the request timeout. If the component's shutdown timeout elapses first, the
+//! loop is halted before it flushes, and nothing pending is persisted. When it is `false`, the loop aborts them and
+//! requeues their transactions, so the flush happens immediately and covers them too. The cost is that a request the
+//! remote endpoint had already received may be sent again after a restart. The abort is carried out by the retry
+//! circuit breaker in the endpoint's service stack, which already holds a copy of each in-flight request in case it
+//! must be retried, and hands that copy back so that it can be requeued.
 //!
 //! In-flight requests remain an ordinary [`JoinSet`] owned by their endpoint loop rather than supervised children,
 //! because the loop consumes each result to decide whether the transaction is done or needs re-enqueuing. Their
@@ -62,6 +71,7 @@ use tokio::{
     sync::mpsc,
     task::{JoinError, JoinSet},
 };
+use tokio_util::sync::CancellationToken;
 use tower::{BoxError, Service, ServiceBuilder, ServiceExt as _};
 use tracing::{debug, error, warn};
 use url::Url;
@@ -135,6 +145,21 @@ where
     Ok(push_result)
 }
 
+async fn requeue_or_log<B>(
+    status: &str, metadata: Metadata, request: Request<TransactionBody<B>>,
+    pending_txns: &mut PendingTransactions<Transaction<B>>, requeued_counters: Option<&TransactionRetryCounters>,
+    telemetry: &ComponentTelemetry, endpoint_url: &str, endpoint_domain: &str,
+) where
+    B: Buf + Clone,
+{
+    match requeue_transaction(metadata, request, pending_txns, requeued_counters).await {
+        Ok(push_result) => track_queue_drops(telemetry, endpoint_domain, push_result),
+        Err(e) => {
+            error!(endpoint_url, error = %e, "Failed to re-enqueue {} transaction. Events may be permanently lost.", status)
+        }
+    }
+}
+
 async fn handle_in_flight_transaction_result<B>(
     task_result: InFlightTaskResult<B>, pending_txns: &mut PendingTransactions<Transaction<B>>,
     telemetry: &ComponentTelemetry, endpoint_url: &str, endpoint_domain: &str,
@@ -154,8 +179,8 @@ async fn handle_in_flight_transaction_result<B>(
         }
     };
 
-    // Any low-priority transaction that reached the inner service counts as a retry on success, final Service error,
-    // or Retry; Open means no dispatch.
+    // Any low-priority transaction that reached the inner service counts as a retry on success,
+    // final Service error, Cancelled, or Retry; Open means no dispatch.
     let reached_inner_service = !matches!(&result, Err(RetryCircuitBreakerError::Open(_)));
     if reached_inner_service {
         if let Some(counters) = retry_counters.as_ref() {
@@ -188,22 +213,48 @@ async fn handle_in_flight_transaction_result<B>(
 
         // The request completed and needs to be retried, so re-enqueue it to the low-priority queue.
         Err(RetryCircuitBreakerError::Retry(req)) => {
-            match requeue_transaction(metadata, req, pending_txns, None).await {
-                Ok(push_result) => track_queue_drops(telemetry, endpoint_domain, push_result),
-                Err(e) => {
-                    error!(endpoint_url, error = %e, "Failed to re-enqueue failed transaction. Events may be permanently lost.")
-                }
-            }
+            requeue_or_log(
+                "failed",
+                metadata,
+                req,
+                pending_txns,
+                None,
+                telemetry,
+                endpoint_url,
+                endpoint_domain,
+            )
+            .await;
         }
 
         // The request was rejected before inward dispatch, so re-enqueue it without counting another retry.
         Err(RetryCircuitBreakerError::Open(req)) => {
-            match requeue_transaction(metadata, req, pending_txns, retry_counters.as_ref()).await {
-                Ok(push_result) => track_queue_drops(telemetry, endpoint_domain, push_result),
-                Err(e) => {
-                    error!(endpoint_url, error = %e, "Failed to re-enqueue failed transaction. Events may be permanently lost.")
-                }
-            }
+            requeue_or_log(
+                "failed",
+                metadata,
+                req,
+                pending_txns,
+                retry_counters.as_ref(),
+                telemetry,
+                endpoint_url,
+                endpoint_domain,
+            )
+            .await;
+        }
+
+        // The request was aborted by shutdown before it completed. The remote endpoint may already have
+        // received it, but we can't know, so requeue it to have it persisted with the rest.
+        Err(RetryCircuitBreakerError::Cancelled(req)) => {
+            requeue_or_log(
+                "aborted",
+                metadata,
+                req,
+                pending_txns,
+                retry_counters.as_ref(),
+                telemetry,
+                endpoint_url,
+                endpoint_domain,
+            )
+            .await;
         }
     }
 }
@@ -240,10 +291,11 @@ where
     /// Triggers the forwarder to shut down.
     ///
     /// Dropping the transaction channel is what starts the drain: the main I/O loop finishes, its per-endpoint senders
-    /// drop, and each endpoint loop completes its in-flight requests and flushes its retry queue. This doesn't wait for
-    /// any of that. The tasks of the forwarder are children of the process that spawned them. That process does not
-    /// finish until the tasks finish. Thus, that process waits for the tasks, and the caller does not. The shutdown
-    /// timeout of that process bounds this wait.
+    /// drop, and each endpoint loop either completes or aborts its in-flight requests, depending on
+    /// [`stop_wait_for_inflight`][ForwarderConfiguration::stop_wait_for_inflight], and flushes its retry queue. This
+    /// doesn't wait for any of that. The tasks of the forwarder are children of the process that spawned them. That
+    /// process does not finish until the tasks finish. Thus, that process waits for the tasks, and the caller does not.
+    /// The shutdown timeout of that process bounds this wait.
     pub fn shutdown(self) {
         drop(self.transactions_tx);
     }
@@ -733,13 +785,25 @@ async fn run_endpoint_io_loop<B>(
     // of the URI, adding the API key as a header, and so on.
     //
     // The body type conversion from `TransactionBody<B>` to `ClientBody` happens as the innermost layer,
-    // after the retry circuit breaker. This ensures that retry and open errors return the original
+    // after the retry circuit breaker. This ensures that retry, open, and cancelled errors return the original
     // `Request<TransactionBody<B>>` so we can reassemble it into a `Transaction<B>` for re-enqueuing.
+    //
+    // Unless in-flight requests are to be waited for on shutdown, the retry circuit breaker abandons them as soon as
+    // `in_flight_shutdown` is cancelled. See the module documentation.
     //
     // The invalid API key inspection layer sits *below* the retry circuit breaker so that it observes the raw response
     // from the client. When secrets management is enabled, a 403 is classified as retriable and the circuit breaker
     // converts it into a `RetryCircuitBreakerError::Retry` error that only re-enqueues the transaction — it never
     // surfaces the response to the loop below — so this layer is the only place that reliably sees the rejection.
+    let in_flight_shutdown = CancellationToken::new();
+    let mut retry_circuit_breaker = RetryCircuitBreakerLayer::new(
+        config
+            .retry()
+            .to_default_http_retry_policy(secrets, retry_cause_telemetry),
+    );
+    if !config.stop_wait_for_inflight() {
+        retry_circuit_breaker = retry_circuit_breaker.with_cancellation(in_flight_shutdown.clone());
+    }
     let mut service = ServiceBuilder::new()
         // Set the request's URI and endpoint-specific headers.
         .map_request({
@@ -756,11 +820,7 @@ async fn run_endpoint_io_loop<B>(
         // Set the User-Agent and DD-Agent-Version headers indicating the version of the data plane sending the request.
         .map_request(with_version_info())
         .concurrency_limit(config.endpoint_concurrency())
-        .layer(RetryCircuitBreakerLayer::new(
-            config
-                .retry()
-                .to_default_http_retry_policy(secrets, retry_cause_telemetry),
-        ))
+        .layer(retry_circuit_breaker)
         .layer(build_diagnostics_layer(emitter, endpoint_url.clone()))
         .map_request(|req: Request<TransactionBody<B>>| req.map(into_client_body))
         .service(service);
@@ -832,9 +892,11 @@ async fn run_endpoint_io_loop<B>(
                 },
                 None => {
                     // Our transactions channel has been closed, so mark ourselves as done which will stop any further
-                    // transactions from being sent, but will allow in-flight transactions to complete.
+                    // transactions from being sent. In-flight transactions are either allowed to complete, or aborted
+                    // by the retry circuit breaker and then requeued as their tasks are joined below.
                     done = true;
-                    debug!(endpoint_url, "Requests channel for endpoint I/O task complete. Completing any in-flight requests...");
+                    debug!(endpoint_url, "Requests channel for endpoint I/O task complete. Settling any in-flight requests...");
+                    in_flight_shutdown.cancel();
                 }
             },
 
@@ -863,8 +925,10 @@ async fn run_endpoint_io_loop<B>(
                         error!(endpoint_url, error = %e, error_source = ?e.source(), "Unexpected error when querying service for readiness.");
                         break;
                     },
-                    RetryCircuitBreakerError::Retry(_) | RetryCircuitBreakerError::Open(_) => {
-                        unreachable!("should not get retry or open error when querying service for readiness")
+                    RetryCircuitBreakerError::Retry(_)
+                    | RetryCircuitBreakerError::Open(_)
+                    | RetryCircuitBreakerError::Cancelled(_) => {
+                        unreachable!("should not get retry, open, or cancelled error when querying service for readiness")
                     },
                 }
             },
@@ -1959,8 +2023,10 @@ mod tests {
         );
     }
 
-    async fn persisted_retry_queue(root_path: &std::path::Path, max_on_disk_bytes: u64) -> RetryQueue<String> {
-        RetryQueue::new("test".to_string(), 1024)
+    async fn persisted_retry_queue<T: Retryable>(
+        root_path: &std::path::Path, queue_id: &str, max_on_disk_bytes: u64,
+    ) -> RetryQueue<T> {
+        RetryQueue::new(queue_id.to_string(), 1024)
             .with_disk_persistence(PersistedQueueArgs {
                 root_path: root_path.to_path_buf(),
                 max_on_disk_bytes,
@@ -2009,7 +2075,7 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("temporary directory should be created");
         let root_path = temp_dir.path().to_path_buf();
-        let retry_queue = persisted_retry_queue(&root_path, 4096).await;
+        let retry_queue = persisted_retry_queue(&root_path, "test", 4096).await;
         let mut pending_txns = PendingTransactions::new(4, retry_queue, telemetry, domain, 900);
 
         let _ = pending_txns
@@ -2028,15 +2094,7 @@ mod tests {
             "disk persistence should retain transactions on flush, not drop them"
         );
 
-        let mut retry_queue = persisted_retry_queue(&root_path, 4096).await;
-        let mut persisted = Vec::new();
-        while let Some(transaction) = retry_queue
-            .pop()
-            .await
-            .expect("persisted transaction should be readable")
-        {
-            persisted.push(transaction);
-        }
+        let mut persisted: Vec<String> = read_persisted_transactions(&root_path, "test", 4096).await;
         persisted.sort();
 
         assert_eq!(persisted, ["high", "low"]);
@@ -2072,7 +2130,7 @@ mod tests {
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let (telemetry, domain) = transaction_queue_telemetry();
         let temp_dir = tempfile::tempdir().expect("temporary directory should be created");
-        let retry_queue = persisted_retry_queue(temp_dir.path(), 1).await;
+        let retry_queue = persisted_retry_queue(temp_dir.path(), "test", 1).await;
         let mut pending_txns = PendingTransactions::new(1, retry_queue, telemetry, domain, 900);
 
         let _ = pending_txns
@@ -2334,6 +2392,17 @@ mod tests {
     async fn build_test_forwarder_with_request_timeout(
         forwarder_url: &str, live: LiveForwarderConfiguration, request_timeout_secs: u64,
     ) -> (DataspaceRegistry, TransactionForwarder<FrozenChunkedBytesBuffer>) {
+        build_test_forwarder_configured(forwarder_url, live, |shared| {
+            shared.endpoints.forwarder.timeout = request_timeout_secs;
+        })
+        .await
+    }
+
+    /// Builds a forwarder pointed at `forwarder_url` that follows `live`, after `configure` has adjusted the test
+    /// configuration.
+    async fn build_test_forwarder_configured(
+        forwarder_url: &str, live: LiveForwarderConfiguration, configure: impl FnOnce(&mut SharedConfiguration),
+    ) -> (DataspaceRegistry, TransactionForwarder<FrozenChunkedBytesBuffer>) {
         // The HTTP client builder requires the process-wide TLS crypto provider to be initialized, even when the
         // forwarder is pointed at a plain HTTP endpoint.
         init_tls_crypto_provider();
@@ -2341,7 +2410,7 @@ mod tests {
         // Small backoffs keep the test short even with retries.
         let mut shared = shared_configuration();
         shared.endpoints.dd_url = ConfigValue::explicit(forwarder_url.to_string());
-        shared.endpoints.forwarder.timeout = request_timeout_secs;
+        shared.endpoints.forwarder.timeout = 1;
         shared.endpoints.forwarder.max_concurrent_requests = 1;
         shared.endpoints.forwarder.high_prio_buffer_size = 4;
         shared.endpoints.forwarder.backoff_base = 0.001;
@@ -2352,6 +2421,7 @@ mod tests {
         // The HTTP client builder otherwise requires the process-wide default root certificate store to be
         // populated. We are talking to a plain HTTP endpoint anyway, so disable validation to skip that path.
         shared.endpoints.tls.skip_ssl_validation = true;
+        configure(&mut shared);
         let forwarder_config = forwarder_config_from(shared).await;
         let context = test_component_context();
         let metrics_builder = MetricsBuilder::from_component_context(&context);
@@ -2526,7 +2596,11 @@ mod tests {
             secrets: Live::new_fixed(Secrets::default()),
             ..Default::default()
         };
-        let (_, forwarder) = build_test_forwarder_with_request_timeout(&server_url, live, 30).await;
+        let (_, forwarder) = build_test_forwarder_configured(&server_url, live, |shared| {
+            shared.endpoints.forwarder.timeout = 30;
+            shared.endpoints.forwarder.stop_wait_for_inflight = true;
+        })
+        .await;
 
         let supervisor =
             TestComponentSupervisor::start_with_component_timeout("test_forwarder", Duration::from_secs(30)).await;
@@ -2552,6 +2626,134 @@ mod tests {
             result.is_ok(),
             "the drain should have waited for the in-flight request: {result:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn forwarder_shutdown_aborts_and_persists_in_flight_requests_when_not_waiting() {
+        // With `stop_wait_for_inflight` disabled, shutdown must not wait for the endpoint to answer. The in-flight
+        // request is aborted and its transaction requeued, so the flush that follows persists it to disk.
+        let outcome = timeout(
+            Duration::from_secs(10),
+            shut_down_with_request_in_flight(false, Duration::from_secs(60)),
+        )
+        .await
+        .expect("shutdown should not wait for the in-flight request");
+
+        assert!(
+            outcome.result.is_ok(),
+            "the forwarder's tasks should have drained on their own: {:?}",
+            outcome.result
+        );
+        assert_eq!(outcome.answered, 0, "the endpoint should not have answered the request");
+        let [persisted] = outcome.persisted.as_slice() else {
+            panic!(
+                "exactly the aborted transaction should have been persisted, but {} were",
+                outcome.persisted.len()
+            );
+        };
+        // The persisted request is the circuit breaker's copy, which the endpoint's request mapper has already
+        // pointed at the endpoint, as for any request that is retried.
+        let original = build_test_transaction();
+        assert_eq!(persisted.request_uri().path(), original.request_uri().path());
+        let (_, request) = persisted.clone().into_parts();
+        let mut body = request.into_body();
+        assert_eq!(body.copy_to_bytes(body.remaining()), "test-payload");
+    }
+
+    #[tokio::test]
+    async fn forwarder_shutdown_waits_for_in_flight_requests_when_waiting() {
+        // With `stop_wait_for_inflight` enabled, shutdown must wait for the endpoint to answer the in-flight request.
+        // The request then completes successfully, so there is nothing left to persist.
+        let outcome = shut_down_with_request_in_flight(true, Duration::from_secs(2)).await;
+
+        assert!(
+            outcome.result.is_ok(),
+            "the forwarder's tasks should have drained on their own: {:?}",
+            outcome.result
+        );
+        assert_eq!(outcome.answered, 1, "the endpoint should have answered the request");
+        assert!(
+            outcome.persisted.is_empty(),
+            "the completed transaction should not have been persisted"
+        );
+    }
+
+    struct InFlightShutdownOutcome {
+        result: Result<(), runtime::SupervisorError>,
+        answered: usize,
+        persisted: Vec<Transaction<FrozenChunkedBytesBuffer>>,
+    }
+
+    /// Shuts down a forwarder, with disk persistence enabled, while one request is in flight to an endpoint that
+    /// answers `response_delay` after receiving it.
+    async fn shut_down_with_request_in_flight(
+        stop_wait_for_inflight: bool, response_delay: Duration,
+    ) -> InFlightShutdownOutcome {
+        let temp_dir = tempfile::tempdir().expect("temporary directory should be created");
+        let storage_path = temp_dir.path().to_path_buf();
+        let (server_url, counter, mut requests) =
+            start_recording_http_server_with_delay(vec![StatusCode::OK], response_delay).await;
+        let live = LiveForwarderConfiguration {
+            secrets: Live::new_fixed(Secrets::default()),
+            ..Default::default()
+        };
+        let (_, forwarder) = build_test_forwarder_configured(&server_url, live, |shared| {
+            shared.endpoints.forwarder.timeout = 30;
+            shared.endpoints.forwarder.stop_wait_for_inflight = stop_wait_for_inflight;
+            shared.endpoints.forwarder.storage_path = storage_path.clone();
+            shared.endpoints.forwarder.storage_max_size_in_bytes = 10 * 1024 * 1024;
+            shared.endpoints.forwarder.storage_max_disk_ratio = 1.0;
+        })
+        .await;
+        let [endpoint] = forwarder.endpoints.as_slice() else {
+            panic!("the forwarder should have a single endpoint");
+        };
+        let queue_id = generate_retry_queue_id(forwarder.context.clone(), endpoint.endpoint());
+
+        let supervisor =
+            TestComponentSupervisor::start_with_component_timeout("test_forwarder", Duration::from_secs(30)).await;
+        supervisor.spawn_component("forwarder", move |shutdown| async move {
+            let handle = forwarder.spawn();
+            handle
+                .send_transaction(build_test_transaction())
+                .await
+                .expect("send should succeed");
+
+            shutdown.await;
+            handle.shutdown();
+        });
+        requests.recv().await.expect("the endpoint should receive the request");
+
+        // When waiting, the request is in flight and nothing remains to do but wait for timers. From here, time moves
+        // only when every task waits, and it moves to the next timer, so the drain doesn't wait for the response delay
+        // in real time. When not waiting, time must keep running: moving it past the response delay would have the
+        // endpoint answer the request before it's aborted.
+        if stop_wait_for_inflight {
+            tokio::time::pause();
+        }
+        let result = supervisor.shutdown().await;
+
+        InFlightShutdownOutcome {
+            result,
+            answered: counter.load(Ordering::SeqCst),
+            persisted: read_persisted_transactions(&storage_path, &queue_id, 10 * 1024 * 1024).await,
+        }
+    }
+
+    async fn read_persisted_transactions<T: Retryable>(
+        storage_path: &std::path::Path, queue_id: &str, max_on_disk_bytes: u64,
+    ) -> Vec<T> {
+        let mut retry_queue = persisted_retry_queue(storage_path, queue_id, max_on_disk_bytes).await;
+
+        let mut persisted = Vec::new();
+        while let Some(txn) = retry_queue
+            .pop()
+            .await
+            .expect("persisted transaction should be readable")
+        {
+            persisted.push(txn);
+        }
+        persisted
     }
 
     #[tokio::test(flavor = "current_thread")]
