@@ -516,6 +516,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Integer,
     },
     EnvKey {
+        env_vars: &["DD_DOGSTATSD_REQUIRE_LISTENER"],
+        path: &["dogstatsd_require_listener"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
         env_vars: &["DD_DOGSTATSD_SO_RCVBUF"],
         path: &["dogstatsd_so_rcvbuf"],
         decode: EnvDecode::Integer,

@@ -213,6 +213,10 @@ pub struct DatadogConfiguration {
     pub dogstatsd_port: i64,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub dogstatsd_require_listener: bool,
+
+    #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub dogstatsd_so_rcvbuf: i64,
 
@@ -633,6 +637,7 @@ impl Default for DatadogConfiguration {
             dogstatsd_origin_optout_enabled: defaults::default_bool::<true>(),
             dogstatsd_pipe_name: Default::default(),
             dogstatsd_port: defaults::default_u64::<i64, 8125>(),
+            dogstatsd_require_listener: Default::default(),
             dogstatsd_so_rcvbuf: Default::default(),
             dogstatsd_socket: Default::default(),
             dogstatsd_stream_log_too_big: Default::default(),

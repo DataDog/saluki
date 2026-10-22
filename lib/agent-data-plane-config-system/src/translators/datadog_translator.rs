@@ -883,6 +883,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.dogstatsd.listeners.stream_log_too_big = value;
     }
 
+    fn consume_dogstatsd_require_listener(&mut self, value: bool) {
+        self.config.domains.dogstatsd.listeners.require_listener = value;
+    }
+
     fn consume_dogstatsd_stream_socket(&mut self, value: String) {
         self.config.domains.dogstatsd.listeners.stream_socket = non_empty(value);
     }

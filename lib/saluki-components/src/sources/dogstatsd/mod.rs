@@ -103,8 +103,8 @@ enum Error {
         source: AcquireError,
     },
 
-    #[snafu(display("No listeners configured. Please specify a port (`dogstatsd_port`) or a socket path (`dogstatsd_socket` or `dogstatsd_stream_socket`) to enable a listener."))]
-    NoListenersConfigured,
+    #[snafu(display("No listeners could be created. Please specify a port (`dogstatsd_port`) or a socket path (`dogstatsd_socket` or `dogstatsd_stream_socket`) that can be listened on."))]
+    NoListeners,
 
     #[snafu(display("Could not resolve bind_host '{}': {}", host, source))]
     UnresolvableBindHost { host: String, source: std::io::Error },
@@ -144,6 +144,30 @@ pub struct EnablePayloadsConfiguration {
 }
 
 const MIN_CAPTURE_DEPTH: usize = 1024;
+
+/// Which of the configured listeners the source requires.
+///
+/// This decides what happens when a listener can't be created, for example because its address is already in use.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ListenerRequirement {
+    /// Every configured listener must be created, and at least one must be configured.
+    ///
+    /// A listener that can't be created stops the source from starting.
+    #[default]
+    All,
+
+    /// At least one listener must be created.
+    ///
+    /// A listener that can't be created is logged and skipped. The source fails to start if
+    /// no listener remains.
+    AtLeastOne,
+
+    /// No listener is required.
+    ///
+    /// A listener that can't be created is logged and skipped. If no listener remains, the source runs without
+    /// listeners until shutdown, and the rest of the server process keeps running.
+    Optional,
+}
 
 /// DogStatsD source.
 ///
@@ -226,6 +250,18 @@ pub struct DogStatsDConfiguration {
     ///
     /// Enable this when diagnosing clients that send oversized UDS stream frames.
     pub stream_log_too_big: bool,
+
+    /// Which of the configured listeners the source requires.
+    ///
+    /// Defaults to [`ListenerRequirement::All`], where a listener that can't be created prevents the source from
+    /// starting. With [`ListenerRequirement::AtLeastOne`] or [`ListenerRequirement::Optional`], such a listener
+    /// is logged and skipped instead. If no listener remains, the source only fails to start under `AtLeastOne`;
+    /// under `Optional` the source runs without listeners until shutdown.
+    ///
+    /// Keep the default when every configured address is needed. Relax it when the server process should keep
+    /// running while some addresses are unavailable, and use `AtLeastOne` when a process supervisor should still
+    /// detect and restart a process that can receive no traffic.
+    pub listener_requirement: ListenerRequirement,
 
     /// The Windows named pipe name to listen on.
     ///
@@ -471,6 +507,7 @@ impl DogStatsDConfiguration {
             socket_path: None,
             socket_stream_path: None,
             stream_log_too_big: false,
+            listener_requirement: ListenerRequirement::default(),
             pipe_name: None,
             windows_pipe_security_descriptor: "D:AI(A;;GA;;;WD)".to_string(),
             disable_verbose_logs: false,
@@ -658,25 +695,64 @@ impl DogStatsDConfiguration {
         }
     }
 
+    /// Resolves the IP that UDP and TCP listeners bind to, if `bind_host` applies.
+    ///
+    /// The lookup is skipped when `non_local_traffic` is set, since `bind_host` is then unused, so an unresolvable
+    /// hostname that wouldn't be used doesn't stop the source from starting.
+    async fn resolve_bind_ip(&self) -> Result<Option<std::net::IpAddr>, Error> {
+        match &self.bind_host {
+            Some(host) if !self.non_local_traffic => resolve_bind_host(host).await.map(Some),
+            _ => Ok(None),
+        }
+    }
+
+    /// Handles `error`, raised because `listeners` can't be created.
+    ///
+    /// The error is not propagated if the listener requirement skips failed listeners.
+    fn handle_listener_failure(&self, error: Error, listeners: &str) -> Result<(), Error> {
+        // A key registered as a different type of resource is a programming error, not a listener that couldn't be
+        // created, so it's never skipped.
+        let is_key_collision = matches!(
+            error,
+            Error::FailedToAcquireListener {
+                source: AcquireError::TypeMismatch { .. },
+                ..
+            }
+        );
+        let fail = match self.listener_requirement {
+            ListenerRequirement::All => true,
+            ListenerRequirement::AtLeastOne | ListenerRequirement::Optional => false,
+        };
+        if is_key_collision || fail {
+            return Err(error);
+        }
+
+        error!(error = %error, "Can't create DogStatsD {}.", listeners);
+        Ok(())
+    }
+
     /// Acquires the appropriate `Listener` objects from the resource registry.
     ///
     /// The listeners are leased, not owned: the registry keeps the bound sockets when this source is torn down, so a
     /// rebuilt source gets the same sockets back rather than racing to re-bind addresses it just released.
+    ///
+    /// The listener requirement decides whether a listener that can't be created is skipped, and whether ending up with
+    /// no listener at all is an error.
     async fn build_listeners(&self, context: &BuildContext) -> Result<Vec<ResourceLease<Listener>>, Error> {
-        // Resolve `bind_host` to an IP (via DNS if needed). Skip the lookup when
-        // `non_local_traffic=true` since `bind_host` is ignored in that branch—matches Go's
-        // laziness and avoids failing startup on an unresolvable hostname that wouldn't be used.
-        let bind_host: Option<std::net::IpAddr> = if self.non_local_traffic {
-            None
-        } else {
-            match &self.bind_host {
-                Some(host) => Some(resolve_bind_host(host).await?),
-                None => None,
+        let addresses = match self.resolve_bind_ip().await {
+            Ok(bind_ip) => self.build_addresses(bind_ip),
+            Err(e) => {
+                // An unresolvable `bind_host` only prevents the UDP and TCP listeners.
+                self.handle_listener_failure(e, "UDP and TCP listeners")?;
+                self.build_addresses(None)
+                    .into_iter()
+                    .filter(|address| !matches!(address, ListenAddress::Udp(_) | ListenAddress::Tcp(_)))
+                    .collect()
             }
         };
 
-        let addresses = self.build_addresses(bind_host);
         self.warn_if_uds_origin_detection_unsupported(&addresses);
+
         let mut listeners = Vec::new();
         let socket_receive_buffer_size =
             (self.socket_receive_buffer_size != 0).then_some(self.socket_receive_buffer_size);
@@ -689,12 +765,21 @@ impl DogStatsDConfiguration {
             let spec = SocketSpecification::new(address)
                 .with_udp_streams(listener_streams)
                 .with_receive_buffer_size(socket_receive_buffer_size);
-            let listener = context
-                .acquire_resource(spec)
-                .await
-                .context(FailedToAcquireListener { listener_type })?;
+            match context.acquire_resource(spec).await {
+                Ok(listener) => listeners.push(listener),
+                Err(source) => self.handle_listener_failure(
+                    Error::FailedToAcquireListener { listener_type, source },
+                    &format!("{listener_type} listener"),
+                )?,
+            }
+        }
 
-            listeners.push(listener);
+        if listeners.is_empty() {
+            match self.listener_requirement {
+                ListenerRequirement::All | ListenerRequirement::AtLeastOne => return Err(Error::NoListeners),
+                // The server process keeps running. The source runs without listeners until shutdown.
+                ListenerRequirement::Optional => error!(error = %Error::NoListeners, "Could not start DogStatsD."),
+            }
         }
         Ok(listeners)
     }
@@ -704,14 +789,18 @@ impl DogStatsDConfiguration {
 impl SourceBuilder for DogStatsDConfiguration {
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
         let listeners = self.build_listeners(&context).await?;
-        if listeners.is_empty() {
-            return Err(Error::NoListenersConfigured.into());
-        }
 
         // Every listener requires at least one I/O buffer to ensure that all listeners can be serviced without
         // deadlocking any of the others. Multi-socket connectionless listeners require one buffer per yielded socket.
         let min_buffers: usize = listeners.iter().map(|listener| listener.min_buffer_reservation()).sum();
         let max_buffers = self.effective_max_buffer_count();
+        // Without listeners, `min_buffers` is zero, so the check below can't catch a capacity of zero. The datagram
+        // queue needs room for at least one buffer either way.
+        if max_buffers == 0 {
+            return Err(generic_error!(
+                "The maximum I/O buffer count must be greater than zero."
+            ));
+        }
         if max_buffers < min_buffers {
             return Err(generic_error!(
                 "The maximum I/O buffer count ({}) must be at least {} to service all configured listeners.",
@@ -1018,7 +1107,8 @@ impl Source for DogStatsD {
         }
         drop(datagram_receiver);
 
-        // For each listener, spawn a dedicated task to run it.
+        // For each listener, spawn a dedicated task to run it. There may be none, when no listener could be created and
+        // the listener requirement is `Optional`. The source then only waits for shutdown.
         for listener in self.listeners {
             let task_name = format!("listener_{}", listener.listen_address().listener_type());
             let listener_source_context = context.clone();
@@ -4352,7 +4442,7 @@ mod supervision {
     use saluki_core::accounting::{ComponentRegistry, MemoryLimiter};
     use saluki_core::components::test_util::TestComponentSupervisor;
     #[cfg(unix)]
-    use saluki_core::components::{sources::SourceBuilder as _, BuildContext};
+    use saluki_core::components::test_util::{ComponentControl, NoInput, Outputs, TestComponentDriver};
     use saluki_core::{
         components::{
             sources::{Source as _, SourceContext},
@@ -4818,34 +4908,207 @@ mod supervision {
         assert_eq!(&buf[..read], b"after.teardown:1|c");
     }
 
+    /// Socket paths for a DogStatsD source, in a temporary directory unique to the test.
+    ///
+    /// Socket paths rather than ports: the configuration has to name the address concretely for the build to ask
+    /// for the same one, and a path in a temporary directory is unique by construction, so there is no ephemeral
+    /// port to discover and race over.
+    #[cfg(unix)]
+    struct ListenerPaths {
+        _temp_dir: tempfile::TempDir,
+        datagram: PathBuf,
+        stream: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl ListenerPaths {
+        fn new() -> Self {
+            let temp_dir = tempfile::tempdir().expect("temp directory should be created");
+            Self {
+                datagram: temp_dir.path().join("dogstatsd.socket"),
+                stream: temp_dir.path().join("dogstatsd-stream.socket"),
+                _temp_dir: temp_dir,
+            }
+        }
+
+        /// Configures a source to listen on both socket paths.
+        fn configure(&self, requirement: ListenerRequirement) -> DogStatsDConfiguration {
+            let mut config = listenerless_config(requirement);
+            config.socket_path = Some(self.datagram.to_string_lossy().into_owned());
+            config.socket_stream_path = Some(self.stream.to_string_lossy().into_owned());
+            config
+        }
+    }
+
+    #[cfg(unix)]
+    const LISTENER_REQUIREMENTS: [ListenerRequirement; 3] = [
+        ListenerRequirement::All,
+        ListenerRequirement::AtLeastOne,
+        ListenerRequirement::Optional,
+    ];
+
+    #[cfg(unix)]
+    fn listenerless_config(requirement: ListenerRequirement) -> DogStatsDConfiguration {
+        let mut config = DogStatsDConfiguration::for_test();
+        // The fixture defaults to the real DogStatsD port, which these tests have no business binding.
+        config.port = 0;
+        config.listener_requirement = requirement;
+        config
+    }
+
+    #[cfg(unix)]
+    type DriveResult = Result<(ComponentControl<NoInput>, Outputs<EventsBuffer>), GenericError>;
+
+    #[cfg(unix)]
+    async fn drive_source(registry: ResourceRegistry, config: DogStatsDConfiguration) -> DriveResult {
+        TestComponentDriver::options()
+            .with_resource_registry(registry)
+            .source(config)
+            .await
+    }
+
+    #[cfg(unix)]
+    async fn assert_runs_idle(result: DriveResult, requirement: ListenerRequirement) {
+        let (control, _outputs) = result
+            .unwrap_or_else(|error| panic!("the source should build without listeners ({requirement:?}): {error:#}"));
+        control.wait_until_ready().await;
+        assert!(
+            !control.is_finished(),
+            "the source should keep running without listeners ({requirement:?})"
+        );
+        control.shutdown().await.expect("the source should stop cleanly");
+    }
+
+    #[cfg(unix)]
+    fn assert_fails_to_start(result: DriveResult, requirement: ListenerRequirement, expected: &str) {
+        let Err(error) = result else {
+            panic!("the component build should fail ({requirement:?})");
+        };
+        let error = format!("{error:#}");
+        assert!(error.contains(expected), "unexpected error ({requirement:?}): {error}");
+    }
+
+    #[cfg(unix)]
+    const NO_LISTENERS: &str = "No listeners could be created";
+    #[cfg(unix)]
+    const ALREADY_LEASED: &str = "already leased";
+
     #[cfg(unix)]
     #[tokio::test]
-    async fn building_against_an_already_leased_address_says_so() {
-        // Two holders of one address is a conflict the registry can name, rather than the bind failure an operator
-        // would otherwise have to work backwards from.
-        //
-        // A socket path rather than a port: the configuration has to name the address concretely for the build to ask
-        // for the same one, and a path in a temporary directory is unique to this test by construction, so there is no
-        // ephemeral port to discover and race over.
-        let temp_dir = tempfile::tempdir().expect("temp directory should be created");
-        let socket_path = temp_dir.path().join("dogstatsd.socket");
+    async fn zero_io_buffer_capacity_fails_to_start_without_listeners() {
+        // Without listeners, no listener reserves a buffer, so the reservation check alone would accept a capacity of
+        // zero, and the datagram queue can't be created with no capacity.
+        let mut config = listenerless_config(ListenerRequirement::Optional);
+        config.buffer_count = 0;
+        config.buffer_count_max = 0;
 
-        let registry = ResourceRegistry::new();
-        let _held = leased_listener_from(&registry, ListenAddress::Unixgram(socket_path.clone())).await;
+        let result = drive_source(ResourceRegistry::new(), config).await;
+        assert_fails_to_start(
+            result,
+            ListenerRequirement::Optional,
+            "maximum I/O buffer count must be greater than zero",
+        );
+    }
 
-        let mut config = DogStatsDConfiguration::for_test();
-        config.socket_path = Some(socket_path.to_string_lossy().into_owned());
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn no_configured_listener_runs_idle_only_when_listeners_are_optional() {
+        for requirement in LISTENER_REQUIREMENTS {
+            let result = drive_source(ResourceRegistry::new(), listenerless_config(requirement)).await;
+            match requirement {
+                ListenerRequirement::All | ListenerRequirement::AtLeastOne => {
+                    assert_fails_to_start(result, requirement, NO_LISTENERS)
+                }
+                ListenerRequirement::Optional => assert_runs_idle(result, requirement).await,
+            }
+        }
+    }
 
-        // The fixture defaults to the real DogStatsD port, which this test has no business binding.
-        config.port = 0;
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn no_created_listener_runs_idle_only_when_listeners_are_optional() {
+        // Every configured address is already leased, so the build can create none of them.
+        for requirement in LISTENER_REQUIREMENTS {
+            let paths = ListenerPaths::new();
+            let registry = ResourceRegistry::new();
+            let _held_datagram = leased_listener_from(&registry, ListenAddress::Unixgram(paths.datagram.clone())).await;
+            let _held_stream = leased_listener_from(&registry, ListenAddress::Unix(paths.stream.clone())).await;
 
-        // The build and the existing holder have to share a registry for the conflict to exist at all;
-        // `BuildContext::test_source` would give the build one of its own.
-        let context = BuildContext::new(ComponentContext::test_source("dogstatsd"), registry);
-        let Err(error) = config.build(context).await else {
-            panic!("building against an address that is already leased should be refused");
-        };
-        let error = error.to_string();
-        assert!(error.contains("already leased"), "unexpected error: {error}");
+            let result = drive_source(registry, paths.configure(requirement)).await;
+            match requirement {
+                ListenerRequirement::All => assert_fails_to_start(result, requirement, ALREADY_LEASED),
+                ListenerRequirement::AtLeastOne => assert_fails_to_start(result, requirement, NO_LISTENERS),
+                ListenerRequirement::Optional => assert_runs_idle(result, requirement).await,
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn listener_that_cannot_be_created_is_skipped_unless_all_are_required() {
+        // The stream address is already leased, but the datagram listener can still be created.
+        for requirement in LISTENER_REQUIREMENTS {
+            let paths = ListenerPaths::new();
+            let registry = ResourceRegistry::new();
+            let _held_stream = leased_listener_from(&registry, ListenAddress::Unix(paths.stream.clone())).await;
+
+            let result = drive_source(registry, paths.configure(requirement)).await;
+            if requirement == ListenerRequirement::All {
+                assert_fails_to_start(result, requirement, ALREADY_LEASED);
+                continue;
+            }
+
+            let (control, mut outputs) = result.unwrap_or_else(|error| {
+                panic!("the source should build with the listener it could create ({requirement:?}): {error:#}")
+            });
+            control.wait_until_ready().await;
+            assert_datagram_listener_receives(&mut outputs, &paths.datagram).await;
+            control.shutdown().await.expect("the source should stop cleanly");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unresolvable_bind_host_skips_only_udp_and_tcp_unless_all_are_required() {
+        // An unresolvable `bind_host` prevents the UDP listener, but the datagram socket listener can still be created.
+        for requirement in LISTENER_REQUIREMENTS {
+            let paths = ListenerPaths::new();
+            let mut config = listenerless_config(requirement);
+            config.port = 8125;
+            config.bind_host = Some("unresolvable.invalid".to_string());
+            config.socket_path = Some(paths.datagram.to_string_lossy().into_owned());
+
+            let result = drive_source(ResourceRegistry::new(), config).await;
+            if requirement == ListenerRequirement::All {
+                assert_fails_to_start(result, requirement, "Could not resolve bind_host");
+                continue;
+            }
+
+            let (control, mut outputs) = result.unwrap_or_else(|error| {
+                panic!("the source should build with the socket listener ({requirement:?}): {error:#}")
+            });
+            control.wait_until_ready().await;
+            assert_datagram_listener_receives(&mut outputs, &paths.datagram).await;
+            control.shutdown().await.expect("the source should stop cleanly");
+        }
+    }
+
+    /// Sends a metric to the datagram socket at `path`, and asserts that the source emits it.
+    #[cfg(unix)]
+    async fn assert_datagram_listener_receives(outputs: &mut Outputs<EventsBuffer>, path: &std::path::Path) {
+        let sender = std::os::unix::net::UnixDatagram::unbound().expect("sender should be created");
+        sender
+            .send_to(b"survivor:1|c", path)
+            .expect("the datagram listener should accept a metric");
+        let events = timeout(RUN_TIMEOUT, outputs.named_output("metrics").next())
+            .await
+            .expect("the metric should arrive")
+            .expect("the metrics output should stay open");
+        let metric = events
+            .into_iter()
+            .next()
+            .and_then(|event| event.try_into_metric())
+            .expect("the output should carry the metric");
+        assert_eq!(metric.context().name(), "survivor");
     }
 }

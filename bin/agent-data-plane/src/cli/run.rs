@@ -45,8 +45,8 @@ use saluki_components::{
     relays::otlp::OtlpRelayConfiguration,
     sources::{
         ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDCaptureControl, DogStatsDConfiguration,
-        DogStatsDReplayAPIHandler, DogStatsDReplayControl, EnablePayloadsConfiguration, OriginEnrichmentConfiguration,
-        OtlpConfiguration,
+        DogStatsDReplayAPIHandler, DogStatsDReplayControl, EnablePayloadsConfiguration, ListenerRequirement,
+        OriginEnrichmentConfiguration, OtlpConfiguration,
     },
     transforms::{
         aggregate_context_snapshot_channel, AggregateConfiguration, ApmStatsTransformConfiguration,
@@ -876,6 +876,13 @@ fn dogstatsd_source_configuration(
         socket_path: listeners.socket.clone(),
         socket_stream_path: listeners.stream_socket.clone(),
         stream_log_too_big: listeners.stream_log_too_big,
+        // The Agent skips a listener that can't be created; `dogstatsd_require_listener` only decides whether running
+        // with none is fatal.
+        listener_requirement: if listeners.require_listener {
+            ListenerRequirement::AtLeastOne
+        } else {
+            ListenerRequirement::Optional
+        },
         pipe_name: listeners.pipe_name.clone(),
         windows_pipe_security_descriptor: listeners.windows_pipe_security_descriptor.clone(),
         disable_verbose_logs: dogstatsd.debug_log.disable_verbose_logs,
