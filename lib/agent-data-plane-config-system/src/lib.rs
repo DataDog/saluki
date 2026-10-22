@@ -23,6 +23,7 @@
 #![cfg_attr(test, recursion_limit = "256")]
 
 mod compatibility;
+mod datadog_yaml;
 mod loaded;
 mod saluki_env_overlay;
 mod saluki_only;
