@@ -1353,6 +1353,7 @@ dependencies = [
  "serde-saphyr 1.3.0",
  "serde_json",
  "syn 3.0.8",
+ "tracing",
  "typify",
 ]
 

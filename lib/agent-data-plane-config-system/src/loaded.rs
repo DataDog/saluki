@@ -141,6 +141,7 @@ fn drop_nulls(value: &mut Value) {
 #[cfg(test)]
 mod tests {
     use bytesize::ByteSize;
+    use saluki_config::dynamic::ConfigSetting;
     use saluki_config::test_env_lock;
     use serde_json::json;
 
@@ -250,8 +251,6 @@ mod tests {
     }
 
     fn log_level_update(level: &str) -> ConfigUpdate {
-        use saluki_config::dynamic::ConfigSetting;
-
         ConfigUpdate::Partial(ConfigSetting::explicit("log_level", json!(level)))
     }
 
@@ -327,6 +326,7 @@ mod tests {
     // `#[tokio::test]`, so the blocking environment guard is never held across an await point.
     fn block_on<F: std::future::Future>(future: F) -> F::Output {
         tokio::runtime::Builder::new_current_thread()
+            .enable_time()
             .build()
             .expect("runtime builds")
             .block_on(future)
@@ -488,6 +488,218 @@ mod tests {
         std::env::remove_var("DD_DATA_PLANE_STOP_TIMEOUT");
         std::fs::remove_file(&path).ok();
         assert_eq!(stop_timeout, Some(std::time::Duration::from_secs(45)));
+    }
+
+    /// Sets process environment variables for the duration of a scope, removing them when it drops.
+    ///
+    /// The caller holds [`test_env_lock`] for at least as long.
+    struct ScopedEnv(Vec<&'static str>);
+
+    impl ScopedEnv {
+        fn set(vars: &[(&'static str, &str)]) -> Self {
+            for (name, value) in vars {
+                std::env::set_var(name, value);
+            }
+            Self(vars.iter().map(|(name, _)| *name).collect())
+        }
+    }
+
+    impl Drop for ScopedEnv {
+        fn drop(&mut self) {
+            for name in &self.0 {
+                std::env::remove_var(name);
+            }
+        }
+    }
+
+    /// Loads a temporary configuration file with the environment applied after it.
+    fn load_with_environment(
+        test: &str, contents: &str, vars: &[(&'static str, &str)],
+    ) -> Result<LoadedConfiguration, Error> {
+        let _guard = test_env_lock();
+        let path = std::env::temp_dir().join(format!("adp_{test}_{}.yaml", std::process::id()));
+        std::fs::write(&path, contents).unwrap();
+        let _env = ScopedEnv::set(vars);
+
+        let loaded = block_on(LoadedConfiguration::load(&path, EnvPrecedence::AfterFile));
+
+        std::fs::remove_file(&path).ok();
+        loaded
+    }
+
+    #[test]
+    fn agent_spellings_of_valid_local_inputs_load_and_survive_the_stream() {
+        // Each input is one the Agent accepts and ADP once rejected or misread: base-prefixed integers
+        // and a JSON list in the environment, and a quoted zero-padded integer in the file.
+        let loaded = load_with_environment(
+            "agent_spellings",
+            "api_key: test-api-key\ndogstatsd_buffer_size: \"010\"\n",
+            &[
+                ("DD_DOGSTATSD_PORT", "0x10"),
+                ("DD_AGENT_IPC_GRPC_MAX_MESSAGE_SIZE", "0x10"),
+                ("DD_CMD_PORT", "0x1F90"),
+                ("DD_APM_OBFUSCATION_ELASTICSEARCH_KEEP_VALUES", r#"["cr-a","cr-b"]"#),
+            ],
+        )
+        .expect("the Agent's spellings load");
+
+        let local = loaded.local();
+        assert_eq!(local.domains.dogstatsd.listeners.port, 16);
+        assert_eq!(local.control.ipc.grpc_max_message_size, 16);
+        assert_eq!(local.control.ipc.cmd_port, 8080);
+        assert_eq!(
+            local.domains.traces.obfuscation.elasticsearch.keep_values,
+            ["cr-a", "cr-b"]
+        );
+        assert_eq!(local.domains.dogstatsd.listeners.buffer_size, 8);
+
+        // The Agent's stream then connects and replaces a local value with its own typed one.
+        block_on(async {
+            let (agent_tx, agent_rx) = mpsc::channel(8);
+            agent_tx
+                .send(ConfigUpdate::snapshot([ConfigSetting::explicit(
+                    "dogstatsd_port",
+                    json!(9125),
+                )]))
+                .await
+                .unwrap();
+            let (system, _updates) = loaded.run(agent_rx).await.expect("the initial snapshot is accepted");
+
+            let config = system.config();
+            assert_eq!(config.domains.dogstatsd.listeners.port, 9125);
+            assert_eq!(config.control.ipc.cmd_port, 8080);
+            assert_eq!(config.domains.dogstatsd.listeners.buffer_size, 8);
+        });
+    }
+
+    /// Waits until `system` reports `port` as the DogStatsD port.
+    async fn await_dogstatsd_port(system: &ConfigurationSystem, port: u16) {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while system.config().domains.dogstatsd.listeners.port != port {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the configuration should report the DogStatsD port {port}"));
+    }
+
+    #[test]
+    fn an_invalid_octal_integer_reads_as_zero_from_every_source() {
+        // The Agent starts with these values and its integer getters read them as 0, so ADP must
+        // neither stop at startup nor reject the stream's raw string.
+        let loaded = load_with_environment(
+            "invalid_octal",
+            "api_key: test-api-key\ndogstatsd_buffer_size: \"0128\"\n",
+            &[
+                ("DD_DOGSTATSD_PORT", "08"),
+                ("DD_CMD_PORT", "08.0"),
+                ("DD_AGENT_IPC_GRPC_MAX_MESSAGE_SIZE", "-09"),
+            ],
+        )
+        .expect("an invalid octal integer loads");
+
+        let local = loaded.local();
+        assert_eq!(local.domains.dogstatsd.listeners.port, 0);
+        assert_eq!(local.control.ipc.cmd_port, 0);
+        assert_eq!(local.control.ipc.grpc_max_message_size, 0);
+        assert_eq!(local.domains.dogstatsd.listeners.buffer_size, 0);
+
+        block_on(async {
+            // The stream forwards the Agent's raw strings, which connected startup accepts.
+            let (agent_tx, agent_rx) = mpsc::channel(8);
+            agent_tx
+                .send(ConfigUpdate::snapshot([
+                    ConfigSetting::explicit("dogstatsd_port", json!("010")),
+                    ConfigSetting::explicit("dogstatsd_buffer_size", json!("09")),
+                ]))
+                .await
+                .unwrap();
+            let (system, updates) = loaded.run(agent_rx).await.expect("the initial snapshot is accepted");
+            assert_eq!(system.config().domains.dogstatsd.listeners.port, 8);
+            assert_eq!(system.config().domains.dogstatsd.listeners.buffer_size, 0);
+
+            // A later update applies too. A rejected update would leave the last value in place.
+            tokio::spawn(updates.run());
+            agent_tx
+                .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                    "dogstatsd_port",
+                    json!("0x10"),
+                )))
+                .await
+                .unwrap();
+            await_dogstatsd_port(&system, 16).await;
+            agent_tx
+                .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                    "dogstatsd_port",
+                    json!("-08"),
+                )))
+                .await
+                .unwrap();
+            await_dogstatsd_port(&system, 0).await;
+        });
+    }
+
+    #[test]
+    fn a_malformed_integer_outside_the_invalid_octal_family_still_stops_startup() {
+        let result = load_with_environment("invalid_octal_boundary", "{}\n", &[("DD_DOGSTATSD_PORT", "08.")]);
+        match result {
+            Err(Error::Base { message }) => assert_eq!(
+                message,
+                "environment variable `DD_DOGSTATSD_PORT` (dogstatsd_port): invalid integer `08.`"
+            ),
+            Err(error) => panic!("expected a base error, got {error}"),
+            Ok(_) => panic!("`08.` should be rejected"),
+        }
+    }
+
+    #[test]
+    fn a_saluki_only_integer_keeps_its_decimal_grammar() {
+        // `dogstatsd_tcp_port` has no Agent counterpart, so a leading zero stays decimal.
+        let loaded = load_with_environment("saluki_integer", "{}\n", &[("DD_DOGSTATSD_TCP_PORT", "010")])
+            .expect("a zero-padded decimal loads");
+        assert_eq!(loaded.local().domains.dogstatsd.listeners.tcp_port, 10);
+
+        let loaded = load_with_environment("saluki_invalid_octal", "{}\n", &[("DD_DOGSTATSD_TCP_PORT", "08")])
+            .expect("a zero-padded decimal loads");
+        assert_eq!(loaded.local().domains.dogstatsd.listeners.tcp_port, 8);
+
+        let result = load_with_environment("saluki_hex", "{}\n", &[("DD_DOGSTATSD_TCP_PORT", "0x10")]);
+        match result {
+            Err(Error::Base { message }) => assert_eq!(
+                message,
+                "environment variable `DD_DOGSTATSD_TCP_PORT` (dogstatsd_tcp_port): invalid integer `0x10`"
+            ),
+            Err(error) => panic!("expected a base error, got {error}"),
+            Ok(_) => panic!("a hexadecimal Saluki-only integer should be rejected"),
+        }
+    }
+
+    #[test]
+    fn a_saluki_only_float_rejects_go_only_spellings() {
+        // `memory_slop_factor` has no Agent counterpart, so Go's hexadecimal float form stays invalid.
+        let result = load_with_environment("saluki_float", "{}\n", &[("DD_MEMORY_SLOP_FACTOR", "0x1p-2")]);
+        match result {
+            Err(Error::Base { message }) => assert_eq!(
+                message,
+                "environment variable `DD_MEMORY_SLOP_FACTOR` (memory_slop_factor): invalid number `0x1p-2`"
+            ),
+            Err(error) => panic!("expected a base error, got {error}"),
+            Ok(_) => panic!("a hexadecimal Saluki-only float should be rejected"),
+        }
+    }
+
+    #[test]
+    fn a_saluki_only_sequence_still_splits_on_whitespace() {
+        let loaded = load_with_environment(
+            "saluki_sequence",
+            "{}\n",
+            &[("DD_OTTL_FILTER_CONFIG_TRACES_SPAN", r#"["a","b"] c"#)],
+        )
+        .expect("a whitespace-separated sequence loads");
+        assert_eq!(
+            loaded.local().domains.traces.ottl_filter.span_conditions,
+            [r#"["a","b"]"#, "c"]
+        );
     }
 
     #[test]
