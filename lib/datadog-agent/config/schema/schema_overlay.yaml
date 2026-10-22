@@ -3713,7 +3713,7 @@ inventory:
   telemetry.dogstatsd_origin:
     support: full
     pipelines: [dogstatsd]
-    description: "Per-origin processed-metrics telemetry"
+    description: "Per-origin processed metrics and context counts"
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:

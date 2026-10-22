@@ -1,8 +1,16 @@
-use std::time::Duration;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use metrics::{Counter, Gauge};
-use saluki_core::data_model::event::metric::{context::Context, MetricValues};
+use saluki_core::data_model::{
+    event::metric::{context::Context, MetricValues},
+    tags::{Tag, TagSet},
+};
 use saluki_metrics::MetricsBuilder;
+use smallvec::SmallVec;
 
 #[derive(Clone)]
 struct MetricTypedGauge {
@@ -69,10 +77,34 @@ pub struct Telemetry {
     last_flush_series: Gauge,
     last_flush_sketches: Gauge,
     last_flush_duration: Gauge,
+    origin_contexts: Option<OriginContextTelemetry>,
+}
+
+#[derive(Clone)]
+struct OriginContextTelemetry {
+    builder: MetricsBuilder,
+    contexts: Arc<Mutex<HashMap<OriginTagSetKey, OriginContextGauge>>>,
+}
+
+pub(super) struct OriginContextGauge {
+    gauge: Gauge,
+    count: usize,
+}
+
+#[derive(Clone, Eq, Hash, PartialEq)]
+pub(super) struct OriginTagSetKey(SmallVec<[Tag; 8]>);
+
+impl OriginTagSetKey {
+    fn new(tags: &TagSet) -> Self {
+        let mut tags: SmallVec<[Tag; 8]> = tags.into_iter().cloned().collect();
+        tags.sort_unstable();
+        tags.dedup();
+        Self(tags)
+    }
 }
 
 impl Telemetry {
-    pub fn new(builder: &MetricsBuilder) -> Self {
+    pub fn new(builder: &MetricsBuilder, origin_telemetry_enabled: bool) -> Self {
         Self {
             active_contexts: builder.register_debug_gauge("aggregate_active_contexts"),
             active_contexts_by_type: MetricTypedGauge::new(builder, "aggregate_active_contexts_by_type"),
@@ -84,6 +116,10 @@ impl Telemetry {
             last_flush_series: builder.register_gauge_with_tags("aggregate_last_flush_count", ["data_type:series"]),
             last_flush_sketches: builder.register_gauge_with_tags("aggregate_last_flush_count", ["data_type:sketches"]),
             last_flush_duration: builder.register_gauge("aggregate_last_flush_duration_nanoseconds"),
+            origin_contexts: origin_telemetry_enabled.then(|| OriginContextTelemetry {
+                builder: builder.clone(),
+                contexts: Arc::default(),
+            }),
         }
     }
 
@@ -100,6 +136,7 @@ impl Telemetry {
             last_flush_series: Gauge::noop(),
             last_flush_sketches: Gauge::noop(),
             last_flush_duration: Gauge::noop(),
+            origin_contexts: None,
         }
     }
 
@@ -109,6 +146,7 @@ impl Telemetry {
         self.active_contexts_bytes_by_type
             .for_values(values)
             .increment(context.size_of() as f64);
+        self.update_origin_contexts(context.origin_tags(), true);
     }
 
     pub fn decrement_contexts(&self, context: &Context, values: &MetricValues) {
@@ -117,6 +155,38 @@ impl Telemetry {
         self.active_contexts_bytes_by_type
             .for_values(values)
             .decrement(context.size_of() as f64);
+        self.update_origin_contexts(context.origin_tags(), false);
+    }
+
+    fn update_origin_contexts(&self, origin_tags: &TagSet, increment: bool) {
+        let Some(origin_contexts) = &self.origin_contexts else {
+            return;
+        };
+        if origin_tags.is_empty() {
+            return;
+        }
+
+        let key = OriginTagSetKey::new(origin_tags);
+        let mut contexts = origin_contexts.contexts.lock().unwrap();
+        if increment {
+            let entry = contexts.entry(key.clone()).or_insert_with(|| {
+                let tags: SmallVec<[String; 8]> = key.0.iter().map(|tag| tag.as_str().to_owned()).collect();
+                OriginContextGauge {
+                    gauge: origin_contexts
+                        .builder
+                        .register_gauge_with_tags("aggregate_active_contexts_by_origin", tags),
+                    count: 0,
+                }
+            });
+            entry.count += 1;
+            entry.gauge.set(entry.count as f64);
+        } else if let Some(entry) = contexts.get_mut(&key) {
+            entry.count = entry.count.saturating_sub(1);
+            entry.gauge.set(entry.count as f64);
+            if entry.count == 0 {
+                contexts.remove(&key);
+            }
+        }
     }
 
     pub fn increment_events_dropped(&self) {

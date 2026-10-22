@@ -1123,7 +1123,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `syslog_rfc`                                                                               | Use RFC-style syslog header                        |
 | `syslog_uri`                                                                               | Syslog destination URI                             |
 | `tags`                                                                                     | Global tags for EKS Fargate OTLP metrics           |
-| `telemetry.dogstatsd_origin`                                                               | Per-origin processed-metrics telemetry             |
+| `telemetry.dogstatsd_origin`                                                               | Per-origin processed metrics and context counts    |
 | `tls_handshake_timeout`                                                                    | HTTP TLS handshake timeout                         |
 | `use_proxy_for_cloud_metadata`                                                             | Proxy cloud metadata endpoints                     |
 | `use_v2_api.series`                                                                        | Send series via V2 protobuf endpoint               |

@@ -24,6 +24,13 @@ pub fn get_aggregation_remappings() -> Vec<RemapperRule> {
         .with_original_tags(["metric_type"])
         .with_help_text("Count the number of dogstatsd contexts in the aggregator, by metric type"),
         RemapperRule::by_name_and_tags(
+            "adp.aggregate_active_contexts_by_origin",
+            &["component_id:dsd_agg"],
+            "aggregator.dogstatsd_contexts_by_origin",
+        )
+        .with_all_original_tags_except(["component_id"])
+        .with_help_text("Count the number of dogstatsd contexts in the aggregator, by origin"),
+        RemapperRule::by_name_and_tags(
             "adp.aggregate_active_contexts_bytes_by_type",
             &["component_id:dsd_agg"],
             "aggregator.dogstatsd_contexts_bytes_by_mtype",

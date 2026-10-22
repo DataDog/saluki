@@ -31,7 +31,7 @@ use tokio::{
 use tracing::{debug, error, info, trace, warn};
 
 mod telemetry;
-use self::telemetry::{FlushCounts, Telemetry};
+use self::telemetry::{FlushCounts, OriginContextGauge, OriginTagSetKey, Telemetry};
 
 mod config;
 pub use self::config::HistogramConfiguration;
@@ -345,6 +345,9 @@ pub struct AggregateConfiguration {
     /// Statistics to calculate over histograms, and how to copy them to distributions.
     pub hist_config: HistogramConfiguration,
 
+    /// Whether to emit active DogStatsD context counts grouped by resolved origin tags.
+    pub dogstatsd_origin_telemetry_enabled: bool,
+
     /// Owner side of the channel used to serve retained-context snapshot requests.
     ///
     /// This is runtime wiring rather than configuration: it carries no settings, and is created by the caller with
@@ -368,6 +371,7 @@ impl AggregateConfiguration {
             flush_open_windows: false,
             counter_expiry_seconds: Some(300),
             hist_config: HistogramConfiguration::default(),
+            dogstatsd_origin_telemetry_enabled: false,
             context_snapshot_receiver,
         }
     }
@@ -378,7 +382,7 @@ impl TransformBuilder for AggregateConfiguration {
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         let context_snapshot_requests = self.context_snapshot_receiver.take_receiver()?;
         let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
-        let telemetry = Telemetry::new(&metrics_builder);
+        let telemetry = Telemetry::new(&metrics_builder, self.dogstatsd_origin_telemetry_enabled);
 
         let state = AggregationState::new(
             self.window_duration_seconds,
@@ -439,6 +443,20 @@ impl MemoryBounds for AggregateConfiguration {
                 UsageExpr::struct_size::<AggregateContextSnapshotEntry>("snapshot entry"),
                 UsageExpr::config("aggregate_context_limit", self.context_limit),
             ));
+
+        if self.dogstatsd_origin_telemetry_enabled {
+            // There can be at most one tracked origin-tag set per active context. This accounts for the per-origin
+            // key and gauge/count entry structures; tag string storage is already represented by context sizing.
+            builder.firm().with_expr(UsageExpr::product(
+                "origin context telemetry map",
+                UsageExpr::sum(
+                    "origin context map entry",
+                    UsageExpr::struct_size::<OriginTagSetKey>("origin tag key"),
+                    UsageExpr::struct_size::<OriginContextGauge>("origin gauge and count"),
+                ),
+                UsageExpr::config("aggregate_context_limit", self.context_limit),
+            ));
+        }
     }
 }
 
@@ -1271,7 +1289,7 @@ mod tests {
             10,
             COUNTER_EXPIRE,
             HistogramConfiguration::default(),
-            Telemetry::new(&builder),
+            Telemetry::new(&builder, false),
         );
 
         assert!(state.insert(insert_ts(1), Metric::counter("metric1", 1.0)));
@@ -1468,6 +1486,20 @@ mod tests {
         assert_eq!(
             bounds.total_firm_limit_bytes(),
             expected_minimum + aggregation_state_bytes + context_snapshot_bytes
+        );
+
+        let origin_config = AggregateConfiguration {
+            context_limit,
+            dogstatsd_origin_telemetry_enabled: true,
+            ..AggregateConfiguration::for_test()
+        };
+        let origin_registry = ComponentRegistry::default();
+        origin_config.specify_bounds(&mut origin_registry.bounds_builder(&SubsystemIdentifier::from_dotted("test")));
+        let origin_bounds = origin_registry.as_bounds();
+        let origin_tracking_bytes = context_limit * (size_of::<OriginTagSetKey>() + size_of::<OriginContextGauge>());
+        assert_eq!(
+            origin_bounds.total_firm_limit_bytes(),
+            expected_minimum + aggregation_state_bytes + context_snapshot_bytes + origin_tracking_bytes
         );
     }
 
@@ -2141,6 +2173,87 @@ mod tests {
         assert_eq!(flushed_metric.values().as_str(), "rate");
     }
 
+    #[test]
+    fn origin_context_telemetry_groups_tag_order_and_skips_unresolved_origins() {
+        let recorder = TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+        let telemetry = Telemetry::new(&MetricsBuilder::default(), true);
+        let values = MetricValues::counter((insert_ts(1), 1.0));
+
+        let mut first_origin = TagSet::default();
+        first_origin.insert_tag("container:one");
+        first_origin.insert_tag("namespace:default");
+        let first_context = Context::from_static_parts("metric.one", &[]).with_origin_tags(first_origin);
+        let mut same_origin_different_order = TagSet::default();
+        same_origin_different_order.insert_tag("namespace:default");
+        same_origin_different_order.insert_tag("container:one");
+        let second_context =
+            Context::from_static_parts("metric.two", &[]).with_origin_tags(same_origin_different_order);
+
+        telemetry.increment_contexts(&first_context, &values);
+        telemetry.increment_contexts(&second_context, &values);
+        assert_eq!(
+            recorder.gauge((
+                "aggregate_active_contexts_by_origin",
+                &[("container", "one"), ("namespace", "default")]
+            )),
+            Some(2.0)
+        );
+
+        telemetry.decrement_contexts(&first_context, &values);
+        assert_eq!(
+            recorder.gauge((
+                "aggregate_active_contexts_by_origin",
+                &[("container", "one"), ("namespace", "default")]
+            )),
+            Some(1.0)
+        );
+        telemetry.decrement_contexts(&second_context, &values);
+        assert_eq!(
+            recorder.gauge((
+                "aggregate_active_contexts_by_origin",
+                &[("container", "one"), ("namespace", "default")]
+            )),
+            Some(0.0)
+        );
+
+        let unresolved_context = Context::from_static_parts("metric.unresolved", &[]);
+        telemetry.increment_contexts(&unresolved_context, &values);
+        assert_eq!(recorder.gauge("aggregate_active_contexts_by_origin"), None);
+    }
+
+    #[tokio::test]
+    async fn origin_context_telemetry_tracks_aggregation_insertions_and_expirations() {
+        let recorder = TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+        let telemetry = Telemetry::new(&MetricsBuilder::default(), true);
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH_SECS,
+            10,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            telemetry,
+        );
+
+        let mut origin_tags = TagSet::default();
+        origin_tags.insert_tag("container_id:container-1");
+        origin_tags.insert_tag("kube_namespace:default");
+        let first_context = Context::from_static_parts("metric.one", &[]).with_origin_tags(origin_tags.clone());
+        let second_context = Context::from_static_parts("metric.two", &[]).with_origin_tags(origin_tags);
+
+        assert!(state.insert(insert_ts(1), Metric::gauge(first_context, (insert_ts(1), 1.0))));
+        assert!(state.insert(insert_ts(1), Metric::gauge(second_context, (insert_ts(1), 1.0))));
+        let origin_metric = (
+            "aggregate_active_contexts_by_origin",
+            &[("container_id", "container-1"), ("kube_namespace", "default")],
+        );
+        assert_eq!(recorder.gauge(origin_metric), Some(2.0));
+
+        let _ = get_flushed_metrics(flush_ts(1), &mut state).await;
+        assert!(state.is_empty());
+        assert_eq!(recorder.gauge(origin_metric), Some(0.0));
+    }
+
     #[tokio::test]
     async fn telemetry() {
         // TODO: We don't check `component_events_dropped_total` here as it's set directly in the aggregate
@@ -2153,7 +2266,7 @@ mod tests {
         let _local = metrics::set_default_local_recorder(&recorder);
 
         let builder = MetricsBuilder::default();
-        let telemetry = Telemetry::new(&builder);
+        let telemetry = Telemetry::new(&builder, false);
 
         let mut state = AggregationState::new(
             BUCKET_WIDTH_SECS,
