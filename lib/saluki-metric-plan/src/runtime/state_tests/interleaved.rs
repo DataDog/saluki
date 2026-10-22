@@ -261,6 +261,53 @@ fn a_pass_whose_instances_next_tick_is_already_due_runs_ahead_of_admission() {
     assert_eq!(direct.driver.next_deadline(), Some(direct.start + tick * 2));
 }
 
+#[test]
+fn a_lineage_a_cut_creates_while_a_pass_is_pending_ticks_in_the_phase_its_completion_leaves() {
+    // Aggregation flushes every 15 seconds. The tick due at 7,215 fires at 7,216, and its pass, one context per step,
+    // is still pending when the installation of a 30-second window cuts: the new lineage takes the phase of the old
+    // one's tick, which has fired, so its first tick is due at 7,230, where the pass's completion moves the old one, and
+    // not at 7,215. The reset at 3,625 blocks until the pass completes, and the monotonic clock moves a second across
+    // it: at 3,631 no tick is due, so the gauge at 3,632 replaces the counter's points before any flush, as with every
+    // drain holding admission.
+    let shape = Shape {
+        filtered: false,
+        context_limit: 1_000,
+        counter_expiry: "0s",
+        flush_interval: "15s",
+    };
+    let counter = |name| super::counter(name, 1.0);
+    let trace = Trace::new()
+        .install(shaped(&shape, "10s"))
+        .admit(src(), t_s(7_200), vec![counter("a"), counter("b")])
+        .advance(t_s(7_216))
+        .admit(src(), t_s(7_220), Vec::new())
+        .install(shaped(&shape, "30s"))
+        .admit(src(), t_s(3_625), vec![counter("a")])
+        .advance(t_s(3_631))
+        .admit(src(), t_s(3_632), vec![gauge("a", 2.0)])
+        .advance(t_s(3_952))
+        .close();
+    let blocking = HarnessOptions {
+        monotonic_across_jumps: Some(Duration::from_secs(1)),
+        ..HarnessOptions::default()
+    };
+    let interleaved = HarnessOptions {
+        interleaving: Some(Interleaving {
+            room: None,
+            background: None,
+        }),
+        turn_budget: Budget::unlimited().with_limit(WorkKind::StateWork, 1),
+        ..blocking
+    };
+    let (_, blocking) = Replay::run_with(&trace, false, t_s(7_200), blocking);
+    let (_, interleaved) = Replay::run_with(&trace, false, t_s(7_200), interleaved);
+    if let Err(mismatch) = compare(blocking.harness.outputs(), interleaved.harness.outputs()) {
+        panic!("interleaved drains differ from blocking ones:\n{}", mismatch);
+    }
+    let points = |replay: &Replay| replay.harness.outputs().count(&"a".parse().unwrap());
+    assert_eq!(points(&interleaved), 3, "a and b at 7,200, and the gauge");
+}
+
 // The property test: random traces through a frame of region drivers whose flushes interleave with admission, against
 // the interpreter and the same frame with every drain holding admission.
 
@@ -356,8 +403,7 @@ fn arb_step() -> impl Strategy<Value = (u64, Step)> {
 /// Builds the trace of `steps`, each `gap` seconds after the previous one, over the plan of `shape`, from 7,200 on.
 ///
 /// A flush tick at the time of the previous one is left out, as in R5b's property test: the interpreter ticks at every
-/// `advance`, a region once per flush interval. At most one reset jumps the clock back, and none with a flush interval
-/// longer than a second.
+/// `advance`, a region once per flush interval. At most one reset jumps the clock back.
 fn trace_of(shape: &Shape, steps: &[(u64, Step)]) -> Trace {
     let mut trace = Trace::new().install(shaped(shape, "10s"));
     let mut now = 7_200;
@@ -373,9 +419,7 @@ fn trace_of(shape: &Shape, steps: &[(u64, Step)]) -> Trace {
                 trace.advance(t_s(now))
             }
             Step::Install(window) => trace.install(shaped(shape, window)),
-            // With the longer flush interval a pass can still be pending when a reset's header arrives, which is
-            // known to differ from blocking drains (an idle counter's zero after the reset), and left out here.
-            Step::Reset if reset || shape.flush_interval != "1s" => trace,
+            Step::Reset if reset => trace,
             Step::Reset => {
                 reset = true;
                 now -= 3_600;
@@ -436,10 +480,10 @@ proptest! {
         let (_, mut blocking) = Replay::run_with(&trace, heartbeats_at_ticks, start, blocking);
 
         // Every output receives what the frame delivers with every drain holding admission, and what the interpreter
-        // delivers where the interpreter models the frame's ticks: with a heartbeat at each, and a tick at every advance,
-        // as a one-second flush interval has it. (Otherwise the two can disagree whether drains interleave or not.)
+        // delivers where the interpreter models the frame's ticks: a tick at every advance, as a one-second flush
+        // interval has it. (Otherwise the two can disagree whether drains interleave or not.)
         let expected = OutputPoints::from_run(&run);
-        let against_interpreter = heartbeats_at_ticks && shape.flush_interval == "1s";
+        let against_interpreter = shape.flush_interval == "1s";
         if against_interpreter {
             if let Err(mismatch) = compare(&expected, blocking.harness.outputs()) {
                 prop_assert!(false, "blocking drains differ from the interpreter:\n{}", mismatch);

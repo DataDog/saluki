@@ -959,6 +959,35 @@ fn predecessor_deadline(state: &StateSlot, bound: InstanceHandle, epoch: u32) ->
         .or(instance.tick.at())
 }
 
+/// Returns where the tick deadline of instance `handle`, not on lanes, moves once the drain in progress completes a tick
+/// or boundary flush of it that it holds, started or queued, as [`complete_instance`] moves it; `None` when it holds
+/// neither, or the flush leaves the deadline as it is.
+fn deadline_after_drain(generations: &[LiveGeneration], state: &StateSlot, handle: InstanceHandle) -> Option<Instant> {
+    let drain = state.drain.as_ref()?;
+    let instance = state.instances.get(handle)?;
+    let flushes = |kind: &DrainKind| matches!(kind, DrainKind::Tick { .. } | DrainKind::Boundary { .. });
+    let current = drain
+        .current
+        .as_ref()
+        .filter(|step| step.instance == handle && flushes(&step.kind))
+        .map(|step| (&step.kind, step.interval));
+    let queued = || {
+        drain
+            .queue
+            .iter()
+            .find(|(queued, kind)| *queued == handle && flushes(kind))
+            .map(|(_, kind)| (kind, stamping_interval(generations, state, handle)))
+    };
+    match current.or_else(queued)? {
+        (DrainKind::Tick { scheduled, next, .. }, interval) => Some(next.unwrap_or(*scheduled + interval)),
+        (DrainKind::Boundary { at }, _) => match instance.tick {
+            TickState::Gated { at: due, second, .. } if second <= at.as_unix_secs() => Some(due + instance.interval),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Returns the generation a drain of `handle` is stamped with: rule 3.2 of the time rules.
 fn stamping(generations: &[LiveGeneration], state: &StateSlot, handle: InstanceHandle) -> Option<GenerationRef> {
     state.instances.get(handle)?;
@@ -2596,15 +2625,21 @@ impl MetricRegionDriver {
             .lineage
             .as_ref()
             .expect("only a state owner's kernel has an instance");
-        let state = self.state_mut();
+        let Self { generations, state, .. } = self;
+        let state = state
+            .as_deref_mut()
+            .expect("only a state owner's region runs its state");
         let phase = state
             .instances
             .iter()
             .filter(|(_, instance)| instance.key.node == lineage.key.node && !instance.retired)
-            .find_map(|(_, instance)| match &instance.lanes {
+            .find_map(|(handle, instance)| match &instance.lanes {
                 // The replaced record's current deadline: every lane's new instance shares it.
                 Some(lanes) => lanes.record.current_deadline().or(instance.tick.at()),
-                None => instance.tick.at(),
+                // A tick or boundary flush of the instance that the drain holds, as a pass pending while this control
+                // arrives does, has fired: the phase is where its completion moves the deadline, as if the drain had
+                // completed first.
+                None => deadline_after_drain(generations, state, handle).or(instance.tick.at()),
             });
         let tick = match (state.started, phase) {
             (false, _) => TickState::Unstarted,

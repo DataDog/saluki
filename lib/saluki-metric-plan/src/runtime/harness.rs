@@ -410,9 +410,9 @@ pub struct HarnessOptions {
     /// How the regions' monotonic clock moves at an [`advance`][FrameHarness::advance]. With `None`, it follows the
     /// wall clock from the harness's start and never moves back, so that after the wall clock jumps back no tick falls
     /// due until it passes its latest time again. With `Some(step)`, it moves by each forward step of the wall clock
-    /// from the previous advance, and by `step` when the wall clock jumped back, or forward by more than the
-    /// clock-reset threshold, between two advances: as a running host's monotonic clock goes on while its wall clock
-    /// steps, so that regions tick in every timeline of a trace whose clock resets.
+    /// from the previous advance, however long, as the interpreter's clock does, and by `step` when the wall clock
+    /// jumped back between two advances: as a running host's monotonic clock goes on while its wall clock steps back,
+    /// so that regions tick in every timeline of a trace whose clock resets.
     pub monotonic_across_jumps: Option<Duration>,
 
     /// Whether each lane of a region runs every deadline that passed before the next lane runs any, as lane tasks of
@@ -1748,8 +1748,7 @@ impl FrameHarness {
             None => self.elapsed.max(since(self.start_wall)),
             Some(step) => {
                 let from = previous.unwrap_or(self.start_wall);
-                let forward = now >= from && since(from) <= CLOCK_RESET_THRESHOLD;
-                self.elapsed + if forward { since(from) } else { step }
+                self.elapsed + if now >= from { since(from) } else { step }
             }
         }
     }

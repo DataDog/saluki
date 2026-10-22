@@ -737,6 +737,28 @@ fn trace_5_a_small_backward_jump_is_absorbed_by_the_admission_clock() {
 }
 
 #[test]
+fn a_gated_ticks_grace_ends_across_an_advance_longer_than_the_reset_threshold() {
+    // Without a heartbeat at the tick at 101 the watermark is at 95, and the tick waits at the gate. An advance 320
+    // seconds later is time going by, as every advance is, however far: the grace has ended, and the tick fires at the
+    // watermark, so that the shutdown flush starts the idle counter's zeros from 95. The monotonic clock that moves a
+    // step across a jump back moves with it.
+    let mut params = aggregation("10s");
+    params["counter_expiry"] = json!("15s");
+    let trace = Trace::new()
+        .install(aggregated_with(params, "a", "untimestamped"))
+        .admit(src(), t(95), vec![counter("c", 1.0)])
+        .advance(t(101))
+        .advance(t(421))
+        .close();
+    let options = HarnessOptions {
+        monotonic_across_jumps: Some(Duration::from_secs(1)),
+        ..HarnessOptions::default()
+    };
+    let (run, replay) = Replay::run_with(&trace, false, t(90), options);
+    assert_delivered(&run, &replay, "a", &[(1, 421_000, "c rate/10s [90:1, 100:0]")]);
+}
+
+#[test]
 fn trace_6_a_large_backward_jump_resets_and_closes_every_open_bucket() {
     let trace = Trace::new()
         .install(aggregated("10s", "a"))
