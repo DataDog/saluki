@@ -14,7 +14,7 @@ Set a path to write the diagnostic log elsewhere.</p>
 </div><span id="structfield.log_file_max_rolls" class="structfield section-header"><a href="#structfield.log_file_max_rolls" class="anchor field">§</a><code>log_file_max_rolls: <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.usize.html">usize</a></code></span><div class="docblock"><p>Number of rotated debug log files retained.</p>
 <p>Defaults to <code>3</code>. The file writer retains one rotated file when this is <code>0</code>.</p>
 </div><span id="structfield.log_file_max_size" class="structfield section-header"><a href="#structfield.log_file_max_size" class="anchor field">§</a><code>log_file_max_size: <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.u64.html">u64</a></code></span><div class="docblock"><p>Maximum size, in bytes, of the active debug log file before rotation.</p>
-<p>Defaults to <code>10,000,000</code> bytes. A value of <code>0</code> is accepted as the rotation threshold.
+<p>Defaults to <code>10,485,760</code> bytes (<code>10Mb</code>). A value of <code>0</code> is accepted as the rotation threshold.
 Set this based on the diagnostic data and disk space to retain.</p>
 </div><span id="structfield.metrics_stats_enable" class="structfield section-header"><a href="#structfield.metrics_stats_enable" class="anchor field">§</a><code>metrics_stats_enable: <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.bool.html">bool</a></code></span><div class="docblock"><p>Whether per-metric processing statistics are written to the debug log.</p>
 <p>Defaults to <code>false</code> and can change at runtime. Enable this when collecting metric-level diagnostics.</p>
