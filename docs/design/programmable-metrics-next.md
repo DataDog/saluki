@@ -325,6 +325,42 @@ encoding spread over the third of the interval as V7b intended; then N4's encode
 pool's growth (G5, bounded by G4); and rerun G1 at 3,000 contexts with the in-process harness to find whether the
 decoder cost is real. G6's thresholds should also be revisited: native itself reaches only 0.61 and 0.66.
 
+#### Layout A/B at 3k contexts
+
+G1's miss at 3,000 contexts asked whether fusing aggregation into one region costs CPU. Measured on 2026-10-22: one
+image of this branch at `cba809db95` (V7b with the driver fix for the flush count), run fused (`lanes-off.yaml`) and
+with state isolated (`isolated.yaml`, `experimental.programmable_metrics.isolate_state: true`: `dsd_pre_aggregation`,
+`dsd_agg`, and `metrics_enrich` as three regions, flushes still interleaved), beside N1's plan image, in the regime
+harness at 0.3 and 0.6 CPUs with N1's steady rates and burst, three rounds of `plan-a plan-b fused-a fused-b isolated-a
+isolated-b` (36 runs, `REGIME_VARIANTS`; summary in `test/scaling/results/layout-ab-20261021/`).
+
+| Limit | Steady CPU ns/metric, plan / fused / isolated | Fused / plan | Isolated / fused | A/A, plan / fused / isolated | Spread, plan / fused / isolated | Burst and recovery, fused / plan |
+|---|---|---|---|---|---|---|
+| 0.3 | 3,175 / 3,279 / 3,506 | 1.033 | 1.069 | 1.049 / 0.905 / 1.200 | 0.19 / 0.18 / 0.14 | 0.999 |
+| 0.6 | 2,027 / 2,015 / 1,923 | 0.994 | 0.955 | 0.976 / 0.954 / 1.046 | 0.14 / 0.08 / 0.08 | 0.996 |
+
+- **The fused layout costs no more than the isolated one.** Every ratio is inside the A/A distances, and fused is the
+  cheaper layout at 0.3 CPUs. The single runs span 2,470 to 3,950 ns at 0.3 CPUs and 1,740 to 2,340 at 0.6 for every
+  image. Burst throughput, shortfall, peak memory, and the flush count (two per steady window and one per burst
+  everywhere) match too.
+- **The region's own work is the same.** In process, the region driver bench's `layout_steady_admission` group (the
+  whole metrics path, 3,000 contexts, release, on the Mac) costs 277 ns a metric fused and 275 isolated in batches of
+  1,024 (confidence intervals 270 to 290 and 273 to 279), 276 against 280 in batches of 128, and 326 against 343 in
+  batches of 16, where fused saves a hop. Interleaving on or off changes nothing outside the noise (276 and 277
+  isolated at 1,024). In the containers, the resource groups give the regions (`dsd_pre_aggregation`, `dsd_agg`, and
+  `metrics_enrich` together) 710, 740, and 675 ns a metric fused, isolated, and plan at 0.3 CPUs, and 412, 394, and
+  412 at 0.6. Batches enter the regions at 830 events at 0.3 CPUs and 950 at 0.6 in every layout, and the runtime
+  polls the decoders and regions as often.
+- **The DogStatsD decoders are where runs differ.** They take about three quarters of the CPU (2,560 to 2,780 ns a
+  metric at 0.3 CPUs, 1,620 to 1,680 at 0.6) and vary from run to run by more than the layouts differ, in code that is
+  the same in all three. N1's plan image measured 1,881 ns a metric at 0.6 CPUs in the V7b series and 2,027 in this
+  one.
+
+**What it means.** The 1.115 and 1.144 that G1 read at 3,000 contexts were noise on this host, or a cost that the
+driver fix removed, not a cost of fusion: the layout needs no change. With six runs per image, steady CPU per metric
+at 3,000 contexts on 0.3 and 0.6 CPUs resolves about 10% at best. Before gating a change on G1 there, run more rounds or
+measure CPU per metric in process. This series took no profile: nothing points at code in one layout and not the other.
+
 ### N2 and N3: one region from decode to encode, with an interleaved flush
 
 - **Status (2026-10-21):** built as version 2's step V7b ([design and as built](programmable-metrics-v7b.md),
