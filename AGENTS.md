@@ -22,6 +22,9 @@ of software projects, in addition to making them harder to maintain and debug ov
 - `bin/agent-data-plane`: the primary artifact of this project. A binary that runs alongside the
   DataDog Agent.
 - `lib/datadog-agent/`: Core Agent configuration and IPC communication protocols.
+  - `lib/datadog-agent/runtime`: the shared runtime for processes that act as a remote agent for the Datadog Agent,
+    such as `agent-data-plane`: registration, configuration streaming, the workload provider, the status, flare, and
+    telemetry services, the control plane workers, and the `RemoteAgent` startup facade.
 - `bin/correctness`: the framework for integration tests.
 - `lib/`: the production frameworks and common code supporting `agent-data-plane`
 - `docs/`: Human-oriented documentation.
