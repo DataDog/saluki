@@ -19,6 +19,9 @@ pub mod env_reader;
 /// Build-time generated code, produced from `core_schema.yaml` plus `schema_overlay.yaml`.
 mod generated;
 
+/// Runtime selection of a schema `platform_default` value, called by generated default functions.
+mod platform_default;
+
 /// A shared, immutable view of the vendored schema's defaults.
 mod schema_defaults;
 

@@ -216,9 +216,9 @@ pub struct DatadogConfiguration {
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub dogstatsd_so_rcvbuf: i64,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    #[serde(deserialize_with = "crate::cast_de::deserialize_optional_string")]
-    pub dogstatsd_socket: Option<String>,
+    #[serde(default = "platform_defaults::dogstatsd_socket")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub dogstatsd_socket: String,
 
     #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
@@ -634,7 +634,7 @@ impl Default for DatadogConfiguration {
             dogstatsd_pipe_name: Default::default(),
             dogstatsd_port: defaults::default_u64::<i64, 8125>(),
             dogstatsd_so_rcvbuf: Default::default(),
-            dogstatsd_socket: Default::default(),
+            dogstatsd_socket: platform_defaults::dogstatsd_socket(),
             dogstatsd_stream_log_too_big: Default::default(),
             dogstatsd_stream_socket: Default::default(),
             dogstatsd_string_interner_size: defaults::default_u64::<i64, 4096>(),
@@ -2393,5 +2393,16 @@ mod duration_defaults {
     }
     pub(super) fn tls_handshake_timeout() -> std::time::Duration {
         std::time::Duration::from_nanos(10000000000)
+    }
+}
+
+mod platform_defaults {
+    pub(super) fn dogstatsd_socket() -> String {
+        match crate::platform_default::resolve(&["aix", "linux", "other"]) {
+            "aix" => "/var/run/datadog/dsd.socket".to_string(),
+            "linux" => "/var/run/datadog/dsd.socket".to_string(),
+            "other" => "".to_string(),
+            _ => Default::default(),
+        }
     }
 }
