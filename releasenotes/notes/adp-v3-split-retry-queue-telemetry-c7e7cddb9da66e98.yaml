@@ -1,0 +1,4 @@
+---
+enhancements:
+  - |
+    Expose V3 payload-split operations that give up on oversized items through ``splitter.payload_drops``, and expose transaction retry queue size by ``domain``.
