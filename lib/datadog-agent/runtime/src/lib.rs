@@ -32,6 +32,8 @@ pub mod control_plane;
 
 pub mod env;
 
+pub mod facade;
+
 pub mod logging;
 
 pub mod remote_agent;

@@ -20,25 +20,19 @@ static LOGGING_TRANSLATOR: OnceLock<LoggingTranslator> = OnceLock::new();
 /// It logs to ADP's platform-specific default log file unless one is configured explicitly, and applies a plain log
 /// level to ADP's own crates on top of the shared first-party log targets. The `agent_data_plane` target is a prefix,
 /// so it also covers `agent_data_plane_config` and `agent_data_plane_config_system`.
-fn get_logging_translator() -> &'static LoggingTranslator {
+pub fn get_logging_translator() -> &'static LoggingTranslator {
     LOGGING_TRANSLATOR.get_or_init(|| {
         LoggingTranslator::new(PlatformSettings::get_default_log_file_path())
             .with_first_party_targets(&["agent_data_plane"])
     })
 }
 
-/// Gets a translated logging configuration from the given Agent Data Plane-specific logging configuration.
+/// Gets the Datadog Agent-specific logging settings from the given Agent Data Plane-specific logging configuration.
 ///
-/// This converts the Agent Data Plane-specific logging configuration (which itself is a layered version of the Datadog
-/// Agent's logging configuration) into the Saluki-specific logging configuration necessary for bootstrapping the
-/// application.
-///
-/// # Errors
-///
-/// If any of the logging configuration is invalid, or cannot be parsed, an error is returned.
-pub fn get_translated_logging_config(adp_log_config: &Logging) -> Result<LoggingConfiguration, GenericError> {
-    // We need to first go from the Agent Data Plane-specific logging configuration shape to the Datadog Agent-specific
-    // logging configuration, which gets all of the settings and remote agent-specific defaults lined up and in place.
+/// This gets all of the settings and remote agent-specific defaults lined up and in place: the log file and its
+/// maximum size are only carried over when they were set explicitly, so that defaulted values select ADP's default log
+/// file and the logging stack's default rotation size.
+pub fn get_logging_settings(adp_log_config: &Logging) -> LoggingSettings {
     let mut agent_log_settings = LoggingSettings::default();
     agent_log_settings.level = adp_log_config.level.clone();
     agent_log_settings.format_json = adp_log_config.format_json;
@@ -57,9 +51,22 @@ pub fn get_translated_logging_config(adp_log_config: &Logging) -> Result<Logging
         .file_max_size
         .is_explicit()
         .then_some(adp_log_config.file_max_size.value);
+    agent_log_settings
+}
 
-    // Now we can translate the Datadog Agent-specific configuration into the underlying logging configuration used by Saluki.
-    get_logging_translator().translate(agent_log_settings)
+/// Gets a translated logging configuration from the given Agent Data Plane-specific logging configuration.
+///
+/// This converts the Agent Data Plane-specific logging configuration (which itself is a layered version of the Datadog
+/// Agent's logging configuration) into the Saluki-specific logging configuration necessary for bootstrapping the
+/// application.
+///
+/// # Errors
+///
+/// If any of the logging configuration is invalid, or cannot be parsed, an error is returned.
+pub fn get_translated_logging_config(adp_log_config: &Logging) -> Result<LoggingConfiguration, GenericError> {
+    // We need to first go from the Agent Data Plane-specific logging configuration shape to the Datadog Agent-specific
+    // logging configuration, and then translate that into the underlying logging configuration used by Saluki.
+    get_logging_translator().translate(get_logging_settings(adp_log_config))
 }
 
 /// Gets a translated stream of log level updates from the given configuration system.
