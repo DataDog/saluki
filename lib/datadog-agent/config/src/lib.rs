@@ -22,6 +22,9 @@ mod generated;
 /// A shared, immutable view of the vendored schema's defaults.
 mod schema_defaults;
 
+/// Parses a byte-size setting the way the Agent's `GetSizeInBytes` does.
+mod size_in_bytes;
+
 /// The translation error type recorded by the translator and surfaced by the witness driver.
 mod translate_error;
 
@@ -31,6 +34,7 @@ pub use env_decode::EnvDecode;
 pub use env_provider::DatadogEnvProvider;
 pub use env_reader::{apply_datadog_env, apply_datadog_env_vars, apply_env_at_path, datadog_leaf_paths, EnvKey};
 pub use generated::{drive, DatadogConfigWitness, DatadogConfiguration};
+pub use size_in_bytes::parse_size_in_bytes;
 pub use translate_error::{TranslateError, TranslateErrors};
 
 #[cfg(test)]

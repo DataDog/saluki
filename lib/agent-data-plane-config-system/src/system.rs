@@ -409,7 +409,7 @@ mod tests {
     use agent_data_plane_config::shared::V3SeriesMode;
     use agent_data_plane_config::Provenance;
     use agent_data_plane_config::{Live, SalukiConfiguration};
-    use datadog_agent_config::DatadogConfiguration;
+    use datadog_agent_config::{apply_datadog_env_vars, DatadogConfiguration};
     use futures::StreamExt as _;
     use saluki_config::dynamic::{ConfigSetting, ConfigUpdate, Provenance as StreamProvenance};
     use serde_json::{json, Value};
@@ -969,6 +969,54 @@ mod tests {
             standalone_system(json!({ "dogstatsd_log_file_max_size": 10485760 })).expect("numeric byte size boots");
 
         assert_eq!(system.config().domains.dogstatsd.debug_log.log_file_max_size, 10485760);
+    }
+
+    /// Builds a standalone system from a configuration file value overlaid with environment variables.
+    ///
+    /// Applies the production environment reader to an explicit variable list instead of the process
+    /// environment, so the test needs no environment mutation.
+    fn standalone_system_with_env(mut file: Value, env: &[(&str, &str)]) -> Result<ConfigurationSystem, Error> {
+        let vars = env.iter().map(|(name, value)| (name.to_string(), value.to_string()));
+        apply_datadog_env_vars(&mut file, vars, true).expect("environment decodes");
+        standalone_system(file)
+    }
+
+    #[tokio::test]
+    async fn standalone_reads_log_file_max_size_from_numbers_strings_and_environment() {
+        // A YAML integer reaches the translator as its decimal string, a string keeps the Agent's unit
+        // grammar, and an environment variable arrives as the raw string. All three must land in the
+        // typed model as an explicit value.
+        let cases = [
+            (
+                "number",
+                standalone_system(json!({ "log_file_max_size": 10_485_760 })),
+                10_485_760,
+            ),
+            (
+                "string",
+                standalone_system(json!({ "log_file_max_size": "10MB" })),
+                10_485_760,
+            ),
+            (
+                "environment",
+                standalone_system_with_env(json!({}), &[("DD_LOG_FILE_MAX_SIZE", "0x10KB")]),
+                16_384,
+            ),
+        ];
+        for (source, system, expected) in cases {
+            let system = system.unwrap_or_else(|error| panic!("{source} boots: {error}"));
+            let file_max_size = &system.config().control.logging.file_max_size;
+            assert!(file_max_size.is_explicit(), "{source}");
+            assert_eq!(file_max_size.value, expected, "{source}");
+        }
+
+        // An environment variable overrides the file value, as it does for every other key.
+        let system = standalone_system_with_env(
+            json!({ "dogstatsd_log_file_max_size": "1KB" }),
+            &[("DD_DOGSTATSD_LOG_FILE_MAX_SIZE", "5KB")],
+        )
+        .expect("environment size boots");
+        assert_eq!(system.config().domains.dogstatsd.debug_log.log_file_max_size, 5_120);
     }
 
     #[test]

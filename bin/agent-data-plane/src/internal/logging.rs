@@ -76,6 +76,7 @@ pub fn get_translated_log_level_stream(
 #[cfg(test)]
 mod tests {
     use agent_data_plane_config::ConfigValue;
+    use agent_data_plane_config_system::{EnvPrecedence, LoadedConfiguration};
     use bytesize::ByteSize;
     use tracing::Level;
 
@@ -93,7 +94,7 @@ mod tests {
             file: ConfigValue::defaulted("/var/log/datadog/agent-data-plane.log".to_string()),
             disable_file_logging: false,
             file_max_rolls: 1,
-            file_max_size: ConfigValue::defaulted(10_000_000),
+            file_max_size: ConfigValue::defaulted(10_485_760),
         }
     }
 
@@ -172,6 +173,19 @@ mod tests {
     }
 
     #[test]
+    fn defaulted_max_size_is_not_passed_to_the_logging_stack() {
+        // The value is ignored while it is a default, so a differing default would still leave the
+        // binary's own threshold in place.
+        let logging = Logging {
+            file_max_size: ConfigValue::defaulted(1),
+            ..defaulted_logging()
+        };
+        let config = get_translated_logging_config(&logging).expect("translate logging config");
+
+        assert_eq!(config.log_file_max_size, ByteSize::mib(10));
+    }
+
+    #[test]
     fn explicit_max_size_is_used() {
         let logging = Logging {
             file_max_size: ConfigValue::explicit(1_048_576),
@@ -180,5 +194,29 @@ mod tests {
         let config = get_translated_logging_config(&logging).expect("translate logging config");
 
         assert_eq!(config.log_file_max_size, ByteSize::b(1_048_576));
+    }
+
+    /// Loads `yaml` through the production local-configuration path and translates its logging settings.
+    async fn logging_config_from_yaml(name: &str, yaml: &str) -> LoggingConfiguration {
+        let path = std::env::temp_dir().join(format!("adp_logging_{name}_{}.yaml", std::process::id()));
+        std::fs::write(&path, yaml).expect("write configuration file");
+        let loaded = LoadedConfiguration::load(&path, EnvPrecedence::Disabled).await;
+        std::fs::remove_file(&path).ok();
+
+        let loaded = loaded.expect("local sources load");
+        get_translated_logging_config(&loaded.local().control.logging).expect("translate logging config")
+    }
+
+    #[tokio::test]
+    async fn configured_log_file_max_size_reaches_the_logging_stack_in_binary_units() {
+        let config = logging_config_from_yaml("unset", "{}\n").await;
+        assert_eq!(config.log_file_max_size, ByteSize::mib(10));
+
+        // `10MB` selects the same rotation threshold in ADP and the Agent.
+        let config = logging_config_from_yaml("mb", "log_file_max_size: 10MB\n").await;
+        assert_eq!(config.log_file_max_size, ByteSize::mib(10));
+
+        let config = logging_config_from_yaml("kb", "log_file_max_size: 5KB\n").await;
+        assert_eq!(config.log_file_max_size, ByteSize::b(5_120));
     }
 }
