@@ -21,7 +21,8 @@ use crate::generated::env_keys::DATADOG_ENV_KEYS;
 #[derive(Clone, Copy, Debug)]
 pub struct EnvKey {
     /// The environment variable names bound to this key, highest priority first. The first one
-    /// set to a non-empty value supplies the key's value, matching the Agent's per-key lookup.
+    /// set to a non-empty value supplies the key's value, matching the Agent's per-key lookup; see
+    /// [`EnvSnapshot`] for how case is matched.
     pub env_vars: &'static [&'static str],
     /// The nested path the typed deserializer reads (`["dogstatsd", "port"]`).
     pub path: &'static [&'static str],
@@ -117,8 +118,8 @@ fn apply_proxy_env(root: &mut Map<String, Value>, env: &EnvSnapshot, overwrite: 
         if env.contains(dd_var) {
             continue;
         }
-        if let Some(raw) = env.lookup(&[canonical_var]) {
-            write_at_path(root, path, Value::String(raw), overwrite);
+        if let Some((_, raw)) = env.lookup(&[canonical_var]) {
+            write_at_path(root, path, Value::String(raw.to_owned()), overwrite);
         }
     }
 }
@@ -127,30 +128,29 @@ fn apply_proxy_env(root: &mut Map<String, Value>, env: &EnvSnapshot, overwrite: 
 fn apply_one(
     root: &mut Map<String, Value>, env: &EnvSnapshot, env_vars: &[&str], path: &[&str], how: EnvDecode, overwrite: bool,
 ) -> Result<(), String> {
-    let Some(raw) = env.lookup(env_vars) else {
+    let Some((name, raw)) = env.lookup(env_vars) else {
         return Ok(());
     };
-    let value = decode(&raw, how).map_err(|msg| {
-        let name = env_vars.first().copied().unwrap_or_default();
-        format!("environment variable `{name}` ({}): {msg}", path.join("."))
-    })?;
+    let value = decode(raw, how).map_err(|msg| format!("environment variable `{name}` ({}): {msg}", path.join(".")))?;
     write_at_path(root, path, value, overwrite);
     Ok(())
 }
 
-/// A case-insensitive snapshot of the process environment.
+/// A snapshot of the non-empty process environment, with exact-case lookup and a case-insensitive
+/// fallback.
 ///
-/// The figment loader reads environment variables case-insensitively (via `uncased`). Because
-/// `std::env::var` is case-sensitive, this reader captures the environment with lowercase names to
-/// preserve parity. `DD_DOGSTATSD_PORT`, `dd_dogstatsd_port`, and `Dd_Dogstatsd_Port` all resolve to
-/// the same key.
+/// The Agent looks each bound name up with a case-sensitive `os.LookupEnv`, so an exact-case match
+/// wins. ADP also accepts other case spellings (`dd_dogstatsd_port` for `DD_DOGSTATSD_PORT`), which
+/// apply only when no bound name is set in its exact case.
 struct EnvSnapshot {
-    /// Environment values keyed by lowercase variable name. Only non-empty values are kept.
-    vars: HashMap<String, String>,
+    /// Non-empty values keyed by exact variable name.
+    exact: HashMap<String, String>,
+    /// The first-seen non-empty variable (name, value) for each lowercase name.
+    folded: HashMap<String, (String, String)>,
 }
 
 impl EnvSnapshot {
-    /// Captures the environment, converting names to lowercase and dropping empty values.
+    /// Captures the process environment, dropping empty values.
     fn capture() -> Self {
         Self::from_vars(std::env::vars())
     }
@@ -158,29 +158,43 @@ impl EnvSnapshot {
     /// Builds a snapshot from environment variable pairs.
     ///
     /// An empty string counts as unset, matching the Agent (`os.LookupEnv` plus an emptiness
-    /// check). If several case variants of one name are set, the first seen wins.
+    /// check).
     fn from_vars(vars: impl IntoIterator<Item = (String, String)>) -> Self {
-        let mut snapshot = HashMap::new();
+        let mut exact = HashMap::new();
+        let mut folded = HashMap::new();
         for (name, value) in vars {
             if value.is_empty() {
                 continue;
             }
-            snapshot.entry(name.to_lowercase()).or_insert(value);
+            folded
+                .entry(name.to_lowercase())
+                .or_insert_with(|| (name.clone(), value.clone()));
+            exact.entry(name).or_insert(value);
         }
-        Self { vars: snapshot }
+        Self { exact, folded }
     }
 
-    /// Returns the value of the first name in `names` (highest priority first) that is set to a
-    /// non-empty value, matched case-insensitively.
-    fn lookup(&self, names: &[&str]) -> Option<String> {
+    /// Returns the actual name and value of the variable that supplies `names` (highest priority
+    /// first).
+    ///
+    /// Tries every name exactly, in order, then every name case-insensitively, in order. Among case
+    /// variants of one name, the first variable captured wins.
+    fn lookup(&self, names: &[&str]) -> Option<(&str, &str)> {
         names
             .iter()
-            .find_map(|name| self.vars.get(&name.to_lowercase()).cloned())
+            .find_map(|name| self.exact.get_key_value(*name))
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .or_else(|| {
+                names
+                    .iter()
+                    .find_map(|name| self.folded.get(&name.to_lowercase()))
+                    .map(|(name, value)| (name.as_str(), value.as_str()))
+            })
     }
 
     /// Whether any case variant of `name` is set to a non-empty value.
     fn contains(&self, name: &str) -> bool {
-        self.vars.contains_key(&name.to_lowercase())
+        self.folded.contains_key(&name.to_lowercase())
     }
 }
 
@@ -298,8 +312,81 @@ mod tests {
             ("Dd_Api_Key".to_string(), "00000".to_string()),
         ]);
 
-        assert_eq!(env.lookup(&["DD_DOGSTATSD_PORT"]).as_deref(), Some("9125"));
-        assert_eq!(env.lookup(&["DD_API_KEY"]).as_deref(), Some("00000"));
+        assert_eq!(env.lookup(&["DD_DOGSTATSD_PORT"]), Some(("dd_dogstatsd_port", "9125")));
+        assert_eq!(env.lookup(&["DD_API_KEY"]), Some(("Dd_Api_Key", "00000")));
+    }
+
+    fn vars(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    fn apply_vars(pairs: &[(&str, &str)]) -> Result<Value, String> {
+        let mut base = json!({});
+        apply_datadog_env_vars(&mut base, vars(pairs), true)?;
+        Ok(base)
+    }
+
+    #[test]
+    fn the_first_alias_in_declared_order_wins() {
+        // `DD_APM_MAX_EPS` is declared before `DD_MAX_EPS`, whatever order the environment lists them in.
+        for pairs in [
+            [("DD_APM_MAX_EPS", "100"), ("DD_MAX_EPS", "200")],
+            [("DD_MAX_EPS", "200"), ("DD_APM_MAX_EPS", "100")],
+        ] {
+            let base = apply_vars(&pairs).unwrap();
+            assert_eq!(at(&base, &["apm_config", "max_events_per_second"]), Some(&json!(100.0)));
+        }
+
+        let base = apply_vars(&[("DD_MAX_EPS", "200")]).unwrap();
+        assert_eq!(at(&base, &["apm_config", "max_events_per_second"]), Some(&json!(200.0)));
+    }
+
+    #[test]
+    fn an_empty_first_alias_falls_through_to_the_next() {
+        let base = apply_vars(&[("DD_APM_MAX_EPS", ""), ("DD_MAX_EPS", "200")]).unwrap();
+        assert_eq!(at(&base, &["apm_config", "max_events_per_second"]), Some(&json!(200.0)));
+    }
+
+    #[test]
+    fn an_exact_case_name_beats_a_different_case_duplicate() {
+        // The Agent's case-sensitive lookup sees only the exact spelling.
+        for pairs in [
+            [("dd_dogstatsd_port", "2"), ("DD_DOGSTATSD_PORT", "1")],
+            [("DD_DOGSTATSD_PORT", "1"), ("dd_dogstatsd_port", "2")],
+        ] {
+            let base = apply_vars(&pairs).unwrap();
+            assert_eq!(at(&base, &["dogstatsd_port"]), Some(&json!(1)));
+        }
+    }
+
+    #[test]
+    fn an_exact_case_later_alias_beats_a_different_case_earlier_alias() {
+        let base = apply_vars(&[("dd_apm_max_eps", "100"), ("DD_MAX_EPS", "200")]).unwrap();
+        assert_eq!(at(&base, &["apm_config", "max_events_per_second"]), Some(&json!(200.0)));
+    }
+
+    #[test]
+    fn the_decode_error_names_the_variable_that_was_read() {
+        let error = apply_vars(&[("DD_MAX_EPS", "fast")]).unwrap_err();
+        assert!(error.starts_with("environment variable `DD_MAX_EPS` (apm_config.max_events_per_second): "));
+
+        // A case-insensitive match is reported under the name it was set with.
+        let error = apply_vars(&[("dd_max_eps", "fast")]).unwrap_err();
+        assert!(error.starts_with("environment variable `dd_max_eps` (apm_config.max_events_per_second): "));
+    }
+
+    #[test]
+    fn agent_integer_and_list_spellings_decode_to_shape() {
+        let base = apply_vars(&[
+            ("DD_DOGSTATSD_PORT", "0x10"),
+            ("DD_APM_OBFUSCATION_ELASTICSEARCH_KEEP_VALUES", r#"["cr-a","cr-b"]"#),
+        ])
+        .unwrap();
+        assert_eq!(at(&base, &["dogstatsd_port"]), Some(&json!(16)));
+        assert_eq!(
+            at(&base, &["apm_config", "obfuscation", "elasticsearch", "keep_values"]),
+            Some(&json!(["cr-a", "cr-b"]))
+        );
     }
 
     #[test]

@@ -119,6 +119,9 @@ impl PathRecorder<'_, '_> {
     }
 }
 
+// Saluki-only numbers and sequences use the `EnvDecode` decimal and whitespace grammars rather than
+// the Agent casts, because these keys have no Agent counterpart to match.
+//
 // `PathRecorder` records a leaf at every scalar (and scalar-like) method, descends at `option` and
 // `newtype_struct`, and recurses at `struct`. The visited value is thrown away, so each leaf feeds
 // the visitor a throwaway of the right shape purely to let deserialization complete. Integers feed
@@ -142,18 +145,18 @@ impl<'de> Deserializer<'de> for PathRecorder<'_, '_> {
     type Error = ValueError;
 
     record_scalar!(deserialize_bool, visit_bool, false, EnvDecode::Bool);
-    record_scalar!(deserialize_i8, visit_i8, 1, EnvDecode::Integer);
-    record_scalar!(deserialize_i16, visit_i16, 1, EnvDecode::Integer);
-    record_scalar!(deserialize_i32, visit_i32, 1, EnvDecode::Integer);
-    record_scalar!(deserialize_i64, visit_i64, 1, EnvDecode::Integer);
-    record_scalar!(deserialize_i128, visit_i128, 1, EnvDecode::Integer);
-    record_scalar!(deserialize_u8, visit_u8, 1, EnvDecode::Integer);
-    record_scalar!(deserialize_u16, visit_u16, 1, EnvDecode::Integer);
-    record_scalar!(deserialize_u32, visit_u32, 1, EnvDecode::Integer);
-    record_scalar!(deserialize_u64, visit_u64, 1, EnvDecode::Integer);
-    record_scalar!(deserialize_u128, visit_u128, 1, EnvDecode::Integer);
-    record_scalar!(deserialize_f32, visit_f32, 0.0, EnvDecode::Float);
-    record_scalar!(deserialize_f64, visit_f64, 0.0, EnvDecode::Float);
+    record_scalar!(deserialize_i8, visit_i8, 1, EnvDecode::DecimalInteger);
+    record_scalar!(deserialize_i16, visit_i16, 1, EnvDecode::DecimalInteger);
+    record_scalar!(deserialize_i32, visit_i32, 1, EnvDecode::DecimalInteger);
+    record_scalar!(deserialize_i64, visit_i64, 1, EnvDecode::DecimalInteger);
+    record_scalar!(deserialize_i128, visit_i128, 1, EnvDecode::DecimalInteger);
+    record_scalar!(deserialize_u8, visit_u8, 1, EnvDecode::DecimalInteger);
+    record_scalar!(deserialize_u16, visit_u16, 1, EnvDecode::DecimalInteger);
+    record_scalar!(deserialize_u32, visit_u32, 1, EnvDecode::DecimalInteger);
+    record_scalar!(deserialize_u64, visit_u64, 1, EnvDecode::DecimalInteger);
+    record_scalar!(deserialize_u128, visit_u128, 1, EnvDecode::DecimalInteger);
+    record_scalar!(deserialize_f32, visit_f32, 0.0, EnvDecode::DecimalFloat);
+    record_scalar!(deserialize_f64, visit_f64, 0.0, EnvDecode::DecimalFloat);
     record_scalar!(deserialize_char, visit_char, '\0', EnvDecode::RawString);
     record_scalar!(deserialize_str, visit_str, "", EnvDecode::RawString);
     record_scalar!(deserialize_string, visit_str, "", EnvDecode::RawString);
@@ -211,7 +214,7 @@ impl<'de> Deserializer<'de> for PathRecorder<'_, '_> {
     where
         V: Visitor<'de>,
     {
-        self.record_leaf(EnvDecode::StringList);
+        self.record_leaf(EnvDecode::WhitespaceList);
         visitor.visit_seq(EmptyAccess)
     }
 
