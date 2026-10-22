@@ -20,10 +20,15 @@ from pathlib import Path
 
 BASE_BRANCH = "main"
 
-# The first label marks every pull request this workflow opens and is how older ones are found and superseded. It is
-# removed from a superseded pull request, which tells that closure apart from a reviewer declining the change.
+# The first label marks every pull request this workflow opens and is how older ones are found and superseded.
 MARKER_LABEL = "ci/update-apm-semantics"
 LABELS = [MARKER_LABEL, "automated"]
+
+# Tells a superseded pull request's closure apart from a reviewer declining the change. GitHub does not promise to
+# create a label when adding it, so the first run that needs this one creates it.
+SUPERSEDED_LABEL = "ci/update-apm-semantics-superseded"
+SUPERSEDED_COLOR = "c5def5"
+SUPERSEDED_DESCRIPTION = "CI workflow: Update APM Semantic Mappings closed this as superseded."
 
 API_ROOT = "https://api.github.com"
 PAGE_SIZE = 100
@@ -74,6 +79,14 @@ class GitHub:
         """Adds labels to a pull request, keeping the ones it has."""
         self._request("POST", f"issues/{number}/labels", {"labels": labels})
 
+    def get_label(self, name):
+        """Gets a repository label."""
+        return self._request("GET", f"labels/{urllib.parse.quote(name, safe='')}")
+
+    def create_label(self, name, color, description):
+        """Creates a repository label."""
+        self._request("POST", "labels", {"name": name, "color": color, "description": description})
+
     def remove_label(self, number, label):
         """Removes a label from a pull request."""
         self._request("DELETE", f"issues/{number}/labels/{urllib.parse.quote(label, safe='')}")
@@ -109,17 +122,21 @@ def log(message):
     print(message, file=sys.stderr)
 
 
-def has_marker(pull):
-    return any(label["name"] == MARKER_LABEL for label in pull["labels"])
+def has_label(pull, name):
+    return any(label["name"] == name for label in pull["labels"])
+
+
+def is_declined(pull):
+    return pull["state"] == "closed" and has_label(pull, MARKER_LABEL) and not has_label(pull, SUPERSEDED_LABEL)
 
 
 def find_report(github, branch):
     """Decides whether the change on `branch` still needs a pull request.
 
     Each distinct change is reported once, and an unmerged pull request is what constitutes having reported it: an open
-    one is waiting for a reviewer, and a closed one that still has the marker label was declined. A merged or
-    superseded one does not count, because branch names are derived from the file's contents and upstream can return to
-    earlier contents.
+    one is waiting for a reviewer, and a closed one with the marker label but not the superseded label was declined. A
+    merged or superseded one does not count, because branch names are derived from the file's contents and upstream can
+    return to earlier contents.
 
     Returns 'reported' when there is nothing to do and 'publish' when the caller should create the branch and the pull
     request.
@@ -127,16 +144,19 @@ def find_report(github, branch):
     pulls = github.list_pulls(state="all", head=f"{github.owner}:{branch}")
 
     reported_by = next(
-        (pull for pull in pulls if not pull["merged_at"] and (pull["state"] == "open" or has_marker(pull))), None
+        (pull for pull in pulls if not pull["merged_at"] and (pull["state"] == "open" or is_declined(pull))), None
     )
     if reported_by:
         log(f"Already reported by {reported_by['html_url']} ({reported_by['state']}); nothing to do.")
 
         # A run can die between creating the pull request and finishing with older ones. Repeat that work, which
-        # changes nothing when it is already done.
+        # changes nothing when it is already done. Older ones are obsolete even when this one was declined.
         if reported_by["state"] == "open":
             github.add_labels(reported_by["number"], LABELS)
-            close_superseded(github, reported_by)
+            # Upstream returned to this change before a failed run finished closing it, so it is current again.
+            if has_label(reported_by, SUPERSEDED_LABEL):
+                github.remove_label(reported_by["number"], SUPERSEDED_LABEL)
+        close_superseded(github, reported_by)
         return "reported"
 
     # Any branch that remains is an orphan from a run that failed before creating its pull request, or the leftover of
@@ -174,7 +194,7 @@ def close_superseded(github, current=None):
     # Listing and filtering is used instead of searching, because the search index lags behind new labels.
     open_pulls = github.list_pulls(state="open", base=BASE_BRANCH)
     keep = None if current is None else current["number"]
-    superseded = [other for other in open_pulls if other["number"] != keep and has_marker(other)]
+    superseded = [other for other in open_pulls if other["number"] != keep and has_label(other, MARKER_LABEL)]
 
     if current is None:
         reason = (
@@ -187,11 +207,20 @@ def close_superseded(github, current=None):
             "If a fix was pushed to this branch, cherry-pick it onto the new one."
         )
 
+    if superseded:
+        try:
+            github.get_label(SUPERSEDED_LABEL)
+        except GitHubError as error:
+            if error.status != 404:
+                raise
+            log(f"Creating the {SUPERSEDED_LABEL} label.")
+            github.create_label(SUPERSEDED_LABEL, SUPERSEDED_COLOR, SUPERSEDED_DESCRIPTION)
+
     for other in superseded:
         log(f"Closing superseded pull request: {other['html_url']}")
-        # The label goes first: a failure before closing leaves an open pull request for a human to close, rather than
-        # a closed one that looks declined.
-        github.remove_label(other["number"], MARKER_LABEL)
+        # The label goes first, so a failure part way never leaves a closed pull request that looks declined. One left
+        # open keeps the marker label, and a later run closes it.
+        github.add_labels(other["number"], [SUPERSEDED_LABEL])
         github.close_pull(other["number"])
         github.create_comment(other["number"], reason)
 
