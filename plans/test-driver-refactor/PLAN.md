@@ -58,10 +58,12 @@ Each pull request checks off its own item.
     the control owns, in place of the one from its worker, so signalling shutdown stops only the supervisor, which
     aborts the component once the budget runs out. The handle fires once the control is dropped.
   - The substitution happens in the driver, so production code doesn't change.
-- [ ] **6. F5: contexts without running.**
-  - One `DriverOptions` method per component type. Each builds the context that the driver would have passed to `run`,
-    along with the input sender and the outputs, and a guard that keeps the topology context and health registry
-    alive. Nothing is spawned.
+- [x] **6. F5: contexts without running.**
+  - One `DriverOptions` method per component type, such as `source_context`, which takes output definitions rather
+    than a builder. Each returns `ContextParts`: the context that the driver would have passed to `run`, the input
+    sender, and the outputs. The parts also keep the topology context and health registry alive. Nothing is spawned.
+  - The context of a source or relay comes with a shutdown handle installed, which `ContextParts::signal_shutdown`
+    fires.
   - For tests that drive a sub-piece of a component with a real component context.
 - [ ] **7. F8: `TestComponentSupervisor` with static workers.**
   - A constructor that adds static workers before the supervisor runs, and still waits until the supervisor is
