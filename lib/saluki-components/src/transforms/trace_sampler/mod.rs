@@ -2570,8 +2570,7 @@ mod tests {
         assert!(rare_keeps_new_trace(&mut sampler, 1));
     }
 
-    /// Regression: remote selection used `default_env`, which `DD_ENV` does not set, so `DD_ENV` never selected a
-    /// `by_env` entry. Selection now uses `env`.
+    /// Remote sampling uses the normalized `env` from `DD_ENV` to select a `by_env` entry.
     #[test]
     fn remote_sampling_subscription_reaches_the_built_sampler() {
         let (publisher, subscription) = TestSamplingPublisher::new();
