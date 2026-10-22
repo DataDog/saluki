@@ -369,6 +369,8 @@ measure CPU per metric in process. This series took no profile: nothing points a
   interval. Approach items 1 to 3 are done; item 4 (decoding inside the region, encoding as a terminal kernel) is V8's.
   The N1 candidate runs ([results](#v7b-candidate-results)) found the stall gone but the exit not met: G5 and G6 miss
   at 0.3 CPUs, G6 at 1.2, and G1 at 3,000 contexts at 0.3 and 0.6.
+  Decided 2026-10-21: done as optionality, the merged layout stays the default, and the gaps (flush pacing, encode cost,
+  G5's pool question, G6's thresholds) are deferred ([outcome](programmable-metrics-v7b.md#65-as-built)).
 - **Goal:** at one core or less, run the whole metrics path between its I/O as one region, one task, with admission
   that never stalls on a flush, no sharding, and no fixed overhead at low load.
 - **Why it is possible now.** Only I/O still needs a task of its own: the sources' sockets in, and delivery's HTTP,

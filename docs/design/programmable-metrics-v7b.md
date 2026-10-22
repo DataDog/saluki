@@ -513,6 +513,13 @@ What integration decided, found, or left, against the text above:
   0.3 CPUs the candidate's datagram pool stays at 129 buffers, against 5,708 for native, so G5 is section 4's question
   of where a burst waits.
 
+  **Outcome (decided 2026-10-21).** V7b's purpose is met as optionality: aggregation is defunctionalized, so the physical
+  layout (fused or isolated) is a plan choice. Full fusion was not shown to be a clear performance win at the tested
+  limits, and that is accepted. Deferred, because none of it is needed now: flush pacing (a pass finishes in under
+  0.6 s because the pace is only a floor; capping a pass at its pace) and encode cost (N4), the pool question for G5,
+  and revisiting G6's thresholds (native itself reaches only 0.61 to 0.66). G1 at 3,000 contexts on 0.3 and 0.6 CPUs
+  cannot resolve differences under about 10% with six runs per image.
+
 ## 7. Owner questions
 
 Decided by the owner on 2026-10-21, all as recommended:
@@ -525,6 +532,11 @@ Decided by the owner on 2026-10-21, all as recommended:
 4. The datagram pool is unchanged in V7b.
 5. If the candidate meets G6 but misses G5 at 0.3 CPUs, V7b is done and G5's gap moves to N4, provided the shortfall
    is no worse than 0.31.
+
+Decided by the owner on 2026-10-21, after the candidate runs and the layout A/B:
+
+6. The merged (fused) layout stays the default when lanes are off. The [layout A/B at 3k contexts](programmable-metrics-next.md#layout-ab-at-3k-contexts) showed no CPU cost (the earlier 11 to 14% was host noise in decoder CPU), the micro-benchmark shows fused about 5% cheaper at small batches, and fused is simpler and the base for V8 and V9. `experimental.programmable_metrics.isolate_state: true` stays for A/B comparison.
+7. V7b's purpose is met as optionality ([outcome](#65-as-built)).
 
 The questions as asked:
 
