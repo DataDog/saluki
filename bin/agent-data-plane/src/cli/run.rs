@@ -26,7 +26,7 @@ use saluki_app::{
 };
 use saluki_components::{
     config::{
-        AutoscalingFailoverConfiguration, ClusterAgentConfiguration, MetricsEndpointRoutingConfiguration,
+        AgentEnv, AutoscalingFailoverConfiguration, ClusterAgentConfiguration, MetricsEndpointRoutingConfiguration,
         MrfConfiguration,
     },
     decoders::otlp::OtlpDecoderConfiguration,
@@ -739,15 +739,25 @@ async fn add_baseline_traces_pipeline_to_blueprint(
     semantic_registry: SemanticRegistryProvider,
 ) -> Result<(), GenericError> {
     let config = config_system.config();
+    let agent_env = AgentEnv::resolve(
+        config.domains.traces.apm_env.as_deref(),
+        config.domains.traces.env.as_deref(),
+        &config.shared.tags.tags,
+        &config.shared.tags.extra_tags,
+    );
     let dd_traces_config = DatadogTraceConfiguration::from_configuration(
         &config.domains.traces,
         &config.domains.otlp.traces,
         &config.shared,
+        agent_env.clone(),
     )
     .with_environment_provider(env_provider.clone())
     .await?;
-    let mut trace_sampler_config =
-        TraceSamplerConfiguration::from_configuration(&config.domains.traces, &config.domains.otlp.traces);
+    let mut trace_sampler_config = TraceSamplerConfiguration::from_configuration(
+        &config.domains.traces,
+        &config.domains.otlp.traces,
+        agent_env.clone(),
+    );
     if let Some(trace_sampling) = trace_sampling {
         trace_sampler_config = trace_sampler_config.with_remote_sampling(trace_sampling);
     }
@@ -779,14 +789,14 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .with_transform_builder("apm_onboarding", ApmOnboardingConfiguration)
         .with_transform_builder("trace_obfuscation", trace_obfuscation_config)
         .with_transform_builder("trace_tag_replacer", trace_tag_replacer_config);
-    let apm_stats_transform_config = ApmStatsTransformConfiguration::from_configuration(&config.domains.traces)
-        .with_semantic_registry(semantic_registry)
-        .with_environment_provider(env_provider.clone())
-        .await?;
-    let dd_apm_stats_encoder =
-        DatadogApmStatsEncoderConfiguration::from_configuration(&config.domains.traces, &config.shared)
+    let apm_stats_transform_config =
+        ApmStatsTransformConfiguration::from_configuration(&config.domains.traces, agent_env.clone())
+            .with_semantic_registry(semantic_registry)
             .with_environment_provider(env_provider.clone())
             .await?;
+    let dd_apm_stats_encoder = DatadogApmStatsEncoderConfiguration::from_configuration(&config.shared, agent_env)
+        .with_environment_provider(env_provider.clone())
+        .await?;
 
     blueprint
         .add_transform("traces_enrich", dd_traces_enrich_config)?

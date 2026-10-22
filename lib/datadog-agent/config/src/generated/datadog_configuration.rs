@@ -783,6 +783,10 @@ pub struct ApmConfig {
     pub enable_rare_sampler: bool,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub env: String,
+
+    #[serde(default)]
     pub error_tracking_standalone: ApmConfigErrorTrackingStandalone,
 
     #[serde(default = "defaults::datadog_configuration_apm_config_errors_per_second")]
@@ -845,6 +849,7 @@ impl Default for ApmConfig {
             analyzed_spans: Default::default(),
             compute_stats_by_span_kind: defaults::default_bool::<true>(),
             enable_rare_sampler: Default::default(),
+            env: Default::default(),
             error_tracking_standalone: Default::default(),
             errors_per_second: defaults::datadog_configuration_apm_config_errors_per_second(),
             extra_sample_rate: defaults::datadog_configuration_apm_config_extra_sample_rate(),

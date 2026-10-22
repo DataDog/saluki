@@ -520,8 +520,11 @@ workers. Connection-oriented listeners continue to use one decoder per connectio
 The core Agent defaults `env` to an empty string and attaches the configured environment to
 every metric, event, log, trace, and service check it emits.
 
-ADP uses `env` for traces and APM stats only, and substitutes `none` when the setting is empty.
-It does not apply this setting directly to the DogStatsD metrics path.
+ADP uses `env` for traces and APM stats only. When `apm_config.env` is not set, a configured
+`env` sets the trace environment. An empty `env` in the configuration file still takes
+precedence over the `env:` global tags, and the trace environment becomes `none`. An empty
+`DD_ENV` counts as unset. ADP does not apply this setting directly to the DogStatsD metrics
+path.
 
 ### `forwarder_apikey_validation_interval`
 
@@ -911,6 +914,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `apm_config.analyzed_spans`                                                                | Per service|operation APM event extraction rates   |
 | `apm_config.compute_stats_by_span_kind`                                                    | Compute APM stats per span kind                    |
 | `apm_config.enable_rare_sampler`                                                           | Enable the APM rare-span sampler                   |
+| `apm_config.env`                                                                           | Trace environment                                  |
 | `apm_config.error_tracking_standalone.enabled`                                             | Enable Error Tracking standalone                   |
 | `apm_config.errors_per_second`                                                             | APM error-span sampling rate (per sec)             |
 | `apm_config.extra_sample_rate`                                                             | Extra sample rate multiplier                       |
@@ -1259,6 +1263,11 @@ metadata can still populate `ContainerPid` aliases in the tag store on Unix plat
 covers steady-state tagging when another source provides a PID, but macOS UDS origin detection
 cannot obtain that PID from the socket.
 
+### `extra_tags`
+
+When neither `apm_config.env` nor `env` is set, the first `env:` entry in `tags`, then in
+`extra_tags`, supplies the trace environment.
+
 ### `hostname`
 
 ADP uses this only in standalone mode, where the fixed host provider requires a configured
@@ -1372,6 +1381,11 @@ To write TLS session secrets in NSS key log format, set `sslkeylogfile` to a fil
 set `DD_SSLKEYLOGFILE`. The file is opened once per path with owner read/write permissions
 on Unix. If the file cannot be opened, ADP logs a single warning and continues without TLS
 key logging. Protect the generated file as sensitive data.
+
+### `tags`
+
+When neither `apm_config.env` nor `env` is set, the first `env:` entry in `tags`, then in
+`extra_tags`, supplies the trace environment.
 
 ### `tls_handshake_timeout`
 

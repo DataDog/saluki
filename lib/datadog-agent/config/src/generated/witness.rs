@@ -22,6 +22,7 @@ pub trait DatadogConfigWitness {
     fn consume_apm_config_analyzed_spans(&mut self, value: ::serde_json::Map<String, ::serde_json::Value>);
     fn consume_apm_config_compute_stats_by_span_kind(&mut self, value: bool);
     fn consume_apm_config_enable_rare_sampler(&mut self, value: bool);
+    fn consume_apm_config_env(&mut self, value: String);
     fn consume_apm_config_error_tracking_standalone_enabled(&mut self, value: bool);
     fn consume_apm_config_errors_per_second(&mut self, value: f64);
     fn consume_apm_config_extra_sample_rate(&mut self, value: f64);
@@ -289,6 +290,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_apm_config_analyzed_spans(config.apm_config.analyzed_spans.clone());
     consumer.consume_apm_config_compute_stats_by_span_kind(config.apm_config.compute_stats_by_span_kind.clone());
     consumer.consume_apm_config_enable_rare_sampler(config.apm_config.enable_rare_sampler.clone());
+    consumer.consume_apm_config_env(config.apm_config.env.clone());
     consumer.consume_apm_config_error_tracking_standalone_enabled(
         config.apm_config.error_tracking_standalone.enabled.clone(),
     );

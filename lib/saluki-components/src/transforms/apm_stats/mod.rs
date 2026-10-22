@@ -33,6 +33,7 @@ use tokio::{select, time::interval};
 use tracing::{debug, error};
 
 use crate::common::otlp::util::extract_container_tags_from_attributes_map;
+use crate::config::AgentEnv;
 
 mod aggregation;
 pub(crate) use self::aggregation::{process_tags_hash, PayloadAggregationKey};
@@ -66,7 +67,7 @@ pub struct ApmStatsTransformConfiguration {
     compute_stats_by_span_kind: bool,
     peer_tags_aggregation: bool,
     peer_tags: Vec<MetaString>,
-    default_env: MetaString,
+    agent_env: AgentEnv,
     default_hostname: Option<String>,
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
     semantic_registry: SemanticRegistryProvider,
@@ -74,12 +75,14 @@ pub struct ApmStatsTransformConfiguration {
 
 impl ApmStatsTransformConfiguration {
     /// Creates a new `ApmStatsTransformConfiguration` from the resolved traces configuration.
-    pub fn from_configuration(config: &domains::traces::Domain) -> Self {
+    ///
+    /// Traces whose spans and payload carry no environment are aggregated under `agent_env`.
+    pub fn from_configuration(config: &domains::traces::Domain, agent_env: AgentEnv) -> Self {
         Self {
             compute_stats_by_span_kind: config.compute_stats_by_span_kind,
             peer_tags_aggregation: config.peer_tags_aggregation,
             peer_tags: config.peer_tags.iter().cloned().map(MetaString::from).collect(),
-            default_env: MetaString::from(config.default_env.clone()),
+            agent_env,
             default_hostname: None,
             workload_provider: None,
             semantic_registry: SemanticRegistryProvider::default(),
@@ -135,7 +138,7 @@ impl TransformBuilder for ApmStatsTransformConfiguration {
         Ok(Box::new(ApmStats {
             concentrator,
             flush_interval: DEFAULT_FLUSH_INTERVAL,
-            agent_env: self.default_env.clone(),
+            agent_env: self.agent_env.clone().into(),
             agent_hostname,
             workload_provider: self.workload_provider.clone(),
         }))
@@ -533,6 +536,7 @@ mod tests {
     use datadog_agent_apm::semantics::{test_util::registry_json, Registry};
     use proptest::prelude::*;
     use saluki_common::collections::FastHashMap;
+    use saluki_core::components::test_util::TestComponentDriver;
     use saluki_core::data_model::event::trace::{AttributeValue, Span, TraceIngestInfo};
     use saluki_core::data_model::event::trace_stats::ClientGroupedStats;
     use saluki_core::data_model::event::trace_stats::ClientStatsBucket;
@@ -615,11 +619,12 @@ mod tests {
             ..Default::default()
         };
         let component_context = ComponentContext::test_transform("apm_stats");
-        let transform = ApmStatsTransformConfiguration::from_configuration(&config)
-            .with_semantic_registry(provider)
-            .build(BuildContext::new(component_context.clone(), ResourceRegistry::new()))
-            .await
-            .expect("build should succeed");
+        let transform =
+            ApmStatsTransformConfiguration::from_configuration(&config, AgentEnv::resolve(None, None, &[], &[]))
+                .with_semantic_registry(provider)
+                .build(BuildContext::new(component_context.clone(), ResourceRegistry::new()))
+                .await
+                .expect("build should succeed");
 
         // The buffer refresh must see a registry published after construction.
         let remapped = registry_json(
@@ -694,6 +699,40 @@ mod tests {
             }
         }
         assert_eq!(peer_tags, ["custom.remote.service:billing"]);
+    }
+
+    #[tokio::test]
+    async fn traces_without_an_env_aggregate_under_the_agent_env() {
+        let agent_env = AgentEnv::resolve(None, Some("Prod"), &[], &[]);
+        let config = ApmStatsTransformConfiguration::from_configuration(&domains::traces::Domain::default(), agent_env);
+        let (control, mut outputs) = TestComponentDriver::transform(config)
+            .await
+            .expect("the transform should start");
+
+        let span = make_top_level_span(
+            align_ts(now_nanos(), BUCKET_DURATION_NS),
+            1,
+            100,
+            0,
+            "svc",
+            "resource",
+            0,
+            None,
+        );
+        control
+            .send_event(Event::Trace(Trace::new(vec![span], TraceIngestInfo::Datadog)))
+            .await;
+        // Shutting down flushes every bucket.
+        control.shutdown().await.expect("the transform should stop cleanly");
+
+        let mut envs = Vec::new();
+        for event in outputs.default_output().collect_events().await {
+            let Event::TraceStats(stats) = event else {
+                panic!("unexpected event: {event:?}");
+            };
+            envs.extend(stats.stats().iter().map(|payload| payload.env().to_string()));
+        }
+        assert_eq!(envs, ["prod"]);
     }
 
     #[test]
