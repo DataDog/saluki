@@ -597,7 +597,7 @@ pub struct DebugLog {
 
     /// Maximum size, in bytes, of the active debug log file before rotation.
     ///
-    /// Defaults to `10,000,000` bytes. A value of `0` is accepted as the rotation threshold.
+    /// Defaults to `10,485,760` bytes (`10Mb`). A value of `0` is accepted as the rotation threshold.
     /// Set this based on the diagnostic data and disk space to retain.
     pub log_file_max_size: u64,
 
