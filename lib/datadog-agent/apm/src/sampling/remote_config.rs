@@ -41,7 +41,7 @@ struct SamplerEnvConfig {
 /// An environment name and its sampling overrides.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 struct EnvAndConfig {
-    /// Environment to match against the normalized local default; the payload name is used as given.
+    /// Environment to match against the normalized local environment; the payload name is used as given.
     #[serde(default, deserialize_with = "null_as_default")]
     env: String,
 
@@ -201,19 +201,37 @@ pub struct SamplerSettings {
 }
 
 impl SamplerConfig {
-    /// Chooses settings for the local default environment.
+    /// Combines remote overrides with local sampling settings for the Agent's environment.
     ///
-    /// For each field, uses the last matching `by_env` entry, then `all_envs`, then `static_settings`. Fields are
-    /// chosen independently, so one field can come from `by_env` while another comes from `all_envs`; earlier
-    /// matching `by_env` entries are ignored once a later one matches.
+    /// The result contains target traces per second for priority and error sampling, plus an on/off switch for rare
+    /// sampling. Priority sampling honors existing decisions to keep or drop traces and uses its target to compute
+    /// sampling rates. Error sampling can keep error traces that would otherwise be dropped; rare sampling keeps
+    /// examples of rarely seen operations.
     ///
-    /// The caller normalizes `default_env` as a tag value; names in the remote payload are compared as given. A
-    /// payload name such as `Prod` does not match a normalized `prod`.
-    pub fn resolve(&self, default_env: &str, static_settings: &SamplerSettings) -> SamplerSettings {
+    /// `env` identifies the Agent's deployment environment, such as `prod`, not an individual trace's environment.
+    /// The caller supplies a normalized tag value. The trace sampler first substitutes `none` for an empty configured
+    /// `env`, then normalizes the result. This method neither normalizes names nor supplies an environment default:
+    /// a remote name of `Prod` does not match `prod`.
+    ///
+    /// This method selects the last `by_env` entry whose name exactly matches `env`. Earlier matching entries
+    /// contribute nothing, even if the selected entry leaves fields unset. For each setting independently, it uses:
+    ///
+    /// 1. The value in the selected entry's `config`, if set.
+    /// 2. Otherwise, the value in `all_envs`, the remote settings shared by all environments.
+    /// 3. Otherwise, the value in `static_settings`, the original local settings, not previous remote values.
+    ///
+    /// Missing or `null` fields are unset; `0` and `false` are explicit overrides. If no entry matches `env`, each
+    /// setting falls back to `all_envs`, then `static_settings`. Numeric targets pass through without validation or
+    /// clamping.
+    ///
+    /// For example, suppose the selected `prod` entry sets only the priority target to 20 and `all_envs` sets only
+    /// the error target to 5. The result uses 20 for priority sampling, 5 for error sampling, and the local setting
+    /// for rare sampling.
+    pub fn resolve(&self, env: &str, static_settings: &SamplerSettings) -> SamplerSettings {
         let for_env = self
             .by_env
             .iter()
-            .rfind(|entry| entry.env == default_env)
+            .rfind(|entry| entry.env == env)
             .map(|entry| &entry.config);
 
         let pick = |field: fn(&SamplerEnvConfig) -> Option<f64>, fallback: f64| {
