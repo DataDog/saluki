@@ -50,9 +50,9 @@ impl LoadedConfiguration {
     /// [`standalone`](Self::standalone) selects applies validation.
     ///
     /// The file's Datadog keys are read as the Datadog Agent reads them (see [`datadog_yaml`]). If
-    /// that reading cannot be translated but the file read with every key as written can, the second
-    /// reading is used: a respelled key whose value ADP cannot use is ignored rather than failing the
-    /// load.
+    /// that reading cannot be built or translated but the file read with every key as written can,
+    /// the second reading is used: a respelled key whose value ADP cannot use is ignored rather than
+    /// failing the load.
     ///
     /// # Errors
     ///
@@ -61,16 +61,18 @@ impl LoadedConfiguration {
         let path = path.as_ref();
         // Every value the local sources supply was set explicitly: the file set it or an environment
         // variable supplied it.
-        let base = SourceTree::all_explicit(build_base(path, env, KeyReading::Datadog)?);
-        let error = match translate_strict(&base) {
-            Ok(local) => return Ok(Self { base, local }),
-            Err(error) => error,
+        let (error, base) = match build_base(path, env, KeyReading::Datadog).map(SourceTree::all_explicit) {
+            Ok(base) => match translate_strict(&base) {
+                Ok(local) => return Ok(Self { base, local }),
+                Err(error) => (error, Some(base)),
+            },
+            Err(error) => (error, None),
         };
 
         let Ok(plain) = build_base(path, env, KeyReading::AsWritten).map(SourceTree::all_explicit) else {
             return Err(error);
         };
-        if plain == base {
+        if base.as_ref() == Some(&plain) {
             return Err(error);
         }
         match translate_strict(&plain) {
