@@ -417,6 +417,8 @@ fn gauge_event(name: &str, value: f64) -> Event {
 
 #[cfg(test)]
 mod tests {
+    use saluki_core::data_model::event::trace::TraceIngestInfo;
+
     use super::*;
 
     fn top_level_span(id: u64) -> Span {
@@ -527,7 +529,7 @@ mod tests {
 
         let root = top_level_span(1);
         let child = Span::new("checkout", "child", "r", "web", 2, 1, 1, 100, 0);
-        let mut trace = Trace::new(vec![root, child]);
+        let mut trace = Trace::new(vec![root, child], TraceIngestInfo::Datadog);
 
         let counts = processor.process(&mut trace, Some(0), 0);
         assert_eq!(counts.extracted, 1);
@@ -548,7 +550,7 @@ mod tests {
         let rates = map_of(&[("checkout", 0.0)]);
         let processor = EventProcessor::for_tests(&HashMap::new(), &rates, 200.0);
 
-        let mut trace = Trace::new(vec![top_level_span(1)]);
+        let mut trace = Trace::new(vec![top_level_span(1)], TraceIngestInfo::Datadog);
         let counts = processor.process(&mut trace, Some(0), 0);
         // The extractor nominated the span, but the rate flip never keeps at rate 0.
         assert_eq!(counts, EventCounts::default());
