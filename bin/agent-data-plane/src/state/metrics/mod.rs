@@ -634,7 +634,12 @@ mod tests {
         let rules = get_datadog_agent_remappings();
         let context = Context::from_static_parts(
             "adp.aggregate_active_contexts_by_origin",
-            &["component_id:dsd_agg", "container_id:abc", "kube_namespace:default"],
+            &[
+                "component_id:dsd_agg",
+                "component_type:transform",
+                "container_id:abc",
+                "kube_namespace:default",
+            ],
         );
         let remapped = rules
             .iter()
@@ -646,6 +651,30 @@ mod tests {
         assert_eq!(tags.len(), 2);
         assert!(tags.contains(&"container_id:abc"));
         assert!(tags.contains(&"kube_namespace:default"));
+        assert!(!tags.contains(&"component_type:transform"));
+    }
+
+    #[test]
+    fn rar_telemetry_renders_dynamic_origin_labels_safely() {
+        let context = Context::from_static_parts(
+            "adp.aggregate_active_contexts_by_origin",
+            &[
+                "component_id:dsd_agg",
+                "component_type:transform",
+                "origin_tag_6B7562655F73657276696365_0:api",
+                "origin_tag_6B7562655F73657276696365_1:worker",
+                "origin_tag_7465616D2E6E616D65:platform%22ops%0Aline",
+            ],
+        );
+        let output = render_with(
+            get_datadog_agent_remappings(),
+            vec![Event::Metric(Metric::gauge(context, 1.0))],
+        );
+
+        assert!(output.contains(
+            "aggregator__dogstatsd_contexts_by_origin{origin_tag_6B7562655F73657276696365_0=\"api\",origin_tag_6B7562655F73657276696365_1=\"worker\",origin_tag_7465616D2E6E616D65=\"platform%22ops%0Aline\"} 1"
+        ));
+        assert!(!output.contains("component_type"));
     }
 
     #[test]
