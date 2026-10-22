@@ -19,7 +19,7 @@ use datadog_agent_config_corpus::{Corpus, Inputs, Outcome};
 
 use super::guard;
 use super::leaf_replay::{checkpoint_rows, reads_at, Checkpoint, Fault, Isolator, Row};
-use crate::loaded::{build_base_from, EnvPrecedence};
+use crate::loaded::{build_base_from, EnvPrecedence, KeyReading};
 
 /// The path a YAML parse error names: the file the Agent would have read.
 const YAML_ORIGIN: &str = "datadog.yaml";
@@ -55,7 +55,13 @@ fn case_base(inputs: &Inputs) -> Result<serde_json::Value, Fault> {
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
     match guard("build bootstrap base", || {
-        build_base_from(yaml, Path::new(YAML_ORIGIN), &vars, EnvPrecedence::AfterFile)
+        build_base_from(
+            yaml,
+            Path::new(YAML_ORIGIN),
+            &vars,
+            EnvPrecedence::AfterFile,
+            KeyReading::Datadog,
+        )
     }) {
         Ok(result) => result.map_err(|e| Fault::Error(e.to_string())),
         Err(panicked) => Err(Fault::Panic(panicked)),
