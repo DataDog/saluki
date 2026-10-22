@@ -1355,6 +1355,7 @@ async fn split_and_encode_oversized_v3_range(
 
     let mut requests = Vec::new();
     let mut pending_ranges = VecDeque::new();
+    let mut split_gave_up = false;
     pending_ranges.push_back(0..accepted_metrics.len());
 
     while let Some(range) = pending_ranges.pop_front() {
@@ -1401,6 +1402,7 @@ async fn split_and_encode_oversized_v3_range(
                 "Dropping oversized V3 metric that cannot be split further."
             );
             context.telemetry.events_dropped_encoder().increment(1);
+            split_gave_up = true;
             continue;
         }
 
@@ -1411,6 +1413,12 @@ async fn split_and_encode_oversized_v3_range(
         let pivot = range.start + range.len() / 2;
         pending_ranges.push_front(pivot..range.end);
         pending_ranges.push_front(range.start..pivot);
+    }
+
+    // Match the Core Agent splitter counter's operation-level semantics: one increment if this original range could not
+    // be fully split into payloads that fit, regardless of how many individual items were dropped.
+    if split_gave_up {
+        context.serializer_telemetry.record_payload_split_drop();
     }
 
     requests
@@ -2619,8 +2627,11 @@ mod tests {
 
     #[tokio::test]
     async fn v3_serializer_stats_record_item_too_big_split_reason() {
-        let metrics = vec![Metric::counter("v3.telemetry.item_too_big", 1.0)];
-        let request = create_v3_test_request(&metrics).await;
+        let metrics = vec![
+            Metric::counter("v3.telemetry.item_too_big.a", 1.0),
+            Metric::counter("v3.telemetry.item_too_big.b", 1.0),
+        ];
+        let request = create_v3_test_request(&metrics[..1]).await;
         let limits = V3PayloadLimits::new(request.compressed_len - 1, usize::MAX, 10_000, 10_000);
         let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
         let recorder = TestRecorder::default();
@@ -2632,11 +2643,12 @@ mod tests {
         let requests = collect_v3_payload_requests(&metrics, context).await;
 
         assert!(requests.is_empty());
-        assert_eq!(recorder.counter("serializer.v3_item_too_big"), Some(1));
+        assert_eq!(recorder.counter("serializer.v3_item_too_big"), Some(2));
         assert_eq!(
             recorder.counter(("serializer.v3_payload_split_reason", &[("reason", "item_too_big")])),
-            Some(1)
+            Some(2)
         );
+        assert_eq!(recorder.counter("serializer.v3_payload_split_drops_total"), Some(2));
     }
 
     #[tokio::test]
