@@ -1,9 +1,10 @@
 //! Run reports and their durable artifacts.
 
+use std::fmt;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
+use chrono::Local;
 use serde::Serialize;
 use tracing::warn;
 
@@ -50,9 +51,20 @@ const SEVERITY_MARKERS: &[&str] = &[
     "\"level\":\"error\"",
 ];
 
+/// Schema version of `run.json`. An absent version field denotes version 1.
+pub const RUN_REPORT_SCHEMA_VERSION: u32 = 2;
+
 /// A whole run, as consumed by a program.
+///
+/// The run collector rewrites `run.json` throughout the run, so a reader may see any [`RunState`].
 #[derive(Debug, Serialize)]
 pub struct RunReport {
+    /// Report schema version, set to [`RUN_REPORT_SCHEMA_VERSION`].
+    pub schema_version: u32,
+    /// Current run status.
+    pub state: RunState,
+    /// First interruption reason, set when `state` becomes `interrupted`.
+    pub interrupted_reason: Option<InterruptReason>,
     /// Revision of the repository this binary was built from: a commit SHA, `-dirty` suffixed when
     /// the checkout had uncommitted changes, or `unknown` when the build could not read a repository.
     pub build_revision: String,
@@ -64,14 +76,58 @@ pub struct RunReport {
     pub parallelism: usize,
     /// When the run started, as an RFC 3339 timestamp.
     pub started_at: String,
-    /// How long the run took.
+    /// Elapsed milliseconds at the last report update.
     pub duration_ms: u64,
     /// Absolute path of the run's log directory.
     pub log_dir: PathBuf,
     /// Counts by outcome.
     pub totals: RunTotals,
-    /// One entry per test that ran.
+    /// Tests that started and haven't completed, in start order.
+    pub running: Vec<String>,
+    /// Selected tests that never started, in selection order.
+    pub not_run: Vec<String>,
+    /// One entry per test that completed, in completion order.
     pub tests: Vec<TestReport>,
+}
+
+/// Completion status of a run.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunState {
+    /// The run is in progress. A stale report may retain this state after the process exits.
+    Running,
+    /// Every selected test finished, except those skipped by `--fail-fast`.
+    Complete,
+    /// An interruption was recorded; cleanup may still be running.
+    Interrupted,
+}
+
+impl fmt::Display for RunState {
+    /// Uses the JSON state names in human-readable output.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::Running => "running",
+            Self::Complete => "complete",
+            Self::Interrupted => "interrupted",
+        };
+        f.write_str(name)
+    }
+}
+
+/// Reason a run was marked interrupted.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InterruptReason {
+    /// A signal or TUI interrupt key.
+    Signal {
+        /// The signal or key that interrupted the run.
+        source: &'static str,
+    },
+    /// The runner task failed or left unfinished tests unexplained by `--fail-fast`.
+    RunnerFailed {
+        /// What went wrong.
+        message: String,
+    },
 }
 
 /// Counts of tests by outcome. `errored` covers both harness errors and timeouts.
@@ -81,8 +137,12 @@ pub struct RunTotals {
     pub passed: usize,
     /// Tests whose assertions failed.
     pub failed: usize,
-    /// Tests the harness could not run to a verdict.
+    /// Tests the harness could not run to a verdict, including those that timed out.
     pub errored: usize,
+    /// Tests that exceeded their timeout.
+    pub timed_out: usize,
+    /// Selected tests that never started.
+    pub not_run: usize,
 }
 
 /// A single test, as consumed by a program.
@@ -216,27 +276,38 @@ pub struct AssertionReport {
 }
 
 impl RunReport {
-    /// Builds the run-level document from the results of a finished run.
-    pub fn new(
-        suite_dirs: Vec<PathBuf>, runtime: String, parallelism: usize, started_at: String, duration: Duration,
-        log_dir: PathBuf, results: &[TestResult],
-    ) -> Self {
-        let suite = crate::reporter::TestSuiteResult::from_results(results.to_vec(), duration);
-
+    /// Creates an empty report in the `running` state.
+    pub fn new(suite_dirs: Vec<PathBuf>, runtime: String, parallelism: usize, log_dir: PathBuf) -> Self {
         Self {
+            schema_version: RUN_REPORT_SCHEMA_VERSION,
+            state: RunState::Running,
+            interrupted_reason: None,
             build_revision: build_revision(),
             suite_dirs,
             runtime,
             parallelism,
-            started_at,
-            duration_ms: DurationMs(duration).as_millis(),
+            started_at: Local::now().to_rfc3339(),
+            duration_ms: 0,
             log_dir,
-            totals: RunTotals {
-                passed: suite.passed,
-                failed: suite.failed,
-                errored: suite.errored,
-            },
-            tests: results.iter().map(TestReport::new).collect(),
+            totals: RunTotals::new(&[], 0),
+            running: Vec::new(),
+            not_run: Vec::new(),
+            tests: Vec::new(),
+        }
+    }
+}
+
+impl RunTotals {
+    /// Counts completed tests by outcome and records how many never started.
+    pub fn new(tests: &[TestReport], not_run: usize) -> Self {
+        let count = |matches: fn(&TestOutcome) -> bool| tests.iter().filter(|t| matches(&t.outcome)).count();
+
+        Self {
+            passed: count(TestOutcome::is_passed),
+            failed: count(|outcome| *outcome == TestOutcome::Failed),
+            errored: count(TestOutcome::is_error),
+            timed_out: count(|outcome| *outcome == TestOutcome::TimedOut),
+            not_run,
         }
     }
 }
@@ -432,14 +503,26 @@ fn write_detail_files(result: &TestResult, log_dir: &Path) {
     }
 }
 
+/// Writes a temporary file, then renames it over `path` so readers see a complete report.
+///
+/// Failures are logged and leave the previous report in place.
 fn write_json<T: Serialize>(path: &Path, value: &T) {
-    match serde_json::to_string_pretty(value) {
-        Ok(json) => {
-            if let Err(e) = std::fs::write(path, format!("{}\n", json)) {
-                warn!(path = %path.display(), error = %e, "Failed to write machine-readable report.");
-            }
+    let json = match serde_json::to_string_pretty(value) {
+        Ok(json) => json,
+        Err(e) => {
+            warn!(path = %path.display(), error = %e, "Failed to serialize machine-readable report.");
+            return;
         }
-        Err(e) => warn!(path = %path.display(), error = %e, "Failed to serialize machine-readable report."),
+    };
+
+    let mut tmp_path = path.as_os_str().to_owned();
+    tmp_path.push(".tmp");
+    let tmp_path = PathBuf::from(tmp_path);
+
+    let written = std::fs::write(&tmp_path, format!("{}\n", json)).and_then(|()| std::fs::rename(&tmp_path, path));
+    if let Err(e) = written {
+        warn!(path = %path.display(), error = %e, "Failed to write machine-readable report.");
+        let _ = std::fs::remove_file(&tmp_path);
     }
 }
 
@@ -481,6 +564,8 @@ mod tests {
 
     use super::*;
     use crate::assertions::AssertionResult;
+    use crate::collector::RunCollector;
+    use crate::events::TestEvent;
     use crate::reporter::{ErrorKind, TestOutcome, TimeoutAttribution};
 
     fn assertion(name: &str, passed: bool) -> AssertionResult {
@@ -820,10 +905,7 @@ mod tests {
             vec![PathBuf::from("/cases")],
             "linux".to_string(),
             1,
-            "2026-09-01T12:00:00Z".to_string(),
-            Duration::from_secs(1),
             PathBuf::from("/logs"),
-            &[],
         );
 
         // A build outside a checkout reports `unknown`; inside one it is a SHA, optionally dirty.
@@ -846,27 +928,84 @@ mod tests {
 
     #[test]
     fn run_report_totals_separate_failures_from_errors() {
-        let results = vec![
+        let results = [
             TestResult::from_assertions("a", Duration::from_secs(1), vec![assertion("x", true)], Vec::new()),
             TestResult::from_assertions("b", Duration::from_secs(1), vec![assertion("x", false)], Vec::new()),
             TestResult::errored("c", ErrorKind::Setup, "boom", Duration::from_secs(1), Vec::new()),
             TestResult::errored("d", ErrorKind::Timeout, "too slow", Duration::from_secs(1), Vec::new()),
         ];
+        let tests: Vec<TestReport> = results.iter().map(TestReport::new).collect();
 
-        let report = RunReport::new(
-            vec![PathBuf::from("/cases")],
-            "linux".to_string(),
-            4,
-            "2026-09-01T12:00:00Z".to_string(),
-            Duration::from_secs(10),
-            PathBuf::from("/logs"),
-            &results,
-        );
+        let totals = RunTotals::new(&tests, 3);
 
-        assert_eq!(report.totals.passed, 1);
-        assert_eq!(report.totals.failed, 1);
-        assert_eq!(report.totals.errored, 2);
-        assert_eq!(results[3].outcome, TestOutcome::TimedOut);
-        assert_eq!(report.tests[3].outcome, TestOutcome::TimedOut);
+        assert_eq!(totals.passed, 1);
+        assert_eq!(totals.failed, 1);
+        assert_eq!(totals.errored, 2);
+        assert_eq!(totals.timed_out, 1);
+        assert_eq!(totals.not_run, 3);
+        assert_eq!(tests[3].outcome, TestOutcome::TimedOut);
+    }
+
+    #[test]
+    fn run_report_pins_the_schema_two_field_names() {
+        let log_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let report = RunReport::new(Vec::new(), "linux".to_string(), 1, log_dir.path().to_path_buf());
+        let mut collector = RunCollector::start(report, false);
+        let timed_out = TestResult::errored("a", ErrorKind::Timeout, "too slow", Duration::from_secs(1), Vec::new());
+        for event in [
+            TestEvent::RunStarted {
+                tests: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            },
+            TestEvent::TestStarted { name: "a".to_string() },
+            TestEvent::TestCompleted {
+                result: Box::new(timed_out),
+                log_dir: log_dir.path().to_path_buf(),
+            },
+            TestEvent::TestStarted { name: "b".to_string() },
+        ] {
+            collector.observe(&event);
+        }
+        collector.interrupt(InterruptReason::Signal { source: "SIGTERM" });
+
+        let json = serde_json::to_value(collector.report()).expect("run report should serialize");
+
+        assert_eq!(json["schema_version"], 2);
+        assert_eq!(json["state"], "interrupted");
+        assert_eq!(json["interrupted_reason"]["kind"], "signal");
+        assert_eq!(json["interrupted_reason"]["source"], "SIGTERM");
+        assert_eq!(json["running"], serde_json::json!(["b"]));
+        assert_eq!(json["not_run"], serde_json::json!(["c"]));
+        assert_eq!(json["totals"]["timed_out"], 1);
+        assert_eq!(json["totals"]["errored"], 1);
+        assert_eq!(json["totals"]["not_run"], 1);
+        assert_eq!(json["tests"][0]["outcome"], "timed_out");
+    }
+
+    #[test]
+    fn a_report_write_that_cannot_complete_leaves_the_previous_report_in_place() {
+        let log_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let run_json = log_dir.path().join(RUN_REPORT_FILE_NAME);
+        let tmp_path = log_dir.path().join(format!("{}.tmp", RUN_REPORT_FILE_NAME));
+        let read_parallelism = || {
+            let written = std::fs::read_to_string(&run_json).expect("run.json should exist");
+            let json: serde_json::Value = serde_json::from_str(&written).expect("run.json should parse");
+            json["parallelism"].clone()
+        };
+
+        let mut report = RunReport::new(Vec::new(), "linux".to_string(), 1, log_dir.path().to_path_buf());
+        write_run_report(&report);
+        assert_eq!(read_parallelism(), 1);
+
+        // Block the temporary file to test that a failed write preserves `run.json`.
+        std::fs::create_dir(&tmp_path).expect("the blocking directory should be creatable");
+        report.parallelism = 2;
+        write_run_report(&report);
+        assert_eq!(read_parallelism(), 1);
+
+        std::fs::remove_dir(&tmp_path).expect("the blocking directory should be removable");
+        report.parallelism = 3;
+        write_run_report(&report);
+        assert_eq!(read_parallelism(), 3);
+        assert!(!tmp_path.exists(), "the temporary file should not remain");
     }
 }

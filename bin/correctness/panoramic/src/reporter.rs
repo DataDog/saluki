@@ -7,7 +7,7 @@ use colored::Colorize as _;
 use serde::Serialize;
 
 use crate::assertions::AssertionResult;
-use crate::machine_output::RUN_REPORT_FILE_NAME;
+use crate::machine_output::{InterruptReason, RunReport, RunState, RUN_REPORT_FILE_NAME};
 
 /// Phase name reported when the harness cannot tell which phase a test was in.
 pub const UNKNOWN_PHASE: &str = "unknown";
@@ -246,6 +246,25 @@ impl TimeoutAttribution {
     }
 }
 
+impl fmt::Display for TimeoutAttribution {
+    /// Formats the expired budget and phase, for example `case budget 120s expired in assertions`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let configured = Duration::from_millis(self.configured_ms);
+        match self.deadline {
+            TimeoutDeadline::TestDeadline => {
+                write!(f, "case budget {:?} expired in {}", configured, self.active_phase)
+            }
+            TimeoutDeadline::CleanupGrace => write!(
+                f,
+                "cleanup grace {:?} expired after the case budget ({:?}) expired in {}",
+                configured,
+                Duration::from_millis(self.test_deadline_ms),
+                self.active_phase
+            ),
+        }
+    }
+}
+
 /// Result of a single test case.
 #[derive(Clone, Debug, Serialize)]
 pub struct TestResult {
@@ -343,52 +362,40 @@ impl TestResult {
         self.assertion_details = details;
         self
     }
-}
 
-/// Result of running all test cases.
-#[derive(Clone, Debug, Serialize)]
-pub struct TestSuiteResult {
-    /// Total number of tests.
-    pub total: usize,
-    /// Number of passed tests.
-    pub passed: usize,
-    /// Number of tests whose assertions failed.
-    pub failed: usize,
-    /// Number of tests the harness could not run to a verdict.
-    pub errored: usize,
-    /// Total duration of the test suite.
-    #[serde(with = "duration_millis")]
-    pub duration: Duration,
-    /// Individual test results.
-    pub results: Vec<TestResult>,
-}
-
-impl TestSuiteResult {
-    /// Create a test suite result from individual test results.
-    pub fn from_results(results: Vec<TestResult>, duration: Duration) -> Self {
-        let total = results.len();
-        let passed = results.iter().filter(|r| r.outcome == TestOutcome::Passed).count();
-        let errored = results.iter().filter(|r| r.outcome.is_error()).count();
-        let failed = total - passed - errored;
-
-        Self {
-            total,
-            passed,
-            failed,
-            errored,
-            duration,
-            results,
+    /// The one-word label every renderer prints: `PASS`, `FAIL`, `ERROR`, or `TIMEOUT`.
+    pub fn label(&self) -> &'static str {
+        match self.outcome {
+            TestOutcome::Passed => "PASS",
+            TestOutcome::Failed => "FAIL",
+            TestOutcome::Errored => "ERROR",
+            TestOutcome::TimedOut => "TIMEOUT",
         }
     }
 
-    /// Returns true if all tests passed.
-    pub fn all_passed(&self) -> bool {
-        self.failed == 0 && self.errored == 0
-    }
+    /// Formats a timeout's attribution when available, otherwise the harness error (`Error: ` on the first line).
+    ///
+    /// Returns no lines when neither is present.
+    pub fn cause_lines(&self) -> Vec<String> {
+        if let (TestOutcome::TimedOut, Some(timeout)) = (self.outcome, &self.timeout) {
+            return vec![timeout.to_string()];
+        }
 
-    /// Returns true if the harness failed to run at least one test to a verdict.
-    pub fn any_errored(&self) -> bool {
-        self.errored > 0
+        let Some(error) = &self.error else {
+            return Vec::new();
+        };
+        error
+            .message
+            .lines()
+            .enumerate()
+            .map(|(i, line)| {
+                if i == 0 {
+                    format!("Error: {}", line)
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect()
     }
 }
 
@@ -420,71 +427,77 @@ impl Reporter {
     /// Report the result of a single test.
     pub fn report_test_result(&self, result: &TestResult, log_dir: impl AsRef<Path>) {
         if matches!(self.format, OutputFormat::Text) {
-            let status = match result.outcome {
-                TestOutcome::Passed => "PASS".green().bold(),
-                TestOutcome::Failed => "FAIL".red().bold(),
-                TestOutcome::Errored | TestOutcome::TimedOut => "ERROR".red().bold(),
-            };
-
-            println!("{} {} ({:.2?})", status, result.name, result.duration);
-
-            // Show error if present
-            if let Some(ref error) = result.error {
-                let mut lines = error.message.lines();
-                if let Some(first) = lines.next() {
-                    println!("  {} {}", "Error:".red(), first);
-                    for line in lines {
-                        println!("  {}", line);
-                    }
-                }
-            }
-
-            // Show assertion results on failure or in verbose mode
-            if !result.outcome.is_passed() || self.verbose {
-                for assertion in &result.assertion_results {
-                    let indicator = if assertion.passed { "+".green() } else { "-".red() };
-
-                    println!("  {} {} ({:.2?})", indicator, assertion.name, assertion.duration);
-                    println!("    {}", assertion.message);
-                }
-
-                if !result.phase_timings.is_empty() {
-                    println!("  {}", "Phase timings:".dimmed());
-                    for phase in &result.phase_timings {
-                        println!("    {} ({:.2?})", phase.phase, phase.duration);
-                    }
-                }
-
-                println!("  {} {}", "Logs:".dimmed(), log_dir.as_ref().display());
+            for line in self.test_result_lines(result, log_dir.as_ref()) {
+                println!("{}", line);
             }
         }
     }
 
-    /// Report the final test suite result.
-    pub fn report_suite_result(&self, suite: &TestSuiteResult) {
+    /// The text lines [`Reporter::report_test_result`] prints for one test.
+    pub fn test_result_lines(&self, result: &TestResult, log_dir: &Path) -> Vec<String> {
+        let label = if result.outcome.is_passed() {
+            result.label().green().bold()
+        } else {
+            result.label().red().bold()
+        };
+
+        let mut lines = vec![format!("{} {} ({:.2?})", label, result.name, result.duration)];
+        lines.extend(result.cause_lines().into_iter().map(|line| format!("  {}", line)));
+
+        if !result.outcome.is_passed() || self.verbose {
+            for assertion in &result.assertion_results {
+                let indicator = if assertion.passed { "+".green() } else { "-".red() };
+
+                lines.push(format!(
+                    "  {} {} ({:.2?})",
+                    indicator, assertion.name, assertion.duration
+                ));
+                lines.push(format!("    {}", assertion.message));
+            }
+
+            if !result.phase_timings.is_empty() {
+                lines.push(format!("  {}", "Phase timings:".dimmed()));
+                for phase in &result.phase_timings {
+                    lines.push(format!("    {} ({:.2?})", phase.phase, phase.duration));
+                }
+            }
+
+            lines.push(format!("  {} {}", "Logs:".dimmed(), log_dir.display()));
+        }
+
+        lines
+    }
+
+    /// Report the final run result.
+    pub fn report_suite_result(&self, report: &RunReport) {
         match self.format {
             OutputFormat::Text => {
                 println!();
                 println!("{}", "=".repeat(60));
 
-                let status = if suite.all_passed() {
-                    "PASSED".green().bold()
+                let status = run_status_label(report);
+                let status = if status == RUN_PASSED_LABEL {
+                    status.green().bold()
                 } else {
-                    "FAILED".red().bold()
+                    status.red().bold()
                 };
+                println!("{}: {}", status, run_counts(report));
 
-                println!(
-                    "{}: {} passed, {} failed, {} errored, {} total ({:.2?})",
-                    status, suite.passed, suite.failed, suite.errored, suite.total, suite.duration
-                );
-
-                if !suite.all_passed() {
+                if report.tests.iter().any(|test| !test.outcome.is_passed()) {
                     println!();
                     println!("{}", "Failed tests:".red().bold());
-                    for result in &suite.results {
-                        if !result.outcome.is_passed() {
-                            println!("  - {} (outcome={})", result.name, result.outcome);
+                    for test in &report.tests {
+                        if !test.outcome.is_passed() {
+                            println!("  - {} (outcome={})", test.name, test.outcome);
                         }
+                    }
+                }
+
+                let unfinished = run_unfinished_lines(report);
+                if !unfinished.is_empty() {
+                    println!();
+                    for line in unfinished {
+                        println!("{}", line);
                     }
                 }
 
@@ -495,12 +508,74 @@ impl Reporter {
                 }
             }
             OutputFormat::Json => {
-                // Nothing here: the machine-readable document is emitted by `report_run`, which
-                // owns the versioned contract. Keeping it in one place stops the two shapes from
-                // drifting apart.
+                // `main` prints the collected report, sharing its schema with `run.json`.
             }
         }
     }
+}
+
+/// Status label of a run whose tests all passed.
+pub const RUN_PASSED_LABEL: &str = "PASSED";
+
+/// The run's one-word status: `PASSED`, `FAILED`, or `INCOMPLETE` for an interrupted run.
+pub fn run_status_label(report: &RunReport) -> &'static str {
+    let all_passed = report.tests.iter().all(|test| test.outcome.is_passed())
+        && report.running.is_empty()
+        && report.not_run.is_empty();
+
+    if report.state == RunState::Interrupted {
+        "INCOMPLETE"
+    } else if all_passed {
+        RUN_PASSED_LABEL
+    } else {
+        "FAILED"
+    }
+}
+
+/// Formats outcome counts, the selected-test total, and elapsed time.
+///
+/// Timed-out, running, and not-run counts appear only when nonzero.
+pub fn run_counts(report: &RunReport) -> String {
+    let totals = &report.totals;
+    let mut counts = format!(
+        "{} passed, {} failed, {} errored",
+        totals.passed, totals.failed, totals.errored
+    );
+    if totals.timed_out > 0 {
+        counts.push_str(&format!(" ({} timed out)", totals.timed_out));
+    }
+    if !report.running.is_empty() {
+        counts.push_str(&format!(", {} running", report.running.len()));
+    }
+    if totals.not_run > 0 {
+        counts.push_str(&format!(", {} not run", totals.not_run));
+    }
+
+    let total = report.tests.len() + report.running.len() + report.not_run.len();
+    let duration = Duration::from_millis(report.duration_ms);
+    let duration = if duration.as_secs() >= 60 {
+        format!("{}m {}s", duration.as_secs() / 60, duration.as_secs() % 60)
+    } else {
+        format!("{:.2?}", duration)
+    };
+    format!("{}, {} total ({})", counts, total, duration)
+}
+
+/// Formats any interruption reason and lists tests still running or never started, including fail-fast skips.
+pub fn run_unfinished_lines(report: &RunReport) -> Vec<String> {
+    let mut lines = Vec::new();
+    match &report.interrupted_reason {
+        Some(InterruptReason::Signal { source }) => lines.push(format!("Interrupted: {}", source)),
+        Some(InterruptReason::RunnerFailed { message }) => lines.push(format!("Interrupted: {}", message)),
+        None => {}
+    }
+    if !report.running.is_empty() {
+        lines.push(format!("Still running: {}", report.running.join(", ")));
+    }
+    if !report.not_run.is_empty() {
+        lines.push(format!("Not run: {}", report.not_run.join(", ")));
+    }
+    lines
 }
 
 /// A duration reported as whole milliseconds.
@@ -556,9 +631,229 @@ impl Serialize for AssertionResult {
     }
 }
 
+/// Results shared by the renderers' tests.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    /// Expected cause line for the timeout result in [`each_outcome`].
+    pub(crate) const TIMEOUT_CAUSE: &str = "case budget 50ms expired in container_start";
+
+    /// One result per outcome, in `Passed`, `Failed`, `Errored`, `TimedOut` order, with their labels.
+    pub(crate) fn each_outcome() -> [(TestResult, &'static str); 4] {
+        let assertion = |passed| AssertionResult {
+            name: "log_contains".to_string(),
+            passed,
+            message: "message".to_string(),
+            duration: Duration::from_millis(1),
+        };
+        let timed_out = TestResult::errored("t", ErrorKind::Timeout, "slow", Duration::from_secs(1), Vec::new())
+            .with_timeout_attribution(TimeoutAttribution::test_deadline(
+                Duration::from_millis(50),
+                Some("container_start".to_string()),
+            ));
+
+        [
+            (
+                TestResult::from_assertions("p", Duration::from_secs(1), vec![assertion(true)], Vec::new()),
+                "PASS",
+            ),
+            (
+                TestResult::from_assertions("f", Duration::from_secs(1), vec![assertion(false)], Vec::new()),
+                "FAIL",
+            ),
+            (
+                TestResult::errored("e", ErrorKind::Setup, "boom", Duration::from_secs(1), Vec::new()),
+                "ERROR",
+            ),
+            (timed_out, "TIMEOUT"),
+        ]
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::test_support::{each_outcome, TIMEOUT_CAUSE};
     use super::*;
+    use crate::collector::RunCollector;
+    use crate::events::TestEvent;
+
+    const LABELS: [&str; 4] = ["PASS", "FAIL", "ERROR", "TIMEOUT"];
+
+    #[test]
+    fn every_outcome_has_its_own_label() {
+        let labels: Vec<&str> = each_outcome().iter().map(|(result, _)| result.label()).collect();
+        assert_eq!(labels, LABELS);
+    }
+
+    #[test]
+    fn a_timeout_cause_names_the_budget_and_the_phase_it_expired_in() {
+        let timed_out = |attribution| {
+            TestResult::errored("t", ErrorKind::Timeout, "slow", Duration::from_secs(121), Vec::new())
+                .with_timeout_attribution(attribution)
+        };
+        let assertions = |passed| {
+            vec![AssertionResult {
+                name: "log_contains".to_string(),
+                passed,
+                message: "message".to_string(),
+                duration: Duration::from_millis(1),
+            }]
+        };
+        let cases = [
+            (
+                timed_out(TimeoutAttribution::test_deadline(
+                    Duration::from_secs(120),
+                    Some("assertions".to_string()),
+                )),
+                vec!["case budget 120s expired in assertions"],
+            ),
+            (
+                timed_out(TimeoutAttribution::cleanup_grace(
+                    Duration::from_secs(30),
+                    Duration::from_secs(120),
+                    Some("assertions".to_string()),
+                )),
+                vec!["cleanup grace 30s expired after the case budget (120s) expired in assertions"],
+            ),
+            (
+                timed_out(TimeoutAttribution::test_deadline(Duration::from_secs(120), None)),
+                vec!["case budget 120s expired in unknown"],
+            ),
+            (
+                TestResult::errored(
+                    "e",
+                    ErrorKind::Setup,
+                    "Failed to start container.\nNo such image.",
+                    Duration::from_secs(1),
+                    Vec::new(),
+                ),
+                vec!["Error: Failed to start container.", "No such image."],
+            ),
+            (
+                TestResult::from_assertions("f", Duration::from_secs(1), assertions(false), Vec::new()),
+                vec![],
+            ),
+            (
+                TestResult::from_assertions("p", Duration::from_secs(1), assertions(true), Vec::new()),
+                vec![],
+            ),
+        ];
+
+        for (result, expected) in cases {
+            assert_eq!(result.cause_lines(), expected, "result: {:?}", result);
+        }
+    }
+
+    #[test]
+    fn text_report_labels_every_outcome_and_prints_a_timeout_cause() {
+        let reporter = Reporter::new(OutputFormat::Text, false, None);
+
+        for (result, label) in each_outcome() {
+            let lines = reporter.test_result_lines(&result, Path::new("/logs"));
+            let first = &lines[0];
+            assert!(first.contains(label), "first line was: {}", first);
+            let others = LABELS.iter().filter(|other| **other != label);
+            assert!(
+                others.into_iter().all(|other| !first.contains(other)),
+                "first line was: {}",
+                first
+            );
+            if label == "TIMEOUT" {
+                assert_eq!(lines[1], format!("  {}", TIMEOUT_CAUSE));
+            }
+        }
+    }
+
+    /// Applies events, an optional interrupt, and optional runner completion to a collector.
+    fn collected(
+        log_dir: &Path, fail_fast: bool, events: Vec<TestEvent>, interrupt: Option<&'static str>, finished: bool,
+    ) -> RunCollector {
+        let report = RunReport::new(Vec::new(), "linux".to_string(), 1, log_dir.to_path_buf());
+        let mut collector = RunCollector::start(report, fail_fast);
+        for event in &events {
+            collector.observe(event);
+        }
+        if let Some(source) = interrupt {
+            collector.interrupt(InterruptReason::Signal { source });
+        }
+        if finished {
+            collector.finish(Ok(()));
+        }
+        collector
+    }
+
+    fn started(name: &str) -> TestEvent {
+        TestEvent::TestStarted { name: name.to_string() }
+    }
+
+    fn completed(result: &TestResult) -> TestEvent {
+        TestEvent::TestCompleted {
+            result: Box::new(result.clone()),
+            log_dir: PathBuf::new(),
+        }
+    }
+
+    fn selected(names: &[&str]) -> TestEvent {
+        TestEvent::RunStarted {
+            tests: names.iter().map(|name| name.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn run_summary_reads_incomplete_for_an_interrupted_run() {
+        let log_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let [(passed, _), (failed, _), _, (timed_out, _)] = each_outcome();
+
+        let all_pass = collected(
+            log_dir.path(),
+            false,
+            vec![selected(&["p"]), started("p"), completed(&passed)],
+            None,
+            true,
+        );
+        let report = all_pass.report();
+        assert_eq!(run_status_label(report), "PASSED");
+        assert!(run_counts(report).starts_with("1 passed, 0 failed, 0 errored, 1 total ("));
+        assert!(run_unfinished_lines(report).is_empty());
+
+        let fail_fast = collected(
+            log_dir.path(),
+            true,
+            vec![selected(&["f", "b"]), started("f"), completed(&failed)],
+            None,
+            true,
+        );
+        let report = fail_fast.report();
+        assert_eq!(run_status_label(report), "FAILED");
+        assert!(run_counts(report).starts_with("0 passed, 1 failed, 0 errored, 1 not run, 2 total ("));
+        assert_eq!(run_unfinished_lines(report), vec!["Not run: b"]);
+
+        let interrupted = collected(
+            log_dir.path(),
+            false,
+            vec![
+                selected(&["t", "a", "b"]),
+                started("t"),
+                completed(&timed_out),
+                started("a"),
+            ],
+            Some("SIGTERM"),
+            false,
+        );
+        let report = interrupted.report();
+        assert_eq!(run_status_label(report), "INCOMPLETE");
+        assert!(run_counts(report)
+            .starts_with("0 passed, 0 failed, 1 errored (1 timed out), 1 running, 1 not run, 3 total ("));
+        assert_eq!(
+            run_unfinished_lines(report),
+            vec!["Interrupted: SIGTERM", "Still running: a", "Not run: b"]
+        );
+
+        let mut long_run = RunReport::new(Vec::new(), "linux".to_string(), 1, log_dir.path().to_path_buf());
+        long_run.duration_ms = 63_000;
+        assert_eq!(run_counts(&long_run), "0 passed, 0 failed, 0 errored, 0 total (1m 3s)");
+    }
 
     #[test]
     fn finished_phases_are_recorded_once_and_leave_no_phase_active() {

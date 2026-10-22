@@ -74,28 +74,29 @@ Exit codes distinguish the run-level result:
 |------|---------|
 | 0 | Every test passed |
 | 1 | At least one assertion failed |
-| 2 | The harness could not reach a verdict for at least one test |
+| 2 | Harness error, timeout, or interrupted run |
 | 3 | The selection matched no tests |
 
-Treat code 2 as an environment or harness problem before investigating assertion differences.
+For code 2, investigate the harness or environment before assertion differences.
 
-A completed run writes `run.json`; each test directory contains `result.json`, `result.log`, and its
-captured artifacts. Start with the non-passing entries in `run.json`, follow each entry's `log_dir`,
-then use the paths in `result.json` rather than constructing artifact paths yourself.
+Check `run.json` first: it is updated during execution, so passing entries do not prove the run
+finished. Inspect completeness before individual results; treat unknown states or outcomes as
+non-passing.
 
 ```bash
+jq '{state, interrupted_reason, running, not_run}' run.json
 jq -r '.tests[] | select(.outcome != "passed") | "\(.name) \(.outcome) \(.log_dir)"' run.json
-jq -r '.assertions[] | select(.passed == false) | .kind + ": " + .message' <case-log-dir>/result.json
-jq -r '.diagnostic_lines[]? | "\(.source):\(.line_number) \(.text)"' <case-log-dir>/result.json
 ```
 
-`outcome` is the verdict: `passed`, `failed`, `errored`, or `timed_out`. For a timeout, read the
-`timeout` object to identify the deadline, active phase, and configured duration. For other failures,
-read `error`, failed `assertions`, and `diagnostic_lines`, then open the referenced artifacts for
-context. Correctness assertion details may point to uncapped files under `details/`.
+Follow each non-passing test's `log_dir` to `result.json`. Read `outcome`, `error`, `timeout`, failed
+`assertions`, and `diagnostic_lines`, then open the referenced artifacts for context and uncapped
+details. Use reported paths rather than guessing filenames.
 
-`run.json` includes `build_revision`: the source revision used to build Panoramic, with `-dirty` for
-a modified checkout and `unknown` when it cannot be determined.
+For field semantics, start with `RunReport` and `TestReport` in
+`bin/correctness/panoramic/src/machine_output.rs` and follow their types. Check `schema_version` and
+`build_revision` when reports differ from the working tree.
+
+On Unix, send SIGINT or SIGTERM to stop a run with cleanup; a second signal may leave containers.
 
 ## Read the traffic artifacts
 
