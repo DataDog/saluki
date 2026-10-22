@@ -1,7 +1,6 @@
 ## Configuration system review checklist
 
-Apply these when the pull request touches the Datadog configuration source model. The architecture and working rules
-live in `.agents/skills/config-system/SKILL.md`; treat it as authoritative.
+Apply these when the pull request touches the Datadog configuration source model.
 
 - Support for Datadog schema keys is classified in `schema/schema_overlay.yaml`. Flag changes that alter which keys
   are supported without updating the overlay, and flag code generated from the schema and overlay that was edited by

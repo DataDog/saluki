@@ -13,8 +13,7 @@ comments will be rejected.
 ## Project-specific review checklist
 
 Saluki is a Rust toolkit for building observability data planes. Its primary artifact, `bin/agent-data-plane`, runs
-alongside the Datadog Agent. `AGENTS.md`, `docs/development/style-guide.md`, and
-`docs/development/testing-patterns.md` are authoritative; apply them in addition to the guidance below.
+alongside the Datadog Agent.
 
 ### Generic crates must stay generic
 
