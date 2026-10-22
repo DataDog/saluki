@@ -1,0 +1,21 @@
+---
+upgrade:
+  - |
+    Agent Data Plane now fails to start when ``datadog.yaml`` sets one Datadog Agent setting twice under
+    different spellings, such as both ``data_plane.api_listen_address`` and a nested
+    ``data_plane: {api_listen_address: ...}``, or when two keys of a map-valued Datadog Agent setting become the
+    same text, such as ``yes`` and ``true``. Previously Agent Data Plane ignored every spelling of a setting except
+    the nested lowercase one, and kept both map keys. The error names the conflicting keys. Remove one of them, or
+    quote a map key to keep it as written.
+fixes:
+  - |
+    Agent Data Plane now reads dotted and differently cased Datadog Agent settings in ``datadog.yaml`` the way
+    the Datadog Agent does. A dotted key such as ``data_plane.api_listen_address`` or
+    ``data_plane: {otlp.enabled: true}`` sets the same setting as the nested form, and ``Log_Level`` sets
+    ``log_level``. Previously these spellings were ignored and the default applied. Write settings specific to
+    Agent Data Plane, such as ``data_plane.standalone_mode``, as nested lowercase keys, as before.
+  - |
+    Unquoted keys inside map- and list-valued Datadog Agent settings, such as ``additional_endpoints`` and
+    ``dogstatsd_mapper_profiles``, are now converted to text as the Datadog Agent converts them: ``010`` becomes
+    ``8``, ``yes`` becomes ``true``, and ``1e3`` becomes ``1000``. Quoted keys, and keys inside settings specific
+    to Agent Data Plane, stay as written.
