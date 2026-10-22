@@ -14,15 +14,18 @@ pub(crate) fn resolve(declared: &[&'static str]) -> &'static str {
     resolve_with(declared, goos(), is_ecs_fargate(), is_containerized())
 }
 
-fn resolve_with(declared: &[&'static str], goos: &str, ecs_fargate: bool, containerized: bool) -> &'static str {
-    let find = |key: &str| declared.iter().copied().find(|declared| *declared == key);
-    let runtime = [(ecs_fargate, "fargate"), (containerized, "container")];
-    runtime
+fn resolve_with(declared: &[&'static str], goos: &'static str, ecs_fargate: bool, containerized: bool) -> &'static str {
+    // The keys that could apply to this process, from most to least specific.
+    let candidates = [
+        ecs_fargate.then_some("fargate"),
+        containerized.then_some("container"),
+        Some(goos),
+        Some("other"),
+    ];
+    candidates
         .into_iter()
-        .filter(|(active, _)| *active)
-        .find_map(|(_, key)| find(key))
-        .or_else(|| find(goos))
-        .or_else(|| find("other"))
+        .flatten()
+        .find(|candidate| declared.contains(candidate))
         .unwrap_or("")
 }
 
