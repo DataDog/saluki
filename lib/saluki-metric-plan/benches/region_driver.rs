@@ -17,6 +17,11 @@
 //!   of 100,000 contexts, run in drain steps of the limits table's size, as the region host runs them, against the
 //!   kernel called directly in one call.
 //!
+//! - **Layout**: the whole metrics path from the source to the outputs, laid out with state owners fused into one region
+//!   (`FrameOptions { isolate_state: false }`, what a host without lanes runs) and isolated in three
+//!   (`isolate_state: true`), with interleaved flushes on and off: steady admission of DogStatsD batches of 1,024, 128,
+//!   and 16 metrics over 3,000 contexts, handed from region to region as the topology delivers them.
+//!
 //! Setup checks that each side delivers the same events to each destination. The baselines are what hand-written
 //! components would do, with no program, no registers, and no telemetry.
 
@@ -37,7 +42,10 @@ use saluki_core::{
     topology::EventsBuffer,
 };
 use saluki_metric_plan::{
-    compile::{compile, CompiledPlan, EntryKey, Frame, FrameTarget, RegionProgram, SlotId, Step},
+    compile::{
+        compile, CompiledPlan, EntryKey, Frame, FrameHosts, FrameOptions, FrameTarget, LanePolicy, RegionProgram,
+        SlotId, Step,
+    },
     ir::{NativeComponentId, NodeId, Plan},
     model::EventView,
     operators::{KernelBuildContext, OperatorRegistry},
@@ -73,6 +81,24 @@ fn default_program() -> (Frame, CompiledPlan) {
     (frame, compiled)
 }
 
+/// The stage 3 default program laid out with `options`, and its compiled programs.
+fn default_program_with(options: FrameOptions) -> (Frame, CompiledPlan) {
+    let plan = Plan::from_value(with_opaque_gateways(DEFAULT_PROGRAM_JSON)).unwrap();
+    let registry = OperatorRegistry::native();
+    let report = Validator::new(&registry, &default_program_catalog()).validate(&plan);
+    assert!(report.is_valid(), "{}", report);
+    let frame = Frame::compute_with(&plan, &registry, &namer, &FrameHosts::new(), &LanePolicy::ONE, options).unwrap();
+    let compiled = compile(
+        &plan,
+        &report,
+        &registry,
+        &frame,
+        &saluki_metric_plan::compile::DerivedPoints::for_plan(&frame, &plan, &registry),
+    )
+    .unwrap();
+    (frame, compiled)
+}
+
 /// Returns the slot named `name`.
 fn slot_named(frame: &Frame, name: &str) -> SlotId {
     frame
@@ -87,8 +113,13 @@ fn slot_named(frame: &Frame, name: &str) -> SlotId {
 /// distributions whose `user_id` tag the tag filterlist removes, gauges, and timestamped counters for the passthrough,
 /// over `contexts` contexts.
 fn dogstatsd_input(header: BatchHeader, size: usize, contexts: usize) -> EventsBuffer {
+    dogstatsd_input_from(header, 0, size, contexts)
+}
+
+/// The metrics `start..start + size` of the stream [`dogstatsd_input`] takes its first `size` from.
+fn dogstatsd_input_from(header: BatchHeader, start: usize, size: usize, contexts: usize) -> EventsBuffer {
     let mut buffer = EventsBuffer::default().with_header(header);
-    for i in 0..size {
+    for i in start..start + size {
         let context = i % contexts;
         let metric = match i % 8 {
             0 | 1 => Metric::counter(
@@ -195,6 +226,53 @@ impl Pipeline {
         }
     }
 
+    /// Returns the pipeline of every slot of `frame`, the one DogStatsD's point feeds first, each region configured as
+    /// a host configures a slot that may hold a state owner (the steady schedule and a fixed wall clock), with
+    /// interleaved flushes on or off, and started.
+    fn whole(
+        frame: &Frame, compiled: &CompiledPlan, generation: &GenerationRef, interleaving: bool, now: Instant,
+    ) -> Self {
+        let first = dogstatsd_slot(frame);
+        let mut slots = vec![first];
+        slots.extend(frame.slots().iter().map(|slot| slot.id).filter(|&slot| slot != first));
+        let wall = Arc::new(BenchClock::default());
+        wall.0.store(
+            AdmissionTime::from_unix_secs(1_700_000_003).as_unix_nanos(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        let stages = slots
+            .iter()
+            .map(|&slot| {
+                let program = Arc::clone(&compiled.programs[slot.get()]);
+                let keys = program.kernels().iter().map(|kernel| &kernel.key);
+                let kernels = build_kernels(&program, keys, KernelBuildContext::detached).unwrap();
+                let boot = PrepareRegion::new(
+                    Arc::clone(generation),
+                    program,
+                    kernels,
+                    PanicBudget::DEFAULT_PROGRAM,
+                    &NoTelemetry,
+                );
+                let slot_frame = frame.slot(slot).unwrap();
+                let config = RegionConfig::for_slot(slot_frame, &NoTelemetry)
+                    .with_schedule(AdmissionSchedule::Steady(Arc::clone(generation)).into_handle())
+                    .with_wall_clock(Arc::clone(&wall) as Arc<dyn WallClock>)
+                    .with_interleaving(interleaving);
+                let mut driver = MetricRegionDriver::new(config, boot).unwrap();
+                driver.start(&mut RegionTurn::new(now, &mut Budget::unlimited()));
+                Stage {
+                    slot,
+                    driver,
+                    sink: ExitSink::new(slot_frame.exits.len()),
+                }
+            })
+            .collect();
+        Self {
+            frame: frame.clone(),
+            stages,
+        }
+    }
+
     /// Runs a batch through the pipeline, returning what left it, by target.
     fn run(&mut self, batch: EventsBuffer, now: Instant, budget: &mut Budget) -> Vec<(FrameTarget, EventsBuffer)> {
         let mut delivered = Vec::new();
@@ -219,6 +297,23 @@ impl Pipeline {
             }
         }
         delivered
+    }
+}
+
+/// Returns DogStatsD's metrics admission point.
+fn dogstatsd_point(frame: &Frame) -> &saluki_metric_plan::compile::AdmissionPointInfo {
+    frame
+        .admission_points()
+        .iter()
+        .find(|point| point.node.local().as_str() == "dsd_in" && point.port.as_str() == "metrics")
+        .expect("DogStatsD's metrics enter the frame")
+}
+
+/// Returns the slot DogStatsD's metrics enter first.
+fn dogstatsd_slot(frame: &Frame) -> SlotId {
+    match dogstatsd_point(frame).route {
+        Some(FrameTarget::Slot(slot)) => slot,
+        ref other => panic!("DogStatsD's metrics lead to {:?}, not a slot", other),
     }
 }
 
@@ -647,9 +742,22 @@ impl Aggregation {
             .advance_time(&mut RegionTurn::new(due, &mut budget), &mut sink);
         emitted += sink.event_count();
         sink.clear();
-        while progress == Progress::Yielded {
+        // An interleaved pass returns between its steps with background work left, which the host runs while no batch
+        // waits, as here.
+        loop {
+            while progress == Progress::Yielded {
+                let mut budget = step();
+                progress = self.driver.resume(&mut RegionTurn::new(due, &mut budget), &mut sink);
+                emitted += sink.event_count();
+                sink.clear();
+            }
+            if !self.driver.has_background_work() {
+                break;
+            }
             let mut budget = step();
-            progress = self.driver.resume(&mut RegionTurn::new(due, &mut budget), &mut sink);
+            progress = self
+                .driver
+                .advance_time(&mut RegionTurn::new(due, &mut budget), &mut sink);
             emitted += sink.event_count();
             sink.clear();
         }
@@ -813,10 +921,78 @@ fn bench_aggregation(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_layout(c: &mut Criterion) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let _guard = runtime.enter();
+    let now = Instant::now();
+    let generation: GenerationRef = Arc::new(GenerationToken::new(GenerationId::new(1)));
+    const CONTEXTS: usize = 3_000;
+
+    let layouts = [("fused", false), ("isolated", true)].map(|(name, isolate_state)| {
+        let (frame, compiled) = default_program_with(FrameOptions { isolate_state });
+        (name, frame, compiled)
+    });
+    assert_eq!(layouts[0].1.slots().len(), 1, "fused, the metrics path is one region");
+    assert_eq!(
+        layouts[1].1.slots().len(),
+        3,
+        "isolated, aggregation runs between two regions"
+    );
+
+    let mut group = c.benchmark_group("layout_steady_admission");
+    for size in [1024, 128, 16] {
+        // Consecutive batches of one stream, which reach every context once per cycle.
+        let batches = |frame: &Frame| {
+            let point = dogstatsd_point(frame).id.get();
+            (0..CONTEXTS.div_ceil(size))
+                .map(|index| dogstatsd_input_from(header(&generation, point), index * size, size, CONTEXTS))
+                .collect::<Vec<_>>()
+        };
+        // Equal delivered work: in steady admission only the passthrough leaves, the same in both layouts.
+        let mut leaves = Vec::new();
+        for (_, frame, compiled) in &layouts {
+            let mut pipeline = Pipeline::whole(frame, compiled, &generation, true, now);
+            let written = batches(frame)
+                .into_iter()
+                .flat_map(|batch| pipeline.run(batch, now, &mut Budget::unlimited()))
+                .map(|(_, buffer)| buffer)
+                .collect::<Vec<_>>();
+            leaves.push(delivered(&written));
+        }
+        assert_eq!(leaves[0], leaves[1], "both layouts deliver the same events");
+
+        group.throughput(Throughput::Elements(size as u64));
+        for (name, frame, compiled) in &layouts {
+            for interleaving in [true, false] {
+                let mut pipeline = Pipeline::whole(frame, compiled, &generation, interleaving, now);
+                let inputs = batches(frame);
+                let mut next = 0;
+                let id = format!("{}/{}", name, if interleaving { "interleaving" } else { "blocking" });
+                group.bench_function(BenchmarkId::new(id, format!("{} metrics", size)), |b| {
+                    let mut budget = Budget::unlimited();
+                    b.iter_batched(
+                        || {
+                            next = (next + 1) % inputs.len();
+                            inputs[next].clone()
+                        },
+                        |batch| pipeline.run(batch, now, &mut budget).len(),
+                        BatchSize::SmallInput,
+                    )
+                });
+            }
+        }
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_pre_aggregation,
     bench_post_aggregation,
-    bench_aggregation
+    bench_aggregation,
+    bench_layout
 );
 criterion_main!(benches);
