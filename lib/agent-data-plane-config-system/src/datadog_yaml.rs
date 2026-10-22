@@ -253,11 +253,16 @@ impl<'de> Visitor<'de> for LeafValue {
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
         // Keys that were written as the text they render to. Such a key keeps its entry when a typed
-        // key renders to the same text; otherwise the later entry wins.
+        // key renders to the same text; otherwise the later entry wins. A null yields to any other value.
         let mut written = std::collections::HashSet::new();
         let mut entries = Map::new();
         while let Some(key) = map.next_key_seed(RenderedKey)? {
             let value = map.next_value_seed(LeafValue)?;
+            if value.is_null() {
+                let (Key::Written(text) | Key::Typed(text)) = key;
+                entries.entry(text).or_insert(value);
+                continue;
+            }
             match key {
                 Key::Written(text) => {
                     written.insert(text.clone());
@@ -654,6 +659,27 @@ mod tests {
                 "  on: [a]\n  y: [b]\n  '1000': [c]\n  1e3: [d]\n",
                 json!({"true": ["b"], "1000": ["c"]}),
             ),
+        ];
+        for (yaml, expected) in cases {
+            let value = from_str(&format!("additional_endpoints:\n{yaml}")).expect(yaml);
+            assert_eq!(value["additional_endpoints"], expected, "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn a_null_leaf_map_entry_yields_to_a_key_that_renders_the_same() {
+        // Regression: a null entry used to claim its rendered key, so `'true': ~` dropped `yes: [a]`
+        // in either order, and the base then dropped the null, leaving no entry.
+        let cases = [
+            ("  'true': ~\n  yes: [a]\n", json!({"true": ["a"]})),
+            ("  yes: [a]\n  'true': ~\n", json!({"true": ["a"]})),
+            ("  yes: ~\n  'true': [b]\n", json!({"true": ["b"]})),
+            ("  'true': [b]\n  yes: ~\n", json!({"true": ["b"]})),
+            ("  yes: ~\n  true: [b]\n", json!({"true": ["b"]})),
+            ("  true: [b]\n  yes: ~\n", json!({"true": ["b"]})),
+            ("  'true': ~\n  yes: ~\n", json!({"true": null})),
+            // A null does not reset which non-null key wins.
+            ("  '8': [b]\n  010: ~\n  8.0: [a]\n", json!({"8": ["b"]})),
         ];
         for (yaml, expected) in cases {
             let value = from_str(&format!("additional_endpoints:\n{yaml}")).expect(yaml);

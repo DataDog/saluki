@@ -176,6 +176,8 @@ fn drop_nulls(value: &mut Value) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use bytesize::ByteSize;
     use saluki_config::dynamic::ConfigSetting;
     use saluki_config::test_env_lock;
@@ -1082,6 +1084,23 @@ mod tests {
         let endpoints = &config.shared.endpoints.additional_endpoints;
         assert_eq!(endpoints.keys().collect::<Vec<_>>(), ["8"]);
         assert_eq!(endpoints["8"], ["b"]);
+    }
+
+    #[tokio::test]
+    async fn a_null_leaf_map_entry_does_not_hide_a_key_that_renders_the_same() {
+        // Regression: the null entry claimed the rendered key `true` and the base dropped it, so the
+        // map loaded empty instead of falling back or keeping `yes`.
+        for (index, yaml) in [
+            "apm_config: {analyzed_rate_by_service: {'true': ~, yes: 0.5}}\n",
+            "apm_config: {analyzed_rate_by_service: {yes: 0.5, 'true': ~}}\n",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let loaded = load_from_file(&format!("null_leaf_entry_{index}"), yaml).await;
+            let rates = &loaded.local().domains.traces.analyzed_rate_by_service;
+            assert_eq!(*rates, HashMap::from([("true".to_owned(), 0.5)]), "{yaml:?}");
+        }
     }
 
     #[test]
