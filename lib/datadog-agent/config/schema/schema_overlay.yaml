@@ -3714,6 +3714,13 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "Per-origin processed metrics and context counts"
+    documentation: |
+      Disabled by default. When enabled, ADP reports active aggregation contexts grouped by resolved origin tags.
+      This breakdown has at most 200 series: 199 origin groups and one `origin_overflow:true` series.
+      Contexts without resolved origin tags are skipped. Groups exceeding 32 tags or 4096 source-tag bytes,
+      and new groups when all slots are occupied, contribute to overflow instead of losing their counts.
+      Each context retains its original assignment until expiry; freed slots can admit new contexts.
+      This limit is separate from the DogStatsD source's per-origin processed-counter limit.
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:

@@ -28,6 +28,8 @@ pub fn get_aggregation_remappings() -> Vec<RemapperRule> {
             &["component_id:dsd_agg"],
             "aggregator.dogstatsd_contexts_by_origin",
         )
+        // Keep this exclusion list in sync with ComponentMetricsExt::from_component_context. Origin keys
+        // are dynamic and ordinary keys have no reserved prefix, so a prefix allowlist would lose them.
         .with_all_original_tags_except(["component_id", "component_type"])
         .with_help_text("Count the number of dogstatsd contexts in the aggregator, by origin"),
         RemapperRule::by_name_and_tags(

@@ -266,6 +266,23 @@ impl MetricsBuilder {
         gauge!(level: Level::INFO, metric_name, tags)
     }
 
+    /// Registers a gauge at info verbosity and returns its registry key without a recorder prefix.
+    ///
+    /// Both the gauge and key include the builder's default tags and the additional tags. Retain the key when
+    /// the gauge must be explicitly removed from the recorder instead of waiting for idle eviction.
+    pub fn register_gauge_with_tags_and_key<I, T>(
+        &self, metric_name: &'static str, additional_tags: I,
+    ) -> (Gauge, metrics::Key)
+    where
+        I: IntoIterator<Item = T>,
+        T: MetricTag,
+    {
+        let mut tags = (*self.default_tags).clone();
+        tags.extend(additional_tags.into_iter().map(MetricTag::into_label));
+        let gauge = gauge!(level: Level::INFO, metric_name, tags.clone());
+        (gauge, metrics::Key::from_parts(metric_name, tags))
+    }
+
     /// Registers a histogram at info verbosity.
     ///
     /// The histogram will include the configured default tags for this builder.
