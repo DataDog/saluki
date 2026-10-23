@@ -4,7 +4,7 @@ histogram_copy_to_distribution: false
 experimental:
   metrics_endpoint_routing:
     metric_allowlist:
-      "http://127.0.0.1:9092":
+      "http://127.0.0.1:9091":
         - routing.metric.10000
         - routing.metric.10000.max
         - routing.metric.10000.median
