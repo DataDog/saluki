@@ -15,8 +15,6 @@ use kube::{
     api::{Api, AttachParams, DeleteParams, LogParams, PostParams},
     Client,
 };
-use rand::{distr::SampleString as _, rng};
-use rand_distr::Alphanumeric;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::{io::AsyncWriteExt as _, net::TcpListener, time::sleep};
 use tokio_util::sync::CancellationToken;
@@ -30,6 +28,7 @@ use crate::{
         runner::make_error_result,
     },
     intake::{CollectedData, IntakeClient},
+    ledger::random_id,
     reporter::TestResult,
     test::TestContext,
     traffic::{self, Side},
@@ -92,7 +91,7 @@ pub async fn run_k8s_correctness_test(case: CorrectnessTestCase, tctx: TestConte
     };
     phase.finish();
 
-    let run_id = generate_isolation_id();
+    let run_id = random_id();
     let baseline_ns = format!("airlock-{}-baseline", run_id);
     let comparison_ns = format!("airlock-{}-comparison", run_id);
     let millstone_ns = format!("airlock-{}-millstone", run_id);
@@ -1332,14 +1331,6 @@ async fn exec_write_file(
     }
 
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Utilities
-// ---------------------------------------------------------------------------
-
-fn generate_isolation_id() -> String {
-    Alphanumeric.sample_string(&mut rng(), 8).to_lowercase()
 }
 
 #[cfg(test)]

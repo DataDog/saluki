@@ -8,6 +8,7 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::deadline::Deadline;
+use crate::ledger::ResourceLedger;
 use crate::record::CaseRecord;
 use crate::reporter::{PhaseTracker, TestResult};
 
@@ -49,11 +50,9 @@ pub(crate) struct RunnerSettings {
 /// Carries information that a test needs at runtime such as the logging directory and the cancellation channel.
 #[derive(Debug, Clone)]
 pub(crate) struct TestContext {
-    /// Provides a teardown signal to a running test.
+    /// Signals a running test to stop.
     ///
-    /// Tests should watch this in a `tokio::select!` block so that they can tear down their resources when they have
-    /// been canceled either by an event or because they have timed out. They will be given a short grace period after
-    /// this fires to tear down resources.
+    /// The runner cancels it on an interrupt or timeout. Tests should return their result within the grace period.
     test_cancel_token: CancellationToken,
 
     /// The case deadline; the runner cancels the test token when it passes.
@@ -74,6 +73,9 @@ pub(crate) struct TestContext {
 
     /// Step states and verdict shared with the runner for reporting after cancellation.
     pub(crate) record: CaseRecord,
+
+    /// Test resources registered for cleanup by the runner.
+    pub(crate) ledger: ResourceLedger,
 }
 
 impl TestContext {
@@ -88,6 +90,7 @@ impl TestContext {
             kind_ready: None,
             phases: PhaseTracker::default(),
             record: CaseRecord::default(),
+            ledger: ResourceLedger::default(),
         }
     }
 
@@ -142,8 +145,8 @@ pub(crate) trait Test: Send + Sync {
     /// Run the test and return the `TestResult`. Note that we don't return an error here. It's expected that you
     /// should handle errors and turn them into a failed `TestResult` and try not to panic.
     ///
-    /// `TestContext` carries a `CancelToken`. created by the `Runner` which a test should watch in a `tokio::select!`
-    /// structure. When a cancellation signal is received, the test should stop executing and tear down its resources.
+    /// Watch the context's cancellation token and return when it fires. Register resources in the context's ledger
+    /// for the runner to remove after the test ends.
     async fn run(&self, tctx: TestContext) -> TestResult;
 }
 

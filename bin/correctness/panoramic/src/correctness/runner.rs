@@ -11,8 +11,6 @@ use airlock::{
     config::{DatadogIntakeConfig, MillstoneConfig},
     driver::{Driver, DriverConfig, DriverDetails, ExitStatus},
 };
-use rand::{distr::SampleString as _, rng};
-use rand_distr::Alphanumeric;
 use saluki_error::{generic_error, GenericError};
 use tokio::{select, task::JoinHandle, time::sleep};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
@@ -26,6 +24,7 @@ use crate::correctness::{
 use crate::{
     assertions::{AssertionResult, AssertionStatus},
     intake::{CollectedData, IntakeClient},
+    ledger::random_id,
     reporter::{ErrorKind, PhaseTiming, TestResult},
     test::TestContext,
     traffic::{self, Side},
@@ -148,7 +147,7 @@ async fn run_docker_correctness_test(case: CorrectnessTestCase, tctx: TestContex
 /// Cleans up remaining Docker resources for all three isolation groups.
 ///
 /// Call after `DriverTasks::stop_and_wait` has waited for container cleanup. Partially started groups are safe to
-/// clean up; errors, including Docker 404 responses for missing resources, are logged and cleanup continues.
+/// clean up; errors are logged and cleanup continues.
 async fn cleanup_groups(baseline_id: &str, comparison_id: &str, millstone_id: &str) {
     for id in [baseline_id, comparison_id, millstone_id] {
         if let Err(e) = Driver::clean_related_resources(id.to_string()).await {
@@ -393,9 +392,9 @@ impl CorrectnessRunner {
     }
 
     pub async fn run(self) -> Result<(CollectedData, CollectedData), GenericError> {
-        let baseline_isolation_group_id = generate_isolation_group_id();
-        let comparison_isolation_group_id = generate_isolation_group_id();
-        let millstone_isolation_group_id = generate_isolation_group_id();
+        let baseline_isolation_group_id = random_id();
+        let comparison_isolation_group_id = random_id();
+        let millstone_isolation_group_id = random_id();
 
         let baseline_runner_span = info_span!(
             "runner",
@@ -895,11 +894,6 @@ async fn spawn_driver_with_details(
         details,
         handle,
     })
-}
-
-/// Generates a random 8-character alphanumeric string suitable for use as an isolation group ID.
-fn generate_isolation_group_id() -> String {
-    Alphanumeric.sample_string(&mut rng(), 8)
 }
 
 #[cfg(test)]
