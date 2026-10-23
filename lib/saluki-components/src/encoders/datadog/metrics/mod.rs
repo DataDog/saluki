@@ -1848,6 +1848,7 @@ mod tests {
     use bytes::Bytes;
     use datadog_protos::metrics::v3::MetricData as V3MetricData;
     use protobuf::Message as _;
+    use saluki_core::components::test_util::TestComponentDriver;
     use saluki_core::data_model::{
         event::{
             metric::{context::Context, MetricMetadata},
@@ -3092,14 +3093,6 @@ mod tests {
             }
         }
 
-        /// Asserts that no payload is flushed within `window`.
-        async fn assert_no_payload_within(&mut self, window: Duration) {
-            assert!(
-                timeout(window, self.payloads_rx.recv()).await.is_err(),
-                "no payload should be flushed within {window:?}"
-            );
-        }
-
         /// Drops the events sender and waits for the request builder task to stop cleanly.
         async fn shutdown(self) {
             drop(self.events_tx);
@@ -3118,33 +3111,58 @@ mod tests {
         let recorder = TestRecorder::default();
         let _local = metrics::set_default_local_recorder(&recorder);
 
-        let mut harness = RequestBuilderScenario::new(MetricsEncoderMode::V3Enabled, MetricsEncoderMode::V2Only)
-            .with_max_points_per_payload(3)
-            .with_flush_timeout(Duration::from_millis(250))
-            .spawn()
-            .await;
+        // A lone Datadog endpoint under `datadog_only` is authoritative V3, so there's no V2 series encoder.
+        let mut shared = shared_configuration();
+        shared.metrics_encoding.v3_series_mode = V3SeriesMode::DatadogOnly;
+        let mut config = metrics_config_from(&shared);
+        config.max_series_points_per_payload = 3;
+        config.flush_timeout = Duration::from_millis(250);
+        assert!(!config.requires_v2_series(false).expect("endpoints should resolve"));
 
-        harness
-            .push_metrics([
-                Metric::counter("authoritative.v3.points.one", [(123, 1.0), (124, 2.0)]),
-                Metric::counter("authoritative.v3.points.two", [(123, 3.0), (124, 4.0)]),
+        let (control, mut payloads) = TestComponentDriver::options()
+            .with_component_id("metrics")
+            .encoder(config)
+            .await
+            .expect("metrics encoder should build");
+        let mut next_request_uri = async || {
+            let payload = payloads.next().await.expect("the encoder should flush a payload");
+            let (_, request) = payload
+                .try_into_http_payload()
+                .expect("metrics are sent over HTTP")
+                .into_parts();
+            request.uri().clone()
+        };
+
+        control
+            .send_events([
+                Event::Metric(Metric::counter("authoritative.v3.points.one", [(123, 1.0), (124, 2.0)])),
+                Event::Metric(Metric::counter("authoritative.v3.points.two", [(123, 3.0), (124, 4.0)])),
             ])
             .await;
 
         // Point-count split flushes the first metric before the second exceeds the limit.
-        let (_, request) = harness.next_http_request().await;
-        assert_eq!(METRICS_SERIES_V3_PATH, request.uri());
-        harness.assert_no_payload_within(Duration::from_millis(50)).await;
+        assert_eq!(METRICS_SERIES_V3_PATH, next_request_uri().await);
+        assert!(
+            timeout(Duration::from_millis(50), next_request_uri()).await.is_err(),
+            "the carried-over metric should wait for the pending-flush timeout"
+        );
 
         // The carried-over metric flushes when the pending-flush timeout fires.
-        let (_, request) = harness.next_http_request().await;
-        assert_eq!(METRICS_SERIES_V3_PATH, request.uri());
+        assert_eq!(METRICS_SERIES_V3_PATH, next_request_uri().await);
         assert_eq!(
-            recorder.counter(("serializer.v3_payload_split_reason", &[("reason", "max_points")])),
+            recorder.counter((
+                "serializer.v3_payload_split_reason",
+                &[
+                    ("component_id", "metrics"),
+                    ("component_type", "encoder"),
+                    ("reason", "max_points")
+                ]
+            )),
             Some(1)
         );
 
-        harness.shutdown().await;
+        control.shutdown().await.expect("metrics encoder should stop cleanly");
+        assert!(payloads.collect().await.is_empty(), "nothing should be left to flush");
     }
 
     #[tokio::test]
