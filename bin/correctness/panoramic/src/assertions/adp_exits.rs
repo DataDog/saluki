@@ -1,7 +1,9 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 use crate::{
-    assertions::{Assertion, AssertionContext, AssertionResult},
+    assertions::{Assertion, AssertionContext, AssertionResult, AssertionStatus},
     config::LogStream,
 };
 
@@ -59,7 +61,7 @@ impl AdpExitsWithAssertion {
             None => {
                 return AssertionResult {
                     name: self.name().to_string(),
-                    passed: false,
+                    status: AssertionStatus::Errored,
                     message: "Host-process exit code cell not provided in AssertionContext.".to_string(),
                     duration: started.elapsed(),
                 };
@@ -73,7 +75,7 @@ impl AdpExitsWithAssertion {
             _ = tokio::time::sleep(self.timeout) => {
                 return AssertionResult {
                     name: self.name().to_string(),
-                    passed: false,
+                    status: AssertionStatus::Failed,
                     message: format!("ADP did not exit within {:?}.", self.timeout),
                     duration: started.elapsed(),
                 };
@@ -86,14 +88,14 @@ impl AdpExitsWithAssertion {
                 if code == self.expected_code {
                     AssertionResult {
                         name: self.name().to_string(),
-                        passed: true,
+                        status: AssertionStatus::Passed,
                         message: format!("ADP exited with expected code {}.", code),
                         duration: started.elapsed(),
                     }
                 } else {
                     AssertionResult {
                         name: self.name().to_string(),
-                        passed: false,
+                        status: AssertionStatus::Failed,
                         message: format!("ADP exited with code {}, expected {}.", code, self.expected_code),
                         duration: started.elapsed(),
                     }
@@ -101,13 +103,13 @@ impl AdpExitsWithAssertion {
             }
             Some(None) => AssertionResult {
                 name: self.name().to_string(),
-                passed: false,
+                status: AssertionStatus::Failed,
                 message: "ADP was terminated by signal; no exit code available.".to_string(),
                 duration: started.elapsed(),
             },
             None => AssertionResult {
                 name: self.name().to_string(),
-                passed: false,
+                status: AssertionStatus::Errored,
                 message: "Exit token fired but exit code not yet recorded.".to_string(),
                 duration: started.elapsed(),
             },
@@ -123,7 +125,7 @@ impl AdpExitsWithAssertion {
             if Instant::now() > deadline {
                 return AssertionResult {
                     name: self.name().to_string(),
-                    passed: false,
+                    status: AssertionStatus::Failed,
                     message: format!(
                         "Did not observe ADP exit with code {} within {:?}.",
                         self.expected_code, self.timeout
@@ -134,7 +136,7 @@ impl AdpExitsWithAssertion {
             if ctx.cancel_token.is_cancelled() {
                 return AssertionResult {
                     name: self.name().to_string(),
-                    passed: false,
+                    status: AssertionStatus::Failed,
                     message: "Assertion cancelled.".to_string(),
                     duration: started.elapsed(),
                 };
@@ -148,15 +150,20 @@ impl AdpExitsWithAssertion {
                     .as_ref()
                     .and_then(|cell| cell.get().copied())
                 {
-                    let passed = code == self.expected_code;
-                    let message = if passed {
-                        format!("Container exited with expected ADP code {}.", code)
+                    let (status, message) = if code == self.expected_code {
+                        (
+                            AssertionStatus::Passed,
+                            format!("Container exited with expected ADP code {}.", code),
+                        )
                     } else {
-                        format!("Container exited with code {}, expected {}.", code, self.expected_code)
+                        (
+                            AssertionStatus::Failed,
+                            format!("Container exited with code {}, expected {}.", code, self.expected_code),
+                        )
                     };
                     return AssertionResult {
                         name: self.name().to_string(),
-                        passed,
+                        status,
                         message,
                         duration: started.elapsed(),
                     };
@@ -169,7 +176,7 @@ impl AdpExitsWithAssertion {
             if matched {
                 return AssertionResult {
                     name: self.name().to_string(),
-                    passed: true,
+                    status: AssertionStatus::Passed,
                     message: format!("Observed ADP exit with expected code {}.", self.expected_code),
                     duration: started.elapsed(),
                 };

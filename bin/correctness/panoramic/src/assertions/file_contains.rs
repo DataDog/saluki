@@ -1,14 +1,13 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use airlock::docker;
-use bollard::{
-    container::LogOutput,
-    exec::{CreateExecOptions, StartExecResults},
-};
-use futures::TryStreamExt as _;
+use tokio::time::Instant;
 use tracing::trace;
 
-use crate::assertions::{Assertion, AssertionContext, AssertionResult};
+use crate::actions::docker_exec;
+use crate::assertions::{Assertion, AssertionContext, AssertionResult, AssertionStatus, Attempts};
+use crate::probe::{probe, ProbeError, PROBE_TIMEOUT};
+
+const RETRY_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Assertion that checks a file exists in the container, and optionally that its contents match a pattern.
 ///
@@ -54,84 +53,107 @@ impl Assertion for FileContainsAssertion {
 
     async fn check(&self, ctx: &AssertionContext) -> AssertionResult {
         let started = Instant::now();
-        let deadline = Instant::now() + self.timeout;
+        let deadline = started + self.timeout;
 
         // Validate the regex pattern up front, if applicable.
-        if self.is_regex {
-            if let Some(p) = &self.pattern {
-                if let Err(e) = regex::Regex::new(p) {
-                    return AssertionResult {
-                        name: self.name().to_string(),
-                        passed: false,
-                        message: format!("Invalid regex pattern '{}': {}.", p, e),
-                        duration: started.elapsed(),
-                    };
+        let regex = match (&self.pattern, self.is_regex) {
+            (Some(p), true) => match regex::Regex::new(p) {
+                Ok(regex) => Some(regex),
+                Err(e) => {
+                    let message = format!("Invalid regex pattern '{}': {}.", p, e);
+                    return AssertionResult::new(self.name(), started, AssertionStatus::Errored, message);
                 }
-            }
-        }
+            },
+            _ => None,
+        };
+
+        let what = if ctx.is_host_process {
+            format!("a read of '{}'", self.path)
+        } else {
+            format!("a read of '{}' in container '{}'", self.path, ctx.container_name)
+        };
+        let mut attempts = Attempts::default();
 
         loop {
-            if Instant::now() > deadline {
-                return AssertionResult {
-                    name: self.name().to_string(),
-                    passed: false,
-                    message: match &self.pattern {
-                        None => format!("File '{}' did not exist after {:?}.", self.path, self.timeout),
-                        Some(p) => format!(
-                            "Pattern '{}' not found in file '{}' after {:?}.",
-                            p, self.path, self.timeout
-                        ),
-                    },
-                    duration: started.elapsed(),
-                };
+            if ctx.cancel_token.is_cancelled() {
+                return AssertionResult::new(
+                    self.name(),
+                    started,
+                    attempts.status(),
+                    attempts.explain_cancelled("Assertion cancelled."),
+                );
+            }
+            if ctx.container_exit_token.is_cancelled() {
+                let message = attempts.explain_cancelled("Assertion cancelled because container exited.");
+                return AssertionResult::new(self.name(), started, AssertionStatus::Failed, message);
             }
 
-            if ctx.cancel_token.is_cancelled() || ctx.container_exit_token.is_cancelled() {
-                return AssertionResult {
-                    name: self.name().to_string(),
-                    passed: false,
-                    message: "Assertion cancelled because container exited.".to_string(),
-                    duration: started.elapsed(),
-                };
-            }
-
-            let read_result = if ctx.is_host_process {
-                read_file_local(&self.path).await
-            } else {
-                read_file_in_container(&ctx.container_name, &self.path, ctx.target_is_windows()).await
+            let read = async {
+                if ctx.is_host_process {
+                    read_file_local(&self.path).await
+                } else {
+                    read_file_in_container(&ctx.container_name, &self.path, ctx.target_is_windows()).await
+                }
             };
-            match read_result {
-                Ok(Some(content)) => {
-                    let matches = match &self.pattern {
-                        None => true,
-                        Some(p) => {
-                            if self.is_regex {
-                                regex::Regex::new(p).expect("regex validated above").is_match(&content)
-                            } else {
-                                content.contains(p)
-                            }
-                        }
+            if Instant::now() > deadline {
+                let summary = match &self.pattern {
+                    None => format!("File '{}' did not exist after {:?}.", self.path, self.timeout),
+                    Some(p) => format!(
+                        "Pattern '{}' not found in file '{}' after {:?}.",
+                        p, self.path, self.timeout
+                    ),
+                };
+                return AssertionResult::new(
+                    self.name(),
+                    started,
+                    attempts.status(),
+                    attempts.explain_expired(&summary),
+                );
+            }
+
+            let limit = deadline.saturating_duration_since(Instant::now()).min(PROBE_TIMEOUT);
+            match probe(&what, limit, &ctx.cancel_token, read).await {
+                Ok(Ok(Some(content))) => {
+                    let matches = match (&self.pattern, &regex) {
+                        (None, _) => true,
+                        (Some(_), Some(regex)) => regex.is_match(&content),
+                        (Some(p), None) => content.contains(p),
                     };
 
                     if matches {
-                        return AssertionResult {
-                            name: self.name().to_string(),
-                            passed: true,
-                            message: match &self.pattern {
-                                None => format!("File '{}' exists.", self.path),
-                                Some(p) => format!("Pattern '{}' found in file '{}'.", p, self.path),
-                            },
-                            duration: started.elapsed(),
+                        let message = match &self.pattern {
+                            None => format!("File '{}' exists.", self.path),
+                            Some(p) => format!("Pattern '{}' found in file '{}'.", p, self.path),
                         };
+                        return AssertionResult::new(self.name(), started, AssertionStatus::Passed, message);
                     }
 
                     trace!(path = %self.path, "File present but pattern not yet matched, polling...");
+                    attempts.observed(format_args!("'{}' did not match.", self.path));
                 }
-                Ok(None) => trace!(path = %self.path, "File not yet present, polling..."),
-                Err(e) => trace!(path = %self.path, error = %e, "Error reading file, polling..."),
+                Ok(Ok(None)) => {
+                    trace!(path = %self.path, "File not yet present, polling...");
+                    attempts.observed(format_args!("'{}' was missing or unreadable.", self.path));
+                }
+                Ok(Err(e)) => {
+                    trace!(path = %self.path, error = %e, "Error reading file, polling...");
+                    attempts.errored(e);
+                }
+                Err(error @ ProbeError::Cancelled { .. }) => {
+                    return AssertionResult::new(
+                        self.name(),
+                        started,
+                        attempts.status(),
+                        attempts.explain_cancelled(error),
+                    );
+                }
+                Err(error @ ProbeError::TimedOut { .. }) => attempts.errored(error),
             }
 
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            // The next iteration reports cancellation.
+            ctx.cancel_token
+                .run_until_cancelled(tokio::time::sleep(RETRY_INTERVAL))
+                .await;
         }
     }
 }
@@ -147,20 +169,15 @@ async fn read_file_local(path: &str) -> Result<Option<String>, String> {
         Ok(contents) => Ok(Some(contents)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Ok(None),
-        Err(e) => Err(format!("Failed to read '{}': {}", path, e)),
+        Err(e) => Err(format!("Failed to read '{}': {}.", path, e)),
     }
 }
 
 /// Reads a file from inside the container via `docker exec`.
 ///
-/// Linux containers run `cat <path>`. Windows containers run a PowerShell snippet that uses
-/// `Get-Content -Raw` and exits non-zero when the file is missing, so the failure modes line up.
-/// Returns `Ok(Some(contents))` when the file exists and is readable, `Ok(None)` when the file
-/// is missing or unreadable (the exec exits non-zero), and `Err` for any other failure (for
-/// example, loss of Docker connectivity).
+/// Uses `cat` on Linux and `Get-Content -Raw` on Windows. Returns `Ok(Some(contents))` on a successful read,
+/// `Ok(None)` for a nonzero exec exit (a missing or unreadable file), and `Err` for Docker API failures.
 async fn read_file_in_container(container_name: &str, path: &str, is_windows: bool) -> Result<Option<String>, String> {
-    let docker = docker::connect().map_err(|e| format!("Failed to connect to Docker: {}", e))?;
-
     let cmd = if is_windows {
         // PowerShell on Windows containers: print the file's contents on stdout, or exit 1 when
         // the path is absent. -LiteralPath disables wildcard expansion so paths with `[`, `]`,
@@ -181,45 +198,6 @@ async fn read_file_in_container(container_name: &str, path: &str, is_windows: bo
         vec!["cat".to_string(), path.to_string()]
     };
 
-    let exec = docker
-        .create_exec(
-            container_name,
-            CreateExecOptions::<String> {
-                cmd: Some(cmd),
-                attach_stdout: Some(true),
-                attach_stderr: Some(false),
-                ..Default::default()
-            },
-        )
-        .await
-        .map_err(|e| format!("Failed to create exec: {}", e))?;
-
-    let exec_id = exec.id.clone();
-    let result = docker
-        .start_exec(&exec_id, None)
-        .await
-        .map_err(|e| format!("Failed to start exec: {}", e))?;
-
-    let mut stdout = String::new();
-    if let StartExecResults::Attached { mut output, .. } = result {
-        while let Some(chunk) = output
-            .try_next()
-            .await
-            .map_err(|e| format!("Failed to read exec output: {}", e))?
-        {
-            if let LogOutput::StdOut { message } = chunk {
-                stdout.push_str(&String::from_utf8_lossy(&message));
-            }
-        }
-    }
-
-    let inspect = docker
-        .inspect_exec(&exec_id)
-        .await
-        .map_err(|e| format!("Failed to inspect exec: {}", e))?;
-
-    match inspect.exit_code {
-        Some(0) => Ok(Some(stdout)),
-        _ => Ok(None),
-    }
+    let output = docker_exec(container_name, cmd).await.map_err(|e| format!("{e:#}"))?;
+    Ok(output.succeeded().then_some(output.stdout))
 }

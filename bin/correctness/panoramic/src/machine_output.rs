@@ -596,15 +596,15 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::assertions::AssertionResult;
+    use crate::assertions::{AssertionResult, AssertionStatus};
     use crate::collector::RunCollector;
     use crate::events::TestEvent;
     use crate::reporter::{ErrorKind, TestOutcome, TimeoutAttribution};
 
-    fn assertion(name: &str, passed: bool) -> AssertionResult {
+    fn assertion(name: &str, status: AssertionStatus) -> AssertionResult {
         AssertionResult {
             name: name.to_string(),
-            passed,
+            status,
             message: "message".to_string(),
             duration: Duration::from_millis(5),
         }
@@ -615,7 +615,7 @@ mod tests {
         let mut result = TestResult::from_assertions(
             "dsd-plain",
             Duration::from_secs(3),
-            vec![assertion("telemetry matches", false)],
+            vec![assertion("telemetry matches", AssertionStatus::Failed)],
             vec![PhaseTiming {
                 phase: "analysis".to_string(),
                 duration: Duration::from_millis(20),
@@ -682,7 +682,7 @@ mod tests {
         let mut result = TestResult::from_assertions(
             "dsd-plain",
             Duration::from_secs(1),
-            vec![assertion("telemetry matches", false)],
+            vec![assertion("telemetry matches", AssertionStatus::Failed)],
             Vec::new(),
         )
         .with_assertion_details(vec![details]);
@@ -777,7 +777,7 @@ mod tests {
         let result = TestResult::from_assertions(
             "cancelled",
             Duration::from_secs(1),
-            vec![assertion("cancelled", false)],
+            vec![assertion("cancelled", AssertionStatus::Failed)],
             Vec::new(),
         )
         .with_harness_error(ErrorKind::Internal, "Test was cancelled.");
@@ -813,7 +813,7 @@ mod tests {
         let mut result = TestResult::from_assertions(
             "dsd-plain",
             Duration::from_secs(1),
-            vec![assertion("log_contains", false)],
+            vec![assertion("log_contains", AssertionStatus::Failed)],
             Vec::new(),
         );
         result.log_dir = Some(log_dir.path().to_path_buf());
@@ -863,7 +863,7 @@ mod tests {
         let mut result = TestResult::from_assertions(
             "dsd-plain",
             Duration::from_secs(1),
-            vec![assertion("telemetry matches", false)],
+            vec![assertion("telemetry matches", AssertionStatus::Failed)],
             Vec::new(),
         );
         result.log_dir = Some(log_dir.path().to_path_buf());
@@ -905,7 +905,7 @@ mod tests {
         let mut result = TestResult::from_assertions(
             "dsd-plain",
             Duration::from_secs(1),
-            vec![assertion("log_contains", true)],
+            vec![assertion("log_contains", AssertionStatus::Passed)],
             Vec::new(),
         );
         result.log_dir = Some(log_dir.path().to_path_buf());
@@ -926,7 +926,7 @@ mod tests {
         let mut result = TestResult::from_assertions(
             "dsd-plain",
             Duration::from_secs(1),
-            vec![assertion("log_contains", false)],
+            vec![assertion("log_contains", AssertionStatus::Failed)],
             Vec::new(),
         );
         result.log_dir = Some(log_dir.path().to_path_buf());
@@ -972,8 +972,18 @@ mod tests {
     #[test]
     fn run_report_totals_separate_failures_from_errors() {
         let results = [
-            TestResult::from_assertions("a", Duration::from_secs(1), vec![assertion("x", true)], Vec::new()),
-            TestResult::from_assertions("b", Duration::from_secs(1), vec![assertion("x", false)], Vec::new()),
+            TestResult::from_assertions(
+                "a",
+                Duration::from_secs(1),
+                vec![assertion("x", AssertionStatus::Passed)],
+                Vec::new(),
+            ),
+            TestResult::from_assertions(
+                "b",
+                Duration::from_secs(1),
+                vec![assertion("x", AssertionStatus::Failed)],
+                Vec::new(),
+            ),
             TestResult::errored("c", ErrorKind::Setup, "boom", Duration::from_secs(1), Vec::new()),
             TestResult::errored("d", ErrorKind::Timeout, "too slow", Duration::from_secs(1), Vec::new()),
         ];

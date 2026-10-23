@@ -58,7 +58,7 @@
 //! - The init script writes `/airlock/dynamic/.ready` via a bash `trap EXIT`, so the sentinel is
 //!   always written regardless of how the script exits.
 
-use std::{collections::HashMap, time::Duration, time::Instant};
+use std::{collections::HashMap, time::Duration};
 
 use airlock::driver::Driver;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -110,24 +110,13 @@ pub async fn resolve_windows_vars(
 
 /// Reads resolved dynamic variable values from `/airlock/dynamic/` inside the container.
 ///
-/// Polls for the `/airlock/dynamic/.ready` sentinel (up to 30 seconds), then reads each key file.
+/// Waits for `/airlock/dynamic/.ready`, then reads each key file. The caller supplies the timeout and cancellation.
 pub async fn read_resolved_vars(driver: &Driver) -> Result<HashMap<String, String>, GenericError> {
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        let result = driver
-            .exec_in_container(vec!["cat".to_string(), "/airlock/dynamic/.ready".to_string()])
-            .await;
-
-        if result.is_ok() {
-            break;
-        }
-
-        if Instant::now() > deadline {
-            return Err(generic_error!(
-                "Timed out waiting for /airlock/dynamic/.ready after 30s."
-            ));
-        }
-
+    while driver
+        .exec_in_container(vec!["cat".to_string(), "/airlock/dynamic/.ready".to_string()])
+        .await
+        .is_err()
+    {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 

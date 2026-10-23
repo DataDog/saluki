@@ -1,12 +1,14 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde_json::Value;
+use tokio::time::Instant;
 use tracing::trace;
 
 use crate::{
-    actions::{execute_target_command, CommandDiagnostics},
-    assertions::{Assertion, AssertionContext, AssertionResult},
+    actions::{execute_target_command, CommandDiagnostics, CommandError},
+    assertions::{Assertion, AssertionContext, AssertionResult, AssertionStatus, Attempts},
+    probe::PROBE_TIMEOUT,
 };
 
 const DEFAULT_ADP_CONFIG_ENDPOINT: &str = "https://localhost:55101/config";
@@ -61,38 +63,50 @@ impl AdpConfigKeyEqualsAssertion {
         })
     }
 
-    async fn fetch_config(&self, ctx: &AssertionContext, timeout: Duration) -> Result<Value, GenericError> {
+    /// Reads the configuration with the ADP CLI, limited to `timeout`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the command's error, or [`CommandError::Failed`] if its output isn't JSON.
+    async fn fetch_config(&self, ctx: &AssertionContext, timeout: Duration) -> Result<Value, CommandError> {
         let args = self.endpoint.command_args();
         let command = ctx.adp_cli_command.with_args(&args);
         let diagnostics = CommandDiagnostics::redacted_without_child_output(ADP_CONFIG_CLI_DIAGNOSTIC_LABEL);
         let stdout =
             execute_target_command(ctx, &command, &diagnostics, timeout, ctx.adp_cli_command.host_env()).await?;
 
-        serde_json::from_str(&stdout).error_context("Failed to parse ADP config CLI JSON.")
+        serde_json::from_str(&stdout)
+            .error_context("Failed to parse ADP config CLI JSON.")
+            .map_err(CommandError::Failed)
     }
 
-    fn timed_out_result(&self, started: Instant, last_observed: Option<&Value>) -> AssertionResult {
-        AssertionResult {
-            name: self.name().to_string(),
-            passed: false,
-            message: format!(
-                "{} did not happen within {:?}. Last observed value: {}.",
-                self.description(),
-                self.timeout,
-                last_observed
-                    .map(Value::to_string)
-                    .unwrap_or_else(|| "<missing>".to_string())
-            ),
-            duration: started.elapsed(),
-        }
+    fn timed_out_result(
+        &self, started: Instant, attempts: &Attempts, last_observed: Option<&Value>,
+    ) -> AssertionResult {
+        let summary = format!(
+            "{} did not happen within {:?}. Last observed value: {}.",
+            self.description(),
+            self.timeout,
+            last_observed
+                .map(Value::to_string)
+                .unwrap_or_else(|| "<missing>".to_string())
+        );
+        AssertionResult::new(
+            self.name(),
+            started,
+            attempts.status(),
+            attempts.explain_expired(&summary),
+        )
     }
 
-    fn cancelled_result(&self, started: Instant) -> AssertionResult {
-        AssertionResult {
-            name: self.name().to_string(),
-            passed: false,
-            message: "Assertion cancelled because container exited.".to_string(),
-            duration: started.elapsed(),
+    /// Reports test cancellation or target exit.
+    fn cancelled_result(&self, started: Instant, attempts: &Attempts, ctx: &AssertionContext) -> AssertionResult {
+        if ctx.cancel_token.is_cancelled() {
+            let message = attempts.explain_cancelled("Assertion cancelled.");
+            AssertionResult::new(self.name(), started, attempts.status(), message)
+        } else {
+            let message = attempts.explain_cancelled("Assertion cancelled because container exited.");
+            AssertionResult::new(self.name(), started, AssertionStatus::Failed, message)
         }
     }
 }
@@ -111,44 +125,58 @@ impl Assertion for AdpConfigKeyEqualsAssertion {
         let started = Instant::now();
         let deadline = started + self.timeout;
         let mut last_observed = None;
+        let mut attempts = Attempts::default();
 
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return self.timed_out_result(started, last_observed.as_ref());
+                return self.timed_out_result(started, &attempts, last_observed.as_ref());
             }
 
             if ctx.cancel_token.is_cancelled() || ctx.container_exit_token.is_cancelled() {
-                return self.cancelled_result(started);
+                return self.cancelled_result(started, &attempts, ctx);
             }
 
-            match self.fetch_config(ctx, remaining).await {
+            let fetched = self.fetch_config(ctx, remaining.min(PROBE_TIMEOUT)).await;
+            // Treat interruption as cancellation, not as evidence about the configuration.
+            if ctx.cancel_token.is_cancelled() || ctx.container_exit_token.is_cancelled() {
+                return self.cancelled_result(started, &attempts, ctx);
+            }
+            match fetched {
                 Ok(config) => {
                     let actual = get_config_key(&config, &self.key).cloned();
                     if actual.as_ref() == Some(&self.expected) {
-                        return AssertionResult {
-                            name: self.name().to_string(),
-                            passed: true,
-                            message: format!("ADP config key '{}' equals {}.", self.key, self.expected),
-                            duration: started.elapsed(),
-                        };
+                        let message = format!("ADP config key '{}' equals {}.", self.key, self.expected);
+                        return AssertionResult::new(self.name(), started, AssertionStatus::Passed, message);
                     }
+                    attempts.observed(format_args!(
+                        "the key was {}.",
+                        actual
+                            .as_ref()
+                            .map(Value::to_string)
+                            .unwrap_or_else(|| "<missing>".to_string())
+                    ));
                     last_observed = actual;
                     trace!(key = %self.key, "ADP config value did not match, retrying...");
                 }
-                Err(e) => {
+                Err(e @ CommandError::Harness(_)) => {
+                    trace!(key = %self.key, error = %e, "Failed to run the ADP config CLI, retrying...");
+                    attempts.errored(format_args!("{e:#}"));
+                }
+                Err(e @ CommandError::Failed(_)) => {
                     trace!(key = %self.key, error = %e, "Failed to read ADP config with its CLI, retrying...");
+                    attempts.observed(format_args!("{e:#}"));
                 }
             }
 
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return self.timed_out_result(started, last_observed.as_ref());
+                return self.timed_out_result(started, &attempts, last_observed.as_ref());
             }
             let retry_delay = remaining.min(CONFIG_POLL_INTERVAL);
             tokio::select! {
-                _ = ctx.cancel_token.cancelled() => return self.cancelled_result(started),
-                _ = ctx.container_exit_token.cancelled() => return self.cancelled_result(started),
+                _ = ctx.cancel_token.cancelled() => return self.cancelled_result(started, &attempts, ctx),
+                _ = ctx.container_exit_token.cancelled() => return self.cancelled_result(started, &attempts, ctx),
                 _ = tokio::time::sleep(retry_delay) => {}
             }
         }

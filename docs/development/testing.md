@@ -105,6 +105,11 @@ budget of `4 × timeout + capture_duration + 50ms`. The driver allows 10 seconds
 report its result, then stops it as `errored`. This makes the test a harness error (exit code 2), unless a parallel
 member failed. Case timeout or run cancellation interrupts unfinished steps and preserves completed results.
 
+Each polling attempt (an HTTP request, Docker exec, or intake poll) is limited to the shorter of 10 seconds or the
+step's remaining time. Timed-out probes are retried while the step has time left. A step is `errored` if harness failures
+(such as Docker API or intake sidecar errors) prevent evaluation, or its configuration is invalid. An unmet expectation
+remains `failed` after any product observation, even if later probes encounter harness errors.
+
 ## Panoramic CLI and environment
 
 Both suites run through the same `panoramic` binary.
@@ -126,12 +131,12 @@ Exit codes distinguish the run-level result:
 
 | Code | Meaning |
 |------|---------|
-| 0 | Every test passed |
-| 1 | At least one assertion failed |
-| 2 | Harness error, timeout, or interrupted run |
-| 3 | The selection matched no tests |
+| 0 | Every test passed; run completed |
+| 1 | Assertion failure, unless code 2 applies |
+| 2 | Harness error, `timed_out` test, or interrupted run |
+| 3 | Empty selection or unmatched test name |
 
-For code 2, investigate the harness or environment before assertion differences.
+An `errored` step couldn't be evaluated. Inspect test `error`, `timeout`, `cause`, and step `message` fields.
 
 Check `run.json` first: it's updated during execution, so passing entries don't prove the run finished. Inspect
 completeness before individual results, and treat unknown states, outcomes, or statuses as non-passing:
@@ -145,10 +150,9 @@ Follow the selected tests' `log_dir` to `result.json`. Use `outcome` for the tes
 each step. Check `issues` even on passes; they don't change `outcome`. Open reported artifact paths and
 `diagnostic_lines` sources for context and uncapped details.
 
-For semantics, read `RunReport`, `TestReport`, and `AssertionReport` in
-`bin/correctness/panoramic/src/machine_output.rs` and follow their types. Step-to-outcome rules are in
-`TestResult::from_steps` in `reporter.rs`. Check `schema_version` and `run.json`'s `build_revision` when reports differ
-from the working tree.
+Follow report types in `bin/correctness/panoramic/src/machine_output.rs` for semantics. For precedence rules, see
+`TestResult::from_steps` in `reporter.rs` and `exit_code` in `collector.rs`. Check `schema_version` and `run.json`'s
+`build_revision` against the working tree.
 
 On Unix, send SIGINT or SIGTERM to stop a run with cleanup. A second signal may leave containers behind.
 

@@ -7,7 +7,7 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 use super::{AdpConfigEndpoint, AdpConfigKeyEqualsAssertion, ADP_CONFIG_CLI_DIAGNOSTIC_LABEL};
-use crate::assertions::{Assertion as _, AssertionContext, LogBuffer, TargetCommand};
+use crate::assertions::{Assertion as _, AssertionContext, AssertionStatus, LogBuffer, TargetCommand};
 
 fn host_context(adp_cli_command: TargetCommand) -> AssertionContext {
     AssertionContext {
@@ -112,7 +112,7 @@ printf '%s' '{"feature":{"nested":{"enabled":true}}}'"#
 
     let result = assertion.check(&ctx).await;
 
-    assert!(result.passed, "unexpected assertion failure: {}", result.message);
+    assert_eq!(result.status, AssertionStatus::Passed, "{}", result.message);
 }
 
 #[tokio::test]
@@ -138,7 +138,7 @@ printf x >> "$0""#
     let _ = std::fs::remove_file(counter);
     let result = result.expect("assertion should finish within 30 seconds");
 
-    assert!(result.passed, "unexpected assertion failure: {}", result.message);
+    assert_eq!(result.status, AssertionStatus::Passed, "{}", result.message);
     assert!(calls >= 2, "expected at least two CLI calls, observed {calls}");
 }
 
