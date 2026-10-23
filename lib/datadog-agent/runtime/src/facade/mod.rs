@@ -12,21 +12,7 @@
 //! 3. [`RemoteAgent::run`] creates the internal supervisor around the binary's control plane, validates the memory
 //!    bounds of everything registered so far, and runs the supervision tree until the process is asked to shut down.
 //!
-//! The resulting supervision tree looks like this, where `{identifier}` is the identifier from the application details
-//! that the binary registered with `saluki_metadata`:
-//!
-//! ```text
-//! {identifier}-root
-//! ├── bootstrap supervisor (from the binary)
-//! ├── internal-sup
-//! │   ├── control plane (from the binary)
-//! │   │   └── remote-agent
-//! │   ├── resource registry
-//! │   ├── config-updates (connected mode only)
-//! │   ├── env-provider (connected mode only)
-//! │   └── remote-config (connected mode only, once the binary asks for a Remote Configuration client)
-//! └── the topology
-//! ```
+//! The [crate documentation](crate#supervision-tree) shows the resulting supervision tree.
 
 use std::{
     future::Future,
