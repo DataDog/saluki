@@ -30,3 +30,7 @@ From `codereview_guideline.md`:
 From `lib/datadog-agent/config/codereview_guideline.md`, which applies to PRs that change the configuration system:
 
 <!--@include: ../../lib/datadog-agent/config/codereview_guideline.md-->
+
+From `lib/saluki-core/codereview_guideline.md`, which applies to PRs that change the core crate and data model:
+
+<!--@include: ../../lib/saluki-core/codereview_guideline.md-->
