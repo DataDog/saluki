@@ -309,7 +309,7 @@ mod tests {
         supervisor.wait_for_children(1).await;
 
         // The loop stops on its senders closing, not on the shutdown signal, so release our clone before shutting
-        // down. Holding it here would leave the loop waiting until the shutdown budget elapsed.
+        // down. Holding it here would leave the loop waiting until it was halted at its shutdown timeout.
         drop(forwarder);
         assert!(supervisor.shutdown().await.is_ok());
     }
@@ -373,7 +373,7 @@ mod tests {
         supervisor.wait_for_children(1).await;
 
         // The loop stops on its senders closing, not on the shutdown signal, so release our clone before shutting
-        // down. Holding it here would leave the loop waiting until the shutdown budget elapsed.
+        // down. Holding it here would leave the loop waiting until it was halted at its shutdown timeout.
         drop(forwarder);
         assert!(supervisor.shutdown().await.is_ok());
     }

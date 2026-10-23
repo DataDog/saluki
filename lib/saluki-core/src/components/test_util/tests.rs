@@ -107,7 +107,7 @@ impl Source for AssertingSource {
     }
 }
 
-/// A source that ignores its shutdown handle, so that it never stops unless it's aborted.
+/// A source that ignores its shutdown handle, so that it never stops unless it's halted.
 struct StuckSource;
 
 #[async_trait]
@@ -172,7 +172,7 @@ enum ChildBehavior {
     /// Finishes once the destination's `run` returns.
     StopsWithComponent,
 
-    /// Never finishes, so the supervisor has to abort it.
+    /// Never finishes, so it has to be halted.
     IgnoresShutdown,
 
     /// Never finishes, and is aborted as soon as the supervisor stops. The destination returns after its first event,
@@ -377,7 +377,7 @@ async fn children_spawned_from_run_join_the_component_supervisor() {
 #[tokio::test]
 async fn child_ignoring_shutdown_surfaces_as_shutdown_timed_out() {
     let control = TestComponentDriver::options()
-        .with_shutdown_budget(Duration::from_millis(100))
+        .with_shutdown_timeout(Duration::from_millis(100))
         .destination(SpawningDestinationBuilder {
             child: ChildBehavior::IgnoresShutdown,
         })
@@ -391,7 +391,7 @@ async fn child_ignoring_shutdown_surfaces_as_shutdown_timed_out() {
     let error = control
         .shutdown()
         .await
-        .expect_err("aborting the child should make the shutdown unclean");
+        .expect_err("halting the child should make the shutdown unclean");
     let elapsed = started.elapsed();
 
     let supervisor_error = error
@@ -399,13 +399,14 @@ async fn child_ignoring_shutdown_surfaces_as_shutdown_timed_out() {
         .expect("the error should come from the supervisor");
     assert!(
         matches!(supervisor_error, SupervisorError::ShutdownTimedOut { aborted: 1 }),
-        "expected exactly one aborted child, got {supervisor_error:?}"
+        "expected exactly one halted child, got {supervisor_error:?}"
     );
 
-    // The default budget is five seconds, so finishing well inside that shows the configured budget was applied.
+    // The component and child timeouts both default to five seconds, so finishing well inside that shows the configured
+    // timeout bounded the child.
     assert!(
         elapsed < Duration::from_secs(3),
-        "the 100ms budget should have bounded the shutdown; took {elapsed:?}"
+        "the 100ms timeout should have bounded the shutdown; took {elapsed:?}"
     );
 }
 
@@ -479,7 +480,7 @@ async fn needed_child_failing_before_run_returns_fails_the_component() {
 #[tokio::test]
 async fn needed_child_failing_while_run_waits_fails_the_component() {
     // The child fails while the destination still waits for its input, so the scope stops `run` before it returns. That
-    // is the child's failure, not an abort at the end of the shutdown budget.
+    // is the child's failure, not a halt at the end of the shutdown timeout.
     let control = TestComponentDriver::destination(SpawningDestinationBuilder {
         child: ChildBehavior::NeededFailsWhileRunWaits,
     })
@@ -495,10 +496,7 @@ async fn needed_child_failing_while_run_waits_fails_the_component() {
         message.contains("child failed on purpose"),
         "the error should come from the child: {message}"
     );
-    assert!(
-        !message.contains("shutdown budget"),
-        "the failure is not an abort: {message}"
-    );
+    assert!(!message.contains("was halted"), "the failure is not a halt: {message}");
 }
 
 #[tokio::test]
@@ -527,9 +525,9 @@ async fn input_drain_wait_returns_once_the_component_has_stopped() {
 }
 
 #[tokio::test]
-async fn run_ignoring_shutdown_is_aborted_within_the_shutdown_budget() {
+async fn run_ignoring_shutdown_is_halted_within_the_shutdown_timeout() {
     let (control, _outputs) = TestComponentDriver::options()
-        .with_shutdown_budget(Duration::from_millis(100))
+        .with_shutdown_timeout(Duration::from_millis(100))
         .source(SourceBuilderFor { source: || StuckSource })
         .await
         .expect("source should build");
@@ -538,7 +536,7 @@ async fn run_ignoring_shutdown_is_aborted_within_the_shutdown_budget() {
     let error = control
         .shutdown()
         .await
-        .expect_err("aborting the source should make the shutdown unclean");
+        .expect_err("halting the source should make the shutdown unclean");
     let elapsed = started.elapsed();
 
     let supervisor_error = error
@@ -546,18 +544,18 @@ async fn run_ignoring_shutdown_is_aborted_within_the_shutdown_budget() {
         .expect("the error should come from the supervisor");
     assert!(
         matches!(supervisor_error, SupervisorError::ShutdownTimedOut { aborted: 1 }),
-        "expected only the source to be aborted, got {supervisor_error:?}"
+        "expected only the source to be halted, got {supervisor_error:?}"
     );
     assert!(
-        error.to_string().contains("didn't stop within the shutdown budget"),
-        "the error should say that the component itself was aborted: {error:#}"
+        error.to_string().contains("didn't stop within its shutdown timeout"),
+        "the error should say that the component itself was halted: {error:#}"
     );
 
-    // The deadline for `run` to stop is the budget plus the five-second wait timeout, so finishing well inside that
-    // shows that the budget bounded the run.
+    // The deadline for `run` to stop is the shutdown timeout plus the five-second wait timeout, so finishing well
+    // inside that shows that the shutdown timeout bounded the run.
     assert!(
         elapsed < Duration::from_secs(3),
-        "the 100ms budget should have bounded the shutdown; took {elapsed:?}"
+        "the 100ms timeout should have bounded the shutdown; took {elapsed:?}"
     );
 }
 
@@ -750,10 +748,10 @@ async fn synchronous_transform_stops_with_the_dispatch_error_once_its_output_is_
 }
 
 #[tokio::test]
-async fn withheld_shutdown_leaves_the_source_running_until_the_budget_aborts_it() {
+async fn withheld_shutdown_leaves_the_source_running_until_its_timeout_halts_it() {
     let (source, mut shutdown_seen) = shutdown_reporting_source();
     let (control, _outputs) = TestComponentDriver::options()
-        .with_shutdown_budget(Duration::from_millis(100))
+        .with_shutdown_timeout(Duration::from_millis(100))
         .with_shutdown_withheld()
         .source(source)
         .await
@@ -763,16 +761,16 @@ async fn withheld_shutdown_leaves_the_source_running_until_the_budget_aborts_it(
     let error = control
         .shutdown()
         .await
-        .expect_err("the source never sees shutdown, so the supervisor should abort it");
+        .expect_err("the source never sees shutdown, so the supervisor should halt it");
     let supervisor_error = error
         .downcast_ref::<SupervisorError>()
         .expect("the error should come from the supervisor");
     assert!(
         matches!(supervisor_error, SupervisorError::ShutdownTimedOut { aborted: 1 }),
-        "expected only the source to be aborted, got {supervisor_error:?}"
+        "expected only the source to be halted, got {supervisor_error:?}"
     );
 
-    // Aborting the source dropped its sender before its shutdown handle fired.
+    // Halting the source dropped its sender before its shutdown handle fired.
     assert!(matches!(
         shutdown_seen.try_recv(),
         Err(oneshot::error::TryRecvError::Closed)

@@ -33,8 +33,8 @@ use saluki_io::net::{
     ListenAddress,
 };
 use stringtheory::MetaString;
+use tokio::select;
 use tokio::sync::mpsc;
-use tokio::{pin, select};
 use tonic::{Response, Status};
 use tracing::{debug, trace, warn};
 
@@ -98,9 +98,6 @@ impl Source for ChecksIPC {
             default_hostname,
         } = *self;
 
-        let global_shutdown = context.take_shutdown_handle();
-        pin!(global_shutdown);
-
         let mut health = context.take_health_handle();
 
         let (events_tx, mut events_rx) = mpsc::channel(16);
@@ -120,8 +117,11 @@ impl Source for ChecksIPC {
             .with_http2_config(Http2Config::grpc_defaults())
             .with_worker_pool(context.topology_context().global_thread_pool().clone());
 
+        // The server stops when this source is told to stop, and the channel closes once it exits. Thus, the loop below
+        // dispatches every event that the server accepted before it ends.
         runtime::nested_supervisor(grpc_server.into_supervisor())
             .needed()
+            .stops_with_owner()
             .spawn();
 
         health.mark_ready();
@@ -129,12 +129,12 @@ impl Source for ChecksIPC {
 
         loop {
             select! {
-                _ = &mut global_shutdown => {
-                    debug!("Received shutdown signal.");
-                    break;
-                },
                 _ = health.live() => continue,
-                Some(event) = events_rx.recv() => {
+                maybe_event = events_rx.recv() => {
+                    let Some(event) = maybe_event else {
+                        break;
+                    };
+
                     let output_name = match &event {
                         Event::Metric(_) => "metrics",
                         Event::Log(_) => "logs",
@@ -347,13 +347,18 @@ fn proto_alert_type_to_alert_type(alert_type: ProtoAlertType) -> Option<AlertTyp
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
+
     use datadog_protos::checks::{
         check_data::Data,
+        checks_client::ChecksClient,
         event::Event as ProtoEvent,
         log::Log as ProtoLog,
         metric::{Metric as ProtoMetric, MetricType as ProtoMetricType},
         service_check::{ServiceCheck as ProtoServiceCheck, Status as ProtoServiceCheckStatus},
+        CheckData,
     };
+    use saluki_core::components::test_util::TestComponentDriver;
     use saluki_core::data_model::event::metric::MetricValues;
 
     use super::*;
@@ -750,5 +755,67 @@ mod tests {
         assert_eq!(ev.aggregation_key(), None);
         assert_eq!(ev.source_type_name(), None);
         assert_eq!(ev.hostname(), None);
+    }
+
+    #[tokio::test]
+    async fn accepted_events_are_dispatched_before_the_source_stops() {
+        // More than the internal channel holds.
+        const METRICS: usize = 64;
+
+        let address = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|listener| listener.local_addr())
+            .expect("should reserve an ephemeral port");
+
+        // The output holds one buffer, so the request is still being handled when the source is told to stop.
+        let (mut control, mut outputs) = TestComponentDriver::options()
+            .with_interconnect_capacity(NonZeroUsize::MIN)
+            .source(ChecksIPCConfiguration::new(ListenAddress::Tcp(address), "test-host"))
+            .await
+            .expect("source should build");
+        let mut metrics = outputs.take_named_output("metrics");
+
+        let endpoint =
+            tonic::transport::Endpoint::from_shared(format!("http://{address}")).expect("endpoint should parse");
+        let channel = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match endpoint.connect().await {
+                    Ok(channel) => return channel,
+                    Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+                }
+            }
+        })
+        .await
+        .expect("the gRPC server should start listening");
+
+        let request = SendCheckPayloadRequest {
+            data: (0..METRICS)
+                .map(|i| CheckData {
+                    data: Some(metric_data(
+                        ProtoMetricType::Gauge as i32,
+                        &format!("metric_{i}"),
+                        1.0,
+                        0,
+                        0,
+                        &[],
+                        "",
+                    )),
+                })
+                .collect(),
+        };
+        let response = tokio::spawn(async move { ChecksClient::new(channel).send_check_payload(request).await });
+
+        let first = metrics.next().await.expect("the first metric should arrive");
+        control.signal_shutdown();
+        let (result, rest) = tokio::join!(control.wait(), metrics.collect_events());
+        result.expect("source should stop cleanly");
+        response
+            .await
+            .expect("request task should not panic")
+            .expect("request should succeed");
+        assert_eq!(
+            first.len() + rest.len(),
+            METRICS,
+            "every accepted metric must be dispatched"
+        );
     }
 }

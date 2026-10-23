@@ -12,7 +12,7 @@ use saluki_error::{generic_error, GenericError};
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
 
-use super::supervisor::{TestComponentSupervisor, TEST_SHUTDOWN_BUDGET};
+use super::supervisor::{TestComponentSupervisor, TEST_COMPONENT_TIMEOUT};
 use super::{ComponentControl, NoInput, Output, Outputs};
 use crate::accounting::{ComponentRegistry, MemoryBoundsBuilder, MemoryLimiter};
 use crate::components::{
@@ -196,7 +196,7 @@ pub struct DriverOptions {
     component_id: ComponentId,
     interconnect_capacity: NonZeroUsize,
     wait_timeout: Duration,
-    shutdown_budget: Duration,
+    shutdown_timeout: Duration,
     resource_registry: ResourceRegistry,
     withhold_shutdown: bool,
 }
@@ -207,7 +207,7 @@ impl Default for DriverOptions {
             component_id: ComponentId::try_from(DEFAULT_COMPONENT_ID).expect("default component ID should be valid"),
             interconnect_capacity: DEFAULT_INTERCONNECT_CAPACITY,
             wait_timeout: DEFAULT_WAIT_TIMEOUT,
-            shutdown_budget: TEST_SHUTDOWN_BUDGET,
+            shutdown_timeout: TEST_COMPONENT_TIMEOUT,
             resource_registry: ResourceRegistry::new(),
             withhold_shutdown: false,
         }
@@ -244,7 +244,7 @@ impl DriverOptions {
     /// Sets how long each wait lasts before it panics.
     ///
     /// Defaults to five seconds. Applies to every wait on a [`ComponentControl`] or an [`Output`]. Waiting for the
-    /// component to stop gets the shutdown budget on top.
+    /// component to stop gets the shutdown timeout on top.
     ///
     /// Raise it for a component that is slow to start on a loaded machine. Lower it to make a test that is expected to
     /// panic on a deadline finish sooner.
@@ -253,15 +253,16 @@ impl DriverOptions {
         self
     }
 
-    /// Sets the shutdown budget of the component's supervisor.
+    /// Sets the shutdown timeout of the component.
     ///
-    /// Defaults to five seconds. The budget covers the component and every child it spawned: whatever is still running
-    /// when it runs out is aborted, and [`ComponentControl::wait`] reports it as an error.
+    /// Defaults to five seconds. The timeout covers the component and every child it spawned: whatever is still running
+    /// when it runs out is halted, and [`ComponentControl::wait`] reports it as an error. A child is halted sooner if
+    /// its own shutdown timeout runs out first.
     ///
     /// Shorten it to check that the component, or a child, stops on shutdown without making the test wait out the
-    /// default budget when it doesn't.
-    pub fn with_shutdown_budget(mut self, shutdown_budget: Duration) -> Self {
-        self.shutdown_budget = shutdown_budget;
+    /// default timeout when it doesn't.
+    pub fn with_shutdown_timeout(mut self, shutdown_timeout: Duration) -> Self {
+        self.shutdown_timeout = shutdown_timeout;
         self
     }
 
@@ -278,7 +279,7 @@ impl DriverOptions {
     ///
     /// The component gets a shutdown handle that the [`ComponentControl`] owns, in place of the one from its worker, so
     /// it behaves like a component that ignores shutdown: [`ComponentControl::signal_shutdown`] only reaches the
-    /// supervisor, which aborts the component and every child still running once the shutdown budget runs out. Use it
+    /// supervisor, which halts the component and every child still running once its shutdown timeout runs out. Use it
     /// to check what happens to the children of a component that is cut off. The handle only fires once the control is
     /// dropped, or once [`ComponentControl::wait`] returns.
     ///
@@ -701,9 +702,9 @@ impl Harness {
     /// Starts the component's supervisor with the component running under it, returning the control for it.
     ///
     /// The component runs the way a topology runs it: wrapped in a [`ComponentWorker`], as the one static, one-shot,
-    /// needed child of the supervisor. So it runs in a process of its own, in the component's span, with the
-    /// supervisor's shutdown budget covering it, and its `run` returning stops the supervisor along with every child
-    /// the component spawned.
+    /// needed child of the supervisor. So it runs in a process of its own, in the component's span, with its shutdown
+    /// timeout covering it and every child it spawned, and its `run` returning stops the supervisor along with those
+    /// children.
     async fn spawn<C, I>(self, runnable: C, input: Option<mpsc::Sender<I>>) -> ComponentControl<I>
     where
         C: RunnableComponent,
@@ -721,14 +722,14 @@ impl Harness {
             outcome_tx,
             shutdown,
         };
-        let worker = ComponentWorker::new(self.component_context.clone(), reporting);
+        let worker = ComponentWorker::new(self.component_context.clone(), reporting, self.options.shutdown_timeout);
         let worker = runtime::supervisable(worker)
             .needed()
             .observing_exit(ExitObserver::new(exit_tx))
             .build();
         let supervisor = TestComponentSupervisor::start_with_worker(
             &self.identity.to_string(),
-            self.options.shutdown_budget,
+            self.options.shutdown_timeout,
             self.dataspace,
             worker,
         )
@@ -743,7 +744,7 @@ impl Harness {
             exit,
             withheld_shutdown,
             wait_timeout: self.options.wait_timeout,
-            shutdown_budget: self.options.shutdown_budget,
+            shutdown_timeout: self.options.shutdown_timeout,
         }
     }
 }
@@ -754,8 +755,8 @@ pub(super) type RunOutcome = std::thread::Result<Result<(), GenericError>>;
 /// A component that reports how its `run` ended to its [`ComponentControl`].
 ///
 /// The outcome goes to the control rather than to the supervisor, so that [`ComponentControl::wait`] can return the
-/// run's error unmodified, or resume its panic. The supervisor only needs to see the run stop. If the supervisor aborts
-/// the run, the outcome is never sent.
+/// run's error unmodified, or resume its panic. The supervisor only needs to see the run stop. If the run is halted, the
+/// outcome is never sent.
 struct Reporting<C> {
     runnable: C,
     outcome_tx: oneshot::Sender<RunOutcome>,

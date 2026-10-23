@@ -161,8 +161,8 @@ impl Forwarder for ClusterAgentForwarder {
             }
         }
 
-        // Starts the drain. This component does not finish until the drain is done. The deadline of the component
-        // bounds this wait.
+        // Starts the drain. This component does not finish until the drain is done. The shutdown timeout of the
+        // component bounds this wait.
         forwarder.shutdown();
 
         debug!("Cluster Agent forwarder stopped.");
