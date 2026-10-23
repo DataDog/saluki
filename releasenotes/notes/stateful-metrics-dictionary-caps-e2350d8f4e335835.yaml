@@ -1,0 +1,25 @@
+enhancements:
+  - |
+    Add ``data_plane.stateful_metrics_dictionary_max_entries`` (default
+    ``60000``) and ``data_plane.stateful_metrics_dictionary_max_bytes``
+    (default ``256MiB``) to the experimental stateful metrics path. They cap
+    each sender worker's metrics dictionary, so the process-wide totals are
+    each value times ``data_plane.stateful_metrics_workers``. The caps are a
+    ceiling rather than a reservation: dictionary memory grows only with the
+    series a worker sees, apart from a fixed frequency sketch of about 512 KiB
+    per worker at the defaults. In local load tests, a 16 MiB byte cap was
+    reached at about 5,000 entries per worker and caused heavy definition
+    churn. The defaults cover the working set of most nodes (about 350,000
+    active contexts per node in those tests); larger nodes rely on admission
+    control. Lower them
+    only on memory-constrained hosts. Both require a restart and reject zero.
+  - |
+    Report each stateful metrics sender worker's dictionary size through the
+    ``stateful_metrics_dictionary_entries``,
+    ``stateful_metrics_dictionary_estimated_bytes``,
+    ``stateful_metrics_dictionary_transient_entries``,
+    ``stateful_metrics_dictionary_transient_bytes``, and
+    ``stateful_metrics_dictionary_frequency_sketch_bytes`` gauges. Entries and
+    estimated bytes count only retained definitions, which the caps govern;
+    transient definitions, sent only with the payloads that need them once the
+    dictionary is full, are reported separately.

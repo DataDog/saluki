@@ -1,10 +1,9 @@
 //! Retained sender counters, including idle periods between metric batches.
 
-use foldspace_core::MetricStreamFailureKind;
+use foldspace_core::{MetricDictionaryStats, MetricStreamFailureKind};
 use saluki_common::collections::FastHashMap;
-use saluki_error::GenericError;
 use saluki_io::net::util::retry::PushResult;
-use saluki_metrics::{Counter, MetricsBuilder};
+use saluki_metrics::{Counter, Gauge, MetricsBuilder};
 use tracing::warn;
 
 pub(super) struct Telemetry {
@@ -12,6 +11,15 @@ pub(super) struct Telemetry {
     pub batches_retried: Counter,
     pub batches_abandoned: Counter,
     pub points_dropped: Counter,
+    /// Retained definitions, which the entry cap governs; transient definitions are reported apart.
+    dictionary_entries: Gauge,
+    /// Estimated bytes of retained definitions, which the byte cap governs.
+    dictionary_estimated_bytes: Gauge,
+    /// Definitions sent only for the payloads that reference them, outside the caps.
+    dictionary_transient_entries: Gauge,
+    dictionary_transient_bytes: Gauge,
+    /// Fixed size of the admission frequency sketch, sized from the caps; outside the byte cap.
+    dictionary_frequency_sketch_bytes: Gauge,
     builder: MetricsBuilder,
     stream_failures: FastHashMap<&'static str, Counter>,
 }
@@ -23,9 +31,24 @@ impl Telemetry {
             batches_retried: builder.register_counter("stateful_metrics_batches_retried_total"),
             batches_abandoned: builder.register_counter("stateful_metrics_batches_abandoned_total"),
             points_dropped: builder.register_counter("stateful_metrics_points_dropped_total"),
+            dictionary_entries: builder.register_gauge("stateful_metrics_dictionary_entries"),
+            dictionary_estimated_bytes: builder.register_gauge("stateful_metrics_dictionary_estimated_bytes"),
+            dictionary_transient_entries: builder.register_gauge("stateful_metrics_dictionary_transient_entries"),
+            dictionary_transient_bytes: builder.register_gauge("stateful_metrics_dictionary_transient_bytes"),
+            dictionary_frequency_sketch_bytes: builder
+                .register_gauge("stateful_metrics_dictionary_frequency_sketch_bytes"),
             builder,
             stream_failures: FastHashMap::default(),
         }
+    }
+
+    pub fn record_dictionary(&self, stats: MetricDictionaryStats) {
+        self.dictionary_entries.set(stats.entries as f64);
+        self.dictionary_estimated_bytes.set(stats.estimated_bytes as f64);
+        self.dictionary_transient_entries.set(stats.transient_entries as f64);
+        self.dictionary_transient_bytes.set(stats.transient_bytes as f64);
+        self.dictionary_frequency_sketch_bytes
+            .set(stats.frequency_sketch_bytes as f64);
     }
 
     pub fn stream_failed(&mut self, kind: MetricStreamFailureKind) {
@@ -36,6 +59,7 @@ impl Telemetry {
             MetricStreamFailureKind::InvalidArgument => "InvalidArgument",
             MetricStreamFailureKind::Unauthenticated => "Unauthenticated",
             MetricStreamFailureKind::FailedPrecondition => "FailedPrecondition",
+            MetricStreamFailureKind::ProtocolViolation => "ProtocolViolation",
         };
         self.stream_failures
             .entry(kind)
@@ -55,18 +79,6 @@ impl Telemetry {
             );
             self.batches_abandoned.increment(result.items_dropped);
             self.points_dropped.increment(result.data_points_dropped);
-        }
-    }
-
-    // A queue rejection consumes the entry; account for it without terminating the sender.
-    pub fn track_enqueue(&self, result: Result<PushResult, GenericError>, points: u64) {
-        match result {
-            Ok(result) => self.track_drops(result),
-            Err(error) => {
-                warn!(%error, points, "Stateful metrics batch could not enter retry storage.");
-                self.batches_abandoned.increment(1);
-                self.points_dropped.increment(points);
-            }
         }
     }
 }

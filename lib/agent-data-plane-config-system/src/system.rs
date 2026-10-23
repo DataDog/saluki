@@ -1,6 +1,7 @@
 //! [`ConfigurationSystem`]: the runtime configuration, translated from the raw sources and kept
 //! current as the Datadog Agent streams updates.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use agent_data_plane_config::{Live, SalukiConfiguration};
@@ -63,9 +64,22 @@ pub enum Error {
     ))]
     MissingApiKey,
 
-    /// The experimental stateful metrics intake is not a plaintext HTTP origin.
-    #[snafu(display("data_plane.stateful_metrics_endpoint requires an http://host:port intake origin for testing"))]
+    /// An experimental stateful metrics intake is not a plaintext HTTP origin.
+    #[snafu(display(
+        "data_plane.stateful_metrics_endpoint and data_plane.stateful_metrics_additional_endpoints require \
+         http://host:port intake origins for testing"
+    ))]
     InvalidStatefulMetricsEndpoint,
+
+    /// Additional stateful metrics intakes are configured without a primary one.
+    #[snafu(display(
+        "data_plane.stateful_metrics_additional_endpoints requires data_plane.stateful_metrics_endpoint"
+    ))]
+    StatefulMetricsAdditionalEndpointsWithoutEndpoint,
+
+    /// The same stateful metrics intake is configured more than once.
+    #[snafu(display("stateful metrics endpoint {endpoint} is configured more than once"))]
+    DuplicateStatefulMetricsEndpoint { endpoint: String },
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -296,17 +310,23 @@ pub(crate) fn translate_authoritative(merged: &SourceTree) -> Result<SalukiConfi
 /// forwarder then retries. Failing here names the cause once instead of leaving an operator to infer
 /// it from a stream of authentication failures.
 pub(crate) fn validate(config: &SalukiConfiguration) -> Result<()> {
-    if let Some(endpoint) = &config.domains.stateful_metrics.endpoint {
+    let stateful = &config.domains.stateful_metrics;
+    if stateful.endpoint.is_none() && !stateful.additional_endpoints.is_empty() {
+        return Err(Error::StatefulMetricsAdditionalEndpointsWithoutEndpoint);
+    }
+    let mut origins = HashSet::new();
+    for endpoint in stateful.endpoint.iter().chain(&stateful.additional_endpoints) {
         let uri: Uri = endpoint.parse().map_err(|_| Error::InvalidStatefulMetricsEndpoint)?;
-        if uri.scheme_str() != Some("http")
-            || uri.host().is_none()
-            || uri
-                .authority()
-                .is_some_and(|authority| authority.as_str().contains('@'))
-            || uri.path() != "/"
-            || uri.query().is_some()
-        {
+        let Some(authority) = uri.authority().filter(|authority| !authority.as_str().contains('@')) else {
             return Err(Error::InvalidStatefulMetricsEndpoint);
+        };
+        if uri.scheme_str() != Some("http") || uri.host().is_none() || uri.path() != "/" || uri.query().is_some() {
+            return Err(Error::InvalidStatefulMetricsEndpoint);
+        }
+        if !origins.insert(authority.as_str().to_ascii_lowercase()) {
+            return Err(Error::DuplicateStatefulMetricsEndpoint {
+                endpoint: endpoint.clone(),
+            });
         }
     }
     // A blank key is as unusable as an absent one, and a padded key is a typo we should name rather
@@ -458,6 +478,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stateful_metrics_dictionary_caps_load_from_file_and_environment() {
+        const MIB_128: u64 = 128 * 1024 * 1024;
+
+        let default = standalone_system(None, None).await.unwrap();
+        let stateful = &default.config().domains.stateful_metrics;
+        assert_eq!(stateful.dictionary_max_entries.get(), 60_000);
+        assert_eq!(stateful.dictionary_max_bytes.get(), 256 * 1024 * 1024);
+
+        for max_bytes in [json!(MIB_128), json!("128MiB")] {
+            let from_file = standalone_system(
+                Some(json!({
+                    "api_key": TEST_API_KEY,
+                    "data_plane": {
+                        "stateful_metrics_dictionary_max_entries": 100_000,
+                        "stateful_metrics_dictionary_max_bytes": max_bytes,
+                    },
+                })),
+                None,
+            )
+            .await
+            .unwrap();
+            let stateful = &from_file.config().domains.stateful_metrics;
+            assert_eq!(stateful.dictionary_max_entries.get(), 100_000, "{max_bytes}");
+            assert_eq!(stateful.dictionary_max_bytes.get(), MIB_128, "{max_bytes}");
+            assert_eq!(stateful.workers.get(), 3);
+        }
+
+        for max_bytes in [MIB_128.to_string(), "128MiB".to_string()] {
+            let (map, _) = ConfigurationLoader::for_tests_with_provider_factory(
+                None,
+                Some(&[
+                    ("DD_API_KEY".to_string(), TEST_API_KEY.to_string()),
+                    (
+                        "DD_DATA_PLANE_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES".to_string(),
+                        "100000".to_string(),
+                    ),
+                    (
+                        "DD_DATA_PLANE_STATEFUL_METRICS_DICTIONARY_MAX_BYTES".to_string(),
+                        max_bytes.clone(),
+                    ),
+                ]),
+                false,
+                |_| crate::env_provider::EnvironmentProvider::new().unwrap(),
+            )
+            .await;
+            let from_env = translate_strict(&SourceTree::all_explicit(map.as_typed::<Value>().unwrap())).unwrap();
+            let stateful = &from_env.domains.stateful_metrics;
+            assert_eq!(stateful.dictionary_max_entries.get(), 100_000, "{max_bytes}");
+            assert_eq!(stateful.dictionary_max_bytes.get(), MIB_128, "{max_bytes}");
+        }
+    }
+
+    #[tokio::test]
+    async fn stateful_metrics_rejects_invalid_dictionary_caps() {
+        let invalid_entries = [json!(0), json!(-1), json!(1.5), json!("invalid")];
+        let invalid_bytes = [
+            json!(0),
+            json!(-1),
+            json!("0B"),
+            json!("invalid"),
+            json!(i64::MAX as u64 + 1),
+        ];
+        let cases = invalid_entries
+            .into_iter()
+            .map(|value| ("stateful_metrics_dictionary_max_entries", value))
+            .chain(
+                invalid_bytes
+                    .into_iter()
+                    .map(|value| ("stateful_metrics_dictionary_max_bytes", value)),
+            );
+        for (key, value) in cases {
+            assert!(
+                standalone_system(
+                    Some(json!({ "api_key": TEST_API_KEY, "data_plane": { key: value.clone() } })),
+                    None,
+                )
+                .await
+                .is_err(),
+                "{key}: {value}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn stateful_metrics_rejects_unsupported_endpoint_forms() {
         for endpoint in [
             "",
@@ -482,6 +586,80 @@ mod tests {
                     Err(Error::InvalidStatefulMetricsEndpoint)
                 ),
                 "{endpoint}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn stateful_metrics_additional_endpoints_load_from_file_and_environment() {
+        let endpoint = "http://127.0.0.1:8080";
+        let additional = ["http://127.0.0.1:8081", "http://127.0.0.1:8082"];
+        let from_file = standalone_system(
+            Some(json!({
+                "api_key": TEST_API_KEY,
+                "data_plane": {
+                    "stateful_metrics_endpoint": endpoint,
+                    "stateful_metrics_additional_endpoints": additional,
+                },
+            })),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            from_file.config().domains.stateful_metrics.additional_endpoints,
+            additional
+        );
+        super::validate(&from_file.config()).unwrap();
+
+        let (map, _) = ConfigurationLoader::for_tests_with_provider_factory(
+            None,
+            Some(&[
+                ("DD_API_KEY".to_string(), TEST_API_KEY.to_string()),
+                (
+                    "DD_DATA_PLANE_STATEFUL_METRICS_ENDPOINT".to_string(),
+                    endpoint.to_string(),
+                ),
+                (
+                    "DD_DATA_PLANE_STATEFUL_METRICS_ADDITIONAL_ENDPOINTS".to_string(),
+                    additional.join(" "),
+                ),
+            ]),
+            false,
+            |_| crate::env_provider::EnvironmentProvider::new().unwrap(),
+        )
+        .await;
+        let from_env = translate_strict(&SourceTree::all_explicit(map.as_typed::<Value>().unwrap())).unwrap();
+        assert_eq!(from_env.domains.stateful_metrics.additional_endpoints, additional);
+        super::validate(&from_env).unwrap();
+    }
+
+    #[tokio::test]
+    async fn stateful_metrics_rejects_invalid_additional_endpoints() {
+        let primary = "http://127.0.0.1:8080";
+        for (endpoint, additional) in [
+            (None, vec!["http://127.0.0.1:8081"]),
+            (Some(primary), vec!["https://127.0.0.1:8081"]),
+            (Some(primary), vec!["http://127.0.0.1:8081/path"]),
+            (Some(primary), vec!["HTTP://127.0.0.1:8080"]),
+            (Some(primary), vec!["http://127.0.0.1:8081", "http://127.0.0.1:8081"]),
+        ] {
+            let mut data_plane = json!({ "stateful_metrics_additional_endpoints": additional });
+            if let Some(endpoint) = endpoint {
+                data_plane["stateful_metrics_endpoint"] = json!(endpoint);
+            }
+            let system = standalone_system(Some(json!({ "api_key": TEST_API_KEY, "data_plane": data_plane })), None)
+                .await
+                .unwrap();
+            let error = super::validate(&system.config()).unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    Error::InvalidStatefulMetricsEndpoint
+                        | Error::StatefulMetricsAdditionalEndpointsWithoutEndpoint
+                        | Error::DuplicateStatefulMetricsEndpoint { .. }
+                ),
+                "{additional:?}: {error}"
             );
         }
     }
