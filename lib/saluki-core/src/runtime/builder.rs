@@ -30,28 +30,28 @@
 //! This behavior lets a set of tasks that are connected by channels drain in dependency order. The tasks do not have to
 //! know that order. Because of this behavior, it is not a problem that a one-shot child cannot see the shutdown signal.
 //!
-//! For a supervisor, its [shutdown budget][super::Supervisor::with_shutdown_budget] limits the wait. The budget applies
-//! to all the children together, so no child has to guess how much time it needs. If no budget limits such a child, the
-//! child uses its own shutdown strategy instead. A scope has no budget, so each child of a process uses its own
-//! shutdown strategy. If the process overruns its own deadline and is aborted, its children are aborted with it.
+//! Each child is held to its own shutdown strategy, whether its owner is a supervisor or a scope. A closure-based child
+//! is graceful, with a timeout of five seconds. When a timeout expires, the process is halted along with everything in
+//! its scope.
 //!
 //! Two cases need something other than the default:
 //!
-//! - Work with no terminal condition holds the drain until the deadline. An endless background loop is an example. Give
-//!   it [`ShutdownStrategy::Brutal`] with [`ChildBuilder::with_shutdown_strategy`] so that it is aborted at once.
+//! - Work with no terminal condition holds the drain open until its timeout expires. An endless background loop is an
+//!   example. Give it [`ShutdownStrategy::Brutal`] with [`ChildBuilder::with_shutdown_strategy`] so that it is halted
+//!   at once.
 //! - If work must observe shutdown to know that it must stop, or must run cleanup, build it with
 //!   [`worker_with_shutdown`]. The body of that worker receives the shutdown signal. You can also implement
 //!   [`Supervisable`] directly.
 //!
-//! [`ChildBuilder::with_shutdown_timeout`] sets a deadline that is shorter than the deadline of the owner. Use it if a
-//! particular child must be abandoned sooner than its siblings.
+//! [`ChildBuilder::with_shutdown_timeout`] sets a timeout other than the default. Use it if a particular child needs
+//! more time to drain, or must be halted sooner than its siblings.
 //!
 //! # Children of the current process
 //!
 //! [`ChildBuilder::spawn`] makes a child a child of the current process, and the [scope][super::scope] of that process
 //! holds it. The process does not finish until its children finish. When the body of the process returns, the scope
-//! stops the children, each according to its own shutdown strategy. A supervisor's budget does not apply in a scope.
-//! [`ChildBuilder::spawn_sibling`] gives the child to the nearest supervisor above the current process instead.
+//! stops the children, each according to its own shutdown strategy. [`ChildBuilder::spawn_sibling`] gives the child
+//! to the nearest supervisor above the current process instead.
 //!
 //! # Task naming
 //!
@@ -213,12 +213,12 @@ impl SupervisorHandle {
     /// Creates a builder for a nested supervisor.
     ///
     /// You can give a [`Supervisor`] directly to [`spawn`][Self::spawn] or [`Supervisor::add_worker`]. Most callers
-    /// need only that. This builder is for the one setting that is not available in that way: whether the subtree is
-    /// needed or hosted.
+    /// need only that. This builder is for the settings that are not available in that way: whether the subtree is
+    /// needed or hosted, and whether it [stops with its owner][NestedSupervisorBuilder::stops_with_owner] in a scope.
     ///
-    /// Unlike [`supervisable`][Self::supervisable], there is no placement or shutdown setting. A nested supervisor
-    /// runs wherever its parent does and its children carry their own placement, and it bounds its own drain through
-    /// those children rather than through a deadline imposed from above.
+    /// Unlike [`supervisable`][Self::supervisable], there is no placement or shutdown setting. A nested supervisor runs
+    /// wherever its parent does and its children carry their own placement, and its drain is bounded by its children's
+    /// timeouts and by its owner.
     pub fn nested_supervisor(&self, supervisor: Supervisor) -> NestedSupervisorBuilder<'_> {
         NestedSupervisorBuilder::new(BuilderTarget::Handle(self), supervisor)
     }
@@ -314,13 +314,9 @@ impl<'a, S: BuilderState> ChildBuilder<'a, S> {
 
     /// Sets an explicit shutdown timeout for this child task.
     ///
-    /// By default, a closure-based child has no deadline of its own, and only the deadline of its owner limits it. Set
-    /// this timeout if a particular child must be abandoned sooner than that. Use it as a deliberate deadline, not as a
-    /// guess about how much time the child needs. A value that is longer than the deadline of the owner has no effect,
-    /// because the runtime uses the deadline that expires first.
-    ///
-    /// A [scope] has no budget. A child spawned into a scope is held only to its own strategy, which for
-    /// a closure-based child is graceful with a timeout of five seconds unless this method sets another one.
+    /// A closure-based child defaults to five seconds, after which it is halted. Set this if a particular child needs
+    /// more time to drain, or must be halted sooner. A timeout longer than its owner's has no effect, since the child
+    /// is halted along with its owner.
     ///
     /// For a [`Supervisable`] child, this overrides the strategy the task reports for itself.
     pub fn with_shutdown_timeout(self, timeout: Duration) -> Self {
@@ -330,21 +326,6 @@ impl<'a, S: BuilderState> ChildBuilder<'a, S> {
     /// Sets the explicit shutdown strategy used for this child task.
     pub fn with_shutdown_strategy(self, strategy: ShutdownStrategy) -> Self {
         self.map_spec(|spec| spec.with_shutdown_strategy(strategy))
-    }
-
-    /// Gives this child no shutdown deadline of its own, so that only the deadline of its owner limits it.
-    ///
-    /// This is already the default for a closure-based child. A [`Supervisable`] child reports its own strategy. This
-    /// method lets such a child be limited as part of the group instead. Without this method, the child silently keeps
-    /// the strategy that [`Supervisable::shutdown_strategy`] returns. That strategy can be much shorter than the
-    /// deadline of the owner.
-    ///
-    /// See [`Supervisor::with_shutdown_budget`][budget] for a description of the deadline of a supervisor. A [scope]
-    /// has no budget, so a child spawned into a scope keeps the strategy that it reports for itself.
-    ///
-    /// [budget]: super::Supervisor::with_shutdown_budget
-    pub fn with_budget_bounded_shutdown(self) -> Self {
-        self.map_spec(|spec| spec.with_budget_bounded_shutdown())
     }
 
     /// Marks this child as one that its owner cannot work without.
@@ -497,7 +478,7 @@ impl<'a> ChildBuilder<'a, OneShot> {
     where
         T: Supervisable + 'static,
     {
-        let spec = ChildSpecification::worker(worker).with_budget_bounded_shutdown();
+        let spec = ChildSpecification::worker(worker);
 
         Self::new(target, spec)
     }
@@ -529,7 +510,7 @@ impl<'a> ChildBuilder<'a, Restartable> {
 /// The counterpart to [`ChildBuilder`] for a child that is itself a [`Supervisor`], and deliberately a much smaller
 /// surface. A nested supervisor has no placement of its own, because it runs where its parent runs and its children
 /// carry their own placement. It also has no shutdown deadline of its own, because it limits its own drain through its
-/// children. Thus, the only setting that remains is whether it is needed or hosted.
+/// children. Thus, the settings that remain are whether it is needed or hosted, and whether it stops with its owner.
 #[must_use = "a child is only described until `spawn` or `build` is called"]
 pub struct NestedSupervisorBuilder<'a> {
     target: BuilderTarget<'a>,
@@ -565,6 +546,23 @@ impl<'a> NestedSupervisorBuilder<'a> {
     /// See [`ChildBuilder::hosted`], which this method mirrors.
     pub fn hosted(self) -> Self {
         self.map_spec(|spec| spec.with_edge(Edge::Hosted))
+    }
+
+    /// Tells this subtree to stop as soon as its owner is told to stop, instead of when the owner's scope closes.
+    ///
+    /// Use this for ingress whose output the owner's body consumes, such as a server whose handlers feed a channel that
+    /// the body drains. The server stops accepting work and finishes what it accepted while the body keeps draining.
+    ///
+    /// This takes effect only in the scope of a worker that takes the shutdown signal (see
+    /// [`Supervisable::wants_shutdown_signal`]). A supervisor tells all of its children to stop at once anyway, and a
+    /// worker that takes no signal has nothing to stop the subtree with.
+    ///
+    /// The scope keeps the subtree's specification until the subtree exits, and the specification holds whatever the
+    /// subtree was built with, such as the sender in a request handler. Thus, the channel closes once the subtree exits.
+    /// The body **MUST NOT** hold a sender of that channel itself, or the channel never closes. See the
+    /// [scope documentation][super::scope#nested-supervisors-that-stop-with-their-owner].
+    pub fn stops_with_owner(self) -> Self {
+        self.map_spec(|spec| spec.stopping_with_owner())
     }
 
     /// Restarts this subtree only when it terminates abnormally.
@@ -652,8 +650,7 @@ mod tests {
 
     /// How long the drain-participating child in these tests takes to finish after its input closes.
     ///
-    /// Long enough that a child given any short deadline of its own would be aborted before completing, so the tests
-    /// fail if children stop being bounded by the supervisor's budget alone.
+    /// Long enough to tell a completed drain apart from a halt.
     const DRAIN_DURATION: Duration = Duration::from_millis(300);
 
     /// A hand-written [`Supervisable`] that records where and how often it was initialized, then runs until shutdown.
@@ -761,8 +758,7 @@ mod tests {
         // matters -- `ShutdownTimedOut` would mean it was aborted instead.
         let supervisor = TestComponentSupervisor::start("test_component").await;
 
-        // The child does real work *after* its input closes, so it would be cut short if children were given a
-        // near-zero deadline rather than being bounded by the supervisor's budget.
+        // The child does real work *after* its input closes, which a premature halt would cut short.
         let drained = Arc::new(AtomicUsize::new(0));
         let child_drained = Arc::clone(&drained);
         let (input_tx, input_rx) = oneshot::channel::<()>();
@@ -786,17 +782,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn worker_without_a_terminal_condition_is_aborted_when_marked_brutal() {
-        // The counterpart: work that never ends has to say so, otherwise it holds the drain open until the budget
-        // elapses. `Brutal` is how it says so, and the supervisor still reports a clean shutdown.
-        let supervisor = TestComponentSupervisor::start_with_budget("test_component", Duration::from_secs(30)).await;
+    async fn worker_without_a_terminal_condition_is_halted_at_once_when_marked_brutal() {
+        // The counterpart: work that never ends has to say so, otherwise it holds the drain open until its owner's
+        // timeout. `Brutal` is how it says so, and the shutdown is still clean.
+        let supervisor =
+            TestComponentSupervisor::start_with_component_timeout("test_component", Duration::from_secs(30)).await;
 
-        supervisor
-            .handle()
-            .worker("endless", std::future::pending::<()>())
-            .with_shutdown_strategy(ShutdownStrategy::Brutal)
-            .spawn();
-        supervisor.wait_for_children(1).await;
+        supervisor.spawn_component("component", |shutdown| async move {
+            crate::runtime::worker("endless", std::future::pending::<()>())
+                .with_shutdown_strategy(ShutdownStrategy::Brutal)
+                .spawn();
+            shutdown.await;
+        });
+        supervisor.wait_for_running_descendants(2).await;
 
         let started = tokio::time::Instant::now();
         let result = supervisor.shutdown().await;
@@ -804,26 +802,25 @@ mod tests {
 
         assert!(
             result.is_ok(),
-            "an aborted brutal child is not an unclean shutdown: {result:?}"
+            "halting a brutal child is not an unclean shutdown: {result:?}"
         );
         assert!(
             elapsed < Duration::from_secs(5),
-            "the child should have been aborted at once rather than held to the 30s budget; took {elapsed:?}"
+            "the child should have been halted at once rather than held to the component's 30s timeout; took {elapsed:?}"
         );
     }
 
     #[tokio::test]
-    async fn endless_worker_is_bounded_by_the_supervisors_budget() {
-        // A one-shot child carries no deadline of its own, so the supervisor's budget is what bounds it and a stuck
-        // child is aborted when the budget elapses.
-        //
-        // This deliberately does not try to distinguish that from a child having silently fallen back to the
-        // `Supervisable` trait default of five seconds: deadlines resolve to whichever elapses first, so any budget
-        // under five seconds produces an identical result.
-        let supervisor = TestComponentSupervisor::start_with_budget("test_component", Duration::from_millis(200)).await;
+    async fn endless_worker_is_halted_with_the_component_it_belongs_to() {
+        // The child keeps its default five-second timeout, but the component's shorter timeout halts it first.
+        let supervisor =
+            TestComponentSupervisor::start_with_component_timeout("test_component", Duration::from_millis(200)).await;
 
-        supervisor.handle().spawn_worker("stuck", std::future::pending::<()>());
-        supervisor.wait_for_children(1).await;
+        supervisor.spawn_component("component", |shutdown| async move {
+            crate::runtime::worker("stuck", std::future::pending::<()>()).spawn();
+            shutdown.await;
+        });
+        supervisor.wait_for_running_descendants(2).await;
 
         let started = tokio::time::Instant::now();
         let result = supervisor.shutdown().await;
@@ -831,11 +828,11 @@ mod tests {
 
         assert!(
             matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 1 })),
-            "the budget should have aborted the stuck child, got {result:?}"
+            "the stuck child should have been halted with the component, and counted, got {result:?}"
         );
         assert!(
             elapsed < Duration::from_secs(1),
-            "the child should have been bounded by the 200ms budget rather than a deadline of its own; took {elapsed:?}"
+            "the child should have been halted with the component at 200ms rather than at its own timeout; took {elapsed:?}"
         );
     }
 

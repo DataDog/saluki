@@ -38,10 +38,15 @@ impl From<GenericError> for InitializationError {
 /// Strategy for shutting down a process.
 #[derive(Clone, Copy, Debug)]
 pub enum ShutdownStrategy {
-    /// Waits for the configured duration for the process to exit, and then forcefully aborts it otherwise.
+    /// Signals the process, then halts it if it hasn't exited within the given duration.
+    ///
+    /// The duration also covers the children in the process's [scope][crate::runtime::scope], which are halted along
+    /// with it. A halt is reported as an unclean shutdown.
     Graceful(Duration),
 
-    /// Forcefully aborts the process without waiting.
+    /// Halts the process and everything it owns immediately, without signalling it.
+    ///
+    /// For work with no terminal condition. Not reported as an unclean shutdown.
     Brutal,
 }
 
@@ -64,9 +69,13 @@ pub trait Supervisable: Send + Sync {
     /// [scope][crate::runtime::scope] of the process still observes the signal for the process, so that it can tell
     /// whether an exit of one of its children was requested.
     ///
+    /// It also decides whether a nested supervisor in that scope that
+    /// [stops with its owner][crate::runtime::NestedSupervisorBuilder::stops_with_owner] is told to stop together with
+    /// the process. If this function returns `false`, the nested supervisor stops only when the scope closes.
+    ///
     /// This says nothing about _whether_ the supervisor waits for the process -- that's
-    /// [`shutdown_strategy`][Self::shutdown_strategy]. A process that ignores the signal is still waited for, up to
-    /// whatever deadline applies to it.
+    /// [`shutdown_strategy`][Self::shutdown_strategy]. A process that ignores the signal is still waited for, up to its
+    /// shutdown timeout.
     ///
     /// Defaults to `true`.
     fn wants_shutdown_signal(&self) -> bool {
@@ -97,7 +106,7 @@ pub trait Supervisable: Send + Sync {
     ///
     /// **Important:** The `process_shutdown` signal must be moved into the returned [`SupervisorFuture`] so the worker
     /// can respond to supervisor-initiated shutdown. If `process_shutdown` is dropped during initialization, the worker
-    /// will be unable to shut down gracefully and will be forcefully aborted after the shutdown timeout.
+    /// will be unable to shut down gracefully and will be halted after the shutdown timeout.
     ///
     /// # Errors
     ///

@@ -59,13 +59,11 @@ const DEFAULT_SERVER_NAME: &str = "http_server";
 /// is built around.
 const DEFAULT_DRAIN_DEADLINE: Duration = Duration::from_secs(30);
 
-/// How much longer than the drain deadline the subtree's shutdown budget runs.
+/// How much longer than its drain deadline a connection's shutdown timeout runs.
 ///
-/// A connection bounds its own drain, so under normal circumstances it finishes and exits cleanly before the budget is
-/// anywhere near elapsing. The slack keeps the two from racing: without it a connection that took its full deadline
-/// could be force-aborted at the very moment it was about to return, which would be reported as an unclean shutdown
-/// all the way up the tree. The budget is the backstop for a connection that ignores its own deadline entirely.
-const SHUTDOWN_BUDGET_SLACK: Duration = Duration::from_secs(1);
+/// A connection bounds its own drain. The slack keeps one that takes its full deadline from being halted just as it
+/// returns, which would be reported as an unclean shutdown all the way up the tree.
+const SHUTDOWN_TIMEOUT_SLACK: Duration = Duration::from_secs(1);
 
 /// How long a TLS handshake is given to complete before the connection is abandoned.
 ///
@@ -199,9 +197,9 @@ impl Http2Config {
 ///
 /// # Shutdown
 ///
-/// The subtree carries its own shutdown budget, because a nested supervisor is deliberately exempt from its parent's.
-/// See [`with_graceful_shutdown_timeout`][Self::with_graceful_shutdown_timeout] for what sets it and what the default
-/// is.
+/// A nested supervisor has no shutdown timeout of its own, so each connection bounds its own drain, and is halted if it
+/// overruns that bound. See [`with_graceful_shutdown_timeout`][Self::with_graceful_shutdown_timeout] for what sets it
+/// and what the default is. The whole subtree is also halted if its owner's timeout expires.
 ///
 /// # Assertions
 ///
@@ -337,9 +335,9 @@ impl HttpServer {
     /// This bounds that: a connection that hasn't finished by then gives up and closes, logging a warning, so one
     /// wedged peer can't hold the subtree open.
     ///
-    /// It also sets the subtree's shutdown budget, to this value plus a small amount of slack. That matters because a
-    /// nested supervisor is exempt from its parent's budget, so without one of its own nothing would bound the subtree
-    /// at all. Connections bound themselves, so the budget only comes into play for one that ignores its own deadline.
+    /// It also sets each connection's shutdown timeout, to this value plus a small amount of slack, after which the
+    /// connection is halted. Connections bound themselves, so the timeout only comes into play for one that ignores its
+    /// own deadline.
     ///
     /// Defaults to 30 seconds, matching the default shutdown timeout a topology gives its components. Lower it for an
     /// endpoint that should be abandoned quickly; raise it for one serving long-running requests that are worth
@@ -388,9 +386,7 @@ impl HttpServer {
         let bound_address_id = self.get_server_id();
 
         let drain_deadline = self.graceful_shutdown_timeout.unwrap_or(DEFAULT_DRAIN_DEADLINE);
-        let mut supervisor = Supervisor::new(&*self.name)
-            .expect("server name is derived from a non-empty constant")
-            .with_shutdown_budget(drain_deadline.saturating_add(SHUTDOWN_BUDGET_SLACK));
+        let mut supervisor = Supervisor::new(&*self.name).expect("server name is derived from a non-empty constant");
 
         let acceptor = Acceptor {
             listen_address: self.listen_address,
@@ -522,9 +518,7 @@ impl ConnectionContext {
         };
 
         let builder = self.supervisor.supervisable(connection);
-        place_on_pool(builder, self.worker_pool.as_ref())
-            .with_budget_bounded_shutdown()
-            .spawn();
+        place_on_pool(builder, self.worker_pool.as_ref()).spawn();
     }
 
     /// Spawns the child that performs the TLS handshake for `stream`, and serves it once it completes.
@@ -536,9 +530,7 @@ impl ConnectionContext {
         };
 
         let builder = self.supervisor.supervisable(handshake);
-        place_on_pool(builder, self.worker_pool.as_ref())
-            .with_budget_bounded_shutdown()
-            .spawn();
+        place_on_pool(builder, self.worker_pool.as_ref()).spawn();
     }
 }
 
@@ -654,9 +646,8 @@ where
     }
 
     fn shutdown_strategy(&self) -> ShutdownStrategy {
-        // Spawned with a budget-bounded shutdown, so this is only consulted if the subtree somehow has no budget. A
-        // connection bounds its own drain either way, so there is nothing shorter worth imposing here.
-        ShutdownStrategy::Graceful(Duration::MAX)
+        // Only a backstop: a connection bounds its own drain.
+        ShutdownStrategy::Graceful(self.drain_deadline.saturating_add(SHUTDOWN_TIMEOUT_SLACK))
     }
 
     fn can_restart(&self) -> bool {
@@ -1415,8 +1406,8 @@ mod tests {
             .expect("handshake should succeed");
         assert_eq!(negotiated, Some(b"h2".to_vec()));
 
-        // Shutting down cleanly is the other half: the stalled handshake is abandoned rather than held onto until the
-        // subtree's budget elapses, which would take far longer than the harness allows.
+        // Shutting down cleanly is the other half: the stalled handshake is abandoned rather than held onto until it
+        // is halted at its shutdown timeout, which would take far longer than the harness allows.
         harness.shutdown().await;
     }
 
@@ -1669,10 +1660,10 @@ mod tests {
         // A peer that writes a partial request head and stalls keeps its connection permanently non-idle, so
         // `graceful_shutdown` alone never closes it. Before the connection builder had a timer and the drain had a
         // deadline, one such socket stalled shutdown indefinitely -- for the OTLP receivers that meant every ADP
-        // shutdown hanging until the component budget forced an abort.
+        // shutdown hanging until the component was halted at its shutdown timeout.
         //
         // A clean result is the assertion that matters: the connection bounds its own drain and exits, rather than
-        // being force-aborted by the subtree's budget, which would surface as `ShutdownTimedOut` all the way up.
+        // being halted at its shutdown timeout, which would surface as `ShutdownTimedOut` all the way up.
         let server = RunningServer::start(
             server_with(ListenAddress::tcp_loopback(0), ok_response)
                 .with_graceful_shutdown_timeout(Duration::from_secs(1)),

@@ -402,9 +402,10 @@ impl OtlpServerConfiguration {
 
     /// Builds and starts the OTLP servers (HTTP and gRPC).
     ///
-    /// Both servers are spawned on the ambient supervisor -- the component's own -- so they stop with the component.
-    /// They run on `worker_pool` rather than the component's runtime, since request handling shouldn't contend with
-    /// the runtime driving the topology, and decoding can be compute-heavy for large requests.
+    /// Both servers are spawned into the scope of the current process, and they stop as soon as that process is told to
+    /// stop. The handler is dropped once both have exited, so the component can drain a channel that the handler feeds
+    /// until it closes. The servers run on `worker_pool` rather than the component's runtime, since request handling
+    /// shouldn't contend with the runtime driving the topology, and decoding can be compute-heavy for large requests.
     ///
     /// # Errors
     ///
@@ -456,6 +457,7 @@ impl OtlpServerConfiguration {
 
         runtime::nested_supervisor(grpc_server.into_supervisor())
             .needed()
+            .stops_with_owner()
             .spawn();
 
         // Create and spawn the HTTP server.
@@ -494,6 +496,7 @@ impl OtlpServerConfiguration {
 
         runtime::nested_supervisor(http_server.into_supervisor())
             .needed()
+            .stops_with_owner()
             .spawn();
 
         Ok(())
@@ -1135,9 +1138,7 @@ mod tests {
         // Use an ephemeral TCP port for HTTP since we are only testing the gRPC path here.
         let http_endpoint = ListenAddress::Tcp("127.0.0.1:0".parse().expect("addr should parse"));
 
-        let mut supervisor = Supervisor::new("otlp-test")
-            .expect("test supervisor name should be valid")
-            .with_shutdown_budget(Duration::from_secs(5));
+        let mut supervisor = Supervisor::new("otlp-test").expect("test supervisor name should be valid");
         let supervisor_handle = supervisor.handle();
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
@@ -1186,9 +1187,7 @@ mod tests {
             .expect("Unix gRPC endpoint should parse");
         let http_endpoint = ListenAddress::Tcp("127.0.0.1:0".parse().expect("addr should parse"));
 
-        let mut supervisor = Supervisor::new("otlp-test")
-            .expect("test supervisor name should be valid")
-            .with_shutdown_budget(Duration::from_secs(5));
+        let mut supervisor = Supervisor::new("otlp-test").expect("test supervisor name should be valid");
         let supervisor_handle = supervisor.handle();
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
