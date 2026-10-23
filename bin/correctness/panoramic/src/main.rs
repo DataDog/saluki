@@ -30,6 +30,7 @@ mod correctness;
 use self::cli::{Cli, Command, LogLevel};
 
 mod config;
+mod deadline;
 mod dynamic_vars;
 mod integration;
 mod mounts;

@@ -23,6 +23,8 @@ pub trait Action: Send + Sync {
     fn description(&self) -> String;
 
     /// Executes the action and returns a result shaped like an assertion result.
+    ///
+    /// The step driver may drop this future on cancellation or a budget overrun. Release owned resources on drop.
     async fn execute(&self, ctx: &AssertionContext) -> AssertionResult;
 }
 

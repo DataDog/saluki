@@ -180,6 +180,10 @@ procedure:
 
 Steps execute sequentially. If any assertion or action fails, subsequent steps are skipped. Within a parallel block, all assertions run to completion regardless of individual failures.
 
+### Step deadlines
+
+Each step uses its `timeout`, `duration`, or `during` as its budget; `dogstatsd_replay` uses the [whole-action budget](#dogstatsd_replay). The driver allows 10s beyond that budget for the step to report its result, then stops it as a failure. Case timeout or run cancellation interrupts unfinished steps and preserves completed results.
+
 ### Available actions
 
 #### `adp_cli`
@@ -198,7 +202,7 @@ The action fails if the command exits with a nonzero status or exceeds its timeo
 
 Captures traffic sent by `sender`, replays the completed capture through the tested ADP binary, and verifies that `expected_metrics` appear in a statistics collection that runs concurrently with the replay. This action invokes the tested ADP CLI with the test's configuration and environment, so it works on Linux, macOS, and Windows without exposing runtime-specific configuration paths to the sender command.
 
-`capture_duration` uses the [duration format](#duration-format). `stats_duration_secs` controls the bounded post-capture statistics collection. The sender must emit all capture traffic before `capture_duration` elapses. `timeout` applies to each target command and defaults to `30s`.
+`capture_duration` uses the [duration format](#duration-format). `stats_duration_secs` controls the bounded post-capture statistics collection. The sender must emit all capture traffic before `capture_duration` elapses. `timeout` applies to each target command and defaults to `30s`. The whole-action budget is `4 × timeout + capture_duration + 50ms`, covering the commands, capture wait, and final retry.
 
 ```yaml
 - action: dogstatsd_replay
