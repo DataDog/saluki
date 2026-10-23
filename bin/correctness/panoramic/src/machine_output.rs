@@ -10,7 +10,7 @@ use tracing::warn;
 
 use crate::record::StepStatus;
 use crate::reporter::{
-    DurationMs, Issue, PhaseTiming, StopCause, TestError, TestOutcome, TestResult, TimeoutAttribution,
+    DurationMs, Issue, PhaseTiming, ReclaimEntry, StopCause, TestError, TestOutcome, TestResult, TimeoutAttribution,
 };
 
 /// Reported when the build could not read a repository to get a revision from.
@@ -171,6 +171,8 @@ pub struct TestReport {
     pub timeout: Option<TimeoutAttribution>,
     /// Cause and running steps for a test interrupted before its verdict.
     pub cause: Option<StopCause>,
+    /// Cleanup results for registered resources, in reverse registration order.
+    pub reclaim: Vec<ReclaimEntry>,
     /// Problems after the verdict or during cleanup. They never change `outcome`.
     pub issues: Vec<Issue>,
     /// Captured output lines worth reading first. Empty for a passing test.
@@ -390,6 +392,7 @@ impl TestReport {
             error: result.error.clone(),
             timeout: result.timeout.clone(),
             cause: result.cause.clone(),
+            reclaim: result.reclaim.clone(),
             issues: result.issues.clone(),
             diagnostic_lines,
             diagnostic_lines_truncated,
@@ -651,6 +654,7 @@ mod tests {
         );
         assert!(json["error"].is_null());
         assert!(json["cause"].is_null());
+        assert_eq!(json["reclaim"], serde_json::json!([]));
         assert_eq!(json["issues"], serde_json::json!([]));
     }
 

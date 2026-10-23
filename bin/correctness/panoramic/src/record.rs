@@ -38,7 +38,7 @@ enum Slot {
 pub(crate) enum Verdict {
     /// The procedure finished. The step statuses decide the outcome.
     Procedure,
-    /// Setup failed with this result; teardown may still be running.
+    /// Setup failed with this result.
     SetupFailed(Box<TestResult>),
 }
 

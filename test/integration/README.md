@@ -186,6 +186,8 @@ Each step uses its `timeout`, `duration`, or `during` as its budget; `dogstatsd_
 
 Each polling attempt (an HTTP request, Docker exec, or intake poll) is limited to the shorter of 10s or the step's remaining time. Timed-out probes are retried while the step has time left. A step is `errored` if harness failures (such as Docker API or intake sidecar errors) prevent evaluation, or its configuration is invalid. An unmet expectation remains `failed` after any product observation, even if later probes encounter harness errors.
 
+After every test, the runner attempts cleanup and records each resource as `reclaimed`, `leaked`, or `unsettled` under `reclaim` in `result.json`. Docker containers, their shared volume, and network share one isolation-group entry; host processes and the state directory have separate entries. Failed or skipped removal adds a `resource_leaked` issue; unconfirmed removal adds `resource_unsettled`. These issues leave the test outcome unchanged.
+
 ### Available actions
 
 #### `adp_cli`
