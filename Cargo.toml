@@ -12,8 +12,8 @@ members = [
   "lib/datadog-agent/commons",
   "lib/datadog-agent/config",
   "lib/datadog-agent/config-corpus",
+  "lib/datadog-agent/config-docs",
   "lib/datadog-agent/config-overlay-model",
-  "lib/datadog-agent/config-testing",
   "lib/datadog-agent/metrics-v3",
   "lib/datadog-agent/remote-config",
   "lib/datadog-agent/runtime",
@@ -60,8 +60,8 @@ datadog-agent-apm = { path = "lib/datadog-agent/apm" }
 datadog-agent-commons = { path = "lib/datadog-agent/commons" }
 datadog-agent-config = { path = "lib/datadog-agent/config" }
 datadog-agent-config-corpus = { path = "lib/datadog-agent/config-corpus" }
+datadog-agent-config-docs = { path = "lib/datadog-agent/config-docs" }
 datadog-agent-config-overlay-model = { path = "lib/datadog-agent/config-overlay-model" }
-datadog-agent-config-testing = { path = "lib/datadog-agent/config-testing" }
 datadog-agent-metrics-v3 = { path = "lib/datadog-agent/metrics-v3" }
 datadog-agent-remote-config = { path = "lib/datadog-agent/remote-config" }
 datadog-agent-runtime = { path = "lib/datadog-agent/runtime" }

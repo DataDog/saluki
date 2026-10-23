@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use super::{ClassifierEntry, DefaultValue, PipelineAffinity, SupportLevel, CLASSIFIER_ENTRIES};
 
-/// Result of classifying a single config key/value pair against the registry.
+/// A key's support level, default-value comparison, and affected pipelines.
 pub struct Classification {
     /// The level at which this config key is supported by Saluki.
     pub support_level: SupportLevel,
@@ -14,33 +14,26 @@ pub struct Classification {
     pub pipeline_affinity: PipelineAffinity,
 }
 
-/// Classifies the support level of config keys and determines if a value is default.
+/// Classifies keys that can warrant compatibility warnings and compares values with schema defaults.
 ///
-/// Only knows about annotated keys (supported + unsupported). Keys not in the registry - whether
-/// ignored, unrecognized, or anything else - return `None` from
-/// [`classify`](Self::classify).
+/// Keys without a warning entry return `None`, including fully supported and excluded keys.
 pub struct ConfigClassifier {
     lookup: HashMap<&'static str, &'static ClassifierEntry>,
 }
 
 impl ConfigClassifier {
-    /// Builds a classifier from all annotated config keys.
+    /// Builds a classifier from the generated compatibility-warning entries.
     pub fn new() -> Self {
         let mut lookup = HashMap::new();
 
         for entry in CLASSIFIER_ENTRIES {
             lookup.insert(entry.yaml_path, entry);
-            for alias in entry.aliases {
-                lookup.insert(alias, entry);
-            }
         }
 
         Self { lookup }
     }
 
-    /// Classifies a single config key/value pair against the registry.
-    ///
-    /// Returns `None` for keys not in the registry (ignored, unrecognized, etc.).
+    /// Classifies a key/value pair, returning `None` if the key has no compatibility-warning entry.
     pub fn classify(&self, key: &str, value: &Value) -> Option<Classification> {
         let entry = self.lookup.get(key)?;
         Some(Classification {

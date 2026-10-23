@@ -40,7 +40,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Write as _};
 use std::panic::Location;
 
-use datadog_agent_config::{Leaf, LEAVES};
+use datadog_agent_config::LEAVES;
 use datadog_agent_config_corpus::{Case, Corpus, Getter, GetterResult, GoFloat, GoValue, Outcome};
 use saluki_config::dynamic::ConfigUpdate;
 use serde_json::Value as JsonValue;
@@ -422,16 +422,6 @@ fn render_go_map(m: &BTreeMap<String, GoValue>) -> String {
     )
 }
 
-/// Every key a supported leaf can be streamed under: its dotted key and each alias, as a sibling
-/// of the key's last segment.
-fn leaf_keys(leaf: &Leaf) -> impl Iterator<Item = String> + '_ {
-    let parent = leaf.key.rsplit_once('.').map(|(parent, _)| parent);
-    std::iter::once(leaf.key.to_string()).chain(leaf.aliases.iter().map(move |alias| match parent {
-        Some(parent) => format!("{parent}.{alias}"),
-        None => (*alias).to_string(),
-    }))
-}
-
 /// Runs every tier over the corpus and returns one [`CheckResult`] per performed comparison, plus
 /// every successful translation of the translate tier.
 pub(crate) fn collect(corpus: &Corpus) -> Collected {
@@ -540,20 +530,8 @@ pub(crate) fn collect(corpus: &Corpus) -> Collected {
     out
 }
 
-/// Maps every key a supported leaf can be streamed under to the leaf's primary key, so a check
-/// keeps one identity whether the case streamed the key itself or one of its aliases.
 fn leaf_key_canons() -> BTreeMap<String, &'static str> {
-    let mut canon = BTreeMap::new();
-    // Primary keys first, so an alias spelled like another leaf's key never takes that key over.
-    for leaf in LEAVES {
-        canon.insert(leaf.key.to_string(), leaf.key);
-    }
-    for leaf in LEAVES {
-        for path in leaf_keys(leaf).skip(1) {
-            canon.entry(path).or_insert(leaf.key);
-        }
-    }
-    canon
+    LEAVES.iter().map(|leaf| (leaf.key.to_string(), leaf.key)).collect()
 }
 
 /// The validation a step must get, stated from the streamed `api_key` alone and not from the
@@ -735,8 +713,6 @@ fn collect_translation(corpus: &Corpus, case: &Case, canon: &BTreeMap<String, &'
                 .and_then(|tree| lookup(tree, key))
                 .map_or("<absent>".to_string(), ToString::to_string),
         };
-        // Record each operation under its key's primary spelling, so the check keeps one identity
-        // whether the case streamed the key itself or one of its aliases.
         let primary = |key: &str| canon.get(key).map_or(key.to_string(), |k| (*k).to_string());
         let operations: BTreeSet<String> = match update {
             ConfigUpdate::Snapshot(settings) => settings

@@ -113,25 +113,11 @@ fn insert(root: &mut Map<String, Value>, path: &str, leaf_value: Value) {
     }
 }
 
-/// Returns every path `leaf` can be read from: its dotted key, then each alias as a sibling of the
-/// key's last segment (a serde alias renames only the field it is written on).
-fn leaf_paths(leaf: &Leaf) -> impl Iterator<Item = String> + '_ {
-    let parent = leaf.key.rsplit_once('.').map(|(parent, _)| parent);
-    std::iter::once(leaf.key.to_string()).chain(leaf.aliases.iter().map(move |alias| match parent {
-        Some(parent) => format!("{parent}.{alias}"),
-        None => (*alias).to_string(),
-    }))
-}
-
-/// Returns an object holding only what `tree` holds for `leaf`: the value at its key, or at an
-/// alias. When the tree holds both, both are kept, so the isolated object fails exactly as the whole
-/// tree does. A leaf the tree does not hold is isolated as an empty object and reads its default.
+/// Isolates a leaf's value in its nested object shape; an absent leaf yields an empty object for defaulting.
 fn isolated_object(leaf: &Leaf, tree: &Value) -> Value {
     let mut object = Map::new();
-    for path in leaf_paths(leaf) {
-        if let Some(value) = lookup(tree, &path) {
-            insert(&mut object, &path, value.clone());
-        }
+    if let Some(value) = lookup(tree, leaf.key) {
+        insert(&mut object, leaf.key, value.clone());
     }
     Value::Object(object)
 }
@@ -151,7 +137,7 @@ type Isolated = Rc<Result<DatadogConfiguration, Fault>>;
 /// Deserializes leaves in isolation, remembering each distinct isolated object per leaf: across the
 /// corpus most leaves hold the same streamed default, so most isolated objects repeat.
 pub(crate) struct Isolator {
-    /// Every path a leaf can be read from (its key and each alias), to the leaf's index in `LEAVES`.
+    /// Maps dotted keys to indices in `LEAVES`.
     by_key: HashMap<String, usize>,
     kinds: Vec<&'static str>,
     /// The configuration every field of which holds its default.
@@ -162,17 +148,11 @@ pub(crate) struct Isolator {
 impl Isolator {
     pub(crate) fn new() -> Self {
         let default = deserialize_datadog(&Value::Object(Map::new())).expect("the defaults deserialize");
-        // Keys first, so an alias spelled like another leaf's key never takes that key over.
-        let mut by_key: HashMap<String, usize> = LEAVES
+        let by_key: HashMap<String, usize> = LEAVES
             .iter()
             .enumerate()
             .map(|(i, leaf)| (leaf.key.to_string(), i))
             .collect();
-        for (i, leaf) in LEAVES.iter().enumerate() {
-            for path in leaf_paths(leaf).skip(1) {
-                by_key.entry(path).or_insert(i);
-            }
-        }
         Self {
             by_key,
             kinds: LEAVES.iter().map(|leaf| kind_name(&(leaf.get)(&default))).collect(),
@@ -181,7 +161,7 @@ impl Isolator {
         }
     }
 
-    /// The index into `LEAVES` of the leaf read from `key`, by its key or an alias.
+    /// Returns the key's index in `LEAVES`, or `None` if it is not modeled.
     pub(crate) fn leaf_index(&self, key: &str) -> Option<usize> {
         self.by_key.get(key).copied()
     }
@@ -235,8 +215,7 @@ pub(crate) struct Row {
     pub(crate) case: String,
     pub(crate) checkpoint: Checkpoint,
     pub(crate) key: String,
-    /// The supported leaf the key line resolves to, by its key or an alias; `None` for a key that is
-    /// not modeled.
+    /// The supported leaf's key, or `None` if it is not modeled.
     pub(crate) leaf: Option<&'static str>,
     /// The recorded getter; `None` for a key that is not modeled, which gets one row in all.
     pub(crate) getter: Option<Getter>,
