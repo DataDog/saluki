@@ -43,7 +43,7 @@ pub struct ComponentControl<I> {
     pub(super) withheld_shutdown: Option<ShutdownCoordinator>,
 
     pub(super) wait_timeout: Duration,
-    pub(super) shutdown_budget: Duration,
+    pub(super) shutdown_timeout: Duration,
 }
 
 impl<I> ComponentControl<I> {
@@ -71,9 +71,9 @@ impl<I> ComponentControl<I> {
 
     /// Returns `true` once the component's `run` has returned or panicked.
     ///
-    /// A `run` that the supervisor aborts never counts as finished.
+    /// A `run` that is halted never counts as finished.
     pub fn is_finished(&self) -> bool {
-        // The outcome is sent when `run` returns or panics, and never when it's aborted.
+        // The outcome is sent when `run` returns or panics, and never when it's halted.
         !self.outcome.is_empty()
     }
 
@@ -148,14 +148,14 @@ impl<I> ComponentControl<I> {
     ///
     /// If the component's `run` returns an error, that error is returned unmodified.
     ///
-    /// If the supervisor doesn't shut down cleanly, such as when a child ignores shutdown and has to be aborted, the
+    /// If the supervisor doesn't shut down cleanly, such as when a child ignores shutdown and has to be halted, the
     /// supervisor's error is returned, and `downcast_ref` recovers it as a [`SupervisorError`]. If both fail, the run's
     /// error is returned with the supervisor's error added as context, and `downcast_ref` recovers either one.
     ///
-    /// If the component's `run` itself doesn't stop within the shutdown budget, the supervisor aborts it along with any
-    /// children still running, and the supervisor's error is returned with an explanation added as context.
+    /// If the component's `run` itself doesn't stop within its shutdown timeout, it is halted along with any children
+    /// still running, and the supervisor's error is returned with an explanation added as context.
     ///
-    /// When the component stops without shutdown being signalled, children aborted while its supervisor stops aren't
+    /// When the component stops without shutdown being signalled, children halted while its supervisor stops aren't
     /// reported, the same as in a topology: the supervisor reports that the component exited instead, and the driver
     /// returns the run's own result.
     ///
@@ -168,9 +168,9 @@ impl<I> ComponentControl<I> {
     ///
     /// If the component's `run` panics, the panic is resumed here, once its supervisor has stopped.
     ///
-    /// Panics if the component and its supervisor don't stop within the shutdown budget plus the wait timeout. When
-    /// shutdown is signalled, the budget bounds both, so the usual cause is a missing shutdown signal. A child that
-    /// blocks its thread can also cause it, since aborting the child has no effect until it yields.
+    /// Panics if the component and its supervisor don't stop within the shutdown timeout plus the wait timeout. When
+    /// shutdown is signalled, the shutdown timeout bounds both, so the usual cause is a missing shutdown signal. A child
+    /// that blocks its thread can also cause it, since halting the child has no effect until it yields.
     ///
     /// [`SupervisorError`]: crate::runtime::SupervisorError
     pub async fn wait(self) -> Result<(), GenericError> {
@@ -184,18 +184,18 @@ impl<I> ComponentControl<I> {
             mut outcome,
             mut exit,
             wait_timeout,
-            shutdown_budget,
+            shutdown_timeout,
             ..
         } = self;
 
         // The supervisor only stops once the component has, after stopping every child the component spawned, so one
         // deadline covers all of them.
-        let deadline = shutdown_budget.saturating_add(wait_timeout);
+        let deadline = shutdown_timeout.saturating_add(wait_timeout);
         let supervisor_result = match tokio::time::timeout(deadline, supervisor.wait()).await {
             Ok(supervisor_result) => supervisor_result,
             Err(_) if !outcome.is_empty() => panic!(
                 "timed out after {:?} waiting for the supervisor of component '{}' to stop the children it spawned. \
-                 Is a child blocking its thread, so that aborting it has no effect?",
+                 Is a child blocking its thread, so that halting it has no effect?",
                 deadline, component_context
             ),
             Err(_) => panic!(
@@ -205,8 +205,8 @@ impl<I> ComponentControl<I> {
             ),
         };
 
-        // The supervisor doesn't stop until the component's worker has returned or been aborted, so the outcome is
-        // settled by now: it was either sent, or dropped unsent by an abort.
+        // The supervisor doesn't stop until the component's worker has returned or been halted, so the outcome is
+        // settled by now: it was either sent, or dropped unsent by a halt.
         let run_result = match outcome.try_recv() {
             Ok(Ok(run_result)) => Some(run_result),
             Ok(Err(panic)) => std::panic::resume_unwind(panic),
@@ -216,7 +216,8 @@ impl<I> ComponentControl<I> {
         // The scope of the component can fail the worker, even if `run` returned cleanly or never finished: a child that
         // the component needs failed without a shutdown signal. The supervisor reports only that its needed child
         // terminated, so the error comes from the exit of the worker. The worker reports its exit before the supervisor
-        // can see it, so the exit is settled by now too. Nothing is sent if the worker was aborted.
+        // can see it, so the exit is settled by now too. A halted worker's exit doesn't matter: it was told to stop, so
+        // the supervisor reports the unclean stop itself.
         let child_failure = match exit.try_recv() {
             Ok(Err(failure)) => Some(failure),
             Ok(Ok(())) | Err(_) => None,
@@ -233,10 +234,10 @@ impl<I> ComponentControl<I> {
             (Some(Ok(())), Err(supervisor_error), _) => Err(supervisor_error.into()),
             (Some(Err(run_error)), Err(supervisor_error), _) => Err(run_error.context(supervisor_error)),
             (None, Err(supervisor_error), _) => Err(GenericError::from(supervisor_error).context(format!(
-                "component '{}' didn't stop within the shutdown budget of {:?} and was aborted. If it dispatches more \
+                "component '{}' didn't stop within its shutdown timeout of {:?} and was halted. If it dispatches more \
                  than an output can hold, drain the output concurrently, for example with \
                  `tokio::join!(control.shutdown(), output.collect())`.",
-                component_context, shutdown_budget
+                component_context, shutdown_timeout
             ))),
             (None, Ok(()), None) => panic!(
                 "the supervisor of component '{}' stopped cleanly, but the component's `run` never finished",

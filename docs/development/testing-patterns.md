@@ -81,7 +81,8 @@ a reviewer into thinking the behavior is covered. Watch for these shapes when yo
 
 - **Zero assertions.** In some cases, we write tests to easily introspect something about the codebase, such as printing
   the size of a particular data structure. These tests **MUST** be marked as ignored (`#[ignore]`) so they don't interfere
-  with the test suite's normal execution.
+  with the test suite's normal execution. This exception covers introspection only: timing code this way is a benchmark,
+  so see [Ignore and perf-test policy](#ignore-and-perf-test-policy).
 - **Tautologies.** A test that calls a pure function twice with the same input and asserts the two results are equal
   proves only that the function is deterministic, not that it's correct. These are OK if determinism is the intended
   property to test, but the test function should be named to reflect this intent.
@@ -139,7 +140,7 @@ pub fn some_helper_function(...) {}
 
 > [!IMPORTANT]
 > Before you write `#[cfg(test)] pub fn make_foo(...)`, ask whether another crate might need the same fixture. If the
-> answer is "maybe," gate it behind a non-default Cargo feature instead (conventionally named `test`) and expose it
+> answer is "maybe," gate it behind the non-default `test-util` Cargo feature instead and expose it
 > as a plain `pub` item, so downstream crates can pull it in as a `dev-dependency` with that feature enabled.
 
 ## Prefer small named helpers over repeated inline setup

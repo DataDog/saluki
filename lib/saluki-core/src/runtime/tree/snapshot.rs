@@ -237,9 +237,6 @@ pub struct SupervisionSettings {
     /// Whether the termination of a significant child drives the supervisor to shut down.
     pub auto_shutdown: AutoShutdown,
 
-    /// How long the supervisor allows its children to drain during shutdown, in milliseconds. `None` if unbounded.
-    pub shutdown_budget_ms: Option<u64>,
-
     /// Worker threads on the supervisor's own runtime. `None` if it runs on its parent's runtime.
     pub dedicated_threads: Option<usize>,
 

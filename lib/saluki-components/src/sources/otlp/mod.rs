@@ -13,7 +13,6 @@ use otlp_protos::opentelemetry::proto::logs::v1::ResourceLogs as OtlpResourceLog
 use otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans as OtlpResourceSpans;
 use prost::Message;
 use saluki_common::collections::FastHashSet;
-use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{
@@ -390,31 +389,31 @@ impl Source for Otlp {
             .await?;
 
         // Run the converter task on the worker pool: translating OTLP resources is highly compute-bound.
+        //
+        // The converter stops once the servers exit and its channel closes, which can take longer than the default
+        // timeout of a closure-based child. Thus, it has no timeout of its own, and is halted with the source if the
+        // component's shutdown timeout expires.
         let converter_context = context.clone();
-
-        let mut converter_shutdown_coordinator = ShutdownCoordinator::default();
-        let converter_shutdown = converter_shutdown_coordinator.register();
-
         runtime::worker(
             "resource_converter",
             run_converter(
                 rx,
                 converter_context,
                 origin_tag_resolver,
-                converter_shutdown,
                 metrics_translator,
                 metrics,
                 traces_translator,
             ),
         )
         .on_runtime(context.topology_context().global_thread_pool().clone())
+        .with_shutdown_timeout(Duration::MAX)
         .needed()
         .spawn();
 
         health.mark_ready();
         debug!("OTLP source started.");
 
-        // Wait for the global shutdown signal, then notify converter to shutdown.
+        // When this body returns, the scope stops the servers, and the converter drains what they accepted.
         loop {
             select! {
                 _ = &mut global_shutdown => {
@@ -424,10 +423,6 @@ impl Source for Otlp {
                 _ = health.live() => continue,
             }
         }
-
-        debug!("Stopping OTLP source...");
-
-        converter_shutdown_coordinator.shutdown_and_wait().await;
 
         debug!("OTLP source stopped.");
 
@@ -499,11 +494,9 @@ impl OtlpHandler for SourceHandler {
 
 async fn run_converter(
     mut receiver: mpsc::Receiver<OtlpSignal>, source_context: SourceContext,
-    origin_tag_resolver: OtlpOriginTagResolver, shutdown_handle: ShutdownHandle,
-    mut metrics_translator: OtlpMetricsTranslator, metrics: Metrics, mut traces_translator: OtlpTracesTranslator,
+    origin_tag_resolver: OtlpOriginTagResolver, mut metrics_translator: OtlpMetricsTranslator, metrics: Metrics,
+    mut traces_translator: OtlpTracesTranslator,
 ) {
-    pin!(shutdown_handle);
-
     debug!("OTLP resource converter task started.");
 
     // Set a buffer flush interval of 100ms, which will ensure we always flush buffered events at least every 100ms if
@@ -517,7 +510,12 @@ async fn run_converter(
 
     loop {
         select! {
-            Some(otlp_signal) = receiver.recv() => {
+            maybe_signal = receiver.recv() => {
+                let Some(otlp_signal) = maybe_signal else {
+                    debug!("Converter task's input closed.");
+                    break;
+                };
+
                 match otlp_signal {
                     OtlpSignal::Metrics(request) => {
                         let mut detected_languages = FastHashSet::default();
@@ -607,10 +605,6 @@ async fn run_converter(
                     }
                 }
             },
-            _ = &mut shutdown_handle => {
-                debug!("Converter task received shutdown signal.");
-                break;
-            }
         }
     }
 
@@ -636,6 +630,7 @@ async fn run_converter(
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
     use std::time::Duration;
 
     use agent_data_plane_config::domains;
@@ -643,11 +638,15 @@ mod tests {
         CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
     };
     use datadog_agent_apm::semantics::test_util::TestRegistryPublisher;
+    use otlp_protos::opentelemetry::proto::collector::logs::v1::logs_service_client::LogsServiceClient;
+    use otlp_protos::opentelemetry::proto::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
     use prost::Message;
-    use saluki_core::components::ComponentContext;
+    use saluki_core::components::{test_util::TestComponentDriver, ComponentContext};
+    use saluki_core::runtime::state::{DataspaceUpdate, IdentifierFilter};
+    use saluki_io::net::BoundListenAddress;
     use saluki_metrics::test::TestRecorder;
 
-    use super::{apply_static_metric_tags, parse_configured_metric_tags, OtlpConfiguration};
+    use super::{apply_static_metric_tags, parse_configured_metric_tags, ExportLogsServiceRequest, OtlpConfiguration};
     use crate::common::otlp::traces::translator::{custom_status_code_registry, translate_custom_status_code};
     use crate::common::otlp::{build_metrics, Metrics, OtlpHandler};
 
@@ -953,5 +952,67 @@ mod tests {
             ("reason", "decode"),
         ];
         assert_eq!(recorder.counter(("component_errors_total", decode_tags)), Some(0));
+    }
+
+    #[tokio::test]
+    async fn accepted_logs_are_dispatched_before_the_source_stops() {
+        // Many more records than two event buffers hold, so that the converter blocks on the output with most of the
+        // requests still queued.
+        const REQUESTS: usize = 16;
+        const RECORDS: usize = 512;
+
+        let mut otlp = domains::otlp::Domain::default();
+        otlp.receiver.logs_enabled = true;
+        otlp.receiver.grpc.endpoint = "127.0.0.1:0".to_string();
+        otlp.receiver.grpc.max_recv_msg_size_mib = 4;
+        // The configuration translator resolves a zero keepalive to these defaults.
+        otlp.receiver.grpc.keepalive.time = Duration::from_secs(2 * 60 * 60);
+        otlp.receiver.grpc.keepalive.timeout = Duration::from_secs(20);
+        otlp.receiver.http.endpoint = "127.0.0.1:0".to_string();
+        let config =
+            OtlpConfiguration::from_configuration(&otlp, saluki_env::workload::providers::NoopWorkloadProvider);
+
+        let (mut control, mut outputs) = TestComponentDriver::options()
+            .with_interconnect_capacity(NonZeroUsize::MIN)
+            .source(config)
+            .await
+            .expect("source should build");
+        let mut logs = outputs.take_named_output("logs");
+
+        let mut bound = control
+            .supervisor()
+            .dataspace()
+            .subscribe::<BoundListenAddress>(IdentifierFilter::exact("http-server-otlp-grpc"));
+        let address = match bound.recv().await {
+            Some(DataspaceUpdate::Asserted(_, BoundListenAddress::Tcp(address))) => address,
+            update => panic!("expected the gRPC server to bind, got {update:?}"),
+        };
+        let channel = tonic::transport::Endpoint::from_shared(format!("http://{address}"))
+            .expect("endpoint should parse")
+            .connect()
+            .await
+            .expect("should connect to the gRPC server");
+        let mut client = LogsServiceClient::new(channel);
+        for _ in 0..REQUESTS {
+            let request = ExportLogsServiceRequest {
+                resource_logs: vec![ResourceLogs {
+                    scope_logs: vec![ScopeLogs {
+                        log_records: vec![LogRecord::default(); RECORDS],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+            };
+            client.export(request).await.expect("export should succeed");
+        }
+
+        control.signal_shutdown();
+        let (result, events) = tokio::join!(control.wait(), logs.collect_events());
+        result.expect("source should stop cleanly");
+        assert_eq!(
+            events.len(),
+            REQUESTS * RECORDS,
+            "every accepted log must be dispatched"
+        );
     }
 }

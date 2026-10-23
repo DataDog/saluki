@@ -38,8 +38,8 @@
 //!
 //! Each output channel holds as many items as the interconnect capacity allows (128 by default). A component that
 //! dispatches more than that before the test reads anything blocks on the full output, so it never gets to see its
-//! input close. Its supervisor then aborts it once the shutdown budget runs out, and [`ComponentControl::shutdown`]
-//! returns an error saying so. Drain the output at the same time instead.
+//! input close. It is then halted once its shutdown timeout runs out, and [`ComponentControl::shutdown`] returns an
+//! error saying so. Drain the output at the same time instead.
 //! To drain several outputs at once, take them out first with [`Outputs::take_named_output`]:
 //!
 //! ```no_run

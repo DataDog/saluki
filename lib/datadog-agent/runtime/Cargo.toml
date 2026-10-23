@@ -47,8 +47,9 @@ tracing = { workspace = true }
 tokio = { workspace = true, features = ["taskdump"], optional = true }
 
 [dev-dependencies]
-# `start_paused` in tests, for deterministic clock control in the InvalidApiKey report throttle tests.
-tokio = { workspace = true, features = ["test-util"] }
+# `start_paused` in tests, for deterministic clock control in the InvalidApiKey report throttle tests, and the
+# multi-threaded runtime for the `minimal_remote_agent` example.
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 
 [lints]
 workspace = true
