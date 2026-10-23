@@ -222,6 +222,7 @@ mod tests {
         use crate::assertions::test_support::{host_context, procedure};
         use crate::assertions::{run_assertion_steps, TargetCommand};
         use crate::deadline::{Budget, Deadline};
+        use crate::record::{CaseRecord, StepStatus};
 
         let marker_dir = tempfile::tempdir().expect("temp dir should be creatable");
         let marker = marker_dir.path().join("sender-ran");
@@ -250,9 +251,10 @@ mod tests {
             cancel.cancel();
             Instant::now()
         };
+        let record = CaseRecord::default();
         let driver = async {
-            let results = run_assertion_steps(&case, &ctx, case_deadline).await;
-            (results, Instant::now())
+            run_assertion_steps(&case, &ctx, case_deadline, &record).await;
+            (record.steps(), Instant::now())
         };
 
         let ((results, finished), cancelled) = tokio::time::timeout(Duration::from_secs(15), async {
@@ -264,14 +266,9 @@ mod tests {
         assert!(finished.duration_since(cancelled) < Duration::from_secs(5));
         assert_eq!(results.len(), 1, "{results:?}");
         assert_eq!(results[0].name, "dogstatsd_replay");
-        assert!(!results[0].passed);
+        assert_eq!(results[0].status, StepStatus::Interrupted, "{}", results[0].message);
         assert!(
             results[0].message.starts_with("Interrupted after "),
-            "{}",
-            results[0].message
-        );
-        assert!(
-            results[0].message.ends_with("the test was cancelled."),
             "{}",
             results[0].message
         );

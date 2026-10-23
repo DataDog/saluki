@@ -182,7 +182,7 @@ Steps execute sequentially. If any assertion or action fails, subsequent steps a
 
 ### Step deadlines
 
-Each step uses its `timeout`, `duration`, or `during` as its budget; `dogstatsd_replay` uses the [whole-action budget](#dogstatsd_replay). The driver allows 10s beyond that budget for the step to report its result, then stops it as a failure. Case timeout or run cancellation interrupts unfinished steps and preserves completed results.
+Each step uses its `timeout`, `duration`, or `during` as its budget; `dogstatsd_replay` uses the [whole-action budget](#dogstatsd_replay). The driver allows 10s beyond that budget for the step to report its result, then stops it as `errored`. This makes the test a harness error (exit code 2), unless a parallel member failed. Case timeout or run cancellation interrupts unfinished steps and preserves completed results.
 
 ### Available actions
 

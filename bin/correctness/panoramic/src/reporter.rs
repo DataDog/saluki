@@ -8,6 +8,7 @@ use serde::Serialize;
 
 use crate::assertions::AssertionResult;
 use crate::machine_output::{InterruptReason, RunReport, RunState, RUN_REPORT_FILE_NAME};
+use crate::record::{step_label, ActiveStep, StepResult, StepStatus};
 
 /// Phase name reported when the harness cannot tell which phase a test was in.
 pub const UNKNOWN_PHASE: &str = "unknown";
@@ -179,6 +180,8 @@ pub enum ErrorKind {
     Setup,
     /// The test exceeded its timeout.
     Timeout,
+    /// The harness could not evaluate a step, for example because it overran its budget.
+    Evaluation,
     /// The harness was interrupted or failed internally.
     Internal,
 }
@@ -208,7 +211,7 @@ pub enum TimeoutDeadline {
 /// What the harness knows about a test it stopped for taking too long.
 ///
 /// `deadline` names the configured deadline that fired; `active_phase` names what the test was doing
-/// when it did.
+/// when the case deadline fired.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct TimeoutAttribution {
     /// The deadline that fired.
@@ -217,8 +220,10 @@ pub struct TimeoutAttribution {
     pub configured_ms: u64,
     /// Duration of the test case's own deadline, whichever deadline fired, in milliseconds.
     pub test_deadline_ms: u64,
-    /// Phase the test was in when the deadline fired, or `unknown` when it had not entered one.
+    /// Phase the test was in when the case deadline fired, or `unknown` when it had not entered one.
     pub active_phase: String,
+    /// Phase at cleanup grace expiry, or `unknown` if no phase was active. Set when `deadline` is `cleanup_grace`.
+    pub grace_phase: Option<String>,
 }
 
 impl TimeoutAttribution {
@@ -229,19 +234,22 @@ impl TimeoutAttribution {
             configured_ms: DurationMs(test_deadline).as_millis(),
             test_deadline_ms: DurationMs(test_deadline).as_millis(),
             active_phase: active_phase.unwrap_or_else(|| UNKNOWN_PHASE.to_string()),
+            grace_phase: None,
         }
     }
 
     /// Attributes a timeout to the teardown grace period that follows the test's own deadline.
     ///
-    /// `active_phase` is the phase the test was in when its own deadline fired, since that is what
-    /// teardown interrupted.
-    pub fn cleanup_grace(grace: Duration, test_deadline: Duration, active_phase: Option<String>) -> Self {
+    /// `active_phase` identifies the phase at the case deadline; `grace_phase` identifies it at grace expiry.
+    pub fn cleanup_grace(
+        grace: Duration, test_deadline: Duration, active_phase: Option<String>, grace_phase: Option<String>,
+    ) -> Self {
         Self {
             deadline: TimeoutDeadline::CleanupGrace,
             configured_ms: DurationMs(grace).as_millis(),
             test_deadline_ms: DurationMs(test_deadline).as_millis(),
             active_phase: active_phase.unwrap_or_else(|| UNKNOWN_PHASE.to_string()),
+            grace_phase: Some(grace_phase.unwrap_or_else(|| UNKNOWN_PHASE.to_string())),
         }
     }
 }
@@ -256,8 +264,9 @@ impl fmt::Display for TimeoutAttribution {
             }
             TimeoutDeadline::CleanupGrace => write!(
                 f,
-                "cleanup grace {:?} expired after the case budget ({:?}) expired in {}",
+                "cleanup grace {:?} expired in {} after the case budget ({:?}) expired in {}",
                 configured,
+                self.grace_phase.as_deref().unwrap_or(UNKNOWN_PHASE),
                 Duration::from_millis(self.test_deadline_ms),
                 self.active_phase
             ),
@@ -265,22 +274,74 @@ impl fmt::Display for TimeoutAttribution {
     }
 }
 
+/// What stopped a test before it reached a verdict.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StoppedBy {
+    /// The test case's own deadline.
+    CaseDeadline,
+    /// A signal or interrupt key that cancelled the run.
+    Signal,
+}
+
+/// What stopped a test before it reached a verdict, and the steps running at that moment.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct StopCause {
+    /// What stopped the test.
+    pub by: StoppedBy,
+    /// Steps running at interruption, in procedure order.
+    pub active: Vec<ActiveStep>,
+}
+
+/// A problem that arose after a test reached its verdict, or during its cleanup.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct Issue {
+    /// What kind of problem this is.
+    pub kind: IssueKind,
+    /// Human-readable detail.
+    pub message: String,
+}
+
+/// The kind of an [`Issue`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IssueKind {
+    /// The case deadline expired after the test reached its verdict.
+    PostVerdictDeadline,
+    /// The test did not finish within the cleanup grace period after it was stopped.
+    CleanupGraceExpired,
+}
+
+impl fmt::Display for IssueKind {
+    /// Writes the same names the JSON contract uses.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::PostVerdictDeadline => "post_verdict_deadline",
+            Self::CleanupGraceExpired => "cleanup_grace_expired",
+        };
+        f.write_str(name)
+    }
+}
+
 /// Result of a single test case.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 pub struct TestResult {
     /// Name of the test case.
     pub name: String,
     /// How the test finished.
     pub outcome: TestOutcome,
     /// Total duration of the test.
-    #[serde(with = "duration_millis")]
     pub duration: Duration,
-    /// Results of individual assertions.
-    pub assertion_results: Vec<AssertionResult>,
+    /// All planned steps and parallel members in procedure order, including those that never ran.
+    pub assertion_results: Vec<StepResult>,
     /// Error if the harness could not reach a verdict.
     pub error: Option<TestError>,
     /// What the harness knows about the timeout, when the outcome is [`TestOutcome::TimedOut`].
     pub timeout: Option<TimeoutAttribution>,
+    /// Cause and running steps for a test interrupted before its verdict.
+    pub cause: Option<StopCause>,
+    /// Problems after the verdict or during cleanup. They never change `outcome`.
+    pub issues: Vec<Issue>,
     /// Directory the test case was loaded from. Set by the runner.
     pub case_path: Option<PathBuf>,
     /// Directory this test's artifacts were written to. Set by the runner.
@@ -288,32 +349,79 @@ pub struct TestResult {
     /// Timing breakdown for each phase of test execution.
     pub phase_timings: Vec<PhaseTiming>,
     /// Full per-assertion mismatch details for log output (not shown in TUI/reporter).
-    #[serde(skip)]
     pub assertion_details: Vec<Vec<String>>,
 }
 
 impl TestResult {
-    /// Creates a result from the assertions a test actually ran.
+    /// Creates a result from sequential assertions, assigning step indices in order.
     pub fn from_assertions(
         name: impl Into<String>, duration: Duration, assertion_results: Vec<AssertionResult>,
         phase_timings: Vec<PhaseTiming>,
     ) -> Self {
-        let passed = assertion_results.iter().all(|r| r.passed);
-        Self {
+        let steps = assertion_results
+            .into_iter()
+            .enumerate()
+            .map(|(step, result)| StepResult {
+                step,
+                member: None,
+                name: result.name,
+                status: if result.passed {
+                    StepStatus::Passed
+                } else {
+                    StepStatus::Failed
+                },
+                message: result.message,
+                duration: result.duration,
+            })
+            .collect();
+        Self::from_steps(name, duration, steps, phase_timings)
+    }
+
+    /// Creates a result whose outcome follows from the step statuses.
+    ///
+    /// In priority order:
+    /// 1. Any `failed` step makes the test `Failed`.
+    /// 2. Any `errored` step makes it `Errored` with [`ErrorKind::Evaluation`], naming the first such step.
+    /// 3. A procedure with only `passed` steps, or no steps, is `Passed`.
+    /// 4. Otherwise, it is `Errored` with [`ErrorKind::Internal`]. For tests it stopped, the runner replaces this
+    ///    outcome with the interruption cause.
+    pub fn from_steps(
+        name: impl Into<String>, duration: Duration, steps: Vec<StepResult>, phase_timings: Vec<PhaseTiming>,
+    ) -> Self {
+        let (outcome, error) = if steps.iter().any(|step| step.status == StepStatus::Failed) {
+            (TestOutcome::Failed, None)
+        } else if let Some(errored) = steps.iter().find(|step| step.status == StepStatus::Errored) {
+            let message = format!(
+                "Step {} ({}) could not be evaluated: {}",
+                step_label(errored.step, errored.member),
+                errored.name,
+                errored.message.lines().next().unwrap_or_default()
+            );
+            (TestOutcome::Errored, Some((ErrorKind::Evaluation, message)))
+        } else if steps.iter().all(|step| step.status == StepStatus::Passed) {
+            (TestOutcome::Passed, None)
+        } else {
+            let message = "The procedure was interrupted.".to_string();
+            (TestOutcome::Errored, Some((ErrorKind::Internal, message)))
+        };
+
+        let result = Self {
             name: name.into(),
-            outcome: if passed {
-                TestOutcome::Passed
-            } else {
-                TestOutcome::Failed
-            },
+            outcome,
             duration,
-            assertion_results,
+            assertion_results: steps,
             error: None,
             timeout: None,
+            cause: None,
+            issues: Vec::new(),
             case_path: None,
             log_dir: None,
             phase_timings,
             assertion_details: Vec::new(),
+        };
+        match error {
+            Some((kind, message)) => result.with_harness_error(kind, message),
+            None => result,
         }
     }
 
@@ -322,19 +430,7 @@ impl TestResult {
         name: impl Into<String>, kind: ErrorKind, message: impl Into<String>, duration: Duration,
         phase_timings: Vec<PhaseTiming>,
     ) -> Self {
-        Self {
-            name: name.into(),
-            outcome: TestOutcome::Errored,
-            duration,
-            assertion_results: Vec::new(),
-            error: None,
-            timeout: None,
-            case_path: None,
-            log_dir: None,
-            phase_timings,
-            assertion_details: Vec::new(),
-        }
-        .with_harness_error(kind, message)
+        Self::from_steps(name, duration, Vec::new(), phase_timings).with_harness_error(kind, message)
     }
 
     /// Marks a completed result as a harness error while retaining its partial evidence.
@@ -363,39 +459,76 @@ impl TestResult {
         self
     }
 
-    /// The one-word label every renderer prints: `PASS`, `FAIL`, `ERROR`, or `TIMEOUT`.
+    /// Returns the display label: `PASS`, `FAIL`, `ERROR`, `TIMEOUT`, or `INTERRUPTED` for a signal interruption.
     pub fn label(&self) -> &'static str {
         match self.outcome {
             TestOutcome::Passed => "PASS",
             TestOutcome::Failed => "FAIL",
+            TestOutcome::Errored if self.cause.as_ref().is_some_and(|cause| cause.by == StoppedBy::Signal) => {
+                "INTERRUPTED"
+            }
             TestOutcome::Errored => "ERROR",
             TestOutcome::TimedOut => "TIMEOUT",
         }
     }
 
-    /// Formats a timeout's attribution when available, otherwise the harness error (`Error: ` on the first line).
+    /// Formats the timeout attribution or harness error, followed by interruption details and issues.
     ///
-    /// Returns no lines when neither is present.
+    /// Includes steps running at interruption and a count of steps that never ran. Returns an empty list for a test
+    /// with none of these diagnostics.
     pub fn cause_lines(&self) -> Vec<String> {
-        if let (TestOutcome::TimedOut, Some(timeout)) = (self.outcome, &self.timeout) {
-            return vec![timeout.to_string()];
+        let mut lines = if let (TestOutcome::TimedOut, Some(timeout)) = (self.outcome, &self.timeout) {
+            vec![timeout.to_string()]
+        } else if let Some(error) = &self.error {
+            error
+                .message
+                .lines()
+                .enumerate()
+                .map(|(i, line)| {
+                    if i == 0 {
+                        format!("Error: {}", line)
+                    } else {
+                        line.to_string()
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        if let Some(cause) = self.cause.as_ref().filter(|cause| !cause.active.is_empty()) {
+            let running: Vec<String> = cause
+                .active
+                .iter()
+                .map(|step| {
+                    format!(
+                        "step {} {} ({:.1?} of {:?})",
+                        step_label(step.step, step.member),
+                        step.kind,
+                        Duration::from_millis(step.elapsed_ms),
+                        Duration::from_millis(step.budget_ms)
+                    )
+                })
+                .collect();
+            lines.push(format!("Running: {}", running.join(", ")));
         }
 
-        let Some(error) = &self.error else {
-            return Vec::new();
-        };
-        error
-            .message
-            .lines()
-            .enumerate()
-            .map(|(i, line)| {
-                if i == 0 {
-                    format!("Error: {}", line)
-                } else {
-                    line.to_string()
-                }
-            })
-            .collect()
+        for issue in &self.issues {
+            lines.push(format!("Issue: {}: {}", issue.kind, issue.message));
+        }
+
+        let not_run = self
+            .assertion_results
+            .iter()
+            .filter(|step| step.status == StepStatus::NotRun)
+            .count();
+        match not_run {
+            0 => {}
+            1 => lines.push("1 step not run".to_string()),
+            n => lines.push(format!("{} steps not run", n)),
+        }
+
+        lines
     }
 }
 
@@ -445,8 +578,16 @@ impl Reporter {
         lines.extend(result.cause_lines().into_iter().map(|line| format!("  {}", line)));
 
         if !result.outcome.is_passed() || self.verbose {
-            for assertion in &result.assertion_results {
-                let indicator = if assertion.passed { "+".green() } else { "-".red() };
+            let ran = result
+                .assertion_results
+                .iter()
+                .filter(|step| step.status != StepStatus::NotRun);
+            for assertion in ran {
+                let indicator = if assertion.status == StepStatus::Passed {
+                    "+".green()
+                } else {
+                    "-".red()
+                };
 
                 lines.push(format!(
                     "  {} {} ({:.2?})",
@@ -614,23 +755,6 @@ mod duration_millis {
     }
 }
 
-/// Serde implementation for AssertionResult.
-impl Serialize for AssertionResult {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeStruct;
-
-        let mut state = serializer.serialize_struct("AssertionResult", 4)?;
-        state.serialize_field("name", &self.name)?;
-        state.serialize_field("passed", &self.passed)?;
-        state.serialize_field("message", &self.message)?;
-        state.serialize_field("duration_ms", &DurationMs(self.duration).as_millis())?;
-        state.end()
-    }
-}
-
 /// Results shared by the renderers' tests.
 #[cfg(test)]
 pub(crate) mod test_support {
@@ -639,51 +763,123 @@ pub(crate) mod test_support {
     /// Expected cause line for the timeout result in [`each_outcome`].
     pub(crate) const TIMEOUT_CAUSE: &str = "case budget 50ms expired in container_start";
 
-    /// One result per outcome, in `Passed`, `Failed`, `Errored`, `TimedOut` order, with their labels.
-    pub(crate) fn each_outcome() -> [(TestResult, &'static str); 4] {
-        let assertion = |passed| AssertionResult {
-            name: "log_contains".to_string(),
-            passed,
+    /// Expected cause line for the issue on the passing result in [`each_outcome`].
+    pub(crate) const PASS_ISSUE: &str =
+        "Issue: post_verdict_deadline: case budget 50ms expired in cleanup after the verdict";
+
+    /// Kind of the step that never ran in the failing result in [`each_outcome`].
+    pub(crate) const NOT_RUN_KIND: &str = "log_not_contains";
+
+    /// A step that runs alone, with a placeholder message.
+    pub(crate) fn step(step: usize, name: &str, status: StepStatus) -> StepResult {
+        StepResult {
+            step,
+            member: None,
+            name: name.to_string(),
+            status,
             message: "message".to_string(),
             duration: Duration::from_millis(1),
-        };
+        }
+    }
+
+    /// One result per label, in `PASS`, `FAIL`, `ERROR`, `TIMEOUT`, `INTERRUPTED` order.
+    ///
+    /// The passing result includes an issue; the failing result includes a later `not_run` step.
+    pub(crate) fn each_outcome() -> [(TestResult, &'static str); 5] {
+        let mut passed = TestResult::from_steps(
+            "p",
+            Duration::from_secs(1),
+            vec![step(0, "log_contains", StepStatus::Passed)],
+            Vec::new(),
+        );
+        passed.issues.push(Issue {
+            kind: IssueKind::PostVerdictDeadline,
+            message: "case budget 50ms expired in cleanup after the verdict".to_string(),
+        });
+        let failed = TestResult::from_steps(
+            "f",
+            Duration::from_secs(1),
+            vec![
+                step(0, "log_contains", StepStatus::Failed),
+                step(1, NOT_RUN_KIND, StepStatus::NotRun),
+            ],
+            Vec::new(),
+        );
         let timed_out = TestResult::errored("t", ErrorKind::Timeout, "slow", Duration::from_secs(1), Vec::new())
             .with_timeout_attribution(TimeoutAttribution::test_deadline(
                 Duration::from_millis(50),
                 Some("container_start".to_string()),
             ));
+        let mut interrupted = TestResult::errored(
+            "i",
+            ErrorKind::Internal,
+            "Test was cancelled.",
+            Duration::from_secs(1),
+            Vec::new(),
+        );
+        interrupted.cause = Some(StopCause {
+            by: StoppedBy::Signal,
+            active: Vec::new(),
+        });
 
         [
-            (
-                TestResult::from_assertions("p", Duration::from_secs(1), vec![assertion(true)], Vec::new()),
-                "PASS",
-            ),
-            (
-                TestResult::from_assertions("f", Duration::from_secs(1), vec![assertion(false)], Vec::new()),
-                "FAIL",
-            ),
+            (passed, "PASS"),
+            (failed, "FAIL"),
             (
                 TestResult::errored("e", ErrorKind::Setup, "boom", Duration::from_secs(1), Vec::new()),
                 "ERROR",
             ),
             (timed_out, "TIMEOUT"),
+            (interrupted, "INTERRUPTED"),
         ]
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::{each_outcome, TIMEOUT_CAUSE};
+    use super::test_support::{each_outcome, step, NOT_RUN_KIND, PASS_ISSUE, TIMEOUT_CAUSE};
     use super::*;
     use crate::collector::RunCollector;
     use crate::events::TestEvent;
 
-    const LABELS: [&str; 4] = ["PASS", "FAIL", "ERROR", "TIMEOUT"];
+    const LABELS: [&str; 5] = ["PASS", "FAIL", "ERROR", "TIMEOUT", "INTERRUPTED"];
 
     #[test]
     fn every_outcome_has_its_own_label() {
         let labels: Vec<&str> = each_outcome().iter().map(|(result, _)| result.label()).collect();
         assert_eq!(labels, LABELS);
+    }
+
+    /// A timed-out result with two running parallel members, an issue, and two steps that never ran.
+    fn stopped_during_a_parallel_block() -> TestResult {
+        let active = |member, kind: &str| ActiveStep {
+            step: 2,
+            member: Some(member),
+            kind: kind.to_string(),
+            elapsed_ms: 4_900,
+            budget_ms: 30_000,
+        };
+        let steps = vec![
+            step(0, "log_contains", StepStatus::Passed),
+            step(1, "log_contains", StepStatus::Passed),
+            step(3, "log_contains", StepStatus::NotRun),
+            step(4, "log_contains", StepStatus::NotRun),
+        ];
+        let mut result = TestResult::from_steps("t", Duration::from_secs(121), steps, Vec::new())
+            .with_harness_error(ErrorKind::Timeout, "slow")
+            .with_timeout_attribution(TimeoutAttribution::test_deadline(
+                Duration::from_secs(120),
+                Some("assertions".to_string()),
+            ));
+        result.cause = Some(StopCause {
+            by: StoppedBy::CaseDeadline,
+            active: vec![active(0, "intake_has_metric"), active(1, "log_contains")],
+        });
+        result.issues.push(Issue {
+            kind: IssueKind::CleanupGraceExpired,
+            message: "cleanup grace 30s expired in cleanup".to_string(),
+        });
+        result
     }
 
     #[test]
@@ -713,9 +909,18 @@ mod tests {
                     Duration::from_secs(30),
                     Duration::from_secs(120),
                     Some("assertions".to_string()),
+                    Some("cleanup".to_string()),
                 )),
-                vec!["cleanup grace 30s expired after the case budget (120s) expired in assertions"],
+                vec!["cleanup grace 30s expired in cleanup after the case budget (120s) expired in assertions"],
             ),
+            (stopped_during_a_parallel_block(), {
+                vec![
+                    "case budget 120s expired in assertions",
+                    "Running: step 3.1 intake_has_metric (4.9s of 30s), step 3.2 log_contains (4.9s of 30s)",
+                    "Issue: cleanup_grace_expired: cleanup grace 30s expired in cleanup",
+                    "2 steps not run",
+                ]
+            }),
             (
                 timed_out(TimeoutAttribution::test_deadline(Duration::from_secs(120), None)),
                 vec!["case budget 120s expired in unknown"],
@@ -759,8 +964,17 @@ mod tests {
                 "first line was: {}",
                 first
             );
-            if label == "TIMEOUT" {
-                assert_eq!(lines[1], format!("  {}", TIMEOUT_CAUSE));
+            match label {
+                "PASS" => assert_eq!(lines[1..], [format!("  {}", PASS_ISSUE)]),
+                "FAIL" => {
+                    assert_eq!(lines[1], "  1 step not run");
+                    assert!(
+                        lines.iter().all(|line| !line.contains(NOT_RUN_KIND)),
+                        "a step that never ran should not be listed: {lines:?}"
+                    );
+                }
+                "TIMEOUT" => assert_eq!(lines[1], format!("  {}", TIMEOUT_CAUSE)),
+                _ => {}
             }
         }
     }
@@ -799,7 +1013,7 @@ mod tests {
     #[test]
     fn run_summary_reads_incomplete_for_an_interrupted_run() {
         let log_dir = tempfile::tempdir().expect("temp dir should be creatable");
-        let [(passed, _), (failed, _), _, (timed_out, _)] = each_outcome();
+        let [(passed, _), (failed, _), _, (timed_out, _), _] = each_outcome();
 
         let all_pass = collected(
             log_dir.path(),

@@ -15,7 +15,6 @@ disable-model-invocation: false
 
 Check the current `Makefile` recipes and `panoramic --help` before choosing a command. Use
 `panoramic run --help` for runner options and `panoramic list --help` to discover selection options.
-This keeps commands aligned with the working tree as the harness changes.
 
 These human-facing documents provide optional background:
 
@@ -80,21 +79,22 @@ Exit codes distinguish the run-level result:
 For code 2, investigate the harness or environment before assertion differences.
 
 Check `run.json` first: it is updated during execution, so passing entries do not prove the run
-finished. Inspect completeness before individual results; treat unknown states or outcomes as
-non-passing.
+finished. Inspect completeness before individual results; treat unknown states, outcomes, or
+statuses as non-passing.
 
 ```bash
 jq '{state, interrupted_reason, running, not_run}' run.json
-jq -r '.tests[] | select(.outcome != "passed") | "\(.name) \(.outcome) \(.log_dir)"' run.json
+jq -r '.tests[] | select(.outcome != "passed" or (.issues | length) > 0) | "\(.name) \(.outcome) \(.log_dir)"' run.json
 ```
 
-Follow each non-passing test's `log_dir` to `result.json`. Read `outcome`, `error`, `timeout`, failed
-`assertions`, and `diagnostic_lines`, then open the referenced artifacts for context and uncapped
-details. Use reported paths rather than guessing filenames.
+Follow the selected tests' `log_dir` to `result.json`. Use `outcome` for the test result and
+`assertions[].status` for each step. Check `issues` even on passes; they do not change `outcome`.
+Open reported artifact paths and `diagnostic_lines` sources for context and uncapped details.
 
-For field semantics, start with `RunReport` and `TestReport` in
-`bin/correctness/panoramic/src/machine_output.rs` and follow their types. Check `schema_version` and
-`build_revision` when reports differ from the working tree.
+For semantics, read `RunReport`, `TestReport`, and `AssertionReport` in
+`bin/correctness/panoramic/src/machine_output.rs` and follow their types. Step-to-outcome rules are
+in `TestResult::from_steps` in `reporter.rs`. Check `schema_version` and `run.json`'s `build_revision`
+when reports differ from the working tree.
 
 On Unix, send SIGINT or SIGTERM to stop a run with cleanup; a second signal may leave containers.
 
