@@ -1,8 +1,81 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Shared runtime infrastructure for a process that acts as a remote agent for the Datadog Agent."><title>datadog_agent_runtime - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="datadog_agent_runtime" data-themes="" data-resource-suffix="" data-rustdoc-version="1.96.0-nightly (02c7f9bec 2026-04-10)" data-channel="nightly" data-search-js="search-b5634cc7.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../static.files/storage-41dd4d93.js"></script><script defer src="../crates.js"></script><script defer src="../static.files/main-5013f961.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc mod crate"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Crate datadog_agent_runtime</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../datadog_agent_runtime/index.html">datadog_<wbr>agent_<wbr>runtime</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><ul class="block"><li><a id="all-types" href="all.html">All Items</a></li></ul><section id="rustdoc-toc"><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#conventions" title="Conventions">Conventions</a></li><li><a href="#features" title="Features">Features</a></li></ul><h3><a href="#modules">Crate Items</a></h3><ul class="block"><li><a href="#modules" title="Modules">Modules</a></li></ul></section><div id="rustdoc-modnav"></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1>Crate <span>datadog_<wbr>agent_<wbr>runtime</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/datadog_agent_runtime/lib.rs.html#1-39">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Shared runtime infrastructure for a process that acts as a remote agent for the Datadog Agent.</p>
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Shared runtime infrastructure for a process that acts as a remote agent for the Datadog Agent."><title>datadog_agent_runtime - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="datadog_agent_runtime" data-themes="" data-resource-suffix="" data-rustdoc-version="1.96.0-nightly (02c7f9bec 2026-04-10)" data-channel="nightly" data-search-js="search-b5634cc7.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../static.files/storage-41dd4d93.js"></script><script defer src="../crates.js"></script><script defer src="../static.files/main-5013f961.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc mod crate"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Crate datadog_agent_runtime</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../datadog_agent_runtime/index.html">datadog_<wbr>agent_<wbr>runtime</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><ul class="block"><li><a id="all-types" href="all.html">All Items</a></li></ul><section id="rustdoc-toc"><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#getting-started" title="Getting started">Getting started</a></li><li><a href="#supervision-tree" title="Supervision tree">Supervision tree</a></li><li><a href="#control-plane" title="Control plane">Control plane</a></li><li><a href="#hooks" title="Hooks">Hooks</a></li><li><a href="#building-blocks" title="Building blocks">Building blocks</a></li><li><a href="#conventions" title="Conventions">Conventions</a></li><li><a href="#features" title="Features">Features</a></li></ul><h3><a href="#modules">Crate Items</a></h3><ul class="block"><li><a href="#modules" title="Modules">Modules</a></li></ul></section><div id="rustdoc-modnav"></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1>Crate <span>datadog_<wbr>agent_<wbr>runtime</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/datadog_agent_runtime/lib.rs.html#1-128">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Shared runtime infrastructure for a process that acts as a remote agent for the Datadog Agent.</p>
 <p>A remote agent is a process that runs alongside the Datadog Agent and attaches to it over the Remote Agent Registry
 (RAR): it registers itself, receives its configuration from the Agent, and serves the status, flare, and telemetry
 services that the Agent queries. This crate provides those pieces, so that each remote agent only supplies what is
-truly its own.</p>
+truly its own: its configuration system, its topology, its control plane supervisor, its status sections, its
+telemetry remapping rules, and any extra API handlers.</p>
+<h2 id="getting-started"><a class="doc-anchor" href="#getting-started">§</a>Getting started</h2>
+<p>Most remote agents use the <a href="facade/index.html" title="mod datadog_agent_runtime::facade"><code>facade</code></a> module, which drives the whole startup sequence. A binary bootstraps the
+process with <code>saluki_app::bootstrap::AppBootstrapper</code>, implements <a href="facade/trait.LocalConfiguration.html" title="trait datadog_agent_runtime::facade::LocalConfiguration"><code>LocalConfiguration</code></a>
+and <a href="facade/trait.AuthoritativeConfiguration.html" title="trait datadog_agent_runtime::facade::AuthoritativeConfiguration"><code>AuthoritativeConfiguration</code></a> for its configuration system, ties them
+together with <a href="facade/trait.RemoteAgentSpecification.html" title="trait datadog_agent_runtime::facade::RemoteAgentSpecification"><code>RemoteAgentSpecification</code></a> on a marker type, and then walks
+through the stages:</p>
+<ol>
+<li><a href="facade/struct.RemoteAgent.html#method.start" title="method datadog_agent_runtime::facade::RemoteAgent::start"><code>RemoteAgent::start</code></a> registers with the Datadog Agent, waits for the initial
+configuration from its configuration stream, and reloads logging to match. In standalone mode, the local
+configuration becomes authoritative instead.</li>
+<li><a href="facade/struct.RemoteAgent.html#method.initialize" title="method datadog_agent_runtime::facade::RemoteAgent::initialize"><code>RemoteAgent::initialize</code></a> creates the component and health registries and the
+<a href="env/struct.RemoteAgentEnvironmentProvider.html" title="struct datadog_agent_runtime::env::RemoteAgentEnvironmentProvider"><code>RemoteAgentEnvironmentProvider</code></a>, which connects to the Datadog Agent for
+the hostname, autodiscovery, and workload metadata.</li>
+<li><a href="facade/struct.RemoteAgent.html#method.run" title="method datadog_agent_runtime::facade::RemoteAgent::run"><code>RemoteAgent::run</code></a> takes the binary’s topology and control plane supervisor, creates
+the rest of the supervisors, validates the memory bounds, and runs the supervision tree until the process is asked
+to shut down.</li>
+</ol>
+<p>Each stage is a type parameter of <a href="facade/struct.RemoteAgent.html" title="struct datadog_agent_runtime::facade::RemoteAgent"><code>RemoteAgent</code></a>, so only the methods for the current stage
+are available. The binary regains control between stages: to check its configuration before anything starts, and to
+build its topology and its control plane. <code>examples/minimal_remote_agent.rs</code> shows a complete binary.</p>
+<h2 id="supervision-tree"><a class="doc-anchor" href="#supervision-tree">§</a>Supervision tree</h2>
+<p>The facade builds this tree, where <code>{identifier}</code> is the identifier of the application details that the binary
+registers with <code>saluki_metadata::set_app_details</code>:</p>
+<div class="example-wrap"><pre class="language-text"><code>{identifier}-root                 one-for-one, no restarts
+├── bootstrap supervisor          from AppBootstrapper
+├── internal-sup
+│   ├── control plane             from the binary
+│   │   └── remote-agent          from RemoteAgent::create_remote_agent_supervisor
+│   ├── resource registry
+│   ├── config-updates            connected mode only
+│   └── env-provider              connected mode only
+│       ├── workload
+│       └── autodiscovery
+└── the binary&#39;s topology</code></pre></div>
+<p>A configuration stream that closes fails <code>config-updates</code> on every restart, which escalates to the root and stops the
+process, rather than leaving it to run on a configuration that can no longer change.</p>
+<h2 id="control-plane"><a class="doc-anchor" href="#control-plane">§</a>Control plane</h2>
+<p>Each remote agent builds its own control plane supervisor from the workers it needs. ADP’s <code>ctrl-pln</code> runs on a
+dedicated single-threaded runtime and holds:</p>
+<ul>
+<li>the health registry’s worker, and [<code>ResourceTelemetryWorker</code>][saluki_app::accounting::ResourceTelemetryWorker]</li>
+<li><a href="../saluki_core/observability/metrics/api/struct.InternalTelemetryAPIWorker.html" title="struct saluki_core::observability::metrics::api::InternalTelemetryAPIWorker"><code>InternalTelemetryAPIWorker</code></a>, for <code>/metrics</code>
+and <code>/compat/metrics</code></li>
+<li>[<code>DynamicLogLevelWorker</code>][saluki_app::logging::DynamicLogLevelWorker], fed by
+<a href="logging/struct.LoggingTranslator.html#method.translate_log_levels" title="method datadog_agent_runtime::logging::LoggingTranslator::translate_log_levels"><code>LoggingTranslator::translate_log_levels</code></a></li>
+<li>[<code>ConfigWorker</code>][saluki_app::config::ConfigWorker] for <code>/config</code>, and
+<a href="control_plane/struct.ConfigRuntimeWorker.html" title="struct datadog_agent_runtime::control_plane::ConfigRuntimeWorker"><code>ConfigRuntimeWorker</code></a> for <code>/config/runtime</code></li>
+<li>the unprivileged and privileged API endpoints, built with [<code>APIBuilder</code>][saluki_app::api::APIBuilder], where the
+privileged endpoint requires the Agent IPC certificate</li>
+<li>the <code>remote-agent</code> supervisor from <a href="facade/struct.RemoteAgent.html#method.create_remote_agent_supervisor" title="method datadog_agent_runtime::facade::RemoteAgent::create_remote_agent_supervisor"><code>RemoteAgent::create_remote_agent_supervisor</code></a></li>
+</ul>
+<p>These workers publish their routes as dynamic routes, so whichever API endpoint runs in the same supervision tree
+serves them.</p>
+<h2 id="hooks"><a class="doc-anchor" href="#hooks">§</a>Hooks</h2>
+<p>A remote agent can:</p>
+<ul>
+<li>add sections to the status output with <a href="remote_agent/trait.StatusSectionProvider.html" title="trait datadog_agent_runtime::remote_agent::StatusSectionProvider"><code>StatusSectionProvider</code></a></li>
+<li>select and rename the internal metrics reported to the Datadog Agent as telemetry</li>
+<li>serve <code>/compat/metrics</code> with its own remapping rules</li>
+<li>serve its own routes on the unprivileged and privileged API endpoints</li>
+</ul>
+<p>Its <a href="logging/struct.LoggingTranslator.html" title="struct datadog_agent_runtime::logging::LoggingTranslator"><code>LoggingTranslator</code></a> sets its default log file and adds its own crates to the
+first-party log targets that a plain log level applies to.</p>
+<h2 id="building-blocks"><a class="doc-anchor" href="#building-blocks">§</a>Building blocks</h2>
+<p>Each module can also be used on its own, without the facade:</p>
+<ul>
+<li><a href="remote_agent/index.html" title="mod datadog_agent_runtime::remote_agent"><code>remote_agent</code></a>: registration, the configuration stream, and the workers that serve the status, flare, and
+telemetry services</li>
+<li><a href="logging/index.html" title="mod datadog_agent_runtime::logging"><code>logging</code></a>: translation of the Datadog Agent’s logging settings and runtime log level changes</li>
+<li><a href="env/index.html" title="mod datadog_agent_runtime::env"><code>env</code></a>: the host, autodiscovery, and workload providers</li>
+<li><a href="control_plane/index.html" title="mod datadog_agent_runtime::control_plane"><code>control_plane</code></a>: workers that serve the internal APIs and keep the configuration current</li>
+</ul>
 <h2 id="conventions"><a class="doc-anchor" href="#conventions">§</a>Conventions</h2>
 <p>Constructors don’t spawn tasks. Long-running work is returned as a
 <a href="../saluki_core/runtime/supervisable/trait.Supervisable.html" title="trait saluki_core::runtime::supervisable::Supervisable"><code>Supervisable</code></a> worker or <a href="../saluki_core/runtime/supervisor/struct.Supervisor.html" title="struct saluki_core::runtime::supervisor::Supervisor"><code>Supervisor</code></a> for
@@ -15,6 +88,8 @@ configuration stream loop. Neither task is supervised, and neither stops on shut
 <p>Each subsystem that talks to the Datadog Agent opens its own connection with
 [<code>RemoteAgentClient::connect</code>][datadog_agent_commons::ipc::client::RemoteAgentClient::connect], rather than sharing a
 clone of another subsystem’s client.</p>
+<p>Code in this crate logs under the <code>datadog_agent_runtime</code> target, which the <code>datadog_agent</code> prefix in
+<a href="logging/constant.FIRST_PARTY_LOG_TARGETS.html" title="constant datadog_agent_runtime::logging::FIRST_PARTY_LOG_TARGETS"><code>FIRST_PARTY_LOG_TARGETS</code></a> covers.</p>
 <h2 id="features"><a class="doc-anchor" href="#features">§</a>Features</h2>
 <ul>
 <li><code>taskdump</code>: includes a Tokio task dump (<code>runtime-dump.txt</code>) in flares. Tokio only supports task dumps on Linux, on
