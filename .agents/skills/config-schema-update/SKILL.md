@@ -4,7 +4,7 @@ description: Update the vendored configuration schema
 disable-model-invocation: true
 user-invocable: true
 ---
-Read `.agents/skills/config-system/SKILL.md` in the Saluki checkout if you have not already.
+Read `docs/development/configuration-system.md` in the Saluki checkout if you have not already.
 
 # /config-schema-update
 
@@ -55,22 +55,10 @@ upstream code with ADP consumers and tests. Check existing issues and pull reque
 Present the keys, changes, effect on users, evidence, and proposal. Ask one question per group.
 Wait for approval before finalizing the classification.
 
-Use the overlay's existing meanings:
+Use the overlay's existing meanings and exclusion-note format, described under "Support
+classifications" in `docs/development/configuration-system.md`.
 
-- `full`: ADP reads the key and matches the Agent's behavior.
-- `partial`: ADP reads the key but differs in some cases. Describe those differences.
-- `none`: ADP does not support the key. Choose severity based on the effect on users and state
-  whether support is planned. Link an issue when work should be tracked.
-- `unknown`: compatibility has not been established. Record what still needs investigation.
-- `excluded`: ADP silently ignores the key and omits it from compatibility documentation. Use this
-  for features ADP does not currently support, not to hide gaps that need tracking.
-
-An investigation toward intended support is `planned: true`. A documentation-only issue does not
-mean support is planned. Get approval before filing an issue, then verify it and link it from the
-overlay.
-
-Date exclusion notes and name the feature: `YYYY-MM-DD: ADP does not currently support <feature>.`
-Avoid generic reasons such as "Core Agent-only" or claims that support can never be added.
+Get approval before filing an issue, then verify it and link it from the overlay.
 
 ## Apply the decisions
 
@@ -78,7 +66,8 @@ Apply one approved decision at a time. Replace its provisional choices and remov
 markers. Regenerate and check the build and relevant tests before reviewing the next group.
 
 - Update `schema_overlay.yaml` and hand-maintained registry entries together.
-  Follow the config-system workflows for model and translation changes.
+  Follow the workflows in `docs/development/configuration-system.md` for model and translation
+  changes.
 - Reconcile changed schema types with deserialization, translation, and consumers. Do not weaken the
   schema to make old code compile.
 - Check that new schema defaults do not replace runtime-derived values with placeholders.

@@ -1,8 +1,7 @@
 # Component test driver migration plan
 
 This document tracks the migration of component tests onto the component test driver. Each pull request in the stack
-updates this file in the same commit as its code, and the last one deletes the `plans/test-driver-refactor/`
-directory.
+updates this file in the same commit as its code, and the last one deletes this file.
 
 ## Goal
 
@@ -79,7 +78,7 @@ Each pull request checks off its own item.
 - [ ] **11. Misc conversions and cleanup.** Needs F5 and F8.
   - Converts the setups listed under [Misc](#misc), and adds `saluki-core` with the `test-util` feature to the
     dev-dependencies of `saluki-app` and `saluki-io`.
-  - Moves the [Follow-ups](#follow-ups) to tracking issues, and deletes `plans/test-driver-refactor/`.
+  - Moves the [Follow-ups](#follow-ups) to tracking issues, and deletes this file.
 
 ## Inventory
 

@@ -507,7 +507,7 @@ mod tests {
 
     #[test]
     fn known_run_invocations_parse() {
-        // These mirror the invocations in the Makefile, `.gitlab/`, and `AGENTS.md`.
+        // These mirror the invocations in the Makefile, `.gitlab/`, and the `panoramic` skill.
         let cli = Cli::try_parse_from([
             "panoramic",
             "run",

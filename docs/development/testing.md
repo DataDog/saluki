@@ -11,6 +11,9 @@ The Saluki testing strategy consists of four main pillars:
 3. Integration Tests (panoramic)
 4. Performance Tests (SMP)
 
+Alongside these, we use fuzzing, Loom and Miri for concurrency and memory-model correctness, and Antithesis for
+fault-injected equivalence testing.
+
 ## Unit tests
 
 These are found throughout the Rust codebase as you would expect. You can run them with `cargo test` or you can use
@@ -66,7 +69,7 @@ make test-correctness
 make test-correctness-case CASE=dsd-plain
 ```
 
-The `test-correctness` target handles building all of the necessary prerequisites -- `millstone, `datadog-intake`, `panoramic`, the bundled Agent/ADP image, and so on -- before running the test cases.
+The `test-correctness` target handles building all of the necessary prerequisites -- `millstone`, `datadog-intake`, `panoramic`, the bundled Agent/ADP image, and so on -- before running the test cases.
 
 Correctness tests are run in the `e2e` stage in CI (`.gitlab/e2e.yml`).
 
@@ -103,7 +106,56 @@ Both suites run through the same `panoramic` binary.
 cargo run --release --bin panoramic -- --help
 ```
 
-`.agents/skills/panoramic/SKILL.md` documents panoramic usage for LLM agents.
+The `panoramic` skill walks LLM agents through choosing and running a suite non-interactively.
+
+### Reading panoramic results
+
+The Make targets write artifacts beneath `target/test-output/panoramic/` by default. Set `SALUKI_TEST_OUTPUT_DIR` to
+relocate the shared test-output root, or `PANORAMIC_LOG_DIR` to override the location for panoramic only. Each run
+creates a timestamped `panoramic-*` directory beneath the base, and stdout and `run.json` identify the directory for a
+run. `make clean-test-logs` deletes the panoramic directory, and `make clean` includes that target.
+
+Exit codes distinguish the run-level result:
+
+| Code | Meaning |
+|------|---------|
+| 0 | Every test passed |
+| 1 | At least one assertion failed |
+| 2 | Harness error, timeout, or interrupted run |
+| 3 | The selection matched no tests |
+
+For code 2, investigate the harness or environment before assertion differences.
+
+Check `run.json` first: it's updated during execution, so passing entries don't prove the run finished. Inspect
+completeness before individual results, and treat unknown states or outcomes as non-passing:
+
+```bash
+jq '{state, interrupted_reason, running, not_run}' run.json
+jq -r '.tests[] | select(.outcome != "passed") | "\(.name) \(.outcome) \(.log_dir)"' run.json
+```
+
+Follow each non-passing test's `log_dir` to `result.json`. Read `outcome`, `error`, `timeout`, failed `assertions`, and
+`diagnostic_lines`, then open the referenced artifacts for context and uncapped details. Use reported paths rather than
+guessing filenames.
+
+For field semantics, start with `RunReport` and `TestReport` in `bin/correctness/panoramic/src/machine_output.rs` and
+follow their types. Check `schema_version` and `build_revision` when reports differ from the working tree.
+
+On Unix, send SIGINT or SIGTERM to stop a run with cleanup. A second signal may leave containers behind.
+
+### Reading traffic artifacts
+
+Traffic captures live under `<log_dir>/traffic/`. Start with `traffic/manifest.json`: it lists each capture, whether its
+file is still on disk, and why any capture is missing. Take file names from the manifest rather than guessing them.
+Captures are zstd-compressed JSON Lines:
+
+```bash
+jq -r '(.input // empty), .decoded[] | select(.file.present) | .file.name' traffic/manifest.json
+zstd -dc traffic/<file-name> | head -5
+```
+
+The module docs in `bin/correctness/panoramic/src/traffic.rs` explain each artifact, its retention, and record ordering.
+For intake sidecar captures, see "Intake artifacts" in `test/integration/README.md`.
 
 ## Benchmark tests: Single Machine Performance (SMP)
 
@@ -132,16 +184,26 @@ development, lean on CI.
 
 ## Fuzzing
 
-A fifth type of testing is fuzzing. We aren't doing a lot with fuzzing right now, but what we've uses `cargo-fuzz` and
+We aren't doing a lot with fuzzing right now, but what we've uses `cargo-fuzz` and
 operates at the function-level. More fuzzing coverage will likely come in the future.
 
 ## Loom and Miri testing
 
-A sixth type of testing targets concurrency and memory-model correctness rather than business logic. **Loom**
+Loom and Miri target concurrency and memory-model correctness rather than business logic. **Loom**
 exhaustively explores how concurrent operations can interleave, to catch ordering bugs that are hard to hit through
 normal test runs. Run it with `make test-loom`. **Miri** runs tests under an interpreter that catches undefined
 behavior—data races, use-after-free, invalid memory access—that a normal test run wouldn't detect. Run it with `make
 test-miri`.
+
+## Antithesis
+
+[Antithesis](https://antithesis.com/) runs ADP under deterministic simulation with injected faults. Our focus is on
+establishing that ADP and the Datadog Agent's DogStatsD behave equivalently: if ADP replaces the Agent's DogStatsD
+server, users shouldn't notice shifts in their telemetry. Better operational behavior is an acceptable deviation.
+
+This is separate from the panoramic correctness tests, which compare outputs for fixed workloads without fault
+injection. The harness and scenarios live under `test/antithesis/`, and `test/antithesis/AGENTS.md` describes how
+agents drive runs there.
 
 ## Directory index
 
@@ -163,6 +225,7 @@ bin/correctness/
 # actual test cases
 test/
 ├── correctness/           : correctness test configs
+├── antithesis/            : antithesis harness and scenarios
 ├── integration/           : integration test configs
 └── smp/                   : smp experiments
 ```

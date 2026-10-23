@@ -567,7 +567,7 @@ check-unused-deps: ## Checks for any imported dependencies that are not used in 
 check-docs: check-lint-tools
 check-docs: ## Checks prose/code documentation against our style guide
 	@echo "[*] Checking prose/code documentation against our style guide..."
-	@vale --minAlertLevel=error --glob='!{lib/*/target/*,docs/.vitepress/*,*datadog_configuration*}' docs lib bin
+	@vale --minAlertLevel=error --glob='!{lib/*/target/*,docs/.vitepress/*,docs/development/plans/*,*datadog_configuration*}' docs lib bin
 
 .PHONY: sync-docs-config
 sync-docs-config: check-lint-tools
