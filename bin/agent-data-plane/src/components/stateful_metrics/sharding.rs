@@ -5,7 +5,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use foldspace_core::{LogicalMetricBatch, LogicalMetricSeries};
+use foldspace_core::{LogicalMetricBatch, LogicalMetricSeries, MetricTags};
 use saluki_core::data_model::event::Event;
 use smallvec::SmallVec;
 use twox_hash::XxHash64;
@@ -15,14 +15,26 @@ use super::conversion;
 pub(super) fn series_hash(series: &LogicalMetricSeries) -> u64 {
     let tags = series.tags();
     // Conversion produces sorted, unique standalone tags; hash them without allocating another vector.
-    if tags.prefix.is_empty() && tags.values.windows(2).all(|pair| pair[0] < pair[1]) {
-        return hash_with_tags(series, tags.values.as_slice());
+    if tags.prefix.is_empty() && tags.values.iter().is_sorted_by(|a, b| a < b) {
+        return hash_with_tags(series, SortedTags(&tags.values));
     }
 
-    let mut tags: Vec<_> = tags.prefix.iter().chain(&tags.values).collect();
+    let mut tags: Vec<_> = tags.prefix.iter().chain(tags.values.iter()).collect();
     tags.sort_unstable();
     tags.dedup();
     hash_with_tags(series, tags)
+}
+
+/// Hashes like `[String]`, so routing matches series hashed before tags could be shared.
+struct SortedTags<'a>(&'a MetricTags);
+
+impl Hash for SortedTags<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_usize(self.0.len());
+        for tag in self.0.iter() {
+            tag.hash(state);
+        }
+    }
 }
 
 fn hash_with_tags(series: &LogicalMetricSeries, tags: impl Hash) -> u64 {
@@ -66,7 +78,11 @@ impl Hasher for ByteSink<'_> {
 }
 
 pub(super) fn partition(events: impl IntoIterator<Item = Event>, workers: usize) -> Vec<LogicalMetricBatch> {
-    let mut shards: Vec<Vec<LogicalMetricSeries>> = (0..workers).map(|_| Vec::new()).collect();
+    let events = events.into_iter();
+    // Hashing spreads series about evenly; the slack keeps a shard slightly over its share from doubling.
+    let share = events.size_hint().0.div_ceil(workers);
+    let mut shards: Vec<Vec<LogicalMetricSeries>> =
+        (0..workers).map(|_| Vec::with_capacity(share + share / 4)).collect();
     for event in events {
         let Event::Metric(metric) = event else { continue };
         let Some(series) = conversion::convert(&metric) else {

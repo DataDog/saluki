@@ -118,7 +118,7 @@ async-compression = { version = "0.4.42", default-features = false, features = [
 zstd = { version = "0.14.0", default-features = false }
 bitmask-enum = { version = "2.2", default-features = false }
 figment = { version = "0.10", default-features = false }
-foldspace-core = { git = "https://github.com/DataDog/foldspace", rev = "1d90861fcba4d82650d6a9c94539dfc6d409461d" }
+foldspace-core = { git = "https://github.com/DataDog/foldspace", rev = "e7b76575f5c2b2b3987d5d24bbf3bba23ce19584" }
 foldhash = { version = "0.2", default-features = false, features = ["std"] }
 h2 = { version = "0.4", default-features = false }
 headers = { version = "0.4", default-features = false }
