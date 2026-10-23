@@ -318,10 +318,6 @@ mod tests {
         assert_eq!(env.lookup(&["DD_API_KEY"]), Some(("Dd_Api_Key", "00000")));
     }
 
-    fn vars(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
-    }
-
     fn apply_vars(pairs: &[(&str, &str)]) -> Result<Value, String> {
         let mut base = json!({});
         apply_datadog_env_vars(&mut base, vars(pairs), true)?;
