@@ -1,7 +1,6 @@
-//! Event types for test execution reporting.
+//! Events for test execution reporting.
 //!
-//! These events are emitted by the test runner and consumed by either the TUI
-//! or a logging consumer, depending on the output mode.
+//! The consume loop records runner events in the run report and forwards them to the TUI or plain output.
 
 use std::path::PathBuf;
 
@@ -38,9 +37,6 @@ pub enum TestEvent {
         /// The message to display.
         message: String,
     },
-
-    /// All tests have finished.
-    AllDone,
 }
 
 /// Create a channel for sending test events.

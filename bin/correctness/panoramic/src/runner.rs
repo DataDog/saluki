@@ -1,8 +1,6 @@
-//! Test execution.
+//! Test execution shared by TUI and plain output.
 //!
-//! This module provides the single entry point for running tests. The same code path
-//! is used regardless of output mode (TUI or plain). Events are emitted to a channel
-//! and consumed by either a TUI renderer or logging consumer.
+//! The runner sends progress and results to the run collector as events.
 
 use std::num::NonZeroUsize;
 use std::sync::RwLock;
@@ -32,9 +30,6 @@ use crate::{
     integration::IntegrationTestCase,
     reporter::{ErrorKind, PhaseTiming, TestResult, TimeoutAttribution},
 };
-
-/// A function that tells us whether to run a test. Used to filter for the desired test or tests.
-pub(crate) type TestFilter = Box<dyn Fn(&dyn Test) -> bool + Send>;
 
 /// A sender that the `Runner` can use to send `TestEvent`s.
 pub(crate) type EventSender = mpsc::UnboundedSender<TestEvent>;
@@ -170,26 +165,21 @@ pub(crate) struct RunArgs {
     /// Whether to stop execution at the first failure.
     fail_fast: bool,
 
-    /// A function to filter tests.
-    filter: Option<TestFilter>,
+    /// Reports run progress and results to the collector.
+    event_sender: EventSender,
 
-    /// A channel that the runner can use to send events out to the caller.
-    event_sender: Option<EventSender>,
-
-    /// The token to be used for to stop all test executions and exit.
+    /// Requests run cancellation.
     ///
-    /// This is the main "stop everything" signal that can be used by the TUI or ctrl-c. In-process tests will be sent
-    /// a cancellation signal and be given `GRACE_TIME` to teardown. No new tests will be started.
+    /// The consume loop cancels this on an interrupt. Active tests get `GRACE_TIME` to clean up.
     cancel_all: CancellationToken,
 }
 
 impl RunArgs {
-    pub(crate) fn new(cancel_all: CancellationToken) -> Self {
+    pub(crate) fn new(cancel_all: CancellationToken, event_sender: EventSender) -> Self {
         Self {
             parallelism: NonZeroUsize::MIN,
             fail_fast: false,
-            filter: None,
-            event_sender: None,
+            event_sender,
             cancel_all,
         }
     }
@@ -203,22 +193,12 @@ impl RunArgs {
         self.fail_fast = fail_fast;
         self
     }
-
-    pub(crate) fn with_filter(mut self, filter: TestFilter) -> Self {
-        self.filter = Some(filter);
-        self
-    }
-
-    pub(crate) fn with_event_sender(mut self, sender: EventSender) -> Self {
-        self.event_sender = Some(sender);
-        self
-    }
 }
 
 /// Owns the set of registered tests and orchestrates their execution.
 ///
-/// Handles test filtering, parallelism, timeout enforcement, cancellation propagation,
-/// log directory creation, and event dispatch. Individual test logic lives in the `Test`
+/// Handles parallelism, timeout enforcement, cancellation propagation, log directory creation,
+/// and event dispatch. Individual test logic lives in the `Test`
 /// implementations.
 pub(crate) struct Runner {
     tests: Vec<Box<dyn Test>>,
@@ -255,51 +235,35 @@ impl Runner {
         Ok(())
     }
 
-    /// Run all registered tests, emitting events and returning results.
-    pub(crate) async fn run_tests(&self, args: RunArgs) -> Vec<TestResult> {
+    /// Runs the registered tests, reporting progress and results as events.
+    pub(crate) async fn run_tests(&self, args: RunArgs) {
         let RunArgs {
             parallelism,
             fail_fast,
-            filter,
             event_sender,
             cancel_all,
         } = args;
 
-        let tests: Vec<&dyn Test> = self
-            .tests
-            .iter()
-            .filter(|t| filter.as_ref().is_none_or(|f| f(t.as_ref())))
-            .map(|t| t.as_ref())
-            .collect();
+        let tests: Vec<&dyn Test> = self.tests.iter().map(|t| t.as_ref()).collect();
 
-        if let Some(ref tx) = event_sender {
-            let _ = tx.send(TestEvent::RunStarted {
-                total_tests: tests.len(),
-            });
-        }
+        let _ = event_sender.send(TestEvent::RunStarted {
+            total_tests: tests.len(),
+        });
 
         let parallelism = parallelism.get();
         let semaphore = Arc::new(Semaphore::new(parallelism));
 
-        let results = if fail_fast {
-            self.run_fail_fast(&tests, &semaphore, &event_sender, &cancel_all).await
+        if fail_fast {
+            self.run_fail_fast(&tests, &semaphore, &event_sender, &cancel_all).await;
         } else {
             self.run_parallel(&tests, parallelism, &semaphore, &event_sender, &cancel_all)
-                .await
-        };
-
-        if let Some(ref tx) = event_sender {
-            let _ = tx.send(TestEvent::AllDone);
+                .await;
         }
-        results
     }
 
     async fn run_fail_fast(
-        &self, tests: &[&dyn Test], semaphore: &Semaphore, event_sender: &Option<EventSender>,
-        cancel_all: &CancellationToken,
-    ) -> Vec<TestResult> {
-        let mut results = Vec::new();
-
+        &self, tests: &[&dyn Test], semaphore: &Semaphore, event_sender: &EventSender, cancel_all: &CancellationToken,
+    ) {
         for test in tests {
             if cancel_all.is_cancelled() {
                 break;
@@ -330,23 +294,18 @@ impl Runner {
                 self.kind_ready.clone(),
             )
             .await;
-            let failed = !result.outcome.is_passed();
-            results.push(result);
 
-            if failed {
+            if !result.outcome.is_passed() {
                 break;
             }
         }
-
-        results
     }
 
     async fn run_parallel(
-        &self, tests: &[&dyn Test], parallelism: usize, semaphore: &Arc<Semaphore>, event_sender: &Option<EventSender>,
+        &self, tests: &[&dyn Test], parallelism: usize, semaphore: &Arc<Semaphore>, event_sender: &EventSender,
         cancel_all: &CancellationToken,
-    ) -> Vec<TestResult> {
+    ) {
         let mut futures = stream::FuturesUnordered::new();
-        let mut results = Vec::new();
 
         for test in tests {
             let semaphore = semaphore.clone();
@@ -356,7 +315,7 @@ impl Runner {
             let mut kind_ready = self.kind_ready.clone();
             futures.push(async move {
                 if cancel.is_cancelled() {
-                    return None;
+                    return;
                 }
 
                 // Kind tests wait for cluster readiness before acquiring a concurrency slot
@@ -376,35 +335,28 @@ impl Runner {
                 }
 
                 if cancel.is_cancelled() {
-                    return None;
+                    return;
                 }
 
                 let _permit = semaphore.acquire().await.unwrap();
 
                 if cancel.is_cancelled() {
-                    return None;
+                    return;
                 }
 
-                Some(Self::run_one(*test, event_sender, &cancel, log_base_dir, settings, kind_ready).await)
+                Self::run_one(*test, event_sender, &cancel, log_base_dir, settings, kind_ready).await;
             });
 
             while futures.len() >= parallelism {
-                if let Some(Some(result)) = futures.next().await {
-                    results.push(result);
-                }
+                futures.next().await;
             }
         }
 
-        while let Some(r) = futures.next().await {
-            if let Some(result) = r {
-                results.push(result);
-            }
-        }
-        results
+        while futures.next().await.is_some() {}
     }
 
     async fn run_one(
-        test: &dyn Test, event_sender: &Option<EventSender>, cancel_all: &CancellationToken, log_base_dir: PathBuf,
+        test: &dyn Test, event_sender: &EventSender, cancel_all: &CancellationToken, log_base_dir: PathBuf,
         settings: RunnerSettings, kind_ready: Option<crate::test::KindReadyReceiver>,
     ) -> TestResult {
         let name = test.name();
@@ -412,8 +364,7 @@ impl Runner {
         let timeout = test.timeout();
         let started = Instant::now();
 
-        // This is the cancellation token that we will use to tell this individual test to stop and cleanup. Not to be
-        // confused with program_cancel which is how we receive a signal from the top level to stop (ctrl-c).
+        // A test-specific token lets a timeout cancel this test without cancelling the run.
         let test_cancel = CancellationToken::new();
 
         // Create a directory for the test to write logs into and pass it into the test context.
@@ -426,16 +377,12 @@ impl Runner {
             );
             result.case_path = Some(test.case_path());
 
-            // There is no log directory, so this result has no artifacts to point at. It still has
-            // to reach the event stream: consumers that build the suite result from events would
-            // otherwise report a run that skipped the test and exited zero.
-            if let Some(ref tx) = event_sender {
-                let _ = tx.send(TestEvent::TestStarted { name });
-                let _ = tx.send(TestEvent::TestCompleted {
-                    result: Box::new(result.clone()),
-                    log_dir,
-                });
-            }
+            // Report setup failures through events so the collector accounts for the selected test.
+            let _ = event_sender.send(TestEvent::TestStarted { name });
+            let _ = event_sender.send(TestEvent::TestCompleted {
+                result: Box::new(result.clone()),
+                log_dir,
+            });
 
             return result;
         }
@@ -447,9 +394,7 @@ impl Runner {
             }
         }
 
-        if let Some(ref tx) = event_sender {
-            let _ = tx.send(TestEvent::TestStarted { name: name.clone() });
-        }
+        let _ = event_sender.send(TestEvent::TestStarted { name: name.clone() });
 
         let phases = tctx.phases.clone();
 
@@ -494,12 +439,10 @@ impl Runner {
         crate::traffic::finalize(&log_dir, result.outcome);
         crate::machine_output::write_test_report(&result, &log_dir);
 
-        if let Some(ref tx) = event_sender {
-            let _ = tx.send(TestEvent::TestCompleted {
-                result: Box::new(result.clone()),
-                log_dir,
-            });
-        }
+        let _ = event_sender.send(TestEvent::TestCompleted {
+            result: Box::new(result.clone()),
+            log_dir,
+        });
 
         result
     }
@@ -1141,11 +1084,9 @@ fn write_result_log(result: &TestResult, dir: impl AsRef<Path>) {
         }
     };
 
-    let status = if result.outcome.is_passed() { "PASS" } else { "FAIL" };
-    let _ = writeln!(f, "{} {} ({:.2?})", status, result.name, result.duration);
-
-    if let Some(ref error) = result.error {
-        let _ = writeln!(f, "Error: {}", error.message);
+    let _ = writeln!(f, "{} {} ({:.2?})", result.label(), result.name, result.duration);
+    for line in result.cause_lines() {
+        let _ = writeln!(f, "{}", line);
     }
 
     if !result.assertion_results.is_empty() {
@@ -1219,25 +1160,56 @@ impl TestResult {
     }
 }
 
+/// Scripted tests and settings for exercising [`Runner`].
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_support {
     use std::collections::BTreeMap;
 
+    use tokio::sync::Notify;
+
     use super::*;
-    use crate::reporter::{DurationMs, PhaseTracker, TestOutcome, TimeoutDeadline};
     use crate::test::TestSuite;
 
-    /// A test that marks a phase and then stays in it until it is cancelled.
-    struct StuckTest {
-        phase: &'static str,
-        timeout: Duration,
-        finish_on_cancel: bool,
+    /// What a [`ScriptedTest`] does once it has entered its phase.
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) enum Behavior {
+        /// Passes one assertion.
+        Pass,
+        /// Fails one assertion.
+        Fail,
+        /// Panics, taking the runner task down with it.
+        Panic,
+        /// Waits for its cancellation token, then returns only if `finish_on_cancel` is set.
+        WaitForCancel { finish_on_cancel: bool },
+    }
+
+    /// A test that enters a phase and then behaves as scripted.
+    pub(crate) struct ScriptedTest {
+        pub(crate) name: String,
+        pub(crate) timeout: Duration,
+        pub(crate) phase: &'static str,
+        pub(crate) behavior: Behavior,
+        /// Notified once the test has entered its phase.
+        pub(crate) entered: Option<Arc<Notify>>,
+    }
+
+    impl ScriptedTest {
+        /// Creates a test with a timeout long enough for cancellation tests to interrupt it first.
+        pub(crate) fn new(name: &str, behavior: Behavior) -> Self {
+            Self {
+                name: name.to_string(),
+                timeout: Duration::from_secs(60),
+                phase: "assertions",
+                behavior,
+                entered: None,
+            }
+        }
     }
 
     #[async_trait::async_trait]
-    impl Test for StuckTest {
+    impl Test for ScriptedTest {
         fn name(&self) -> String {
-            "stuck".to_string()
+            self.name.clone()
         }
 
         fn suite(&self) -> TestSuite {
@@ -1249,7 +1221,7 @@ mod tests {
         }
 
         fn case_path(&self) -> PathBuf {
-            PathBuf::from("/cases/stuck")
+            PathBuf::from("/cases").join(&self.name)
         }
 
         fn timeout(&self) -> Duration {
@@ -1264,17 +1236,39 @@ mod tests {
             // The phase is deliberately left active: a test that overruns its deadline does not get
             // to finish the phase it was in.
             let _phase = tctx.phases.enter(self.phase);
-
-            tctx.test_cancel_token().cancelled().await;
-            if !self.finish_on_cancel {
-                std::future::pending::<()>().await;
+            if let Some(entered) = &self.entered {
+                entered.notify_one();
             }
 
-            TestResult::from_assertions("stuck", Duration::from_secs(1), Vec::new(), Vec::new())
+            let assertion = |passed| AssertionResult {
+                name: "scripted".to_string(),
+                passed,
+                message: String::new(),
+                duration: Duration::from_millis(1),
+            };
+            match self.behavior {
+                Behavior::Pass => {
+                    TestResult::from_assertions(&self.name, Duration::from_millis(1), vec![assertion(true)], Vec::new())
+                }
+                Behavior::Fail => TestResult::from_assertions(
+                    &self.name,
+                    Duration::from_millis(1),
+                    vec![assertion(false)],
+                    Vec::new(),
+                ),
+                Behavior::Panic => panic!("scripted test '{}' panicked", self.name),
+                Behavior::WaitForCancel { finish_on_cancel } => {
+                    tctx.test_cancel_token().cancelled().await;
+                    if !finish_on_cancel {
+                        std::future::pending::<()>().await;
+                    }
+                    TestResult::from_assertions(&self.name, Duration::from_secs(1), Vec::new(), Vec::new())
+                }
+            }
         }
     }
 
-    fn test_runner_settings(mounts_dir: &Path) -> RunnerSettings {
+    pub(crate) fn test_runner_settings(mounts_dir: &Path) -> RunnerSettings {
         RunnerSettings {
             mounts_dir: mounts_dir.to_path_buf(),
             adp_binary_path: PathBuf::new(),
@@ -1282,20 +1276,37 @@ mod tests {
             alpine_image: airlock::driver::DEFAULT_ALPINE_IMAGE.to_string(),
         }
     }
+}
 
-    async fn run_stuck_test(test: StuckTest) -> TestResult {
-        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
+#[cfg(test)]
+mod tests {
+    use super::test_support::{test_runner_settings, Behavior, ScriptedTest};
+    use super::*;
+    use crate::reporter::{DurationMs, PhaseTracker, TestOutcome, TimeoutDeadline};
+
+    /// Runs one test to completion in `log_base_dir`, discarding its events.
+    async fn run_scripted_test(test: ScriptedTest, log_base_dir: &Path) -> TestResult {
         let mounts_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let (tx, _rx) = mpsc::unbounded_channel();
 
         Runner::run_one(
             &test,
-            &None,
+            &tx,
             &CancellationToken::new(),
-            log_base_dir.path().to_path_buf(),
+            log_base_dir.to_path_buf(),
             test_runner_settings(mounts_dir.path()),
             None,
         )
         .await
+    }
+
+    /// Creates a test that times out in `phase` and returns on cancellation.
+    fn timing_out_in(phase: &'static str) -> ScriptedTest {
+        ScriptedTest {
+            timeout: Duration::from_millis(50),
+            phase,
+            ..ScriptedTest::new("stuck", Behavior::WaitForCancel { finish_on_cancel: true })
+        }
     }
 
     #[tokio::test]
@@ -1308,12 +1319,8 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
 
         let result = Runner::run_one(
-            &StuckTest {
-                phase: "assertions",
-                timeout: Duration::from_secs(60),
-                finish_on_cancel: true,
-            },
-            &Some(tx),
+            &ScriptedTest::new("stuck", Behavior::WaitForCancel { finish_on_cancel: true }),
+            &tx,
             &CancellationToken::new(),
             occupied_base_dir.path().to_path_buf(),
             test_runner_settings(mounts_dir.path()),
@@ -1340,18 +1347,27 @@ mod tests {
 
     #[tokio::test]
     async fn test_deadline_timeout_names_the_phase_that_was_active() {
-        let result = run_stuck_test(StuckTest {
-            phase: "container_start",
-            timeout: Duration::from_millis(50),
-            finish_on_cancel: true,
-        })
-        .await;
+        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let result = run_scripted_test(timing_out_in("container_start"), log_base_dir.path()).await;
 
         let timeout = result.timeout.expect("a timed-out test should carry timeout detail");
         assert_eq!(result.outcome, TestOutcome::TimedOut);
         assert_eq!(timeout.deadline, TimeoutDeadline::TestDeadline);
         assert_eq!(timeout.active_phase, "container_start");
         assert_eq!(timeout.configured_ms, 50);
+    }
+
+    #[tokio::test]
+    async fn result_log_labels_a_timeout_and_gives_its_cause() {
+        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let result = run_scripted_test(timing_out_in("container_start"), log_base_dir.path()).await;
+
+        let log_dir = result.log_dir.expect("the runner should record the log directory");
+        let result_log = std::fs::read_to_string(log_dir.join("result.log")).expect("result.log should exist");
+        let mut lines = result_log.lines();
+        let first = lines.next().expect("result.log should not be empty");
+        assert!(first.starts_with("TIMEOUT stuck "), "first line was: {}", first);
+        assert_eq!(lines.next(), Some("case budget 50ms expired in container_start"));
     }
 
     #[test]
