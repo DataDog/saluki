@@ -504,7 +504,7 @@ mod tests {
     use std::sync::Arc;
 
     use saluki_core::{
-        components::test_util::TestComponentDriver,
+        components::test_util::{ComponentControl, Output, TestComponentDriver},
         data_model::{
             event::{
                 metric::{
@@ -515,6 +515,7 @@ mod tests {
             },
             tags::{Tag, TagSet},
         },
+        topology::EventsBuffer,
     };
     use saluki_metrics::{test::TestRecorder, MetricsBuilder};
 
@@ -1272,11 +1273,35 @@ mod tests {
 
     #[tokio::test]
     async fn typed_live_updates_replace_whole_tag_rules_without_replacing_static_value_rules() {
+        /// Sends the probe metric through the transform, and returns its tags as dispatched.
+        async fn filter_probe(
+            control: &ComponentControl<EventsBuffer>, output: &mut Output<EventsBuffer>,
+        ) -> Vec<String> {
+            let probe = distribution_metric("my.metric", &["customer_id:long-tail", "host:h1", "service:web"]);
+            control.send_event(Event::Metric(probe)).await;
+            let metric = output
+                .next()
+                .await
+                .and_then(|buffer| buffer.into_iter().next())
+                .and_then(Event::try_into_metric)
+                .expect("the probe should be dispatched");
+            tag_names(&metric)
+        }
+
+        let recorder = TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+        let updates = || {
+            recorder.counter((
+                "tag_filterlist_updates_total",
+                &[("component_id", "tag_filterlist"), ("component_type", "transform")],
+            ))
+        };
+
         let cell = Arc::new(arc_swap::ArcSwap::from_pointee(
             agent_data_plane_config::SalukiConfiguration::default(),
         ));
         let (tick_tx, tick_rx) = tokio::sync::watch::channel(());
-        let mut entries = Live::new_dynamic(Arc::clone(&cell), tick_rx, |config| {
+        let entries = Live::new_dynamic(Arc::clone(&cell), tick_rx, |config| {
             &config.domains.dogstatsd.tag_filterlist
         });
         let value_allowlists = [value_allowlist(
@@ -1286,9 +1311,17 @@ mod tests {
             TagValueMismatchAction::Remove,
             "other",
         )];
-        let value_prefix_filters = compile_all_filters(&[], &value_allowlists)
-            .expect("static value rules should compile")
-            .value_prefix_filters;
+        let builder = TagFilterlistConfiguration::new(entries, &value_allowlists, 100_000)
+            .expect("typed configuration should be valid");
+        let (control, mut outputs) = TestComponentDriver::options()
+            .with_component_id("tag_filterlist")
+            .transform(builder)
+            .await
+            .expect("tag filterlist should build");
+        let output = outputs.default_output();
+
+        // This caches the probe's context, so later probes only change if an update rebuilds the cache.
+        assert_eq!(filter_probe(&control, output).await, ["host:h1", "service:web"]);
 
         let mut updated = (*cell.load_full()).clone();
         updated.domains.dogstatsd.tag_filterlist = vec![MetricTagFilterEntry {
@@ -1298,28 +1331,27 @@ mod tests {
         }];
         cell.store(Arc::new(updated));
         tick_tx.send_replace(());
-
-        let new_entries = tokio::time::timeout(Duration::from_secs(2), entries.changed())
-            .await
-            .expect("timed out waiting for typed tag filter update");
-        let filters = compile_filters_with_values(&new_entries, value_prefix_filters.clone());
-        let mut metric = distribution_metric("my.metric", &["customer_id:long-tail", "host:h1", "service:web"]);
-        let mut state = TagSetMutViewState::default();
-        filter_metric_tags(&mut metric, &mut state, &filters);
-        assert_eq!(tag_names(&metric), vec!["service:web"]);
+        control
+            .wait_until(
+                || updates() == Some(1),
+                || "the typed tag filter update is applied".to_string(),
+            )
+            .await;
+        assert_eq!(filter_probe(&control, output).await, ["service:web"]);
 
         let mut updated = (*cell.load_full()).clone();
         updated.domains.dogstatsd.tag_filterlist.clear();
         cell.store(Arc::new(updated));
         tick_tx.send_replace(());
+        control
+            .wait_until(
+                || updates() == Some(2),
+                || "the cleared tag filter update is applied".to_string(),
+            )
+            .await;
+        assert_eq!(filter_probe(&control, output).await, ["host:h1", "service:web"]);
 
-        let new_entries = tokio::time::timeout(Duration::from_secs(2), entries.changed())
-            .await
-            .expect("timed out waiting for cleared typed tag filter update");
-        let filters = compile_filters_with_values(&new_entries, value_prefix_filters);
-        let mut metric = distribution_metric("my.metric", &["customer_id:long-tail", "host:h1", "service:web"]);
-        filter_metric_tags(&mut metric, &mut state, &filters);
-        assert_eq!(tag_names(&metric), vec!["host:h1", "service:web"]);
+        control.shutdown().await.expect("tag filterlist run should succeed");
     }
 
     #[test]
