@@ -53,6 +53,7 @@ impl Action for DogstatsdReplayAction {
     }
 
     async fn execute(&self, ctx: &AssertionContext) -> AssertionResult {
+        // Keep `ActionConfig::budget` in sync with this command and wait sequence.
         let started = Instant::now();
         let adp_cli = &ctx.adp_cli_command;
         let diagnostics = CommandDiagnostics::redacted("tested ADP CLI command");
@@ -211,6 +212,70 @@ mod tests {
     use std::time::Duration;
 
     use super::{capture_path_from_output, duration_as_go_duration, stats_output_contains_metric};
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelling_during_the_replay_capture_wait_interrupts_the_replay() {
+        use tokio::time::Instant;
+        use tokio_util::sync::CancellationToken;
+
+        use crate::assertions::test_support::{host_context, procedure};
+        use crate::assertions::{run_assertion_steps, TargetCommand};
+        use crate::deadline::{Budget, Deadline};
+
+        let marker_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let marker = marker_dir.path().join("sender-ran");
+        let cancel = CancellationToken::new();
+        let mut ctx = host_context(cancel.clone());
+        // The fake ADP CLI supplies the capture path needed to reach the wait.
+        ctx.adp_cli_command = TargetCommand::new(vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "echo \"Data will be written to '/tmp/capture.dog'\"".to_string(),
+            "adp".to_string(),
+        ]);
+        let case = procedure(&format!(
+            "- action: dogstatsd_replay\n  sender: [sh, -c, \"touch {}\"]\n  capture_duration: 600s\n  \
+             stats_duration_secs: 1\n  expected_metrics: []\n  timeout: 5s\n",
+            marker.display()
+        ));
+        let case_deadline = Deadline::after(Budget::Case, Duration::from_secs(3600));
+
+        // Allow time after the sender's marker for the action to reach its capture wait.
+        let cancel_during_capture_wait = async {
+            while !marker.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            cancel.cancel();
+            Instant::now()
+        };
+        let driver = async {
+            let results = run_assertion_steps(&case, &ctx, case_deadline).await;
+            (results, Instant::now())
+        };
+
+        let ((results, finished), cancelled) = tokio::time::timeout(Duration::from_secs(15), async {
+            tokio::join!(driver, cancel_during_capture_wait)
+        })
+        .await
+        .expect("cancellation should end the replay long before its capture wait does");
+
+        assert!(finished.duration_since(cancelled) < Duration::from_secs(5));
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert_eq!(results[0].name, "dogstatsd_replay");
+        assert!(!results[0].passed);
+        assert!(
+            results[0].message.starts_with("Interrupted after "),
+            "{}",
+            results[0].message
+        );
+        assert!(
+            results[0].message.ends_with("the test was cancelled."),
+            "{}",
+            results[0].message
+        );
+    }
 
     #[test]
     fn capture_path_parser_extracts_path_from_cli_output() {

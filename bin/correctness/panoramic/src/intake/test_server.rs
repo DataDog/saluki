@@ -40,6 +40,9 @@ impl MockIntake {
     }
 
     /// Accepts connections but never answers a request.
+    ///
+    /// With Tokio's clock paused, requests stay pending as time advances to the next timer, making timeout tests
+    /// independent of response timing.
     pub(crate) async fn unresponsive() -> Self {
         Self::spawn(|listener, connections| async move {
             let mut held = Vec::new();

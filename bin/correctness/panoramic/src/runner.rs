@@ -21,6 +21,7 @@ use tokio::sync::{mpsc, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+use crate::deadline::{Budget, Deadline};
 use crate::test::{RunnerSettings, Test, TestContext};
 use crate::{
     assertions::{AssertionContext, AssertionResult, LogBuffer, TargetCommand},
@@ -387,7 +388,8 @@ impl Runner {
             return result;
         }
 
-        let mut tctx = TestContext::new(test_cancel.clone(), log_dir.clone(), settings);
+        let case = Deadline::after(Budget::Case, timeout);
+        let mut tctx = TestContext::new(test_cancel.clone(), case, log_dir.clone(), settings);
         if test.runtime() == "kubernetes_in_docker" {
             if let Some(rx) = kind_ready {
                 tctx = tctx.with_kind_ready(rx);
@@ -403,9 +405,12 @@ impl Runner {
 
         // Run the test for the duration of 'timeout', then send a cancel request if it times out and wait GRACE_TIME
         // for teardown.
+        //
+        // The case timer wins ties with the test body, ensuring an expired case reports a timeout. The body
+        // precedes `cancel_all` to preserve a result ready when external cancellation arrives.
         let mut result = tokio::select! {
-            r = &mut run_fut => r,
-            _ = tokio::time::sleep(timeout) => {
+            biased;
+            _ = tokio::time::sleep_until(case.at) => {
                 // Read the active phase before cancelling, since teardown moves the test on from the
                 // phase the deadline interrupted.
                 let active_phase = phases.active();
@@ -419,6 +424,7 @@ impl Runner {
                     Err(_) => TestResult::hard_timeout(name, timeout, started.elapsed(), active_phase, phases.completed())
                 }
             }
+            r = &mut run_fut => r,
             // We received a request from above to kill all tests, so send the cancellation and wait GRACE_TIME.
             _ = cancel_all.cancelled() => {
                 test_cancel.cancel();
@@ -724,8 +730,7 @@ impl IntegrationRunner {
             phase_timings.push(phase.finish());
         }
 
-        // Run assertions. Timeout is handled by the Runner, which calls cancel() on this test
-        // if the deadline is exceeded.
+        // The step driver bounds each step and stops when the runner cancels the test.
         info!(
             test = %test_name,
             assertion_count = self.test_case.total_assertion_count(),
@@ -735,16 +740,16 @@ impl IntegrationRunner {
         let phase = self.tctx.phases.enter("assertions");
         let test_cancel = self.tctx.test_cancel_token();
 
-        // If we are canceled while running our assertions, we return early to respect cancellation.
-        let assertion_results = tokio::select! {
-            results = self.run_assertions(&port_mappings, details.container_ip(), &container_name, &exit_token, docker_exit_code, intake_host_port) => results,
-            _ = test_cancel.cancelled() => vec![AssertionResult {
-                name: "cancelled".to_string(),
-                passed: false,
-                message: "Test was cancelled.".to_string(),
-                duration: phase.elapsed(),
-            }],
-        };
+        let assertion_results = self
+            .run_assertions(
+                &port_mappings,
+                details.container_ip(),
+                &container_name,
+                &exit_token,
+                docker_exit_code,
+                intake_host_port,
+            )
+            .await;
         phase_timings.push(phase.finish());
 
         // Cancel the exit monitor.
@@ -1022,7 +1027,7 @@ impl IntegrationRunner {
             adp_cli_command: container_adp_cli_command(target_os),
             core_agent_cli_command: container_core_agent_cli_command(target_os),
         };
-        crate::assertions::run_assertion_steps(&self.test_case, &ctx).await
+        crate::assertions::run_assertion_steps(&self.test_case, &ctx, self.tctx.deadline).await
     }
 
     async fn cleanup(&self) -> Result<(), GenericError> {
@@ -1168,6 +1173,8 @@ pub(crate) mod test_support {
     use tokio::sync::Notify;
 
     use super::*;
+    use crate::assertions::run_assertion_steps;
+    use crate::assertions::test_support::{host_context, procedure};
     use crate::test::TestSuite;
 
     /// What a [`ScriptedTest`] does once it has entered its phase.
@@ -1181,6 +1188,10 @@ pub(crate) mod test_support {
         Panic,
         /// Waits for its cancellation token, then returns only if `finish_on_cancel` is set.
         WaitForCancel { finish_on_cancel: bool },
+        /// Sleeps until the case deadline, then passes.
+        ReturnAtDeadline,
+        /// Runs `procedure:` entries on the host against a `ready` log line and reports the step results.
+        Procedure(&'static str),
     }
 
     /// A test that enters a phase and then behaves as scripted.
@@ -1264,6 +1275,17 @@ pub(crate) mod test_support {
                     }
                     TestResult::from_assertions(&self.name, Duration::from_secs(1), Vec::new(), Vec::new())
                 }
+                Behavior::ReturnAtDeadline => {
+                    tokio::time::sleep_until(tctx.deadline.at).await;
+                    TestResult::from_assertions(&self.name, Duration::from_millis(1), vec![assertion(true)], Vec::new())
+                }
+                Behavior::Procedure(steps) => {
+                    let started = Instant::now();
+                    let ctx = host_context(tctx.test_cancel_token());
+                    ctx.log_buffer.write().unwrap().stdout.push("ready".to_string());
+                    let results = run_assertion_steps(&procedure(steps), &ctx, tctx.deadline).await;
+                    TestResult::from_assertions(&self.name, started.elapsed(), results, Vec::new())
+                }
             }
         }
     }
@@ -1289,15 +1311,19 @@ mod tests {
         let mounts_dir = tempfile::tempdir().expect("temp dir should be creatable");
         let (tx, _rx) = mpsc::unbounded_channel();
 
-        Runner::run_one(
-            &test,
-            &tx,
-            &CancellationToken::new(),
-            log_base_dir.to_path_buf(),
-            test_runner_settings(mounts_dir.path()),
-            None,
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            Runner::run_one(
+                &test,
+                &tx,
+                &CancellationToken::new(),
+                log_base_dir.to_path_buf(),
+                test_runner_settings(mounts_dir.path()),
+                None,
+            ),
         )
         .await
+        .expect("the runner should finish the test within the bound")
     }
 
     /// Creates a test that times out in `phase` and returns on cancellation.
@@ -1368,6 +1394,87 @@ mod tests {
         let first = lines.next().expect("result.log should not be empty");
         assert!(first.starts_with("TIMEOUT stuck "), "first line was: {}", first);
         assert_eq!(lines.next(), Some("case budget 50ms expired in container_start"));
+    }
+
+    #[tokio::test]
+    async fn a_case_deadline_interrupts_the_running_step_and_keeps_the_finished_ones() {
+        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let test = ScriptedTest {
+            timeout: Duration::from_millis(300),
+            ..ScriptedTest::new(
+                "procedure",
+                Behavior::Procedure(
+                    "- assertion: log_contains\n  pattern: ready\n  timeout: 5s\n\
+                     - assertion: process_stable_for\n  duration: 30s\n",
+                ),
+            )
+        };
+
+        let result = run_scripted_test(test, log_base_dir.path()).await;
+
+        assert_eq!(result.outcome, TestOutcome::TimedOut);
+        let timeout = result.timeout.expect("a timed-out test should carry timeout detail");
+        assert_eq!(timeout.deadline, TimeoutDeadline::TestDeadline);
+        assert_eq!(timeout.active_phase, "assertions");
+        assert_eq!(result.assertion_results.len(), 2, "{:?}", result.assertion_results);
+        assert!(result.assertion_results[0].passed);
+        let interrupted = &result.assertion_results[1];
+        assert_eq!(interrupted.name, "process_stable_for");
+        assert!(!interrupted.passed);
+        assert!(
+            interrupted.message.contains("the case budget of 300ms expired."),
+            "{}",
+            interrupted.message
+        );
+        assert!(
+            interrupted.message.contains("of its 30s step budget"),
+            "{}",
+            interrupted.message
+        );
+    }
+
+    #[tokio::test]
+    async fn a_step_that_exhausts_its_own_budget_fails_the_test() {
+        // Port 0 fails immediately. The retry sleep outlasts the step budget, proving the slack preserves
+        // the assertion's own timeout message.
+        crate::intake::test_server::install_crypto_provider();
+        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let test = ScriptedTest::new(
+            "procedure",
+            Behavior::Procedure(
+                "- assertion: http_check\n  endpoint: http://127.0.0.1:0/\n  status:\n    equal: 200\n  timeout: 200ms\n",
+            ),
+        );
+
+        let result = run_scripted_test(test, log_base_dir.path()).await;
+
+        assert_eq!(result.outcome, TestOutcome::Failed);
+        assert!(result.timeout.is_none());
+        assert_eq!(result.assertion_results.len(), 1);
+        assert_eq!(
+            result.assertion_results[0].message,
+            "HTTP endpoint 'http://127.0.0.1:0/' returns status 200. did not happen within 200ms."
+        );
+    }
+
+    #[tokio::test]
+    async fn the_case_deadline_wins_when_the_test_returns_at_the_same_instant() {
+        // Unbiased polling lets the body win roughly a third of ties. Repetition makes a false pass unlikely.
+        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        for run in 0..50 {
+            let test = ScriptedTest {
+                timeout: Duration::from_millis(10),
+                ..ScriptedTest::new("tie", Behavior::ReturnAtDeadline)
+            };
+
+            let result = run_scripted_test(test, log_base_dir.path()).await;
+
+            assert_eq!(
+                result.outcome,
+                TestOutcome::TimedOut,
+                "run {run} reported the body's result"
+            );
+        }
     }
 
     #[test]

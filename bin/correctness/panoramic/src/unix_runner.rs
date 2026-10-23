@@ -355,7 +355,7 @@ impl UnixIntegrationRunner {
             adp_cli_command,
             core_agent_cli_command,
         };
-        crate::assertions::run_assertion_steps(&self.test_case, &ctx).await
+        crate::assertions::run_assertion_steps(&self.test_case, &ctx, self.tctx.deadline).await
     }
 }
 
