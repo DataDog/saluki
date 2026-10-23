@@ -105,6 +105,11 @@ pub static LEAVES: &[Leaf] = &[
         get: |config| LeafValue::Bool(config.apm_config.enable_rare_sampler),
     },
     Leaf {
+        key: "apm_config.env",
+        aliases: &[],
+        get: |config| LeafValue::Str(config.apm_config.env.as_str()),
+    },
+    Leaf {
         key: "apm_config.error_tracking_standalone.enabled",
         aliases: &[],
         get: |config| LeafValue::Bool(config.apm_config.error_tracking_standalone.enabled),
@@ -567,6 +572,11 @@ pub static LEAVES: &[Leaf] = &[
         key: "dogstatsd_port",
         aliases: &[],
         get: |config| LeafValue::I64(config.dogstatsd_port),
+    },
+    Leaf {
+        key: "dogstatsd_require_listener",
+        aliases: &[],
+        get: |config| LeafValue::Bool(config.dogstatsd_require_listener),
     },
     Leaf {
         key: "dogstatsd_so_rcvbuf",
