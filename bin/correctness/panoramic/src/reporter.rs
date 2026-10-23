@@ -204,7 +204,7 @@ pub struct TestError {
 pub enum TimeoutDeadline {
     /// The test case's own deadline, from its `timeout` setting.
     TestDeadline,
-    /// The grace period a test gets to tear down after its own deadline fired.
+    /// The grace period for returning a result after the test's deadline expires.
     CleanupGrace,
 }
 
@@ -238,7 +238,7 @@ impl TimeoutAttribution {
         }
     }
 
-    /// Attributes a timeout to the teardown grace period that follows the test's own deadline.
+    /// Attributes a timeout to the grace period that follows the test's own deadline.
     ///
     /// `active_phase` identifies the phase at the case deadline; `grace_phase` identifies it at grace expiry.
     pub fn cleanup_grace(
@@ -308,8 +308,12 @@ pub struct Issue {
 pub enum IssueKind {
     /// The case deadline expired after the test reached its verdict.
     PostVerdictDeadline,
-    /// The test did not finish within the cleanup grace period after it was stopped.
+    /// The test did not return within the grace period after it was stopped.
     CleanupGraceExpired,
+    /// A registered resource likely remains after failed or skipped removal.
+    ResourceLeaked,
+    /// A registered resource's removal is unconfirmed.
+    ResourceUnsettled,
 }
 
 impl fmt::Display for IssueKind {
@@ -318,9 +322,32 @@ impl fmt::Display for IssueKind {
         let name = match self {
             Self::PostVerdictDeadline => "post_verdict_deadline",
             Self::CleanupGraceExpired => "cleanup_grace_expired",
+            Self::ResourceLeaked => "resource_leaked",
+            Self::ResourceUnsettled => "resource_unsettled",
         };
         f.write_str(name)
     }
+}
+
+/// The runner's cleanup result for one registered resource.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ReclaimEntry {
+    /// The resource: `isolation_group:<id>`, `process:<name>`, or `directory:<path>`.
+    pub resource: String,
+    /// Cleanup status. Failed or unconfirmed removal also adds an issue.
+    pub result: ReclaimResult,
+}
+
+/// The result of removing one registered resource.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReclaimResult {
+    /// Removal succeeded with no interrupted creation request.
+    Reclaimed,
+    /// Removal failed or was skipped, so the resource probably remains.
+    Leaked,
+    /// Removal is unconfirmed: creation was interrupted or cleanup timed out.
+    Unsettled,
 }
 
 /// Result of a single test case.
@@ -340,6 +367,8 @@ pub struct TestResult {
     pub timeout: Option<TimeoutAttribution>,
     /// Cause and running steps for a test interrupted before its verdict.
     pub cause: Option<StopCause>,
+    /// Cleanup results in reverse registration order, set by the runner.
+    pub reclaim: Vec<ReclaimEntry>,
     /// Problems after the verdict or during cleanup. They never change `outcome`.
     pub issues: Vec<Issue>,
     /// Directory the test case was loaded from. Set by the runner.
@@ -409,6 +438,7 @@ impl TestResult {
             error: None,
             timeout: None,
             cause: None,
+            reclaim: Vec::new(),
             issues: Vec::new(),
             case_path: None,
             log_dir: None,

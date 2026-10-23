@@ -29,3 +29,6 @@ tracing = { workspace = true }
 # Unix process-group signaling via killpg.
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["net"] }
