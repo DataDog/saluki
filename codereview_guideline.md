@@ -32,7 +32,15 @@ which must stay a pristine upstream copy.
 
 Much of Saluki processes high volumes of metrics, logs, and traces. In per-event code paths, flag new heap allocations,
 clones, or string formatting that could be avoided, unbounded buffering or queues, and logging at any level that scales
-with event volume.
+with event volume. In particular:
+
+- Flag a clone or an owned `String` where a reference, a `&'static str`, or a value the code already owns would work,
+  and flag methods that silently clone large data structures.
+- Fixed strings stored in events, tags, or contexts should use `MetaString::from_static` or existing string interning
+  rather than allocating a new `String` for each event.
+- Flag code that collects into a temporary `Vec` or map only to iterate over it once, when it could iterate directly.
+- Flag per-event construction of builders, resolvers, or buffers that could be created once and reused. Regressions
+  that only affect tail latency (p95, p99) still count.
 
 ### Concurrency and component lifecycle
 
@@ -40,11 +48,57 @@ Components run concurrently on Tokio and have explicit startup and shutdown. Fla
 held across `.await` points, spawned tasks that are never joined or cancelled, and shutdown paths that can drop
 buffered data or hang. Changes to component lifecycle should have tests that exercise graceful shutdown.
 
+- Flag code that drops messages or updates without telemetry or a log, such as `try_send` failures that are ignored.
+  Applying backpressure is usually better than losing data without anyone noticing.
+- Flag shutdown handling that differs between `select!` branches, such as one branch that cleans up a resource and
+  another that exits without doing so.
+- Flag `Arc<T>` or `Mutex<T>` wrappers that nothing shares across tasks. Also flag misuse of Tokio synchronization
+  primitives where their documented semantics differ from what the code assumes. For example, a `Notify::notified()`
+  future only receives `notify_waiters()` calls made after the future was created.
+- Flag synchronization patterns ported from Go, such as serializing every loop iteration through a rendezvous
+  channel, when they don't fit Tokio's scheduling model.
+
 ### Error handling
 
 Flag new `unwrap()`, `expect()`, or panicking indexing in non-test code where the failure is reachable from external
 input or configuration. Error messages should say what went wrong in plain language and, where relevant, name the
 configuration field involved.
+
+- Untyped errors use `saluki_error::GenericError`, with context added through `saluki_error::ErrorContext`
+  (`error_context` or `with_error_context`). Typed errors use `snafu`. Flag new uses of `anyhow` types directly,
+  `Box<dyn Error>`, or `String` as an error type.
+- When a recoverable condition can be handled by logging a warning and skipping the bad input, prefer that over
+  panicking. Conditions that need someone's attention should log at `warn` or higher, not `info`.
+- Flag errors that are swallowed in a way that silently loses data.
+
+### Design and API conventions
+
+- Matching the Datadog Agent's observable behavior is often required, but reproducing its internal design is not. Flag
+  code that copies an Agent implementation detail which is a poor fit for Rust or for Saluki's architecture, unless
+  the pull request explains why that exact behavior is required.
+- Conversion methods should follow the Rust API Guidelines naming conventions. `as_` is a cheap borrow, `to_` is an
+  expensive or owned conversion, and `into_` consumes `self`. Use an `into_parts(self)`-style method when callers need
+  owned access to the internals.
+- Flag type and function names that repeat the enclosing module or type name, such as `eventd::EventPriority` instead
+  of `eventd::Priority`.
+- Flag hand-rolled logic that duplicates a method in the standard library or an existing workspace crate, such as a
+  manual ASCII check instead of `char::is_ascii_alphanumeric`.
+- Flag constants or definitions duplicated across crates. Define them once and reference them from each place.
+- Flag new wrappers, traits, or layers of indirection that add nothing over the type they wrap.
+- Small, field-less enums should derive `Copy`. If such an enum maps to a string, give it a method that returns
+  `&'static str` rather than allocating.
+
+### Internal telemetry
+
+- `agent-data-plane` applies the `adp.` prefix to all internal metrics at bootstrap. Flag new metric names that
+  include the prefix themselves.
+- A metric must measure what its name says. For example, flag a counter named for spans that is incremented once per
+  payload. Also check that the metric type (counter, gauge, or histogram) fits what is being measured.
+
+### Scope
+
+Large refactors that a pull request merely makes possible belong in follow-up pull requests. Don't flag the lack of
+such a refactor as a defect. If the change introduces a hazard that it leaves unfixed, suggest filing an issue.
 
 ### Tests
 
@@ -55,11 +109,19 @@ configuration field involved.
 - Flag tests that sleep to wait for background work instead of using deterministic synchronization or Tokio's paused
   time.
 - Test functions should be named as bare, descriptive sentences, without a `test_` prefix.
+- New behavior, including new input forms such as short-form aliases, should have unit tests that exercise it.
+- Flag tests that share global state, such as environment variables or process-wide singletons, without real mutual
+  exclusion. Two separate `Mutex` instances don't serialize anything.
+- Flag test code that copies setup or assertions from neighboring tests when they don't apply to the behavior under
+  test.
 
 ### Documentation and release notes
 
 - All public items **MUST** have rustdoc. Configuration fields **MUST** document what they control, their default
   value, and their edge cases.
 - If a pull request changes behavior but does not update the corresponding docs, comments, or doc strings, flag it.
+- Reference documentation under `docs/reference/` describes how the code works today. Flag aspirational or
+  inaccurate descriptions there.
+- Flag `TODO` comments and "not yet implemented" notes that don't say what is missing.
 - User-visible changes to `agent-data-plane` need a release note fragment under `releasenotes/notes/`, unless the pull
   request carries the `changelog/no-changelog` label.
