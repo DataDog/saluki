@@ -1,7 +1,7 @@
 # Testing stateful metrics delivery
 
 ADP embeds `foldspace-core` through a pinned Cargo dependency from the
-[Foldspace metrics stack](https://github.com/DataDog/foldspace/pull/129). You do not copy Foldspace
+[Foldspace metrics stack](https://github.com/DataDog/foldspace/pull/143). You do not copy Foldspace
 source into Saluki or run a separate client binary.
 
 Configuration selects delivery for count, rate, and gauge series. When the stateful endpoint is
@@ -104,9 +104,11 @@ from its existing configuration stream. The test-only standalone mode can also d
 
 ## Delivery and retry behavior
 
-ADP converts enriched series once to self-contained `LogicalMetricBatch` values. Rate normalization,
+ADP converts enriched series once to `LogicalMetricBatch` values. Rate normalization,
 resources, tags, origin, source type, and unit follow the V3 encoder's semantics. Non-finite points
-and empty series are excluded. The sender does not retain original ADP `Metric` objects.
+and empty series are excluded. The sender does not retain original ADP `Metric` objects, but each
+series shares the `Tag` handles of its context instead of copying the tag strings. Interned, shared,
+and inlined tags clone without copying.
 
 The destination reuses the HTTP forwarder's `PendingTransactions<T>` scheduling and `RetryQueue<T>`
 storage machinery with a distinct logical-batch entry type:
@@ -125,8 +127,10 @@ storage machinery with a distinct logical-batch entry type:
 Queue capacity, memory limits, disk location, disk limits, spill ratio, and file age use the existing
 forwarder settings, including `forwarder_high_prio_buffer_size`,
 `forwarder_retry_queue_payloads_max_size`, `forwarder_storage_path`, and
-`forwarder_storage_max_size_in_bytes`. Queue byte accounting estimates the owned logical data,
-including series, points, tags, and resource strings. This is not a total process memory bound.
+`forwarder_storage_max_size_in_bytes`. Queue byte accounting estimates the logical data as if owned,
+including series, points, tags, and resource strings. Conversion shares tags with the aggregator's
+contexts instead of copying them, but queued batches keep those tags alive, so they count in full.
+This is not a total process memory bound.
 
 Disk storage is enabled only when configured. Its directory is separate from HTTP transactions and
 includes the logical format version, destination hash, and worker index. If requested storage cannot
@@ -272,8 +276,9 @@ The caps are a ceiling, not a reservation: a worker's dictionary grows only with
 to it. The defaults cover the live working set of most nodes, so in normal operation eviction only
 removes definitions for series that stopped reporting, such as departed pods. Raising the caps
 costs memory only on nodes that actually have that many contexts; nodes whose working set exceeds
-the caps fall back to admission control, described below. The one fixed cost is the frequency
-sketch described below, which is sized from the caps: about 512 KiB per worker at the defaults.
+the caps fall back to admission control, described below. The frequency sketch described below
+also follows the working set: it starts small and doubles as the dictionary grows, up to a ceiling
+set by the caps of about 512 KiB per worker at the defaults.
 
 A cap below the live working set evicts definitions that are still in use and re-sends them on later
 flushes, which slows draining under load. In local load tests on traffic shaped like real tags, the
@@ -294,7 +299,7 @@ the dictionary below the live working set: recently created definitions are prot
 30-second grace period. The aggregator's context limit bounds the live set instead.
 
 Once an eviction pass has had to relieve pressure and the dictionary is at its cap, Foldspace admits
-a new or returning definition only if a fixed-size frequency sketch counts it more often than the
+a new or returning definition only if a growable frequency sketch counts it more often than the
 entry it would displace. Otherwise the definition is **transient**: it is sent with the payload that
 needs it but is not counted against the caps, and it is removed once no payload in progress
 references it. A working set above the caps therefore costs one definition per payload that
@@ -307,8 +312,9 @@ Each worker reports its dictionary through these gauges, tagged with `worker`:
 - `stateful_metrics_dictionary_transient_entries` and `stateful_metrics_dictionary_transient_bytes`:
   transient definitions, outside the caps. Sustained nonzero values mean the live working set
   exceeds the caps.
-- `stateful_metrics_dictionary_frequency_sketch_bytes`: the fixed size of the frequency sketch,
-  sized from the caps when the worker starts and not part of the estimate.
+- `stateful_metrics_dictionary_frequency_sketch_bytes`: the current size of the frequency sketch,
+  which grows with the dictionary up to a ceiling set by the caps, and is not part of the
+  estimate.
 
 Closing destination input closes all worker input queues before waiting for completion. Workers drain
 accepted input, run their delivery budgets concurrently, recover remaining logical data, and flush

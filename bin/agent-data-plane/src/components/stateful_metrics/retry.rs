@@ -61,8 +61,9 @@ fn series_bytes(series: &LogicalMetricSeries) -> usize {
     let mut bytes = size_of::<LogicalMetricSeries>() + series.name().len();
     bytes += series.unit().map_or(0, str::len) + series.source_type_name().map_or(0, str::len);
     bytes += size_of_val(series.points());
-    for tag in series.tags().prefix.iter().chain(&series.tags().values) {
-        bytes += size_of::<String>() + tag.capacity();
+    // Shared tags are charged as if owned: the batch keeps them alive, and they are owned once restored from disk.
+    for tag in series.tags().prefix.iter().chain(series.tags().values.iter()) {
+        bytes += size_of::<String>() + tag.len();
     }
     for resource in series.resources() {
         bytes += size_of::<MetricResource>() + resource.kind.capacity() + resource.name.capacity();

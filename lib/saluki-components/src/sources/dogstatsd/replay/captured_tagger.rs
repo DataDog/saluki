@@ -14,6 +14,7 @@ use saluki_context::{
     tags::{SharedTagSet, Tag, TagSet},
 };
 use saluki_env::workload::EntityId;
+use stringtheory::MetaString;
 
 use super::writer::parse_entity_id_str;
 
@@ -142,12 +143,15 @@ impl CapturedTaggerHandle {
 }
 
 fn tag_set_from_strings(raw: &[String]) -> SharedTagSet {
-    TagSet::from_iter(raw.iter().map(|s| Tag::from(s.as_str()))).into_shared()
+    // Shared rather than owned, so cloning a captured tag never copies it, as with the live tagger's interned tags.
+    let tag = |s: &String| MetaString::try_inline(s).unwrap_or_else(|| MetaString::from(Arc::<str>::from(s.as_str())));
+    TagSet::from_iter(raw.iter().map(|s| Tag::from(tag(s)))).into_shared()
 }
 
 #[cfg(test)]
 mod tests {
     use datadog_protos::agent::Entity as ProtoEntity;
+    use stringtheory::CheapMetaString as _;
 
     use super::*;
 
@@ -215,5 +219,14 @@ mod tests {
         let store = CapturedTaggerStore::from_tagger_state(make_state());
         // PID 123 was mapped to a malformed entity id; lookup should miss cleanly.
         assert!(store.lookup(123, OriginTagCardinality::Low).is_none());
+    }
+
+    #[test]
+    fn captured_tags_clone_without_copying() {
+        let long = "kube_deployment:a-deployment-name-longer-than-inline".to_string();
+        let tags = tag_set_from_strings(&["env:prod".to_string(), long.clone()]);
+        let tags: Vec<_> = tags.into_iter().collect();
+        assert_eq!(tags[1].as_str(), long);
+        assert!(tags.iter().all(|tag| tag.try_cheap_clone().is_some()));
     }
 }
