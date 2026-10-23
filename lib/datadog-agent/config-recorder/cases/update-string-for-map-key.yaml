@@ -1,0 +1,9 @@
+# Updates additional_endpoints with a JSON string through the CLI and reads it as a map.
+# Shows that a string update to a map setting stays raw at highest priority.
+name: update-string-for-map-key
+group: behavior
+why: [config-set-api-string-under-cli]
+updates:
+  - {key: additional_endpoints, value: '{"https://x.test": ["k"]}', source: cli}
+keys:
+  - {key: additional_endpoints, getters: [Get, GetStringMapStringSlice]}

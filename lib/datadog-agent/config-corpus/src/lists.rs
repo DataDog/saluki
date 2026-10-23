@@ -1,0 +1,176 @@
+//! Allowed names in saved Agent configuration records, represented as Rust enums.
+//!
+//! The corpus reader uses these lists to reject unknown names instead of silently accepting a
+//! recording it cannot interpret. [`Source`] identifies where a setting came from, [`Getter`]
+//! names the Agent method called, [`Group`] describes a test case's coverage, and [`Level`]
+//! identifies a recorded warning's severity.
+//!
+//! Agent names were manually reviewed at [`REVIEWED_AT_AGENT_COMMIT`]; the recording format
+//! defines the case groups and permitted reads. When the schema pin changes, review the lists
+//! against their cited definitions before updating that constant.
+
+use std::fmt;
+
+/// The Agent commit these lists were last checked against.
+pub const REVIEWED_AT_AGENT_COMMIT: &str = "281d921619d52ce7b99aef40607285992c9c2e89";
+
+/// Declares a string enum with its full list and its string forms.
+macro_rules! string_enum {
+    ($(#[$meta:meta])* $name:ident, $all:ident { $($(#[$vmeta:meta])* $variant:ident => $text:literal,)* }) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub enum $name {
+            $($(#[$vmeta])* $variant,)*
+        }
+
+        impl $name {
+            /// Every variant, in declaration order.
+            pub const $all: &'static [$name] = &[$($name::$variant,)*];
+
+            /// The name as the corpus writes it.
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $($name::$variant => $text,)*
+                }
+            }
+
+            /// Parses the name as the corpus writes it.
+            pub fn parse(s: &str) -> Option<Self> {
+                match s {
+                    $($text => Some($name::$variant),)*
+                    _ => None,
+                }
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(self.as_str())
+            }
+        }
+    };
+}
+
+string_enum! {
+    /// A `model.Source` string (`pkg/config/model/types.go:29-59` at the pin).
+    Source, ALL {
+        /// `schema`.
+        Schema => "schema",
+        /// `default`.
+        Default => "default",
+        /// `unknown`.
+        Unknown => "unknown",
+        /// `infra-mode`.
+        InfraMode => "infra-mode",
+        /// `file`.
+        File => "file",
+        /// `environment-variable`.
+        EnvironmentVariable => "environment-variable",
+        /// `config-post-init`.
+        ConfigPostInit => "config-post-init",
+        /// `secret`.
+        Secret => "secret",
+        /// `local-config-process`.
+        LocalConfigProcess => "local-config-process",
+        /// `agent-runtime`.
+        AgentRuntime => "agent-runtime",
+        /// `remote-config`.
+        RemoteConfig => "remote-config",
+        /// `fleet-policies`.
+        FleetPolicies => "fleet-policies",
+        /// `cli`.
+        Cli => "cli",
+        /// `provided`.
+        Provided => "provided",
+        /// The empty string: a streamed setting's `source` is written even when `""` (record.md §5.1).
+        /// Only legal there; a read source, an update source or an `unset_source` must never be `""`.
+        Empty => "",
+    }
+}
+
+impl Source {
+    /// The sources a case update may write or clear (case.md §5; `pkg/config/model/types.go:37-57`).
+    pub const UPDATE: &'static [Source] = &[
+        Source::InfraMode,
+        Source::File,
+        Source::EnvironmentVariable,
+        Source::FleetPolicies,
+        Source::ConfigPostInit,
+        Source::Secret,
+        Source::LocalConfigProcess,
+        Source::AgentRuntime,
+        Source::RemoteConfig,
+        Source::Cli,
+    ];
+}
+
+string_enum! {
+    /// An Agent getter a read may call (getter-map.md §2).
+    Getter, ALL {
+        /// `Get`, returning `interface{}`.
+        Get => "Get",
+        /// `GetString`, returning `string`.
+        GetString => "GetString",
+        /// `GetBool`, returning `bool`.
+        GetBool => "GetBool",
+        /// `GetInt`, returning `int`.
+        GetInt => "GetInt",
+        /// `GetInt32`, returning `int32`.
+        GetInt32 => "GetInt32",
+        /// `GetInt64`, returning `int64`.
+        GetInt64 => "GetInt64",
+        /// `GetFloat64`, returning `float64`.
+        GetFloat64 => "GetFloat64",
+        /// `GetFloat64Slice`, returning `[]float64`.
+        GetFloat64Slice => "GetFloat64Slice",
+        /// `GetDuration`, returning `time.Duration`.
+        GetDuration => "GetDuration",
+        /// `GetStringSlice`, returning `[]string`.
+        GetStringSlice => "GetStringSlice",
+        /// `GetStringMap`, returning `map[string]interface{}`.
+        GetStringMap => "GetStringMap",
+        /// `GetStringMapString`, returning `map[string]string`.
+        GetStringMapString => "GetStringMapString",
+        /// `GetStringMapStringSlice`, returning `map[string][]string`.
+        GetStringMapStringSlice => "GetStringMapStringSlice",
+        /// `GetSizeInBytes`, returning `uint`.
+        GetSizeInBytes => "GetSizeInBytes",
+        /// The Agent's OTLP section read, `configcheck.ReadConfigSection(cfg, key).ToStringMap()`, returning
+        /// `map[string]interface{}` (getter-map.md §2.1). It keeps only the section's configured leaves, plus
+        /// sections declared with a nil value, so schema defaults are absent. It is never a default getter.
+        ReadConfigSection => "ReadConfigSection",
+        /// `cfg.IsConfigured(key)` (`nodetreemodel/config.go:878`), returning `bool` (getter-map.md §2.1). It
+        /// reports whether the user set the key, not the key's value. It is never a default getter.
+        IsConfigured => "IsConfigured",
+    }
+}
+
+string_enum! {
+    /// A case's coverage group (case.md §3).
+    Group, ALL {
+        /// One case with no inputs, recording every modeled key.
+        Baseline => "baseline",
+        /// Every modeled key, set from each source.
+        Breadth => "breadth",
+        /// Representative modeled keys, with variants.
+        Depth => "depth",
+        /// Every unsupported schema key.
+        Unsupported => "unsupported",
+        /// Representatives of the excluded keys.
+        Excluded => "excluded",
+        /// Keys that are not in the schema.
+        Unknown => "unknown",
+        /// Hand-written cases, each naming behavior catalog entries in its `why` list.
+        Behavior => "behavior",
+    }
+}
+
+string_enum! {
+    /// A recorded warning's slog level (record.md §7).
+    Level, ALL {
+        /// `WARN`.
+        Warn => "WARN",
+        /// `ERROR`.
+        Error => "ERROR",
+    }
+}

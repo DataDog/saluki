@@ -1,0 +1,9 @@
+# Sets both bound environment names for the OTLP metrics tag cardinality.
+# Shows that the first name in registration order wins when both are non-empty.
+name: env-two-names-first-bound-wins
+group: behavior
+why: [env-multi-name-order-is-registration-order]
+env:
+  DD_OTLP_CONFIG_METRICS_TAG_CARDINALITY: "orchestrator"
+  DD_OTLP_TAG_CARDINALITY: "high"
+keys: [otlp_config.metrics.tag_cardinality]
