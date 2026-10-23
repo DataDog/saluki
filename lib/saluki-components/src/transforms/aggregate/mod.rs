@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     future::pending,
     num::NonZeroU64,
     sync::Mutex,
@@ -8,7 +9,7 @@ use std::{
 use async_trait::async_trait;
 use ddsketch::DDSketch;
 use hashbrown::{hash_map::Entry, HashMap};
-use saluki_common::time::get_unix_timestamp;
+use saluki_common::{collections::find_matching_prefix, time::get_unix_timestamp};
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr},
     components::{transforms::*, BuildContext},
@@ -274,6 +275,57 @@ impl AggregateContextSnapshotReceiver {
     }
 }
 
+/// An aggregation-window override selected by metric-name prefix.
+///
+/// A metric name that starts with `metric_prefix` is aggregated into an `interval_seconds`-wide window instead of
+/// the transform's default window. Matching is case-sensitive, and because prefixes must not overlap, at most one
+/// rule can match a given metric name.
+#[derive(Clone, Debug)]
+pub struct MetricAggregationInterval {
+    /// Case-sensitive metric-name prefix used for matching.
+    ///
+    /// Must be non-empty. Rules whose prefixes overlap, where one starts with the other, are rejected when the
+    /// transform is built, since the intended match would be ambiguous.
+    pub metric_prefix: String,
+
+    /// Aggregation window length in seconds: one of 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, or 60.
+    ///
+    /// A value of `0` is invalid. It is not a way to disable aggregation for the prefix; every metric is aggregated
+    /// into some window.
+    pub interval_seconds: u64,
+}
+
+fn sort_and_validate_metric_intervals(rules: &mut [MetricAggregationInterval]) -> Result<(), GenericError> {
+    for rule in rules.iter() {
+        if rule.metric_prefix.is_empty() {
+            return Err(GenericError::msg(
+                "metric aggregation intervals must use non-empty metric prefixes",
+            ));
+        }
+        if rule.interval_seconds == 0 || !60u64.is_multiple_of(rule.interval_seconds) {
+            return Err(GenericError::msg(concat!(
+                "metric aggregation interval durations must be positive divisors of 60: ",
+                "1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, or 60 seconds"
+            )));
+        }
+    }
+
+    rules.sort_unstable_by(|left, right| left.metric_prefix.cmp(&right.metric_prefix));
+    for pair in rules.windows(2) {
+        let [left, right] = pair else {
+            unreachable!("a two-entry window must contain two entries");
+        };
+        if right.metric_prefix.starts_with(&left.metric_prefix) {
+            return Err(GenericError::msg(format!(
+                "metric aggregation interval prefixes {:?} and {:?} overlap",
+                left.metric_prefix, right.metric_prefix
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 /// Aggregate transform.
 ///
 /// Aggregates metrics into fixed-size windows, flushing them at a regular interval.
@@ -301,20 +353,36 @@ pub struct AggregateConfiguration {
     /// how many data points are emitted downstream.
     pub window_duration_seconds: NonZeroU64,
 
+    /// Metric-name prefix rules that override the default aggregation window.
+    ///
+    /// Each rule maps a metric-name prefix to its own aggregation window. A metric whose name starts with a rule's
+    /// prefix is aggregated into that window, while metrics that match no rule keep using `window_duration_seconds`.
+    ///
+    /// The default is an empty list, which applies `window_duration_seconds` to every metric.
+    ///
+    /// Rules are validated when the transform is built, and invalid configuration stops startup rather than being
+    /// silently ignored: prefixes must be non-empty and must not overlap each other, and `interval_seconds` must be
+    /// a positive divisor of 60. Changes require restarting the component.
+    ///
+    /// Shorter intervals emit more points downstream and retain more buckets between flushes, which raises memory
+    /// use under the same context limit. Only narrow the interval for prefixes that genuinely need finer-grained
+    /// resolution, such as gauges feeding live dashboards, and keep everything else on the default window.
+    pub metric_intervals: Vec<MetricAggregationInterval>,
+
     /// How often to flush buckets.
     ///
     /// This represents a trade-off between the savings in network bandwidth (sending fewer requests to downstream
     /// systems, etc) and the frequency of updates (how often updates to a metric are emitted).
     pub primary_flush_interval: Duration,
 
-    /// Maximum number of contexts to aggregate per window.
+    /// Maximum number of contexts retained across all aggregation windows.
     ///
     /// A context is the unique combination of a metric name and its set of tags. For example,
     /// `metric.name.here{tag1=A,tag2=B}` represents a single context, and would be different than
     /// `metric.name.here{tag1=A,tag2=C}`.
     ///
-    /// When the maximum number of contexts is reached in the current aggregation window, additional metrics are dropped
-    /// until the next window starts.
+    /// When the maximum is reached, updates to retained contexts continue while metrics introducing new contexts are
+    /// dropped until a flush releases capacity.
     pub context_limit: usize,
 
     /// Whether to flush open buckets when stopping the transform.
@@ -363,6 +431,7 @@ impl AggregateConfiguration {
 
         Self {
             window_duration_seconds: NonZeroU64::new(10).expect("not zero"),
+            metric_intervals: Vec::new(),
             primary_flush_interval: Duration::from_secs(15),
             context_limit: 1_000_000,
             flush_open_windows: false,
@@ -380,8 +449,11 @@ impl TransformBuilder for AggregateConfiguration {
         let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = Telemetry::new(&metrics_builder);
 
-        let state = AggregationState::new(
+        let mut metric_intervals = self.metric_intervals.clone();
+        sort_and_validate_metric_intervals(&mut metric_intervals)?;
+        let state = AggregationLanes::new(
             self.window_duration_seconds,
+            &metric_intervals,
             self.context_limit,
             self.counter_expiry_seconds.filter(|s| *s != 0).map(Duration::from_secs),
             self.hist_config.clone(),
@@ -409,13 +481,47 @@ impl TransformBuilder for AggregateConfiguration {
 
 impl MemoryBounds for AggregateConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        // TODO: While we account for the aggregation state map accurately, what we don't currently account for is the
-        // fact that a metric could have multiple distinct values. For the common pipeline of metrics in via DogStatsD,
-        // this generally shouldn't be a problem because the values don't have a timestamp, so they get aggregated into
-        // the same bucket, leading to two values per `MetricValues` at most, which is already baked into the size of
-        // `MetricValues` due to using `SmallVec`.
-        //
-        // However, there could be many more values in a single metric, and we don't account for that.
+        // Estimate retained scalar storage from the configured cadence. SmallVec spills the entire
+        // buffer to the heap, including slots formerly held inline, and rounds growth up geometrically.
+        // Delayed flushes and variable-size non-scalar values retain their existing workload-dependent
+        // accounting limitations; this is not a hard allocation limit.
+        // Rules are validated when the transform is built, but bounds are specified during topology
+        // construction, which can happen first. Skip zero-second rules here rather than dividing by
+        // zero; `build` still rejects them with a configuration error.
+        let minimum_interval_seconds = self
+            .metric_intervals
+            .iter()
+            .map(|rule| rule.interval_seconds)
+            .filter(|seconds| *seconds != 0)
+            .chain(std::iter::once(self.window_duration_seconds.get()))
+            .min()
+            .expect("the default aggregation interval is always present");
+        let interval_nanos = u128::from(minimum_interval_seconds) * 1_000_000_000;
+        let retained_scalar_points = self
+            .primary_flush_interval
+            .as_nanos()
+            .div_ceil(interval_nanos)
+            .saturating_add(1)
+            .min(usize::MAX as u128) as usize;
+        let heap_scalar_points = scalar_heap_point_capacity(retained_scalar_points);
+        let scalar_point_size = std::mem::size_of::<Option<NonZeroU64>>() + std::mem::size_of::<f64>();
+        // The transform keeps a compiled copy of every rule, where each rule holds its prefix string on the heap,
+        // and one aggregation lane per distinct interval. Both are fixed by configuration. Invalid zero-second
+        // rules create no lane because `build` rejects the configuration, but we still reserve their prefix bytes so
+        // the estimate never undercounts a table the configuration could produce.
+        let prefix_table_bytes = self
+            .metric_intervals
+            .iter()
+            .map(|rule| std::mem::size_of::<MetricAggregationInterval>() + rule.metric_prefix.capacity())
+            .sum();
+        let lane_count = self
+            .metric_intervals
+            .iter()
+            .map(|rule| rule.interval_seconds)
+            .filter(|seconds| *seconds != 0)
+            .chain(std::iter::once(self.window_duration_seconds.get()))
+            .collect::<std::collections::HashSet<u64>>()
+            .len();
 
         builder
             .minimum()
@@ -433,6 +539,23 @@ impl MemoryBounds for AggregateConfiguration {
                 ),
                 UsageExpr::config("aggregate_context_limit", self.context_limit),
             ))
+            .with_expr(UsageExpr::product(
+                "heap scalar aggregation points",
+                UsageExpr::product(
+                    "heap scalar capacity per context",
+                    UsageExpr::constant("scalar point", scalar_point_size),
+                    UsageExpr::constant("point capacity", heap_scalar_points),
+                ),
+                UsageExpr::config("aggregate_context_limit", self.context_limit),
+            ))
+            // Account for the compiled prefix table and the per-interval lane states, which exist even before any
+            // metric is aggregated.
+            .with_fixed_amount("metric interval prefix table", prefix_table_bytes)
+            .with_expr(UsageExpr::product(
+                "aggregation lane states",
+                UsageExpr::struct_size::<AggregationState>("aggregation lane state"),
+                UsageExpr::constant("lane count", lane_count),
+            ))
             // A snapshot is constructed while the aggregation state remains live, so its peak allocation is additive.
             .with_expr(UsageExpr::product(
                 "retained context snapshot",
@@ -442,8 +565,18 @@ impl MemoryBounds for AggregateConfiguration {
     }
 }
 
+// ScalarPoints holds four inline points and grows by doubling when merging new timestamps.
+// Count the full heap capacity after a spill: the inline storage remains part of the enclosing struct.
+fn scalar_heap_point_capacity(point_count: usize) -> usize {
+    if point_count <= 4 {
+        0
+    } else {
+        point_count.checked_next_power_of_two().unwrap_or(usize::MAX)
+    }
+}
+
 pub struct Aggregate {
-    state: AggregationState,
+    state: AggregationLanes,
     telemetry: Telemetry,
     primary_flush_interval: Duration,
     flush_open_windows: bool,
@@ -577,6 +710,130 @@ async fn receive_context_snapshot_request(
     }
 }
 
+struct AggregationLanes {
+    default_interval: NonZeroU64,
+    metric_intervals: Vec<MetricAggregationInterval>,
+    states: BTreeMap<NonZeroU64, AggregationState>,
+    context_limit: usize,
+    retained_contexts: usize,
+    context_limit_breached: bool,
+}
+
+impl AggregationLanes {
+    fn new(
+        default_interval: NonZeroU64, metric_intervals: &[MetricAggregationInterval], context_limit: usize,
+        counter_expiration: Option<Duration>, hist_config: HistogramConfiguration, telemetry: Telemetry,
+    ) -> Self {
+        debug_assert!(metric_intervals.windows(2).all(|pair| {
+            pair[0].metric_prefix < pair[1].metric_prefix && !pair[1].metric_prefix.starts_with(&pair[0].metric_prefix)
+        }));
+
+        let mut states = BTreeMap::new();
+        states.insert(
+            default_interval,
+            AggregationState::new(
+                default_interval,
+                context_limit,
+                counter_expiration,
+                hist_config.clone(),
+                telemetry.clone(),
+            ),
+        );
+        for rule in metric_intervals {
+            let interval = NonZeroU64::new(rule.interval_seconds)
+                .expect("typed metric aggregation intervals must have non-zero durations");
+            states.entry(interval).or_insert_with(|| {
+                AggregationState::new(
+                    interval,
+                    context_limit,
+                    counter_expiration,
+                    hist_config.clone(),
+                    telemetry.clone(),
+                )
+            });
+        }
+
+        Self {
+            default_interval,
+            metric_intervals: metric_intervals.to_vec(),
+            states,
+            context_limit,
+            retained_contexts: 0,
+            context_limit_breached: false,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.states.values().all(AggregationState::is_empty)
+    }
+
+    #[cfg(test)]
+    fn retained_contexts(&self) -> usize {
+        self.retained_contexts
+    }
+
+    fn snapshot_contexts(&self) -> Vec<AggregateContextSnapshotEntry> {
+        let mut snapshot = Vec::with_capacity(self.retained_contexts);
+        for state in self.states.values() {
+            state.append_context_snapshot(&mut snapshot);
+        }
+        snapshot
+    }
+
+    fn interval_for_metric(&self, metric: &Metric) -> NonZeroU64 {
+        if self.metric_intervals.is_empty() {
+            return self.default_interval;
+        }
+
+        find_matching_prefix(&self.metric_intervals, metric.context().name(), |rule| {
+            rule.metric_prefix.as_str()
+        })
+        .map(|rule| {
+            NonZeroU64::new(rule.interval_seconds)
+                .expect("typed metric aggregation intervals must have non-zero durations")
+        })
+        .unwrap_or(self.default_interval)
+    }
+
+    fn insert(&mut self, timestamp: u64, metric: Metric) -> bool {
+        let interval = self.interval_for_metric(&metric);
+        let state = self
+            .states
+            .get_mut(&interval)
+            .expect("every configured interval must have an aggregation lane");
+        let is_new_context = !state.contexts.contains_key(metric.context());
+
+        if is_new_context && self.retained_contexts >= self.context_limit {
+            self.context_limit_breached = true;
+            return false;
+        }
+
+        let inserted = state.insert(timestamp, metric);
+        if inserted && is_new_context {
+            self.retained_contexts += 1;
+        }
+        inserted
+    }
+
+    async fn flush(
+        &mut self, current_time: u64, flush_open_buckets: bool, dispatcher: &mut BufferedDispatcher<'_, EventsBuffer>,
+    ) -> Result<(), GenericError> {
+        for state in self.states.values_mut().filter(|state| !state.is_empty()) {
+            let contexts_before = state.contexts.len();
+            state.flush(current_time, flush_open_buckets, dispatcher).await?;
+            self.retained_contexts -= contexts_before - state.contexts.len();
+        }
+        if self.context_limit_breached && self.retained_contexts < self.context_limit {
+            self.context_limit_breached = false;
+        }
+        Ok(())
+    }
+
+    fn context_limit_breached(&self) -> bool {
+        self.context_limit_breached
+    }
+}
+
 #[derive(Clone)]
 struct AggregatedMetric {
     values: MetricValues,
@@ -622,16 +879,23 @@ impl AggregationState {
         self.contexts.is_empty()
     }
 
+    #[cfg(test)]
     fn snapshot_contexts(&self) -> Vec<AggregateContextSnapshotEntry> {
         let mut snapshot = Vec::with_capacity(self.contexts.len());
-        for (context, aggregated) in &self.contexts {
-            snapshot.push(AggregateContextSnapshotEntry {
-                context: context.clone(),
-                metric_type: AggregateMetricType::from(&aggregated.values),
-                unit: aggregated.metadata.unit.clone(),
-            });
-        }
+        self.append_context_snapshot(&mut snapshot);
         snapshot
+    }
+
+    fn append_context_snapshot(&self, snapshot: &mut Vec<AggregateContextSnapshotEntry>) {
+        snapshot.extend(
+            self.contexts
+                .iter()
+                .map(|(context, aggregated)| AggregateContextSnapshotEntry {
+                    context: context.clone(),
+                    metric_type: AggregateMetricType::from(&aggregated.values),
+                    unit: aggregated.metadata.unit.clone(),
+                }),
+        );
     }
 
     fn insert(&mut self, timestamp: u64, metric: Metric) -> bool {
@@ -849,6 +1113,7 @@ impl AggregationState {
         Ok(())
     }
 
+    #[cfg(test)]
     fn context_limit_breached(&self) -> bool {
         self.context_limit_breached
     }
@@ -984,6 +1249,7 @@ mod tests {
         components::{
             destinations::{Destination, DestinationBuilder, DestinationContext},
             sources::{Source, SourceBuilder, SourceContext},
+            test_util::TestComponentDriver,
             ComponentContext,
         },
         data_model::tags::{Tag, TagSet},
@@ -1149,6 +1415,24 @@ mod tests {
 
         // Flush our buffered dispatcher, which should ensure that the event buffer is sent out, and then read it from the
         // receiver:
+        buffered_dispatcher
+            .flush()
+            .await
+            .expect("should not fail to flush buffered sender");
+
+        dispatcher_receiver.collect_next()
+    }
+
+    async fn get_flushed_lane_metrics(
+        timestamp: u64, flush_open_buckets: bool, state: &mut AggregationLanes,
+    ) -> Vec<Metric> {
+        let (dispatcher, mut dispatcher_receiver) = build_basic_dispatcher();
+        let mut buffered_dispatcher = dispatcher.buffered().expect("default output should always exist");
+
+        state
+            .flush(timestamp, flush_open_buckets, &mut buffered_dispatcher)
+            .await
+            .expect("should not fail to flush aggregation lanes");
         buffered_dispatcher
             .flush()
             .await
@@ -1463,12 +1747,95 @@ mod tests {
         let expected_minimum = size_of::<Aggregate>();
         let aggregation_state_bytes = context_limit * (size_of::<Context>() + size_of::<AggregatedMetric>());
         let context_snapshot_bytes = context_limit * size_of::<AggregateContextSnapshotEntry>();
+        let lane_state_bytes = size_of::<AggregationState>();
 
         assert_eq!(bounds.total_minimum_required_bytes(), expected_minimum);
         assert_eq!(
             bounds.total_firm_limit_bytes(),
-            expected_minimum + aggregation_state_bytes + context_snapshot_bytes
+            expected_minimum + aggregation_state_bytes + lane_state_bytes + context_snapshot_bytes
         );
+    }
+
+    #[test]
+    fn aggregate_memory_bounds_tolerate_zero_second_interval_rules() {
+        // Bounds are specified before `build` validates the rules, so an invalid zero-second rule
+        // must not panic the calculation; `build` is what rejects it.
+        let mut config = AggregateConfiguration::for_test();
+        config.metric_intervals = vec![MetricAggregationInterval {
+            metric_prefix: "invalid.".to_string(),
+            interval_seconds: 0,
+        }];
+        let registry = ComponentRegistry::default();
+        config.specify_bounds(&mut registry.bounds_builder(&SubsystemIdentifier::from_dotted("test")));
+    }
+
+    #[test]
+    fn aggregate_memory_bounds_include_short_interval_scalar_spill() {
+        let mut config = AggregateConfiguration::for_test();
+        config.context_limit = 17;
+        config.metric_intervals = vec![MetricAggregationInterval {
+            metric_prefix: "high_resolution.".to_string(),
+            interval_seconds: 1,
+        }];
+        let registry = ComponentRegistry::default();
+        config.specify_bounds(&mut registry.bounds_builder(&SubsystemIdentifier::from_dotted("test")));
+        let bounds = registry.as_bounds();
+
+        let aggregation_state_bytes = config.context_limit * (size_of::<Context>() + size_of::<AggregatedMetric>());
+        let context_snapshot_bytes = config.context_limit * size_of::<AggregateContextSnapshotEntry>();
+        // At the configured 15-second cadence, reserve 16 one-second buckets including the open
+        // bucket. Once spilled, all 16 points live on the heap, not just the 12 beyond inline capacity.
+        let scalar_spill_bytes = config.context_limit * 16 * (size_of::<Option<NonZeroU64>>() + size_of::<f64>());
+        // One lane for the default window plus one for the 1-second rule, and the compiled copy of the rule
+        // itself, prefix string included.
+        let lane_state_bytes = 2 * size_of::<AggregationState>();
+        let prefix_table_bytes = size_of::<MetricAggregationInterval>() + "high_resolution.".len();
+
+        assert_eq!(
+            bounds.total_firm_limit_bytes(),
+            size_of::<Aggregate>()
+                + aggregation_state_bytes
+                + lane_state_bytes
+                + prefix_table_bytes
+                + context_snapshot_bytes
+                + scalar_spill_bytes
+        );
+    }
+
+    #[test]
+    fn scalar_heap_estimate_matches_smallvec_growth() {
+        // Mirror ScalarPoints' storage to check both the spill boundary and geometric capacity growth.
+        let mut points = SmallVec::<[(Option<NonZeroU64>, f64); 4]>::new();
+        for count in 0..=257 {
+            let actual_heap_capacity = if points.spilled() { points.capacity() } else { 0 };
+            assert_eq!(
+                scalar_heap_point_capacity(count),
+                actual_heap_capacity,
+                "point count {count}"
+            );
+            points.push((NonZeroU64::new(count as u64 + 1), 1.0));
+        }
+        assert_eq!(scalar_heap_point_capacity(usize::MAX), usize::MAX);
+    }
+
+    #[test]
+    fn aggregate_memory_bounds_round_up_partial_spills_and_saturate() {
+        let mut config = AggregateConfiguration::for_test();
+        config.context_limit = 1;
+        config.window_duration_seconds = NonZeroU64::new(1).unwrap();
+        let bounds_for = |config: &AggregateConfiguration| {
+            let registry = ComponentRegistry::default();
+            config.specify_bounds(&mut registry.bounds_builder(&SubsystemIdentifier::from_dotted("test")));
+            registry.as_bounds().total_firm_limit_bytes()
+        };
+        config.primary_flush_interval = Duration::from_secs(3);
+        let inline_bounds = bounds_for(&config);
+        for (flush_seconds, heap_capacity) in [(4, 8), (7, 8), (8, 16), (15, 16), (16, 32)] {
+            config.primary_flush_interval = Duration::from_secs(flush_seconds);
+            assert_eq!(bounds_for(&config) - inline_bounds, heap_capacity * 16);
+        }
+        config.primary_flush_interval = Duration::MAX;
+        assert_eq!(bounds_for(&config), usize::MAX);
     }
 
     #[tokio::test]
@@ -1690,6 +2057,468 @@ mod tests {
                 flush_open_buckets
             );
         }
+    }
+
+    #[test]
+    fn metric_interval_rules_are_compiled_for_binary_search() {
+        let mut rules = (0..10_000)
+            .rev()
+            .map(|index| MetricAggregationInterval {
+                metric_prefix: format!("metric.{index:05}."),
+                interval_seconds: 5,
+            })
+            .collect::<Vec<_>>();
+
+        sort_and_validate_metric_intervals(&mut rules).expect("non-overlapping rules should compile");
+        let state = AggregationLanes::new(
+            BUCKET_WIDTH_SECS,
+            &rules,
+            10,
+            None,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+
+        assert_eq!(
+            state
+                .interval_for_metric(&Metric::gauge("metric.09999.requests", 1.0))
+                .get(),
+            5
+        );
+        assert_eq!(
+            state.interval_for_metric(&Metric::gauge("unmatched.requests", 1.0)),
+            BUCKET_WIDTH_SECS
+        );
+    }
+
+    #[test]
+    fn metric_interval_rules_reject_unsupported_intervals() {
+        for interval_seconds in [0, 7, 11, 59, 61, u64::MAX] {
+            let mut rules = vec![MetricAggregationInterval {
+                metric_prefix: "requests.".to_string(),
+                interval_seconds,
+            }];
+
+            let error = sort_and_validate_metric_intervals(&mut rules).expect_err("invalid intervals must fail");
+            assert!(error.to_string().contains("positive divisors of 60"));
+        }
+    }
+
+    #[test]
+    fn metric_interval_rules_accept_exactly_the_supported_widths() {
+        for interval_seconds in 0..=120 {
+            let mut rules = vec![MetricAggregationInterval {
+                metric_prefix: "requests.".to_string(),
+                interval_seconds,
+            }];
+            let accepted = sort_and_validate_metric_intervals(&mut rules).is_ok();
+            assert_eq!(
+                accepted,
+                [1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60].contains(&interval_seconds)
+            );
+        }
+    }
+
+    #[test]
+    fn metric_interval_rules_reject_overlapping_prefixes() {
+        let mut rules = vec![
+            MetricAggregationInterval {
+                metric_prefix: "requests.api.".to_string(),
+                interval_seconds: 5,
+            },
+            MetricAggregationInterval {
+                metric_prefix: "requests.".to_string(),
+                interval_seconds: 10,
+            },
+        ];
+
+        let error = sort_and_validate_metric_intervals(&mut rules).expect_err("overlapping prefixes must fail");
+        assert!(error.to_string().contains("overlap"));
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn property_test_interval_routing_and_bucket_alignment(
+            rule_interval in proptest::sample::select(vec![1u64, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60]),
+            timestamp in 60u64..100_000,
+            matches_rule in proptest::bool::ANY,
+        ) {
+            let rules = vec![MetricAggregationInterval {
+                metric_prefix: "matched.".to_string(),
+                interval_seconds: rule_interval,
+            }];
+            let mut state = AggregationLanes::new(
+                BUCKET_WIDTH_SECS,
+                &rules,
+                10,
+                None,
+                HistogramConfiguration::default(),
+                Telemetry::noop(),
+            );
+            let name = if matches_rule { "matched.metric" } else { "ordinary.metric" };
+            let metric = Metric::gauge(name, 1.0);
+            let context = metric.context().clone();
+
+            assert!(state.insert(timestamp, metric));
+
+            let selected_interval = if matches_rule {
+                NonZeroU64::new(rule_interval).unwrap()
+            } else {
+                BUCKET_WIDTH_SECS
+            };
+            let aggregated = state
+                .states
+                .get(&selected_interval)
+                .and_then(|lane| lane.contexts.get(&context))
+                .expect("metric must be retained in its selected interval lane");
+            let expected_bucket = align_to_bucket_start(timestamp, selected_interval);
+            assert!(matches!(
+                &aggregated.values,
+                MetricValues::Gauge(points)
+                    if points.into_iter().next().and_then(|(ts, _)| ts.map(NonZeroU64::get))
+                        == Some(expected_bucket)
+            ));
+            assert_eq!(state.retained_contexts(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn no_interval_rules_match_the_existing_aggregation_state() {
+        let mut lanes = AggregationLanes::new(
+            BUCKET_WIDTH_SECS,
+            &[],
+            10,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+        let mut existing = AggregationState::new(
+            BUCKET_WIDTH_SECS,
+            10,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+        let metrics = [Metric::gauge("requests.active", 3.0), Metric::counter("requests", 7.0)];
+
+        for metric in metrics {
+            assert!(lanes.insert(61, metric.clone()));
+            assert!(existing.insert(61, metric));
+        }
+
+        assert_eq!(
+            get_flushed_lane_metrics(70, true, &mut lanes).await,
+            get_flushed_metrics(70, &mut existing).await
+        );
+        assert_eq!(
+            get_flushed_lane_metrics(80, true, &mut lanes).await,
+            get_flushed_metrics(80, &mut existing).await
+        );
+    }
+
+    #[tokio::test]
+    async fn configured_lanes_match_independent_aggregation_states() {
+        let rules = vec![
+            MetricAggregationInterval {
+                metric_prefix: "archival.".to_string(),
+                interval_seconds: 60,
+            },
+            MetricAggregationInterval {
+                metric_prefix: "fast.".to_string(),
+                interval_seconds: 1,
+            },
+        ];
+        let mut lanes = AggregationLanes::new(
+            BUCKET_WIDTH_SECS,
+            &rules,
+            10,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+        let mut reference = [
+            AggregationState::new(
+                NonZeroU64::new(1).unwrap(),
+                10,
+                COUNTER_EXPIRE,
+                HistogramConfiguration::default(),
+                Telemetry::noop(),
+            ),
+            AggregationState::new(
+                BUCKET_WIDTH_SECS,
+                10,
+                COUNTER_EXPIRE,
+                HistogramConfiguration::default(),
+                Telemetry::noop(),
+            ),
+            AggregationState::new(
+                NonZeroU64::new(60).unwrap(),
+                10,
+                COUNTER_EXPIRE,
+                HistogramConfiguration::default(),
+                Telemetry::noop(),
+            ),
+        ];
+        let metrics = [
+            (0, Metric::gauge("fast.requests", 1.0)),
+            (1, Metric::counter("ordinary.requests", 2.0)),
+            (2, Metric::gauge("archival.requests", 3.0)),
+        ];
+        for (reference_index, metric) in metrics {
+            assert!(lanes.insert(61, metric.clone()));
+            assert!(reference[reference_index].insert(61, metric));
+        }
+
+        for timestamp in [70, 120] {
+            let actual = get_flushed_lane_metrics(timestamp, false, &mut lanes).await;
+            let mut expected = Vec::new();
+            for state in &mut reference {
+                expected.extend(get_flushed_metrics_with_open_windows(timestamp, false, state).await);
+            }
+            expected.sort_by(|left, right| left.context().name().cmp(right.context().name()));
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn routes_metrics_to_epoch_aligned_interval_lanes() {
+        let rules = vec![
+            MetricAggregationInterval {
+                metric_prefix: "archival.".to_string(),
+                interval_seconds: 60,
+            },
+            MetricAggregationInterval {
+                metric_prefix: "high_resolution.".to_string(),
+                interval_seconds: 1,
+            },
+        ];
+        let mut state = AggregationLanes::new(
+            BUCKET_WIDTH_SECS,
+            &rules,
+            10,
+            None,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+
+        assert!(state.insert(61, Metric::gauge("high_resolution.requests", 1.0)));
+        assert!(state.insert(61, Metric::gauge("ordinary.requests", 2.0)));
+        assert!(state.insert(61, Metric::gauge("archival.requests", 3.0)));
+
+        let first_flush = get_flushed_lane_metrics(70, false, &mut state).await;
+        assert_eq!(first_flush.len(), 2);
+        assert_eq!(first_flush[0].context().name(), "high_resolution.requests");
+        assert_eq!(first_flush[1].context().name(), "ordinary.requests");
+        assert!(
+            matches!(first_flush[0].values(), MetricValues::Gauge(points) if points.into_iter().next().and_then(|(ts, _)| ts.map(NonZeroU64::get)) == Some(61))
+        );
+        assert!(
+            matches!(first_flush[1].values(), MetricValues::Gauge(points) if points.into_iter().next().and_then(|(ts, _)| ts.map(NonZeroU64::get)) == Some(60))
+        );
+
+        let second_flush = get_flushed_lane_metrics(120, false, &mut state).await;
+        assert_eq!(second_flush.len(), 1);
+        assert_eq!(second_flush[0].context().name(), "archival.requests");
+        assert!(
+            matches!(second_flush[0].values(), MetricValues::Gauge(points) if points.into_iter().next().and_then(|(ts, _)| ts.map(NonZeroU64::get)) == Some(60))
+        );
+    }
+
+    #[test]
+    fn context_snapshot_includes_every_interval_lane() {
+        let rules = vec![MetricAggregationInterval {
+            metric_prefix: "fast.".to_string(),
+            interval_seconds: 1,
+        }];
+        let mut state = AggregationLanes::new(
+            BUCKET_WIDTH_SECS,
+            &rules,
+            10,
+            None,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+
+        assert!(state.insert(61, Metric::gauge("fast.requests", 1.0)));
+        assert!(state.insert(61, Metric::counter("ordinary.requests", 2.0)));
+
+        let mut snapshot = state.snapshot_contexts();
+        snapshot.sort_by(|left, right| left.context().name().cmp(right.context().name()));
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(snapshot[0].context().name(), "fast.requests");
+        assert_eq!(snapshot[0].metric_type(), AggregateMetricType::Gauge);
+        assert_eq!(snapshot[1].context().name(), "ordinary.requests");
+        assert_eq!(snapshot[1].metric_type(), AggregateMetricType::Counter);
+    }
+
+    #[tokio::test]
+    async fn context_limit_is_global_across_interval_lanes() {
+        let rules = vec![MetricAggregationInterval {
+            metric_prefix: "fast.".to_string(),
+            interval_seconds: 1,
+        }];
+        let mut state = AggregationLanes::new(
+            BUCKET_WIDTH_SECS,
+            &rules,
+            2,
+            None,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+
+        assert!(state.insert(61, Metric::gauge("fast.one", 1.0)));
+        assert!(state.insert(61, Metric::gauge("default.one", 1.0)));
+        assert!(state.insert(62, Metric::gauge("fast.one", 2.0)));
+        assert!(!state.insert(61, Metric::gauge("default.two", 1.0)));
+        assert!(state.context_limit_breached());
+        assert_eq!(state.retained_contexts(), 2);
+
+        let flushed = get_flushed_lane_metrics(70, false, &mut state).await;
+        assert_eq!(flushed.len(), 2);
+        assert!(!state.context_limit_breached());
+        assert!(state.insert(71, Metric::gauge("default.two", 1.0)));
+    }
+
+    #[tokio::test]
+    async fn reusing_an_empty_lane_does_not_backfill_counter_zeros() {
+        let rules = vec![MetricAggregationInterval {
+            metric_prefix: "fast.".to_string(),
+            interval_seconds: 1,
+        }];
+        let mut state = AggregationLanes::new(
+            BUCKET_WIDTH_SECS,
+            &rules,
+            10,
+            Some(Duration::from_secs(300)),
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+
+        assert!(state.insert(1, Metric::gauge("fast.previous", 1.0)));
+        let flushed = get_flushed_lane_metrics(2, false, &mut state).await;
+        assert_eq!(flushed.len(), 1);
+        assert!(state
+            .states
+            .get(&NonZeroU64::new(1).unwrap())
+            .expect("fast lane exists")
+            .is_empty());
+
+        let counter = Metric::counter("fast.counter", 7.0);
+        assert!(state.insert(1_000, counter.clone()));
+        let flushed = get_flushed_lane_metrics(1_001, false, &mut state).await;
+
+        assert_eq!(flushed.len(), 1);
+        assert_flushed_scalar_metric!(&counter, &flushed[0], [1_000 => 7.0]);
+    }
+
+    #[test]
+    fn rules_with_the_same_interval_share_a_lane() {
+        let rules = vec![
+            MetricAggregationInterval {
+                metric_prefix: "default.".to_string(),
+                interval_seconds: 10,
+            },
+            MetricAggregationInterval {
+                metric_prefix: "first.".to_string(),
+                interval_seconds: 5,
+            },
+            MetricAggregationInterval {
+                metric_prefix: "second.".to_string(),
+                interval_seconds: 5,
+            },
+        ];
+        let state = AggregationLanes::new(
+            BUCKET_WIDTH_SECS,
+            &rules,
+            10,
+            None,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+
+        assert_eq!(state.states.len(), 2);
+    }
+
+    /// Builds the transform from its configuration and runs it, covering rule validation, lane routing, and the
+    /// owner's final flush together rather than the lane state alone.
+    #[tokio::test]
+    async fn configured_prefix_rules_route_metrics_through_the_running_transform() {
+        let config = AggregateConfiguration {
+            metric_intervals: vec![
+                MetricAggregationInterval {
+                    metric_prefix: "slow.".to_string(),
+                    interval_seconds: 60,
+                },
+                MetricAggregationInterval {
+                    metric_prefix: "fast.".to_string(),
+                    interval_seconds: 1,
+                },
+            ],
+            // Emit the still-open windows at shutdown, so the test doesn't wait for windows to close.
+            flush_open_windows: true,
+            ..AggregateConfiguration::for_test()
+        };
+        let (control, mut outputs) = TestComponentDriver::transform(config)
+            .await
+            .expect("aggregate transform should build");
+        control
+            .send_events(
+                ["fast.requests", "slow.requests", "other.requests"]
+                    .map(|name| Event::Metric(Metric::counter(name, 1.0))),
+            )
+            .await;
+        control
+            .shutdown()
+            .await
+            .expect("aggregate transform should stop cleanly");
+
+        let mut intervals = outputs
+            .default_output()
+            .collect_events()
+            .await
+            .into_iter()
+            .map(|event| {
+                let metric = event.try_into_metric().expect("aggregate emits metrics");
+                let MetricValues::Rate(_, interval) = metric.values() else {
+                    panic!("counters are emitted as rates: {metric:?}");
+                };
+                (metric.context().name().to_string(), interval.as_secs())
+            })
+            .collect::<Vec<_>>();
+        intervals.sort();
+
+        assert_eq!(
+            intervals,
+            [
+                ("fast.requests".to_string(), 1),
+                ("other.requests".to_string(), 10),
+                ("slow.requests".to_string(), 60),
+            ]
+        );
+    }
+
+    /// The configuration layer rejects these rules first, but the transform also validates them when it is built.
+    #[tokio::test]
+    async fn invalid_prefix_rules_fail_the_transform_build() {
+        let config = AggregateConfiguration {
+            metric_intervals: vec![
+                MetricAggregationInterval {
+                    metric_prefix: "requests.".to_string(),
+                    interval_seconds: 1,
+                },
+                MetricAggregationInterval {
+                    metric_prefix: "requests.api.".to_string(),
+                    interval_seconds: 60,
+                },
+            ],
+            ..AggregateConfiguration::for_test()
+        };
+
+        let error = match TestComponentDriver::transform(config).await {
+            Ok(_) => panic!("overlapping prefix rules must fail the build"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("overlap"), "unexpected error: {error}");
     }
 
     #[tokio::test]

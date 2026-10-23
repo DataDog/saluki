@@ -205,7 +205,9 @@ pub struct SalukiOnly {
     ///
     /// A window of zero seconds cannot be aggregated into, so `0` is rejected here.
     pub aggregate_window_duration_seconds: Option<NonZeroU64>,
-    /// Maximum contexts per aggregation window (`aggregate_context_limit`).
+    /// Per-prefix aggregation window overrides (`metric_aggregation_intervals`).
+    metric_aggregation_intervals: Option<JsonSequence<MetricAggregationIntervalSource>>,
+    /// Maximum contexts across all aggregation windows (`aggregate_context_limit`).
     pub aggregate_context_limit: Option<usize>,
     /// Aggregator flush period (`aggregate_flush_interval`).
     pub aggregate_flush_interval: Option<DurationString>,
@@ -236,6 +238,51 @@ pub struct SalukiOnly {
     pub ottl_filter_config: Option<OttlFilterConfig>,
     /// OTTL span-transform processor (`ottl_transform_config`).
     pub ottl_transform_config: Option<OttlTransformConfig>,
+}
+
+/// Source representation of one metric aggregation interval override.
+#[derive(Clone, Debug, Deserialize)]
+pub struct MetricAggregationIntervalSource {
+    /// Case-sensitive metric-name prefix used for matching.
+    metric_prefix: String,
+
+    /// Aggregation window length in seconds; must be a positive divisor of 60.
+    interval_seconds: u64,
+}
+
+impl ValidateJsonSequence for MetricAggregationIntervalSource {
+    fn validate_sequence(rules: &[Self]) -> Result<(), String> {
+        for rule in rules {
+            if rule.metric_prefix.is_empty() {
+                return Err("metric_aggregation_intervals contains an empty metric_prefix".to_string());
+            }
+            if rule.interval_seconds == 0 || !60u64.is_multiple_of(rule.interval_seconds) {
+                return Err(format!(
+                    concat!(
+                        "metric_aggregation_intervals prefix {:?} has an interval_seconds value of {}; ",
+                        "use a positive divisor of 60: 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, or 60"
+                    ),
+                    rule.metric_prefix, rule.interval_seconds
+                ));
+            }
+        }
+
+        let mut sorted_rules = rules.iter().collect::<Vec<_>>();
+        sorted_rules.sort_unstable_by(|left, right| left.metric_prefix.cmp(&right.metric_prefix));
+        for pair in sorted_rules.windows(2) {
+            let [left, right] = pair else {
+                unreachable!("a two-entry window must contain two entries");
+            };
+            if right.metric_prefix.starts_with(&left.metric_prefix) {
+                return Err(format!(
+                    "metric_aggregation_intervals prefixes {:?} and {:?} overlap",
+                    left.metric_prefix, right.metric_prefix
+                ));
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Shared namespace for experimental settings (`experimental.*`).
@@ -656,6 +703,18 @@ impl SalukiOnly {
         if let Some(v) = self.aggregate_window_duration_seconds {
             dsd.aggregation.window_duration_seconds = v;
         }
+        if let Some(rules) = &self.metric_aggregation_intervals {
+            dsd.aggregation.metric_intervals = rules
+                .0
+                .iter()
+                .map(
+                    |rule| agent_data_plane_config::domains::dogstatsd::MetricAggregationInterval {
+                        metric_prefix: rule.metric_prefix.clone(),
+                        interval_seconds: rule.interval_seconds,
+                    },
+                )
+                .collect();
+        }
         if let Some(v) = self.aggregate_context_limit {
             dsd.aggregation.context_limit = v;
         }
@@ -992,6 +1051,108 @@ mod tests {
 
         // domains.checks
         assert_eq!(config.domains.checks.ipc_endpoint, "localhost:5006");
+    }
+
+    #[test]
+    fn metric_aggregation_intervals_transport_to_the_model() {
+        let source: SalukiOnly = serde_json::from_value(json!({
+            "metric_aggregation_intervals": [
+                { "metric_prefix": "high_resolution.", "interval_seconds": 1 },
+                { "metric_prefix": "archival.", "interval_seconds": 60 }
+            ]
+        }))
+        .expect("metric aggregation intervals deserialize");
+        let mut config = SalukiConfiguration::default();
+        source.seed(&mut config);
+
+        assert_eq!(
+            config.domains.dogstatsd.aggregation.metric_intervals,
+            vec![
+                agent_data_plane_config::domains::dogstatsd::MetricAggregationInterval {
+                    metric_prefix: "high_resolution.".to_string(),
+                    interval_seconds: 1,
+                },
+                agent_data_plane_config::domains::dogstatsd::MetricAggregationInterval {
+                    metric_prefix: "archival.".to_string(),
+                    interval_seconds: 60,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn metric_aggregation_intervals_preserve_prefixes_and_accept_upper_bound() {
+        let source: SalukiOnly = serde_json::from_value(json!({
+            "metric_aggregation_intervals": [
+                { "metric_prefix": " archival. ", "interval_seconds": 60 }
+            ]
+        }))
+        .expect("valid metric aggregation intervals deserialize");
+        let mut config = SalukiConfiguration::default();
+        source.seed(&mut config);
+
+        assert_eq!(
+            config.domains.dogstatsd.aggregation.metric_intervals[0].metric_prefix,
+            " archival. "
+        );
+        assert_eq!(
+            config.domains.dogstatsd.aggregation.metric_intervals[0].interval_seconds,
+            60
+        );
+    }
+
+    #[test]
+    fn metric_aggregation_intervals_accept_exactly_the_supported_widths() {
+        for interval_seconds in 0..=120 {
+            let result = serde_json::from_value::<SalukiOnly>(json!({
+                "metric_aggregation_intervals": [{ "metric_prefix": "requests.", "interval_seconds": interval_seconds }]
+            }));
+            assert_eq!(
+                result.is_ok(),
+                [1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60].contains(&interval_seconds)
+            );
+        }
+    }
+
+    #[test]
+    fn prefix_intervals_preserve_the_legacy_default_window_range() {
+        let source: SalukiOnly = serde_json::from_value(json!({
+            "aggregate_window_duration_seconds": 7,
+            "metric_aggregation_intervals": [{ "metric_prefix": "requests.", "interval_seconds": 1 }]
+        }))
+        .unwrap();
+        let mut config = SalukiConfiguration::default();
+        source.seed(&mut config);
+        assert_eq!(config.domains.dogstatsd.aggregation.window_duration_seconds.get(), 7);
+        assert_eq!(
+            config.domains.dogstatsd.aggregation.metric_intervals[0].interval_seconds,
+            1
+        );
+    }
+
+    #[test]
+    fn metric_aggregation_intervals_reject_invalid_rules() {
+        let invalid_rules = [
+            json!([{ "metric_prefix": "", "interval_seconds": 10 }]),
+            json!([{ "metric_prefix": "zero.", "interval_seconds": 0 }]),
+            json!([{ "metric_prefix": "too_long.", "interval_seconds": 61 }]),
+            json!([{ "metric_prefix": "unsupported.", "interval_seconds": 7 }]),
+            json!([{ "metric_prefix": "huge.", "interval_seconds": u64::MAX }]),
+            json!([{ "metric_prefix": "fractional.", "interval_seconds": 1.5 }]),
+            json!([
+                { "metric_prefix": "overlap.", "interval_seconds": 10 },
+                { "metric_prefix": "overlap.child.", "interval_seconds": 20 }
+            ]),
+            json!([
+                { "metric_prefix": "duplicate.", "interval_seconds": 10 },
+                { "metric_prefix": "duplicate.", "interval_seconds": 20 }
+            ]),
+        ];
+
+        for rules in invalid_rules {
+            let result = serde_json::from_value::<SalukiOnly>(json!({ "metric_aggregation_intervals": rules }));
+            assert!(result.is_err());
+        }
     }
 
     /// `data_plane.apm.max_payload_size` is a byte size, but the equivalent Agent key

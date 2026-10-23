@@ -1,0 +1,5 @@
+features:
+  - |
+    Add local, startup-only DogStatsD aggregation windows by metric-name prefix
+    using ``metric_aggregation_intervals``. Unmatched metrics retain the default
+    window. Changes require restarting Agent Data Plane.

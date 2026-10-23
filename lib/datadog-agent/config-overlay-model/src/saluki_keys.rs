@@ -630,6 +630,44 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         filename: "aggregate.rs",
     },
     SalukiKey {
+        yaml_path: "metric_aggregation_intervals",
+        description: "Per-prefix DogStatsD aggregation windows",
+        default: "[]",
+        documentation: Some(
+            r#"Each entry selects an aggregation window for a non-empty, case-sensitive metric-name prefix. Allowed widths are the positive divisors of 60: `1`, `2`, `3`, `4`, `5`, `6`, `10`, `12`, `15`, `20`, `30`, or `60` seconds. Prefixes must not overlap. Whitespace is preserved and matched exactly. Rules apply after mapper rewrites and metric namespace prefixing.
+
+Rules are read at startup. Restart Agent Data Plane to apply changes; live updates and Remote Config delivery are not supported. An empty list preserves the default window. Unmatched metrics use `aggregate_window_duration_seconds` (10 seconds by default), whose existing accepted range is unchanged.
+
+The window controls point granularity, not delivery cadence: `aggregate_flush_interval` still controls when closed windows are forwarded. Shorter windows increase point volume and memory requirements. Timestamped metrics on the no-aggregation path bypass these rules.
+
+> [!WARNING]
+> Treat each metric's selected interval as stable. Changing the interval of an existing metric, including across a restart, can produce incorrect query results where the backend treats interval as static metadata.
+
+```yaml
+metric_aggregation_intervals:
+  - metric_prefix: high_resolution.
+    interval_seconds: 1
+  - metric_prefix: archival.
+    interval_seconds: 60
+```
+
+Set `DD_METRIC_AGGREGATION_INTERVALS` to the equivalent JSON array when configuring ADP through the environment:
+
+```shell
+DD_METRIC_AGGREGATION_INTERVALS='[{"metric_prefix":"high_resolution.","interval_seconds":1}]'
+```"#,
+        ),
+        value_type: "ValueType::String",
+        schema_default: Some("[]"),
+        env_vars: &["DD_METRIC_AGGREGATION_INTERVALS"],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: Some(r#"[{"metric_prefix":"smoke.","interval_seconds":5}]"#),
+        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::DogStatsD])",
+        filename: "aggregate.rs",
+    },
+    SalukiKey {
         yaml_path: "aggregate_flush_interval",
         description: "Aggregator flush period",
         default: "",
@@ -646,7 +684,7 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
     },
     SalukiKey {
         yaml_path: "aggregate_context_limit",
-        description: "Max contexts per aggregation window",
+        description: "Max contexts across aggregation windows",
         default: "",
         documentation: None,
         value_type: "ValueType::Integer",
