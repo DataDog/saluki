@@ -181,6 +181,32 @@ where
         self.max_in_memory_bytes.saturating_sub(self.total_in_memory_bytes)
     }
 
+    /// Returns the size of all in-memory entries, in bytes.
+    pub const fn in_memory_bytes(&self) -> u64 {
+        self.total_in_memory_bytes
+    }
+
+    /// Returns the oldest in-memory entry, which is the next one evicted or consumed from memory.
+    pub fn oldest_in_memory(&self) -> Option<&T> {
+        self.pending.front()
+    }
+
+    /// Returns how many in-memory bytes an overflow evicts when it needs `required_bytes` of room.
+    ///
+    /// With disk persistence and a positive flush-to-disk ratio, this is at least `max_in_memory_bytes *
+    /// flush_to_disk_mem_ratio`, so overflows move data to disk in larger batches. Otherwise it is `required_bytes`.
+    /// Callers that coordinate eviction across several queues can use this to match [`push`][Self::push].
+    pub fn overflow_eviction_bytes(&self, required_bytes: u64) -> u64 {
+        if self.persisted_pending.is_some() && required_bytes > 0 {
+            required_bytes.max(flush_to_disk_bytes(
+                self.max_in_memory_bytes,
+                self.flush_to_disk_mem_ratio,
+            ))
+        } else {
+            required_bytes
+        }
+    }
+
     /// Returns the available on-disk capacity, in bytes.
     ///
     /// Returns `0` when disk persistence is not enabled.
@@ -235,60 +261,14 @@ where
             .total_in_memory_bytes
             .saturating_add(current_entry_size)
             .saturating_sub(self.max_in_memory_bytes);
-        let using_disk = self.persisted_pending.is_some();
-        let bytes_to_remove = if using_disk && required_bytes > 0 {
-            required_bytes.max(flush_to_disk_bytes(
-                self.max_in_memory_bytes,
-                self.flush_to_disk_mem_ratio,
-            ))
-        } else {
-            required_bytes
-        };
+        let bytes_to_remove = self.overflow_eviction_bytes(required_bytes);
         let mut bytes_removed = 0;
 
-        while !self.pending.is_empty() && bytes_removed < bytes_to_remove {
-            let oldest_entry = self.pending.pop_front().expect("queue is not empty");
-            let oldest_entry_size = oldest_entry.size_bytes();
-
-            if using_disk {
-                // Capture the dropped-event counts before moving `oldest_entry` into the persist call, so we can still
-                // record drop telemetry if the disk write fails.
-                let oldest_entry_events = oldest_entry.event_count();
-                let oldest_entry_data_points = oldest_entry.data_point_count();
-                let persisted_pending = self.persisted_pending.as_mut().expect("disk persistence is enabled");
-                match persisted_pending.push(oldest_entry).await {
-                    Ok(persist_result) => {
-                        push_result.merge(persist_result);
-                        debug!(entry.len = oldest_entry_size, "Moved in-memory entry to disk.");
-                    }
-                    Err(e) => {
-                        // Match the upstream Agent: on disk persistence failure, drop this entry and continue evicting
-                        // so the new entry can still be admitted to the queue. Propagating the error here would
-                        // permanently lose the incoming transaction at the caller, which the Agent does not do.
-                        warn!(
-                            error = %e,
-                            entry.len = oldest_entry_size,
-                            "Failed to persist in-memory entry to disk; dropping entry to make room."
-                        );
-                        push_result.items_dropped += 1;
-                        push_result.events_dropped += oldest_entry_events;
-                        push_result.data_points_dropped += oldest_entry_data_points;
-                    }
-                }
-            } else {
-                debug!(
-                    entry.len = oldest_entry_size,
-                    "Dropped in-memory entry to increase available capacity."
-                );
-
-                push_result.track_dropped_item(&oldest_entry);
-
-                // Anchor the overflow-drop path: a prolonged outage saturates the queue and sheds the oldest entry
-                // (bounded memory at the cost of counted data loss).
-                saluki_antithesis::sometimes!(true, "retry queue dropped oldest in-memory entry on overflow");
-            }
-
-            self.total_in_memory_bytes -= oldest_entry_size;
+        while bytes_removed < bytes_to_remove {
+            let Some((oldest_entry_size, evict_result)) = self.evict_front().await else {
+                break;
+            };
+            push_result.merge(evict_result);
             bytes_removed += oldest_entry_size;
         }
 
@@ -307,6 +287,61 @@ where
         debug!(entry.len = current_entry_size, "Enqueued in-memory entry.");
 
         Ok(push_result)
+    }
+
+    /// Evicts the oldest in-memory entry, as [`push`][Self::push] does when the queue is full.
+    ///
+    /// When disk persistence is enabled, the entry is moved to disk; otherwise, or if it can't be persisted, it is
+    /// dropped and counted in the returned `PushResult`. Returns `None` if there are no in-memory entries.
+    pub async fn evict_oldest_in_memory(&mut self) -> Option<PushResult> {
+        self.evict_front().await.map(|(_, push_result)| push_result)
+    }
+
+    /// Evicts the oldest in-memory entry and returns its size along with any drops.
+    async fn evict_front(&mut self) -> Option<(u64, PushResult)> {
+        let oldest_entry = self.pending.pop_front()?;
+        let oldest_entry_size = oldest_entry.size_bytes();
+        let mut push_result = PushResult::default();
+
+        if let Some(persisted_pending) = self.persisted_pending.as_mut() {
+            // Capture the dropped-event counts before moving `oldest_entry` into the persist call, so we can still
+            // record drop telemetry if the disk write fails.
+            let oldest_entry_events = oldest_entry.event_count();
+            let oldest_entry_data_points = oldest_entry.data_point_count();
+            match persisted_pending.push(oldest_entry).await {
+                Ok(persist_result) => {
+                    push_result.merge(persist_result);
+                    debug!(entry.len = oldest_entry_size, "Moved in-memory entry to disk.");
+                }
+                Err(e) => {
+                    // Match the upstream Agent: on disk persistence failure, drop this entry and continue evicting
+                    // so the new entry can still be admitted to the queue. Propagating the error here would
+                    // permanently lose the incoming transaction at the caller, which the Agent does not do.
+                    warn!(
+                        error = %e,
+                        entry.len = oldest_entry_size,
+                        "Failed to persist in-memory entry to disk; dropping entry to make room."
+                    );
+                    push_result.items_dropped += 1;
+                    push_result.events_dropped += oldest_entry_events;
+                    push_result.data_points_dropped += oldest_entry_data_points;
+                }
+            }
+        } else {
+            debug!(
+                entry.len = oldest_entry_size,
+                "Dropped in-memory entry to increase available capacity."
+            );
+
+            push_result.track_dropped_item(&oldest_entry);
+
+            // Anchor the overflow-drop path: a prolonged outage saturates the queue and sheds the oldest entry
+            // (bounded memory at the cost of counted data loss).
+            saluki_antithesis::sometimes!(true, "retry queue dropped oldest in-memory entry on overflow");
+        }
+
+        self.total_in_memory_bytes -= oldest_entry_size;
+        Some((oldest_entry_size, push_result))
     }
 
     /// Consumes an entry.
@@ -543,6 +578,62 @@ mod tests {
             .expect("should not fail to pop data")
             .expect("should not be empty");
         assert_eq!(data2, actual);
+    }
+
+    #[tokio::test]
+    async fn evict_oldest_in_memory_drops_without_disk() {
+        let data1 = FakeData::random();
+        let data2 = FakeData::random();
+        let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), 1024);
+        assert!(retry_queue.evict_oldest_in_memory().await.is_none());
+
+        assert!(!retry_queue.push(data1.clone()).await.unwrap().had_drops());
+        assert!(!retry_queue.push(data2.clone()).await.unwrap().had_drops());
+        assert_eq!(retry_queue.in_memory_bytes(), data1.size_bytes() + data2.size_bytes());
+        assert_eq!(retry_queue.oldest_in_memory(), Some(&data1));
+        assert_eq!(retry_queue.overflow_eviction_bytes(1), 1);
+
+        let evicted = retry_queue.evict_oldest_in_memory().await.expect("entry to evict");
+        assert_eq!(evicted.items_dropped, 1);
+        assert_eq!(evicted.events_dropped, 1);
+        assert_eq!(retry_queue.in_memory_bytes(), data2.size_bytes());
+        assert_eq!(retry_queue.oldest_in_memory(), Some(&data2));
+        assert_eq!(retry_queue.pop().await.unwrap(), Some(data2));
+        assert!(retry_queue.is_empty());
+    }
+
+    #[tokio::test]
+    async fn evict_oldest_in_memory_persists_with_disk() {
+        let data1 = FakeData::random();
+        let data2 = FakeData::random();
+        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
+        let root_path = temp_dir.path().to_path_buf();
+        let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), 1024)
+            .with_flush_to_disk_mem_ratio(0.5)
+            .with_disk_persistence(PersistedQueueArgs {
+                root_path: root_path.clone(),
+                max_on_disk_bytes: u64::MAX,
+                storage_max_disk_ratio: 1.0,
+                disk_usage_retriever: Arc::new(DiskUsageRetrieverImpl::new(root_path.clone())),
+                max_age_days: 10,
+            })
+            .await
+            .expect("should not fail to create retry queue with disk persistence");
+        assert_eq!(retry_queue.overflow_eviction_bytes(0), 0);
+        assert_eq!(retry_queue.overflow_eviction_bytes(1), 512);
+        assert_eq!(retry_queue.overflow_eviction_bytes(600), 600);
+
+        assert!(!retry_queue.push(data1.clone()).await.unwrap().had_drops());
+        assert!(!retry_queue.push(data2.clone()).await.unwrap().had_drops());
+        let evicted = retry_queue.evict_oldest_in_memory().await.expect("entry to evict");
+        assert!(!evicted.had_drops());
+        assert_eq!(1, file_count_recursive(&root_path));
+        assert_eq!(retry_queue.in_memory_bytes(), data2.size_bytes());
+        assert_eq!(retry_queue.len(), 2);
+
+        // Memory is read before disk.
+        assert_eq!(retry_queue.pop().await.unwrap(), Some(data2));
+        assert_eq!(retry_queue.pop().await.unwrap(), Some(data1));
     }
 
     #[tokio::test]

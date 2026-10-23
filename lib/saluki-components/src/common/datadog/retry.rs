@@ -1,4 +1,5 @@
 use std::{
+    num::NonZeroU64,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -201,6 +202,17 @@ impl RetryConfiguration {
                 .retry_queue_capacity_time_interval_sec
                 .max(RETRY_QUEUE_CAPACITY_MIN_HISTORY_DURATION_SECS),
         }
+    }
+
+    /// Returns a copy whose on-disk retry budget is an even share of this one.
+    ///
+    /// A nonzero disk budget stays nonzero so that sharing it never disables persistence.
+    pub(crate) fn with_storage_budget_share(&self, parts: NonZeroU64) -> Self {
+        let mut shared = self.clone();
+        if shared.storage_max_size_bytes > 0 {
+            shared.storage_max_size_bytes = (shared.storage_max_size_bytes / parts.get()).max(1);
+        }
+        shared
     }
 
     /// Returns the maximum size of the retry queue in bytes.
