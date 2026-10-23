@@ -1,0 +1,61 @@
+[{
+  "agentEnv": "none",
+  "agentHostname": "agent-host",
+  "agentVersion": "",
+  "clientComputed": false,
+  "splitPayload": false,
+  "stats": [
+    {
+      "agentAggregation": "",
+      "containerID": "",
+      "env": "prod",
+      "gitCommitSha": "",
+      "hostname": "agent-host",
+      "imageTag": "",
+      "lang": "python",
+      "processTags": "",
+      "processTagsHash": "0",
+      "runtimeID": "",
+      "sequence": "0",
+      "service": "",
+      "stats": [
+        {
+          "agentTimeShift": "0",
+          "duration": "10000000000",
+          "start": "\u003cbucket\u003e",
+          "stats": [
+            {
+              "DBType": "",
+              "GRPCStatusCode": "",
+              "HTTPEndpoint": "",
+              "HTTPMethod": "",
+              "HTTPStatusCode": 0,
+              "additionalMetricTags": [],
+              "duration": "30000000",
+              "errorSummary": "CgkJ/UqBWr9S8D8SABoA",
+              "errors": "0",
+              "hits": "1",
+              "isTraceRoot": "TRUE",
+              "name": "db.query",
+              "okSummary": "CgkJ/UqBWr9S8D8SDRIIAAAAAAAA8D8YuA0aAA==",
+              "peerTags": [
+                "peer.hostname:blocked-ip-address:5432"
+              ],
+              "resource": "SELECT * FROM orders",
+              "service": "web",
+              "serviceSource": "",
+              "spanDerivedPrimaryTags": [],
+              "spanKind": "client",
+              "synthetics": false,
+              "topLevelHits": "1",
+              "type": "sql"
+            }
+          ]
+        }
+      ],
+      "tags": [],
+      "tracerVersion": "",
+      "version": "1.2.3"
+    }
+  ]
+}]

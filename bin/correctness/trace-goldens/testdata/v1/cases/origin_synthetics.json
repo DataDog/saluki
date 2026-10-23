@@ -1,0 +1,24 @@
+{
+  "comment": "Origin branch: chunk origin 'synthetics' flows into the stats aggregation and flips the synthetics flag on grouped stats.",
+  "payload": {
+    "chunks": [
+      {
+        "priority": 1,
+        "origin": "synthetics",
+        "spans": [
+          {
+            "span_id": 1,
+            "parent_id": 0,
+            "service": "web",
+            "name": "web.request",
+            "resource": "GET /synthetics",
+            "type": "web",
+            "start": "-2s",
+            "duration": "90ms"
+          }
+        ]
+      }
+    ]
+  },
+  "name": "origin_synthetics"
+}
