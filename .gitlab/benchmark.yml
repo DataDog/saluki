@@ -1,6 +1,6 @@
 .setup-smp-env: &setup-smp-env
   - export AWS_NAMED_PROFILE=single-machine-performance
-  - export SMP_VERSION=0.28.0
+  - export SMP_VERSION=dev-pr4916-e24e21f4d
   - export RUST_LOG=info,aws_config::profile::credentials=error
   - export SMP_ACCOUNT_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-account-id --with-decryption --query "Parameter.Value" --out text)
   - export SMP_TEAM_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-team-id --with-decryption --query "Parameter.Value" --out text)
@@ -170,17 +170,19 @@ run-benchmarks-adp:
       - submission_metadata # for provenance, debugging
       - outputs/report.md # for debugging, also on S3
       - outputs/report.json # for debugging, also on S3
+      - outputs/report.v1.json # input of the condensed report DOES NOT EXIST YET
     when: always
   script:
     # Do some pre-flight steps like creating directories, installing helper utilities, setting credentials, and so on.
-    - mkdir outputs && touch outputs/report.md outputs/report.html
+    - mkdir -p outputs
     - ./ci/tooling/configure-smp-aws-credentials.sh
     # Download the SMP binary.
-    - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/v${SMP_VERSION}/x86_64-unknown-linux-musl/smp smp && chmod +x smp
+    - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/${SMP_VERSION}/x86_64-unknown-linux-musl/smp smp && chmod +x smp
     # Trigger the SMP job run.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job submit
       --warmup-seconds 0
+      --total-samples 60
       --baseline-image ${BASELINE_SMP_IMG}
       --comparison-image ${COMPARISON_SMP_IMG}
       --baseline-sha ${BASELINE_ADP_SHA}
@@ -209,7 +211,7 @@ run-benchmarks-adp:
 
 report-benchmarks-adp:
   stage: benchmark
-  # Build a condensed report from run-benchmarks-adp's report.json and post it
+  # Build a condensed report from run-benchmarks-adp's report.v1.json and post it
   # to the linked PR. Runs whether or not `run-benchmarks-adp` succeeded so a
   # comment is posted even when SMP signals a regression (and the parent job
   # exits non-zero).
@@ -228,10 +230,21 @@ report-benchmarks-adp:
     paths:
       - outputs/condensed-report.md
     when: always
+  before_script:
+    - *setup-smp-env
   script:
+    # Do some pre-flight steps like creating directories, installing helper utilities, setting credentials, and so on.
+    - mkdir -p outputs
+    - ./ci/tooling/configure-smp-aws-credentials.sh
+    # Download the SMP binary.
+    - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/${SMP_VERSION}/x86_64-unknown-linux-musl/smp smp && chmod +x smp
+    # temp step, until saluki team backend is upgraded to generate v1 reports
+    # this is a vibe-coded generation script, so best effort
+    - python3 ./ci/tooling/temp_upgrade_smp_report_to_v1.py outputs/report.json
     - python3 ./ci/tooling/build-smp-report.py
-      --report-json outputs/report.json
+      --report-json outputs/report.v1.json
       --output-report outputs/condensed-report.md
+      --smp-binary ./smp
     - cat outputs/condensed-report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Agent Data Plane)"
 
 run-benchmarks-adp-full:
@@ -260,14 +273,15 @@ run-benchmarks-adp-full:
       - submission_metadata # for provenance, debugging
       - outputs/report.md # for debugging, also on S3
       - outputs/report.json # for debugging, also on S3
+      - outputs/report.v1.json # input of the condensed report DOES NOT EXIST YET
       - outputs/condensed-report.md # the posted report, for debugging
     when: always
   script:
     # Do some pre-flight steps like creating directories, installing helper utilities, setting credentials, and so on.
-    - mkdir outputs && touch outputs/report.md outputs/report.html
+    - mkdir -p outputs
     - ./ci/tooling/configure-smp-aws-credentials.sh
     # Download the SMP binary.
-    - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/v${SMP_VERSION}/x86_64-unknown-linux-musl/smp smp && chmod +x smp
+    - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/${SMP_VERSION}/x86_64-unknown-linux-musl/smp smp && chmod +x smp
     - echo "Running full suite -- baseline ${BASELINE_ADP_SHA}, comparison ${COMPARISON_ADP_SHA}."
     # Trigger the SMP job run against the full suite.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
@@ -291,13 +305,17 @@ run-benchmarks-adp-full:
       job sync
       --submission-metadata submission_metadata
       --output-path outputs
+    # temp step, until saluki team backend is upgraded to generate v1 reports
+    # this is a vibe-coded generation script, so best effort
+    - python3 ./ci/tooling/temp_upgrade_smp_report_to_v1.py outputs/report.json
     # Condense the report and deliver it. Reporting lives in this job (rather than a separate
     # one) because the on-demand run is an optional manual job: a separate `needs`-based report
     # job would run even when the manual job is not triggered, since GitLab does not block
     # dependents on an un-triggered `allow_failure` manual job.
     - python3 ./ci/tooling/build-smp-report.py
-      --report-json outputs/report.json
+      --report-v1-json outputs/report.v1.json
       --output-report outputs/condensed-report.md
+      --smp-binary ./smp
     - |
       if [ "$CI_PIPELINE_SOURCE" = "schedule" ]; then
         ./ci/tooling/report-smp-to-slack.sh outputs/condensed-report.md
@@ -309,7 +327,12 @@ binary-size-analysis:
   stage: benchmark
   tags: ["docker-in-docker:amd64"]
   # Don't run binary size analysis unless it's a PR, basically.
+  # Skipped entirely while iterating on the SMP local-report work: this branch's
+  # pipeline is limited to the report flow (see the conditional includes in
+  # .gitlab-ci.yml).
   rules:
+    - if: $CI_COMMIT_BRANCH == "greg/smp-ci-reporting"
+      when: never
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - if: !reference [.on_development_branch, rules, if]

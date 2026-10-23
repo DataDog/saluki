@@ -1,5 +1,8 @@
 include:
-  - .gitlab/*.yml
+  # While iterating on the SMP local-report work (branch greg/smp-ci-reporting), only the
+  # benchmark pipeline runs: every other job-definition file is skipped on that branch to
+  # limit CI weight. Revert to the `.gitlab/*.yml` glob before merging to main.
+  - local: '.gitlab/benchmark.yml'
   - 'https://gitlab-templates.ddbuild.io/slack-notifier/v3-sdm/template.yml'
 
 stages:
