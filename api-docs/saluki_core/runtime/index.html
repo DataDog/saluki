@@ -32,7 +32,7 @@ up for permanent failures, and so on.</p>
 <p>Usually, you declare children in advance with <a href="struct.Supervisor.html#method.add_worker" title="method saluki_core::runtime::Supervisor::add_worker"><code>Supervisor::add_worker</code></a>. A process can also start new children
 while it runs. There are three ways to do this. They differ in the owner of the new child:</p>
 <ul>
-<li><a href="fn.spawn.html" title="fn saluki_core::runtime::spawn"><code>spawn</code></a>, which makes the new child a child of the current process. It is the equivalent of <a href="https://docs.rs/tokio/1.53.2/tokio/task/spawn/fn.spawn.html" title="fn tokio::task::spawn::spawn"><code>tokio::spawn</code></a> for
+<li><a href="fn.spawn.html" title="fn saluki_core::runtime::spawn"><code>spawn</code></a>, which makes the new child a child of the current process. It is the equivalent of <a href="https://docs.rs/tokio/1.53.3/tokio/task/spawn/fn.spawn.html" title="fn tokio::task::spawn::spawn"><code>tokio::spawn</code></a> for
 supervision. It is the recommended way to spawn for code that runs under supervision.</li>
 <li><a href="fn.spawn_sibling.html" title="fn saluki_core::runtime::spawn_sibling"><code>spawn_sibling</code></a>, which gives the new child to the nearest supervisor above the current process. The child is a
 sibling of the current process only if that supervisor runs the process directly, and not in a scope.</li>
@@ -45,7 +45,7 @@ cannot use the specification to make a combination of settings that the builder 
 <p>A child that is itself a <a href="struct.Supervisor.html" title="struct saluki_core::runtime::Supervisor"><code>Supervisor</code></a> can be handed to any of the above directly, which is all most callers need.
 <a href="fn.nested_supervisor.html" title="fn saluki_core::runtime::nested_supervisor"><code>nested_supervisor</code></a> and <a href="struct.SupervisorHandle.html#method.nested_supervisor" title="method saluki_core::runtime::SupervisorHandle::nested_supervisor"><code>SupervisorHandle::nested_supervisor</code></a> give access to the one setting that is not
 available that way: whether the subtree is needed or hosted.</p>
-<p>All three ways to spawn are synchronous and cannot fail. As with <a href="https://docs.rs/tokio/1.53.2/tokio/task/spawn/fn.spawn.html" title="fn tokio::task::spawn::spawn"><code>tokio::spawn</code></a>, an accepted child does not always
+<p>All three ways to spawn are synchronous and cannot fail. As with <a href="https://docs.rs/tokio/1.53.3/tokio/task/spawn/fn.spawn.html" title="fn tokio::task::spawn::spawn"><code>tokio::spawn</code></a>, an accepted child does not always
 run. If its owner stops before it reaches the child, the owner never starts the child.</p>
 <h2 id="restart-policy"><a class="doc-anchor" href="#restart-policy">§</a>Restart policy</h2>
 <p>You do not select the restart policy of a child directly. Two properties of the child decide it:</p>

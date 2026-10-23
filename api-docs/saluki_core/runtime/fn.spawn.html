@@ -9,7 +9,7 @@ example is a test that drives a component directly. That code spawns onto the am
 <a href="trait.Supervisable.html" title="trait saluki_core::runtime::Supervisable"><code>Supervisable</code></a>, a <a href="struct.Supervisor.html" title="struct saluki_core::runtime::Supervisor"><code>Supervisor</code></a> to run as a nested
 supervision subtree, or a <a href="struct.ChildSpecification.html" title="struct saluki_core::runtime::ChildSpecification"><code>ChildSpecification</code></a> configured in detail. The child is hosted, unless the specification
 says otherwise. See <a href="struct.ChildBuilder.html" title="struct saluki_core::runtime::ChildBuilder"><code>ChildBuilder</code></a> for what that means.</p>
-<p>This function has the same shape and guarantees as <a href="https://docs.rs/tokio/1.53.2/tokio/task/spawn/fn.spawn.html" title="fn tokio::task::spawn::spawn"><code>tokio::spawn</code></a>. It always succeeds, but success means only that
+<p>This function has the same shape and guarantees as <a href="https://docs.rs/tokio/1.53.3/tokio/task/spawn/fn.spawn.html" title="fn tokio::task::spawn::spawn"><code>tokio::spawn</code></a>. It always succeeds, but success means only that
 the child was accepted. It does not guarantee that the child runs. If an owner stops before it gets to the queued
 child, it never starts that child.</p>
 <h2 id="panics"><a class="doc-anchor" href="#panics">§</a>Panics</h2>
