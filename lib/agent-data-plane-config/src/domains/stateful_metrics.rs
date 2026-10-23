@@ -1,12 +1,16 @@
 //! Experimental stateful metrics delivery.
 
-use std::num::{NonZeroU64, NonZeroUsize};
+use std::{
+    num::{NonZeroU64, NonZeroUsize},
+    time::Duration,
+};
 
 use serde::Serialize;
 
 use crate::defaults::{
     DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES, DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES,
-    DEFAULT_STATEFUL_METRICS_WORKERS,
+    DEFAULT_STATEFUL_METRICS_RETRY_MAX_AGE, DEFAULT_STATEFUL_METRICS_RETRY_MAX_ATTEMPTS,
+    DEFAULT_STATEFUL_METRICS_RETRY_MAX_BYTES, DEFAULT_STATEFUL_METRICS_WORKERS,
 };
 
 /// Configuration for the experimental stateful series client.
@@ -45,6 +49,19 @@ pub struct Domain {
     /// memory use is higher. Whichever of this and `dictionary_max_entries` is reached first triggers
     /// eviction. Requires a restart.
     pub dictionary_max_bytes: NonZeroU64,
+    /// Byte budget for unacknowledged payloads Foldspace retains, compressed, to retry itself, per sender worker.
+    /// Defaults to 8 MiB.
+    ///
+    /// Covers the compressed payloads plus dictionary definitions kept only for them. Past it, the oldest payloads
+    /// still waiting for an endpoint move to the retry queue as logical batches. Zero moves every waiting payload to
+    /// the retry queue at once. Requires a restart.
+    pub retry_max_bytes: u64,
+    /// How long a payload may wait inside Foldspace for an endpoint before it moves to the retry queue. Defaults to two
+    /// minutes; zero disables the limit. Requires a restart.
+    pub retry_max_age: Duration,
+    /// Sends per payload before a stream that ends without acknowledging it moves it to the retry queue instead of
+    /// replaying it. Defaults to `8`; zero is treated as one. Requires a restart.
+    pub retry_max_attempts: u32,
 }
 
 impl Default for Domain {
@@ -55,6 +72,9 @@ impl Default for Domain {
             workers: DEFAULT_STATEFUL_METRICS_WORKERS,
             dictionary_max_entries: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES,
             dictionary_max_bytes: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES,
+            retry_max_bytes: DEFAULT_STATEFUL_METRICS_RETRY_MAX_BYTES,
+            retry_max_age: DEFAULT_STATEFUL_METRICS_RETRY_MAX_AGE,
+            retry_max_attempts: DEFAULT_STATEFUL_METRICS_RETRY_MAX_ATTEMPTS,
         }
     }
 }
