@@ -20,12 +20,12 @@ tokio = { workspace = true, features = [
   "process",
   "rt",
   "rt-multi-thread",
+  "sync",
+  "time",
 ] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 
-# Unix process driver uses libc's killpg/SIGTERM/SIGKILL inside #[cfg(unix)] blocks. The wider
-# correctness/integration test suite is only operated on Linux/Docker today, so this gate exists
-# more as a forward-looking marker than as something a Windows build actually depends on.
+# Unix process-group signaling via killpg.
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
