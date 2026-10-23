@@ -10,72 +10,72 @@
 <a href=#10 id=10 data-nosnippet>10</a>//! the supervisor-provided shutdown handle is installed into their context; the remaining component kinds stop when
 <a href=#11 id=11 data-nosnippet>11</a>//! their upstream channels close and ignore it.
 <a href=#12 id=12 data-nosnippet>12</a>//!
-<a href=#13 id=13 data-nosnippet>13</a>//! A component carries no shutdown deadline of its own. The topology supervisor holds one budget. That budget applies
-<a href=#14 id=14 data-nosnippet>14</a>//! to each component and to every task that the component spawned. Thus, a single number bounds the subtree of a
-<a href=#15 id=15 data-nosnippet>15</a>//! component, instead of a guess for each worker. See
-<a href=#16 id=16 data-nosnippet>16</a>//! [`Supervisor::with_shutdown_budget`][crate::runtime::Supervisor::with_shutdown_budget].
-<a href=#17 id=17 data-nosnippet>17</a>//!
-<a href=#18 id=18 data-nosnippet>18</a>//! The one exception is a child spawned from a hand-written [`Supervisable`][crate::runtime::Supervisable], which
-<a href=#19 id=19 data-nosnippet>19</a>//! reports its own shutdown strategy; that child is held to whichever of its deadline and the budget elapses first.
-<a href=#20 id=20 data-nosnippet>20</a>
-<a href=#21 id=21 data-nosnippet>21</a></span><span class="kw">use </span>std::sync::Mutex;
-<a href=#22 id=22 data-nosnippet>22</a><span class="kw">use </span>std::time::Duration;
-<a href=#23 id=23 data-nosnippet>23</a>
-<a href=#24 id=24 data-nosnippet>24</a><span class="kw">use </span>async_trait::async_trait;
-<a href=#25 id=25 data-nosnippet>25</a><span class="kw">use </span>saluki_common::sync::shutdown::ShutdownHandle;
-<a href=#26 id=26 data-nosnippet>26</a><span class="kw">use </span>saluki_error::generic_error;
-<a href=#27 id=27 data-nosnippet>27</a><span class="kw">use </span>tracing::{error_span, Instrument <span class="kw">as _</span>};
-<a href=#28 id=28 data-nosnippet>28</a>
-<a href=#29 id=29 data-nosnippet>29</a><span class="kw">use </span><span class="kw">crate</span>::components::{
-<a href=#30 id=30 data-nosnippet>30</a>    decoders::{Decoder, DecoderContext},
-<a href=#31 id=31 data-nosnippet>31</a>    destinations::{Destination, DestinationContext},
-<a href=#32 id=32 data-nosnippet>32</a>    encoders::{Encoder, EncoderContext},
-<a href=#33 id=33 data-nosnippet>33</a>    forwarders::{Forwarder, ForwarderContext},
-<a href=#34 id=34 data-nosnippet>34</a>    relays::{Relay, RelayContext},
-<a href=#35 id=35 data-nosnippet>35</a>    sources::{Source, SourceContext},
-<a href=#36 id=36 data-nosnippet>36</a>    transforms::{Transform, TransformContext},
-<a href=#37 id=37 data-nosnippet>37</a>    ComponentContext,
-<a href=#38 id=38 data-nosnippet>38</a>};
-<a href=#39 id=39 data-nosnippet>39</a><span class="kw">use </span><span class="kw">crate</span>::runtime::{InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture};
-<a href=#40 id=40 data-nosnippet>40</a><span class="kw">use </span><span class="kw">crate</span>::topology::ids::get_component_relative_identifier;
-<a href=#41 id=41 data-nosnippet>41</a>
-<a href=#42 id=42 data-nosnippet>42</a><span class="doccomment">/// A built component paired with its context, runnable exactly once.
-<a href=#43 id=43 data-nosnippet>43</a>///
-<a href=#44 id=44 data-nosnippet>44</a>/// Implemented for each of the seven component kinds. Producing the run-future is where the per-kind
-<a href=#45 id=45 data-nosnippet>45</a>/// differences live: which context type is used, and whether the supervisor-provided shutdown handle is
-<a href=#46 id=46 data-nosnippet>46</a>/// installed into the context (sources and relays) or ignored (everything else).
-<a href=#47 id=47 data-nosnippet>47</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">trait </span>RunnableComponent: Send + <span class="lifetime">'static </span>{
-<a href=#48 id=48 data-nosnippet>48</a>    <span class="doccomment">/// Whether this component kind observes the shutdown signal it is handed.
-<a href=#49 id=49 data-nosnippet>49</a>    ///
-<a href=#50 id=50 data-nosnippet>50</a>    /// True for the kinds that install it into their context (sources and relays), false for the kinds that stop when
-<a href=#51 id=51 data-nosnippet>51</a>    /// their upstream channels close and drop it. Forwarded to
-<a href=#52 id=52 data-nosnippet>52</a>    /// [`Supervisable::wants_shutdown_signal`][crate::runtime::Supervisable::wants_shutdown_signal] so the supervisor
-<a href=#53 id=53 data-nosnippet>53</a>    /// can skip creating a coordinator it would never usefully fire -- for the majority of components, as it happens.
-<a href=#54 id=54 data-nosnippet>54</a>    ///
-<a href=#55 id=55 data-nosnippet>55</a>    /// This has to be a constant rather than a method on the value: the component is consumed by `initialize`, so
-<a href=#56 id=56 data-nosnippet>56</a>    /// there is nothing left to ask by the time the supervisor wants an answer.
-<a href=#57 id=57 data-nosnippet>57</a>    </span><span class="kw">const </span>WANTS_SHUTDOWN_SIGNAL: bool;
-<a href=#58 id=58 data-nosnippet>58</a>
-<a href=#59 id=59 data-nosnippet>59</a>    <span class="doccomment">/// Consumes the component and its context, returning the future that runs the component.
-<a href=#60 id=60 data-nosnippet>60</a>    ///
-<a href=#61 id=61 data-nosnippet>61</a>    /// `process_shutdown` is the shutdown signal of the component's dedicated supervisor. The run-future's
-<a href=#62 id=62 data-nosnippet>62</a>    /// allocations are attributed to the component's resource group by the process it runs in: the component's
-<a href=#63 id=63 data-nosnippet>63</a>    /// dedicated supervisor is named for the component, so no additional tracking is needed here.
-<a href=#64 id=64 data-nosnippet>64</a>    </span><span class="kw">fn </span>run_with_shutdown(<span class="self">self</span>, process_shutdown: ShutdownHandle) -&gt; SupervisorFuture;
-<a href=#65 id=65 data-nosnippet>65</a>}
-<a href=#66 id=66 data-nosnippet>66</a>
-<a href=#67 id=67 data-nosnippet>67</a><span class="doccomment">/// A [`Supervisable`] adapter over a single built topology component.
-<a href=#68 id=68 data-nosnippet>68</a>///
-<a href=#69 id=69 data-nosnippet>69</a>/// Holds the component behind a take-once [`Mutex`] -- a component is built and run exactly once -- and
-<a href=#70 id=70 data-nosnippet>70</a>/// exposes it to a supervisor via [`Supervisable`].
-<a href=#71 id=71 data-nosnippet>71</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">struct </span>ComponentWorker&lt;C&gt; {
-<a href=#72 id=72 data-nosnippet>72</a>    <span class="doccomment">/// The name of the worker: the identifier of the component relative to its topology, such as `sources.dsd_in`.
-<a href=#73 id=73 data-nosnippet>73</a>    ///
-<a href=#74 id=74 data-nosnippet>74</a>    /// The worker runs under the topology supervisor, so this name makes the process name of the worker the canonical
-<a href=#75 id=75 data-nosnippet>75</a>    /// identity of the component. This identity also names the resource group of the component and its entry in the
-<a href=#76 id=76 data-nosnippet>76</a>    /// health registry.
-<a href=#77 id=77 data-nosnippet>77</a>    </span>name: String,
-<a href=#78 id=78 data-nosnippet>78</a>    component_context: ComponentContext,
+<a href=#13 id=13 data-nosnippet>13</a>//! Each component gets the shutdown timeout of the topology, which bounds the component and everything it spawned: if
+<a href=#14 id=14 data-nosnippet>14</a>//! it expires, they are all halted. Children also keep their own shutdown strategies (five seconds for a closure-based
+<a href=#15 id=15 data-nosnippet>15</a>//! child), so a child is halted at its own timeout or the component's, whichever comes first.
+<a href=#16 id=16 data-nosnippet>16</a>
+<a href=#17 id=17 data-nosnippet>17</a></span><span class="kw">use </span>std::sync::Mutex;
+<a href=#18 id=18 data-nosnippet>18</a><span class="kw">use </span>std::time::Duration;
+<a href=#19 id=19 data-nosnippet>19</a>
+<a href=#20 id=20 data-nosnippet>20</a><span class="kw">use </span>async_trait::async_trait;
+<a href=#21 id=21 data-nosnippet>21</a><span class="kw">use </span>saluki_common::sync::shutdown::ShutdownHandle;
+<a href=#22 id=22 data-nosnippet>22</a><span class="kw">use </span>saluki_error::generic_error;
+<a href=#23 id=23 data-nosnippet>23</a><span class="kw">use </span>tracing::{error_span, Instrument <span class="kw">as _</span>};
+<a href=#24 id=24 data-nosnippet>24</a>
+<a href=#25 id=25 data-nosnippet>25</a><span class="kw">use </span><span class="kw">crate</span>::components::{
+<a href=#26 id=26 data-nosnippet>26</a>    decoders::{Decoder, DecoderContext},
+<a href=#27 id=27 data-nosnippet>27</a>    destinations::{Destination, DestinationContext},
+<a href=#28 id=28 data-nosnippet>28</a>    encoders::{Encoder, EncoderContext},
+<a href=#29 id=29 data-nosnippet>29</a>    forwarders::{Forwarder, ForwarderContext},
+<a href=#30 id=30 data-nosnippet>30</a>    relays::{Relay, RelayContext},
+<a href=#31 id=31 data-nosnippet>31</a>    sources::{Source, SourceContext},
+<a href=#32 id=32 data-nosnippet>32</a>    transforms::{Transform, TransformContext},
+<a href=#33 id=33 data-nosnippet>33</a>    ComponentContext,
+<a href=#34 id=34 data-nosnippet>34</a>};
+<a href=#35 id=35 data-nosnippet>35</a><span class="kw">use </span><span class="kw">crate</span>::runtime::{InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture};
+<a href=#36 id=36 data-nosnippet>36</a><span class="kw">use </span><span class="kw">crate</span>::topology::ids::get_component_relative_identifier;
+<a href=#37 id=37 data-nosnippet>37</a>
+<a href=#38 id=38 data-nosnippet>38</a><span class="doccomment">/// A built component paired with its context, runnable exactly once.
+<a href=#39 id=39 data-nosnippet>39</a>///
+<a href=#40 id=40 data-nosnippet>40</a>/// Implemented for each of the seven component kinds. Producing the run-future is where the per-kind
+<a href=#41 id=41 data-nosnippet>41</a>/// differences live: which context type is used, and whether the supervisor-provided shutdown handle is
+<a href=#42 id=42 data-nosnippet>42</a>/// installed into the context (sources and relays) or ignored (everything else).
+<a href=#43 id=43 data-nosnippet>43</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">trait </span>RunnableComponent: Send + <span class="lifetime">'static </span>{
+<a href=#44 id=44 data-nosnippet>44</a>    <span class="doccomment">/// Whether this component kind observes the shutdown signal it is handed.
+<a href=#45 id=45 data-nosnippet>45</a>    ///
+<a href=#46 id=46 data-nosnippet>46</a>    /// True for the kinds that install it into their context (sources and relays), false for the kinds that stop when
+<a href=#47 id=47 data-nosnippet>47</a>    /// their upstream channels close and drop it. Forwarded to
+<a href=#48 id=48 data-nosnippet>48</a>    /// [`Supervisable::wants_shutdown_signal`][crate::runtime::Supervisable::wants_shutdown_signal]. A kind that
+<a href=#49 id=49 data-nosnippet>49</a>    /// reports `false` gets a no-op handle, though the runtime still keeps a coordinator for it, so that its scope can
+<a href=#50 id=50 data-nosnippet>50</a>    /// tell requested exits apart. It also decides whether the nested supervisors that the component spawns to
+<a href=#51 id=51 data-nosnippet>51</a>    /// [stop with it][crate::runtime::NestedSupervisorBuilder::stops_with_owner] do so.
+<a href=#52 id=52 data-nosnippet>52</a>    ///
+<a href=#53 id=53 data-nosnippet>53</a>    /// This has to be a constant rather than a method on the value: the component is consumed by `initialize`, so
+<a href=#54 id=54 data-nosnippet>54</a>    /// there is nothing left to ask by the time the supervisor wants an answer.
+<a href=#55 id=55 data-nosnippet>55</a>    </span><span class="kw">const </span>WANTS_SHUTDOWN_SIGNAL: bool;
+<a href=#56 id=56 data-nosnippet>56</a>
+<a href=#57 id=57 data-nosnippet>57</a>    <span class="doccomment">/// Consumes the component and its context, returning the future that runs the component.
+<a href=#58 id=58 data-nosnippet>58</a>    ///
+<a href=#59 id=59 data-nosnippet>59</a>    /// `process_shutdown` is the shutdown signal of the component's worker. The run-future's allocations are attributed
+<a href=#60 id=60 data-nosnippet>60</a>    /// to the component's resource group by the process it runs in: the worker is named for the component, so no
+<a href=#61 id=61 data-nosnippet>61</a>    /// additional tracking is needed here.
+<a href=#62 id=62 data-nosnippet>62</a>    </span><span class="kw">fn </span>run_with_shutdown(<span class="self">self</span>, process_shutdown: ShutdownHandle) -&gt; SupervisorFuture;
+<a href=#63 id=63 data-nosnippet>63</a>}
+<a href=#64 id=64 data-nosnippet>64</a>
+<a href=#65 id=65 data-nosnippet>65</a><span class="doccomment">/// A [`Supervisable`] adapter over a single built topology component.
+<a href=#66 id=66 data-nosnippet>66</a>///
+<a href=#67 id=67 data-nosnippet>67</a>/// Holds the component behind a take-once [`Mutex`] -- a component is built and run exactly once -- and
+<a href=#68 id=68 data-nosnippet>68</a>/// exposes it to a supervisor via [`Supervisable`].
+<a href=#69 id=69 data-nosnippet>69</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">struct </span>ComponentWorker&lt;C&gt; {
+<a href=#70 id=70 data-nosnippet>70</a>    <span class="doccomment">/// The name of the worker: the identifier of the component relative to its topology, such as `sources.dsd_in`.
+<a href=#71 id=71 data-nosnippet>71</a>    ///
+<a href=#72 id=72 data-nosnippet>72</a>    /// The worker runs under the topology supervisor, so this name makes the process name of the worker the canonical
+<a href=#73 id=73 data-nosnippet>73</a>    /// identity of the component. This identity also names the resource group of the component and its entry in the
+<a href=#74 id=74 data-nosnippet>74</a>    /// health registry.
+<a href=#75 id=75 data-nosnippet>75</a>    </span>name: String,
+<a href=#76 id=76 data-nosnippet>76</a>    component_context: ComponentContext,
+<a href=#77 id=77 data-nosnippet>77</a>    <span class="doccomment">/// Bounds the shutdown of the component and everything it spawned.
+<a href=#78 id=78 data-nosnippet>78</a>    </span>shutdown_timeout: Duration,
 <a href=#79 id=79 data-nosnippet>79</a>    inner: Mutex&lt;<span class="prelude-ty">Option</span>&lt;C&gt;&gt;,
 <a href=#80 id=80 data-nosnippet>80</a>}
 <a href=#81 id=81 data-nosnippet>81</a>
@@ -83,115 +83,113 @@
 <a href=#83 id=83 data-nosnippet>83</a>    <span class="doccomment">/// Creates a new `ComponentWorker` for the given runnable component.
 <a href=#84 id=84 data-nosnippet>84</a>    ///
 <a href=#85 id=85 data-nosnippet>85</a>    /// `component_context` identifies the component (its kind and id).
-<a href=#86 id=86 data-nosnippet>86</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>new(component_context: ComponentContext, runnable: C) -&gt; <span class="self">Self </span>{
+<a href=#86 id=86 data-nosnippet>86</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>new(component_context: ComponentContext, runnable: C, shutdown_timeout: Duration) -&gt; <span class="self">Self </span>{
 <a href=#87 id=87 data-nosnippet>87</a>        <span class="kw">let </span>name =
 <a href=#88 id=88 data-nosnippet>88</a>            get_component_relative_identifier(component_context.component_type(), component_context.component_id())
 <a href=#89 id=89 data-nosnippet>89</a>                .to_string();
 <a href=#90 id=90 data-nosnippet>90</a>        <span class="self">Self </span>{
 <a href=#91 id=91 data-nosnippet>91</a>            name,
 <a href=#92 id=92 data-nosnippet>92</a>            component_context,
-<a href=#93 id=93 data-nosnippet>93</a>            inner: Mutex::new(<span class="prelude-val">Some</span>(runnable)),
-<a href=#94 id=94 data-nosnippet>94</a>        }
-<a href=#95 id=95 data-nosnippet>95</a>    }
-<a href=#96 id=96 data-nosnippet>96</a>}
-<a href=#97 id=97 data-nosnippet>97</a>
-<a href=#98 id=98 data-nosnippet>98</a><span class="attr">#[async_trait]
-<a href=#99 id=99 data-nosnippet>99</a></span><span class="kw">impl</span>&lt;C: RunnableComponent&gt; Supervisable <span class="kw">for </span>ComponentWorker&lt;C&gt; {
-<a href=#100 id=100 data-nosnippet>100</a>    <span class="kw">fn </span>name(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>str {
-<a href=#101 id=101 data-nosnippet>101</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.name
-<a href=#102 id=102 data-nosnippet>102</a>    }
-<a href=#103 id=103 data-nosnippet>103</a>
-<a href=#104 id=104 data-nosnippet>104</a>    <span class="kw">fn </span>shutdown_strategy(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; ShutdownStrategy {
-<a href=#105 id=105 data-nosnippet>105</a>        <span class="comment">// The component has no deadline of its own. The topology supervisor holds a single budget for the component and
-<a href=#106 id=106 data-nosnippet>106</a>        // everything that it spawned. If the budget expires, the supervisor aborts the component together with all work
-<a href=#107 id=107 data-nosnippet>107</a>        // that still runs in its scope.
-<a href=#108 id=108 data-nosnippet>108</a>        </span>ShutdownStrategy::Graceful(Duration::MAX)
-<a href=#109 id=109 data-nosnippet>109</a>    }
-<a href=#110 id=110 data-nosnippet>110</a>
-<a href=#111 id=111 data-nosnippet>111</a>    <span class="kw">fn </span>wants_shutdown_signal(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
-<a href=#112 id=112 data-nosnippet>112</a>        C::WANTS_SHUTDOWN_SIGNAL
-<a href=#113 id=113 data-nosnippet>113</a>    }
-<a href=#114 id=114 data-nosnippet>114</a>
-<a href=#115 id=115 data-nosnippet>115</a>    <span class="kw">fn </span>can_restart(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
-<a href=#116 id=116 data-nosnippet>116</a>        <span class="comment">// A component is built once and runs once. Its first start consumes it.
-<a href=#117 id=117 data-nosnippet>117</a>        </span><span class="bool-val">false
-<a href=#118 id=118 data-nosnippet>118</a>    </span>}
-<a href=#119 id=119 data-nosnippet>119</a>
-<a href=#120 id=120 data-nosnippet>120</a>    <span class="kw">async fn </span>initialize(<span class="kw-2">&amp;</span><span class="self">self</span>, process_shutdown: ShutdownHandle) -&gt; <span class="prelude-ty">Result</span>&lt;SupervisorFuture, InitializationError&gt; {
-<a href=#121 id=121 data-nosnippet>121</a>        <span class="comment">// The component is already built; there is no async initialization. Take it out of the take-once
-<a href=#122 id=122 data-nosnippet>122</a>        // slot and hand back its run-future. A second initialization is a bug (a component runs once).
-<a href=#123 id=123 data-nosnippet>123</a>        </span><span class="kw">let </span>runnable = <span class="self">self
-<a href=#124 id=124 data-nosnippet>124</a>            </span>.inner
-<a href=#125 id=125 data-nosnippet>125</a>            .lock()
-<a href=#126 id=126 data-nosnippet>126</a>            .expect(<span class="string">"component worker mutex poisoned"</span>)
-<a href=#127 id=127 data-nosnippet>127</a>            .take()
-<a href=#128 id=128 data-nosnippet>128</a>            .ok_or_else(|| {
-<a href=#129 id=129 data-nosnippet>129</a>                InitializationError::from(<span class="macro">generic_error!</span>(
-<a href=#130 id=130 data-nosnippet>130</a>                    <span class="string">"component worker '{}' was already initialized"</span>,
-<a href=#131 id=131 data-nosnippet>131</a>                    <span class="self">self</span>.component_context
-<a href=#132 id=132 data-nosnippet>132</a>                ))
-<a href=#133 id=133 data-nosnippet>133</a>            })<span class="question-mark">?</span>;
-<a href=#134 id=134 data-nosnippet>134</a>
-<a href=#135 id=135 data-nosnippet>135</a>        <span class="kw">let </span>span = <span class="macro">error_span!</span>(
-<a href=#136 id=136 data-nosnippet>136</a>            <span class="string">"component"</span>,
-<a href=#137 id=137 data-nosnippet>137</a>            <span class="string">"type" </span>= <span class="self">self</span>.component_context.component_type().as_str(),
-<a href=#138 id=138 data-nosnippet>138</a>            id = %<span class="self">self</span>.component_context.component_id(),
-<a href=#139 id=139 data-nosnippet>139</a>        );
-<a href=#140 id=140 data-nosnippet>140</a>        <span class="prelude-val">Ok</span>(Box::pin(runnable.run_with_shutdown(process_shutdown).instrument(span)))
-<a href=#141 id=141 data-nosnippet>141</a>    }
-<a href=#142 id=142 data-nosnippet>142</a>}
-<a href=#143 id=143 data-nosnippet>143</a>
-<a href=#144 id=144 data-nosnippet>144</a><span class="doccomment">/// Generates a [`RunnableComponent`] implementation for a component kind.
-<a href=#145 id=145 data-nosnippet>145</a>///
-<a href=#146 id=146 data-nosnippet>146</a>/// `$inject_shutdown` controls whether the supervisor-provided shutdown handle is installed into the
-<a href=#147 id=147 data-nosnippet>147</a>/// context (sources and relays) or dropped (the channel-draining kinds), and sets
-<a href=#148 id=148 data-nosnippet>148</a>/// [`RunnableComponent::WANTS_SHUTDOWN_SIGNAL`] to match so the supervisor doesn't create a coordinator for a handle
-<a href=#149 id=149 data-nosnippet>149</a>/// that is thrown away.
-<a href=#150 id=150 data-nosnippet>150</a></span><span class="macro">macro_rules!</span> runnable_component {
-<a href=#151 id=151 data-nosnippet>151</a>    (<span class="macro-nonterminal">$name</span>:ident, <span class="macro-nonterminal">$component</span>:path, <span class="macro-nonterminal">$context</span>:ty, inject_shutdown) =&gt; {
-<a href=#152 id=152 data-nosnippet>152</a>        <span class="doccomment">/// Pairs a built component with its context for supervised execution.
-<a href=#153 id=153 data-nosnippet>153</a>        </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">struct </span><span class="macro-nonterminal">$name </span>{
-<a href=#154 id=154 data-nosnippet>154</a>            <span class="kw">pub</span>(<span class="kw">crate</span>) component: Box&lt;<span class="kw">dyn </span><span class="macro-nonterminal">$component </span>+ Send&gt;,
-<a href=#155 id=155 data-nosnippet>155</a>            <span class="kw">pub</span>(<span class="kw">crate</span>) context: <span class="macro-nonterminal">$context</span>,
-<a href=#156 id=156 data-nosnippet>156</a>        }
-<a href=#157 id=157 data-nosnippet>157</a>
-<a href=#158 id=158 data-nosnippet>158</a>        <span class="kw">impl </span>RunnableComponent <span class="kw">for </span><span class="macro-nonterminal">$name </span>{
-<a href=#159 id=159 data-nosnippet>159</a>            <span class="kw">const </span>WANTS_SHUTDOWN_SIGNAL: bool = <span class="bool-val">true</span>;
-<a href=#160 id=160 data-nosnippet>160</a>
-<a href=#161 id=161 data-nosnippet>161</a>            <span class="kw">fn </span>run_with_shutdown(<span class="self">self</span>, process_shutdown: ShutdownHandle) -&gt; SupervisorFuture {
-<a href=#162 id=162 data-nosnippet>162</a>                <span class="kw">let </span><span class="self">Self </span>{
-<a href=#163 id=163 data-nosnippet>163</a>                    component,
-<a href=#164 id=164 data-nosnippet>164</a>                    <span class="kw-2">mut </span>context,
-<a href=#165 id=165 data-nosnippet>165</a>                } = <span class="self">self</span>;
-<a href=#166 id=166 data-nosnippet>166</a>                context.set_shutdown_handle(process_shutdown);
-<a href=#167 id=167 data-nosnippet>167</a>                Box::pin(component.run(context))
-<a href=#168 id=168 data-nosnippet>168</a>            }
-<a href=#169 id=169 data-nosnippet>169</a>        }
-<a href=#170 id=170 data-nosnippet>170</a>    };
-<a href=#171 id=171 data-nosnippet>171</a>    (<span class="macro-nonterminal">$name</span>:ident, <span class="macro-nonterminal">$component</span>:path, <span class="macro-nonterminal">$context</span>:ty) =&gt; {
-<a href=#172 id=172 data-nosnippet>172</a>        <span class="doccomment">/// Pairs a built component with its context for supervised execution.
-<a href=#173 id=173 data-nosnippet>173</a>        </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">struct </span><span class="macro-nonterminal">$name </span>{
-<a href=#174 id=174 data-nosnippet>174</a>            <span class="kw">pub</span>(<span class="kw">crate</span>) component: Box&lt;<span class="kw">dyn </span><span class="macro-nonterminal">$component </span>+ Send&gt;,
-<a href=#175 id=175 data-nosnippet>175</a>            <span class="kw">pub</span>(<span class="kw">crate</span>) context: <span class="macro-nonterminal">$context</span>,
-<a href=#176 id=176 data-nosnippet>176</a>        }
-<a href=#177 id=177 data-nosnippet>177</a>
-<a href=#178 id=178 data-nosnippet>178</a>        <span class="kw">impl </span>RunnableComponent <span class="kw">for </span><span class="macro-nonterminal">$name </span>{
-<a href=#179 id=179 data-nosnippet>179</a>            <span class="kw">const </span>WANTS_SHUTDOWN_SIGNAL: bool = <span class="bool-val">false</span>;
-<a href=#180 id=180 data-nosnippet>180</a>
-<a href=#181 id=181 data-nosnippet>181</a>            <span class="kw">fn </span>run_with_shutdown(<span class="self">self</span>, _process_shutdown: ShutdownHandle) -&gt; SupervisorFuture {
-<a href=#182 id=182 data-nosnippet>182</a>                <span class="comment">// This kind has no shutdown handle of its own: it stops when its upstream channels close.
-<a href=#183 id=183 data-nosnippet>183</a>                </span><span class="kw">let </span><span class="self">Self </span>{ component, context } = <span class="self">self</span>;
-<a href=#184 id=184 data-nosnippet>184</a>                Box::pin(component.run(context))
-<a href=#185 id=185 data-nosnippet>185</a>            }
-<a href=#186 id=186 data-nosnippet>186</a>        }
-<a href=#187 id=187 data-nosnippet>187</a>    };
-<a href=#188 id=188 data-nosnippet>188</a>}
-<a href=#189 id=189 data-nosnippet>189</a>
-<a href=#190 id=190 data-nosnippet>190</a><span class="macro">runnable_component!</span>(SourceRunnable, Source, SourceContext, inject_shutdown);
-<a href=#191 id=191 data-nosnippet>191</a><span class="macro">runnable_component!</span>(RelayRunnable, Relay, RelayContext, inject_shutdown);
-<a href=#192 id=192 data-nosnippet>192</a><span class="macro">runnable_component!</span>(DecoderRunnable, Decoder, DecoderContext);
-<a href=#193 id=193 data-nosnippet>193</a><span class="macro">runnable_component!</span>(TransformRunnable, Transform, TransformContext);
-<a href=#194 id=194 data-nosnippet>194</a><span class="macro">runnable_component!</span>(DestinationRunnable, Destination, DestinationContext);
-<a href=#195 id=195 data-nosnippet>195</a><span class="macro">runnable_component!</span>(EncoderRunnable, Encoder, EncoderContext);
-<a href=#196 id=196 data-nosnippet>196</a><span class="macro">runnable_component!</span>(ForwarderRunnable, Forwarder, ForwarderContext);
+<a href=#93 id=93 data-nosnippet>93</a>            shutdown_timeout,
+<a href=#94 id=94 data-nosnippet>94</a>            inner: Mutex::new(<span class="prelude-val">Some</span>(runnable)),
+<a href=#95 id=95 data-nosnippet>95</a>        }
+<a href=#96 id=96 data-nosnippet>96</a>    }
+<a href=#97 id=97 data-nosnippet>97</a>}
+<a href=#98 id=98 data-nosnippet>98</a>
+<a href=#99 id=99 data-nosnippet>99</a><span class="attr">#[async_trait]
+<a href=#100 id=100 data-nosnippet>100</a></span><span class="kw">impl</span>&lt;C: RunnableComponent&gt; Supervisable <span class="kw">for </span>ComponentWorker&lt;C&gt; {
+<a href=#101 id=101 data-nosnippet>101</a>    <span class="kw">fn </span>name(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>str {
+<a href=#102 id=102 data-nosnippet>102</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.name
+<a href=#103 id=103 data-nosnippet>103</a>    }
+<a href=#104 id=104 data-nosnippet>104</a>
+<a href=#105 id=105 data-nosnippet>105</a>    <span class="kw">fn </span>shutdown_strategy(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; ShutdownStrategy {
+<a href=#106 id=106 data-nosnippet>106</a>        ShutdownStrategy::Graceful(<span class="self">self</span>.shutdown_timeout)
+<a href=#107 id=107 data-nosnippet>107</a>    }
+<a href=#108 id=108 data-nosnippet>108</a>
+<a href=#109 id=109 data-nosnippet>109</a>    <span class="kw">fn </span>wants_shutdown_signal(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
+<a href=#110 id=110 data-nosnippet>110</a>        C::WANTS_SHUTDOWN_SIGNAL
+<a href=#111 id=111 data-nosnippet>111</a>    }
+<a href=#112 id=112 data-nosnippet>112</a>
+<a href=#113 id=113 data-nosnippet>113</a>    <span class="kw">fn </span>can_restart(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
+<a href=#114 id=114 data-nosnippet>114</a>        <span class="comment">// A component is built once and runs once. Its first start consumes it.
+<a href=#115 id=115 data-nosnippet>115</a>        </span><span class="bool-val">false
+<a href=#116 id=116 data-nosnippet>116</a>    </span>}
+<a href=#117 id=117 data-nosnippet>117</a>
+<a href=#118 id=118 data-nosnippet>118</a>    <span class="kw">async fn </span>initialize(<span class="kw-2">&amp;</span><span class="self">self</span>, process_shutdown: ShutdownHandle) -&gt; <span class="prelude-ty">Result</span>&lt;SupervisorFuture, InitializationError&gt; {
+<a href=#119 id=119 data-nosnippet>119</a>        <span class="comment">// The component is already built; there is no async initialization. Take it out of the take-once
+<a href=#120 id=120 data-nosnippet>120</a>        // slot and hand back its run-future. A second initialization is a bug (a component runs once).
+<a href=#121 id=121 data-nosnippet>121</a>        </span><span class="kw">let </span>runnable = <span class="self">self
+<a href=#122 id=122 data-nosnippet>122</a>            </span>.inner
+<a href=#123 id=123 data-nosnippet>123</a>            .lock()
+<a href=#124 id=124 data-nosnippet>124</a>            .expect(<span class="string">"component worker mutex poisoned"</span>)
+<a href=#125 id=125 data-nosnippet>125</a>            .take()
+<a href=#126 id=126 data-nosnippet>126</a>            .ok_or_else(|| {
+<a href=#127 id=127 data-nosnippet>127</a>                InitializationError::from(<span class="macro">generic_error!</span>(
+<a href=#128 id=128 data-nosnippet>128</a>                    <span class="string">"component worker '{}' was already initialized"</span>,
+<a href=#129 id=129 data-nosnippet>129</a>                    <span class="self">self</span>.component_context
+<a href=#130 id=130 data-nosnippet>130</a>                ))
+<a href=#131 id=131 data-nosnippet>131</a>            })<span class="question-mark">?</span>;
+<a href=#132 id=132 data-nosnippet>132</a>
+<a href=#133 id=133 data-nosnippet>133</a>        <span class="kw">let </span>span = <span class="macro">error_span!</span>(
+<a href=#134 id=134 data-nosnippet>134</a>            <span class="string">"component"</span>,
+<a href=#135 id=135 data-nosnippet>135</a>            <span class="string">"type" </span>= <span class="self">self</span>.component_context.component_type().as_str(),
+<a href=#136 id=136 data-nosnippet>136</a>            id = %<span class="self">self</span>.component_context.component_id(),
+<a href=#137 id=137 data-nosnippet>137</a>        );
+<a href=#138 id=138 data-nosnippet>138</a>        <span class="prelude-val">Ok</span>(Box::pin(runnable.run_with_shutdown(process_shutdown).instrument(span)))
+<a href=#139 id=139 data-nosnippet>139</a>    }
+<a href=#140 id=140 data-nosnippet>140</a>}
+<a href=#141 id=141 data-nosnippet>141</a>
+<a href=#142 id=142 data-nosnippet>142</a><span class="doccomment">/// Generates a [`RunnableComponent`] implementation for a component kind.
+<a href=#143 id=143 data-nosnippet>143</a>///
+<a href=#144 id=144 data-nosnippet>144</a>/// `$inject_shutdown` controls whether the supervisor-provided shutdown handle is installed into the
+<a href=#145 id=145 data-nosnippet>145</a>/// context (sources and relays) or dropped (the channel-draining kinds), and sets
+<a href=#146 id=146 data-nosnippet>146</a>/// [`RunnableComponent::WANTS_SHUTDOWN_SIGNAL`] to match, so that the supervisor hands a no-op handle to a kind that
+<a href=#147 id=147 data-nosnippet>147</a>/// would throw it away.
+<a href=#148 id=148 data-nosnippet>148</a></span><span class="macro">macro_rules!</span> runnable_component {
+<a href=#149 id=149 data-nosnippet>149</a>    (<span class="macro-nonterminal">$name</span>:ident, <span class="macro-nonterminal">$component</span>:path, <span class="macro-nonterminal">$context</span>:ty, inject_shutdown) =&gt; {
+<a href=#150 id=150 data-nosnippet>150</a>        <span class="doccomment">/// Pairs a built component with its context for supervised execution.
+<a href=#151 id=151 data-nosnippet>151</a>        </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">struct </span><span class="macro-nonterminal">$name </span>{
+<a href=#152 id=152 data-nosnippet>152</a>            <span class="kw">pub</span>(<span class="kw">crate</span>) component: Box&lt;<span class="kw">dyn </span><span class="macro-nonterminal">$component </span>+ Send&gt;,
+<a href=#153 id=153 data-nosnippet>153</a>            <span class="kw">pub</span>(<span class="kw">crate</span>) context: <span class="macro-nonterminal">$context</span>,
+<a href=#154 id=154 data-nosnippet>154</a>        }
+<a href=#155 id=155 data-nosnippet>155</a>
+<a href=#156 id=156 data-nosnippet>156</a>        <span class="kw">impl </span>RunnableComponent <span class="kw">for </span><span class="macro-nonterminal">$name </span>{
+<a href=#157 id=157 data-nosnippet>157</a>            <span class="kw">const </span>WANTS_SHUTDOWN_SIGNAL: bool = <span class="bool-val">true</span>;
+<a href=#158 id=158 data-nosnippet>158</a>
+<a href=#159 id=159 data-nosnippet>159</a>            <span class="kw">fn </span>run_with_shutdown(<span class="self">self</span>, process_shutdown: ShutdownHandle) -&gt; SupervisorFuture {
+<a href=#160 id=160 data-nosnippet>160</a>                <span class="kw">let </span><span class="self">Self </span>{
+<a href=#161 id=161 data-nosnippet>161</a>                    component,
+<a href=#162 id=162 data-nosnippet>162</a>                    <span class="kw-2">mut </span>context,
+<a href=#163 id=163 data-nosnippet>163</a>                } = <span class="self">self</span>;
+<a href=#164 id=164 data-nosnippet>164</a>                context.set_shutdown_handle(process_shutdown);
+<a href=#165 id=165 data-nosnippet>165</a>                Box::pin(component.run(context))
+<a href=#166 id=166 data-nosnippet>166</a>            }
+<a href=#167 id=167 data-nosnippet>167</a>        }
+<a href=#168 id=168 data-nosnippet>168</a>    };
+<a href=#169 id=169 data-nosnippet>169</a>    (<span class="macro-nonterminal">$name</span>:ident, <span class="macro-nonterminal">$component</span>:path, <span class="macro-nonterminal">$context</span>:ty) =&gt; {
+<a href=#170 id=170 data-nosnippet>170</a>        <span class="doccomment">/// Pairs a built component with its context for supervised execution.
+<a href=#171 id=171 data-nosnippet>171</a>        </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">struct </span><span class="macro-nonterminal">$name </span>{
+<a href=#172 id=172 data-nosnippet>172</a>            <span class="kw">pub</span>(<span class="kw">crate</span>) component: Box&lt;<span class="kw">dyn </span><span class="macro-nonterminal">$component </span>+ Send&gt;,
+<a href=#173 id=173 data-nosnippet>173</a>            <span class="kw">pub</span>(<span class="kw">crate</span>) context: <span class="macro-nonterminal">$context</span>,
+<a href=#174 id=174 data-nosnippet>174</a>        }
+<a href=#175 id=175 data-nosnippet>175</a>
+<a href=#176 id=176 data-nosnippet>176</a>        <span class="kw">impl </span>RunnableComponent <span class="kw">for </span><span class="macro-nonterminal">$name </span>{
+<a href=#177 id=177 data-nosnippet>177</a>            <span class="kw">const </span>WANTS_SHUTDOWN_SIGNAL: bool = <span class="bool-val">false</span>;
+<a href=#178 id=178 data-nosnippet>178</a>
+<a href=#179 id=179 data-nosnippet>179</a>            <span class="kw">fn </span>run_with_shutdown(<span class="self">self</span>, _process_shutdown: ShutdownHandle) -&gt; SupervisorFuture {
+<a href=#180 id=180 data-nosnippet>180</a>                <span class="comment">// This kind has no shutdown handle of its own: it stops when its upstream channels close.
+<a href=#181 id=181 data-nosnippet>181</a>                </span><span class="kw">let </span><span class="self">Self </span>{ component, context } = <span class="self">self</span>;
+<a href=#182 id=182 data-nosnippet>182</a>                Box::pin(component.run(context))
+<a href=#183 id=183 data-nosnippet>183</a>            }
+<a href=#184 id=184 data-nosnippet>184</a>        }
+<a href=#185 id=185 data-nosnippet>185</a>    };
+<a href=#186 id=186 data-nosnippet>186</a>}
+<a href=#187 id=187 data-nosnippet>187</a>
+<a href=#188 id=188 data-nosnippet>188</a><span class="macro">runnable_component!</span>(SourceRunnable, Source, SourceContext, inject_shutdown);
+<a href=#189 id=189 data-nosnippet>189</a><span class="macro">runnable_component!</span>(RelayRunnable, Relay, RelayContext, inject_shutdown);
+<a href=#190 id=190 data-nosnippet>190</a><span class="macro">runnable_component!</span>(DecoderRunnable, Decoder, DecoderContext);
+<a href=#191 id=191 data-nosnippet>191</a><span class="macro">runnable_component!</span>(TransformRunnable, Transform, TransformContext);
+<a href=#192 id=192 data-nosnippet>192</a><span class="macro">runnable_component!</span>(DestinationRunnable, Destination, DestinationContext);
+<a href=#193 id=193 data-nosnippet>193</a><span class="macro">runnable_component!</span>(EncoderRunnable, Encoder, EncoderContext);
+<a href=#194 id=194 data-nosnippet>194</a><span class="macro">runnable_component!</span>(ForwarderRunnable, Forwarder, ForwarderContext);
 </code></pre></div></section></main></body></html>

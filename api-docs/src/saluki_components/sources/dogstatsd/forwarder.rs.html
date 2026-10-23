@@ -309,7 +309,7 @@
 <a href=#309 id=309 data-nosnippet>309</a>        </span>supervisor.wait_for_children(<span class="number">1</span>).<span class="kw">await</span>;
 <a href=#310 id=310 data-nosnippet>310</a>
 <a href=#311 id=311 data-nosnippet>311</a>        <span class="comment">// The loop stops on its senders closing, not on the shutdown signal, so release our clone before shutting
-<a href=#312 id=312 data-nosnippet>312</a>        // down. Holding it here would leave the loop waiting until the shutdown budget elapsed.
+<a href=#312 id=312 data-nosnippet>312</a>        // down. Holding it here would leave the loop waiting until it was halted at its shutdown timeout.
 <a href=#313 id=313 data-nosnippet>313</a>        </span>drop(forwarder);
 <a href=#314 id=314 data-nosnippet>314</a>        <span class="macro">assert!</span>(supervisor.shutdown().<span class="kw">await</span>.is_ok());
 <a href=#315 id=315 data-nosnippet>315</a>    }
@@ -373,7 +373,7 @@
 <a href=#373 id=373 data-nosnippet>373</a>        </span>supervisor.wait_for_children(<span class="number">1</span>).<span class="kw">await</span>;
 <a href=#374 id=374 data-nosnippet>374</a>
 <a href=#375 id=375 data-nosnippet>375</a>        <span class="comment">// The loop stops on its senders closing, not on the shutdown signal, so release our clone before shutting
-<a href=#376 id=376 data-nosnippet>376</a>        // down. Holding it here would leave the loop waiting until the shutdown budget elapsed.
+<a href=#376 id=376 data-nosnippet>376</a>        // down. Holding it here would leave the loop waiting until it was halted at its shutdown timeout.
 <a href=#377 id=377 data-nosnippet>377</a>        </span>drop(forwarder);
 <a href=#378 id=378 data-nosnippet>378</a>        <span class="macro">assert!</span>(supervisor.shutdown().<span class="kw">await</span>.is_ok());
 <a href=#379 id=379 data-nosnippet>379</a>    }

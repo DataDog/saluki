@@ -30,28 +30,28 @@
 <a href=#30 id=30 data-nosnippet>30</a>//! This behavior lets a set of tasks that are connected by channels drain in dependency order. The tasks do not have to
 <a href=#31 id=31 data-nosnippet>31</a>//! know that order. Because of this behavior, it is not a problem that a one-shot child cannot see the shutdown signal.
 <a href=#32 id=32 data-nosnippet>32</a>//!
-<a href=#33 id=33 data-nosnippet>33</a>//! For a supervisor, its [shutdown budget][super::Supervisor::with_shutdown_budget] limits the wait. The budget applies
-<a href=#34 id=34 data-nosnippet>34</a>//! to all the children together, so no child has to guess how much time it needs. If no budget limits such a child, the
-<a href=#35 id=35 data-nosnippet>35</a>//! child uses its own shutdown strategy instead. A scope has no budget, so each child of a process uses its own
-<a href=#36 id=36 data-nosnippet>36</a>//! shutdown strategy. If the process overruns its own deadline and is aborted, its children are aborted with it.
-<a href=#37 id=37 data-nosnippet>37</a>//!
-<a href=#38 id=38 data-nosnippet>38</a>//! Two cases need something other than the default:
-<a href=#39 id=39 data-nosnippet>39</a>//!
-<a href=#40 id=40 data-nosnippet>40</a>//! - Work with no terminal condition holds the drain until the deadline. An endless background loop is an example. Give
-<a href=#41 id=41 data-nosnippet>41</a>//!   it [`ShutdownStrategy::Brutal`] with [`ChildBuilder::with_shutdown_strategy`] so that it is aborted at once.
+<a href=#33 id=33 data-nosnippet>33</a>//! Each child is held to its own shutdown strategy, whether its owner is a supervisor or a scope. A closure-based child
+<a href=#34 id=34 data-nosnippet>34</a>//! is graceful, with a timeout of five seconds. When a timeout expires, the process is halted along with everything in
+<a href=#35 id=35 data-nosnippet>35</a>//! its scope.
+<a href=#36 id=36 data-nosnippet>36</a>//!
+<a href=#37 id=37 data-nosnippet>37</a>//! Two cases need something other than the default:
+<a href=#38 id=38 data-nosnippet>38</a>//!
+<a href=#39 id=39 data-nosnippet>39</a>//! - Work with no terminal condition holds the drain open until its timeout expires. An endless background loop is an
+<a href=#40 id=40 data-nosnippet>40</a>//!   example. Give it [`ShutdownStrategy::Brutal`] with [`ChildBuilder::with_shutdown_strategy`] so that it is halted
+<a href=#41 id=41 data-nosnippet>41</a>//!   at once.
 <a href=#42 id=42 data-nosnippet>42</a>//! - If work must observe shutdown to know that it must stop, or must run cleanup, build it with
 <a href=#43 id=43 data-nosnippet>43</a>//!   [`worker_with_shutdown`]. The body of that worker receives the shutdown signal. You can also implement
 <a href=#44 id=44 data-nosnippet>44</a>//!   [`Supervisable`] directly.
 <a href=#45 id=45 data-nosnippet>45</a>//!
-<a href=#46 id=46 data-nosnippet>46</a>//! [`ChildBuilder::with_shutdown_timeout`] sets a deadline that is shorter than the deadline of the owner. Use it if a
-<a href=#47 id=47 data-nosnippet>47</a>//! particular child must be abandoned sooner than its siblings.
+<a href=#46 id=46 data-nosnippet>46</a>//! [`ChildBuilder::with_shutdown_timeout`] sets a timeout other than the default. Use it if a particular child needs
+<a href=#47 id=47 data-nosnippet>47</a>//! more time to drain, or must be halted sooner than its siblings.
 <a href=#48 id=48 data-nosnippet>48</a>//!
 <a href=#49 id=49 data-nosnippet>49</a>//! # Children of the current process
 <a href=#50 id=50 data-nosnippet>50</a>//!
 <a href=#51 id=51 data-nosnippet>51</a>//! [`ChildBuilder::spawn`] makes a child a child of the current process, and the [scope][super::scope] of that process
 <a href=#52 id=52 data-nosnippet>52</a>//! holds it. The process does not finish until its children finish. When the body of the process returns, the scope
-<a href=#53 id=53 data-nosnippet>53</a>//! stops the children, each according to its own shutdown strategy. A supervisor's budget does not apply in a scope.
-<a href=#54 id=54 data-nosnippet>54</a>//! [`ChildBuilder::spawn_sibling`] gives the child to the nearest supervisor above the current process instead.
+<a href=#53 id=53 data-nosnippet>53</a>//! stops the children, each according to its own shutdown strategy. [`ChildBuilder::spawn_sibling`] gives the child
+<a href=#54 id=54 data-nosnippet>54</a>//! to the nearest supervisor above the current process instead.
 <a href=#55 id=55 data-nosnippet>55</a>//!
 <a href=#56 id=56 data-nosnippet>56</a>//! # Task naming
 <a href=#57 id=57 data-nosnippet>57</a>//!
@@ -213,12 +213,12 @@
 <a href=#213 id=213 data-nosnippet>213</a>    <span class="doccomment">/// Creates a builder for a nested supervisor.
 <a href=#214 id=214 data-nosnippet>214</a>    ///
 <a href=#215 id=215 data-nosnippet>215</a>    /// You can give a [`Supervisor`] directly to [`spawn`][Self::spawn] or [`Supervisor::add_worker`]. Most callers
-<a href=#216 id=216 data-nosnippet>216</a>    /// need only that. This builder is for the one setting that is not available in that way: whether the subtree is
-<a href=#217 id=217 data-nosnippet>217</a>    /// needed or hosted.
+<a href=#216 id=216 data-nosnippet>216</a>    /// need only that. This builder is for the settings that are not available in that way: whether the subtree is
+<a href=#217 id=217 data-nosnippet>217</a>    /// needed or hosted, and whether it [stops with its owner][NestedSupervisorBuilder::stops_with_owner] in a scope.
 <a href=#218 id=218 data-nosnippet>218</a>    ///
-<a href=#219 id=219 data-nosnippet>219</a>    /// Unlike [`supervisable`][Self::supervisable], there is no placement or shutdown setting. A nested supervisor
-<a href=#220 id=220 data-nosnippet>220</a>    /// runs wherever its parent does and its children carry their own placement, and it bounds its own drain through
-<a href=#221 id=221 data-nosnippet>221</a>    /// those children rather than through a deadline imposed from above.
+<a href=#219 id=219 data-nosnippet>219</a>    /// Unlike [`supervisable`][Self::supervisable], there is no placement or shutdown setting. A nested supervisor runs
+<a href=#220 id=220 data-nosnippet>220</a>    /// wherever its parent does and its children carry their own placement, and its drain is bounded by its children's
+<a href=#221 id=221 data-nosnippet>221</a>    /// timeouts and by its owner.
 <a href=#222 id=222 data-nosnippet>222</a>    </span><span class="kw">pub fn </span>nested_supervisor(<span class="kw-2">&amp;</span><span class="self">self</span>, supervisor: Supervisor) -&gt; NestedSupervisorBuilder&lt;<span class="lifetime">'_</span>&gt; {
 <a href=#223 id=223 data-nosnippet>223</a>        NestedSupervisorBuilder::new(BuilderTarget::Handle(<span class="self">self</span>), supervisor)
 <a href=#224 id=224 data-nosnippet>224</a>    }
@@ -314,781 +314,778 @@
 <a href=#314 id=314 data-nosnippet>314</a>
 <a href=#315 id=315 data-nosnippet>315</a>    <span class="doccomment">/// Sets an explicit shutdown timeout for this child task.
 <a href=#316 id=316 data-nosnippet>316</a>    ///
-<a href=#317 id=317 data-nosnippet>317</a>    /// By default, a closure-based child has no deadline of its own, and only the deadline of its owner limits it. Set
-<a href=#318 id=318 data-nosnippet>318</a>    /// this timeout if a particular child must be abandoned sooner than that. Use it as a deliberate deadline, not as a
-<a href=#319 id=319 data-nosnippet>319</a>    /// guess about how much time the child needs. A value that is longer than the deadline of the owner has no effect,
-<a href=#320 id=320 data-nosnippet>320</a>    /// because the runtime uses the deadline that expires first.
-<a href=#321 id=321 data-nosnippet>321</a>    ///
-<a href=#322 id=322 data-nosnippet>322</a>    /// A [scope] has no budget. A child spawned into a scope is held only to its own strategy, which for
-<a href=#323 id=323 data-nosnippet>323</a>    /// a closure-based child is graceful with a timeout of five seconds unless this method sets another one.
-<a href=#324 id=324 data-nosnippet>324</a>    ///
-<a href=#325 id=325 data-nosnippet>325</a>    /// For a [`Supervisable`] child, this overrides the strategy the task reports for itself.
-<a href=#326 id=326 data-nosnippet>326</a>    </span><span class="kw">pub fn </span>with_shutdown_timeout(<span class="self">self</span>, timeout: Duration) -&gt; <span class="self">Self </span>{
-<a href=#327 id=327 data-nosnippet>327</a>        <span class="self">self</span>.with_shutdown_strategy(ShutdownStrategy::Graceful(timeout))
-<a href=#328 id=328 data-nosnippet>328</a>    }
-<a href=#329 id=329 data-nosnippet>329</a>
-<a href=#330 id=330 data-nosnippet>330</a>    <span class="doccomment">/// Sets the explicit shutdown strategy used for this child task.
-<a href=#331 id=331 data-nosnippet>331</a>    </span><span class="kw">pub fn </span>with_shutdown_strategy(<span class="self">self</span>, strategy: ShutdownStrategy) -&gt; <span class="self">Self </span>{
-<a href=#332 id=332 data-nosnippet>332</a>        <span class="self">self</span>.map_spec(|spec| spec.with_shutdown_strategy(strategy))
-<a href=#333 id=333 data-nosnippet>333</a>    }
-<a href=#334 id=334 data-nosnippet>334</a>
-<a href=#335 id=335 data-nosnippet>335</a>    <span class="doccomment">/// Gives this child no shutdown deadline of its own, so that only the deadline of its owner limits it.
-<a href=#336 id=336 data-nosnippet>336</a>    ///
-<a href=#337 id=337 data-nosnippet>337</a>    /// This is already the default for a closure-based child. A [`Supervisable`] child reports its own strategy. This
-<a href=#338 id=338 data-nosnippet>338</a>    /// method lets such a child be limited as part of the group instead. Without this method, the child silently keeps
-<a href=#339 id=339 data-nosnippet>339</a>    /// the strategy that [`Supervisable::shutdown_strategy`] returns. That strategy can be much shorter than the
-<a href=#340 id=340 data-nosnippet>340</a>    /// deadline of the owner.
-<a href=#341 id=341 data-nosnippet>341</a>    ///
-<a href=#342 id=342 data-nosnippet>342</a>    /// See [`Supervisor::with_shutdown_budget`][budget] for a description of the deadline of a supervisor. A [scope]
-<a href=#343 id=343 data-nosnippet>343</a>    /// has no budget, so a child spawned into a scope keeps the strategy that it reports for itself.
-<a href=#344 id=344 data-nosnippet>344</a>    ///
-<a href=#345 id=345 data-nosnippet>345</a>    /// [budget]: super::Supervisor::with_shutdown_budget
-<a href=#346 id=346 data-nosnippet>346</a>    </span><span class="kw">pub fn </span>with_budget_bounded_shutdown(<span class="self">self</span>) -&gt; <span class="self">Self </span>{
-<a href=#347 id=347 data-nosnippet>347</a>        <span class="self">self</span>.map_spec(|spec| spec.with_budget_bounded_shutdown())
-<a href=#348 id=348 data-nosnippet>348</a>    }
-<a href=#349 id=349 data-nosnippet>349</a>
-<a href=#350 id=350 data-nosnippet>350</a>    <span class="doccomment">/// Marks this child as one that its owner cannot work without.
-<a href=#351 id=351 data-nosnippet>351</a>    ///
-<a href=#352 id=352 data-nosnippet>352</a>    /// If the child stops without a request to stop and can only be started once, its owner also stops and fails. This
-<a href=#353 id=353 data-nosnippet>353</a>    /// occurs even when the child exits cleanly. Thus, use this method for a child that its owner cannot work without.
-<a href=#354 id=354 data-nosnippet>354</a>    /// Do not use it for a child that you expect to finish by itself. If the child can be started again, its owner
-<a href=#355 id=355 data-nosnippet>355</a>    /// restarts it after any such stop, not only after a failure.
-<a href=#356 id=356 data-nosnippet>356</a>    ///
-<a href=#357 id=357 data-nosnippet>357</a>    /// For example, one failed connection is usually not a reason to stop a component that handles client connections.
-<a href=#358 id=358 data-nosnippet>358</a>    /// But a component that forwards work to a child task can become inoperable if that task stops unexpectedly. This
-<a href=#359 id=359 data-nosnippet>359</a>    /// occurs if the task cannot be attached again to the necessary channels or state unless the component is created
-<a href=#360 id=360 data-nosnippet>360</a>    /// again.
-<a href=#361 id=361 data-nosnippet>361</a>    ///
-<a href=#362 id=362 data-nosnippet>362</a>    /// See the [runtime documentation][super#restart-policy] for the default.
-<a href=#363 id=363 data-nosnippet>363</a>    </span><span class="kw">pub fn </span>needed(<span class="self">self</span>) -&gt; <span class="self">Self </span>{
-<a href=#364 id=364 data-nosnippet>364</a>        <span class="self">self</span>.map_spec(|spec| spec.with_edge(Edge::Needed))
-<a href=#365 id=365 data-nosnippet>365</a>    }
-<a href=#366 id=366 data-nosnippet>366</a>
-<a href=#367 id=367 data-nosnippet>367</a>    <span class="doccomment">/// Marks this child as one that its owner runs but does not need.
-<a href=#368 id=368 data-nosnippet>368</a>    ///
-<a href=#369 id=369 data-nosnippet>369</a>    /// If the child stops without a request to stop, and its owner does not restart it, the owner reaps the child and
-<a href=#370 id=370 data-nosnippet>370</a>    /// continues. The owner does not restart a child that can only be started once, or a child that exited cleanly. If
-<a href=#371 id=371 data-nosnippet>371</a>    /// the child can be started again, its owner restarts it only if it failed, and accepts a clean exit as final. But
-<a href=#372 id=372 data-nosnippet>372</a>    /// if the child fails more often than the restart limit of its owner allows, the owner also fails, as for a needed
-<a href=#373 id=373 data-nosnippet>373</a>    /// child.
-<a href=#374 id=374 data-nosnippet>374</a>    ///
-<a href=#375 id=375 data-nosnippet>375</a>    /// See the [runtime documentation][super#restart-policy] for the default.
-<a href=#376 id=376 data-nosnippet>376</a>    </span><span class="kw">pub fn </span>hosted(<span class="self">self</span>) -&gt; <span class="self">Self </span>{
-<a href=#377 id=377 data-nosnippet>377</a>        <span class="self">self</span>.map_spec(|spec| spec.with_edge(Edge::Hosted))
-<a href=#378 id=378 data-nosnippet>378</a>    }
-<a href=#379 id=379 data-nosnippet>379</a>
-<a href=#380 id=380 data-nosnippet>380</a>    <span class="doccomment">/// Sets whether the supervisor stops when this child task terminates.
-<a href=#381 id=381 data-nosnippet>381</a>    ///
-<a href=#382 id=382 data-nosnippet>382</a>    /// This setting has an effect only under a supervisor that uses the deprecated
-<a href=#383 id=383 data-nosnippet>383</a>    /// [`with_auto_shutdown`][super::Supervisor::with_auto_shutdown]. It also has no effect on a child that its
-<a href=#384 id=384 data-nosnippet>384</a>    /// supervisor always restarts, such as a child that can start again and that you declare with
-<a href=#385 id=385 data-nosnippet>385</a>    /// [`Supervisor::add_worker`] without marking it [hosted][Self::hosted]. The supervisor logs a warning for each
-<a href=#386 id=386 data-nosnippet>386</a>    /// child where the setting has no effect.
-<a href=#387 id=387 data-nosnippet>387</a>    </span><span class="attr">#[deprecated(note = <span class="string">"mark the child `needed` instead, which stops its owner when it terminates for good"</span>)]
-<a href=#388 id=388 data-nosnippet>388</a>    </span><span class="kw">pub fn </span>with_significant(<span class="self">self</span>, significant: bool) -&gt; <span class="self">Self </span>{
-<a href=#389 id=389 data-nosnippet>389</a>        <span class="self">self</span>.map_spec(|spec| spec.with_significant(significant))
+<a href=#317 id=317 data-nosnippet>317</a>    /// A closure-based child defaults to five seconds, after which it is halted. Set this if a particular child needs
+<a href=#318 id=318 data-nosnippet>318</a>    /// more time to drain, or must be halted sooner. A timeout longer than its owner's has no effect, since the child
+<a href=#319 id=319 data-nosnippet>319</a>    /// is halted along with its owner.
+<a href=#320 id=320 data-nosnippet>320</a>    ///
+<a href=#321 id=321 data-nosnippet>321</a>    /// For a [`Supervisable`] child, this overrides the strategy the task reports for itself.
+<a href=#322 id=322 data-nosnippet>322</a>    </span><span class="kw">pub fn </span>with_shutdown_timeout(<span class="self">self</span>, timeout: Duration) -&gt; <span class="self">Self </span>{
+<a href=#323 id=323 data-nosnippet>323</a>        <span class="self">self</span>.with_shutdown_strategy(ShutdownStrategy::Graceful(timeout))
+<a href=#324 id=324 data-nosnippet>324</a>    }
+<a href=#325 id=325 data-nosnippet>325</a>
+<a href=#326 id=326 data-nosnippet>326</a>    <span class="doccomment">/// Sets the explicit shutdown strategy used for this child task.
+<a href=#327 id=327 data-nosnippet>327</a>    </span><span class="kw">pub fn </span>with_shutdown_strategy(<span class="self">self</span>, strategy: ShutdownStrategy) -&gt; <span class="self">Self </span>{
+<a href=#328 id=328 data-nosnippet>328</a>        <span class="self">self</span>.map_spec(|spec| spec.with_shutdown_strategy(strategy))
+<a href=#329 id=329 data-nosnippet>329</a>    }
+<a href=#330 id=330 data-nosnippet>330</a>
+<a href=#331 id=331 data-nosnippet>331</a>    <span class="doccomment">/// Marks this child as one that its owner cannot work without.
+<a href=#332 id=332 data-nosnippet>332</a>    ///
+<a href=#333 id=333 data-nosnippet>333</a>    /// If the child stops without a request to stop and can only be started once, its owner also stops and fails. This
+<a href=#334 id=334 data-nosnippet>334</a>    /// occurs even when the child exits cleanly. Thus, use this method for a child that its owner cannot work without.
+<a href=#335 id=335 data-nosnippet>335</a>    /// Do not use it for a child that you expect to finish by itself. If the child can be started again, its owner
+<a href=#336 id=336 data-nosnippet>336</a>    /// restarts it after any such stop, not only after a failure.
+<a href=#337 id=337 data-nosnippet>337</a>    ///
+<a href=#338 id=338 data-nosnippet>338</a>    /// For example, one failed connection is usually not a reason to stop a component that handles client connections.
+<a href=#339 id=339 data-nosnippet>339</a>    /// But a component that forwards work to a child task can become inoperable if that task stops unexpectedly. This
+<a href=#340 id=340 data-nosnippet>340</a>    /// occurs if the task cannot be attached again to the necessary channels or state unless the component is created
+<a href=#341 id=341 data-nosnippet>341</a>    /// again.
+<a href=#342 id=342 data-nosnippet>342</a>    ///
+<a href=#343 id=343 data-nosnippet>343</a>    /// See the [runtime documentation][super#restart-policy] for the default.
+<a href=#344 id=344 data-nosnippet>344</a>    </span><span class="kw">pub fn </span>needed(<span class="self">self</span>) -&gt; <span class="self">Self </span>{
+<a href=#345 id=345 data-nosnippet>345</a>        <span class="self">self</span>.map_spec(|spec| spec.with_edge(Edge::Needed))
+<a href=#346 id=346 data-nosnippet>346</a>    }
+<a href=#347 id=347 data-nosnippet>347</a>
+<a href=#348 id=348 data-nosnippet>348</a>    <span class="doccomment">/// Marks this child as one that its owner runs but does not need.
+<a href=#349 id=349 data-nosnippet>349</a>    ///
+<a href=#350 id=350 data-nosnippet>350</a>    /// If the child stops without a request to stop, and its owner does not restart it, the owner reaps the child and
+<a href=#351 id=351 data-nosnippet>351</a>    /// continues. The owner does not restart a child that can only be started once, or a child that exited cleanly. If
+<a href=#352 id=352 data-nosnippet>352</a>    /// the child can be started again, its owner restarts it only if it failed, and accepts a clean exit as final. But
+<a href=#353 id=353 data-nosnippet>353</a>    /// if the child fails more often than the restart limit of its owner allows, the owner also fails, as for a needed
+<a href=#354 id=354 data-nosnippet>354</a>    /// child.
+<a href=#355 id=355 data-nosnippet>355</a>    ///
+<a href=#356 id=356 data-nosnippet>356</a>    /// See the [runtime documentation][super#restart-policy] for the default.
+<a href=#357 id=357 data-nosnippet>357</a>    </span><span class="kw">pub fn </span>hosted(<span class="self">self</span>) -&gt; <span class="self">Self </span>{
+<a href=#358 id=358 data-nosnippet>358</a>        <span class="self">self</span>.map_spec(|spec| spec.with_edge(Edge::Hosted))
+<a href=#359 id=359 data-nosnippet>359</a>    }
+<a href=#360 id=360 data-nosnippet>360</a>
+<a href=#361 id=361 data-nosnippet>361</a>    <span class="doccomment">/// Sets whether the supervisor stops when this child task terminates.
+<a href=#362 id=362 data-nosnippet>362</a>    ///
+<a href=#363 id=363 data-nosnippet>363</a>    /// This setting has an effect only under a supervisor that uses the deprecated
+<a href=#364 id=364 data-nosnippet>364</a>    /// [`with_auto_shutdown`][super::Supervisor::with_auto_shutdown]. It also has no effect on a child that its
+<a href=#365 id=365 data-nosnippet>365</a>    /// supervisor always restarts, such as a child that can start again and that you declare with
+<a href=#366 id=366 data-nosnippet>366</a>    /// [`Supervisor::add_worker`] without marking it [hosted][Self::hosted]. The supervisor logs a warning for each
+<a href=#367 id=367 data-nosnippet>367</a>    /// child where the setting has no effect.
+<a href=#368 id=368 data-nosnippet>368</a>    </span><span class="attr">#[deprecated(note = <span class="string">"mark the child `needed` instead, which stops its owner when it terminates for good"</span>)]
+<a href=#369 id=369 data-nosnippet>369</a>    </span><span class="kw">pub fn </span>with_significant(<span class="self">self</span>, significant: bool) -&gt; <span class="self">Self </span>{
+<a href=#370 id=370 data-nosnippet>370</a>        <span class="self">self</span>.map_spec(|spec| spec.with_significant(significant))
+<a href=#371 id=371 data-nosnippet>371</a>    }
+<a href=#372 id=372 data-nosnippet>372</a>
+<a href=#373 id=373 data-nosnippet>373</a>    <span class="doccomment">/// Makes this child adopt `scope` as its own and start what was spawned into it before the child started.
+<a href=#374 id=374 data-nosnippet>374</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>adopting(<span class="self">self</span>, scope: UnadoptedScope) -&gt; <span class="self">Self </span>{
+<a href=#375 id=375 data-nosnippet>375</a>        <span class="self">self</span>.map_spec(|spec| spec.adopting(scope))
+<a href=#376 id=376 data-nosnippet>376</a>    }
+<a href=#377 id=377 data-nosnippet>377</a>
+<a href=#378 id=378 data-nosnippet>378</a>    <span class="doccomment">/// Gives this child a resource group of its own, with the same name as the child.
+<a href=#379 id=379 data-nosnippet>379</a>    ///
+<a href=#380 id=380 data-nosnippet>380</a>    /// The child then does not count against the resource group of its owner. Use this for a worker that represents
+<a href=#381 id=381 data-nosnippet>381</a>    /// something with its own resource accounting, such as a topology component.
+<a href=#382 id=382 data-nosnippet>382</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>with_own_resource_group(<span class="self">self</span>) -&gt; <span class="self">Self </span>{
+<a href=#383 id=383 data-nosnippet>383</a>        <span class="self">self</span>.map_spec(|spec| spec.with_own_resource_group())
+<a href=#384 id=384 data-nosnippet>384</a>    }
+<a href=#385 id=385 data-nosnippet>385</a>
+<a href=#386 id=386 data-nosnippet>386</a>    <span class="doccomment">/// Makes `observer` receive how this child ended, after its scope closed. See [`ExitObserver`].
+<a href=#387 id=387 data-nosnippet>387</a>    </span><span class="attr">#[cfg(any(test, feature = <span class="string">"test-util"</span>))]
+<a href=#388 id=388 data-nosnippet>388</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>observing_exit(<span class="self">self</span>, observer: ExitObserver) -&gt; <span class="self">Self </span>{
+<a href=#389 id=389 data-nosnippet>389</a>        <span class="self">self</span>.map_spec(|spec| spec.observing_exit(observer))
 <a href=#390 id=390 data-nosnippet>390</a>    }
 <a href=#391 id=391 data-nosnippet>391</a>
-<a href=#392 id=392 data-nosnippet>392</a>    <span class="doccomment">/// Makes this child adopt `scope` as its own and start what was spawned into it before the child started.
-<a href=#393 id=393 data-nosnippet>393</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>adopting(<span class="self">self</span>, scope: UnadoptedScope) -&gt; <span class="self">Self </span>{
-<a href=#394 id=394 data-nosnippet>394</a>        <span class="self">self</span>.map_spec(|spec| spec.adopting(scope))
-<a href=#395 id=395 data-nosnippet>395</a>    }
-<a href=#396 id=396 data-nosnippet>396</a>
-<a href=#397 id=397 data-nosnippet>397</a>    <span class="doccomment">/// Gives this child a resource group of its own, with the same name as the child.
-<a href=#398 id=398 data-nosnippet>398</a>    ///
-<a href=#399 id=399 data-nosnippet>399</a>    /// The child then does not count against the resource group of its owner. Use this for a worker that represents
-<a href=#400 id=400 data-nosnippet>400</a>    /// something with its own resource accounting, such as a topology component.
-<a href=#401 id=401 data-nosnippet>401</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>with_own_resource_group(<span class="self">self</span>) -&gt; <span class="self">Self </span>{
-<a href=#402 id=402 data-nosnippet>402</a>        <span class="self">self</span>.map_spec(|spec| spec.with_own_resource_group())
-<a href=#403 id=403 data-nosnippet>403</a>    }
-<a href=#404 id=404 data-nosnippet>404</a>
-<a href=#405 id=405 data-nosnippet>405</a>    <span class="doccomment">/// Makes `observer` receive how this child ended, after its scope closed. See [`ExitObserver`].
-<a href=#406 id=406 data-nosnippet>406</a>    </span><span class="attr">#[cfg(any(test, feature = <span class="string">"test-util"</span>))]
-<a href=#407 id=407 data-nosnippet>407</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>observing_exit(<span class="self">self</span>, observer: ExitObserver) -&gt; <span class="self">Self </span>{
-<a href=#408 id=408 data-nosnippet>408</a>        <span class="self">self</span>.map_spec(|spec| spec.observing_exit(observer))
-<a href=#409 id=409 data-nosnippet>409</a>    }
-<a href=#410 id=410 data-nosnippet>410</a>
-<a href=#411 id=411 data-nosnippet>411</a>    <span class="doccomment">/// Finishes describing the child without starting it, for [`Supervisor::add_worker`].
-<a href=#412 id=412 data-nosnippet>412</a>    ///
-<a href=#413 id=413 data-nosnippet>413</a>    /// Use this method to register a configured child on a supervisor that has not started yet. The supervisor starts
-<a href=#414 id=414 data-nosnippet>414</a>    /// this child when it runs. When the supervisor restarts, the child restarts with it. To start a child now, use
-<a href=#415 id=415 data-nosnippet>415</a>    /// [`spawn`][Self::spawn].
-<a href=#416 id=416 data-nosnippet>416</a>    ///
-<a href=#417 id=417 data-nosnippet>417</a>    /// Whichever supervisor this builder was created against is irrelevant here -- the child belongs to whichever one
-<a href=#418 id=418 data-nosnippet>418</a>    /// it is handed to.
-<a href=#419 id=419 data-nosnippet>419</a>    ///
-<a href=#420 id=420 data-nosnippet>420</a>    /// [`Supervisor::add_worker`]: super::Supervisor::add_worker
-<a href=#421 id=421 data-nosnippet>421</a>    </span><span class="kw">pub fn </span>build(<span class="self">self</span>) -&gt; ChildSpecification&lt;WorkerSpec&gt; {
-<a href=#422 id=422 data-nosnippet>422</a>        <span class="self">self</span>.spec
-<a href=#423 id=423 data-nosnippet>423</a>    }
-<a href=#424 id=424 data-nosnippet>424</a>
-<a href=#425 id=425 data-nosnippet>425</a>    <span class="doccomment">/// Spawns the child.
-<a href=#426 id=426 data-nosnippet>426</a>    ///
-<a href=#427 id=427 data-nosnippet>427</a>    /// A builder that was created from a [`SupervisorHandle`] spawns the child onto that supervisor. Other builders
-<a href=#428 id=428 data-nosnippet>428</a>    /// make the child a child of the current process, and the [scope][super::scope] of that process holds it. See
-<a href=#429 id=429 data-nosnippet>429</a>    /// [`spawn`][super::spawn].
+<a href=#392 id=392 data-nosnippet>392</a>    <span class="doccomment">/// Finishes describing the child without starting it, for [`Supervisor::add_worker`].
+<a href=#393 id=393 data-nosnippet>393</a>    ///
+<a href=#394 id=394 data-nosnippet>394</a>    /// Use this method to register a configured child on a supervisor that has not started yet. The supervisor starts
+<a href=#395 id=395 data-nosnippet>395</a>    /// this child when it runs. When the supervisor restarts, the child restarts with it. To start a child now, use
+<a href=#396 id=396 data-nosnippet>396</a>    /// [`spawn`][Self::spawn].
+<a href=#397 id=397 data-nosnippet>397</a>    ///
+<a href=#398 id=398 data-nosnippet>398</a>    /// Whichever supervisor this builder was created against is irrelevant here -- the child belongs to whichever one
+<a href=#399 id=399 data-nosnippet>399</a>    /// it is handed to.
+<a href=#400 id=400 data-nosnippet>400</a>    ///
+<a href=#401 id=401 data-nosnippet>401</a>    /// [`Supervisor::add_worker`]: super::Supervisor::add_worker
+<a href=#402 id=402 data-nosnippet>402</a>    </span><span class="kw">pub fn </span>build(<span class="self">self</span>) -&gt; ChildSpecification&lt;WorkerSpec&gt; {
+<a href=#403 id=403 data-nosnippet>403</a>        <span class="self">self</span>.spec
+<a href=#404 id=404 data-nosnippet>404</a>    }
+<a href=#405 id=405 data-nosnippet>405</a>
+<a href=#406 id=406 data-nosnippet>406</a>    <span class="doccomment">/// Spawns the child.
+<a href=#407 id=407 data-nosnippet>407</a>    ///
+<a href=#408 id=408 data-nosnippet>408</a>    /// A builder that was created from a [`SupervisorHandle`] spawns the child onto that supervisor. Other builders
+<a href=#409 id=409 data-nosnippet>409</a>    /// make the child a child of the current process, and the [scope][super::scope] of that process holds it. See
+<a href=#410 id=410 data-nosnippet>410</a>    /// [`spawn`][super::spawn].
+<a href=#411 id=411 data-nosnippet>411</a>    ///
+<a href=#412 id=412 data-nosnippet>412</a>    /// Returns the [`ChildId`] of the child. This method queues the child and does not start it synchronously. Thus,
+<a href=#413 id=413 data-nosnippet>413</a>    /// when this method returns, the child can still be in the queue. If its owner does not run, or stops before it
+<a href=#414 id=414 data-nosnippet>414</a>    /// processes the child, the child never runs.
+<a href=#415 id=415 data-nosnippet>415</a>    ///
+<a href=#416 id=416 data-nosnippet>416</a>    /// # Panics
+<a href=#417 id=417 data-nosnippet>417</a>    ///
+<a href=#418 id=418 data-nosnippet>418</a>    /// Panics if this builder does not target a specific supervisor and code outside supervision calls this method. See
+<a href=#419 id=419 data-nosnippet>419</a>    /// [`spawn`][super::spawn].
+<a href=#420 id=420 data-nosnippet>420</a>    </span><span class="kw">pub fn </span>spawn(<span class="self">self</span>) -&gt; ChildId {
+<a href=#421 id=421 data-nosnippet>421</a>        <span class="kw">let </span><span class="self">Self </span>{ target, spec, .. } = <span class="self">self</span>;
+<a href=#422 id=422 data-nosnippet>422</a>
+<a href=#423 id=423 data-nosnippet>423</a>        <span class="kw">match </span>target {
+<a href=#424 id=424 data-nosnippet>424</a>            BuilderTarget::Ambient =&gt; <span class="kw">super</span>::spawn(spec),
+<a href=#425 id=425 data-nosnippet>425</a>            BuilderTarget::Handle(supervisor) =&gt; supervisor.spawn(spec),
+<a href=#426 id=426 data-nosnippet>426</a>        }
+<a href=#427 id=427 data-nosnippet>427</a>    }
+<a href=#428 id=428 data-nosnippet>428</a>
+<a href=#429 id=429 data-nosnippet>429</a>    <span class="doccomment">/// Spawns the child onto the ambient supervisor, the nearest supervisor above the current process.
 <a href=#430 id=430 data-nosnippet>430</a>    ///
-<a href=#431 id=431 data-nosnippet>431</a>    /// Returns the [`ChildId`] of the child. This method queues the child and does not start it synchronously. Thus,
-<a href=#432 id=432 data-nosnippet>432</a>    /// when this method returns, the child can still be in the queue. If its owner does not run, or stops before it
-<a href=#433 id=433 data-nosnippet>433</a>    /// processes the child, the child never runs.
+<a href=#431 id=431 data-nosnippet>431</a>    /// The child is a sibling of the current process only if a supervisor runs that process directly. For a process
+<a href=#432 id=432 data-nosnippet>432</a>    /// that runs in a scope, the child goes to the nearest supervisor above it instead. See
+<a href=#433 id=433 data-nosnippet>433</a>    /// [`spawn_sibling`][super::spawn_sibling].
 <a href=#434 id=434 data-nosnippet>434</a>    ///
-<a href=#435 id=435 data-nosnippet>435</a>    /// # Panics
-<a href=#436 id=436 data-nosnippet>436</a>    ///
-<a href=#437 id=437 data-nosnippet>437</a>    /// Panics if this builder does not target a specific supervisor and code outside supervision calls this method. See
-<a href=#438 id=438 data-nosnippet>438</a>    /// [`spawn`][super::spawn].
-<a href=#439 id=439 data-nosnippet>439</a>    </span><span class="kw">pub fn </span>spawn(<span class="self">self</span>) -&gt; ChildId {
-<a href=#440 id=440 data-nosnippet>440</a>        <span class="kw">let </span><span class="self">Self </span>{ target, spec, .. } = <span class="self">self</span>;
-<a href=#441 id=441 data-nosnippet>441</a>
-<a href=#442 id=442 data-nosnippet>442</a>        <span class="kw">match </span>target {
-<a href=#443 id=443 data-nosnippet>443</a>            BuilderTarget::Ambient =&gt; <span class="kw">super</span>::spawn(spec),
-<a href=#444 id=444 data-nosnippet>444</a>            BuilderTarget::Handle(supervisor) =&gt; supervisor.spawn(spec),
-<a href=#445 id=445 data-nosnippet>445</a>        }
-<a href=#446 id=446 data-nosnippet>446</a>    }
-<a href=#447 id=447 data-nosnippet>447</a>
-<a href=#448 id=448 data-nosnippet>448</a>    <span class="doccomment">/// Spawns the child onto the ambient supervisor, the nearest supervisor above the current process.
-<a href=#449 id=449 data-nosnippet>449</a>    ///
-<a href=#450 id=450 data-nosnippet>450</a>    /// The child is a sibling of the current process only if a supervisor runs that process directly. For a process
-<a href=#451 id=451 data-nosnippet>451</a>    /// that runs in a scope, the child goes to the nearest supervisor above it instead. See
-<a href=#452 id=452 data-nosnippet>452</a>    /// [`spawn_sibling`][super::spawn_sibling].
-<a href=#453 id=453 data-nosnippet>453</a>    ///
-<a href=#454 id=454 data-nosnippet>454</a>    /// A builder that was created from a [`SupervisorHandle`] spawns the child onto that supervisor, exactly as
-<a href=#455 id=455 data-nosnippet>455</a>    /// [`spawn`][Self::spawn] does.
-<a href=#456 id=456 data-nosnippet>456</a>    ///
-<a href=#457 id=457 data-nosnippet>457</a>    /// # Panics
+<a href=#435 id=435 data-nosnippet>435</a>    /// A builder that was created from a [`SupervisorHandle`] spawns the child onto that supervisor, exactly as
+<a href=#436 id=436 data-nosnippet>436</a>    /// [`spawn`][Self::spawn] does.
+<a href=#437 id=437 data-nosnippet>437</a>    ///
+<a href=#438 id=438 data-nosnippet>438</a>    /// # Panics
+<a href=#439 id=439 data-nosnippet>439</a>    ///
+<a href=#440 id=440 data-nosnippet>440</a>    /// Panics if this builder does not target a specific supervisor and there is no ambient supervisor.
+<a href=#441 id=441 data-nosnippet>441</a>    </span><span class="kw">pub fn </span>spawn_sibling(<span class="self">self</span>) -&gt; ChildId {
+<a href=#442 id=442 data-nosnippet>442</a>        <span class="kw">let </span><span class="self">Self </span>{ target, spec, .. } = <span class="self">self</span>;
+<a href=#443 id=443 data-nosnippet>443</a>
+<a href=#444 id=444 data-nosnippet>444</a>        <span class="kw">match </span>target {
+<a href=#445 id=445 data-nosnippet>445</a>            BuilderTarget::Ambient =&gt; <span class="kw">super</span>::spawn_sibling(spec),
+<a href=#446 id=446 data-nosnippet>446</a>            BuilderTarget::Handle(supervisor) =&gt; supervisor.spawn(spec),
+<a href=#447 id=447 data-nosnippet>447</a>        }
+<a href=#448 id=448 data-nosnippet>448</a>    }
+<a href=#449 id=449 data-nosnippet>449</a>
+<a href=#450 id=450 data-nosnippet>450</a>    <span class="doccomment">/// Spawns the child into `scope`.
+<a href=#451 id=451 data-nosnippet>451</a>    </span><span class="kw">pub fn </span>spawn_in(<span class="self">self</span>, scope: <span class="kw-2">&amp;</span>Scope) -&gt; ChildId {
+<a href=#452 id=452 data-nosnippet>452</a>        <span class="kw">let </span><span class="self">Self </span>{ spec, .. } = <span class="self">self</span>;
+<a href=#453 id=453 data-nosnippet>453</a>
+<a href=#454 id=454 data-nosnippet>454</a>        scope.spawn(spec)
+<a href=#455 id=455 data-nosnippet>455</a>    }
+<a href=#456 id=456 data-nosnippet>456</a>
+<a href=#457 id=457 data-nosnippet>457</a>    <span class="doccomment">/// Spawns the child into the scope of the current process, or as a detached task outside supervision.
 <a href=#458 id=458 data-nosnippet>458</a>    ///
-<a href=#459 id=459 data-nosnippet>459</a>    /// Panics if this builder does not target a specific supervisor and there is no ambient supervisor.
-<a href=#460 id=460 data-nosnippet>460</a>    </span><span class="kw">pub fn </span>spawn_sibling(<span class="self">self</span>) -&gt; ChildId {
-<a href=#461 id=461 data-nosnippet>461</a>        <span class="kw">let </span><span class="self">Self </span>{ target, spec, .. } = <span class="self">self</span>;
-<a href=#462 id=462 data-nosnippet>462</a>
-<a href=#463 id=463 data-nosnippet>463</a>        <span class="kw">match </span>target {
-<a href=#464 id=464 data-nosnippet>464</a>            BuilderTarget::Ambient =&gt; <span class="kw">super</span>::spawn_sibling(spec),
-<a href=#465 id=465 data-nosnippet>465</a>            BuilderTarget::Handle(supervisor) =&gt; supervisor.spawn(spec),
-<a href=#466 id=466 data-nosnippet>466</a>        }
-<a href=#467 id=467 data-nosnippet>467</a>    }
-<a href=#468 id=468 data-nosnippet>468</a>
-<a href=#469 id=469 data-nosnippet>469</a>    <span class="doccomment">/// Spawns the child into `scope`.
-<a href=#470 id=470 data-nosnippet>470</a>    </span><span class="kw">pub fn </span>spawn_in(<span class="self">self</span>, scope: <span class="kw-2">&amp;</span>Scope) -&gt; ChildId {
-<a href=#471 id=471 data-nosnippet>471</a>        <span class="kw">let </span><span class="self">Self </span>{ spec, .. } = <span class="self">self</span>;
-<a href=#472 id=472 data-nosnippet>472</a>
-<a href=#473 id=473 data-nosnippet>473</a>        scope.spawn(spec)
-<a href=#474 id=474 data-nosnippet>474</a>    }
+<a href=#459 id=459 data-nosnippet>459</a>    /// Returns the [`ChildId`] of the child, or `None` if there was no current scope and the child started as a
+<a href=#460 id=460 data-nosnippet>460</a>    /// detached task instead. A detached child never receives a shutdown signal, and nothing restarts it or waits for
+<a href=#461 id=461 data-nosnippet>461</a>    /// it. This is how the same work runs without supervision at all. Thus, this method is the correct choice for code
+<a href=#462 id=462 data-nosnippet>462</a>    /// that can be called from any location, such as a primitive that a test can construct.
+<a href=#463 id=463 data-nosnippet>463</a>    </span><span class="kw">pub fn </span>spawn_or_detached(<span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;ChildId&gt; {
+<a href=#464 id=464 data-nosnippet>464</a>        <span class="kw">let </span><span class="self">Self </span>{ spec, .. } = <span class="self">self</span>;
+<a href=#465 id=465 data-nosnippet>465</a>
+<a href=#466 id=466 data-nosnippet>466</a>        <span class="kw">match </span>scope::current() {
+<a href=#467 id=467 data-nosnippet>467</a>            <span class="prelude-val">Some</span>(scope) =&gt; <span class="prelude-val">Some</span>(scope.spawn(spec)),
+<a href=#468 id=468 data-nosnippet>468</a>            <span class="prelude-val">None </span>=&gt; {
+<a href=#469 id=469 data-nosnippet>469</a>                scope::spawn_detached(spec, ShutdownHandle::noop());
+<a href=#470 id=470 data-nosnippet>470</a>                <span class="prelude-val">None
+<a href=#471 id=471 data-nosnippet>471</a>            </span>}
+<a href=#472 id=472 data-nosnippet>472</a>        }
+<a href=#473 id=473 data-nosnippet>473</a>    }
+<a href=#474 id=474 data-nosnippet>474</a>}
 <a href=#475 id=475 data-nosnippet>475</a>
-<a href=#476 id=476 data-nosnippet>476</a>    <span class="doccomment">/// Spawns the child into the scope of the current process, or as a detached task outside supervision.
-<a href=#477 id=477 data-nosnippet>477</a>    ///
-<a href=#478 id=478 data-nosnippet>478</a>    /// Returns the [`ChildId`] of the child, or `None` if there was no current scope and the child started as a
-<a href=#479 id=479 data-nosnippet>479</a>    /// detached task instead. A detached child never receives a shutdown signal, and nothing restarts it or waits for
-<a href=#480 id=480 data-nosnippet>480</a>    /// it. This is how the same work runs without supervision at all. Thus, this method is the correct choice for code
-<a href=#481 id=481 data-nosnippet>481</a>    /// that can be called from any location, such as a primitive that a test can construct.
-<a href=#482 id=482 data-nosnippet>482</a>    </span><span class="kw">pub fn </span>spawn_or_detached(<span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;ChildId&gt; {
-<a href=#483 id=483 data-nosnippet>483</a>        <span class="kw">let </span><span class="self">Self </span>{ spec, .. } = <span class="self">self</span>;
-<a href=#484 id=484 data-nosnippet>484</a>
-<a href=#485 id=485 data-nosnippet>485</a>        <span class="kw">match </span>scope::current() {
-<a href=#486 id=486 data-nosnippet>486</a>            <span class="prelude-val">Some</span>(scope) =&gt; <span class="prelude-val">Some</span>(scope.spawn(spec)),
-<a href=#487 id=487 data-nosnippet>487</a>            <span class="prelude-val">None </span>=&gt; {
-<a href=#488 id=488 data-nosnippet>488</a>                scope::spawn_detached(spec, ShutdownHandle::noop());
-<a href=#489 id=489 data-nosnippet>489</a>                <span class="prelude-val">None
-<a href=#490 id=490 data-nosnippet>490</a>            </span>}
-<a href=#491 id=491 data-nosnippet>491</a>        }
-<a href=#492 id=492 data-nosnippet>492</a>    }
-<a href=#493 id=493 data-nosnippet>493</a>}
+<a href=#476 id=476 data-nosnippet>476</a><span class="kw">impl</span>&lt;<span class="lifetime">'a</span>&gt; ChildBuilder&lt;<span class="lifetime">'a</span>, OneShot&gt; {
+<a href=#477 id=477 data-nosnippet>477</a>    <span class="kw">fn </span>new_one_shot&lt;T&gt;(target: BuilderTarget&lt;<span class="lifetime">'a</span>&gt;, worker: T) -&gt; <span class="self">Self
+<a href=#478 id=478 data-nosnippet>478</a>    </span><span class="kw">where
+<a href=#479 id=479 data-nosnippet>479</a>        </span>T: Supervisable + <span class="lifetime">'static</span>,
+<a href=#480 id=480 data-nosnippet>480</a>    {
+<a href=#481 id=481 data-nosnippet>481</a>        <span class="kw">let </span>spec = ChildSpecification::worker(worker);
+<a href=#482 id=482 data-nosnippet>482</a>
+<a href=#483 id=483 data-nosnippet>483</a>        <span class="self">Self</span>::new(target, spec)
+<a href=#484 id=484 data-nosnippet>484</a>    }
+<a href=#485 id=485 data-nosnippet>485</a>}
+<a href=#486 id=486 data-nosnippet>486</a>
+<a href=#487 id=487 data-nosnippet>487</a><span class="kw">impl</span>&lt;<span class="lifetime">'a</span>&gt; ChildBuilder&lt;<span class="lifetime">'a</span>, Restartable&gt; {
+<a href=#488 id=488 data-nosnippet>488</a>    <span class="kw">fn </span>new_restartable&lt;T&gt;(target: BuilderTarget&lt;<span class="lifetime">'a</span>&gt;, worker: T) -&gt; <span class="self">Self
+<a href=#489 id=489 data-nosnippet>489</a>    </span><span class="kw">where
+<a href=#490 id=490 data-nosnippet>490</a>        </span>T: Supervisable + <span class="lifetime">'static</span>,
+<a href=#491 id=491 data-nosnippet>491</a>    {
+<a href=#492 id=492 data-nosnippet>492</a>        <span class="self">Self</span>::new(target, ChildSpecification::worker(worker))
+<a href=#493 id=493 data-nosnippet>493</a>    }
 <a href=#494 id=494 data-nosnippet>494</a>
-<a href=#495 id=495 data-nosnippet>495</a><span class="kw">impl</span>&lt;<span class="lifetime">'a</span>&gt; ChildBuilder&lt;<span class="lifetime">'a</span>, OneShot&gt; {
-<a href=#496 id=496 data-nosnippet>496</a>    <span class="kw">fn </span>new_one_shot&lt;T&gt;(target: BuilderTarget&lt;<span class="lifetime">'a</span>&gt;, worker: T) -&gt; <span class="self">Self
-<a href=#497 id=497 data-nosnippet>497</a>    </span><span class="kw">where
-<a href=#498 id=498 data-nosnippet>498</a>        </span>T: Supervisable + <span class="lifetime">'static</span>,
-<a href=#499 id=499 data-nosnippet>499</a>    {
-<a href=#500 id=500 data-nosnippet>500</a>        <span class="kw">let </span>spec = ChildSpecification::worker(worker).with_budget_bounded_shutdown();
-<a href=#501 id=501 data-nosnippet>501</a>
-<a href=#502 id=502 data-nosnippet>502</a>        <span class="self">Self</span>::new(target, spec)
-<a href=#503 id=503 data-nosnippet>503</a>    }
-<a href=#504 id=504 data-nosnippet>504</a>}
-<a href=#505 id=505 data-nosnippet>505</a>
-<a href=#506 id=506 data-nosnippet>506</a><span class="kw">impl</span>&lt;<span class="lifetime">'a</span>&gt; ChildBuilder&lt;<span class="lifetime">'a</span>, Restartable&gt; {
-<a href=#507 id=507 data-nosnippet>507</a>    <span class="kw">fn </span>new_restartable&lt;T&gt;(target: BuilderTarget&lt;<span class="lifetime">'a</span>&gt;, worker: T) -&gt; <span class="self">Self
-<a href=#508 id=508 data-nosnippet>508</a>    </span><span class="kw">where
-<a href=#509 id=509 data-nosnippet>509</a>        </span>T: Supervisable + <span class="lifetime">'static</span>,
-<a href=#510 id=510 data-nosnippet>510</a>    {
-<a href=#511 id=511 data-nosnippet>511</a>        <span class="self">Self</span>::new(target, ChildSpecification::worker(worker))
-<a href=#512 id=512 data-nosnippet>512</a>    }
-<a href=#513 id=513 data-nosnippet>513</a>
-<a href=#514 id=514 data-nosnippet>514</a>    <span class="doccomment">/// Restarts this child task only when it terminates abnormally.
-<a href=#515 id=515 data-nosnippet>515</a>    </span><span class="attr">#[deprecated(note = <span class="string">"mark the child `hosted` instead, which restarts it only if it fails"</span>)]
-<a href=#516 id=516 data-nosnippet>516</a>    </span><span class="kw">pub fn </span>transient(<span class="self">self</span>) -&gt; <span class="self">Self </span>{
-<a href=#517 id=517 data-nosnippet>517</a>        <span class="self">self</span>.map_spec(|spec| spec.with_restart_type(RestartType::Transient))
-<a href=#518 id=518 data-nosnippet>518</a>    }
+<a href=#495 id=495 data-nosnippet>495</a>    <span class="doccomment">/// Restarts this child task only when it terminates abnormally.
+<a href=#496 id=496 data-nosnippet>496</a>    </span><span class="attr">#[deprecated(note = <span class="string">"mark the child `hosted` instead, which restarts it only if it fails"</span>)]
+<a href=#497 id=497 data-nosnippet>497</a>    </span><span class="kw">pub fn </span>transient(<span class="self">self</span>) -&gt; <span class="self">Self </span>{
+<a href=#498 id=498 data-nosnippet>498</a>        <span class="self">self</span>.map_spec(|spec| spec.with_restart_type(RestartType::Transient))
+<a href=#499 id=499 data-nosnippet>499</a>    }
+<a href=#500 id=500 data-nosnippet>500</a>
+<a href=#501 id=501 data-nosnippet>501</a>    <span class="doccomment">/// Never restarts this child task.
+<a href=#502 id=502 data-nosnippet>502</a>    </span><span class="attr">#[deprecated(note = <span class="string">"implement `Supervisable::can_restart` instead, if the child can only be started once"</span>)]
+<a href=#503 id=503 data-nosnippet>503</a>    </span><span class="kw">pub fn </span>temporary(<span class="self">self</span>) -&gt; <span class="self">Self </span>{
+<a href=#504 id=504 data-nosnippet>504</a>        <span class="self">self</span>.map_spec(|spec| spec.with_restart_type(RestartType::Temporary))
+<a href=#505 id=505 data-nosnippet>505</a>    }
+<a href=#506 id=506 data-nosnippet>506</a>}
+<a href=#507 id=507 data-nosnippet>507</a>
+<a href=#508 id=508 data-nosnippet>508</a><span class="doccomment">/// Builder for a yet-to-be-started nested supervisor.
+<a href=#509 id=509 data-nosnippet>509</a>///
+<a href=#510 id=510 data-nosnippet>510</a>/// The counterpart to [`ChildBuilder`] for a child that is itself a [`Supervisor`], and deliberately a much smaller
+<a href=#511 id=511 data-nosnippet>511</a>/// surface. A nested supervisor has no placement of its own, because it runs where its parent runs and its children
+<a href=#512 id=512 data-nosnippet>512</a>/// carry their own placement. It also has no shutdown deadline of its own, because it limits its own drain through its
+<a href=#513 id=513 data-nosnippet>513</a>/// children. Thus, the settings that remain are whether it is needed or hosted, and whether it stops with its owner.
+<a href=#514 id=514 data-nosnippet>514</a></span><span class="attr">#[must_use = <span class="string">"a child is only described until `spawn` or `build` is called"</span>]
+<a href=#515 id=515 data-nosnippet>515</a></span><span class="kw">pub struct </span>NestedSupervisorBuilder&lt;<span class="lifetime">'a</span>&gt; {
+<a href=#516 id=516 data-nosnippet>516</a>    target: BuilderTarget&lt;<span class="lifetime">'a</span>&gt;,
+<a href=#517 id=517 data-nosnippet>517</a>    spec: ChildSpecification&lt;SupervisorSpec&gt;,
+<a href=#518 id=518 data-nosnippet>518</a>}
 <a href=#519 id=519 data-nosnippet>519</a>
-<a href=#520 id=520 data-nosnippet>520</a>    <span class="doccomment">/// Never restarts this child task.
-<a href=#521 id=521 data-nosnippet>521</a>    </span><span class="attr">#[deprecated(note = <span class="string">"implement `Supervisable::can_restart` instead, if the child can only be started once"</span>)]
-<a href=#522 id=522 data-nosnippet>522</a>    </span><span class="kw">pub fn </span>temporary(<span class="self">self</span>) -&gt; <span class="self">Self </span>{
-<a href=#523 id=523 data-nosnippet>523</a>        <span class="self">self</span>.map_spec(|spec| spec.with_restart_type(RestartType::Temporary))
-<a href=#524 id=524 data-nosnippet>524</a>    }
-<a href=#525 id=525 data-nosnippet>525</a>}
-<a href=#526 id=526 data-nosnippet>526</a>
-<a href=#527 id=527 data-nosnippet>527</a><span class="doccomment">/// Builder for a yet-to-be-started nested supervisor.
-<a href=#528 id=528 data-nosnippet>528</a>///
-<a href=#529 id=529 data-nosnippet>529</a>/// The counterpart to [`ChildBuilder`] for a child that is itself a [`Supervisor`], and deliberately a much smaller
-<a href=#530 id=530 data-nosnippet>530</a>/// surface. A nested supervisor has no placement of its own, because it runs where its parent runs and its children
-<a href=#531 id=531 data-nosnippet>531</a>/// carry their own placement. It also has no shutdown deadline of its own, because it limits its own drain through its
-<a href=#532 id=532 data-nosnippet>532</a>/// children. Thus, the only setting that remains is whether it is needed or hosted.
-<a href=#533 id=533 data-nosnippet>533</a></span><span class="attr">#[must_use = <span class="string">"a child is only described until `spawn` or `build` is called"</span>]
-<a href=#534 id=534 data-nosnippet>534</a></span><span class="kw">pub struct </span>NestedSupervisorBuilder&lt;<span class="lifetime">'a</span>&gt; {
-<a href=#535 id=535 data-nosnippet>535</a>    target: BuilderTarget&lt;<span class="lifetime">'a</span>&gt;,
-<a href=#536 id=536 data-nosnippet>536</a>    spec: ChildSpecification&lt;SupervisorSpec&gt;,
-<a href=#537 id=537 data-nosnippet>537</a>}
-<a href=#538 id=538 data-nosnippet>538</a>
-<a href=#539 id=539 data-nosnippet>539</a><span class="kw">impl</span>&lt;<span class="lifetime">'a</span>&gt; NestedSupervisorBuilder&lt;<span class="lifetime">'a</span>&gt; {
-<a href=#540 id=540 data-nosnippet>540</a>    <span class="kw">fn </span>new(target: BuilderTarget&lt;<span class="lifetime">'a</span>&gt;, supervisor: Supervisor) -&gt; <span class="self">Self </span>{
-<a href=#541 id=541 data-nosnippet>541</a>        <span class="self">Self </span>{
-<a href=#542 id=542 data-nosnippet>542</a>            target,
-<a href=#543 id=543 data-nosnippet>543</a>            spec: ChildSpecification::from(supervisor),
-<a href=#544 id=544 data-nosnippet>544</a>        }
-<a href=#545 id=545 data-nosnippet>545</a>    }
-<a href=#546 id=546 data-nosnippet>546</a>
-<a href=#547 id=547 data-nosnippet>547</a>    <span class="kw">fn </span>map_spec&lt;F&gt;(<span class="self">self</span>, f: F) -&gt; <span class="self">Self
-<a href=#548 id=548 data-nosnippet>548</a>    </span><span class="kw">where
-<a href=#549 id=549 data-nosnippet>549</a>        </span>F: FnOnce(ChildSpecification&lt;SupervisorSpec&gt;) -&gt; ChildSpecification&lt;SupervisorSpec&gt;,
-<a href=#550 id=550 data-nosnippet>550</a>    {
-<a href=#551 id=551 data-nosnippet>551</a>        <span class="kw">let </span><span class="self">Self </span>{ target, spec } = <span class="self">self</span>;
-<a href=#552 id=552 data-nosnippet>552</a>
-<a href=#553 id=553 data-nosnippet>553</a>        <span class="self">Self </span>{ target, spec: f(spec) }
-<a href=#554 id=554 data-nosnippet>554</a>    }
-<a href=#555 id=555 data-nosnippet>555</a>
-<a href=#556 id=556 data-nosnippet>556</a>    <span class="doccomment">/// Marks this subtree as one that its owner cannot work without.
-<a href=#557 id=557 data-nosnippet>557</a>    ///
-<a href=#558 id=558 data-nosnippet>558</a>    /// See [`ChildBuilder::needed`], which this method mirrors.
-<a href=#559 id=559 data-nosnippet>559</a>    </span><span class="kw">pub fn </span>needed(<span class="self">self</span>) -&gt; <span class="self">Self </span>{
-<a href=#560 id=560 data-nosnippet>560</a>        <span class="self">self</span>.map_spec(|spec| spec.with_edge(Edge::Needed))
-<a href=#561 id=561 data-nosnippet>561</a>    }
-<a href=#562 id=562 data-nosnippet>562</a>
-<a href=#563 id=563 data-nosnippet>563</a>    <span class="doccomment">/// Marks this subtree as one that its owner runs but does not need.
-<a href=#564 id=564 data-nosnippet>564</a>    ///
-<a href=#565 id=565 data-nosnippet>565</a>    /// See [`ChildBuilder::hosted`], which this method mirrors.
-<a href=#566 id=566 data-nosnippet>566</a>    </span><span class="kw">pub fn </span>hosted(<span class="self">self</span>) -&gt; <span class="self">Self </span>{
-<a href=#567 id=567 data-nosnippet>567</a>        <span class="self">self</span>.map_spec(|spec| spec.with_edge(Edge::Hosted))
-<a href=#568 id=568 data-nosnippet>568</a>    }
-<a href=#569 id=569 data-nosnippet>569</a>
-<a href=#570 id=570 data-nosnippet>570</a>    <span class="doccomment">/// Restarts this subtree only when it terminates abnormally.
-<a href=#571 id=571 data-nosnippet>571</a>    </span><span class="attr">#[deprecated(note = <span class="string">"mark the subtree `hosted` instead, which restarts it only if it fails"</span>)]
-<a href=#572 id=572 data-nosnippet>572</a>    </span><span class="kw">pub fn </span>transient(<span class="self">self</span>) -&gt; <span class="self">Self </span>{
-<a href=#573 id=573 data-nosnippet>573</a>        <span class="self">self</span>.map_spec(|spec| spec.with_restart_type(RestartType::Transient))
-<a href=#574 id=574 data-nosnippet>574</a>    }
-<a href=#575 id=575 data-nosnippet>575</a>
-<a href=#576 id=576 data-nosnippet>576</a>    <span class="doccomment">/// Never restarts this subtree.
-<a href=#577 id=577 data-nosnippet>577</a>    </span><span class="attr">#[deprecated(note = <span class="string">"a supervisor can always be started again; mark it `hosted` or `needed` instead"</span>)]
-<a href=#578 id=578 data-nosnippet>578</a>    </span><span class="kw">pub fn </span>temporary(<span class="self">self</span>) -&gt; <span class="self">Self </span>{
-<a href=#579 id=579 data-nosnippet>579</a>        <span class="self">self</span>.map_spec(|spec| spec.with_restart_type(RestartType::Temporary))
-<a href=#580 id=580 data-nosnippet>580</a>    }
-<a href=#581 id=581 data-nosnippet>581</a>
-<a href=#582 id=582 data-nosnippet>582</a>    <span class="doccomment">/// Sets whether the parent supervisor stops when this subtree terminates.
-<a href=#583 id=583 data-nosnippet>583</a>    </span><span class="attr">#[deprecated(note = <span class="string">"mark the subtree `needed` instead, which stops its owner when it terminates for good"</span>)]
-<a href=#584 id=584 data-nosnippet>584</a>    </span><span class="kw">pub fn </span>with_significant(<span class="self">self</span>, significant: bool) -&gt; <span class="self">Self </span>{
-<a href=#585 id=585 data-nosnippet>585</a>        <span class="self">self</span>.map_spec(|spec| spec.with_significant(significant))
-<a href=#586 id=586 data-nosnippet>586</a>    }
-<a href=#587 id=587 data-nosnippet>587</a>
-<a href=#588 id=588 data-nosnippet>588</a>    <span class="doccomment">/// Finishes describing the child without starting it, for [`Supervisor::add_worker`].
-<a href=#589 id=589 data-nosnippet>589</a>    ///
-<a href=#590 id=590 data-nosnippet>590</a>    /// Use this method to register a configured subtree on a supervisor that has not started yet. To start the subtree
-<a href=#591 id=591 data-nosnippet>591</a>    /// now, use [`spawn`][Self::spawn].
-<a href=#592 id=592 data-nosnippet>592</a>    ///
-<a href=#593 id=593 data-nosnippet>593</a>    /// Whichever supervisor this builder was created against is irrelevant here -- the child belongs to whichever one
-<a href=#594 id=594 data-nosnippet>594</a>    /// it is handed to.
-<a href=#595 id=595 data-nosnippet>595</a>    </span><span class="kw">pub fn </span>build(<span class="self">self</span>) -&gt; ChildSpecification&lt;SupervisorSpec&gt; {
-<a href=#596 id=596 data-nosnippet>596</a>        <span class="self">self</span>.spec
-<a href=#597 id=597 data-nosnippet>597</a>    }
-<a href=#598 id=598 data-nosnippet>598</a>
-<a href=#599 id=599 data-nosnippet>599</a>    <span class="doccomment">/// Spawns the nested supervisor.
-<a href=#600 id=600 data-nosnippet>600</a>    ///
-<a href=#601 id=601 data-nosnippet>601</a>    /// This method works as [`ChildBuilder::spawn`] does. It spawns onto the target supervisor if the builder has one.
-<a href=#602 id=602 data-nosnippet>602</a>    /// If not, it spawns the nested supervisor as a child of the current process.
+<a href=#520 id=520 data-nosnippet>520</a><span class="kw">impl</span>&lt;<span class="lifetime">'a</span>&gt; NestedSupervisorBuilder&lt;<span class="lifetime">'a</span>&gt; {
+<a href=#521 id=521 data-nosnippet>521</a>    <span class="kw">fn </span>new(target: BuilderTarget&lt;<span class="lifetime">'a</span>&gt;, supervisor: Supervisor) -&gt; <span class="self">Self </span>{
+<a href=#522 id=522 data-nosnippet>522</a>        <span class="self">Self </span>{
+<a href=#523 id=523 data-nosnippet>523</a>            target,
+<a href=#524 id=524 data-nosnippet>524</a>            spec: ChildSpecification::from(supervisor),
+<a href=#525 id=525 data-nosnippet>525</a>        }
+<a href=#526 id=526 data-nosnippet>526</a>    }
+<a href=#527 id=527 data-nosnippet>527</a>
+<a href=#528 id=528 data-nosnippet>528</a>    <span class="kw">fn </span>map_spec&lt;F&gt;(<span class="self">self</span>, f: F) -&gt; <span class="self">Self
+<a href=#529 id=529 data-nosnippet>529</a>    </span><span class="kw">where
+<a href=#530 id=530 data-nosnippet>530</a>        </span>F: FnOnce(ChildSpecification&lt;SupervisorSpec&gt;) -&gt; ChildSpecification&lt;SupervisorSpec&gt;,
+<a href=#531 id=531 data-nosnippet>531</a>    {
+<a href=#532 id=532 data-nosnippet>532</a>        <span class="kw">let </span><span class="self">Self </span>{ target, spec } = <span class="self">self</span>;
+<a href=#533 id=533 data-nosnippet>533</a>
+<a href=#534 id=534 data-nosnippet>534</a>        <span class="self">Self </span>{ target, spec: f(spec) }
+<a href=#535 id=535 data-nosnippet>535</a>    }
+<a href=#536 id=536 data-nosnippet>536</a>
+<a href=#537 id=537 data-nosnippet>537</a>    <span class="doccomment">/// Marks this subtree as one that its owner cannot work without.
+<a href=#538 id=538 data-nosnippet>538</a>    ///
+<a href=#539 id=539 data-nosnippet>539</a>    /// See [`ChildBuilder::needed`], which this method mirrors.
+<a href=#540 id=540 data-nosnippet>540</a>    </span><span class="kw">pub fn </span>needed(<span class="self">self</span>) -&gt; <span class="self">Self </span>{
+<a href=#541 id=541 data-nosnippet>541</a>        <span class="self">self</span>.map_spec(|spec| spec.with_edge(Edge::Needed))
+<a href=#542 id=542 data-nosnippet>542</a>    }
+<a href=#543 id=543 data-nosnippet>543</a>
+<a href=#544 id=544 data-nosnippet>544</a>    <span class="doccomment">/// Marks this subtree as one that its owner runs but does not need.
+<a href=#545 id=545 data-nosnippet>545</a>    ///
+<a href=#546 id=546 data-nosnippet>546</a>    /// See [`ChildBuilder::hosted`], which this method mirrors.
+<a href=#547 id=547 data-nosnippet>547</a>    </span><span class="kw">pub fn </span>hosted(<span class="self">self</span>) -&gt; <span class="self">Self </span>{
+<a href=#548 id=548 data-nosnippet>548</a>        <span class="self">self</span>.map_spec(|spec| spec.with_edge(Edge::Hosted))
+<a href=#549 id=549 data-nosnippet>549</a>    }
+<a href=#550 id=550 data-nosnippet>550</a>
+<a href=#551 id=551 data-nosnippet>551</a>    <span class="doccomment">/// Tells this subtree to stop as soon as its owner is told to stop, instead of when the owner's scope closes.
+<a href=#552 id=552 data-nosnippet>552</a>    ///
+<a href=#553 id=553 data-nosnippet>553</a>    /// Use this for ingress whose output the owner's body consumes, such as a server whose handlers feed a channel that
+<a href=#554 id=554 data-nosnippet>554</a>    /// the body drains. The server stops accepting work and finishes what it accepted while the body keeps draining.
+<a href=#555 id=555 data-nosnippet>555</a>    ///
+<a href=#556 id=556 data-nosnippet>556</a>    /// This takes effect only in the scope of a worker that takes the shutdown signal (see
+<a href=#557 id=557 data-nosnippet>557</a>    /// [`Supervisable::wants_shutdown_signal`]). A supervisor tells all of its children to stop at once anyway, and a
+<a href=#558 id=558 data-nosnippet>558</a>    /// worker that takes no signal has nothing to stop the subtree with.
+<a href=#559 id=559 data-nosnippet>559</a>    ///
+<a href=#560 id=560 data-nosnippet>560</a>    /// The scope keeps the subtree's specification until the subtree exits, and the specification holds whatever the
+<a href=#561 id=561 data-nosnippet>561</a>    /// subtree was built with, such as the sender in a request handler. Thus, the channel closes once the subtree exits.
+<a href=#562 id=562 data-nosnippet>562</a>    /// The body **MUST NOT** hold a sender of that channel itself, or the channel never closes. See the
+<a href=#563 id=563 data-nosnippet>563</a>    /// [scope documentation][super::scope#nested-supervisors-that-stop-with-their-owner].
+<a href=#564 id=564 data-nosnippet>564</a>    </span><span class="kw">pub fn </span>stops_with_owner(<span class="self">self</span>) -&gt; <span class="self">Self </span>{
+<a href=#565 id=565 data-nosnippet>565</a>        <span class="self">self</span>.map_spec(|spec| spec.stopping_with_owner())
+<a href=#566 id=566 data-nosnippet>566</a>    }
+<a href=#567 id=567 data-nosnippet>567</a>
+<a href=#568 id=568 data-nosnippet>568</a>    <span class="doccomment">/// Restarts this subtree only when it terminates abnormally.
+<a href=#569 id=569 data-nosnippet>569</a>    </span><span class="attr">#[deprecated(note = <span class="string">"mark the subtree `hosted` instead, which restarts it only if it fails"</span>)]
+<a href=#570 id=570 data-nosnippet>570</a>    </span><span class="kw">pub fn </span>transient(<span class="self">self</span>) -&gt; <span class="self">Self </span>{
+<a href=#571 id=571 data-nosnippet>571</a>        <span class="self">self</span>.map_spec(|spec| spec.with_restart_type(RestartType::Transient))
+<a href=#572 id=572 data-nosnippet>572</a>    }
+<a href=#573 id=573 data-nosnippet>573</a>
+<a href=#574 id=574 data-nosnippet>574</a>    <span class="doccomment">/// Never restarts this subtree.
+<a href=#575 id=575 data-nosnippet>575</a>    </span><span class="attr">#[deprecated(note = <span class="string">"a supervisor can always be started again; mark it `hosted` or `needed` instead"</span>)]
+<a href=#576 id=576 data-nosnippet>576</a>    </span><span class="kw">pub fn </span>temporary(<span class="self">self</span>) -&gt; <span class="self">Self </span>{
+<a href=#577 id=577 data-nosnippet>577</a>        <span class="self">self</span>.map_spec(|spec| spec.with_restart_type(RestartType::Temporary))
+<a href=#578 id=578 data-nosnippet>578</a>    }
+<a href=#579 id=579 data-nosnippet>579</a>
+<a href=#580 id=580 data-nosnippet>580</a>    <span class="doccomment">/// Sets whether the parent supervisor stops when this subtree terminates.
+<a href=#581 id=581 data-nosnippet>581</a>    </span><span class="attr">#[deprecated(note = <span class="string">"mark the subtree `needed` instead, which stops its owner when it terminates for good"</span>)]
+<a href=#582 id=582 data-nosnippet>582</a>    </span><span class="kw">pub fn </span>with_significant(<span class="self">self</span>, significant: bool) -&gt; <span class="self">Self </span>{
+<a href=#583 id=583 data-nosnippet>583</a>        <span class="self">self</span>.map_spec(|spec| spec.with_significant(significant))
+<a href=#584 id=584 data-nosnippet>584</a>    }
+<a href=#585 id=585 data-nosnippet>585</a>
+<a href=#586 id=586 data-nosnippet>586</a>    <span class="doccomment">/// Finishes describing the child without starting it, for [`Supervisor::add_worker`].
+<a href=#587 id=587 data-nosnippet>587</a>    ///
+<a href=#588 id=588 data-nosnippet>588</a>    /// Use this method to register a configured subtree on a supervisor that has not started yet. To start the subtree
+<a href=#589 id=589 data-nosnippet>589</a>    /// now, use [`spawn`][Self::spawn].
+<a href=#590 id=590 data-nosnippet>590</a>    ///
+<a href=#591 id=591 data-nosnippet>591</a>    /// Whichever supervisor this builder was created against is irrelevant here -- the child belongs to whichever one
+<a href=#592 id=592 data-nosnippet>592</a>    /// it is handed to.
+<a href=#593 id=593 data-nosnippet>593</a>    </span><span class="kw">pub fn </span>build(<span class="self">self</span>) -&gt; ChildSpecification&lt;SupervisorSpec&gt; {
+<a href=#594 id=594 data-nosnippet>594</a>        <span class="self">self</span>.spec
+<a href=#595 id=595 data-nosnippet>595</a>    }
+<a href=#596 id=596 data-nosnippet>596</a>
+<a href=#597 id=597 data-nosnippet>597</a>    <span class="doccomment">/// Spawns the nested supervisor.
+<a href=#598 id=598 data-nosnippet>598</a>    ///
+<a href=#599 id=599 data-nosnippet>599</a>    /// This method works as [`ChildBuilder::spawn`] does. It spawns onto the target supervisor if the builder has one.
+<a href=#600 id=600 data-nosnippet>600</a>    /// If not, it spawns the nested supervisor as a child of the current process.
+<a href=#601 id=601 data-nosnippet>601</a>    ///
+<a href=#602 id=602 data-nosnippet>602</a>    /// # Panics
 <a href=#603 id=603 data-nosnippet>603</a>    ///
-<a href=#604 id=604 data-nosnippet>604</a>    /// # Panics
-<a href=#605 id=605 data-nosnippet>605</a>    ///
-<a href=#606 id=606 data-nosnippet>606</a>    /// Panics if this builder does not target a specific supervisor and code outside supervision calls this method. See
-<a href=#607 id=607 data-nosnippet>607</a>    /// [`spawn`][super::spawn].
-<a href=#608 id=608 data-nosnippet>608</a>    </span><span class="kw">pub fn </span>spawn(<span class="self">self</span>) -&gt; ChildId {
-<a href=#609 id=609 data-nosnippet>609</a>        <span class="kw">let </span><span class="self">Self </span>{ target, spec } = <span class="self">self</span>;
-<a href=#610 id=610 data-nosnippet>610</a>
-<a href=#611 id=611 data-nosnippet>611</a>        <span class="kw">match </span>target {
-<a href=#612 id=612 data-nosnippet>612</a>            BuilderTarget::Ambient =&gt; <span class="kw">super</span>::spawn(spec),
-<a href=#613 id=613 data-nosnippet>613</a>            BuilderTarget::Handle(supervisor) =&gt; supervisor.spawn(spec),
-<a href=#614 id=614 data-nosnippet>614</a>        }
-<a href=#615 id=615 data-nosnippet>615</a>    }
-<a href=#616 id=616 data-nosnippet>616</a>
-<a href=#617 id=617 data-nosnippet>617</a>    <span class="doccomment">/// Spawns the nested supervisor onto the ambient supervisor, the nearest supervisor above the current process.
+<a href=#604 id=604 data-nosnippet>604</a>    /// Panics if this builder does not target a specific supervisor and code outside supervision calls this method. See
+<a href=#605 id=605 data-nosnippet>605</a>    /// [`spawn`][super::spawn].
+<a href=#606 id=606 data-nosnippet>606</a>    </span><span class="kw">pub fn </span>spawn(<span class="self">self</span>) -&gt; ChildId {
+<a href=#607 id=607 data-nosnippet>607</a>        <span class="kw">let </span><span class="self">Self </span>{ target, spec } = <span class="self">self</span>;
+<a href=#608 id=608 data-nosnippet>608</a>
+<a href=#609 id=609 data-nosnippet>609</a>        <span class="kw">match </span>target {
+<a href=#610 id=610 data-nosnippet>610</a>            BuilderTarget::Ambient =&gt; <span class="kw">super</span>::spawn(spec),
+<a href=#611 id=611 data-nosnippet>611</a>            BuilderTarget::Handle(supervisor) =&gt; supervisor.spawn(spec),
+<a href=#612 id=612 data-nosnippet>612</a>        }
+<a href=#613 id=613 data-nosnippet>613</a>    }
+<a href=#614 id=614 data-nosnippet>614</a>
+<a href=#615 id=615 data-nosnippet>615</a>    <span class="doccomment">/// Spawns the nested supervisor onto the ambient supervisor, the nearest supervisor above the current process.
+<a href=#616 id=616 data-nosnippet>616</a>    ///
+<a href=#617 id=617 data-nosnippet>617</a>    /// This method works as [`ChildBuilder::spawn_sibling`] does.
 <a href=#618 id=618 data-nosnippet>618</a>    ///
-<a href=#619 id=619 data-nosnippet>619</a>    /// This method works as [`ChildBuilder::spawn_sibling`] does.
+<a href=#619 id=619 data-nosnippet>619</a>    /// # Panics
 <a href=#620 id=620 data-nosnippet>620</a>    ///
-<a href=#621 id=621 data-nosnippet>621</a>    /// # Panics
-<a href=#622 id=622 data-nosnippet>622</a>    ///
-<a href=#623 id=623 data-nosnippet>623</a>    /// Panics if this builder does not target a specific supervisor and there is no ambient supervisor.
-<a href=#624 id=624 data-nosnippet>624</a>    </span><span class="kw">pub fn </span>spawn_sibling(<span class="self">self</span>) -&gt; ChildId {
-<a href=#625 id=625 data-nosnippet>625</a>        <span class="kw">let </span><span class="self">Self </span>{ target, spec } = <span class="self">self</span>;
-<a href=#626 id=626 data-nosnippet>626</a>
-<a href=#627 id=627 data-nosnippet>627</a>        <span class="kw">match </span>target {
-<a href=#628 id=628 data-nosnippet>628</a>            BuilderTarget::Ambient =&gt; <span class="kw">super</span>::spawn_sibling(spec),
-<a href=#629 id=629 data-nosnippet>629</a>            BuilderTarget::Handle(supervisor) =&gt; supervisor.spawn(spec),
-<a href=#630 id=630 data-nosnippet>630</a>        }
-<a href=#631 id=631 data-nosnippet>631</a>    }
-<a href=#632 id=632 data-nosnippet>632</a>}
-<a href=#633 id=633 data-nosnippet>633</a>
-<a href=#634 id=634 data-nosnippet>634</a><span class="attr">#[cfg(test)]
-<a href=#635 id=635 data-nosnippet>635</a></span><span class="kw">mod </span>tests {
-<a href=#636 id=636 data-nosnippet>636</a>    <span class="kw">use </span>std::sync::{
-<a href=#637 id=637 data-nosnippet>637</a>        atomic::{AtomicUsize, Ordering},
-<a href=#638 id=638 data-nosnippet>638</a>        Arc, Mutex,
-<a href=#639 id=639 data-nosnippet>639</a>    };
-<a href=#640 id=640 data-nosnippet>640</a>    <span class="kw">use </span>std::thread::ThreadId;
-<a href=#641 id=641 data-nosnippet>641</a>
-<a href=#642 id=642 data-nosnippet>642</a>    <span class="kw">use </span>async_trait::async_trait;
-<a href=#643 id=643 data-nosnippet>643</a>    <span class="kw">use </span>saluki_common::sync::shutdown::ShutdownHandle;
-<a href=#644 id=644 data-nosnippet>644</a>    <span class="kw">use </span>saluki_metrics::test::TestRecorder;
-<a href=#645 id=645 data-nosnippet>645</a>    <span class="kw">use </span>tokio::sync::oneshot;
-<a href=#646 id=646 data-nosnippet>646</a>    <span class="kw">use </span>tokio::time::timeout;
-<a href=#647 id=647 data-nosnippet>647</a>
-<a href=#648 id=648 data-nosnippet>648</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
-<a href=#649 id=649 data-nosnippet>649</a>    <span class="kw">use </span><span class="kw">crate</span>::components::test_util::TestComponentSupervisor;
-<a href=#650 id=650 data-nosnippet>650</a>    <span class="kw">use </span><span class="kw">crate</span>::runtime::{InitializationError, SupervisorError, SupervisorFuture};
-<a href=#651 id=651 data-nosnippet>651</a>    <span class="kw">use </span><span class="kw">crate</span>::test_support::wait_until;
-<a href=#652 id=652 data-nosnippet>652</a>
-<a href=#653 id=653 data-nosnippet>653</a>    <span class="doccomment">/// How long the drain-participating child in these tests takes to finish after its input closes.
-<a href=#654 id=654 data-nosnippet>654</a>    ///
-<a href=#655 id=655 data-nosnippet>655</a>    /// Long enough that a child given any short deadline of its own would be aborted before completing, so the tests
-<a href=#656 id=656 data-nosnippet>656</a>    /// fail if children stop being bounded by the supervisor's budget alone.
-<a href=#657 id=657 data-nosnippet>657</a>    </span><span class="kw">const </span>DRAIN_DURATION: Duration = Duration::from_millis(<span class="number">300</span>);
-<a href=#658 id=658 data-nosnippet>658</a>
-<a href=#659 id=659 data-nosnippet>659</a>    <span class="doccomment">/// A hand-written [`Supervisable`] that records where and how often it was initialized, then runs until shutdown.
-<a href=#660 id=660 data-nosnippet>660</a>    </span><span class="kw">struct </span>CountingWorker {
-<a href=#661 id=661 data-nosnippet>661</a>        name: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str,
-<a href=#662 id=662 data-nosnippet>662</a>        initializations: Arc&lt;AtomicUsize&gt;,
-<a href=#663 id=663 data-nosnippet>663</a>        thread_id: Arc&lt;Mutex&lt;<span class="prelude-ty">Option</span>&lt;ThreadId&gt;&gt;&gt;,
-<a href=#664 id=664 data-nosnippet>664</a>    }
-<a href=#665 id=665 data-nosnippet>665</a>
-<a href=#666 id=666 data-nosnippet>666</a>    <span class="kw">impl </span>CountingWorker {
-<a href=#667 id=667 data-nosnippet>667</a>        <span class="kw">fn </span>new(name: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str) -&gt; (<span class="self">Self</span>, Arc&lt;AtomicUsize&gt;, Arc&lt;Mutex&lt;<span class="prelude-ty">Option</span>&lt;ThreadId&gt;&gt;&gt;) {
-<a href=#668 id=668 data-nosnippet>668</a>            <span class="kw">let </span>thread_id = Arc::new(Mutex::new(<span class="prelude-val">None</span>));
-<a href=#669 id=669 data-nosnippet>669</a>            <span class="kw">let </span>initializations = Arc::new(AtomicUsize::new(<span class="number">0</span>));
-<a href=#670 id=670 data-nosnippet>670</a>
-<a href=#671 id=671 data-nosnippet>671</a>            (
-<a href=#672 id=672 data-nosnippet>672</a>                <span class="self">Self </span>{
-<a href=#673 id=673 data-nosnippet>673</a>                    name,
-<a href=#674 id=674 data-nosnippet>674</a>                    initializations: Arc::clone(<span class="kw-2">&amp;</span>initializations),
-<a href=#675 id=675 data-nosnippet>675</a>                    thread_id: Arc::clone(<span class="kw-2">&amp;</span>thread_id),
-<a href=#676 id=676 data-nosnippet>676</a>                },
-<a href=#677 id=677 data-nosnippet>677</a>                initializations,
-<a href=#678 id=678 data-nosnippet>678</a>                thread_id,
-<a href=#679 id=679 data-nosnippet>679</a>            )
-<a href=#680 id=680 data-nosnippet>680</a>        }
-<a href=#681 id=681 data-nosnippet>681</a>    }
-<a href=#682 id=682 data-nosnippet>682</a>
-<a href=#683 id=683 data-nosnippet>683</a>    <span class="attr">#[async_trait]
-<a href=#684 id=684 data-nosnippet>684</a>    </span><span class="kw">impl </span>Supervisable <span class="kw">for </span>CountingWorker {
-<a href=#685 id=685 data-nosnippet>685</a>        <span class="kw">fn </span>name(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>str {
-<a href=#686 id=686 data-nosnippet>686</a>            <span class="self">self</span>.name
-<a href=#687 id=687 data-nosnippet>687</a>        }
-<a href=#688 id=688 data-nosnippet>688</a>
-<a href=#689 id=689 data-nosnippet>689</a>        <span class="kw">fn </span>shutdown_strategy(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; ShutdownStrategy {
-<a href=#690 id=690 data-nosnippet>690</a>            ShutdownStrategy::Graceful(Duration::MAX)
-<a href=#691 id=691 data-nosnippet>691</a>        }
-<a href=#692 id=692 data-nosnippet>692</a>
-<a href=#693 id=693 data-nosnippet>693</a>        <span class="kw">async fn </span>initialize(<span class="kw-2">&amp;</span><span class="self">self</span>, process_shutdown: ShutdownHandle) -&gt; <span class="prelude-ty">Result</span>&lt;SupervisorFuture, InitializationError&gt; {
-<a href=#694 id=694 data-nosnippet>694</a>            <span class="self">self</span>.initializations.fetch_add(<span class="number">1</span>, Ordering::SeqCst);
-<a href=#695 id=695 data-nosnippet>695</a>            <span class="kw-2">*</span><span class="self">self</span>.thread_id.lock().unwrap() = <span class="prelude-val">Some</span>(std::thread::current().id());
-<a href=#696 id=696 data-nosnippet>696</a>
-<a href=#697 id=697 data-nosnippet>697</a>            <span class="prelude-val">Ok</span>(Box::pin(<span class="kw">async move </span>{
-<a href=#698 id=698 data-nosnippet>698</a>                process_shutdown.<span class="kw">await</span>;
-<a href=#699 id=699 data-nosnippet>699</a>                <span class="prelude-val">Ok</span>(())
-<a href=#700 id=700 data-nosnippet>700</a>            }))
-<a href=#701 id=701 data-nosnippet>701</a>        }
-<a href=#702 id=702 data-nosnippet>702</a>    }
-<a href=#703 id=703 data-nosnippet>703</a>
-<a href=#704 id=704 data-nosnippet>704</a>    <span class="doccomment">/// A [`Supervisable`] that fails its first run and waits for shutdown on every run after.
-<a href=#705 id=705 data-nosnippet>705</a>    </span><span class="kw">struct </span>FailingOnceWorker {
-<a href=#706 id=706 data-nosnippet>706</a>        initializations: Arc&lt;AtomicUsize&gt;,
-<a href=#707 id=707 data-nosnippet>707</a>        restartable: bool,
-<a href=#708 id=708 data-nosnippet>708</a>    }
-<a href=#709 id=709 data-nosnippet>709</a>
-<a href=#710 id=710 data-nosnippet>710</a>    <span class="kw">impl </span>FailingOnceWorker {
-<a href=#711 id=711 data-nosnippet>711</a>        <span class="kw">fn </span>new() -&gt; (<span class="self">Self</span>, Arc&lt;AtomicUsize&gt;) {
-<a href=#712 id=712 data-nosnippet>712</a>            <span class="kw">let </span>initializations = Arc::new(AtomicUsize::new(<span class="number">0</span>));
-<a href=#713 id=713 data-nosnippet>713</a>            (
-<a href=#714 id=714 data-nosnippet>714</a>                <span class="self">Self </span>{
-<a href=#715 id=715 data-nosnippet>715</a>                    initializations: Arc::clone(<span class="kw-2">&amp;</span>initializations),
-<a href=#716 id=716 data-nosnippet>716</a>                    restartable: <span class="bool-val">true</span>,
-<a href=#717 id=717 data-nosnippet>717</a>                },
-<a href=#718 id=718 data-nosnippet>718</a>                initializations,
-<a href=#719 id=719 data-nosnippet>719</a>            )
-<a href=#720 id=720 data-nosnippet>720</a>        }
-<a href=#721 id=721 data-nosnippet>721</a>
-<a href=#722 id=722 data-nosnippet>722</a>        <span class="doccomment">/// Makes this worker report that it cannot be started again, as a worker that consumes its state does.
-<a href=#723 id=723 data-nosnippet>723</a>        </span><span class="kw">fn </span>one_shot(<span class="kw-2">mut </span><span class="self">self</span>) -&gt; <span class="self">Self </span>{
-<a href=#724 id=724 data-nosnippet>724</a>            <span class="self">self</span>.restartable = <span class="bool-val">false</span>;
-<a href=#725 id=725 data-nosnippet>725</a>            <span class="self">self
-<a href=#726 id=726 data-nosnippet>726</a>        </span>}
-<a href=#727 id=727 data-nosnippet>727</a>    }
-<a href=#728 id=728 data-nosnippet>728</a>
-<a href=#729 id=729 data-nosnippet>729</a>    <span class="attr">#[async_trait]
-<a href=#730 id=730 data-nosnippet>730</a>    </span><span class="kw">impl </span>Supervisable <span class="kw">for </span>FailingOnceWorker {
-<a href=#731 id=731 data-nosnippet>731</a>        <span class="kw">fn </span>name(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>str {
-<a href=#732 id=732 data-nosnippet>732</a>            <span class="string">"failing_once"
-<a href=#733 id=733 data-nosnippet>733</a>        </span>}
-<a href=#734 id=734 data-nosnippet>734</a>
-<a href=#735 id=735 data-nosnippet>735</a>        <span class="kw">fn </span>shutdown_strategy(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; ShutdownStrategy {
-<a href=#736 id=736 data-nosnippet>736</a>            ShutdownStrategy::Graceful(Duration::MAX)
-<a href=#737 id=737 data-nosnippet>737</a>        }
-<a href=#738 id=738 data-nosnippet>738</a>
-<a href=#739 id=739 data-nosnippet>739</a>        <span class="kw">fn </span>can_restart(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
-<a href=#740 id=740 data-nosnippet>740</a>            <span class="self">self</span>.restartable
-<a href=#741 id=741 data-nosnippet>741</a>        }
+<a href=#621 id=621 data-nosnippet>621</a>    /// Panics if this builder does not target a specific supervisor and there is no ambient supervisor.
+<a href=#622 id=622 data-nosnippet>622</a>    </span><span class="kw">pub fn </span>spawn_sibling(<span class="self">self</span>) -&gt; ChildId {
+<a href=#623 id=623 data-nosnippet>623</a>        <span class="kw">let </span><span class="self">Self </span>{ target, spec } = <span class="self">self</span>;
+<a href=#624 id=624 data-nosnippet>624</a>
+<a href=#625 id=625 data-nosnippet>625</a>        <span class="kw">match </span>target {
+<a href=#626 id=626 data-nosnippet>626</a>            BuilderTarget::Ambient =&gt; <span class="kw">super</span>::spawn_sibling(spec),
+<a href=#627 id=627 data-nosnippet>627</a>            BuilderTarget::Handle(supervisor) =&gt; supervisor.spawn(spec),
+<a href=#628 id=628 data-nosnippet>628</a>        }
+<a href=#629 id=629 data-nosnippet>629</a>    }
+<a href=#630 id=630 data-nosnippet>630</a>}
+<a href=#631 id=631 data-nosnippet>631</a>
+<a href=#632 id=632 data-nosnippet>632</a><span class="attr">#[cfg(test)]
+<a href=#633 id=633 data-nosnippet>633</a></span><span class="kw">mod </span>tests {
+<a href=#634 id=634 data-nosnippet>634</a>    <span class="kw">use </span>std::sync::{
+<a href=#635 id=635 data-nosnippet>635</a>        atomic::{AtomicUsize, Ordering},
+<a href=#636 id=636 data-nosnippet>636</a>        Arc, Mutex,
+<a href=#637 id=637 data-nosnippet>637</a>    };
+<a href=#638 id=638 data-nosnippet>638</a>    <span class="kw">use </span>std::thread::ThreadId;
+<a href=#639 id=639 data-nosnippet>639</a>
+<a href=#640 id=640 data-nosnippet>640</a>    <span class="kw">use </span>async_trait::async_trait;
+<a href=#641 id=641 data-nosnippet>641</a>    <span class="kw">use </span>saluki_common::sync::shutdown::ShutdownHandle;
+<a href=#642 id=642 data-nosnippet>642</a>    <span class="kw">use </span>saluki_metrics::test::TestRecorder;
+<a href=#643 id=643 data-nosnippet>643</a>    <span class="kw">use </span>tokio::sync::oneshot;
+<a href=#644 id=644 data-nosnippet>644</a>    <span class="kw">use </span>tokio::time::timeout;
+<a href=#645 id=645 data-nosnippet>645</a>
+<a href=#646 id=646 data-nosnippet>646</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#647 id=647 data-nosnippet>647</a>    <span class="kw">use </span><span class="kw">crate</span>::components::test_util::TestComponentSupervisor;
+<a href=#648 id=648 data-nosnippet>648</a>    <span class="kw">use </span><span class="kw">crate</span>::runtime::{InitializationError, SupervisorError, SupervisorFuture};
+<a href=#649 id=649 data-nosnippet>649</a>    <span class="kw">use </span><span class="kw">crate</span>::test_support::wait_until;
+<a href=#650 id=650 data-nosnippet>650</a>
+<a href=#651 id=651 data-nosnippet>651</a>    <span class="doccomment">/// How long the drain-participating child in these tests takes to finish after its input closes.
+<a href=#652 id=652 data-nosnippet>652</a>    ///
+<a href=#653 id=653 data-nosnippet>653</a>    /// Long enough to tell a completed drain apart from a halt.
+<a href=#654 id=654 data-nosnippet>654</a>    </span><span class="kw">const </span>DRAIN_DURATION: Duration = Duration::from_millis(<span class="number">300</span>);
+<a href=#655 id=655 data-nosnippet>655</a>
+<a href=#656 id=656 data-nosnippet>656</a>    <span class="doccomment">/// A hand-written [`Supervisable`] that records where and how often it was initialized, then runs until shutdown.
+<a href=#657 id=657 data-nosnippet>657</a>    </span><span class="kw">struct </span>CountingWorker {
+<a href=#658 id=658 data-nosnippet>658</a>        name: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str,
+<a href=#659 id=659 data-nosnippet>659</a>        initializations: Arc&lt;AtomicUsize&gt;,
+<a href=#660 id=660 data-nosnippet>660</a>        thread_id: Arc&lt;Mutex&lt;<span class="prelude-ty">Option</span>&lt;ThreadId&gt;&gt;&gt;,
+<a href=#661 id=661 data-nosnippet>661</a>    }
+<a href=#662 id=662 data-nosnippet>662</a>
+<a href=#663 id=663 data-nosnippet>663</a>    <span class="kw">impl </span>CountingWorker {
+<a href=#664 id=664 data-nosnippet>664</a>        <span class="kw">fn </span>new(name: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str) -&gt; (<span class="self">Self</span>, Arc&lt;AtomicUsize&gt;, Arc&lt;Mutex&lt;<span class="prelude-ty">Option</span>&lt;ThreadId&gt;&gt;&gt;) {
+<a href=#665 id=665 data-nosnippet>665</a>            <span class="kw">let </span>thread_id = Arc::new(Mutex::new(<span class="prelude-val">None</span>));
+<a href=#666 id=666 data-nosnippet>666</a>            <span class="kw">let </span>initializations = Arc::new(AtomicUsize::new(<span class="number">0</span>));
+<a href=#667 id=667 data-nosnippet>667</a>
+<a href=#668 id=668 data-nosnippet>668</a>            (
+<a href=#669 id=669 data-nosnippet>669</a>                <span class="self">Self </span>{
+<a href=#670 id=670 data-nosnippet>670</a>                    name,
+<a href=#671 id=671 data-nosnippet>671</a>                    initializations: Arc::clone(<span class="kw-2">&amp;</span>initializations),
+<a href=#672 id=672 data-nosnippet>672</a>                    thread_id: Arc::clone(<span class="kw-2">&amp;</span>thread_id),
+<a href=#673 id=673 data-nosnippet>673</a>                },
+<a href=#674 id=674 data-nosnippet>674</a>                initializations,
+<a href=#675 id=675 data-nosnippet>675</a>                thread_id,
+<a href=#676 id=676 data-nosnippet>676</a>            )
+<a href=#677 id=677 data-nosnippet>677</a>        }
+<a href=#678 id=678 data-nosnippet>678</a>    }
+<a href=#679 id=679 data-nosnippet>679</a>
+<a href=#680 id=680 data-nosnippet>680</a>    <span class="attr">#[async_trait]
+<a href=#681 id=681 data-nosnippet>681</a>    </span><span class="kw">impl </span>Supervisable <span class="kw">for </span>CountingWorker {
+<a href=#682 id=682 data-nosnippet>682</a>        <span class="kw">fn </span>name(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>str {
+<a href=#683 id=683 data-nosnippet>683</a>            <span class="self">self</span>.name
+<a href=#684 id=684 data-nosnippet>684</a>        }
+<a href=#685 id=685 data-nosnippet>685</a>
+<a href=#686 id=686 data-nosnippet>686</a>        <span class="kw">fn </span>shutdown_strategy(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; ShutdownStrategy {
+<a href=#687 id=687 data-nosnippet>687</a>            ShutdownStrategy::Graceful(Duration::MAX)
+<a href=#688 id=688 data-nosnippet>688</a>        }
+<a href=#689 id=689 data-nosnippet>689</a>
+<a href=#690 id=690 data-nosnippet>690</a>        <span class="kw">async fn </span>initialize(<span class="kw-2">&amp;</span><span class="self">self</span>, process_shutdown: ShutdownHandle) -&gt; <span class="prelude-ty">Result</span>&lt;SupervisorFuture, InitializationError&gt; {
+<a href=#691 id=691 data-nosnippet>691</a>            <span class="self">self</span>.initializations.fetch_add(<span class="number">1</span>, Ordering::SeqCst);
+<a href=#692 id=692 data-nosnippet>692</a>            <span class="kw-2">*</span><span class="self">self</span>.thread_id.lock().unwrap() = <span class="prelude-val">Some</span>(std::thread::current().id());
+<a href=#693 id=693 data-nosnippet>693</a>
+<a href=#694 id=694 data-nosnippet>694</a>            <span class="prelude-val">Ok</span>(Box::pin(<span class="kw">async move </span>{
+<a href=#695 id=695 data-nosnippet>695</a>                process_shutdown.<span class="kw">await</span>;
+<a href=#696 id=696 data-nosnippet>696</a>                <span class="prelude-val">Ok</span>(())
+<a href=#697 id=697 data-nosnippet>697</a>            }))
+<a href=#698 id=698 data-nosnippet>698</a>        }
+<a href=#699 id=699 data-nosnippet>699</a>    }
+<a href=#700 id=700 data-nosnippet>700</a>
+<a href=#701 id=701 data-nosnippet>701</a>    <span class="doccomment">/// A [`Supervisable`] that fails its first run and waits for shutdown on every run after.
+<a href=#702 id=702 data-nosnippet>702</a>    </span><span class="kw">struct </span>FailingOnceWorker {
+<a href=#703 id=703 data-nosnippet>703</a>        initializations: Arc&lt;AtomicUsize&gt;,
+<a href=#704 id=704 data-nosnippet>704</a>        restartable: bool,
+<a href=#705 id=705 data-nosnippet>705</a>    }
+<a href=#706 id=706 data-nosnippet>706</a>
+<a href=#707 id=707 data-nosnippet>707</a>    <span class="kw">impl </span>FailingOnceWorker {
+<a href=#708 id=708 data-nosnippet>708</a>        <span class="kw">fn </span>new() -&gt; (<span class="self">Self</span>, Arc&lt;AtomicUsize&gt;) {
+<a href=#709 id=709 data-nosnippet>709</a>            <span class="kw">let </span>initializations = Arc::new(AtomicUsize::new(<span class="number">0</span>));
+<a href=#710 id=710 data-nosnippet>710</a>            (
+<a href=#711 id=711 data-nosnippet>711</a>                <span class="self">Self </span>{
+<a href=#712 id=712 data-nosnippet>712</a>                    initializations: Arc::clone(<span class="kw-2">&amp;</span>initializations),
+<a href=#713 id=713 data-nosnippet>713</a>                    restartable: <span class="bool-val">true</span>,
+<a href=#714 id=714 data-nosnippet>714</a>                },
+<a href=#715 id=715 data-nosnippet>715</a>                initializations,
+<a href=#716 id=716 data-nosnippet>716</a>            )
+<a href=#717 id=717 data-nosnippet>717</a>        }
+<a href=#718 id=718 data-nosnippet>718</a>
+<a href=#719 id=719 data-nosnippet>719</a>        <span class="doccomment">/// Makes this worker report that it cannot be started again, as a worker that consumes its state does.
+<a href=#720 id=720 data-nosnippet>720</a>        </span><span class="kw">fn </span>one_shot(<span class="kw-2">mut </span><span class="self">self</span>) -&gt; <span class="self">Self </span>{
+<a href=#721 id=721 data-nosnippet>721</a>            <span class="self">self</span>.restartable = <span class="bool-val">false</span>;
+<a href=#722 id=722 data-nosnippet>722</a>            <span class="self">self
+<a href=#723 id=723 data-nosnippet>723</a>        </span>}
+<a href=#724 id=724 data-nosnippet>724</a>    }
+<a href=#725 id=725 data-nosnippet>725</a>
+<a href=#726 id=726 data-nosnippet>726</a>    <span class="attr">#[async_trait]
+<a href=#727 id=727 data-nosnippet>727</a>    </span><span class="kw">impl </span>Supervisable <span class="kw">for </span>FailingOnceWorker {
+<a href=#728 id=728 data-nosnippet>728</a>        <span class="kw">fn </span>name(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>str {
+<a href=#729 id=729 data-nosnippet>729</a>            <span class="string">"failing_once"
+<a href=#730 id=730 data-nosnippet>730</a>        </span>}
+<a href=#731 id=731 data-nosnippet>731</a>
+<a href=#732 id=732 data-nosnippet>732</a>        <span class="kw">fn </span>shutdown_strategy(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; ShutdownStrategy {
+<a href=#733 id=733 data-nosnippet>733</a>            ShutdownStrategy::Graceful(Duration::MAX)
+<a href=#734 id=734 data-nosnippet>734</a>        }
+<a href=#735 id=735 data-nosnippet>735</a>
+<a href=#736 id=736 data-nosnippet>736</a>        <span class="kw">fn </span>can_restart(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
+<a href=#737 id=737 data-nosnippet>737</a>            <span class="self">self</span>.restartable
+<a href=#738 id=738 data-nosnippet>738</a>        }
+<a href=#739 id=739 data-nosnippet>739</a>
+<a href=#740 id=740 data-nosnippet>740</a>        <span class="kw">async fn </span>initialize(<span class="kw-2">&amp;</span><span class="self">self</span>, process_shutdown: ShutdownHandle) -&gt; <span class="prelude-ty">Result</span>&lt;SupervisorFuture, InitializationError&gt; {
+<a href=#741 id=741 data-nosnippet>741</a>            <span class="kw">let </span>first_run = <span class="self">self</span>.initializations.fetch_add(<span class="number">1</span>, Ordering::SeqCst) == <span class="number">0</span>;
 <a href=#742 id=742 data-nosnippet>742</a>
-<a href=#743 id=743 data-nosnippet>743</a>        <span class="kw">async fn </span>initialize(<span class="kw-2">&amp;</span><span class="self">self</span>, process_shutdown: ShutdownHandle) -&gt; <span class="prelude-ty">Result</span>&lt;SupervisorFuture, InitializationError&gt; {
-<a href=#744 id=744 data-nosnippet>744</a>            <span class="kw">let </span>first_run = <span class="self">self</span>.initializations.fetch_add(<span class="number">1</span>, Ordering::SeqCst) == <span class="number">0</span>;
-<a href=#745 id=745 data-nosnippet>745</a>
-<a href=#746 id=746 data-nosnippet>746</a>            <span class="prelude-val">Ok</span>(Box::pin(<span class="kw">async move </span>{
-<a href=#747 id=747 data-nosnippet>747</a>                <span class="kw">if </span>first_run {
-<a href=#748 id=748 data-nosnippet>748</a>                    <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="macro">saluki_error::generic_error!</span>(<span class="string">"first run always fails"</span>));
-<a href=#749 id=749 data-nosnippet>749</a>                }
-<a href=#750 id=750 data-nosnippet>750</a>
-<a href=#751 id=751 data-nosnippet>751</a>                process_shutdown.<span class="kw">await</span>;
-<a href=#752 id=752 data-nosnippet>752</a>                <span class="prelude-val">Ok</span>(())
-<a href=#753 id=753 data-nosnippet>753</a>            }))
-<a href=#754 id=754 data-nosnippet>754</a>        }
-<a href=#755 id=755 data-nosnippet>755</a>    }
-<a href=#756 id=756 data-nosnippet>756</a>
-<a href=#757 id=757 data-nosnippet>757</a>    <span class="attr">#[tokio::test]
-<a href=#758 id=758 data-nosnippet>758</a>    </span><span class="kw">async fn </span>worker_drains_to_its_terminal_condition_before_the_supervisor_stops() {
-<a href=#759 id=759 data-nosnippet>759</a>        <span class="comment">// The central promise of a one-shot worker: shutdown is a trigger, not an enforcement, so a worker that is
-<a href=#760 id=760 data-nosnippet>760</a>        // still finishing when the drain starts gets to finish. A clean supervisor result is the assertion that
-<a href=#761 id=761 data-nosnippet>761</a>        // matters -- `ShutdownTimedOut` would mean it was aborted instead.
-<a href=#762 id=762 data-nosnippet>762</a>        </span><span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"test_component"</span>).<span class="kw">await</span>;
-<a href=#763 id=763 data-nosnippet>763</a>
-<a href=#764 id=764 data-nosnippet>764</a>        <span class="comment">// The child does real work *after* its input closes, so it would be cut short if children were given a
-<a href=#765 id=765 data-nosnippet>765</a>        // near-zero deadline rather than being bounded by the supervisor's budget.
-<a href=#766 id=766 data-nosnippet>766</a>        </span><span class="kw">let </span>drained = Arc::new(AtomicUsize::new(<span class="number">0</span>));
-<a href=#767 id=767 data-nosnippet>767</a>        <span class="kw">let </span>child_drained = Arc::clone(<span class="kw-2">&amp;</span>drained);
-<a href=#768 id=768 data-nosnippet>768</a>        <span class="kw">let </span>(input_tx, input_rx) = oneshot::channel::&lt;()&gt;();
-<a href=#769 id=769 data-nosnippet>769</a>
-<a href=#770 id=770 data-nosnippet>770</a>        supervisor.handle().spawn_worker(<span class="string">"drainer"</span>, <span class="kw">async move </span>{
-<a href=#771 id=771 data-nosnippet>771</a>            <span class="kw">let _ </span>= input_rx.<span class="kw">await</span>;
-<a href=#772 id=772 data-nosnippet>772</a>            tokio::time::sleep(DRAIN_DURATION).<span class="kw">await</span>;
-<a href=#773 id=773 data-nosnippet>773</a>            child_drained.fetch_add(<span class="number">1</span>, Ordering::SeqCst);
-<a href=#774 id=774 data-nosnippet>774</a>        });
-<a href=#775 id=775 data-nosnippet>775</a>
-<a href=#776 id=776 data-nosnippet>776</a>        supervisor.wait_for_children(<span class="number">1</span>).<span class="kw">await</span>;
-<a href=#777 id=777 data-nosnippet>777</a>
-<a href=#778 id=778 data-nosnippet>778</a>        <span class="comment">// Close the child's input, then immediately shut down while it is still draining.
-<a href=#779 id=779 data-nosnippet>779</a>        </span>drop(input_tx);
-<a href=#780 id=780 data-nosnippet>780</a>        <span class="kw">let </span>result = supervisor.shutdown().<span class="kw">await</span>;
-<a href=#781 id=781 data-nosnippet>781</a>        <span class="macro">assert!</span>(
-<a href=#782 id=782 data-nosnippet>782</a>            result.is_ok(),
-<a href=#783 id=783 data-nosnippet>783</a>            <span class="string">"child should have drained rather than been aborted: {result:?}"
-<a href=#784 id=784 data-nosnippet>784</a>        </span>);
-<a href=#785 id=785 data-nosnippet>785</a>        <span class="macro">assert_eq!</span>(drained.load(Ordering::SeqCst), <span class="number">1</span>);
-<a href=#786 id=786 data-nosnippet>786</a>    }
-<a href=#787 id=787 data-nosnippet>787</a>
-<a href=#788 id=788 data-nosnippet>788</a>    <span class="attr">#[tokio::test]
-<a href=#789 id=789 data-nosnippet>789</a>    </span><span class="kw">async fn </span>worker_without_a_terminal_condition_is_aborted_when_marked_brutal() {
-<a href=#790 id=790 data-nosnippet>790</a>        <span class="comment">// The counterpart: work that never ends has to say so, otherwise it holds the drain open until the budget
-<a href=#791 id=791 data-nosnippet>791</a>        // elapses. `Brutal` is how it says so, and the supervisor still reports a clean shutdown.
-<a href=#792 id=792 data-nosnippet>792</a>        </span><span class="kw">let </span>supervisor = TestComponentSupervisor::start_with_budget(<span class="string">"test_component"</span>, Duration::from_secs(<span class="number">30</span>)).<span class="kw">await</span>;
-<a href=#793 id=793 data-nosnippet>793</a>
-<a href=#794 id=794 data-nosnippet>794</a>        supervisor
-<a href=#795 id=795 data-nosnippet>795</a>            .handle()
-<a href=#796 id=796 data-nosnippet>796</a>            .worker(<span class="string">"endless"</span>, std::future::pending::&lt;()&gt;())
-<a href=#797 id=797 data-nosnippet>797</a>            .with_shutdown_strategy(ShutdownStrategy::Brutal)
-<a href=#798 id=798 data-nosnippet>798</a>            .spawn();
-<a href=#799 id=799 data-nosnippet>799</a>        supervisor.wait_for_children(<span class="number">1</span>).<span class="kw">await</span>;
-<a href=#800 id=800 data-nosnippet>800</a>
-<a href=#801 id=801 data-nosnippet>801</a>        <span class="kw">let </span>started = tokio::time::Instant::now();
-<a href=#802 id=802 data-nosnippet>802</a>        <span class="kw">let </span>result = supervisor.shutdown().<span class="kw">await</span>;
-<a href=#803 id=803 data-nosnippet>803</a>        <span class="kw">let </span>elapsed = started.elapsed();
-<a href=#804 id=804 data-nosnippet>804</a>
-<a href=#805 id=805 data-nosnippet>805</a>        <span class="macro">assert!</span>(
-<a href=#806 id=806 data-nosnippet>806</a>            result.is_ok(),
-<a href=#807 id=807 data-nosnippet>807</a>            <span class="string">"an aborted brutal child is not an unclean shutdown: {result:?}"
-<a href=#808 id=808 data-nosnippet>808</a>        </span>);
-<a href=#809 id=809 data-nosnippet>809</a>        <span class="macro">assert!</span>(
-<a href=#810 id=810 data-nosnippet>810</a>            elapsed &lt; Duration::from_secs(<span class="number">5</span>),
-<a href=#811 id=811 data-nosnippet>811</a>            <span class="string">"the child should have been aborted at once rather than held to the 30s budget; took {elapsed:?}"
-<a href=#812 id=812 data-nosnippet>812</a>        </span>);
-<a href=#813 id=813 data-nosnippet>813</a>    }
-<a href=#814 id=814 data-nosnippet>814</a>
-<a href=#815 id=815 data-nosnippet>815</a>    <span class="attr">#[tokio::test]
-<a href=#816 id=816 data-nosnippet>816</a>    </span><span class="kw">async fn </span>endless_worker_is_bounded_by_the_supervisors_budget() {
-<a href=#817 id=817 data-nosnippet>817</a>        <span class="comment">// A one-shot child carries no deadline of its own, so the supervisor's budget is what bounds it and a stuck
-<a href=#818 id=818 data-nosnippet>818</a>        // child is aborted when the budget elapses.
-<a href=#819 id=819 data-nosnippet>819</a>        //
-<a href=#820 id=820 data-nosnippet>820</a>        // This deliberately does not try to distinguish that from a child having silently fallen back to the
-<a href=#821 id=821 data-nosnippet>821</a>        // `Supervisable` trait default of five seconds: deadlines resolve to whichever elapses first, so any budget
-<a href=#822 id=822 data-nosnippet>822</a>        // under five seconds produces an identical result.
-<a href=#823 id=823 data-nosnippet>823</a>        </span><span class="kw">let </span>supervisor = TestComponentSupervisor::start_with_budget(<span class="string">"test_component"</span>, Duration::from_millis(<span class="number">200</span>)).<span class="kw">await</span>;
+<a href=#743 id=743 data-nosnippet>743</a>            <span class="prelude-val">Ok</span>(Box::pin(<span class="kw">async move </span>{
+<a href=#744 id=744 data-nosnippet>744</a>                <span class="kw">if </span>first_run {
+<a href=#745 id=745 data-nosnippet>745</a>                    <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="macro">saluki_error::generic_error!</span>(<span class="string">"first run always fails"</span>));
+<a href=#746 id=746 data-nosnippet>746</a>                }
+<a href=#747 id=747 data-nosnippet>747</a>
+<a href=#748 id=748 data-nosnippet>748</a>                process_shutdown.<span class="kw">await</span>;
+<a href=#749 id=749 data-nosnippet>749</a>                <span class="prelude-val">Ok</span>(())
+<a href=#750 id=750 data-nosnippet>750</a>            }))
+<a href=#751 id=751 data-nosnippet>751</a>        }
+<a href=#752 id=752 data-nosnippet>752</a>    }
+<a href=#753 id=753 data-nosnippet>753</a>
+<a href=#754 id=754 data-nosnippet>754</a>    <span class="attr">#[tokio::test]
+<a href=#755 id=755 data-nosnippet>755</a>    </span><span class="kw">async fn </span>worker_drains_to_its_terminal_condition_before_the_supervisor_stops() {
+<a href=#756 id=756 data-nosnippet>756</a>        <span class="comment">// The central promise of a one-shot worker: shutdown is a trigger, not an enforcement, so a worker that is
+<a href=#757 id=757 data-nosnippet>757</a>        // still finishing when the drain starts gets to finish. A clean supervisor result is the assertion that
+<a href=#758 id=758 data-nosnippet>758</a>        // matters -- `ShutdownTimedOut` would mean it was aborted instead.
+<a href=#759 id=759 data-nosnippet>759</a>        </span><span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"test_component"</span>).<span class="kw">await</span>;
+<a href=#760 id=760 data-nosnippet>760</a>
+<a href=#761 id=761 data-nosnippet>761</a>        <span class="comment">// The child does real work *after* its input closes, which a premature halt would cut short.
+<a href=#762 id=762 data-nosnippet>762</a>        </span><span class="kw">let </span>drained = Arc::new(AtomicUsize::new(<span class="number">0</span>));
+<a href=#763 id=763 data-nosnippet>763</a>        <span class="kw">let </span>child_drained = Arc::clone(<span class="kw-2">&amp;</span>drained);
+<a href=#764 id=764 data-nosnippet>764</a>        <span class="kw">let </span>(input_tx, input_rx) = oneshot::channel::&lt;()&gt;();
+<a href=#765 id=765 data-nosnippet>765</a>
+<a href=#766 id=766 data-nosnippet>766</a>        supervisor.handle().spawn_worker(<span class="string">"drainer"</span>, <span class="kw">async move </span>{
+<a href=#767 id=767 data-nosnippet>767</a>            <span class="kw">let _ </span>= input_rx.<span class="kw">await</span>;
+<a href=#768 id=768 data-nosnippet>768</a>            tokio::time::sleep(DRAIN_DURATION).<span class="kw">await</span>;
+<a href=#769 id=769 data-nosnippet>769</a>            child_drained.fetch_add(<span class="number">1</span>, Ordering::SeqCst);
+<a href=#770 id=770 data-nosnippet>770</a>        });
+<a href=#771 id=771 data-nosnippet>771</a>
+<a href=#772 id=772 data-nosnippet>772</a>        supervisor.wait_for_children(<span class="number">1</span>).<span class="kw">await</span>;
+<a href=#773 id=773 data-nosnippet>773</a>
+<a href=#774 id=774 data-nosnippet>774</a>        <span class="comment">// Close the child's input, then immediately shut down while it is still draining.
+<a href=#775 id=775 data-nosnippet>775</a>        </span>drop(input_tx);
+<a href=#776 id=776 data-nosnippet>776</a>        <span class="kw">let </span>result = supervisor.shutdown().<span class="kw">await</span>;
+<a href=#777 id=777 data-nosnippet>777</a>        <span class="macro">assert!</span>(
+<a href=#778 id=778 data-nosnippet>778</a>            result.is_ok(),
+<a href=#779 id=779 data-nosnippet>779</a>            <span class="string">"child should have drained rather than been aborted: {result:?}"
+<a href=#780 id=780 data-nosnippet>780</a>        </span>);
+<a href=#781 id=781 data-nosnippet>781</a>        <span class="macro">assert_eq!</span>(drained.load(Ordering::SeqCst), <span class="number">1</span>);
+<a href=#782 id=782 data-nosnippet>782</a>    }
+<a href=#783 id=783 data-nosnippet>783</a>
+<a href=#784 id=784 data-nosnippet>784</a>    <span class="attr">#[tokio::test]
+<a href=#785 id=785 data-nosnippet>785</a>    </span><span class="kw">async fn </span>worker_without_a_terminal_condition_is_halted_at_once_when_marked_brutal() {
+<a href=#786 id=786 data-nosnippet>786</a>        <span class="comment">// The counterpart: work that never ends has to say so, otherwise it holds the drain open until its owner's
+<a href=#787 id=787 data-nosnippet>787</a>        // timeout. `Brutal` is how it says so, and the shutdown is still clean.
+<a href=#788 id=788 data-nosnippet>788</a>        </span><span class="kw">let </span>supervisor =
+<a href=#789 id=789 data-nosnippet>789</a>            TestComponentSupervisor::start_with_component_timeout(<span class="string">"test_component"</span>, Duration::from_secs(<span class="number">30</span>)).<span class="kw">await</span>;
+<a href=#790 id=790 data-nosnippet>790</a>
+<a href=#791 id=791 data-nosnippet>791</a>        supervisor.spawn_component(<span class="string">"component"</span>, |shutdown| <span class="kw">async move </span>{
+<a href=#792 id=792 data-nosnippet>792</a>            <span class="kw">crate</span>::runtime::worker(<span class="string">"endless"</span>, std::future::pending::&lt;()&gt;())
+<a href=#793 id=793 data-nosnippet>793</a>                .with_shutdown_strategy(ShutdownStrategy::Brutal)
+<a href=#794 id=794 data-nosnippet>794</a>                .spawn();
+<a href=#795 id=795 data-nosnippet>795</a>            shutdown.<span class="kw">await</span>;
+<a href=#796 id=796 data-nosnippet>796</a>        });
+<a href=#797 id=797 data-nosnippet>797</a>        supervisor.wait_for_running_descendants(<span class="number">2</span>).<span class="kw">await</span>;
+<a href=#798 id=798 data-nosnippet>798</a>
+<a href=#799 id=799 data-nosnippet>799</a>        <span class="kw">let </span>started = tokio::time::Instant::now();
+<a href=#800 id=800 data-nosnippet>800</a>        <span class="kw">let </span>result = supervisor.shutdown().<span class="kw">await</span>;
+<a href=#801 id=801 data-nosnippet>801</a>        <span class="kw">let </span>elapsed = started.elapsed();
+<a href=#802 id=802 data-nosnippet>802</a>
+<a href=#803 id=803 data-nosnippet>803</a>        <span class="macro">assert!</span>(
+<a href=#804 id=804 data-nosnippet>804</a>            result.is_ok(),
+<a href=#805 id=805 data-nosnippet>805</a>            <span class="string">"halting a brutal child is not an unclean shutdown: {result:?}"
+<a href=#806 id=806 data-nosnippet>806</a>        </span>);
+<a href=#807 id=807 data-nosnippet>807</a>        <span class="macro">assert!</span>(
+<a href=#808 id=808 data-nosnippet>808</a>            elapsed &lt; Duration::from_secs(<span class="number">5</span>),
+<a href=#809 id=809 data-nosnippet>809</a>            <span class="string">"the child should have been halted at once rather than held to the component's 30s timeout; took {elapsed:?}"
+<a href=#810 id=810 data-nosnippet>810</a>        </span>);
+<a href=#811 id=811 data-nosnippet>811</a>    }
+<a href=#812 id=812 data-nosnippet>812</a>
+<a href=#813 id=813 data-nosnippet>813</a>    <span class="attr">#[tokio::test]
+<a href=#814 id=814 data-nosnippet>814</a>    </span><span class="kw">async fn </span>endless_worker_is_halted_with_the_component_it_belongs_to() {
+<a href=#815 id=815 data-nosnippet>815</a>        <span class="comment">// The child keeps its default five-second timeout, but the component's shorter timeout halts it first.
+<a href=#816 id=816 data-nosnippet>816</a>        </span><span class="kw">let </span>supervisor =
+<a href=#817 id=817 data-nosnippet>817</a>            TestComponentSupervisor::start_with_component_timeout(<span class="string">"test_component"</span>, Duration::from_millis(<span class="number">200</span>)).<span class="kw">await</span>;
+<a href=#818 id=818 data-nosnippet>818</a>
+<a href=#819 id=819 data-nosnippet>819</a>        supervisor.spawn_component(<span class="string">"component"</span>, |shutdown| <span class="kw">async move </span>{
+<a href=#820 id=820 data-nosnippet>820</a>            <span class="kw">crate</span>::runtime::worker(<span class="string">"stuck"</span>, std::future::pending::&lt;()&gt;()).spawn();
+<a href=#821 id=821 data-nosnippet>821</a>            shutdown.<span class="kw">await</span>;
+<a href=#822 id=822 data-nosnippet>822</a>        });
+<a href=#823 id=823 data-nosnippet>823</a>        supervisor.wait_for_running_descendants(<span class="number">2</span>).<span class="kw">await</span>;
 <a href=#824 id=824 data-nosnippet>824</a>
-<a href=#825 id=825 data-nosnippet>825</a>        supervisor.handle().spawn_worker(<span class="string">"stuck"</span>, std::future::pending::&lt;()&gt;());
-<a href=#826 id=826 data-nosnippet>826</a>        supervisor.wait_for_children(<span class="number">1</span>).<span class="kw">await</span>;
-<a href=#827 id=827 data-nosnippet>827</a>
-<a href=#828 id=828 data-nosnippet>828</a>        <span class="kw">let </span>started = tokio::time::Instant::now();
-<a href=#829 id=829 data-nosnippet>829</a>        <span class="kw">let </span>result = supervisor.shutdown().<span class="kw">await</span>;
-<a href=#830 id=830 data-nosnippet>830</a>        <span class="kw">let </span>elapsed = started.elapsed();
-<a href=#831 id=831 data-nosnippet>831</a>
-<a href=#832 id=832 data-nosnippet>832</a>        <span class="macro">assert!</span>(
-<a href=#833 id=833 data-nosnippet>833</a>            <span class="macro">matches!</span>(result, <span class="prelude-val">Err</span>(SupervisorError::ShutdownTimedOut { aborted: <span class="number">1 </span>})),
-<a href=#834 id=834 data-nosnippet>834</a>            <span class="string">"the budget should have aborted the stuck child, got {result:?}"
-<a href=#835 id=835 data-nosnippet>835</a>        </span>);
-<a href=#836 id=836 data-nosnippet>836</a>        <span class="macro">assert!</span>(
-<a href=#837 id=837 data-nosnippet>837</a>            elapsed &lt; Duration::from_secs(<span class="number">1</span>),
-<a href=#838 id=838 data-nosnippet>838</a>            <span class="string">"the child should have been bounded by the 200ms budget rather than a deadline of its own; took {elapsed:?}"
-<a href=#839 id=839 data-nosnippet>839</a>        </span>);
-<a href=#840 id=840 data-nosnippet>840</a>    }
-<a href=#841 id=841 data-nosnippet>841</a>
-<a href=#842 id=842 data-nosnippet>842</a>    <span class="attr">#[tokio::test]
-<a href=#843 id=843 data-nosnippet>843</a>    </span><span class="kw">async fn </span>on_runtime_places_the_child_on_that_runtime() {
-<a href=#844 id=844 data-nosnippet>844</a>        <span class="comment">// `on_runtime` must actually change where the child's task runs, not just where it was spawned from.
-<a href=#845 id=845 data-nosnippet>845</a>        </span><span class="kw">let </span>pool = tokio::runtime::Builder::new_multi_thread()
-<a href=#846 id=846 data-nosnippet>846</a>            .worker_threads(<span class="number">1</span>)
-<a href=#847 id=847 data-nosnippet>847</a>            .thread_name(<span class="string">"builder-pool-test"</span>)
-<a href=#848 id=848 data-nosnippet>848</a>            .enable_all()
-<a href=#849 id=849 data-nosnippet>849</a>            .build()
-<a href=#850 id=850 data-nosnippet>850</a>            .expect(<span class="string">"should build pool"</span>);
-<a href=#851 id=851 data-nosnippet>851</a>
-<a href=#852 id=852 data-nosnippet>852</a>        <span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"test_component"</span>).<span class="kw">await</span>;
-<a href=#853 id=853 data-nosnippet>853</a>
-<a href=#854 id=854 data-nosnippet>854</a>        <span class="kw">let </span>(thread_tx, thread_rx) = oneshot::channel();
-<a href=#855 id=855 data-nosnippet>855</a>        supervisor
-<a href=#856 id=856 data-nosnippet>856</a>            .handle()
-<a href=#857 id=857 data-nosnippet>857</a>            .worker(<span class="string">"pooled"</span>, <span class="kw">async move </span>{
-<a href=#858 id=858 data-nosnippet>858</a>                <span class="kw">let _ </span>= thread_tx.send(std::thread::current().name().unwrap_or_default().to_string());
-<a href=#859 id=859 data-nosnippet>859</a>                std::future::pending::&lt;()&gt;().<span class="kw">await</span>;
-<a href=#860 id=860 data-nosnippet>860</a>            })
-<a href=#861 id=861 data-nosnippet>861</a>            .on_runtime(pool.handle().clone())
-<a href=#862 id=862 data-nosnippet>862</a>            .with_shutdown_strategy(ShutdownStrategy::Brutal)
-<a href=#863 id=863 data-nosnippet>863</a>            .spawn();
-<a href=#864 id=864 data-nosnippet>864</a>
-<a href=#865 id=865 data-nosnippet>865</a>        <span class="kw">let </span>thread_name = timeout(Duration::from_secs(<span class="number">5</span>), thread_rx)
-<a href=#866 id=866 data-nosnippet>866</a>            .<span class="kw">await
-<a href=#867 id=867 data-nosnippet>867</a>            </span>.expect(<span class="string">"child should report its thread promptly"</span>)
-<a href=#868 id=868 data-nosnippet>868</a>            .expect(<span class="string">"child should not be dropped before reporting"</span>);
-<a href=#869 id=869 data-nosnippet>869</a>        <span class="macro">assert!</span>(
-<a href=#870 id=870 data-nosnippet>870</a>            thread_name.starts_with(<span class="string">"builder-pool-test"</span>),
-<a href=#871 id=871 data-nosnippet>871</a>            <span class="string">"child must run on the given runtime, but ran on thread {thread_name:?}"
-<a href=#872 id=872 data-nosnippet>872</a>        </span>);
-<a href=#873 id=873 data-nosnippet>873</a>
-<a href=#874 id=874 data-nosnippet>874</a>        <span class="macro">assert!</span>(supervisor.shutdown().<span class="kw">await</span>.is_ok());
-<a href=#875 id=875 data-nosnippet>875</a>        pool.shutdown_background();
-<a href=#876 id=876 data-nosnippet>876</a>    }
-<a href=#877 id=877 data-nosnippet>877</a>
-<a href=#878 id=878 data-nosnippet>878</a>    <span class="attr">#[tokio::test]
-<a href=#879 id=879 data-nosnippet>879</a>    </span><span class="kw">async fn </span>child_exiting_does_not_shut_the_supervisor_down() {
-<a href=#880 id=880 data-nosnippet>880</a>        <span class="comment">// Spawned children are hosted. Thus, a child that finishes must not stop the supervisor, because that also
-<a href=#881 id=881 data-nosnippet>881</a>        // stops the component. During a drain, a child that finishes is the normal case.
-<a href=#882 id=882 data-nosnippet>882</a>        </span><span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"test_component"</span>).<span class="kw">await</span>;
-<a href=#883 id=883 data-nosnippet>883</a>        <span class="kw">let </span>handle = supervisor.handle();
-<a href=#884 id=884 data-nosnippet>884</a>
-<a href=#885 id=885 data-nosnippet>885</a>        <span class="comment">// Wait for the child to have actually run and exited. `wait_for_children(0)` would be vacuously true before
-<a href=#886 id=886 data-nosnippet>886</a>        // the supervisor ever picked it up, so the exit this test is about would never be observed.
-<a href=#887 id=887 data-nosnippet>887</a>        </span><span class="kw">let </span>exited = Arc::new(AtomicUsize::new(<span class="number">0</span>));
-<a href=#888 id=888 data-nosnippet>888</a>        <span class="kw">let </span>child_exited = Arc::clone(<span class="kw-2">&amp;</span>exited);
-<a href=#889 id=889 data-nosnippet>889</a>        handle.spawn_worker(<span class="string">"brief"</span>, <span class="kw">async move </span>{
-<a href=#890 id=890 data-nosnippet>890</a>            child_exited.fetch_add(<span class="number">1</span>, Ordering::SeqCst);
-<a href=#891 id=891 data-nosnippet>891</a>        });
-<a href=#892 id=892 data-nosnippet>892</a>        wait_until(<span class="string">"the child has run and exited"</span>, || exited.load(Ordering::SeqCst) == <span class="number">1</span>).<span class="kw">await</span>;
-<a href=#893 id=893 data-nosnippet>893</a>        supervisor.wait_for_children(<span class="number">0</span>).<span class="kw">await</span>;
-<a href=#894 id=894 data-nosnippet>894</a>
-<a href=#895 id=895 data-nosnippet>895</a>        <span class="comment">// The supervisor survived that exit: it is still running and still accepting work.
-<a href=#896 id=896 data-nosnippet>896</a>        </span><span class="macro">assert!</span>(handle.is_running());
-<a href=#897 id=897 data-nosnippet>897</a>        handle
-<a href=#898 id=898 data-nosnippet>898</a>            .worker(<span class="string">"second"</span>, std::future::pending::&lt;()&gt;())
-<a href=#899 id=899 data-nosnippet>899</a>            .with_shutdown_strategy(ShutdownStrategy::Brutal)
-<a href=#900 id=900 data-nosnippet>900</a>            .spawn();
+<a href=#825 id=825 data-nosnippet>825</a>        <span class="kw">let </span>started = tokio::time::Instant::now();
+<a href=#826 id=826 data-nosnippet>826</a>        <span class="kw">let </span>result = supervisor.shutdown().<span class="kw">await</span>;
+<a href=#827 id=827 data-nosnippet>827</a>        <span class="kw">let </span>elapsed = started.elapsed();
+<a href=#828 id=828 data-nosnippet>828</a>
+<a href=#829 id=829 data-nosnippet>829</a>        <span class="macro">assert!</span>(
+<a href=#830 id=830 data-nosnippet>830</a>            <span class="macro">matches!</span>(result, <span class="prelude-val">Err</span>(SupervisorError::ShutdownTimedOut { aborted: <span class="number">1 </span>})),
+<a href=#831 id=831 data-nosnippet>831</a>            <span class="string">"the stuck child should have been halted with the component, and counted, got {result:?}"
+<a href=#832 id=832 data-nosnippet>832</a>        </span>);
+<a href=#833 id=833 data-nosnippet>833</a>        <span class="macro">assert!</span>(
+<a href=#834 id=834 data-nosnippet>834</a>            elapsed &lt; Duration::from_secs(<span class="number">1</span>),
+<a href=#835 id=835 data-nosnippet>835</a>            <span class="string">"the child should have been halted with the component at 200ms rather than at its own timeout; took {elapsed:?}"
+<a href=#836 id=836 data-nosnippet>836</a>        </span>);
+<a href=#837 id=837 data-nosnippet>837</a>    }
+<a href=#838 id=838 data-nosnippet>838</a>
+<a href=#839 id=839 data-nosnippet>839</a>    <span class="attr">#[tokio::test]
+<a href=#840 id=840 data-nosnippet>840</a>    </span><span class="kw">async fn </span>on_runtime_places_the_child_on_that_runtime() {
+<a href=#841 id=841 data-nosnippet>841</a>        <span class="comment">// `on_runtime` must actually change where the child's task runs, not just where it was spawned from.
+<a href=#842 id=842 data-nosnippet>842</a>        </span><span class="kw">let </span>pool = tokio::runtime::Builder::new_multi_thread()
+<a href=#843 id=843 data-nosnippet>843</a>            .worker_threads(<span class="number">1</span>)
+<a href=#844 id=844 data-nosnippet>844</a>            .thread_name(<span class="string">"builder-pool-test"</span>)
+<a href=#845 id=845 data-nosnippet>845</a>            .enable_all()
+<a href=#846 id=846 data-nosnippet>846</a>            .build()
+<a href=#847 id=847 data-nosnippet>847</a>            .expect(<span class="string">"should build pool"</span>);
+<a href=#848 id=848 data-nosnippet>848</a>
+<a href=#849 id=849 data-nosnippet>849</a>        <span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"test_component"</span>).<span class="kw">await</span>;
+<a href=#850 id=850 data-nosnippet>850</a>
+<a href=#851 id=851 data-nosnippet>851</a>        <span class="kw">let </span>(thread_tx, thread_rx) = oneshot::channel();
+<a href=#852 id=852 data-nosnippet>852</a>        supervisor
+<a href=#853 id=853 data-nosnippet>853</a>            .handle()
+<a href=#854 id=854 data-nosnippet>854</a>            .worker(<span class="string">"pooled"</span>, <span class="kw">async move </span>{
+<a href=#855 id=855 data-nosnippet>855</a>                <span class="kw">let _ </span>= thread_tx.send(std::thread::current().name().unwrap_or_default().to_string());
+<a href=#856 id=856 data-nosnippet>856</a>                std::future::pending::&lt;()&gt;().<span class="kw">await</span>;
+<a href=#857 id=857 data-nosnippet>857</a>            })
+<a href=#858 id=858 data-nosnippet>858</a>            .on_runtime(pool.handle().clone())
+<a href=#859 id=859 data-nosnippet>859</a>            .with_shutdown_strategy(ShutdownStrategy::Brutal)
+<a href=#860 id=860 data-nosnippet>860</a>            .spawn();
+<a href=#861 id=861 data-nosnippet>861</a>
+<a href=#862 id=862 data-nosnippet>862</a>        <span class="kw">let </span>thread_name = timeout(Duration::from_secs(<span class="number">5</span>), thread_rx)
+<a href=#863 id=863 data-nosnippet>863</a>            .<span class="kw">await
+<a href=#864 id=864 data-nosnippet>864</a>            </span>.expect(<span class="string">"child should report its thread promptly"</span>)
+<a href=#865 id=865 data-nosnippet>865</a>            .expect(<span class="string">"child should not be dropped before reporting"</span>);
+<a href=#866 id=866 data-nosnippet>866</a>        <span class="macro">assert!</span>(
+<a href=#867 id=867 data-nosnippet>867</a>            thread_name.starts_with(<span class="string">"builder-pool-test"</span>),
+<a href=#868 id=868 data-nosnippet>868</a>            <span class="string">"child must run on the given runtime, but ran on thread {thread_name:?}"
+<a href=#869 id=869 data-nosnippet>869</a>        </span>);
+<a href=#870 id=870 data-nosnippet>870</a>
+<a href=#871 id=871 data-nosnippet>871</a>        <span class="macro">assert!</span>(supervisor.shutdown().<span class="kw">await</span>.is_ok());
+<a href=#872 id=872 data-nosnippet>872</a>        pool.shutdown_background();
+<a href=#873 id=873 data-nosnippet>873</a>    }
+<a href=#874 id=874 data-nosnippet>874</a>
+<a href=#875 id=875 data-nosnippet>875</a>    <span class="attr">#[tokio::test]
+<a href=#876 id=876 data-nosnippet>876</a>    </span><span class="kw">async fn </span>child_exiting_does_not_shut_the_supervisor_down() {
+<a href=#877 id=877 data-nosnippet>877</a>        <span class="comment">// Spawned children are hosted. Thus, a child that finishes must not stop the supervisor, because that also
+<a href=#878 id=878 data-nosnippet>878</a>        // stops the component. During a drain, a child that finishes is the normal case.
+<a href=#879 id=879 data-nosnippet>879</a>        </span><span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"test_component"</span>).<span class="kw">await</span>;
+<a href=#880 id=880 data-nosnippet>880</a>        <span class="kw">let </span>handle = supervisor.handle();
+<a href=#881 id=881 data-nosnippet>881</a>
+<a href=#882 id=882 data-nosnippet>882</a>        <span class="comment">// Wait for the child to have actually run and exited. `wait_for_children(0)` would be vacuously true before
+<a href=#883 id=883 data-nosnippet>883</a>        // the supervisor ever picked it up, so the exit this test is about would never be observed.
+<a href=#884 id=884 data-nosnippet>884</a>        </span><span class="kw">let </span>exited = Arc::new(AtomicUsize::new(<span class="number">0</span>));
+<a href=#885 id=885 data-nosnippet>885</a>        <span class="kw">let </span>child_exited = Arc::clone(<span class="kw-2">&amp;</span>exited);
+<a href=#886 id=886 data-nosnippet>886</a>        handle.spawn_worker(<span class="string">"brief"</span>, <span class="kw">async move </span>{
+<a href=#887 id=887 data-nosnippet>887</a>            child_exited.fetch_add(<span class="number">1</span>, Ordering::SeqCst);
+<a href=#888 id=888 data-nosnippet>888</a>        });
+<a href=#889 id=889 data-nosnippet>889</a>        wait_until(<span class="string">"the child has run and exited"</span>, || exited.load(Ordering::SeqCst) == <span class="number">1</span>).<span class="kw">await</span>;
+<a href=#890 id=890 data-nosnippet>890</a>        supervisor.wait_for_children(<span class="number">0</span>).<span class="kw">await</span>;
+<a href=#891 id=891 data-nosnippet>891</a>
+<a href=#892 id=892 data-nosnippet>892</a>        <span class="comment">// The supervisor survived that exit: it is still running and still accepting work.
+<a href=#893 id=893 data-nosnippet>893</a>        </span><span class="macro">assert!</span>(handle.is_running());
+<a href=#894 id=894 data-nosnippet>894</a>        handle
+<a href=#895 id=895 data-nosnippet>895</a>            .worker(<span class="string">"second"</span>, std::future::pending::&lt;()&gt;())
+<a href=#896 id=896 data-nosnippet>896</a>            .with_shutdown_strategy(ShutdownStrategy::Brutal)
+<a href=#897 id=897 data-nosnippet>897</a>            .spawn();
+<a href=#898 id=898 data-nosnippet>898</a>
+<a href=#899 id=899 data-nosnippet>899</a>        <span class="macro">assert!</span>(supervisor.shutdown().<span class="kw">await</span>.is_ok());
+<a href=#900 id=900 data-nosnippet>900</a>    }
 <a href=#901 id=901 data-nosnippet>901</a>
-<a href=#902 id=902 data-nosnippet>902</a>        <span class="macro">assert!</span>(supervisor.shutdown().<span class="kw">await</span>.is_ok());
-<a href=#903 id=903 data-nosnippet>903</a>    }
-<a href=#904 id=904 data-nosnippet>904</a>
-<a href=#905 id=905 data-nosnippet>905</a>    <span class="attr">#[tokio::test]
-<a href=#906 id=906 data-nosnippet>906</a>    </span><span class="kw">async fn </span>a_needed_child_exiting_stops_the_supervisor() {
-<a href=#907 id=907 data-nosnippet>907</a>        <span class="comment">// The counterpart: when a child that is marked needed terminates permanently, its supervisor also stops. Here
-<a href=#908 id=908 data-nosnippet>908</a>        // the child exits cleanly. It is not obvious that a clean exit also stops the supervisor.
-<a href=#909 id=909 data-nosnippet>909</a>        </span><span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"test_component"</span>).<span class="kw">await</span>;
-<a href=#910 id=910 data-nosnippet>910</a>        <span class="kw">let </span>handle = supervisor.handle();
-<a href=#911 id=911 data-nosnippet>911</a>
-<a href=#912 id=912 data-nosnippet>912</a>        handle.worker(<span class="string">"brief"</span>, <span class="kw">async </span>{}).needed().spawn();
-<a href=#913 id=913 data-nosnippet>913</a>
-<a href=#914 id=914 data-nosnippet>914</a>        <span class="comment">// Spawning only queues the child, so wait for the supervisor to actually stop itself rather than racing our
-<a href=#915 id=915 data-nosnippet>915</a>        // own shutdown against the child ever starting.
-<a href=#916 id=916 data-nosnippet>916</a>        </span>wait_until(<span class="string">"the supervisor has stopped"</span>, || !handle.is_running()).<span class="kw">await</span>;
-<a href=#917 id=917 data-nosnippet>917</a>
-<a href=#918 id=918 data-nosnippet>918</a>        <span class="kw">let </span>result = supervisor.shutdown().<span class="kw">await</span>;
-<a href=#919 id=919 data-nosnippet>919</a>        <span class="macro">assert!</span>(
-<a href=#920 id=920 data-nosnippet>920</a>            <span class="macro">matches!</span>(result, <span class="prelude-val">Err</span>(SupervisorError::SignificantChildExited)),
-<a href=#921 id=921 data-nosnippet>921</a>            <span class="string">"a needed child's exit should have stopped the supervisor, got {result:?}"
-<a href=#922 id=922 data-nosnippet>922</a>        </span>);
-<a href=#923 id=923 data-nosnippet>923</a>    }
-<a href=#924 id=924 data-nosnippet>924</a>
-<a href=#925 id=925 data-nosnippet>925</a>    <span class="attr">#[tokio::test]
-<a href=#926 id=926 data-nosnippet>926</a>    </span><span class="kw">async fn </span>spawned_children_record_poll_metrics() {
-<a href=#927 id=927 data-nosnippet>927</a>        <span class="comment">// Every supervised worker's task is timed, and a child spawned through the builder is no exception. The tag is
-<a href=#928 id=928 data-nosnippet>928</a>        // the child's fully qualified process name, which is what gives one series per name rather than per task.
-<a href=#929 id=929 data-nosnippet>929</a>        </span><span class="kw">let </span>recorder = TestRecorder::default();
-<a href=#930 id=930 data-nosnippet>930</a>        <span class="kw">let </span>_guard = metrics::set_default_local_recorder(<span class="kw-2">&amp;</span>recorder);
+<a href=#902 id=902 data-nosnippet>902</a>    <span class="attr">#[tokio::test]
+<a href=#903 id=903 data-nosnippet>903</a>    </span><span class="kw">async fn </span>a_needed_child_exiting_stops_the_supervisor() {
+<a href=#904 id=904 data-nosnippet>904</a>        <span class="comment">// The counterpart: when a child that is marked needed terminates permanently, its supervisor also stops. Here
+<a href=#905 id=905 data-nosnippet>905</a>        // the child exits cleanly. It is not obvious that a clean exit also stops the supervisor.
+<a href=#906 id=906 data-nosnippet>906</a>        </span><span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"test_component"</span>).<span class="kw">await</span>;
+<a href=#907 id=907 data-nosnippet>907</a>        <span class="kw">let </span>handle = supervisor.handle();
+<a href=#908 id=908 data-nosnippet>908</a>
+<a href=#909 id=909 data-nosnippet>909</a>        handle.worker(<span class="string">"brief"</span>, <span class="kw">async </span>{}).needed().spawn();
+<a href=#910 id=910 data-nosnippet>910</a>
+<a href=#911 id=911 data-nosnippet>911</a>        <span class="comment">// Spawning only queues the child, so wait for the supervisor to actually stop itself rather than racing our
+<a href=#912 id=912 data-nosnippet>912</a>        // own shutdown against the child ever starting.
+<a href=#913 id=913 data-nosnippet>913</a>        </span>wait_until(<span class="string">"the supervisor has stopped"</span>, || !handle.is_running()).<span class="kw">await</span>;
+<a href=#914 id=914 data-nosnippet>914</a>
+<a href=#915 id=915 data-nosnippet>915</a>        <span class="kw">let </span>result = supervisor.shutdown().<span class="kw">await</span>;
+<a href=#916 id=916 data-nosnippet>916</a>        <span class="macro">assert!</span>(
+<a href=#917 id=917 data-nosnippet>917</a>            <span class="macro">matches!</span>(result, <span class="prelude-val">Err</span>(SupervisorError::SignificantChildExited)),
+<a href=#918 id=918 data-nosnippet>918</a>            <span class="string">"a needed child's exit should have stopped the supervisor, got {result:?}"
+<a href=#919 id=919 data-nosnippet>919</a>        </span>);
+<a href=#920 id=920 data-nosnippet>920</a>    }
+<a href=#921 id=921 data-nosnippet>921</a>
+<a href=#922 id=922 data-nosnippet>922</a>    <span class="attr">#[tokio::test]
+<a href=#923 id=923 data-nosnippet>923</a>    </span><span class="kw">async fn </span>spawned_children_record_poll_metrics() {
+<a href=#924 id=924 data-nosnippet>924</a>        <span class="comment">// Every supervised worker's task is timed, and a child spawned through the builder is no exception. The tag is
+<a href=#925 id=925 data-nosnippet>925</a>        // the child's fully qualified process name, which is what gives one series per name rather than per task.
+<a href=#926 id=926 data-nosnippet>926</a>        </span><span class="kw">let </span>recorder = TestRecorder::default();
+<a href=#927 id=927 data-nosnippet>927</a>        <span class="kw">let </span>_guard = metrics::set_default_local_recorder(<span class="kw-2">&amp;</span>recorder);
+<a href=#928 id=928 data-nosnippet>928</a>
+<a href=#929 id=929 data-nosnippet>929</a>        <span class="comment">// The recorder must be installed before the child is spawned: metric handles are resolved once, at spawn.
+<a href=#930 id=930 data-nosnippet>930</a>        </span><span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"metrics_component"</span>).<span class="kw">await</span>;
 <a href=#931 id=931 data-nosnippet>931</a>
-<a href=#932 id=932 data-nosnippet>932</a>        <span class="comment">// The recorder must be installed before the child is spawned: metric handles are resolved once, at spawn.
-<a href=#933 id=933 data-nosnippet>933</a>        </span><span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"metrics_component"</span>).<span class="kw">await</span>;
-<a href=#934 id=934 data-nosnippet>934</a>
-<a href=#935 id=935 data-nosnippet>935</a>        <span class="comment">// Spawning only queues the child, so wait for it to actually run before shutting down -- otherwise there's no
-<a href=#936 id=936 data-nosnippet>936</a>        // guarantee it was ever polled, and therefore none that it recorded anything.
-<a href=#937 id=937 data-nosnippet>937</a>        </span><span class="kw">let </span>(ran_tx, ran_rx) = oneshot::channel();
-<a href=#938 id=938 data-nosnippet>938</a>        supervisor.handle().spawn_worker(<span class="string">"instrumented"</span>, <span class="kw">async move </span>{
-<a href=#939 id=939 data-nosnippet>939</a>            <span class="kw">let _ </span>= ran_tx.send(());
-<a href=#940 id=940 data-nosnippet>940</a>        });
-<a href=#941 id=941 data-nosnippet>941</a>        ran_rx.<span class="kw">await</span>.expect(<span class="string">"child should have run"</span>);
-<a href=#942 id=942 data-nosnippet>942</a>
-<a href=#943 id=943 data-nosnippet>943</a>        <span class="macro">assert!</span>(supervisor.shutdown().<span class="kw">await</span>.is_ok());
-<a href=#944 id=944 data-nosnippet>944</a>
-<a href=#945 id=945 data-nosnippet>945</a>        <span class="kw">let </span>polls = recorder.counter((
-<a href=#946 id=946 data-nosnippet>946</a>            <span class="string">"runtime_task_poll_count"</span>,
-<a href=#947 id=947 data-nosnippet>947</a>            <span class="kw-2">&amp;</span>[(<span class="string">"task_name"</span>, <span class="string">"metrics_component.instrumented"</span>)],
-<a href=#948 id=948 data-nosnippet>948</a>        ));
-<a href=#949 id=949 data-nosnippet>949</a>        <span class="macro">assert!</span>(
-<a href=#950 id=950 data-nosnippet>950</a>            polls.is_some_and(|polls| polls &gt; <span class="number">0</span>),
-<a href=#951 id=951 data-nosnippet>951</a>            <span class="string">"spawned child should have recorded poll metrics, got {polls:?}"
-<a href=#952 id=952 data-nosnippet>952</a>        </span>);
-<a href=#953 id=953 data-nosnippet>953</a>    }
-<a href=#954 id=954 data-nosnippet>954</a>
-<a href=#955 id=955 data-nosnippet>955</a>    <span class="attr">#[tokio::test]
-<a href=#956 id=956 data-nosnippet>956</a>    </span><span class="kw">async fn </span>supervisable_child_can_be_configured_before_spawning() {
-<a href=#957 id=957 data-nosnippet>957</a>        <span class="comment">// A `Supervisable` child goes through the same builder, including runtime placement.
-<a href=#958 id=958 data-nosnippet>958</a>        </span><span class="kw">let </span>worker_pool_thread_id = Arc::new(Mutex::new(<span class="prelude-val">None</span>));
-<a href=#959 id=959 data-nosnippet>959</a>        <span class="kw">let </span>worker_pool_thread_id2 = Arc::clone(<span class="kw-2">&amp;</span>worker_pool_thread_id);
-<a href=#960 id=960 data-nosnippet>960</a>
-<a href=#961 id=961 data-nosnippet>961</a>        <span class="kw">let </span>pool = tokio::runtime::Builder::new_multi_thread()
-<a href=#962 id=962 data-nosnippet>962</a>            .worker_threads(<span class="number">1</span>)
-<a href=#963 id=963 data-nosnippet>963</a>            .on_thread_start(<span class="kw">move </span>|| {
-<a href=#964 id=964 data-nosnippet>964</a>                worker_pool_thread_id2
-<a href=#965 id=965 data-nosnippet>965</a>                    .lock()
-<a href=#966 id=966 data-nosnippet>966</a>                    .unwrap()
-<a href=#967 id=967 data-nosnippet>967</a>                    .replace(std::thread::current().id());
-<a href=#968 id=968 data-nosnippet>968</a>            })
-<a href=#969 id=969 data-nosnippet>969</a>            .enable_all()
-<a href=#970 id=970 data-nosnippet>970</a>            .build()
-<a href=#971 id=971 data-nosnippet>971</a>            .expect(<span class="string">"should build pool"</span>);
-<a href=#972 id=972 data-nosnippet>972</a>
-<a href=#973 id=973 data-nosnippet>973</a>        <span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"test_component"</span>).<span class="kw">await</span>;
-<a href=#974 id=974 data-nosnippet>974</a>
-<a href=#975 id=975 data-nosnippet>975</a>        <span class="kw">let </span>(worker, initializations, worker_thread_id) = CountingWorker::new(<span class="string">"counting"</span>);
-<a href=#976 id=976 data-nosnippet>976</a>        supervisor
-<a href=#977 id=977 data-nosnippet>977</a>            .handle()
-<a href=#978 id=978 data-nosnippet>978</a>            .supervisable(worker)
-<a href=#979 id=979 data-nosnippet>979</a>            .on_runtime(pool.handle().clone())
-<a href=#980 id=980 data-nosnippet>980</a>            .spawn();
-<a href=#981 id=981 data-nosnippet>981</a>
-<a href=#982 id=982 data-nosnippet>982</a>        <span class="comment">// `spawn` returns once the child is queued, and `initialize` runs inside the child's own task -- on the pool's
-<a href=#983 id=983 data-nosnippet>983</a>        // runtime here -- so wait for it rather than assuming it has been polled.
-<a href=#984 id=984 data-nosnippet>984</a>        </span>supervisor.wait_for_children(<span class="number">1</span>).<span class="kw">await</span>;
-<a href=#985 id=985 data-nosnippet>985</a>        wait_until(<span class="string">"the worker has initialized once"</span>, || {
-<a href=#986 id=986 data-nosnippet>986</a>            initializations.load(Ordering::SeqCst) == <span class="number">1
-<a href=#987 id=987 data-nosnippet>987</a>        </span>})
-<a href=#988 id=988 data-nosnippet>988</a>        .<span class="kw">await</span>;
-<a href=#989 id=989 data-nosnippet>989</a>
-<a href=#990 id=990 data-nosnippet>990</a>        <span class="comment">// Assert where it actually ran, not just that it ran: without this, `on_runtime` could be a no-op and the test
-<a href=#991 id=991 data-nosnippet>991</a>        // would still pass.
-<a href=#992 id=992 data-nosnippet>992</a>        </span><span class="kw">let </span>worker_pool_thread_id = worker_pool_thread_id
-<a href=#993 id=993 data-nosnippet>993</a>            .lock()
-<a href=#994 id=994 data-nosnippet>994</a>            .unwrap()
-<a href=#995 id=995 data-nosnippet>995</a>            .expect(<span class="string">"worker pool thread should have recorded its thread ID"</span>);
-<a href=#996 id=996 data-nosnippet>996</a>        <span class="kw">let </span>worker_thread_id = worker_thread_id
-<a href=#997 id=997 data-nosnippet>997</a>            .lock()
-<a href=#998 id=998 data-nosnippet>998</a>            .unwrap()
-<a href=#999 id=999 data-nosnippet>999</a>            .expect(<span class="string">"worker should have recorded its thread ID"</span>);
-<a href=#1000 id=1000 data-nosnippet>1000</a>        <span class="macro">assert_eq!</span>(
-<a href=#1001 id=1001 data-nosnippet>1001</a>            worker_pool_thread_id, worker_thread_id,
-<a href=#1002 id=1002 data-nosnippet>1002</a>            <span class="string">"child should have run on the given runtime"
-<a href=#1003 id=1003 data-nosnippet>1003</a>        </span>);
-<a href=#1004 id=1004 data-nosnippet>1004</a>
-<a href=#1005 id=1005 data-nosnippet>1005</a>        <span class="macro">assert!</span>(supervisor.shutdown().<span class="kw">await</span>.is_ok());
-<a href=#1006 id=1006 data-nosnippet>1006</a>        pool.shutdown_background();
-<a href=#1007 id=1007 data-nosnippet>1007</a>    }
-<a href=#1008 id=1008 data-nosnippet>1008</a>
-<a href=#1009 id=1009 data-nosnippet>1009</a>    <span class="attr">#[tokio::test]
-<a href=#1010 id=1010 data-nosnippet>1010</a>    </span><span class="kw">async fn </span>supervisable_children_are_restarted_by_default() {
-<a href=#1011 id=1011 data-nosnippet>1011</a>        <span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"test_component"</span>).<span class="kw">await</span>;
+<a href=#932 id=932 data-nosnippet>932</a>        <span class="comment">// Spawning only queues the child, so wait for it to actually run before shutting down -- otherwise there's no
+<a href=#933 id=933 data-nosnippet>933</a>        // guarantee it was ever polled, and therefore none that it recorded anything.
+<a href=#934 id=934 data-nosnippet>934</a>        </span><span class="kw">let </span>(ran_tx, ran_rx) = oneshot::channel();
+<a href=#935 id=935 data-nosnippet>935</a>        supervisor.handle().spawn_worker(<span class="string">"instrumented"</span>, <span class="kw">async move </span>{
+<a href=#936 id=936 data-nosnippet>936</a>            <span class="kw">let _ </span>= ran_tx.send(());
+<a href=#937 id=937 data-nosnippet>937</a>        });
+<a href=#938 id=938 data-nosnippet>938</a>        ran_rx.<span class="kw">await</span>.expect(<span class="string">"child should have run"</span>);
+<a href=#939 id=939 data-nosnippet>939</a>
+<a href=#940 id=940 data-nosnippet>940</a>        <span class="macro">assert!</span>(supervisor.shutdown().<span class="kw">await</span>.is_ok());
+<a href=#941 id=941 data-nosnippet>941</a>
+<a href=#942 id=942 data-nosnippet>942</a>        <span class="kw">let </span>polls = recorder.counter((
+<a href=#943 id=943 data-nosnippet>943</a>            <span class="string">"runtime_task_poll_count"</span>,
+<a href=#944 id=944 data-nosnippet>944</a>            <span class="kw-2">&amp;</span>[(<span class="string">"task_name"</span>, <span class="string">"metrics_component.instrumented"</span>)],
+<a href=#945 id=945 data-nosnippet>945</a>        ));
+<a href=#946 id=946 data-nosnippet>946</a>        <span class="macro">assert!</span>(
+<a href=#947 id=947 data-nosnippet>947</a>            polls.is_some_and(|polls| polls &gt; <span class="number">0</span>),
+<a href=#948 id=948 data-nosnippet>948</a>            <span class="string">"spawned child should have recorded poll metrics, got {polls:?}"
+<a href=#949 id=949 data-nosnippet>949</a>        </span>);
+<a href=#950 id=950 data-nosnippet>950</a>    }
+<a href=#951 id=951 data-nosnippet>951</a>
+<a href=#952 id=952 data-nosnippet>952</a>    <span class="attr">#[tokio::test]
+<a href=#953 id=953 data-nosnippet>953</a>    </span><span class="kw">async fn </span>supervisable_child_can_be_configured_before_spawning() {
+<a href=#954 id=954 data-nosnippet>954</a>        <span class="comment">// A `Supervisable` child goes through the same builder, including runtime placement.
+<a href=#955 id=955 data-nosnippet>955</a>        </span><span class="kw">let </span>worker_pool_thread_id = Arc::new(Mutex::new(<span class="prelude-val">None</span>));
+<a href=#956 id=956 data-nosnippet>956</a>        <span class="kw">let </span>worker_pool_thread_id2 = Arc::clone(<span class="kw-2">&amp;</span>worker_pool_thread_id);
+<a href=#957 id=957 data-nosnippet>957</a>
+<a href=#958 id=958 data-nosnippet>958</a>        <span class="kw">let </span>pool = tokio::runtime::Builder::new_multi_thread()
+<a href=#959 id=959 data-nosnippet>959</a>            .worker_threads(<span class="number">1</span>)
+<a href=#960 id=960 data-nosnippet>960</a>            .on_thread_start(<span class="kw">move </span>|| {
+<a href=#961 id=961 data-nosnippet>961</a>                worker_pool_thread_id2
+<a href=#962 id=962 data-nosnippet>962</a>                    .lock()
+<a href=#963 id=963 data-nosnippet>963</a>                    .unwrap()
+<a href=#964 id=964 data-nosnippet>964</a>                    .replace(std::thread::current().id());
+<a href=#965 id=965 data-nosnippet>965</a>            })
+<a href=#966 id=966 data-nosnippet>966</a>            .enable_all()
+<a href=#967 id=967 data-nosnippet>967</a>            .build()
+<a href=#968 id=968 data-nosnippet>968</a>            .expect(<span class="string">"should build pool"</span>);
+<a href=#969 id=969 data-nosnippet>969</a>
+<a href=#970 id=970 data-nosnippet>970</a>        <span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"test_component"</span>).<span class="kw">await</span>;
+<a href=#971 id=971 data-nosnippet>971</a>
+<a href=#972 id=972 data-nosnippet>972</a>        <span class="kw">let </span>(worker, initializations, worker_thread_id) = CountingWorker::new(<span class="string">"counting"</span>);
+<a href=#973 id=973 data-nosnippet>973</a>        supervisor
+<a href=#974 id=974 data-nosnippet>974</a>            .handle()
+<a href=#975 id=975 data-nosnippet>975</a>            .supervisable(worker)
+<a href=#976 id=976 data-nosnippet>976</a>            .on_runtime(pool.handle().clone())
+<a href=#977 id=977 data-nosnippet>977</a>            .spawn();
+<a href=#978 id=978 data-nosnippet>978</a>
+<a href=#979 id=979 data-nosnippet>979</a>        <span class="comment">// `spawn` returns once the child is queued, and `initialize` runs inside the child's own task -- on the pool's
+<a href=#980 id=980 data-nosnippet>980</a>        // runtime here -- so wait for it rather than assuming it has been polled.
+<a href=#981 id=981 data-nosnippet>981</a>        </span>supervisor.wait_for_children(<span class="number">1</span>).<span class="kw">await</span>;
+<a href=#982 id=982 data-nosnippet>982</a>        wait_until(<span class="string">"the worker has initialized once"</span>, || {
+<a href=#983 id=983 data-nosnippet>983</a>            initializations.load(Ordering::SeqCst) == <span class="number">1
+<a href=#984 id=984 data-nosnippet>984</a>        </span>})
+<a href=#985 id=985 data-nosnippet>985</a>        .<span class="kw">await</span>;
+<a href=#986 id=986 data-nosnippet>986</a>
+<a href=#987 id=987 data-nosnippet>987</a>        <span class="comment">// Assert where it actually ran, not just that it ran: without this, `on_runtime` could be a no-op and the test
+<a href=#988 id=988 data-nosnippet>988</a>        // would still pass.
+<a href=#989 id=989 data-nosnippet>989</a>        </span><span class="kw">let </span>worker_pool_thread_id = worker_pool_thread_id
+<a href=#990 id=990 data-nosnippet>990</a>            .lock()
+<a href=#991 id=991 data-nosnippet>991</a>            .unwrap()
+<a href=#992 id=992 data-nosnippet>992</a>            .expect(<span class="string">"worker pool thread should have recorded its thread ID"</span>);
+<a href=#993 id=993 data-nosnippet>993</a>        <span class="kw">let </span>worker_thread_id = worker_thread_id
+<a href=#994 id=994 data-nosnippet>994</a>            .lock()
+<a href=#995 id=995 data-nosnippet>995</a>            .unwrap()
+<a href=#996 id=996 data-nosnippet>996</a>            .expect(<span class="string">"worker should have recorded its thread ID"</span>);
+<a href=#997 id=997 data-nosnippet>997</a>        <span class="macro">assert_eq!</span>(
+<a href=#998 id=998 data-nosnippet>998</a>            worker_pool_thread_id, worker_thread_id,
+<a href=#999 id=999 data-nosnippet>999</a>            <span class="string">"child should have run on the given runtime"
+<a href=#1000 id=1000 data-nosnippet>1000</a>        </span>);
+<a href=#1001 id=1001 data-nosnippet>1001</a>
+<a href=#1002 id=1002 data-nosnippet>1002</a>        <span class="macro">assert!</span>(supervisor.shutdown().<span class="kw">await</span>.is_ok());
+<a href=#1003 id=1003 data-nosnippet>1003</a>        pool.shutdown_background();
+<a href=#1004 id=1004 data-nosnippet>1004</a>    }
+<a href=#1005 id=1005 data-nosnippet>1005</a>
+<a href=#1006 id=1006 data-nosnippet>1006</a>    <span class="attr">#[tokio::test]
+<a href=#1007 id=1007 data-nosnippet>1007</a>    </span><span class="kw">async fn </span>supervisable_children_are_restarted_by_default() {
+<a href=#1008 id=1008 data-nosnippet>1008</a>        <span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"test_component"</span>).<span class="kw">await</span>;
+<a href=#1009 id=1009 data-nosnippet>1009</a>
+<a href=#1010 id=1010 data-nosnippet>1010</a>        <span class="kw">let </span>(worker, initializations) = FailingOnceWorker::new();
+<a href=#1011 id=1011 data-nosnippet>1011</a>        supervisor.handle().spawn_supervisable(worker);
 <a href=#1012 id=1012 data-nosnippet>1012</a>
-<a href=#1013 id=1013 data-nosnippet>1013</a>        <span class="kw">let </span>(worker, initializations) = FailingOnceWorker::new();
-<a href=#1014 id=1014 data-nosnippet>1014</a>        supervisor.handle().spawn_supervisable(worker);
-<a href=#1015 id=1015 data-nosnippet>1015</a>
-<a href=#1016 id=1016 data-nosnippet>1016</a>        <span class="comment">// The worker fails its first run, but then runs forever after that, so we should observe two initializations
-<a href=#1017 id=1017 data-nosnippet>1017</a>        // and no more after that.
-<a href=#1018 id=1018 data-nosnippet>1018</a>        </span>wait_until(<span class="string">"the worker has initialized twice"</span>, || {
-<a href=#1019 id=1019 data-nosnippet>1019</a>            initializations.load(Ordering::SeqCst) == <span class="number">2
-<a href=#1020 id=1020 data-nosnippet>1020</a>        </span>})
-<a href=#1021 id=1021 data-nosnippet>1021</a>        .<span class="kw">await</span>;
-<a href=#1022 id=1022 data-nosnippet>1022</a>        <span class="macro">assert!</span>(supervisor.shutdown().<span class="kw">await</span>.is_ok());
-<a href=#1023 id=1023 data-nosnippet>1023</a>    }
-<a href=#1024 id=1024 data-nosnippet>1024</a>
-<a href=#1025 id=1025 data-nosnippet>1025</a>    <span class="attr">#[tokio::test]
-<a href=#1026 id=1026 data-nosnippet>1026</a>    #[allow(deprecated)]
-<a href=#1027 id=1027 data-nosnippet>1027</a>    </span><span class="kw">async fn </span>a_worker_that_cannot_restart_overrides_an_explicit_restart_policy() {
-<a href=#1028 id=1028 data-nosnippet>1028</a>        <span class="comment">// A worker that reports that it cannot start again is never restarted by its owner. This is also true if the
-<a href=#1029 id=1029 data-nosnippet>1029</a>        // deprecated `transient` gave it an explicit policy that restarts it after a failure.
-<a href=#1030 id=1030 data-nosnippet>1030</a>        </span><span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"test_component"</span>).<span class="kw">await</span>;
+<a href=#1013 id=1013 data-nosnippet>1013</a>        <span class="comment">// The worker fails its first run, but then runs forever after that, so we should observe two initializations
+<a href=#1014 id=1014 data-nosnippet>1014</a>        // and no more after that.
+<a href=#1015 id=1015 data-nosnippet>1015</a>        </span>wait_until(<span class="string">"the worker has initialized twice"</span>, || {
+<a href=#1016 id=1016 data-nosnippet>1016</a>            initializations.load(Ordering::SeqCst) == <span class="number">2
+<a href=#1017 id=1017 data-nosnippet>1017</a>        </span>})
+<a href=#1018 id=1018 data-nosnippet>1018</a>        .<span class="kw">await</span>;
+<a href=#1019 id=1019 data-nosnippet>1019</a>        <span class="macro">assert!</span>(supervisor.shutdown().<span class="kw">await</span>.is_ok());
+<a href=#1020 id=1020 data-nosnippet>1020</a>    }
+<a href=#1021 id=1021 data-nosnippet>1021</a>
+<a href=#1022 id=1022 data-nosnippet>1022</a>    <span class="attr">#[tokio::test]
+<a href=#1023 id=1023 data-nosnippet>1023</a>    #[allow(deprecated)]
+<a href=#1024 id=1024 data-nosnippet>1024</a>    </span><span class="kw">async fn </span>a_worker_that_cannot_restart_overrides_an_explicit_restart_policy() {
+<a href=#1025 id=1025 data-nosnippet>1025</a>        <span class="comment">// A worker that reports that it cannot start again is never restarted by its owner. This is also true if the
+<a href=#1026 id=1026 data-nosnippet>1026</a>        // deprecated `transient` gave it an explicit policy that restarts it after a failure.
+<a href=#1027 id=1027 data-nosnippet>1027</a>        </span><span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"test_component"</span>).<span class="kw">await</span>;
+<a href=#1028 id=1028 data-nosnippet>1028</a>
+<a href=#1029 id=1029 data-nosnippet>1029</a>        <span class="kw">let </span>(worker, initializations) = FailingOnceWorker::new();
+<a href=#1030 id=1030 data-nosnippet>1030</a>        supervisor.handle().supervisable(worker.one_shot()).transient().spawn();
 <a href=#1031 id=1031 data-nosnippet>1031</a>
-<a href=#1032 id=1032 data-nosnippet>1032</a>        <span class="kw">let </span>(worker, initializations) = FailingOnceWorker::new();
-<a href=#1033 id=1033 data-nosnippet>1033</a>        supervisor.handle().supervisable(worker.one_shot()).transient().spawn();
-<a href=#1034 id=1034 data-nosnippet>1034</a>
-<a href=#1035 id=1035 data-nosnippet>1035</a>        <span class="comment">// The child starts and fails. If the supervisor restarted it, the child would stay registered, because each
-<a href=#1036 id=1036 data-nosnippet>1036</a>        // later run waits for shutdown.
-<a href=#1037 id=1037 data-nosnippet>1037</a>        </span>wait_until(<span class="string">"the worker has initialized once"</span>, || {
-<a href=#1038 id=1038 data-nosnippet>1038</a>            initializations.load(Ordering::SeqCst) == <span class="number">1
-<a href=#1039 id=1039 data-nosnippet>1039</a>        </span>})
-<a href=#1040 id=1040 data-nosnippet>1040</a>        .<span class="kw">await</span>;
-<a href=#1041 id=1041 data-nosnippet>1041</a>        supervisor.wait_for_children(<span class="number">0</span>).<span class="kw">await</span>;
-<a href=#1042 id=1042 data-nosnippet>1042</a>        <span class="macro">assert_eq!</span>(initializations.load(Ordering::SeqCst), <span class="number">1</span>);
+<a href=#1032 id=1032 data-nosnippet>1032</a>        <span class="comment">// The child starts and fails. If the supervisor restarted it, the child would stay registered, because each
+<a href=#1033 id=1033 data-nosnippet>1033</a>        // later run waits for shutdown.
+<a href=#1034 id=1034 data-nosnippet>1034</a>        </span>wait_until(<span class="string">"the worker has initialized once"</span>, || {
+<a href=#1035 id=1035 data-nosnippet>1035</a>            initializations.load(Ordering::SeqCst) == <span class="number">1
+<a href=#1036 id=1036 data-nosnippet>1036</a>        </span>})
+<a href=#1037 id=1037 data-nosnippet>1037</a>        .<span class="kw">await</span>;
+<a href=#1038 id=1038 data-nosnippet>1038</a>        supervisor.wait_for_children(<span class="number">0</span>).<span class="kw">await</span>;
+<a href=#1039 id=1039 data-nosnippet>1039</a>        <span class="macro">assert_eq!</span>(initializations.load(Ordering::SeqCst), <span class="number">1</span>);
+<a href=#1040 id=1040 data-nosnippet>1040</a>
+<a href=#1041 id=1041 data-nosnippet>1041</a>        <span class="macro">assert!</span>(supervisor.shutdown().<span class="kw">await</span>.is_ok());
+<a href=#1042 id=1042 data-nosnippet>1042</a>    }
 <a href=#1043 id=1043 data-nosnippet>1043</a>
-<a href=#1044 id=1044 data-nosnippet>1044</a>        <span class="macro">assert!</span>(supervisor.shutdown().<span class="kw">await</span>.is_ok());
-<a href=#1045 id=1045 data-nosnippet>1045</a>    }
-<a href=#1046 id=1046 data-nosnippet>1046</a>
-<a href=#1047 id=1047 data-nosnippet>1047</a>    <span class="attr">#[tokio::test]
-<a href=#1048 id=1048 data-nosnippet>1048</a>    #[allow(deprecated)]
-<a href=#1049 id=1049 data-nosnippet>1049</a>    </span><span class="kw">async fn </span>a_significant_child_that_is_always_restarted_is_accepted() {
-<a href=#1050 id=1050 data-nosnippet>1050</a>        <span class="comment">// The deprecated `with_significant` is available on the builder of a child that can start again. Declared in
-<a href=#1051 id=1051 data-nosnippet>1051</a>        // advance, such a child is needed and permanent, so the flag has no effect. The supervisor warns about that,
-<a href=#1052 id=1052 data-nosnippet>1052</a>        // but must accept the child and run it.
-<a href=#1053 id=1053 data-nosnippet>1053</a>        </span><span class="kw">let </span>(worker, initializations, <span class="kw">_</span>) = CountingWorker::new(<span class="string">"counting"</span>);
-<a href=#1054 id=1054 data-nosnippet>1054</a>        <span class="kw">let </span><span class="kw-2">mut </span>sup = Supervisor::new(<span class="string">"test_sup"</span>).expect(<span class="string">"supervisor name should be valid"</span>);
-<a href=#1055 id=1055 data-nosnippet>1055</a>        sup.add_worker(supervisable(worker).with_significant(<span class="bool-val">true</span>).build());
-<a href=#1056 id=1056 data-nosnippet>1056</a>
-<a href=#1057 id=1057 data-nosnippet>1057</a>        <span class="kw">let </span>(tx, rx) = oneshot::channel::&lt;()&gt;();
-<a href=#1058 id=1058 data-nosnippet>1058</a>        <span class="kw">let </span>run = tokio::spawn(<span class="kw">async move </span>{
-<a href=#1059 id=1059 data-nosnippet>1059</a>            sup.run_with_shutdown(<span class="kw">async move </span>{
-<a href=#1060 id=1060 data-nosnippet>1060</a>                <span class="kw">let _ </span>= rx.<span class="kw">await</span>;
-<a href=#1061 id=1061 data-nosnippet>1061</a>            })
-<a href=#1062 id=1062 data-nosnippet>1062</a>            .<span class="kw">await
-<a href=#1063 id=1063 data-nosnippet>1063</a>        </span>});
-<a href=#1064 id=1064 data-nosnippet>1064</a>        wait_until(<span class="string">"the worker has initialized once"</span>, || {
-<a href=#1065 id=1065 data-nosnippet>1065</a>            initializations.load(Ordering::SeqCst) == <span class="number">1
-<a href=#1066 id=1066 data-nosnippet>1066</a>        </span>})
-<a href=#1067 id=1067 data-nosnippet>1067</a>        .<span class="kw">await</span>;
-<a href=#1068 id=1068 data-nosnippet>1068</a>
-<a href=#1069 id=1069 data-nosnippet>1069</a>        tx.send(()).expect(<span class="string">"supervisor should still be running"</span>);
-<a href=#1070 id=1070 data-nosnippet>1070</a>        <span class="kw">let </span>result = run.<span class="kw">await</span>.expect(<span class="string">"supervisor task should not panic"</span>);
-<a href=#1071 id=1071 data-nosnippet>1071</a>        <span class="macro">assert!</span>(result.is_ok(), <span class="string">"supervisor should stop cleanly: {result:?}"</span>);
-<a href=#1072 id=1072 data-nosnippet>1072</a>    }
-<a href=#1073 id=1073 data-nosnippet>1073</a>
-<a href=#1074 id=1074 data-nosnippet>1074</a>    <span class="attr">#[tokio::test]
-<a href=#1075 id=1075 data-nosnippet>1075</a>    </span><span class="kw">async fn </span>spawning_after_shutdown_never_starts_the_child() {
-<a href=#1076 id=1076 data-nosnippet>1076</a>        <span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"test_component"</span>).<span class="kw">await</span>;
-<a href=#1077 id=1077 data-nosnippet>1077</a>        <span class="kw">let </span>handle = supervisor.handle();
-<a href=#1078 id=1078 data-nosnippet>1078</a>        <span class="macro">assert!</span>(supervisor.shutdown().<span class="kw">await</span>.is_ok());
-<a href=#1079 id=1079 data-nosnippet>1079</a>
-<a href=#1080 id=1080 data-nosnippet>1080</a>        <span class="kw">let </span>started = Arc::new(AtomicUsize::new(<span class="number">0</span>));
-<a href=#1081 id=1081 data-nosnippet>1081</a>        <span class="kw">let </span>child_started = Arc::clone(<span class="kw-2">&amp;</span>started);
-<a href=#1082 id=1082 data-nosnippet>1082</a>        handle.spawn_worker(<span class="string">"late"</span>, <span class="kw">async move </span>{
-<a href=#1083 id=1083 data-nosnippet>1083</a>            child_started.fetch_add(<span class="number">1</span>, Ordering::SeqCst);
-<a href=#1084 id=1084 data-nosnippet>1084</a>        });
-<a href=#1085 id=1085 data-nosnippet>1085</a>
-<a href=#1086 id=1086 data-nosnippet>1086</a>        tokio::time::sleep(Duration::from_millis(<span class="number">50</span>)).<span class="kw">await</span>;
-<a href=#1087 id=1087 data-nosnippet>1087</a>        <span class="macro">assert_eq!</span>(
-<a href=#1088 id=1088 data-nosnippet>1088</a>            started.load(Ordering::SeqCst),
-<a href=#1089 id=1089 data-nosnippet>1089</a>            <span class="number">0</span>,
-<a href=#1090 id=1090 data-nosnippet>1090</a>            <span class="string">"a child spawned against a stopped supervisor must never run"
-<a href=#1091 id=1091 data-nosnippet>1091</a>        </span>);
-<a href=#1092 id=1092 data-nosnippet>1092</a>    }
-<a href=#1093 id=1093 data-nosnippet>1093</a>}
+<a href=#1044 id=1044 data-nosnippet>1044</a>    <span class="attr">#[tokio::test]
+<a href=#1045 id=1045 data-nosnippet>1045</a>    #[allow(deprecated)]
+<a href=#1046 id=1046 data-nosnippet>1046</a>    </span><span class="kw">async fn </span>a_significant_child_that_is_always_restarted_is_accepted() {
+<a href=#1047 id=1047 data-nosnippet>1047</a>        <span class="comment">// The deprecated `with_significant` is available on the builder of a child that can start again. Declared in
+<a href=#1048 id=1048 data-nosnippet>1048</a>        // advance, such a child is needed and permanent, so the flag has no effect. The supervisor warns about that,
+<a href=#1049 id=1049 data-nosnippet>1049</a>        // but must accept the child and run it.
+<a href=#1050 id=1050 data-nosnippet>1050</a>        </span><span class="kw">let </span>(worker, initializations, <span class="kw">_</span>) = CountingWorker::new(<span class="string">"counting"</span>);
+<a href=#1051 id=1051 data-nosnippet>1051</a>        <span class="kw">let </span><span class="kw-2">mut </span>sup = Supervisor::new(<span class="string">"test_sup"</span>).expect(<span class="string">"supervisor name should be valid"</span>);
+<a href=#1052 id=1052 data-nosnippet>1052</a>        sup.add_worker(supervisable(worker).with_significant(<span class="bool-val">true</span>).build());
+<a href=#1053 id=1053 data-nosnippet>1053</a>
+<a href=#1054 id=1054 data-nosnippet>1054</a>        <span class="kw">let </span>(tx, rx) = oneshot::channel::&lt;()&gt;();
+<a href=#1055 id=1055 data-nosnippet>1055</a>        <span class="kw">let </span>run = tokio::spawn(<span class="kw">async move </span>{
+<a href=#1056 id=1056 data-nosnippet>1056</a>            sup.run_with_shutdown(<span class="kw">async move </span>{
+<a href=#1057 id=1057 data-nosnippet>1057</a>                <span class="kw">let _ </span>= rx.<span class="kw">await</span>;
+<a href=#1058 id=1058 data-nosnippet>1058</a>            })
+<a href=#1059 id=1059 data-nosnippet>1059</a>            .<span class="kw">await
+<a href=#1060 id=1060 data-nosnippet>1060</a>        </span>});
+<a href=#1061 id=1061 data-nosnippet>1061</a>        wait_until(<span class="string">"the worker has initialized once"</span>, || {
+<a href=#1062 id=1062 data-nosnippet>1062</a>            initializations.load(Ordering::SeqCst) == <span class="number">1
+<a href=#1063 id=1063 data-nosnippet>1063</a>        </span>})
+<a href=#1064 id=1064 data-nosnippet>1064</a>        .<span class="kw">await</span>;
+<a href=#1065 id=1065 data-nosnippet>1065</a>
+<a href=#1066 id=1066 data-nosnippet>1066</a>        tx.send(()).expect(<span class="string">"supervisor should still be running"</span>);
+<a href=#1067 id=1067 data-nosnippet>1067</a>        <span class="kw">let </span>result = run.<span class="kw">await</span>.expect(<span class="string">"supervisor task should not panic"</span>);
+<a href=#1068 id=1068 data-nosnippet>1068</a>        <span class="macro">assert!</span>(result.is_ok(), <span class="string">"supervisor should stop cleanly: {result:?}"</span>);
+<a href=#1069 id=1069 data-nosnippet>1069</a>    }
+<a href=#1070 id=1070 data-nosnippet>1070</a>
+<a href=#1071 id=1071 data-nosnippet>1071</a>    <span class="attr">#[tokio::test]
+<a href=#1072 id=1072 data-nosnippet>1072</a>    </span><span class="kw">async fn </span>spawning_after_shutdown_never_starts_the_child() {
+<a href=#1073 id=1073 data-nosnippet>1073</a>        <span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"test_component"</span>).<span class="kw">await</span>;
+<a href=#1074 id=1074 data-nosnippet>1074</a>        <span class="kw">let </span>handle = supervisor.handle();
+<a href=#1075 id=1075 data-nosnippet>1075</a>        <span class="macro">assert!</span>(supervisor.shutdown().<span class="kw">await</span>.is_ok());
+<a href=#1076 id=1076 data-nosnippet>1076</a>
+<a href=#1077 id=1077 data-nosnippet>1077</a>        <span class="kw">let </span>started = Arc::new(AtomicUsize::new(<span class="number">0</span>));
+<a href=#1078 id=1078 data-nosnippet>1078</a>        <span class="kw">let </span>child_started = Arc::clone(<span class="kw-2">&amp;</span>started);
+<a href=#1079 id=1079 data-nosnippet>1079</a>        handle.spawn_worker(<span class="string">"late"</span>, <span class="kw">async move </span>{
+<a href=#1080 id=1080 data-nosnippet>1080</a>            child_started.fetch_add(<span class="number">1</span>, Ordering::SeqCst);
+<a href=#1081 id=1081 data-nosnippet>1081</a>        });
+<a href=#1082 id=1082 data-nosnippet>1082</a>
+<a href=#1083 id=1083 data-nosnippet>1083</a>        tokio::time::sleep(Duration::from_millis(<span class="number">50</span>)).<span class="kw">await</span>;
+<a href=#1084 id=1084 data-nosnippet>1084</a>        <span class="macro">assert_eq!</span>(
+<a href=#1085 id=1085 data-nosnippet>1085</a>            started.load(Ordering::SeqCst),
+<a href=#1086 id=1086 data-nosnippet>1086</a>            <span class="number">0</span>,
+<a href=#1087 id=1087 data-nosnippet>1087</a>            <span class="string">"a child spawned against a stopped supervisor must never run"
+<a href=#1088 id=1088 data-nosnippet>1088</a>        </span>);
+<a href=#1089 id=1089 data-nosnippet>1089</a>    }
+<a href=#1090 id=1090 data-nosnippet>1090</a>}
 </code></pre></div></section></main></body></html>

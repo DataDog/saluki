@@ -237,19 +237,16 @@
 <a href=#237 id=237 data-nosnippet>237</a>    <span class="doccomment">/// Whether the termination of a significant child drives the supervisor to shut down.
 <a href=#238 id=238 data-nosnippet>238</a>    </span><span class="kw">pub </span>auto_shutdown: AutoShutdown,
 <a href=#239 id=239 data-nosnippet>239</a>
-<a href=#240 id=240 data-nosnippet>240</a>    <span class="doccomment">/// How long the supervisor allows its children to drain during shutdown, in milliseconds. `None` if unbounded.
-<a href=#241 id=241 data-nosnippet>241</a>    </span><span class="kw">pub </span>shutdown_budget_ms: <span class="prelude-ty">Option</span>&lt;u64&gt;,
+<a href=#240 id=240 data-nosnippet>240</a>    <span class="doccomment">/// Worker threads on the supervisor's own runtime. `None` if it runs on its parent's runtime.
+<a href=#241 id=241 data-nosnippet>241</a>    </span><span class="kw">pub </span>dedicated_threads: <span class="prelude-ty">Option</span>&lt;usize&gt;,
 <a href=#242 id=242 data-nosnippet>242</a>
-<a href=#243 id=243 data-nosnippet>243</a>    <span class="doccomment">/// Worker threads on the supervisor's own runtime. `None` if it runs on its parent's runtime.
-<a href=#244 id=244 data-nosnippet>244</a>    </span><span class="kw">pub </span>dedicated_threads: <span class="prelude-ty">Option</span>&lt;usize&gt;,
-<a href=#245 id=245 data-nosnippet>245</a>
-<a href=#246 id=246 data-nosnippet>246</a>    <span class="doccomment">/// How many child restarts the supervisor has performed, across all of its own generations.
-<a href=#247 id=247 data-nosnippet>247</a>    ///
-<a href=#248 id=248 data-nosnippet>248</a>    /// A group restart counts once here however many children it brought back, which is what distinguishes a
-<a href=#249 id=249 data-nosnippet>249</a>    /// supervisor restarting its whole group repeatedly from a single child restarting repeatedly.
-<a href=#250 id=250 data-nosnippet>250</a>    </span><span class="kw">pub </span>restarts_performed: u64,
-<a href=#251 id=251 data-nosnippet>251</a>
-<a href=#252 id=252 data-nosnippet>252</a>    <span class="doccomment">/// How many times the supervisor has started running.
-<a href=#253 id=253 data-nosnippet>253</a>    </span><span class="kw">pub </span>generation: u64,
-<a href=#254 id=254 data-nosnippet>254</a>}
+<a href=#243 id=243 data-nosnippet>243</a>    <span class="doccomment">/// How many child restarts the supervisor has performed, across all of its own generations.
+<a href=#244 id=244 data-nosnippet>244</a>    ///
+<a href=#245 id=245 data-nosnippet>245</a>    /// A group restart counts once here however many children it brought back, which is what distinguishes a
+<a href=#246 id=246 data-nosnippet>246</a>    /// supervisor restarting its whole group repeatedly from a single child restarting repeatedly.
+<a href=#247 id=247 data-nosnippet>247</a>    </span><span class="kw">pub </span>restarts_performed: u64,
+<a href=#248 id=248 data-nosnippet>248</a>
+<a href=#249 id=249 data-nosnippet>249</a>    <span class="doccomment">/// How many times the supervisor has started running.
+<a href=#250 id=250 data-nosnippet>250</a>    </span><span class="kw">pub </span>generation: u64,
+<a href=#251 id=251 data-nosnippet>251</a>}
 </code></pre></div></section></main></body></html>
