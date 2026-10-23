@@ -116,7 +116,7 @@ pub trait DatadogConfigWitness {
     fn consume_dogstatsd_port(&mut self, value: i64);
     fn consume_dogstatsd_require_listener(&mut self, value: bool);
     fn consume_dogstatsd_so_rcvbuf(&mut self, value: i64);
-    fn consume_dogstatsd_socket(&mut self, value: Option<String>);
+    fn consume_dogstatsd_socket(&mut self, value: String);
     fn consume_dogstatsd_stream_log_too_big(&mut self, value: bool);
     fn consume_dogstatsd_stream_socket(&mut self, value: String);
     fn consume_dogstatsd_string_interner_size(&mut self, value: i64);

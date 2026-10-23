@@ -882,8 +882,8 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         }
     }
 
-    fn consume_dogstatsd_socket(&mut self, value: Option<String>) {
-        self.config.domains.dogstatsd.listeners.socket = value.and_then(non_empty);
+    fn consume_dogstatsd_socket(&mut self, value: String) {
+        self.config.domains.dogstatsd.listeners.socket = non_empty(value);
     }
 
     fn consume_dogstatsd_stream_log_too_big(&mut self, value: bool) {
@@ -2176,6 +2176,17 @@ mod tests {
         assert_eq!(listeners.socket, None);
         assert_eq!(listeners.stream_socket, None);
         assert_eq!(listeners.forward_host, None);
+    }
+
+    #[test]
+    fn dogstatsd_socket_defaults_to_the_platform_default() {
+        // The schema declares `dogstatsd_socket` per platform: a UDS path on Linux and AIX, unset elsewhere.
+        let (config, errors) = translate_explicit(json!({}));
+
+        assert!(errors.is_none());
+        let expected =
+            cfg!(any(target_os = "linux", target_os = "aix")).then(|| "/var/run/datadog/dsd.socket".to_string());
+        assert_eq!(config.domains.dogstatsd.listeners.socket, expected);
     }
 
     #[test]
