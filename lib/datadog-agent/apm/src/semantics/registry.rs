@@ -133,19 +133,22 @@ impl Registry {
         Self::from_slice(json.as_bytes())
     }
 
-    /// Parses registry JSON, rejecting unsupported entries.
+    /// Parses registry JSON, ignoring unknown concepts but rejecting anything else unsupported.
     ///
-    /// Use this for embedded mappings, where unsupported entries indicate a build defect. Remote Configuration
-    /// decoding skips unsupported entries instead.
+    /// Use this for embedded mappings, where a mapping for a known concept that this binary cannot represent indicates
+    /// a build defect. Concepts without a [`Concept`] variant are ignored, because nothing can look them up. That lets
+    /// the embedded snapshot gain concepts before this binary models them. Remote Configuration decoding skips
+    /// every unsupported entry instead.
     ///
     /// # Errors
     ///
     /// Returns an error for invalid JSON, a missing or empty `concepts` object, or a missing or empty
-    /// `metadata.content_hash` string. Also rejects unknown concepts, malformed mappings, and fallbacks with invalid
-    /// fields, including unknown providers or value types. Errors may quote payload keys; do not send them to the
+    /// `metadata.content_hash` string. Also rejects malformed mappings, and fallbacks with invalid fields (including
+    /// unknown providers or value types) for known concepts. Errors may quote payload keys; do not send them to the
     /// remote endpoint.
     pub fn from_slice(json: &[u8]) -> Result<Self, GenericError> {
-        let (registry, skipped) = Self::from_slice_permissive(json)?;
+        let (registry, mut skipped) = Self::from_slice_permissive(json)?;
+        skipped.unknown_concepts.clear();
         if !skipped.is_empty() {
             return Err(generic_error!(
                 "Registry JSON has parts the registry cannot represent: {}",
@@ -356,6 +359,8 @@ fn check_required(has_concepts: bool, content_hash: &str) -> Result<(), GenericE
     Ok(())
 }
 
+// Do not edit `mappings.json` by hand: `make update-apm-semantics` overwrites it from upstream and records the source
+// commit in `_version.txt`.
 const MAPPINGS_JSON: &str = include_str!("mappings.json");
 
 /// Hashes a raw registry document for change detection.
@@ -422,7 +427,7 @@ mod tests {
             .get_attribute_precedence(Concept::RpcGrpcStatusCode)
             .expect("rpc.grpc.status_code concept missing");
         let gated = tags.iter().filter(|t| !t.when.is_empty()).count();
-        assert_eq!(gated, 4, "expected four when-gated fallbacks");
+        assert!(gated >= 4, "expected at least four when-gated fallbacks, found {gated}");
     }
 
     #[test]
@@ -462,15 +467,78 @@ mod tests {
     }
 
     #[test]
-    fn from_json_rejects_unknown_concepts() {
-        let bad = registry_json(r#"{"this.is.not.a.real.concept": {"canonical": "x", "fallbacks": []}}"#);
-        let error = Registry::from_json(&bad)
-            .err()
-            .expect("unknown concept should be rejected");
+    fn from_json_ignores_unknown_concepts() {
+        let json = registry_json(
+            r#"{
+                "this.is.not.a.real.concept": {"canonical": "x", "fallbacks": []},
+                "db.statement": {"fallbacks": [{"name": "db.statement", "provider": "datadog", "type": "string"}]}
+            }"#,
+        );
+        let registry = Registry::from_json(&json).expect("unknown concepts should be ignored");
+        assert_eq!(registry.mappings.len(), 1);
         assert_eq!(
-            error.to_string(),
-            r#"Registry JSON has parts the registry cannot represent: unknown concepts: 1 "#.to_owned()
-                + r#"("this.is.not.a.real.concept")"#
+            registry.get_attribute_precedence(Concept::DbStatement).map(<[_]>::len),
+            Some(1)
+        );
+    }
+
+    // The weekly update PR changes only `mappings.json`, so the embedded mappings must load whatever upstream adds.
+    #[test]
+    fn from_slice_loads_the_embedded_mappings_extended_with_additions() {
+        let mut document: Value = serde_json::from_str(MAPPINGS_JSON).expect("embedded mappings should be JSON");
+        let concepts = document["concepts"]
+            .as_object_mut()
+            .expect("concepts should be an object");
+        concepts.insert(
+            "future.concept".to_owned(),
+            serde_json::json!({
+                "canonical": "future.concept",
+                "fallbacks": [{"name": "future.concept", "provider": "otel", "type": "string"}]
+            }),
+        );
+        let added_fallback = serde_json::json!({"name": "added.http.method", "provider": "otel", "type": "string"});
+        concepts["http.method"]["fallbacks"]
+            .as_array_mut()
+            .expect("http.method should have fallbacks")
+            .push(added_fallback);
+        let extended = document.to_string();
+
+        let registry = Registry::from_slice(extended.as_bytes()).expect("additions should not break loading");
+        for concept in Concept::ALL {
+            assert!(
+                registry.get_attribute_precedence(*concept).is_some(),
+                "concept {concept:?} should be present"
+            );
+        }
+        let added = registry
+            .get_attribute_precedence(Concept::HttpMethod)
+            .expect("http.method should be present")
+            .iter()
+            .any(|tag| tag.name == "added.http.method");
+        assert!(added, "an added fallback for a known concept should be kept");
+
+        let (_, skipped) = Registry::from_slice_permissive(extended.as_bytes()).expect("payload should load");
+        assert!(skipped.unknown_concepts.contains(&"future.concept".to_owned()));
+        assert!(skipped.malformed_concepts.is_empty() && skipped.fallbacks.is_empty());
+    }
+
+    #[test]
+    fn from_slice_rejects_an_unusable_fallback_in_the_extended_embedded_mappings() {
+        let mut document: Value = serde_json::from_str(MAPPINGS_JSON).expect("embedded mappings should be JSON");
+        document["concepts"]["http.method"]["fallbacks"]
+            .as_array_mut()
+            .expect("http.method should have fallbacks")
+            .push(serde_json::json!({"name": "future.provider", "provider": "vendor", "type": "string"}));
+        document["concepts"]["future.concept"] = serde_json::json!({"fallbacks": []});
+
+        let error = Registry::from_slice(document.to_string().as_bytes())
+            .err()
+            .expect("an unrepresentable fallback should be rejected");
+        assert!(
+            error
+                .to_string()
+                .starts_with("Registry JSON has parts the registry cannot represent: unrepresentable fallbacks: 1"),
+            "{error}"
         );
     }
 
@@ -501,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn from_json_rejects_what_the_permissive_parser_skips() {
+    fn from_json_rejects_unusable_parts_the_permissive_parser_skips() {
         let json = registry_json(
             r#"{
                 "http.status_code": {"fallbacks": [{"name": "http.status_code", "provider": "X", "type": "string"}]},
@@ -581,10 +649,11 @@ mod tests {
 
     #[test]
     fn content_hash_is_the_declared_label() {
-        assert_eq!(
-            EMBEDDED_REGISTRY.content_hash(),
-            "sha256:d2d19e7f53f8d3cb4abe235d3a83b3dcb3399cadcc21cc2ebb5d5e724143b7f3"
-        );
+        let document: Value = serde_json::from_str(MAPPINGS_JSON).expect("embedded mappings should be JSON");
+        let declared = document["metadata"]["content_hash"]
+            .as_str()
+            .expect("embedded mappings should declare a content hash");
+        assert_eq!(EMBEDDED_REGISTRY.content_hash(), declared);
     }
 
     /// An upstream fixture; placeholder concepts `alpha` and `beta` are skipped as unknown.
@@ -665,7 +734,10 @@ mod tests {
     fn fingerprint_matches_for_identical_payload_bytes() {
         let (remote, skipped) =
             Registry::from_slice_permissive(MAPPINGS_JSON.as_bytes()).expect("embedded mappings should parse");
-        assert!(skipped.is_empty(), "{skipped}");
+        assert!(
+            skipped.malformed_concepts.is_empty() && skipped.fallbacks.is_empty(),
+            "{skipped}"
+        );
         assert_eq!(remote.fingerprint(), EMBEDDED_REGISTRY.fingerprint());
     }
 

@@ -1,0 +1,146 @@
+name: Update APM Semantic Mappings
+
+# ADP embeds a copy of the Agent's APM semantic mappings and falls back to it when Remote Configuration has not supplied
+# a registry. When the Agent changes the mappings, that fallback silently falls behind.
+#
+# This workflow runs `ci/tooling/update-apm-semantics.sh` every week and opens a pull request when the mappings on the
+# Agent's `main` branch have changed. Nothing here builds or parses the result with Rust. The embedded registry ignores
+# concepts that ADP does not model, so an ordinary update passes CI as it stands. CI fails only when ADP cannot use the
+# update, and the fix lands on the same branch. A human reviews and merges every pull request.
+#
+# Subscribe to workflow-failure notifications through Slack's GitHub integration so failed update checks are noticed.
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ci/tooling/update-apm-semantics*
+      - ci/tooling/update_apm_semantics_pr.py
+      - ci/tooling/test_update_apm_semantics.py
+      - .github/workflows/update-apm-semantics.yml
+      - .github/chainguard/self.update-apm-semantics.*.sts.yaml
+      - Makefile
+
+jobs:
+  validate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: make test-update-apm-semantics
+
+  update:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Two runs at once could both see the change as unreported and race to create the same branch.
+    concurrency:
+      group: update-apm-semantics
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      MAPPINGS: lib/datadog-agent/apm/src/semantics/mappings.json
+      VERSION_FILE: lib/datadog-agent/apm/src/semantics/_version.txt
+    steps:
+      - name: Get access token from dd-octo-sts
+        uses: DataDog/dd-octo-sts-action@c85802a58e202b7e764b5441e4378c76043c8108 # v1.0.5
+        id: octo-sts
+        with:
+          scope: DataDog/saluki
+          policy: self.update-apm-semantics.create-pr
+
+      # Every write goes through the GitHub API, so git keeps no credential that the script could read.
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure Git
+        run: |
+          git -C "$GITHUB_WORKSPACE" config user.name "github-actions[bot]"
+          git -C "$GITHUB_WORKSPACE" config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # The script gets the workflow's read-only token, never the write token. Its commit is replayed as a signed one
+      # further down.
+      - name: Refresh the mappings
+        id: update
+        env:
+          GITHUB_TOKEN: "${{ github.token }}"
+        run: |
+          base_sha=$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)
+          ci/tooling/update-apm-semantics.sh
+
+          update_sha=$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)
+          if [ "$update_sha" = "$base_sha" ]; then
+            echo "The mappings are current."
+            echo "needs_update=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Name the branch after the content, so that an unrelated later change gets its own branch and so the next
+          # step can look up whether this particular change has been reported already.
+          {
+            echo "needs_update=true"
+            echo "base_sha=$base_sha"
+            echo "update_sha=$update_sha"
+            echo "branch=ci/update-apm-semantics-$(sha256sum "$MAPPINGS" | cut -c1-12)"
+            echo "title=$(git -C "$GITHUB_WORKSPACE" log -1 --format=%s)"
+            echo "source=$(cat "$VERSION_FILE")"
+            echo "previous=$(git -C "$GITHUB_WORKSPACE" show "$base_sha:$VERSION_FILE")"
+          } >> "$GITHUB_OUTPUT"
+
+          git -C "$GITHUB_WORKSPACE" log -1 --format=%b > "$RUNNER_TEMP/commit-body.txt"
+
+      # Upstream can return to the embedded mappings before an open update merges. Close that update, so nobody merges
+      # mappings that upstream rolled back.
+      - name: Close superseded pull requests
+        if: steps.update.outputs.needs_update == 'false'
+        env:
+          GITHUB_TOKEN: "${{ steps.octo-sts.outputs.token }}"
+        run: python3 ci/tooling/update_apm_semantics_pr.py close-superseded
+
+      - name: Check whether this change was already reported
+        id: reported
+        if: steps.update.outputs.needs_update == 'true'
+        env:
+          BRANCH: "${{ steps.update.outputs.branch }}"
+          GITHUB_TOKEN: "${{ steps.octo-sts.outputs.token }}"
+        run: |
+          result=$(python3 ci/tooling/update_apm_semantics_pr.py find-report --branch "$BRANCH")
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+
+      # The branch is created at the commit the run began from, and the script's unsigned commit is replayed on top as
+      # a signed one.
+      - name: Sign commit
+        if: steps.reported.outputs.result == 'publish'
+        uses: DataDog/commit-headless@5a0f3876e0fbdd3a86b3e008acf4ec562db59eee # v2.0.1
+        with:
+          token: "${{ steps.octo-sts.outputs.token }}"
+          branch: ${{ steps.update.outputs.branch }}
+          head-sha: ${{ steps.update.outputs.base_sha }}
+          create-branch: true
+          command: push
+          commits: "${{ steps.update.outputs.update_sha }}"
+
+      - name: Create pull request
+        if: steps.reported.outputs.result == 'publish'
+        env:
+          BRANCH: "${{ steps.update.outputs.branch }}"
+          TITLE: "${{ steps.update.outputs.title }}"
+          PREVIOUS: "${{ steps.update.outputs.previous }}"
+          SOURCE: "${{ steps.update.outputs.source }}"
+          GITHUB_TOKEN: "${{ steps.octo-sts.outputs.token }}"
+        run: |
+          python3 ci/tooling/update_apm_semantics_pr.py open-pr \
+            --branch "$BRANCH" \
+            --title "$TITLE" \
+            --commit-body-file "$RUNNER_TEMP/commit-body.txt" \
+            --previous "$PREVIOUS" \
+            --source "$SOURCE"
