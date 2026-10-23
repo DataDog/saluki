@@ -1,20 +1,18 @@
 #[cfg(unix)]
 use std::path::Path;
-use std::{io::ErrorKind, net::SocketAddr, sync::Mutex, time::Duration};
+use std::{io::ErrorKind, net::SocketAddr, time::Duration};
 
-use async_trait::async_trait;
-use saluki_common::sync::shutdown::ShutdownHandle;
-use saluki_core::runtime::{
-    state::{DataspaceRegistry, DataspaceUpdate, Identifier, IdentifierFilter},
-    InitializationError, Supervisable, Supervisor, SupervisorError, SupervisorFuture,
+use saluki_core::{
+    components::test_util::TestComponentSupervisor,
+    runtime::{
+        state::{DataspaceUpdate, Identifier, IdentifierFilter},
+        Supervisor,
+    },
 };
-use saluki_error::generic_error;
 #[cfg(unix)]
 use tokio::net::UnixStream;
 use tokio::{
     net::TcpStream,
-    sync::oneshot,
-    task::JoinHandle,
     time::{sleep, timeout},
 };
 
@@ -56,37 +54,24 @@ pub async fn connect_unix(path: &Path) -> UnixStream {
 }
 
 pub struct ServerTestHarness {
-    pub dataspace: DataspaceRegistry,
+    supervisor: TestComponentSupervisor,
     bound_address_id: Identifier,
-    shutdown_tx: Option<oneshot::Sender<()>>,
-    task: JoinHandle<Result<(), SupervisorError>>,
 }
 
 impl ServerTestHarness {
     pub async fn start(id: &str, configure: impl FnOnce(&mut Supervisor, &str)) -> Self {
-        let (capture, dataspace_rx) = DataspaceCapture::new();
-        let mut supervisor = Supervisor::new(id).expect("test supervisor name should be valid");
-        configure(&mut supervisor, id);
-        supervisor.add_worker(capture);
-
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        let task = tokio::spawn(async move { supervisor.run_with_shutdown(shutdown_rx).await });
-        let dataspace = timeout(TEST_TIMEOUT, dataspace_rx)
-            .await
-            .expect("should capture the supervisor dataspace")
-            .expect("dataspace capture worker should send the registry");
+        let supervisor = TestComponentSupervisor::start_with(id, |supervisor| configure(supervisor, id)).await;
 
         Self {
-            dataspace,
+            supervisor,
             bound_address_id: Identifier::from(format!("http-server-{}", id)),
-            shutdown_tx: Some(shutdown_tx),
-            task,
         }
     }
 
     pub async fn bound_address(&self) -> BoundListenAddress {
         let mut subscription = self
-            .dataspace
+            .supervisor
+            .dataspace()
             .subscribe::<BoundListenAddress>(IdentifierFilter::exact(self.bound_address_id.clone()));
 
         match timeout(TEST_TIMEOUT, subscription.recv()).await {
@@ -109,59 +94,10 @@ impl ServerTestHarness {
         }
     }
 
-    pub async fn shutdown(mut self) {
-        if let Some(shutdown_tx) = self.shutdown_tx.take() {
-            let _ = shutdown_tx.send(());
-        }
-
-        (&mut self.task)
+    pub async fn shutdown(self) {
+        self.supervisor
+            .shutdown()
             .await
-            .expect("test supervisor task should not panic")
             .expect("test supervisor should stop cleanly");
-    }
-}
-
-impl Drop for ServerTestHarness {
-    fn drop(&mut self) {
-        self.shutdown_tx.take();
-    }
-}
-
-pub(crate) struct DataspaceCapture {
-    dataspace_tx: Mutex<Option<oneshot::Sender<DataspaceRegistry>>>,
-}
-
-impl DataspaceCapture {
-    pub(crate) fn new() -> (Self, oneshot::Receiver<DataspaceRegistry>) {
-        let (dataspace_tx, dataspace_rx) = oneshot::channel();
-        (
-            Self {
-                dataspace_tx: Mutex::new(Some(dataspace_tx)),
-            },
-            dataspace_rx,
-        )
-    }
-}
-
-#[async_trait]
-impl Supervisable for DataspaceCapture {
-    fn name(&self) -> &str {
-        "dataspace_capture"
-    }
-
-    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
-        let dataspace = DataspaceRegistry::try_current().ok_or_else(|| generic_error!("Dataspace not available."))?;
-        let dataspace_tx = self
-            .dataspace_tx
-            .lock()
-            .unwrap()
-            .take()
-            .ok_or_else(|| generic_error!("DataspaceCapture can only be initialized once."))?;
-        let _ = dataspace_tx.send(dataspace);
-
-        Ok(Box::pin(async move {
-            process_shutdown.await;
-            Ok(())
-        }))
     }
 }

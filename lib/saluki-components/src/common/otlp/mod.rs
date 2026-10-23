@@ -730,8 +730,6 @@ mod tests {
         routing::post,
     };
     use rustls::pki_types::ServerName;
-    #[cfg(unix)]
-    use saluki_core::runtime::Supervisor;
     use saluki_core::{
         accounting::MemoryLimiter,
         components::{test_util::TestComponentSupervisor, ComponentContext},
@@ -1135,25 +1133,10 @@ mod tests {
         // Use an ephemeral TCP port for HTTP since we are only testing the gRPC path here.
         let http_endpoint = ListenAddress::Tcp("127.0.0.1:0".parse().expect("addr should parse"));
 
-        let mut supervisor = Supervisor::new("otlp-test")
-            .expect("test supervisor name should be valid")
-            .with_shutdown_budget(Duration::from_secs(5));
-        let supervisor_handle = supervisor.handle();
-
-        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-        let supervisor_task = tokio::spawn(async move {
-            supervisor
-                .run_with_shutdown(async {
-                    let _ = shutdown_rx.await;
-                })
-                .await
-        });
-
-        // Give the supervisor time to start.
-        tokio::task::yield_now().await;
+        let supervisor = TestComponentSupervisor::start("otlp-test").await;
 
         // The servers spawn on the ambient supervisor, so the build has to run under the one they belong to.
-        let result = supervisor_handle
+        let result = supervisor
             .scope(
                 OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024).build(
                     NoopHandler,
@@ -1170,9 +1153,10 @@ mod tests {
             result.err()
         );
 
-        // Shut down cleanly.
-        let _ = shutdown_tx.send(());
-        let _ = supervisor_task.await;
+        supervisor
+            .shutdown()
+            .await
+            .expect("supervisor should shut down cleanly");
     }
 
     #[cfg(unix)]
@@ -1186,24 +1170,9 @@ mod tests {
             .expect("Unix gRPC endpoint should parse");
         let http_endpoint = ListenAddress::Tcp("127.0.0.1:0".parse().expect("addr should parse"));
 
-        let mut supervisor = Supervisor::new("otlp-test")
-            .expect("test supervisor name should be valid")
-            .with_shutdown_budget(Duration::from_secs(5));
-        let supervisor_handle = supervisor.handle();
+        let supervisor = TestComponentSupervisor::start("otlp-test").await;
 
-        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-        let supervisor_task = tokio::spawn(async move {
-            supervisor
-                .run_with_shutdown(async {
-                    let _ = shutdown_rx.await;
-                })
-                .await
-        });
-
-        // Give the supervisor time to start.
-        tokio::task::yield_now().await;
-
-        supervisor_handle
+        supervisor
             .scope(
                 OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024).build(
                     NoopHandler,
@@ -1234,8 +1203,10 @@ mod tests {
         // A successful response has an empty partial_success (None).
         assert_eq!(response.into_inner().partial_success, None);
 
-        let _ = shutdown_tx.send(());
-        let _ = supervisor_task.await;
+        supervisor
+            .shutdown()
+            .await
+            .expect("supervisor should shut down cleanly");
     }
 
     /// Builds a `rustls::ClientConfig` that trusts the self-signed certificate.

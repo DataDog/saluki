@@ -226,8 +226,7 @@ mod tests {
 
     #[tokio::test]
     async fn reload_can_enable_change_disable_syslog_and_preserves_previous_stack_on_invalid_config() {
-        use saluki_core::runtime::Supervisor;
-        use tokio::sync::oneshot;
+        use saluki_core::components::test_util::TestComponentSupervisor;
 
         let config = logging_config_without_outputs();
         let (output_stack, worker_guards) = build_output_stack(&config).expect("build initial output stack");
@@ -243,10 +242,10 @@ mod tests {
 
         // Run the override worker inside a Supervisor so it has the dataspace context required for
         // its route assertion. The supervisor's shutdown signal drives the worker to exit cleanly.
-        let mut sup = Supervisor::new("test-logging-override").expect("create supervisor");
-        sup.add_worker(override_worker);
-        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-        let sup_handle = tokio::spawn(async move { sup.run_with_shutdown(shutdown_rx).await });
+        let supervisor = TestComponentSupervisor::start_with("test-logging-override", |supervisor| {
+            supervisor.add_worker(override_worker);
+        })
+        .await;
 
         guard
             .reload(logging_config_with_syslog(TEST_SYSLOG_URI))
@@ -281,11 +280,7 @@ mod tests {
 
         // Trigger supervisor shutdown so the worker exits via its shutdown branch rather than via
         // the channel-close path (which would prompt a restart attempt by the supervisor).
-        shutdown_tx.send(()).expect("send shutdown");
-        sup_handle
-            .await
-            .expect("supervisor task joins")
-            .expect("supervisor should exit cleanly");
+        supervisor.shutdown().await.expect("supervisor should exit cleanly");
         drop(guard);
     }
 
