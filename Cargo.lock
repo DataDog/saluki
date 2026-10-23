@@ -1744,7 +1744,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 [[package]]
 name = "foldspace-core"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/foldspace?rev=7ae3b58adc12b76ccae70fdeeff384f6ddf19986#7ae3b58adc12b76ccae70fdeeff384f6ddf19986"
+source = "git+https://github.com/DataDog/foldspace?rev=e5fbc02d3e0dfdaed2802f07271a5bb503333fc9#e5fbc02d3e0dfdaed2802f07271a5bb503333fc9"
 dependencies = [
  "patterns",
  "prost",
@@ -4132,7 +4132,7 @@ checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
 [[package]]
 name = "patterns"
 version = "0.0.0"
-source = "git+https://github.com/DataDog/foldspace?rev=7ae3b58adc12b76ccae70fdeeff384f6ddf19986#7ae3b58adc12b76ccae70fdeeff384f6ddf19986"
+source = "git+https://github.com/DataDog/foldspace?rev=e5fbc02d3e0dfdaed2802f07271a5bb503333fc9#e5fbc02d3e0dfdaed2802f07271a5bb503333fc9"
 dependencies = [
  "metrics",
  "regex-automata",
