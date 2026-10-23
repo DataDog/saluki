@@ -1,8 +1,4 @@
-use std::{
-    collections::HashMap,
-    process::Stdio,
-    time::{Duration, Instant},
-};
+use std::{collections::HashMap, fmt, process::Stdio, time::Duration};
 
 use airlock::docker;
 use bollard::{
@@ -12,10 +8,11 @@ use bollard::{
 use futures::TryStreamExt as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::process::Command;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::Action;
-use crate::assertions::{AssertionContext, AssertionResult};
+use crate::assertions::{AssertionContext, AssertionResult, AssertionStatus};
 
 pub(super) struct TargetExecAction {
     command: Vec<String>,
@@ -110,7 +107,7 @@ impl Action for TargetExecAction {
         match result {
             Ok(output) => AssertionResult {
                 name: self.name().to_string(),
-                passed: true,
+                status: AssertionStatus::Passed,
                 message: if output.trim().is_empty() {
                     self.description()
                 } else {
@@ -120,7 +117,7 @@ impl Action for TargetExecAction {
             },
             Err(e) => AssertionResult {
                 name: self.name().to_string(),
-                passed: false,
+                status: e.status(),
                 message: e.to_string(),
                 duration: started.elapsed(),
             },
@@ -128,10 +125,50 @@ impl Action for TargetExecAction {
     }
 }
 
+/// Why a target command didn't succeed.
+#[derive(Debug)]
+pub(crate) enum CommandError {
+    /// The command was empty, host process setup or output collection failed, or the Docker API failed.
+    Harness(GenericError),
+    /// The command exited nonzero, timed out, or was interrupted.
+    Failed(GenericError),
+}
+
+impl CommandError {
+    /// Returns `Errored` for [`CommandError::Harness`] and `Failed` otherwise.
+    pub(crate) fn status(&self) -> AssertionStatus {
+        match self {
+            Self::Harness(_) => AssertionStatus::Errored,
+            Self::Failed(_) => AssertionStatus::Failed,
+        }
+    }
+}
+
+impl fmt::Display for CommandError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Harness(error) | Self::Failed(error) => error.fmt(f),
+        }
+    }
+}
+
+/// Runs `command` in the target environment within `timeout`, returning its combined stdout and stderr.
+///
+/// # Errors
+///
+/// Returns [`CommandError::Harness`] for an empty command, host process I/O errors, or Docker API failures.
+/// Returns [`CommandError::Failed`] on nonzero exit, timeout, test cancellation, or target exit.
 pub(crate) async fn execute_target_command(
     ctx: &AssertionContext, command: &[String], diagnostics: &CommandDiagnostics, timeout: Duration,
     host_env: Option<&HashMap<String, String>>,
-) -> Result<String, GenericError> {
+) -> Result<String, CommandError> {
+    if command.is_empty() {
+        return Err(CommandError::Harness(generic_error!(
+            "{} must not be empty.",
+            diagnostics.validation_subject()
+        )));
+    }
+
     if ctx.is_host_process {
         exec_on_host_with_timeout(
             command,
@@ -158,21 +195,13 @@ pub(crate) async fn execute_target_command(
 async fn exec_in_container_with_timeout(
     container_name: &str, command: &[String], diagnostics: &CommandDiagnostics, timeout: Duration,
     cancel_token: &CancellationToken, exit_token: &CancellationToken,
-) -> Result<String, GenericError> {
-    if command.is_empty() {
-        return Err(generic_error!(
-            "{} must not be empty.",
-            diagnostics.validation_subject()
-        ));
-    }
-
+) -> Result<String, CommandError> {
     tokio::select! {
-        _ = cancel_token.cancelled() => Err(generic_error!("Action cancelled.")),
-        _ = exit_token.cancelled() => Err(generic_error!("Action cancelled because the target exited.")),
+        _ = cancel_token.cancelled() => Err(CommandError::Failed(generic_error!("Action cancelled."))),
+        _ = exit_token.cancelled() => Err(CommandError::Failed(generic_error!("Action cancelled because the target exited."))),
         result = tokio::time::timeout(timeout, exec_in_container_collect(container_name, command, diagnostics)) => match result {
-            Ok(result) if diagnostics.includes_child_output() => result,
-            Ok(result) => result.with_error_context(|| format!("Failed to run {}.", diagnostics.container_subject(container_name))),
-            Err(_) => Err(generic_error!("Timed out running {}.", diagnostics.container_subject(container_name))),
+            Ok(result) => result,
+            Err(_) => Err(CommandError::Failed(generic_error!("Timed out running {}.", diagnostics.container_subject(container_name)))),
         }
     }
 }
@@ -180,76 +209,47 @@ async fn exec_in_container_with_timeout(
 async fn exec_on_host_with_timeout(
     command: &[String], diagnostics: &CommandDiagnostics, host_env: Option<&HashMap<String, String>>,
     timeout: Duration, cancel_token: &CancellationToken, exit_token: &CancellationToken,
-) -> Result<String, GenericError> {
-    if command.is_empty() {
-        return Err(generic_error!(
-            "{} must not be empty.",
-            diagnostics.validation_subject()
-        ));
-    }
-
+) -> Result<String, CommandError> {
     tokio::select! {
-        _ = cancel_token.cancelled() => Err(generic_error!("Action cancelled.")),
-        _ = exit_token.cancelled() => Err(generic_error!("Action cancelled because the target exited.")),
+        _ = cancel_token.cancelled() => Err(CommandError::Failed(generic_error!("Action cancelled."))),
+        _ = exit_token.cancelled() => Err(CommandError::Failed(generic_error!("Action cancelled because the target exited."))),
         result = tokio::time::timeout(timeout, exec_on_host_collect(command, diagnostics, host_env)) => match result {
             Ok(result) => result,
-            Err(_) => Err(generic_error!("Timed out running {}.", diagnostics.host_subject())),
+            Err(_) => Err(CommandError::Failed(generic_error!("Timed out running {}.", diagnostics.host_subject()))),
         }
     }
 }
 
 async fn exec_in_container_collect(
     container_name: &str, command: &[String], diagnostics: &CommandDiagnostics,
-) -> Result<String, GenericError> {
-    if command.is_empty() {
-        return Err(generic_error!("target_exec command must not be empty."));
-    }
-
-    let docker = docker::connect().error_context("Failed to connect to Docker.")?;
-    let exec = docker
-        .create_exec(
-            container_name,
-            CreateExecOptions::<String> {
-                cmd: Some(command.to_vec()),
-                attach_stdout: Some(true),
-                attach_stderr: Some(true),
-                ..Default::default()
-            },
-        )
-        .await
-        .error_context("Failed to create exec.")?;
-    let exec_id = exec.id.clone();
-    let result = docker
-        .start_exec(&exec_id, None)
-        .await
-        .error_context("Failed to start exec.")?;
-
-    let mut output_text = String::new();
-    if let StartExecResults::Attached { mut output, .. } = result {
-        while let Some(chunk) = output.try_next().await.error_context("Failed to read exec output.")? {
-            match chunk {
-                LogOutput::StdOut { message } | LogOutput::StdErr { message } => {
-                    output_text.push_str(&String::from_utf8_lossy(&message));
-                }
-                _ => {}
-            }
-        }
-    }
-
-    let inspect = docker
-        .inspect_exec(&exec_id)
-        .await
-        .error_context("Failed to inspect exec.")?;
-    if inspect.exit_code != Some(0) {
-        return if diagnostics.includes_child_output() {
-            Err(generic_error!("exec exited {:?}: {}", inspect.exit_code, output_text))
+) -> Result<String, CommandError> {
+    // A redacted command's errors show only its subject.
+    let redact = |error: GenericError| {
+        if diagnostics.includes_child_output() {
+            error
         } else {
-            Err(generic_error!(
+            error.context(format!(
+                "Failed to run {}.",
+                diagnostics.container_subject(container_name)
+            ))
+        }
+    };
+    let output = docker_exec(container_name, command.to_vec())
+        .await
+        .map_err(|error| CommandError::Harness(redact(error)))?;
+
+    let output_text = format!("{}{}", output.stdout, output.stderr);
+    if !output.succeeded() {
+        let error = if diagnostics.includes_child_output() {
+            generic_error!("exec exited {:?}: {}", output.exit_code, output_text)
+        } else {
+            generic_error!(
                 "{} exited {:?}.",
                 diagnostics.container_subject(container_name),
-                inspect.exit_code
-            ))
+                output.exit_code
+            )
         };
+        return Err(CommandError::Failed(redact(error)));
     }
 
     Ok(output_text)
@@ -257,10 +257,13 @@ async fn exec_in_container_collect(
 
 async fn exec_on_host_collect(
     command: &[String], diagnostics: &CommandDiagnostics, host_env: Option<&HashMap<String, String>>,
-) -> Result<String, GenericError> {
-    let (program, args) = command
-        .split_first()
-        .ok_or_else(|| generic_error!("{} must not be empty.", diagnostics.validation_subject()))?;
+) -> Result<String, CommandError> {
+    let (program, args) = command.split_first().ok_or_else(|| {
+        CommandError::Harness(generic_error!(
+            "{} must not be empty.",
+            diagnostics.validation_subject()
+        ))
+    })?;
     let mut child = Command::new(program);
     child.args(args);
     if let Some(host_env) = host_env {
@@ -272,9 +275,10 @@ async fn exec_on_host_collect(
         .kill_on_drop(true)
         .output()
         .await
-        .with_error_context(|| format!("Failed to run {}.", diagnostics.host_subject()))?;
+        .with_error_context(|| format!("Failed to run {}.", diagnostics.host_subject()))
+        .map_err(CommandError::Harness)?;
 
-    collect_host_output(output, diagnostics)
+    collect_host_output(output, diagnostics).map_err(CommandError::Failed)
 }
 
 fn collect_host_output(output: std::process::Output, diagnostics: &CommandDiagnostics) -> Result<String, GenericError> {
@@ -295,6 +299,68 @@ fn collect_host_output(output: std::process::Output, diagnostics: &CommandDiagno
     }
 
     Ok(output_text)
+}
+
+/// Output and exit status of a Docker exec.
+pub(crate) struct ExecOutput {
+    /// The command's exit code, if Docker reported one.
+    pub(crate) exit_code: Option<i64>,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+}
+
+impl ExecOutput {
+    /// Returns whether the command exited zero.
+    pub(crate) fn succeeded(&self) -> bool {
+        self.exit_code == Some(0)
+    }
+}
+
+/// Runs `cmd` in `container_name` and collects its output.
+///
+/// # Errors
+///
+/// Returns an error only when the Docker API fails. A command that runs and exits nonzero is `Ok`.
+pub(crate) async fn docker_exec(container_name: &str, cmd: Vec<String>) -> Result<ExecOutput, GenericError> {
+    let docker = docker::connect().error_context("Failed to connect to Docker.")?;
+    let exec = docker
+        .create_exec(
+            container_name,
+            CreateExecOptions::<String> {
+                cmd: Some(cmd),
+                attach_stdout: Some(true),
+                attach_stderr: Some(true),
+                ..Default::default()
+            },
+        )
+        .await
+        .error_context("Failed to create exec.")?;
+    let result = docker
+        .start_exec(&exec.id, None)
+        .await
+        .error_context("Failed to start exec.")?;
+
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    if let StartExecResults::Attached { mut output, .. } = result {
+        while let Some(chunk) = output.try_next().await.error_context("Failed to read exec output.")? {
+            match chunk {
+                LogOutput::StdOut { message } => stdout.push_str(&String::from_utf8_lossy(&message)),
+                LogOutput::StdErr { message } => stderr.push_str(&String::from_utf8_lossy(&message)),
+                _ => {}
+            }
+        }
+    }
+
+    let inspect = docker
+        .inspect_exec(&exec.id)
+        .await
+        .error_context("Failed to inspect exec.")?;
+    Ok(ExecOutput {
+        exit_code: inspect.exit_code,
+        stdout,
+        stderr,
+    })
 }
 
 #[cfg(test)]

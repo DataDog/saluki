@@ -140,7 +140,7 @@ pub enum StepStatus {
     Passed,
     /// The step observed behavior that did not meet its expectation.
     Failed,
-    /// The harness could not evaluate the step, for example because it overran its own budget.
+    /// A budget overrun, harness failure, or invalid configuration prevented evaluation of the step.
     Errored,
     /// Cancellation or the case budget stopped the step.
     Interrupted,

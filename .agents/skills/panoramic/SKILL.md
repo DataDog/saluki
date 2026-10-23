@@ -71,12 +71,13 @@ Exit codes distinguish the run-level result:
 
 | Code | Meaning |
 |------|---------|
-| 0 | Every test passed |
-| 1 | At least one assertion failed |
-| 2 | Harness error, timeout, or interrupted run |
-| 3 | The selection matched no tests |
+| 0 | Every test passed; run completed |
+| 1 | Assertion failure, unless code 2 applies |
+| 2 | Harness error, `timed_out` test, or interrupted run |
+| 3 | Empty selection or unmatched test name |
 
-For code 2, investigate the harness or environment before assertion differences.
+An `errored` step could not be evaluated. Inspect test `error`, `timeout`, `cause`, and step
+`message` fields.
 
 Check `run.json` first: it is updated during execution, so passing entries do not prove the run
 finished. Inspect completeness before individual results; treat unknown states, outcomes, or
@@ -91,10 +92,9 @@ Follow the selected tests' `log_dir` to `result.json`. Use `outcome` for the tes
 `assertions[].status` for each step. Check `issues` even on passes; they do not change `outcome`.
 Open reported artifact paths and `diagnostic_lines` sources for context and uncapped details.
 
-For semantics, read `RunReport`, `TestReport`, and `AssertionReport` in
-`bin/correctness/panoramic/src/machine_output.rs` and follow their types. Step-to-outcome rules are
-in `TestResult::from_steps` in `reporter.rs`. Check `schema_version` and `run.json`'s `build_revision`
-when reports differ from the working tree.
+Follow report types in `bin/correctness/panoramic/src/machine_output.rs` for semantics.
+Precedence: `TestResult::from_steps` in `reporter.rs`; `exit_code` in `collector.rs`.
+Check `schema_version` and `run.json`'s `build_revision` against the working tree.
 
 On Unix, send SIGINT or SIGTERM to stop a run with cleanup; a second signal may leave containers.
 
