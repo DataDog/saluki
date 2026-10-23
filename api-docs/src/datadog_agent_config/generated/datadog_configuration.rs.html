@@ -220,9 +220,9 @@
 <a href=#220 id=220 data-nosnippet>220</a>    #[serde(deserialize_with = <span class="string">"crate::cast_de::deserialize_i64"</span>)]
 <a href=#221 id=221 data-nosnippet>221</a>    </span><span class="kw">pub </span>dogstatsd_so_rcvbuf: i64,
 <a href=#222 id=222 data-nosnippet>222</a>
-<a href=#223 id=223 data-nosnippet>223</a>    <span class="attr">#[serde(default, skip_serializing_if = <span class="string">"::std::option::Option::is_none"</span>)]
-<a href=#224 id=224 data-nosnippet>224</a>    #[serde(deserialize_with = <span class="string">"crate::cast_de::deserialize_optional_string"</span>)]
-<a href=#225 id=225 data-nosnippet>225</a>    </span><span class="kw">pub </span>dogstatsd_socket: <span class="prelude-ty">Option</span>&lt;String&gt;,
+<a href=#223 id=223 data-nosnippet>223</a>    <span class="attr">#[serde(default = <span class="string">"platform_defaults::dogstatsd_socket"</span>)]
+<a href=#224 id=224 data-nosnippet>224</a>    #[serde(deserialize_with = <span class="string">"crate::cast_de::deserialize_string"</span>)]
+<a href=#225 id=225 data-nosnippet>225</a>    </span><span class="kw">pub </span>dogstatsd_socket: String,
 <a href=#226 id=226 data-nosnippet>226</a>
 <a href=#227 id=227 data-nosnippet>227</a>    <span class="attr">#[serde(default)]
 <a href=#228 id=228 data-nosnippet>228</a>    #[serde(deserialize_with = <span class="string">"crate::cast_de::deserialize_bool"</span>)]
@@ -639,7 +639,7 @@
 <a href=#639 id=639 data-nosnippet>639</a>            dogstatsd_port: defaults::default_u64::&lt;i64, <span class="number">8125</span>&gt;(),
 <a href=#640 id=640 data-nosnippet>640</a>            dogstatsd_require_listener: Default::default(),
 <a href=#641 id=641 data-nosnippet>641</a>            dogstatsd_so_rcvbuf: Default::default(),
-<a href=#642 id=642 data-nosnippet>642</a>            dogstatsd_socket: Default::default(),
+<a href=#642 id=642 data-nosnippet>642</a>            dogstatsd_socket: platform_defaults::dogstatsd_socket(),
 <a href=#643 id=643 data-nosnippet>643</a>            dogstatsd_stream_log_too_big: Default::default(),
 <a href=#644 id=644 data-nosnippet>644</a>            dogstatsd_stream_socket: Default::default(),
 <a href=#645 id=645 data-nosnippet>645</a>            dogstatsd_string_interner_size: defaults::default_u64::&lt;i64, <span class="number">4096</span>&gt;(),
@@ -2405,4 +2405,15 @@
 <a href=#2405 id=2405 data-nosnippet>2405</a>        std::time::Duration::from_nanos(<span class="number">10000000000</span>)
 <a href=#2406 id=2406 data-nosnippet>2406</a>    }
 <a href=#2407 id=2407 data-nosnippet>2407</a>}
+<a href=#2408 id=2408 data-nosnippet>2408</a>
+<a href=#2409 id=2409 data-nosnippet>2409</a><span class="kw">mod </span>platform_defaults {
+<a href=#2410 id=2410 data-nosnippet>2410</a>    <span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>dogstatsd_socket() -&gt; String {
+<a href=#2411 id=2411 data-nosnippet>2411</a>        <span class="kw">match </span><span class="kw">crate</span>::platform_default::resolve(<span class="kw-2">&amp;</span>[<span class="string">"aix"</span>, <span class="string">"linux"</span>, <span class="string">"other"</span>]) {
+<a href=#2412 id=2412 data-nosnippet>2412</a>            <span class="string">"aix" </span>=&gt; <span class="string">"/var/run/datadog/dsd.socket"</span>.to_string(),
+<a href=#2413 id=2413 data-nosnippet>2413</a>            <span class="string">"linux" </span>=&gt; <span class="string">"/var/run/datadog/dsd.socket"</span>.to_string(),
+<a href=#2414 id=2414 data-nosnippet>2414</a>            <span class="string">"other" </span>=&gt; <span class="string">""</span>.to_string(),
+<a href=#2415 id=2415 data-nosnippet>2415</a>            <span class="kw">_ </span>=&gt; Default::default(),
+<a href=#2416 id=2416 data-nosnippet>2416</a>        }
+<a href=#2417 id=2417 data-nosnippet>2417</a>    }
+<a href=#2418 id=2418 data-nosnippet>2418</a>}
 </code></pre></div></section></main></body></html>
