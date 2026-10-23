@@ -10,11 +10,13 @@
 ///
 /// Returns `""` when none applies (a mapping with no `other` key on an unlisted platform), in which case the setting
 /// defaults to its type's zero value, as the Agent's `nil` default would.
-pub(crate) fn resolve(declared: &[&'static str]) -> &'static str {
-    resolve_with(declared, goos(), is_ecs_fargate(), is_containerized())
+pub(crate) fn resolve(platforms_with_defaults: &[&'static str]) -> &'static str {
+    resolve_with(platforms_with_defaults, goos(), is_ecs_fargate(), is_containerized())
 }
 
-fn resolve_with(declared: &[&'static str], goos: &'static str, ecs_fargate: bool, containerized: bool) -> &'static str {
+fn resolve_with(
+    platforms_with_defaults: &[&'static str], goos: &'static str, ecs_fargate: bool, containerized: bool,
+) -> &'static str {
     // The keys that could apply to this process, from most to least specific.
     let candidates = [
         ecs_fargate.then_some("fargate"),
@@ -25,7 +27,7 @@ fn resolve_with(declared: &[&'static str], goos: &'static str, ecs_fargate: bool
     candidates
         .into_iter()
         .flatten()
-        .find(|candidate| declared.contains(candidate))
+        .find(|candidate| platforms_with_defaults.contains(candidate))
         .unwrap_or("")
 }
 
