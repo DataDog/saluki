@@ -212,6 +212,7 @@ procedure:
         use crate::assertions::test_support::{host_context, procedure};
         use crate::assertions::{run_assertion_steps, LogBuffer};
         use crate::deadline::{Budget, Deadline};
+        use crate::record::{CaseRecord, StepStatus};
 
         let mut case = procedure(
             r#"
@@ -228,9 +229,16 @@ procedure:
         }));
         ctx.container_exit_token.cancel();
         let case_deadline = Deadline::after(Budget::Case, Duration::from_secs(1));
-        let results = run_assertion_steps(&case, &ctx, case_deadline).await;
+        let record = CaseRecord::default();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            run_assertion_steps(&case, &ctx, case_deadline, &record),
+        )
+        .await
+        .expect("the procedure should finish within the bound");
+        let results = record.steps();
         assert_eq!(results.len(), 1);
-        assert!(results[0].passed, "{}", results[0].message);
+        assert_eq!(results[0].status, StepStatus::Passed, "{}", results[0].message);
         assert_eq!(results[0].message, "Found pattern 'resolved' in logs.");
         assert_eq!(
             case.config

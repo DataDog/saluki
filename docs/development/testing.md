@@ -98,6 +98,13 @@ be configured to run in `parallel`.
 
 CI: `.gitlab/e2e.yml`—same file as correctness, `e2e` stage, 10 min timeout, retry 2.
 
+### Step deadlines
+
+Each step uses its `timeout`, `duration`, or `during` as its budget. The `dogstatsd_replay` action uses a whole-action
+budget of `4 × timeout + capture_duration + 50ms`. The driver allows 10 seconds beyond that budget for the step to
+report its result, then stops it as `errored`. This makes the test a harness error (exit code 2), unless a parallel
+member failed. Case timeout or run cancellation interrupts unfinished steps and preserves completed results.
+
 ## Panoramic CLI and environment
 
 Both suites run through the same `panoramic` binary.
@@ -127,19 +134,21 @@ Exit codes distinguish the run-level result:
 For code 2, investigate the harness or environment before assertion differences.
 
 Check `run.json` first: it's updated during execution, so passing entries don't prove the run finished. Inspect
-completeness before individual results, and treat unknown states or outcomes as non-passing:
+completeness before individual results, and treat unknown states, outcomes, or statuses as non-passing:
 
 ```bash
 jq '{state, interrupted_reason, running, not_run}' run.json
-jq -r '.tests[] | select(.outcome != "passed") | "\(.name) \(.outcome) \(.log_dir)"' run.json
+jq -r '.tests[] | select(.outcome != "passed" or (.issues | length) > 0) | "\(.name) \(.outcome) \(.log_dir)"' run.json
 ```
 
-Follow each non-passing test's `log_dir` to `result.json`. Read `outcome`, `error`, `timeout`, failed `assertions`, and
-`diagnostic_lines`, then open the referenced artifacts for context and uncapped details. Use reported paths rather than
-guessing filenames.
+Follow the selected tests' `log_dir` to `result.json`. Use `outcome` for the test result and `assertions[].status` for
+each step. Check `issues` even on passes; they don't change `outcome`. Open reported artifact paths and
+`diagnostic_lines` sources for context and uncapped details.
 
-For field semantics, start with `RunReport` and `TestReport` in `bin/correctness/panoramic/src/machine_output.rs` and
-follow their types. Check `schema_version` and `build_revision` when reports differ from the working tree.
+For semantics, read `RunReport`, `TestReport`, and `AssertionReport` in
+`bin/correctness/panoramic/src/machine_output.rs` and follow their types. Step-to-outcome rules are in
+`TestResult::from_steps` in `reporter.rs`. Check `schema_version` and `run.json`'s `build_revision` when reports differ
+from the working tree.
 
 On Unix, send SIGINT or SIGTERM to stop a run with cleanup. A second signal may leave containers behind.
 
