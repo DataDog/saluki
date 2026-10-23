@@ -470,12 +470,26 @@ pub enum AssertionConfig {
         /// Optional numeric value the matching value must carry. Not applicable to sketches.
         #[serde(default)]
         value: Option<f64>,
-        /// Tags that must all be present on the matching metric. Extra tags are allowed.
+        /// Tags compared against the matching metric's tags, as `tags_match` directs.
         #[serde(default)]
         tags: Vec<String>,
+        /// How `tags` must relate to the matching metric's tags. Defaults to `subset`.
+        #[serde(default)]
+        tags_match: TagMatch,
         /// Timeout for waiting for the metric to arrive.
         timeout: HumanDuration,
     },
+}
+
+/// How an [`AssertionConfig::IntakeHasMetric`]'s `tags` must relate to an observed context's normalized tags.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TagMatch {
+    /// Every expected tag is present; extra tags are allowed.
+    #[default]
+    Subset,
+    /// The context's tag set equals the expected set after sorting and deduplication.
+    Exact,
 }
 
 /// Metric type accepted by an [`AssertionConfig::IntakeHasMetric`].
@@ -1291,6 +1305,38 @@ procedure:
         assert_eq!(*metric_type, Some(MetricTypeMatcher::Count));
         assert_eq!(*value, Some(3.0));
         assert_eq!(tags, &["source:integration-test".to_string()]);
+    }
+
+    #[test]
+    fn intake_has_metric_tags_match_defaults_to_subset_and_rejects_unknown_modes() {
+        let parse = |tags_match: &str| {
+            let yaml = format!(
+                r#"
+type: integration
+name: tags-match-case
+timeout: 60s
+procedure:
+  - assertion: intake_has_metric
+    name: "example.gauge"
+    tags: []
+    {}
+    timeout: 30s
+"#,
+                tags_match
+            );
+            serde_saphyr::from_str::<IntegrationConfig>(&yaml).map(|config| match &config.procedure[0] {
+                AssertionStep::Single(AssertionConfig::IntakeHasMetric { tags_match, .. }) => *tags_match,
+                _ => panic!("step should parse as an intake_has_metric assertion"),
+            })
+        };
+
+        assert_eq!(parse("").expect("case should parse"), TagMatch::Subset);
+        assert_eq!(
+            parse("tags_match: subset").expect("case should parse"),
+            TagMatch::Subset
+        );
+        assert_eq!(parse("tags_match: exact").expect("case should parse"), TagMatch::Exact);
+        assert!(parse("tags_match: fuzzy").is_err());
     }
 
     #[test]

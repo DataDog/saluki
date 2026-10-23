@@ -1,0 +1,77 @@
+type: integration
+name: "dogstatsd-host-tag"
+description: "Sends DogStatsD gauges with and without host tags and asserts the exact contexts at datadog-intake"
+timeout: 180s
+# Docker only: the host-process runtime has no container network and so no intake sidecar.
+runtimes: [linux]
+
+intake:
+  enabled: true
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-host-tag"
+  DD_DD_URL: "http://datadog-intake:2049"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
+  DD_DOGSTATSD_ORIGIN_DETECTION: "false"
+
+container:
+  exposed_ports:
+    - "58125/udp"
+
+procedure:
+  # Readiness gate: the listener logs this only once it is bound, and steps run in order, so
+  # nothing is sent early. A UDP `port_listening` probe would pass before the bind.
+  - assertion: log_contains
+    pattern: 'listen_addr:"udp://0.0.0.0:58125" | DogStatsD listener started.'
+    timeout: 60s
+  # The four lines of the `dsd-host-tag` correctness case, except that line 3 names this case's
+  # hostname so it still equals the default. A `host` tag sets the metric's host rather than
+  # staying a tag:
+  #
+  # 1. No host tag: the default hostname.
+  # 2. An empty host tag: an empty host, which the intake reports with no host tag.
+  # 3. An explicit host equal to the default hostname: the same context as line 1. It is sent
+  #    after line 1, so its value wins the gauge.
+  # 4. A custom host.
+  - action: dogstatsd_send
+    payload: |-
+      hosttag.metric:1|g
+      hosttag.metric:2|g|#host:
+      hosttag.metric:3|g|#host:integration-host-tag
+      hosttag.metric:4|g|#host:custom
+    port: 58125
+    timeout: 10s
+  # Exact tag matching tells these contexts apart: under the subset default, `tags: []` matches
+  # every context.
+  - assertion: intake_has_metric
+    name: "hosttag.metric"
+    metric_type: gauge
+    value: 3
+    tags: ["host:integration-host-tag"]
+    tags_match: exact
+    timeout: 120s
+  - assertion: intake_has_metric
+    name: "hosttag.metric"
+    metric_type: gauge
+    value: 2
+    tags: []
+    tags_match: exact
+    timeout: 120s
+  - assertion: intake_has_metric
+    name: "hosttag.metric"
+    metric_type: gauge
+    value: 4
+    tags: ["host:custom"]
+    tags_match: exact
+    timeout: 120s
+  - parallel:
+      - assertion: process_stable_for
+        duration: 5s
+      - assertion: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 5s

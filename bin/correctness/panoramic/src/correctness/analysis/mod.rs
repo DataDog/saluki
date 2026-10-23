@@ -1,8 +1,7 @@
 use saluki_error::GenericError;
 use serde::Deserialize;
 
-mod collected;
-pub use self::collected::CollectedData;
+use crate::intake::CollectedData;
 
 mod dogstatsd_forwarding;
 mod events;

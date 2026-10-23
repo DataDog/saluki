@@ -24,14 +24,15 @@ use tracing::{debug, info, warn};
 
 use crate::{
     correctness::{
-        analysis::{AnalysisMode, AnalysisRunner, CollectedData, TracesAnalysisOptions},
+        analysis::{AnalysisMode, AnalysisRunner, TracesAnalysisOptions},
         case::CorrectnessTestCase,
         config::TargetConfig,
         runner::make_error_result,
-        traffic::{self, Side},
     },
+    intake::{CollectedData, IntakeClient},
     reporter::TestResult,
     test::TestContext,
+    traffic::{self, Side},
 };
 
 const POD_NAME: &str = "correctness-pod";
@@ -327,8 +328,14 @@ pub async fn run_k8s_correctness_test(case: CorrectnessTestCase, tctx: TestConte
     // Phase 5: Collect data from both agent pods in parallel.
     let phase = phases.enter("collect_data");
     let (baseline_result, comparison_result) = tokio::join!(
-        CollectedData::for_port(baseline_port),
-        CollectedData::for_port(comparison_port),
+        async move {
+            let client = IntakeClient::new(baseline_port);
+            CollectedData::collect(&client).await
+        },
+        async move {
+            let client = IntakeClient::new(comparison_port);
+            CollectedData::collect(&client).await
+        },
     );
 
     baseline_pf_cancel.cancel();
@@ -364,9 +371,7 @@ pub async fn run_k8s_correctness_test(case: CorrectnessTestCase, tctx: TestConte
     // Persist what each side decoded before the analysis consumes it.
     let traffic_dir = traffic::traffic_dir(tctx.log_dir());
     for (side, data) in [(Side::Baseline, &baseline_data), (Side::Comparison, &comparison_data)] {
-        if let Err(e) = traffic::write_decoded(&traffic_dir, side, data) {
-            warn!(side = side.name(), error = %e, "Failed to write decoded telemetry capture.");
-        }
+        traffic::write_decoded(&traffic_dir, side, data);
     }
 
     // The millstone container writes its input capture inside the pod, and the pod has already terminated by this

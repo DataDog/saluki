@@ -40,6 +40,7 @@ mod events;
 use self::events::{create_event_channel, TestEvent};
 
 mod image_override;
+mod intake;
 
 mod machine_output;
 use self::machine_output::RunReport;
@@ -50,6 +51,7 @@ use self::reporter::{ErrorKind, OutputFormat, Reporter, TestResult, TestSuiteRes
 mod runner;
 mod test;
 mod test_env;
+mod traffic;
 mod tui;
 mod unix_runner;
 mod utils;

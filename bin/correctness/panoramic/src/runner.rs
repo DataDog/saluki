@@ -28,6 +28,7 @@ use crate::{
     assertions::{AssertionContext, AssertionResult, LogBuffer, TargetCommand},
     config::{parse_file_spec, parse_port_spec},
     events::TestEvent,
+    intake::IntakeClient,
     integration::IntegrationTestCase,
     reporter::{ErrorKind, PhaseTiming, TestResult, TimeoutAttribution},
 };
@@ -43,6 +44,9 @@ const GRACE_TIME: Duration = Duration::from_secs(30);
 
 /// The amount of time the intake sidecar has to report healthy before the test fails.
 const INTAKE_HEALTH_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The amount of time the post-assertion intake capture has to collect from the intake sidecar.
+const INTAKE_CAPTURE_BUDGET: Duration = Duration::from_secs(10);
 
 /// Maps shared `DD_DATA_PLANE_*` test env keys to their Windows-image-native nested form.
 ///
@@ -487,7 +491,7 @@ impl Runner {
 
         write_result_log(&result, &log_dir);
         // Traffic retention runs before the report, so `result.json` lists the artifacts that are on disk.
-        crate::correctness::traffic::finalize(&log_dir, result.outcome);
+        crate::traffic::finalize(&log_dir, result.outcome);
         crate::machine_output::write_test_report(&result, &log_dir);
 
         if let Some(ref tx) = event_sender {
@@ -821,6 +825,19 @@ impl IntegrationRunner {
                 assertions_failed = failed_count,
                 "Some assertions failed."
             );
+        }
+
+        // Keep what the intake holds now as diagnostic evidence; retention is decided once the verdict is final.
+        if let Some(intake_host_port) = intake_host_port {
+            let phase = self.tctx.phases.enter("intake_capture");
+            crate::traffic::capture_intake(
+                &crate::traffic::traffic_dir(self.tctx.log_dir()),
+                &IntakeClient::new(intake_host_port),
+                &test_cancel,
+                INTAKE_CAPTURE_BUDGET,
+            )
+            .await;
+            phase_timings.push(phase.finish());
         }
 
         // Write logs to disk if configured.

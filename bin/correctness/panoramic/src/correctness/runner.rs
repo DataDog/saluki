@@ -19,16 +19,17 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, info_span, warn, Instrument as _, Span};
 
 use crate::correctness::{
-    analysis::{AnalysisMode, AnalysisRunner, CollectedData, TracesAnalysisOptions},
+    analysis::{AnalysisMode, AnalysisRunner, TracesAnalysisOptions},
     case::CorrectnessTestCase,
     config::Runtime,
     sync::Coordinator,
-    traffic::{self, Side},
 };
 use crate::{
     assertions::AssertionResult,
+    intake::{CollectedData, IntakeClient},
     reporter::{ErrorKind, PhaseTiming, TestResult},
     test::TestContext,
+    traffic::{self, Side},
 };
 
 /// Path where the original millstone config is mounted inside the shared millstone container.
@@ -90,9 +91,7 @@ async fn run_docker_correctness_test(case: CorrectnessTestCase, tctx: TestContex
     // Persist what each side decoded before the analysis consumes it.
     let traffic_dir = traffic::traffic_dir(&log_dir);
     for (side, data) in [(Side::Baseline, &baseline_data), (Side::Comparison, &comparison_data)] {
-        if let Err(e) = traffic::write_decoded(&traffic_dir, side, data) {
-            warn!(side = side.name(), error = %e, "Failed to write decoded telemetry capture.");
-        }
+        traffic::write_decoded(&traffic_dir, side, data);
     }
 
     // Phase 3: analysis
@@ -532,14 +531,16 @@ impl CorrectnessRunner {
 
         // Phase 6: Collect data from both datadog-intake containers, then shut everything down.
         info!("Collecting data from baseline and comparison intake containers...");
-        let maybe_baseline_data = run_in_background(
-            &baseline_runner_span,
-            CollectedData::for_port(baseline_collector.datadog_intake_port),
-        );
-        let maybe_comparison_data = run_in_background(
-            &comparison_runner_span,
-            CollectedData::for_port(comparison_collector.datadog_intake_port),
-        );
+        let baseline_intake_port = baseline_collector.datadog_intake_port;
+        let maybe_baseline_data = run_in_background(&baseline_runner_span, async move {
+            let client = IntakeClient::new(baseline_intake_port);
+            CollectedData::collect(&client).await
+        });
+        let comparison_intake_port = comparison_collector.datadog_intake_port;
+        let maybe_comparison_data = run_in_background(&comparison_runner_span, async move {
+            let client = IntakeClient::new(comparison_intake_port);
+            CollectedData::collect(&client).await
+        });
 
         let (baseline_data, comparison_data) = match self
             .unwrap_or_shutdown("collect_data", maybe_baseline_data.await, maybe_comparison_data.await)
