@@ -617,17 +617,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             ),
             cause: UNPARSEABLE_SCALAR_STRING,
         }),
-        known_bug(Entry {
-            origin: "depth-env-hex",
-            tier: Bootstrap,
-            at: "snapshot",
-            getter: "-",
-            key: "<boot>",
-            adp: Adp::error(
-                "failed to build the configuration base: environment variable `DD_AGENT_IPC_GRPC_MAX_MESSAGE_SIZE` (agent_ipc.grpc_max_message_size): invalid integer `0x10`",
-            ),
-            cause: BOOTSTRAP_ENV_PARSING,
-        }),
         intentional(Entry {
             origin: "depth-env-json-list",
             tier: Leaf,
@@ -663,15 +652,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             key: "metric_tag_filterlist",
             adp: Adp::value("[\"cr-a\",\"cr-b\"]"),
             cause: RAW_JSON_REPRESENTATION,
-        }),
-        known_bug(Entry {
-            origin: "depth-env-json-list",
-            tier: Bootstrap,
-            at: "snapshot",
-            getter: "GetStringSlice",
-            key: "apm_config.obfuscation.elasticsearch.keep_values",
-            adp: Adp::value("[\"[\\\"cr-a\\\",\\\"cr-b\\\"]\"]"),
-            cause: BOOTSTRAP_ENV_PARSING,
         }),
         intentional(Entry {
             origin: "depth-env-json-list",
@@ -1366,7 +1346,7 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             at: "snapshot",
             getter: "GetStringSlice",
             key: "apm_config.features",
-            adp: Adp::error("invalid type: map, expected a sequence or a space-separated string"),
+            adp: Adp::error("invalid type: map, expected a sequence or a string list"),
             cause: COLLECTION_SHAPE_MISMATCH,
         }),
         known_bug(Entry {
@@ -1449,7 +1429,7 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             at: "snapshot",
             getter: "GetStringSlice",
             key: "apm_config.features",
-            adp: Adp::error("invalid type: map, expected a sequence or a space-separated string"),
+            adp: Adp::error("invalid type: map, expected a sequence or a string list"),
             cause: COLLECTION_SHAPE_MISMATCH,
         }),
         known_bug(Entry {
@@ -1503,7 +1483,7 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             getter: "-",
             key: "apm_config.features",
             adp: Adp::error(
-                "invalid type: map, expected a sequence or a space-separated string",
+                "invalid type: map, expected a sequence or a string list",
             ),
             cause: COLLECTION_SHAPE_MISMATCH,
         }),
@@ -2189,39 +2169,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             cause: AGENT_LOAD_WRITE,
         }),
         known_bug(Entry {
-            origin: "int-string-base-prefix",
-            tier: Derived,
-            at: "snapshot",
-            getter: "GetSizeInBytes",
-            key: "log_file_max_size",
-            adp: Adp::error(
-                "1 config translation error(s):\n  - error translating config key `log_file_max_size`, couldn't parse \"x10KB\" into a known SI unit, Failed to parse unit \"x10...\"",
-            ),
-            cause: BYTE_SIZE_PARSE,
-        }),
-        known_bug(Entry {
-            origin: "int-string-base-prefix",
-            tier: Bootstrap,
-            at: "snapshot",
-            getter: "-",
-            key: "<boot>",
-            adp: Adp::error(
-                "failed to build the configuration base: environment variable `DD_DOGSTATSD_PORT` (dogstatsd_port): invalid integer `0x10`",
-            ),
-            cause: BOOTSTRAP_ENV_PARSING,
-        }),
-        known_bug(Entry {
-            origin: "int-string-base-prefix",
-            tier: Translate,
-            at: "snapshot",
-            getter: "-",
-            key: "log_file_max_size",
-            adp: Adp::error(
-                "error translating config key `log_file_max_size`, couldn't parse \"x10KB\" into a known SI unit, Failed to parse unit \"x10...\"",
-            ),
-            cause: BYTE_SIZE_PARSE,
-        }),
-        known_bug(Entry {
             origin: "mapper-profiles-wrong-field-type",
             tier: Translate,
             at: "snapshot",
@@ -2267,42 +2214,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             key: "proxy.no_proxy",
             adp: Adp::value("[]"),
             cause: AGENT_LOAD_WRITE,
-        }),
-        known_bug(Entry {
-            origin: "size-in-bytes-kb",
-            tier: Derived,
-            at: "snapshot",
-            getter: "GetSizeInBytes",
-            key: "dogstatsd_log_file_max_size",
-            adp: Adp::value("5000"),
-            cause: SIZE_UNIT_BASE,
-        }),
-        known_bug(Entry {
-            origin: "size-in-bytes-kb",
-            tier: Derived,
-            at: "snapshot",
-            getter: "GetSizeInBytes",
-            key: "log_file_max_size",
-            adp: Adp::value("10000000"),
-            cause: SIZE_UNIT_BASE,
-        }),
-        known_bug(Entry {
-            origin: "size-in-bytes-units",
-            tier: Derived,
-            at: "snapshot",
-            getter: "GetSizeInBytes",
-            key: "dogstatsd_log_file_max_size",
-            adp: Adp::value("10000000"),
-            cause: SIZE_UNIT_BASE,
-        }),
-        known_bug(Entry {
-            origin: "size-in-bytes-units",
-            tier: Derived,
-            at: "snapshot",
-            getter: "GetSizeInBytes",
-            key: "log_file_max_size",
-            adp: Adp::value("10000000"),
-            cause: SIZE_UNIT_BASE,
         }),
         intentional(Entry {
             origin: "valid-stream-updates",
@@ -2417,12 +2328,6 @@ const AGENT_LOAD_WRITE: Cause = Cause {
     issue: None,
 };
 
-const BOOTSTRAP_ENV_PARSING: Cause = Cause {
-    name: "bootstrap-env-parsing",
-    why: "ADP's own DD_* reader rejects base-prefixed integers and does not match the Agent's per-key list separators",
-    issue: Some(2753),
-};
-
 const BOOTSTRAP_YAML_LOADING: Cause = Cause {
     name: "bootstrap-yaml-loading",
     why: "ADP's own datadog.yaml reader rejects duplicate keys and NaN, does not split dotted keys, and resolves non-string map keys differently",
@@ -2467,22 +2372,10 @@ const SCALAR_GIVEN_COLLECTION: Cause = Cause {
     issue: Some(2755),
 };
 
-const SIZE_UNIT_BASE: Cause = Cause {
-    name: "size-unit-base",
-    why: "ADP parses KB, MB and GB byte sizes as powers of 1000; the Agent's GetSizeInBytes uses powers of 1024",
-    issue: Some(2751),
-};
-
 const STOP_TIMEOUT_RECOMPUTED: Cause = Cause {
     name: "stop-timeout-recomputed",
     why: "the Agent computes data_plane.stop_timeout once at load; ADP recomputes it from later inputs",
     issue: Some(2757),
-};
-
-const BYTE_SIZE_PARSE: Cause = Cause {
-    name: "byte-size-parse",
-    why: "the translator rejects a base-prefixed size the Agent's getter accepts",
-    issue: Some(2751),
 };
 
 const STRUCT_DECODE: Cause = Cause {
