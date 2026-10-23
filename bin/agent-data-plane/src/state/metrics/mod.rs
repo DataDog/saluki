@@ -21,7 +21,7 @@ mod tests {
         processor.process(
             MetricsSnapshot {
                 upserts: metrics,
-                evictions: Vec::new(),
+                ..MetricsSnapshot::default()
             },
             &state,
         );
@@ -661,9 +661,9 @@ mod tests {
             &[
                 "component_id:dsd_agg",
                 "component_type:transform",
-                "origin_tag_6B7562655F73657276696365_0:api",
-                "origin_tag_6B7562655F73657276696365_1:worker",
-                "origin_tag_7465616D2E6E616D65:platform%22ops%0Aline",
+                "kube_service_0:api",
+                "kube_service_1:worker",
+                "origin_tag_7465616D2E6E616D65:platform\"ops\nline",
             ],
         );
         let output = render_with(
@@ -672,7 +672,7 @@ mod tests {
         );
 
         assert!(output.contains(
-            "aggregator__dogstatsd_contexts_by_origin{origin_tag_6B7562655F73657276696365_0=\"api\",origin_tag_6B7562655F73657276696365_1=\"worker\",origin_tag_7465616D2E6E616D65=\"platform%22ops%0Aline\"} 1"
+            "aggregator__dogstatsd_contexts_by_origin{kube_service_0=\"api\",kube_service_1=\"worker\",origin_tag_7465616D2E6E616D65=\"platform\\\"ops\\nline\"} 1"
         ));
         assert!(!output.contains("component_type"));
     }

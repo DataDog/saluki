@@ -89,6 +89,12 @@ pub struct MetricsSnapshot {
 
     /// Metrics which are no longer active and should be removed.
     pub evictions: Vec<Context>,
+
+    /// Whether `upserts` contains the complete visible gauge set, including an empty set.
+    ///
+    /// Periodic snapshots set this so consumers can reconcile gauges after missing a broadcast.
+    /// Partial updates, such as counter eviction notifications, leave this `false`.
+    pub gauges_are_complete: bool,
 }
 
 /// A [`MetricsSnapshot`] that can be cheaply cloned and shared between multiple consumers.
@@ -427,6 +433,7 @@ fn delete_counter_from_state(state: &State, prefixed_key: &Key) -> Option<Metric
     let mut snapshot = MetricsSnapshot {
         upserts: Vec::new(),
         evictions: vec![context.clone()],
+        ..MetricsSnapshot::default()
     };
     if delta > 0 && handle.level() >= current_level {
         snapshot
@@ -435,6 +442,46 @@ fn delete_counter_from_state(state: &State, prefixed_key: &Key) -> Option<Metric
     }
 
     Some(snapshot)
+}
+
+/// A recorder-bound key for explicitly evicting a gauge without allocating on the eviction path.
+///
+/// Prepare this handle when registering the gauge. The owner must stop writing to that gauge before
+/// calling [`evict`](Self::evict), and must not retain this handle across a later registration of the same key.
+pub struct GaugeEvictionHandle {
+    state: Arc<State>,
+    key: Key,
+}
+
+impl GaugeEvictionHandle {
+    /// Prepares an eviction handle from a key without the recorder's prefix, including the builder's default tags.
+    /// Returns `None` if the internal recorder is not installed.
+    pub fn new(key: Key) -> Option<Self> {
+        RECEIVER_STATE.get().map(|state| Self::for_state(state, key))
+    }
+
+    fn for_state(state: &Arc<State>, key: Key) -> Self {
+        let key = Key::from_parts(format!("{}.{}", state.metrics_prefix, key.name()), key.labels());
+        Self {
+            state: Arc::clone(state),
+            key,
+        }
+    }
+
+    /// Evicts the registered gauge, returning whether it existed.
+    ///
+    /// The next periodic snapshot removes its cached context and reconciles downstream gauge state.
+    /// Deferring notification to that snapshot batches churn instead of queueing a tombstone per deletion.
+    pub fn evict(self) -> bool {
+        self.state
+            .registry
+            .maps
+            .lock()
+            .unwrap()
+            .gauges
+            .remove(&self.key)
+            .is_some()
+    }
 }
 
 fn context_from_key(key: &Key) -> Context {
@@ -544,7 +591,10 @@ fn flush_once(state: &State, context_resolver: &mut MetricsContextResolver, flus
     let has_listeners = state.flush_tx.receiver_count() > 0;
     let current_level = *state.current_level.lock().unwrap();
     let idle_threshold = state.idle_evict_intervals;
-    let mut snapshot = MetricsSnapshot::default();
+    let mut snapshot = MetricsSnapshot {
+        gauges_are_complete: true,
+        ..MetricsSnapshot::default()
+    };
 
     flush_state.clear();
     let FlushState {
@@ -556,6 +606,18 @@ fn flush_once(state: &State, context_resolver: &mut MetricsContextResolver, flus
 
     {
         let mut maps = state.registry.maps.lock().unwrap();
+
+        // Explicit removals must also retire the resolver cache. Compare at the snapshot boundary, rather
+        // than enqueueing one tombstone per deletion: high churn between flushes remains bounded by the
+        // previously published series. Re-registered keys are still live and must not be evicted.
+        context_resolver.key_context_cache.retain(|key, context| {
+            let live =
+                maps.counters.contains_key(key) || maps.gauges.contains_key(key) || maps.histograms.contains_key(key);
+            if !live && has_listeners {
+                snapshot.evictions.push(context.clone());
+            }
+            live
+        });
 
         // Counters: a counter is never idle so long as it has a non-zero delta during a flush _or_ has
         // an active reference (strong count > 1).
@@ -660,9 +722,8 @@ fn flush_once(state: &State, context_resolver: &mut MetricsContextResolver, flus
             .push(Event::Metric(Metric::histogram(context, &samples[..])));
     }
 
-    if !snapshot.upserts.is_empty() || !snapshot.evictions.is_empty() {
-        let _ = state.flush_tx.send(Arc::new(snapshot));
-    }
+    // Even an empty complete gauge snapshot must be delivered: it retires the last gauge after lag.
+    let _ = state.flush_tx.send(Arc::new(snapshot));
 }
 
 struct MetricsContextResolver {
@@ -776,7 +837,7 @@ pub(crate) fn aggregate_upserts(upserts: Vec<Event>) -> AggregatedMetricsState {
     processor.process(
         MetricsSnapshot {
             upserts,
-            evictions: Vec::new(),
+            ..MetricsSnapshot::default()
         },
         &state,
     );
@@ -921,6 +982,114 @@ mod tests {
             panic!("delete should emit a counter metric");
         };
         assert_eq!(points.into_iter().map(|(_, value)| value).sum::<f64>(), 7.0);
+    }
+
+    #[tokio::test]
+    async fn explicitly_removed_gauges_retire_cached_and_exported_series_on_flush() {
+        let (state, mut rx) = make_state(IDLE_EVICT_INTERVALS);
+        let mut resolver = resolver();
+        let mut flush_state = FlushState::default();
+        let processor = AggregatedMetricsProcessor;
+        let aggregated = processor.build_initial_state();
+        for i in 0..400 {
+            let key = Key::from_parts("origin_contexts", vec![Label::new("origin", i.to_string())]);
+            let gauge = state.registry.get_or_create_gauge(&key, Level::INFO);
+            gauge.set(1.0);
+            flush_once(&state, &mut resolver, &mut flush_state);
+            for snapshot in drain(&mut rx) {
+                processor.process(snapshot, &aggregated);
+            }
+            assert_eq!(resolver.key_context_cache.len(), 1);
+            assert_eq!(metric_count(&aggregated, "origin_contexts"), 1);
+            gauge.set(0.0);
+            drop(gauge);
+            state.registry.maps.lock().unwrap().gauges.remove(&key);
+        }
+        flush_once(&state, &mut resolver, &mut flush_state);
+        for snapshot in drain(&mut rx) {
+            processor.process(snapshot, &aggregated);
+        }
+        assert!(resolver.key_context_cache.is_empty());
+        assert_eq!(metric_count(&aggregated, "origin_contexts"), 0);
+    }
+
+    #[tokio::test]
+    async fn complete_gauge_snapshots_recover_after_lost_eviction_broadcasts() {
+        let (state, mut rx) = make_state(IDLE_EVICT_INTERVALS);
+        let mut resolver = resolver();
+        let mut flush_state = FlushState::default();
+        let processor = AggregatedMetricsProcessor;
+        let aggregated = processor.build_initial_state();
+        let first = Key::from_parts("origins", vec![Label::new("origin", "first")]);
+        state.registry.get_or_create_gauge(&first, Level::INFO).set(1.0);
+        flush_once(&state, &mut resolver, &mut flush_state);
+        for snapshot in drain(&mut rx) {
+            processor.process(snapshot, &aggregated);
+        }
+        state.registry.maps.lock().unwrap().gauges.remove(&first);
+        let second = Key::from_parts("origins", vec![Label::new("origin", "second")]);
+        let gauge = state.registry.get_or_create_gauge(&second, Level::INFO);
+        gauge.set(2.0);
+        // Overrun the 64-snapshot receiver, including the first origin's one-shot eviction.
+        for _ in 0..70 {
+            flush_once(&state, &mut resolver, &mut flush_state);
+        }
+        assert!(matches!(rx.try_recv(), Err(broadcast::error::TryRecvError::Lagged(_))));
+        for snapshot in drain(&mut rx) {
+            processor.process(snapshot, &aggregated);
+        }
+        assert_eq!(metric_count(&aggregated, "origins"), 1);
+        assert_eq!(aggregated.find_single_with_tags("origins", &["origin:first"]), None);
+        assert_eq!(
+            aggregated.find_single_with_tags("origins", &["origin:second"]),
+            Some(2.0)
+        );
+        state.registry.maps.lock().unwrap().gauges.remove(&second);
+        for _ in 0..70 {
+            flush_once(&state, &mut resolver, &mut flush_state);
+        }
+        assert!(matches!(rx.try_recv(), Err(broadcast::error::TryRecvError::Lagged(_))));
+        for snapshot in drain(&mut rx) {
+            processor.process(snapshot, &aggregated);
+        }
+        assert_eq!(metric_count(&aggregated, "origins"), 0);
+    }
+
+    #[test]
+    fn gauge_eviction_handle_uses_registration_prefix_and_all_builder_tags() {
+        let recorder = MetricsRecorder::new("test".to_string(), Level::INFO);
+        let _local = metrics::set_default_local_recorder(&recorder);
+        let builder = saluki_metrics::MetricsBuilder::default().add_default_tag("component_id:test");
+        let (gauge, key) = builder.register_gauge_with_tags_and_key("origins", ["container:one"]);
+        let eviction = GaugeEvictionHandle::for_state(&recorder.state, key);
+        assert!(recorder
+            .state
+            .registry
+            .maps
+            .lock()
+            .unwrap()
+            .gauges
+            .contains_key(&eviction.key));
+        gauge.set(0.0);
+        drop(gauge);
+        assert!(eviction.evict());
+        assert!(recorder.state.registry.maps.lock().unwrap().gauges.is_empty());
+    }
+
+    #[tokio::test]
+    async fn gauge_reregistered_before_flush_is_not_evicted() {
+        let (state, mut rx) = make_state(IDLE_EVICT_INTERVALS);
+        let mut resolver = resolver();
+        let mut flush_state = FlushState::default();
+        let key = Key::from_name("reused");
+        state.registry.get_or_create_gauge(&key, Level::INFO).set(1.0);
+        flush_once(&state, &mut resolver, &mut flush_state);
+        drain(&mut rx);
+        state.registry.maps.lock().unwrap().gauges.remove(&key);
+        state.registry.get_or_create_gauge(&key, Level::INFO).set(2.0);
+        flush_once(&state, &mut resolver, &mut flush_state);
+        assert!(drain(&mut rx).iter().all(|snapshot| snapshot.evictions.is_empty()));
+        assert_eq!(resolver.key_context_cache.len(), 1);
     }
 
     #[tokio::test]

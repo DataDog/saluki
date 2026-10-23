@@ -125,6 +125,12 @@ impl RemapperRule {
     /// Copies all source tags except tags whose names are in `excluded_tags`.
     ///
     /// This is useful when a metric carries a dynamic set of labels alongside component-specific tags.
+    /// Explicit copies and renames configured with `with_original_tags` or `with_remapped_tags` take precedence:
+    /// their source names are not copied again, even if also listed in `excluded_tags`. Exclusions apply only
+    /// to this catch-all copy, not to explicit mappings. Output order is explicit mappings in rule order,
+    /// remaining source tags in source order, then `with_additional_tags`.
+    ///
+    /// Calling this method again replaces the previous exclusion list.
     pub fn with_all_original_tags_except<I>(mut self, excluded_tags: I) -> Self
     where
         I: IntoIterator<Item = &'static str>,
