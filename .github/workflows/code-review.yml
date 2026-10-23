@@ -18,6 +18,9 @@ jobs:
       contents: read
       pull-requests: write
       checks: write
+      # The reusable workflow's telemetry job declares this, and GitHub requires the caller to grant every permission
+      # a nested job requests, even though telemetry is disabled here and the job never runs.
+      id-token: write
     uses: DataDog/code-review-action/.github/workflows/code-review.yml@b4f43b4ac7a96b9ecc3484d77aa04ad41c07b420 # v1.3.0
     with:
       provider: claude
