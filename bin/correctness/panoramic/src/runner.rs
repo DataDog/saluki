@@ -40,7 +40,7 @@ use crate::{
 /// A sender that the `Runner` can use to send `TestEvent`s.
 pub(crate) type EventSender = mpsc::UnboundedSender<TestEvent>;
 
-/// The amount of time a test has to clean up after cancellation or timing out.
+/// How long a cancelled or timed-out test has to return its result before the runner drops it.
 const GRACE_TIME: Duration = Duration::from_secs(30);
 
 /// The amount of time the intake sidecar has to report healthy before the test fails.
@@ -179,7 +179,7 @@ pub(crate) struct RunArgs {
 
     /// Requests run cancellation.
     ///
-    /// The consume loop cancels this on an interrupt. Active tests get `GRACE_TIME` to clean up.
+    /// The consume loop cancels this on an interrupt. Active tests get `GRACE_TIME` to return.
     cancel_all: CancellationToken,
 }
 
@@ -408,30 +408,47 @@ impl Runner {
 
         let phases = tctx.phases.clone();
         let record = tctx.record.clone();
+        let ledger = tctx.ledger.clone();
 
-        let run_fut = test.run(tctx);
-        pin!(run_fut);
+        let mut result = {
+            let run_fut = test.run(tctx);
+            pin!(run_fut);
 
-        // On timeout or run cancellation, cancel the test and allow GRACE_TIME for teardown.
-        //
-        // The case timer wins ties with the body so an expired deadline is reported, even after a verdict.
-        // The body precedes `cancel_all` to preserve a result ready when external cancellation arrives.
-        let mut result = tokio::select! {
-            biased;
-            _ = tokio::time::sleep_until(case.at) => {
-                let stop = Stop::snapshot(StoppedBy::CaseDeadline, &phases, &record);
-                test_cancel.cancel();
-                let returned = tokio::time::timeout(GRACE_TIME, &mut run_fut).await.ok();
-                stop.settle(returned, &name, timeout, started.elapsed(), &phases, &record)
+            // On timeout or run cancellation, cancel the test and allow GRACE_TIME for it to return.
+            //
+            // The case timer wins ties with the body so an expired deadline is reported, even after a verdict.
+            // The body precedes `cancel_all` to preserve a result ready when external cancellation arrives.
+            tokio::select! {
+                biased;
+                _ = tokio::time::sleep_until(case.at) => {
+                    let stop = Stop::snapshot(StoppedBy::CaseDeadline, &phases, &record);
+                    test_cancel.cancel();
+                    let returned = tokio::time::timeout(GRACE_TIME, &mut run_fut).await.ok();
+                    stop.settle(returned, &name, timeout, started.elapsed(), &phases, &record)
+                }
+                r = &mut run_fut => r,
+                _ = cancel_all.cancelled() => {
+                    let stop = Stop::snapshot(StoppedBy::Signal, &phases, &record);
+                    test_cancel.cancel();
+                    let returned = tokio::time::timeout(GRACE_TIME, &mut run_fut).await.ok();
+                    stop.settle(returned, &name, timeout, started.elapsed(), &phases, &record)
+                }
             }
-            r = &mut run_fut => r,
-            _ = cancel_all.cancelled() => {
-                let stop = Stop::snapshot(StoppedBy::Signal, &phases, &record);
-                test_cancel.cancel();
-                let returned = tokio::time::timeout(GRACE_TIME, &mut run_fut).await.ok();
-                stop.settle(returned, &name, timeout, started.elapsed(), &phases, &record)
-            }
+            // Drop the body before cleanup to release its resources and end its resource registration.
         };
+
+        // Cleanup needs its own deadline because the test token may already be cancelled.
+        let reclaim_started = Instant::now();
+        let (reclaim, issues) = ledger.reclaim().await;
+        if !reclaim.is_empty() {
+            result.phase_timings.push(PhaseTiming {
+                phase: "reclaim".to_string(),
+                duration: reclaim_started.elapsed(),
+            });
+            result.duration = started.elapsed();
+        }
+        result.reclaim = reclaim;
+        result.issues.extend(issues);
 
         // The runner is the only place that knows both the test and where its artifacts landed, so
         // it stamps that provenance onto the result before anything reports on it.
@@ -452,7 +469,7 @@ impl Runner {
     }
 }
 
-/// Test state captured before cancellation can change step statuses or advance the phase to teardown.
+/// Test state captured before cancellation can change step statuses or advance the phase.
 struct Stop {
     by: StoppedBy,
     /// The phase the test was in.
@@ -473,7 +490,7 @@ impl Stop {
         }
     }
 
-    /// Uses the result returned during cleanup grace, falling back to the case record when grace expires.
+    /// Uses the result returned during grace, falling back to the case record when grace expires.
     ///
     /// Preserves a verdict reached before cancellation, recording any expired deadline or cleanup grace as an issue.
     /// Otherwise, the stop determines the outcome: a timeout for the case deadline, an internal error for a signal.
@@ -517,7 +534,7 @@ impl Stop {
                 .with_harness_error(
                     ErrorKind::Timeout,
                     format!(
-                        "Test timed out after {:?} and did not clean up its resources within {:?}.",
+                        "Test timed out after {:?} and did not return within {:?}.",
                         timeout, GRACE_TIME
                     ),
                 )
@@ -539,23 +556,6 @@ impl Stop {
 // IntegrationRunner: single integration test case execution
 // ----------------------------------------------------------------------------
 
-/// Generates a random isolation group ID.
-fn generate_isolation_group_id() -> String {
-    use rand::RngExt as _;
-    let mut rng = rand::rng();
-    let chars: String = (0..8)
-        .map(|_| {
-            let idx = rng.random_range(0..36);
-            if idx < 10 {
-                (b'0' + idx) as char
-            } else {
-                (b'a' + idx - 10) as char
-            }
-        })
-        .collect();
-    chars
-}
-
 /// Runner for a single integration test case.
 pub(crate) struct IntegrationRunner {
     test_case: IntegrationTestCase,
@@ -569,7 +569,7 @@ impl IntegrationRunner {
     pub(crate) fn new(test_case: IntegrationTestCase, tctx: TestContext) -> Self {
         Self {
             test_case,
-            isolation_group_id: generate_isolation_group_id(),
+            isolation_group_id: tctx.ledger.isolation_group(),
             tctx,
             log_buffer: Arc::new(RwLock::new(LogBuffer::default())),
         }
@@ -638,9 +638,7 @@ impl IntegrationRunner {
                 }
                 Err(e) => {
                     error!(test = %test_name, error = %e, "Failed to start intake sidecar.");
-                    return self
-                        .fail_setup(format!("Failed to start intake sidecar: {}", e), started, phase_timings)
-                        .await;
+                    return self.fail_setup(format!("Failed to start intake sidecar: {}", e), started, phase_timings);
                 }
             }
         }
@@ -653,23 +651,17 @@ impl IntegrationRunner {
             Err(e) => {
                 error!(test = %test_name, error = %e, "Failed to create container driver.");
                 phase_timings.push(phase.finish());
-                // An intake sidecar started above already owns a container and the isolation group's
-                // network, so tear the group down before giving up on the test.
-                return self
-                    .fail_setup(format!("Failed to create driver: {}", e), started, phase_timings)
-                    .await;
+                return self.fail_setup(format!("Failed to create driver: {}", e), started, phase_timings);
             }
         };
 
         info!(test = %test_name, "Starting container...");
-        let details = match driver.start().await {
+        let details = match self.start_container(&mut driver).await {
             Ok(details) => details,
             Err(e) => {
                 error!(test = %test_name, error = %e, "Failed to start container.");
                 phase_timings.push(phase.finish());
-                return self
-                    .fail_setup(format!("Failed to start container: {}", e), started, phase_timings)
-                    .await;
+                return self.fail_setup(format!("Failed to start container: {}", e), started, phase_timings);
             }
         };
         phase_timings.push(phase.finish());
@@ -744,7 +736,7 @@ impl IntegrationRunner {
                                  The shell command in the test config likely failed.",
                                 key
                             );
-                            return self.fail_setup(message, started, phase_timings).await;
+                            return self.fail_setup(message, started, phase_timings);
                         }
                     }
 
@@ -765,19 +757,17 @@ impl IntegrationRunner {
                              Check that matching PANORAMIC_DYNAMIC_* env vars are defined.",
                             unresolved.join(", ")
                         );
-                        return self.fail_setup(message, started, phase_timings).await;
+                        return self.fail_setup(message, started, phase_timings);
                     }
                 }
                 Err(e) => {
                     error!(test = %test_name, error = %e, "Failed to resolve dynamic variables.");
                     phase_timings.push(phase.finish());
-                    return self
-                        .fail_setup(
-                            format!("Failed to resolve dynamic variables: {}", e),
-                            started,
-                            phase_timings,
-                        )
-                        .await;
+                    return self.fail_setup(
+                        format!("Failed to resolve dynamic variables: {}", e),
+                        started,
+                        phase_timings,
+                    );
                 }
             }
 
@@ -829,15 +819,6 @@ impl IntegrationRunner {
         debug!(test = %test_name, "Wrote container logs to disk.");
         phase_timings.push(phase.finish());
 
-        // Cleanup.
-        let phase = self.tctx.phases.enter("cleanup");
-        debug!(test = %test_name, "Cleaning up container and resources...");
-        if let Err(e) = self.cleanup().await {
-            warn!(test = %test_name, error = %e, "Failed to clean up resources.");
-        }
-        debug!(test = %test_name, "Cleanup complete.");
-        phase_timings.push(phase.finish());
-
         let result = self.tctx.record.result(&test_name, started.elapsed(), phase_timings);
         info!(
             test = %test_name,
@@ -848,9 +829,9 @@ impl IntegrationRunner {
         result
     }
 
-    /// Records a setup failure before tearing down the isolation group, preserving the failure if teardown times out.
-    async fn fail_setup(&self, message: String, started: Instant, phase_timings: Vec<PhaseTiming>) -> TestResult {
-        let mut result = TestResult::errored(
+    /// Records and returns a setup failure.
+    fn fail_setup(&self, message: String, started: Instant, phase_timings: Vec<PhaseTiming>) -> TestResult {
+        let result = TestResult::errored(
             self.test_case.config.name.clone(),
             ErrorKind::Setup,
             message,
@@ -858,11 +839,23 @@ impl IntegrationRunner {
             phase_timings,
         );
         self.tctx.record.decide(Verdict::SetupFailed(Box::new(result.clone())));
-        let phase = self.tctx.phases.enter("cleanup");
-        let _ = self.cleanup().await;
-        result.phase_timings.push(phase.finish());
-        result.duration = started.elapsed();
         result
+    }
+
+    /// Starts `driver`'s container, stopping on test cancellation.
+    ///
+    /// Cancellation marks the group unsettled: Docker may finish creating resources after cleanup lists the group.
+    async fn start_container(&self, driver: &mut Driver) -> Result<DriverDetails, GenericError> {
+        match self.tctx.test_cancel_token().run_until_cancelled(driver.start()).await {
+            Some(started) => started,
+            None => {
+                self.tctx.ledger.mark_unsettled(&self.isolation_group_id);
+                Err(generic_error!(
+                    "Cancelled while starting a container in isolation group '{}'.",
+                    self.isolation_group_id
+                ))
+            }
+        }
     }
 
     async fn build_driver_config(&self) -> Result<DriverConfig, GenericError> {
@@ -970,10 +963,9 @@ impl IntegrationRunner {
 
         let mut driver = Driver::from_config(self.isolation_group_id.clone(), config)?
             .with_logging(self.tctx.log_dir().to_path_buf());
-        let details = driver.start().await?;
+        let details = self.start_container(&mut driver).await?;
 
-        // The health wait polls until it gets an answer, so bound it and watch for cancellation. A sidecar that never
-        // reports healthy would otherwise hold the test past its teardown grace period, leaking the isolation group.
+        // Bound the health wait and watch cancellation so an unhealthy sidecar releases the test promptly.
         probe(
             "the intake sidecar to report healthy",
             INTAKE_HEALTH_TIMEOUT,
@@ -1073,15 +1065,6 @@ impl IntegrationRunner {
             core_agent_cli_command: container_core_agent_cli_command(target_os),
         };
         crate::assertions::run_assertion_steps(&self.test_case, &ctx, self.tctx.deadline, &self.tctx.record).await
-    }
-
-    async fn cleanup(&self) -> Result<(), GenericError> {
-        // Clean up all resources in the isolation group.
-        Driver::clean_related_resources(self.isolation_group_id.clone())
-            .await
-            .error_context("Failed to clean up isolation group resources.")?;
-
-        Ok(())
     }
 
     async fn write_logs(&self, test_name: &str) -> Result<(), GenericError> {
@@ -1234,6 +1217,8 @@ pub(crate) mod test_support {
         pub(crate) entered: Option<Arc<Notify>>,
         /// Published port of the intake sidecar that procedure steps poll.
         pub(crate) intake: Option<u16>,
+        /// A directory the test creates and registers before its behavior runs.
+        pub(crate) registers: Option<PathBuf>,
     }
 
     impl ScriptedTest {
@@ -1246,6 +1231,7 @@ pub(crate) mod test_support {
                 behavior,
                 entered: None,
                 intake: None,
+                registers: None,
             }
         }
     }
@@ -1277,6 +1263,11 @@ pub(crate) mod test_support {
         }
 
         async fn run(&self, tctx: TestContext) -> TestResult {
+            if let Some(dir) = &self.registers {
+                std::fs::create_dir_all(dir).expect("the registered directory should be creatable");
+                tctx.ledger.directory(dir.clone());
+            }
+
             // Keep the phase active to model an interrupted phase; `ProcedureThenWait` finishes it before switching.
             let phase = tctx.phases.enter(self.phase);
             if let Some(entered) = &self.entered {
@@ -1386,7 +1377,7 @@ mod tests {
     use super::*;
     use crate::record::StepStatus;
     use crate::reporter::test_support::{each_outcome, NOT_RUN_KIND};
-    use crate::reporter::{TestOutcome, TimeoutDeadline};
+    use crate::reporter::{ReclaimResult, TestOutcome, TimeoutDeadline};
 
     /// A bound for real-time tests.
     const BOUND: Duration = Duration::from_secs(5);
@@ -1442,6 +1433,25 @@ mod tests {
 
     fn phase_names(result: &TestResult) -> Vec<&str> {
         result.phase_timings.iter().map(|t| t.phase.as_str()).collect()
+    }
+
+    /// Returns registered resource labels and their cleanup results.
+    fn reclaimed(result: &TestResult) -> Vec<(&str, ReclaimResult)> {
+        result
+            .reclaim
+            .iter()
+            .map(|entry| (entry.resource.as_str(), entry.result))
+            .collect()
+    }
+
+    /// Reads the test's saved `result.json`.
+    fn written_report(result: &TestResult) -> serde_json::Value {
+        let log_dir = result
+            .log_dir
+            .as_ref()
+            .expect("the runner should record the log directory");
+        let written = std::fs::read_to_string(log_dir.join("result.json")).expect("result.json should exist");
+        serde_json::from_str(&written).expect("result.json should parse")
     }
 
     fn issue(kind: IssueKind, message: &str) -> Issue {
@@ -1672,41 +1682,16 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn cancelling_the_core_agent_ipc_wait_returns_at_once() {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        use crate::config::MAC_RUNTIME;
-        use crate::image_override::ImageOverrides;
-        use crate::integration::IntegrationSettings;
-
         // Both binaries exit at once, so the Core Agent never writes its IPC credentials. The case timeout leaves
         // room to start both processes on a busy machine before the wait begins.
-        let binaries = tempfile::tempdir().expect("temp dir should be creatable");
-        let exits = binaries.path().join("exits");
-        std::fs::write(&exits, "#!/bin/sh\nexit 0\n").expect("the script should be writable");
-        std::fs::set_permissions(&exits, std::fs::Permissions::from_mode(0o755))
-            .expect("the script should be made executable");
-        let config = serde_saphyr::from_str(&format!("name: ipc-wait\ntimeout: 3s\nprocedure:\n{LOG_MATCHES}"))
-            .expect("the case should parse");
-        let test = IntegrationTestCase::new(
-            config,
-            &IntegrationSettings::new(MAC_RUNTIME, &ImageOverrides::new(&[])),
+        let case = MacCase::new(
+            &format!("name: ipc-wait\ntimeout: 3s\nprocedure:\n{LOG_MATCHES}"),
+            "exit 0",
+            "exit 0",
         );
-        let mounts_dir = tempfile::tempdir().expect("temp dir should be creatable");
-        let settings = RunnerSettings {
-            adp_binary_path: exits.clone(),
-            core_agent_binary_path: exits,
-            ..test_runner_settings(mounts_dir.path())
-        };
         let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
 
-        let result = run_with_settings(
-            &test,
-            settings,
-            log_base_dir.path(),
-            &CancellationToken::new(),
-            3 * BOUND,
-        )
-        .await;
+        let result = case.run(log_base_dir.path(), 3 * BOUND).await;
 
         assert_eq!(result.outcome, TestOutcome::TimedOut, "{:?}", result.error);
         let timeout = result
@@ -1715,6 +1700,120 @@ mod tests {
             .expect("a timed-out test should carry timeout detail");
         assert_eq!(timeout.deadline, TimeoutDeadline::TestDeadline);
         assert_eq!(timeout.active_phase, "core_agent_ipc_ready");
+        let reclaimed = reclaimed(&result);
+        assert_eq!(reclaimed.len(), 2, "{reclaimed:?}");
+        let state_dir = state_dir(reclaimed[1].0);
+        assert!(!state_dir.exists(), "{} should be removed", state_dir.display());
+        assert_eq!(
+            reclaimed,
+            [
+                ("process:ipc-wait-core-agent", ReclaimResult::Reclaimed),
+                (reclaimed[1].0, ReclaimResult::Reclaimed),
+            ]
+        );
+        assert_eq!(
+            phase_names(&result),
+            ["core_agent_spawn", "core_agent_ipc_ready", "reclaim"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_mac_case_stops_adp_then_the_core_agent_and_then_removes_its_state_directory() {
+        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let marker = log_base_dir.path().join("marker");
+        let case = MacCase::new(
+            &marking_case("mac-reclaim", &marker),
+            &marking_script("agent", CORE_AGENT_IPC_FILES),
+            &marking_script("adp", "echo ready"),
+        );
+
+        let result = case.run(log_base_dir.path(), Duration::from_secs(10)).await;
+
+        assert_eq!(result.outcome, TestOutcome::Passed, "{:?}", result.error);
+        let marked = std::fs::read_to_string(&marker).expect("the processes should have written the marker");
+        assert_eq!(marked, "adp dir\nagent dir\n");
+        let reclaimed = reclaimed(&result);
+        assert_eq!(reclaimed.len(), 3, "{reclaimed:?}");
+        let state_dir = state_dir(reclaimed[2].0);
+        assert!(!state_dir.exists(), "{} should be removed", state_dir.display());
+        assert_eq!(
+            reclaimed,
+            [
+                ("process:mac-reclaim", ReclaimResult::Reclaimed),
+                ("process:mac-reclaim-core-agent", ReclaimResult::Reclaimed),
+                (reclaimed[2].0, ReclaimResult::Reclaimed),
+            ]
+        );
+        assert_eq!(
+            written_report(&result)["reclaim"],
+            serde_json::json!([
+                { "resource": "process:mac-reclaim", "result": "reclaimed" },
+                { "resource": "process:mac-reclaim-core-agent", "result": "reclaimed" },
+                { "resource": reclaimed[2].0, "result": "reclaimed" },
+            ])
+        );
+        assert_eq!(result.issues, []);
+        assert_eq!(
+            phase_names(&result),
+            [
+                "core_agent_spawn",
+                "core_agent_ipc_ready",
+                "spawn",
+                "assertions",
+                "write_logs",
+                "reclaim"
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_process_that_does_not_confirm_its_exit_leaks_and_keeps_the_state_directory() {
+        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let marker = log_base_dir.path().join("marker");
+        // Printing `ready` after leaving ADP's process group ensures escape before cleanup starts. The subsequent
+        // `sleep` holds ADP's output pipes open until it exits on its own.
+        let case = MacCase::new(
+            &marking_case("mac-leak", &marker),
+            &marking_script("agent", CORE_AGENT_IPC_FILES),
+            &marking_script(
+                "adp",
+                r#"perl -e '$| = 1; setpgrp(0, 0); print "ready\n"; exec @ARGV' sleep 10 &"#,
+            ),
+        );
+
+        let result = case.run(log_base_dir.path(), Duration::from_secs(15)).await;
+
+        assert_eq!(result.outcome, TestOutcome::Passed, "{:?}", result.error);
+        let reclaimed = reclaimed(&result);
+        assert_eq!(reclaimed.len(), 3, "{reclaimed:?}");
+        let state_dir = state_dir(reclaimed[2].0);
+        let kept = state_dir.exists();
+        let _ = std::fs::remove_dir_all(state_dir);
+        assert!(kept, "{} should be kept", state_dir.display());
+        assert_eq!(
+            reclaimed,
+            [
+                ("process:mac-leak", ReclaimResult::Leaked),
+                ("process:mac-leak-core-agent", ReclaimResult::Reclaimed),
+                (reclaimed[2].0, ReclaimResult::Leaked),
+            ]
+        );
+        assert_eq!(
+            result.issues,
+            [
+                issue(
+                    IssueKind::ResourceLeaked,
+                    "process:mac-leak: 'mac-leak' exited, but a descendant outside its process group still holds its \
+                     output pipes"
+                ),
+                issue(
+                    IssueKind::ResourceLeaked,
+                    &format!("{}: kept because process:mac-leak was not reclaimed", reclaimed[2].0)
+                ),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1787,12 +1886,7 @@ mod tests {
         assert_eq!(statuses(&result), expected_statuses);
         assert_eq!(phase_names(&result), ["assertions"]);
 
-        let log_dir = result
-            .log_dir
-            .as_ref()
-            .expect("the runner should record the log directory");
-        let written = std::fs::read_to_string(log_dir.join("result.json")).expect("result.json should exist");
-        let json: serde_json::Value = serde_json::from_str(&written).expect("result.json should parse");
+        let json = written_report(&result);
         assert_eq!(json["schema_version"], 2);
         let written_statuses: Vec<&str> = json["assertions"]
             .as_array()
@@ -1804,6 +1898,60 @@ mod tests {
             written_statuses,
             ["passed", "passed", "interrupted", "interrupted", "not_run"]
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn resources_are_reclaimed_after_the_runner_drops_a_body_stuck_past_grace() {
+        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let registered = tempfile::tempdir().expect("temp dir should be creatable");
+        let stuck = |name: &str, behavior| ScriptedTest {
+            timeout: Duration::from_secs(1),
+            registers: Some(registered.path().join(name)),
+            ..ScriptedTest::new(name, behavior)
+        };
+        let decided = stuck(
+            "decided",
+            Behavior::ProcedureThenWait {
+                steps: LOG_MATCHES,
+                then_phase: "intake_capture",
+                returns_on_cancel: false,
+            },
+        );
+        let undecided = stuck(
+            "undecided",
+            Behavior::WaitForCancel {
+                finish_on_cancel: false,
+            },
+        );
+
+        let decided = run_scripted_test(&decided, log_base_dir.path(), &CancellationToken::new(), PAUSED_BOUND).await;
+        let undecided =
+            run_scripted_test(&undecided, log_base_dir.path(), &CancellationToken::new(), PAUSED_BOUND).await;
+
+        assert_eq!(decided.outcome, TestOutcome::Passed, "{:?}", decided.error);
+        let issue_kinds: Vec<_> = decided.issues.iter().map(|issue| issue.kind).collect();
+        assert_eq!(
+            issue_kinds,
+            [IssueKind::PostVerdictDeadline, IssueKind::CleanupGraceExpired]
+        );
+        assert_eq!(undecided.outcome, TestOutcome::TimedOut);
+        let timeout = undecided
+            .timeout
+            .as_ref()
+            .expect("a timed-out test should carry timeout detail");
+        assert_eq!(timeout.deadline, TimeoutDeadline::CleanupGrace);
+        let error = undecided
+            .error
+            .as_ref()
+            .expect("a timed-out test should carry its error");
+        assert_eq!(error.message, "Test timed out after 1s and did not return within 30s.");
+        for result in [&decided, &undecided] {
+            let dir = registered.path().join(&result.name);
+            let resource = format!("directory:{}", dir.display());
+            assert_eq!(reclaimed(result), [(resource.as_str(), ReclaimResult::Reclaimed)]);
+            assert!(!dir.exists(), "{} should be removed", dir.display());
+            assert_eq!(phase_names(result).last(), Some(&"reclaim"), "{}", result.name);
+        }
     }
 
     #[tokio::test(start_paused = true)]
@@ -1951,6 +2099,108 @@ mod tests {
             statuses(&result),
             [("process_stable_for", None, StepStatus::Interrupted)]
         );
+    }
+
+    /// A test case for the `mac` runtime using shell scripts as ADP and Core Agent binaries.
+    #[cfg(unix)]
+    struct MacCase {
+        test: IntegrationTestCase,
+        settings: RunnerSettings,
+        /// Holds the scripts until the case is dropped.
+        _scripts: tempfile::TempDir,
+    }
+
+    #[cfg(unix)]
+    impl MacCase {
+        /// Parses a `mac` case with the given Core Agent and ADP script bodies.
+        fn new(case: &str, core_agent: &str, adp: &str) -> Self {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            use crate::config::MAC_RUNTIME;
+            use crate::image_override::ImageOverrides;
+            use crate::integration::IntegrationSettings;
+
+            let scripts = tempfile::tempdir().expect("temp dir should be creatable");
+            let script = |name: &str, body: &str| {
+                let path = scripts.path().join(name);
+                std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("the script should be writable");
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                    .expect("the script should be made executable");
+                path
+            };
+            let settings = RunnerSettings {
+                adp_binary_path: script("adp", adp),
+                core_agent_binary_path: script("core-agent", core_agent),
+                ..test_runner_settings(scripts.path())
+            };
+            let config = serde_saphyr::from_str(case).expect("the case should parse");
+            let test = IntegrationTestCase::new(
+                config,
+                &IntegrationSettings::new(MAC_RUNTIME, &ImageOverrides::new(&[])),
+            );
+            Self {
+                test,
+                settings,
+                _scripts: scripts,
+            }
+        }
+
+        /// Runs the case through the runner within `bound`.
+        async fn run(&self, log_base_dir: &Path, bound: Duration) -> TestResult {
+            run_with_settings(
+                &self.test,
+                self.settings.clone(),
+                log_base_dir,
+                &CancellationToken::new(),
+                bound,
+            )
+            .await
+        }
+    }
+
+    /// Creates empty IPC credential files so the runner's readiness check succeeds.
+    #[cfg(unix)]
+    const CORE_AGENT_IPC_FILES: &str = r#": > "$dir/auth_token"; : > "$dir/ipc_cert.pem""#;
+
+    /// A passing `mac` case whose processes record their stop order in `marker`.
+    #[cfg(unix)]
+    fn marking_case(name: &str, marker: &Path) -> String {
+        format!(
+            "name: {name}\ntimeout: 30s\nenv:\n  MARKER: \"{}\"\nprocedure:\n{LOG_MATCHES}",
+            marker.display()
+        )
+    }
+
+    /// A process script that runs `setup` with `$dir` set to the state directory, then runs until SIGTERM.
+    ///
+    /// On SIGTERM, appends `role` to `$MARKER`, plus ` dir` if the state directory exists. The trap uses built-in shell
+    /// commands to finish within the grace period before SIGKILL.
+    #[cfg(unix)]
+    fn marking_script(role: &str, setup: &str) -> String {
+        format!(
+            r#"dir=${{DD_AUTH_TOKEN_FILE_PATH%/*}}
+trap 'if [ -d "$dir" ]; then echo "{role} dir" >> "$MARKER"; else echo {role} >> "$MARKER"; fi; exit 0' TERM
+{setup}
+while :; do sleep 1; done"#
+        )
+    }
+
+    /// Validates and extracts a `mac` state directory from a cleanup resource label.
+    #[cfg(unix)]
+    #[track_caller]
+    fn state_dir(resource: &str) -> &Path {
+        let temp_dir = std::env::temp_dir();
+        match resource.strip_prefix("directory:").map(Path::new) {
+            Some(path)
+                if path.parent() == Some(temp_dir.as_path())
+                    && path
+                        .file_name()
+                        .is_some_and(|name| name.to_string_lossy().starts_with("panoramic-unix-")) =>
+            {
+                path
+            }
+            _ => panic!("{resource} should name a mac state directory"),
+        }
     }
 
     #[test]
