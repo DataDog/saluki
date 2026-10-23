@@ -1,7 +1,9 @@
 //! Collects run results, writes `run.json`, and drives the display.
 //!
 //! [`RunCollector`] owns the report. [`consume_run`] handles events and interrupts for both TUI and plain output.
+//! [`run_teardown`] records interrupts that arrive during cleanup after the run.
 
+use std::future::Future;
 use std::io;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
@@ -58,11 +60,10 @@ impl RunCollector {
         collector
     }
 
-    /// Applies a runner event and rewrites `run.json`, except for status messages.
+    /// Applies a runner event and rewrites `run.json` if the event changed it.
     pub(crate) fn observe(&mut self, event: &TestEvent) {
         let report = &mut self.report;
         match event {
-            TestEvent::RunStarted { tests } => report.not_run = tests.clone(),
             TestEvent::TestStarted { name } => {
                 report.not_run.retain(|n| n != name);
                 if !report.running.contains(name) {
@@ -75,7 +76,7 @@ impl RunCollector {
                 // Cache the report to avoid rescanning the test's logs on each update.
                 report.tests.push(TestReport::new(result));
             }
-            TestEvent::StatusLine { .. } => return,
+            TestEvent::RunStarted { .. } | TestEvent::StatusLine { .. } => return,
         }
         self.write();
     }
@@ -157,7 +158,7 @@ impl RunDisplay {
         match self {
             Self::Tui(tui) => tui.show_event(event),
             Self::Plain(reporter) => match event {
-                TestEvent::RunStarted { tests } => info!("Running {} test(s)...", tests.len()),
+                TestEvent::RunStarted { total_tests } => info!("Running {} test(s)...", total_tests),
                 TestEvent::TestStarted { name } => info!("Starting test '{}'...", name),
                 TestEvent::TestCompleted { result, log_dir } => reporter.report_test_result(result, log_dir),
                 TestEvent::StatusLine { message } => info!("{}", message),
@@ -290,6 +291,24 @@ pub(crate) async fn consume_run(
     ConsumedRun { end, display_error }
 }
 
+/// Awaits `teardown` unless an interrupt arrives first.
+///
+/// An interrupt abandons `teardown` and marks the run interrupted, so the report and exit code show that cleanup did
+/// not finish. Returns the interrupt's source in that case.
+pub(crate) async fn run_teardown(
+    teardown: impl Future<Output = ()>, collector: &mut RunCollector, interrupts: &mut Interrupts,
+) -> Option<&'static str> {
+    tokio::select! {
+        biased;
+
+        Some(source) = interrupts.recv() => {
+            collector.interrupt(InterruptReason::Signal { source });
+            Some(source)
+        }
+        () = teardown => None,
+    }
+}
+
 fn apply_event(collector: &mut RunCollector, display: Option<&mut RunDisplay>, event: &TestEvent) {
     collector.observe(event);
     if let Some(display) = display {
@@ -330,7 +349,14 @@ mod tests {
         fn spawn(tests: Vec<ScriptedTest>, fail_fast: bool) -> Self {
             let log_dir = tempfile::tempdir().expect("temp dir should be creatable");
             let mounts_dir = tempfile::tempdir().expect("temp dir should be creatable");
-            let report = RunReport::new(Vec::new(), "linux".to_string(), 1, log_dir.path().to_path_buf());
+            let selected = tests.iter().map(|t| t.name.clone()).collect();
+            let report = RunReport::new(
+                Vec::new(),
+                "linux".to_string(),
+                1,
+                log_dir.path().to_path_buf(),
+                selected,
+            );
             let collector = RunCollector::start(report, fail_fast);
 
             let mut runner = Runner::new(log_dir.path(), test_runner_settings(mounts_dir.path()));
@@ -463,7 +489,7 @@ mod tests {
 
         let on_disk = read_run_json(run.log_dir.path());
         assert_eq!(on_disk["state"], "running");
-        assert_eq!(on_disk["not_run"], json!([]));
+        assert_eq!(on_disk["not_run"], json!(["a", "b"]));
 
         // Expected (running, not_run, completed names) in `run.json` after each event.
         let expected = [
@@ -498,31 +524,46 @@ mod tests {
 
     #[tokio::test]
     async fn an_interrupt_before_any_test_starts_reports_every_selected_test_as_not_run() {
-        let (tx, mut interrupts) = Interrupts::manual();
-        tx.send("SIGTERM").expect("the interrupt receiver should be alive");
-        // The current-thread runtime processes the queued interrupt before polling the spawned runner.
-        // Asserting empty results below verifies that cancellation precedes test execution.
-        let run = ScriptedRun::spawn(
-            vec![
-                ScriptedTest::new("a", Behavior::Pass),
-                ScriptedTest::new("b", Behavior::Pass),
-                ScriptedTest::new("c", Behavior::Pass),
-            ],
-            false,
-        );
+        // Two interrupts used to end the loop before the runner sent the selection, leaving every test out of the
+        // report. The selection now seeds the report before the runner is spawned.
+        for (sources, expected_end) in [
+            (&["SIGTERM"][..], RunEnd::Finished),
+            (&["SIGTERM", "SIGINT"][..], RunEnd::Abandoned),
+        ] {
+            let (tx, mut interrupts) = Interrupts::manual();
+            for source in sources {
+                tx.send(source).expect("the interrupt receiver should be alive");
+            }
+            // The current-thread runtime processes the queued interrupts before polling the spawned runner.
+            // Asserting empty results below verifies that cancellation precedes test execution.
+            let run = ScriptedRun::spawn(
+                vec![
+                    ScriptedTest::new("a", Behavior::Pass),
+                    ScriptedTest::new("b", Behavior::Pass),
+                    ScriptedTest::new("c", Behavior::Pass),
+                ],
+                false,
+            );
 
-        let (end, report) = run.consume(&mut interrupts).await;
+            let (end, report) = run.consume(&mut interrupts).await;
 
-        assert_eq!(end, RunEnd::Finished);
-        assert_eq!(report.on_disk["state"], "interrupted");
-        assert_eq!(
-            report.on_disk["interrupted_reason"],
-            json!({"kind": "signal", "source": "SIGTERM"})
-        );
-        assert_eq!(report.on_disk["not_run"], json!(["a", "b", "c"]));
-        assert_eq!(report.on_disk["tests"], json!([]));
-        assert_eq!(report.exit_code, ExitCode::from(EXIT_HARNESS_ERROR));
-        assert!(report.cancelled);
+            assert_eq!(end, expected_end, "interrupts: {:?}", sources);
+            assert_eq!(report.on_disk["state"], "interrupted");
+            assert_eq!(
+                report.on_disk["interrupted_reason"],
+                json!({"kind": "signal", "source": "SIGTERM"})
+            );
+            assert_eq!(report.on_disk["running"], json!([]), "interrupts: {:?}", sources);
+            assert_eq!(
+                report.on_disk["not_run"],
+                json!(["a", "b", "c"]),
+                "interrupts: {:?}",
+                sources
+            );
+            assert_eq!(report.on_disk["tests"], json!([]), "interrupts: {:?}", sources);
+            assert_eq!(report.exit_code, ExitCode::from(EXIT_HARNESS_ERROR));
+            assert!(report.cancelled);
+        }
     }
 
     #[tokio::test]
@@ -623,11 +664,15 @@ mod tests {
     #[test]
     fn a_run_that_ends_with_unexplained_unstarted_tests_is_interrupted() {
         let log_dir = tempfile::tempdir().expect("temp dir should be creatable");
-        let report = RunReport::new(Vec::new(), "linux".to_string(), 1, log_dir.path().to_path_buf());
+        let selected = vec!["a".to_string(), "b".to_string()];
+        let report = RunReport::new(
+            Vec::new(),
+            "linux".to_string(),
+            1,
+            log_dir.path().to_path_buf(),
+            selected,
+        );
         let mut collector = RunCollector::start(report, false);
-        collector.observe(&TestEvent::RunStarted {
-            tests: vec!["a".to_string(), "b".to_string()],
-        });
         collector.observe(&TestEvent::TestStarted { name: "a".to_string() });
         collector.observe(&completed(result("a", true)));
 
@@ -675,7 +720,13 @@ mod tests {
 
         for (case, results, interrupted, expected) in cases {
             let log_dir = tempfile::tempdir().expect("temp dir should be creatable");
-            let report = RunReport::new(Vec::new(), "linux".to_string(), 1, log_dir.path().to_path_buf());
+            let report = RunReport::new(
+                Vec::new(),
+                "linux".to_string(),
+                1,
+                log_dir.path().to_path_buf(),
+                Vec::new(),
+            );
             let mut collector = RunCollector::start(report, false);
             for result in results {
                 collector.observe(&completed(result));
@@ -687,5 +738,47 @@ mod tests {
 
             assert_eq!(exit_code(collector.report()), expected, "case: {}", case);
         }
+    }
+
+    #[tokio::test]
+    async fn an_interrupt_during_teardown_marks_a_passing_run_interrupted() {
+        // An interrupt during kind teardown used to leave a passing run `complete` with exit code 0, though the
+        // cluster may remain.
+        let log_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let report = RunReport::new(
+            Vec::new(),
+            "linux".to_string(),
+            1,
+            log_dir.path().to_path_buf(),
+            vec!["a".to_string()],
+        );
+        let mut collector = RunCollector::start(report, false);
+        collector.observe(&TestEvent::TestStarted { name: "a".to_string() });
+        collector.observe(&completed(result("a", true)));
+        collector.finish(Ok(()));
+        let (tx, mut interrupts) = Interrupts::manual();
+
+        let finished = run_teardown(std::future::ready(()), &mut collector, &mut interrupts).await;
+        assert_eq!(finished, None);
+        assert_eq!(read_run_json(log_dir.path())["state"], "complete");
+        assert_eq!(exit_code(collector.report()), ExitCode::SUCCESS);
+
+        tx.send("SIGTERM").expect("the interrupt receiver should be alive");
+        let abandoned = tokio::time::timeout(
+            WAIT_BOUND,
+            run_teardown(std::future::pending(), &mut collector, &mut interrupts),
+        )
+        .await
+        .expect("an interrupt should abandon teardown");
+
+        assert_eq!(abandoned, Some("SIGTERM"));
+        let on_disk = read_run_json(log_dir.path());
+        assert_eq!(on_disk["state"], "interrupted");
+        assert_eq!(
+            on_disk["interrupted_reason"],
+            json!({"kind": "signal", "source": "SIGTERM"})
+        );
+        assert_eq!(outcomes(&on_disk), vec![("a".to_string(), "passed".to_string())]);
+        assert_eq!(exit_code(collector.report()), ExitCode::from(EXIT_HARNESS_ERROR));
     }
 }

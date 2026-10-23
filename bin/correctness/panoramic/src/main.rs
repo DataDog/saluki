@@ -22,7 +22,9 @@ mod actions;
 mod assertions;
 mod cli;
 mod collector;
-use self::collector::{consume_run, RunCollector, RunDisplay, RunEnd, EXIT_HARNESS_ERROR, EXIT_NO_TESTS_SELECTED};
+use self::collector::{
+    consume_run, run_teardown, RunCollector, RunDisplay, RunEnd, EXIT_HARNESS_ERROR, EXIT_NO_TESTS_SELECTED,
+};
 
 mod correctness;
 use self::cli::{Cli, Command, LogLevel};
@@ -222,6 +224,11 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         }
         None => None,
     };
+    // Register only the selected tests so the runner and `run.json` share one selection.
+    let test_cases: Vec<Box<dyn test::Test>> = match selected_tests {
+        Some(names) => test_cases.into_iter().filter(|t| names.contains(&t.name())).collect(),
+        None => test_cases,
+    };
 
     // Create log directory.
     let log_dir = match std::path::absolute(cmd.log_dir()) {
@@ -248,6 +255,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
             integration_runtime.clone(),
             cmd.parallelism.get(),
             log_dir.clone(),
+            test_cases.iter().map(|t| t.name()).collect(),
         ),
         cmd.fail_fast,
     );
@@ -257,7 +265,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
 
     // Spawn kind cluster setup in the background so non-kind tests start immediately.
     // Kind tests will wait on `kind_rx` before doing any work.
-    let kind_images = collect_kind_images(&test_cases, cmd.tests.as_deref());
+    let kind_images = collect_kind_images(&test_cases);
     let kind_lifecycle_slot = std::sync::Arc::new(Mutex::new(None::<KindLifecycle>));
     let kind_rx = if kind_images.is_empty() {
         None
@@ -293,15 +301,9 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     let cancel_all = CancellationToken::new();
 
     // Build run args.
-    let mut args = runner::RunArgs::new(cancel_all.clone(), tx)
+    let args = runner::RunArgs::new(cancel_all.clone(), tx)
         .with_parallelism(cmd.parallelism)
         .with_fail_fast(cmd.fail_fast);
-
-    // The runtime scope is already applied at discovery time. The optional -t name filter
-    // narrows further. When unset, every discovered test runs.
-    if let Some(names) = selected_tests {
-        args = args.with_filter(Box::new(move |t: &dyn test::Test| names.iter().any(|n| *n == t.name())));
-    }
 
     // Spawn the test runner task (same code path for both modes).
     let runner_handle = tokio::spawn(async move { registry.run_tests(args).await });
@@ -334,17 +336,6 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         eprintln!("The TUI failed: {}", e);
     }
 
-    let mut json_output_failed = false;
-    if matches!(cmd.output, OutputFormat::Json) {
-        match serde_json::to_string_pretty(collector.report()) {
-            Ok(json) => println!("{}", json),
-            Err(e) => {
-                error!("Failed to serialize the machine-readable run report: {}", e);
-                json_output_failed = true;
-            }
-        }
-    }
-
     // Tear down the kind cluster unless the caller asked to keep it.
     if kind_rx.is_some() {
         // The TUI has shut down by now, so its notices go to stderr directly.
@@ -372,15 +363,12 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
                          Cluster '{}' is still running.",
                         cluster_name
                     );
-                } else {
-                    tokio::select! {
-                        () = lifecycle.teardown() => {}
-                        Some(source) = interrupts.recv() => notice(format!(
-                            "Received {}; abandoned kind cluster teardown. A 'kind delete' already started may still \
-                             finish. If cluster '{}' is still running, delete it with 'kind delete cluster --name {}'.",
-                            source, cluster_name, cluster_name
-                        )),
-                    }
+                } else if let Some(source) = run_teardown(lifecycle.teardown(), &mut collector, &mut interrupts).await {
+                    notice(format!(
+                        "Received {}; abandoned kind cluster teardown. A 'kind delete' already started may still \
+                         finish. If cluster '{}' is still running, delete it with 'kind delete cluster --name {}'.",
+                        source, cluster_name, cluster_name
+                    ));
                 }
             } else {
                 // Failed or unfinished setup can leave a cluster behind.
@@ -389,6 +377,18 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
                      A kind cluster named '{}' may still be running — run 'kind delete cluster --name {}' to clean it up.",
                     cluster_name, cluster_name
                 ));
+            }
+        }
+    }
+
+    // Print after teardown so the report includes an interrupt during teardown.
+    let mut json_output_failed = false;
+    if matches!(cmd.output, OutputFormat::Json) {
+        match serde_json::to_string_pretty(collector.report()) {
+            Ok(json) => println!("{}", json),
+            Err(e) => {
+                error!("Failed to serialize the machine-readable run report: {}", e);
+                json_output_failed = true;
             }
         }
     }
@@ -402,16 +402,10 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
 }
 
 /// Collects the unique set of images required by all kind-runtime tests in the given list.
-fn collect_kind_images(tests: &[Box<dyn test::Test>], filter: Option<&str>) -> Vec<String> {
+fn collect_kind_images(tests: &[Box<dyn test::Test>]) -> Vec<String> {
     use std::collections::BTreeSet;
-    let names: Vec<&str> = filter
-        .map(|f| f.split(',').map(str::trim).collect())
-        .unwrap_or_default();
     let mut images = BTreeSet::new();
     for test in tests {
-        if !names.is_empty() && !names.contains(&test.name().as_str()) {
-            continue;
-        }
         if test.runtime() == "kubernetes_in_docker" {
             for (_, image) in test.images() {
                 images.insert(image);

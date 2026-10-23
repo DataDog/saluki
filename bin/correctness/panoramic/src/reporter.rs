@@ -765,11 +765,13 @@ mod tests {
         }
     }
 
-    /// Applies events, an optional interrupt, and optional runner completion to a collector.
+    /// Applies events, an optional interrupt, and optional runner completion to a collector of `selected` tests.
     fn collected(
-        log_dir: &Path, fail_fast: bool, events: Vec<TestEvent>, interrupt: Option<&'static str>, finished: bool,
+        log_dir: &Path, fail_fast: bool, selected: &[&str], events: Vec<TestEvent>, interrupt: Option<&'static str>,
+        finished: bool,
     ) -> RunCollector {
-        let report = RunReport::new(Vec::new(), "linux".to_string(), 1, log_dir.to_path_buf());
+        let selected = selected.iter().map(|name| name.to_string()).collect();
+        let report = RunReport::new(Vec::new(), "linux".to_string(), 1, log_dir.to_path_buf(), selected);
         let mut collector = RunCollector::start(report, fail_fast);
         for event in &events {
             collector.observe(event);
@@ -794,12 +796,6 @@ mod tests {
         }
     }
 
-    fn selected(names: &[&str]) -> TestEvent {
-        TestEvent::RunStarted {
-            tests: names.iter().map(|name| name.to_string()).collect(),
-        }
-    }
-
     #[test]
     fn run_summary_reads_incomplete_for_an_interrupted_run() {
         let log_dir = tempfile::tempdir().expect("temp dir should be creatable");
@@ -808,7 +804,8 @@ mod tests {
         let all_pass = collected(
             log_dir.path(),
             false,
-            vec![selected(&["p"]), started("p"), completed(&passed)],
+            &["p"],
+            vec![started("p"), completed(&passed)],
             None,
             true,
         );
@@ -820,7 +817,8 @@ mod tests {
         let fail_fast = collected(
             log_dir.path(),
             true,
-            vec![selected(&["f", "b"]), started("f"), completed(&failed)],
+            &["f", "b"],
+            vec![started("f"), completed(&failed)],
             None,
             true,
         );
@@ -832,12 +830,8 @@ mod tests {
         let interrupted = collected(
             log_dir.path(),
             false,
-            vec![
-                selected(&["t", "a", "b"]),
-                started("t"),
-                completed(&timed_out),
-                started("a"),
-            ],
+            &["t", "a", "b"],
+            vec![started("t"), completed(&timed_out), started("a")],
             Some("SIGTERM"),
             false,
         );
@@ -850,7 +844,13 @@ mod tests {
             vec!["Interrupted: SIGTERM", "Still running: a", "Not run: b"]
         );
 
-        let mut long_run = RunReport::new(Vec::new(), "linux".to_string(), 1, log_dir.path().to_path_buf());
+        let mut long_run = RunReport::new(
+            Vec::new(),
+            "linux".to_string(),
+            1,
+            log_dir.path().to_path_buf(),
+            Vec::new(),
+        );
         long_run.duration_ms = 63_000;
         assert_eq!(run_counts(&long_run), "0 passed, 0 failed, 0 errored, 0 total (1m 3s)");
     }

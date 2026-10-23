@@ -276,8 +276,10 @@ pub struct AssertionReport {
 }
 
 impl RunReport {
-    /// Creates an empty report in the `running` state.
-    pub fn new(suite_dirs: Vec<PathBuf>, runtime: String, parallelism: usize, log_dir: PathBuf) -> Self {
+    /// Creates a report in the `running` state that lists every selected test as not run.
+    pub fn new(
+        suite_dirs: Vec<PathBuf>, runtime: String, parallelism: usize, log_dir: PathBuf, selected: Vec<String>,
+    ) -> Self {
         Self {
             schema_version: RUN_REPORT_SCHEMA_VERSION,
             state: RunState::Running,
@@ -289,9 +291,9 @@ impl RunReport {
             started_at: Local::now().to_rfc3339(),
             duration_ms: 0,
             log_dir,
-            totals: RunTotals::new(&[], 0),
+            totals: RunTotals::new(&[], selected.len()),
             running: Vec::new(),
-            not_run: Vec::new(),
+            not_run: selected,
             tests: Vec::new(),
         }
     }
@@ -906,6 +908,7 @@ mod tests {
             "linux".to_string(),
             1,
             PathBuf::from("/logs"),
+            Vec::new(),
         );
 
         // A build outside a checkout reports `unknown`; inside one it is a SHA, optionally dirty.
@@ -949,13 +952,17 @@ mod tests {
     #[test]
     fn run_report_pins_the_schema_two_field_names() {
         let log_dir = tempfile::tempdir().expect("temp dir should be creatable");
-        let report = RunReport::new(Vec::new(), "linux".to_string(), 1, log_dir.path().to_path_buf());
+        let selected = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let report = RunReport::new(
+            Vec::new(),
+            "linux".to_string(),
+            1,
+            log_dir.path().to_path_buf(),
+            selected,
+        );
         let mut collector = RunCollector::start(report, false);
         let timed_out = TestResult::errored("a", ErrorKind::Timeout, "too slow", Duration::from_secs(1), Vec::new());
         for event in [
-            TestEvent::RunStarted {
-                tests: vec!["a".to_string(), "b".to_string(), "c".to_string()],
-            },
             TestEvent::TestStarted { name: "a".to_string() },
             TestEvent::TestCompleted {
                 result: Box::new(timed_out),
@@ -992,7 +999,13 @@ mod tests {
             json["parallelism"].clone()
         };
 
-        let mut report = RunReport::new(Vec::new(), "linux".to_string(), 1, log_dir.path().to_path_buf());
+        let mut report = RunReport::new(
+            Vec::new(),
+            "linux".to_string(),
+            1,
+            log_dir.path().to_path_buf(),
+            Vec::new(),
+        );
         write_run_report(&report);
         assert_eq!(read_parallelism(), 1);
 

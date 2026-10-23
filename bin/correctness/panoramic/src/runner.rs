@@ -31,9 +31,6 @@ use crate::{
     reporter::{ErrorKind, PhaseTiming, TestResult, TimeoutAttribution},
 };
 
-/// A function that tells us whether to run a test. Used to filter for the desired test or tests.
-pub(crate) type TestFilter = Box<dyn Fn(&dyn Test) -> bool + Send>;
-
 /// A sender that the `Runner` can use to send `TestEvent`s.
 pub(crate) type EventSender = mpsc::UnboundedSender<TestEvent>;
 
@@ -168,9 +165,6 @@ pub(crate) struct RunArgs {
     /// Whether to stop execution at the first failure.
     fail_fast: bool,
 
-    /// A function to filter tests.
-    filter: Option<TestFilter>,
-
     /// Reports run progress and results to the collector.
     event_sender: EventSender,
 
@@ -185,7 +179,6 @@ impl RunArgs {
         Self {
             parallelism: NonZeroUsize::MIN,
             fail_fast: false,
-            filter: None,
             event_sender,
             cancel_all,
         }
@@ -200,17 +193,12 @@ impl RunArgs {
         self.fail_fast = fail_fast;
         self
     }
-
-    pub(crate) fn with_filter(mut self, filter: TestFilter) -> Self {
-        self.filter = Some(filter);
-        self
-    }
 }
 
 /// Owns the set of registered tests and orchestrates their execution.
 ///
-/// Handles test filtering, parallelism, timeout enforcement, cancellation propagation,
-/// log directory creation, and event dispatch. Individual test logic lives in the `Test`
+/// Handles parallelism, timeout enforcement, cancellation propagation, log directory creation,
+/// and event dispatch. Individual test logic lives in the `Test`
 /// implementations.
 pub(crate) struct Runner {
     tests: Vec<Box<dyn Test>>,
@@ -247,25 +235,19 @@ impl Runner {
         Ok(())
     }
 
-    /// Runs selected tests, reporting progress and results as events.
+    /// Runs the registered tests, reporting progress and results as events.
     pub(crate) async fn run_tests(&self, args: RunArgs) {
         let RunArgs {
             parallelism,
             fail_fast,
-            filter,
             event_sender,
             cancel_all,
         } = args;
 
-        let tests: Vec<&dyn Test> = self
-            .tests
-            .iter()
-            .filter(|t| filter.as_ref().is_none_or(|f| f(t.as_ref())))
-            .map(|t| t.as_ref())
-            .collect();
+        let tests: Vec<&dyn Test> = self.tests.iter().map(|t| t.as_ref()).collect();
 
         let _ = event_sender.send(TestEvent::RunStarted {
-            tests: tests.iter().map(|t| t.name()).collect(),
+            total_tests: tests.len(),
         });
 
         let parallelism = parallelism.get();

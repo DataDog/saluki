@@ -13,8 +13,8 @@ use crate::reporter::TestResult;
 pub enum TestEvent {
     /// The test run is starting.
     RunStarted {
-        /// Names of the selected tests, in selection order.
-        tests: Vec<String>,
+        /// Total number of tests to run.
+        total_tests: usize,
     },
 
     /// A test has started running.

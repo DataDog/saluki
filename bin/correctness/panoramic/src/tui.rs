@@ -96,7 +96,7 @@ impl Tui {
     /// Queues the lines for one runner event.
     pub fn show_event(&mut self, event: &TestEvent) {
         match event {
-            TestEvent::RunStarted { tests } => self.add_line(format!("Running {} test(s)...", tests.len())),
+            TestEvent::RunStarted { total_tests } => self.add_line(format!("Running {} test(s)...", total_tests)),
             TestEvent::TestStarted { name } => self.add_line(format!("Starting test '{}'...", name)),
             TestEvent::TestCompleted { result, log_dir } => {
                 self.pending_lines.extend(completed_test_lines(result, log_dir));
