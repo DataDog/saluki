@@ -876,6 +876,87 @@ experiments:
             # Core Agent's own receiver gets redirected out of the way by cont-init.
             target_uri: "http://localhost:6317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
 
+  - name: otlp_ingest_metrics_agent_3mb
+    extends: otlp_ingest_converged_base
+    on_demand: true
+    optimization_goal: memory
+    target:
+      files:
+        datadog.yaml:
+          content:
+            # With the data plane disabled, nothing redirects these endpoints out of the way (see
+            # docker/cont-init.d/99-agent-data-plane.sh), so the Core Agent owns port 4317.
+            otlp_config:
+              receiver:
+                protocols:
+                  grpc:
+                    endpoint: 127.0.0.1:4317
+              metrics:
+                enabled: true
+    lading:
+      generator:
+        - grpc:
+            bytes_per_second: "3 MiB"
+            target_uri: "http://127.0.0.1:4317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
+
+  # Leg 2: DDOT (`otel-agent`, the otelcol-based collector shipped in the Agent image) handles
+  # ingest, supervised by s6 alongside the Core Agent.
+  - name: otlp_ingest_metrics_ddot_3mb
+    extends: otlp_ingest_converged_base
+    on_demand: true
+    optimization_goal: memory
+    target:
+      environment:
+        # Starts the otel-agent sidecar (it exits immediately when this is unset).
+        DD_OTELCOLLECTOR_ENABLED: "true"
+      files:
+        # otelcol-style collector configuration, consumed by the `otel-agent` s6 service.
+        otel-config.yaml:
+          content:
+            receivers:
+              otlp:
+                protocols:
+                  grpc:
+                    endpoint: 0.0.0.0:4317
+            exporters:
+              datadog:
+                hostname: smp-regression
+                api:
+                  key: foo00000001
+                  site: 127.0.0.1:9091
+                metrics:
+                  endpoint: http://127.0.0.1:9091
+            service:
+              pipelines:
+                metrics:
+                  receivers: [otlp]
+                  exporters: [datadog]
+    lading:
+      generator:
+        - grpc:
+            bytes_per_second: "3 MiB"
+            target_uri: "http://127.0.0.1:4317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
+
+  # Leg 3: ADP handles ingest as the data-plane sidecar.
+  - name: otlp_ingest_metrics_adp_3mb
+    extends: otlp_ingest_converged_base
+    on_demand: true
+    optimization_goal: memory
+    target:
+      environment:
+        DD_DATA_PLANE_ENABLED: "true"
+        DD_DATA_PLANE_OTLP_ENABLED: "true"
+        DD_DATA_PLANE_REMOTE_AGENT_ENABLED: "true"
+        DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+        DD_OTLP_CONFIG: "{}"
+    lading:
+      generator:
+        - grpc:
+            bytes_per_second: "3 MiB"
+            # ADP listens on the temporary ADP-only OTLP ports in converged mode (#2177); the
+            # Core Agent's own receiver gets redirected out of the way by cont-init.
+            target_uri: "http://localhost:6317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
+
   - name: otlp_ingest_logs_5mb
     extends: otlp_base
     optimization_goals:
