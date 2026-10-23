@@ -949,7 +949,8 @@ async fn add_dsd_pipeline_to_blueprint(
 }
 
 async fn add_apm_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, env_provider: &ADPEnvironmentProvider,
+    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
+    env_provider: &RemoteAgentEnvironmentProvider,
 ) -> Result<(), GenericError> {
     let config = config_system.config();
     // In standalone mode there is no workload provider, so the resolver finds nothing and the relay forwards requests
