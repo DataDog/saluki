@@ -22,7 +22,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use agent_data_plane_config::defaults::DEFAULT_APM_RECEIVER_SOCKET_UNIX;
 use agent_data_plane_config::domains::dogstatsd::{
     FilterAction, MapperProfile, MetricMapping, MetricTagFilterEntry, OriginTagCardinality,
 };
@@ -528,16 +527,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         }
     }
 
-    fn consume_apm_config_receiver_socket(&mut self, value: Option<String>) {
-        // The schema default is platform-specific, which the generated model cannot express, so an unset value
-        // arrives as `None` and the platform default is applied here. An explicit empty string disables the socket.
-        self.config.domains.apm.receiver_socket = match value {
-            Some(path) => non_empty(path),
-            None if cfg!(any(target_os = "linux", target_os = "aix")) => {
-                Some(DEFAULT_APM_RECEIVER_SOCKET_UNIX.to_string())
-            }
-            None => None,
-        };
+    fn consume_apm_config_receiver_socket(&mut self, value: String) {
+        // The schema's platform default is applied by the generated model; an explicit empty string disables the
+        // socket.
+        self.config.domains.apm.receiver_socket = non_empty(value);
     }
 
     fn consume_apm_config_replace_tags(&mut self, value: Vec<HashMap<String, String>>) {
