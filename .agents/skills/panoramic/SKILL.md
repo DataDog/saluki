@@ -17,9 +17,9 @@ Check the current `Makefile` recipes and `panoramic --help` before choosing a co
 `panoramic run --help` for runner options and `panoramic list --help` to discover selection options.
 This keeps commands aligned with the working tree as the harness changes.
 
-These human-facing documents provide optional background:
+Background:
 
-- `docs/development/testing.md`: test types and CI entry points
+- `docs/development/testing.md`: test types, CI entry points, and how to read results
 - `docs/development/testing-patterns.md`: conventions for Rust tests
 - `bin/correctness/README.md`: Panoramic and its supporting tools
 
@@ -68,47 +68,6 @@ Panoramic directory under the shared test-output root; `make clean` includes tha
 
 ## Interpret the result
 
-Exit codes distinguish the run-level result:
-
-| Code | Meaning |
-|------|---------|
-| 0 | Every test passed |
-| 1 | At least one assertion failed |
-| 2 | Harness error, timeout, or interrupted run |
-| 3 | The selection matched no tests |
-
-For code 2, investigate the harness or environment before assertion differences.
-
-Check `run.json` first: it is updated during execution, so passing entries do not prove the run
-finished. Inspect completeness before individual results; treat unknown states or outcomes as
-non-passing.
-
-```bash
-jq '{state, interrupted_reason, running, not_run}' run.json
-jq -r '.tests[] | select(.outcome != "passed") | "\(.name) \(.outcome) \(.log_dir)"' run.json
-```
-
-Follow each non-passing test's `log_dir` to `result.json`. Read `outcome`, `error`, `timeout`, failed
-`assertions`, and `diagnostic_lines`, then open the referenced artifacts for context and uncapped
-details. Use reported paths rather than guessing filenames.
-
-For field semantics, start with `RunReport` and `TestReport` in
-`bin/correctness/panoramic/src/machine_output.rs` and follow their types. Check `schema_version` and
-`build_revision` when reports differ from the working tree.
-
-On Unix, send SIGINT or SIGTERM to stop a run with cleanup; a second signal may leave containers.
-
-## Read the traffic artifacts
-
-Traffic captures live under `<log_dir>/traffic/`. Start with `traffic/manifest.json`: it lists each
-capture, whether its file is still on disk, and why any capture is missing. Take file names from the
-manifest rather than guessing them. Captures are zstd-compressed JSON Lines:
-
-```bash
-jq -r '(.input // empty), .decoded[] | select(.file.present) | .file.name' traffic/manifest.json
-zstd -dc traffic/<file-name> | head -5
-```
-
-The module docs in `bin/correctness/panoramic/src/traffic.rs` explain each artifact, its retention,
-and record ordering. For intake sidecar captures, see "Intake artifacts" in
-`test/integration/README.md`.
+Read "Reading panoramic results" and "Reading traffic artifacts" in `docs/development/testing.md`
+for exit codes, the `run.json` and `result.json` layout, and how to inspect traffic captures. Treat
+exit code 2 as an environment or harness problem before investigating assertion differences.

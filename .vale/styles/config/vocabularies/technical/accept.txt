@@ -294,3 +294,12 @@ target_traces_per_second
 PING(s?)
 GAT(s?)
 declarative(ly)?
+LLM(s?)
+README(s?)
+rebas(e|ed|es|ing)
+restack(s|ed|ing)?
+cutover(s?)
+composable
+unmodeled
+vendoring
+agentic

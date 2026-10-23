@@ -1,8 +1,8 @@
 # Remote agent runtime extraction plan
 
 This document tracks the extraction of the remote agent infrastructure in `bin/agent-data-plane/src/internal/` into
-`datadog-agent-runtime`. It lives next to the code so that the remaining work stays visible after the extraction
-stack merges. Each pull request in the stack updates this file in the same commit as its code.
+`datadog-agent-runtime`. It stays in place after the extraction stack merges, so that the remaining work stays
+visible. Each pull request in the stack updates this file in the same commit as its code.
 
 Once the stack merges, this file is the backlog of [follow-ups](#follow-ups). Each follow-up pull request removes its
 item, and once the list is empty, the file is deleted or replaced with design notes that are still useful.
@@ -75,7 +75,7 @@ to the pull request), or merged.
     the `remote-agent` supervisor from `RemoteAgent::create_remote_agent_supervisor`, which holds the supervision tree route
     and the remote agent workers.
 - [ ] **6. Documentation and example.** Status: in review (pull request not opened yet).
-  - Adds the crate documentation, `examples/minimal_remote_agent.rs`, and the `AGENTS.md` entry.
+  - Adds the crate documentation, `examples/minimal_remote_agent.rs`, and the entry in the agent guide (`docs/development/agents.md`).
 
 ## Invariants
 
