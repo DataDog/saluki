@@ -8,9 +8,10 @@ repository = { workspace = true }
 # Maintain this crate as a leaf node and do not depend on other workspace crates. build.rs files
 # depend on this and keeping it as a leaf node simplifies the dependency mental model.
 [dependencies]
-indexmap = { workspace = true, features = ["serde"] }
+indexmap = { workspace = true, features = ["serde", "std"] }
 serde = { workspace = true }
-serde_yaml = { workspace = true }
+serde-saphyr = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

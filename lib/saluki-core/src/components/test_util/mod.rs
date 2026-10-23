@@ -1,12 +1,14 @@
 //! Test helpers for running components.
 //!
-//! This module has two levels of helper:
+//! This module has three levels of helper:
 //!
 //! - [`TestComponentDriver`] builds one component from its builder, connects its input and outputs, and runs it the way
 //!   the topology would. It returns a [`ComponentControl`] to feed and stop the component, and an [`Outputs`] (or a
 //!   single [`Output`]) to observe what it dispatches.
-//! - [`TestComponentSupervisor`] is the per-component supervisor on its own, for code that spawns supervised children
-//!   but isn't a whole component. The driver runs every component under one. Prefer it over
+//! - [`DriverOptions`] can also build only the context that the driver would pass to a component, as
+//!   [`ContextParts`], for a test that drives a piece of a component with a real context.
+//! - [`TestComponentSupervisor`] is the topology supervisor on its own, for code that spawns supervised children but
+//!   isn't a whole component. The driver runs every component under one. Prefer it over
 //!   `Supervisor::new(..).handle()`, which looks equivalent but never runs, so every child spawned on it is dropped.
 //!
 //! # Driving a component
@@ -25,7 +27,10 @@
 //! ```
 //!
 //! Use [`TestComponentDriver::options`] to change the component ID, the channel capacity, the deadlines, or the
-//! resource registry the component is built with.
+//! resource registry the component is built with, or to withhold the shutdown signal from a source or relay so that it
+//! behaves as if it ignored shutdown. To run a source that the test builds by hand, wrap it in a [`PrebuiltSource`]. A
+//! synchronous transform has no run loop of its own, so [`TestComponentDriver::synchronous_transform`] runs it the way
+//! a chained transform runs each of its steps.
 //!
 //! # Things to know
 //!
@@ -54,6 +59,12 @@
 //! # }
 //! ```
 //!
+//! ## Wait for changes that don't arrive on the input
+//!
+//! Some changes reach a running component another way, such as a `Live` configuration update that its run loop
+//! applies. Wait for the effect with [`ComponentControl::wait_until`], for example by polling a counter that the
+//! component increments, rather than sleeping for a fixed time.
+//!
 //! ## Keep the handles alive
 //!
 //! Bind handles you don't use to `_control` or `_outputs`, not to `_`. A `_` pattern drops the value immediately:
@@ -74,6 +85,9 @@
 //! - Nothing sends liveness probes, so [`Health::live`][crate::health::Health::live] stays pending forever and a
 //!   component's liveness response is never exercised. Readiness does work: see [`ComponentControl::wait_until_ready`].
 
+mod context;
+pub use self::context::ContextParts;
+
 mod control;
 pub use self::control::{ComponentControl, NoInput};
 
@@ -82,6 +96,9 @@ pub use self::driver::{DriverOptions, TestComponentDriver};
 
 mod output;
 pub use self::output::{Output, Outputs};
+
+mod prebuilt;
+pub use self::prebuilt::PrebuiltSource;
 
 mod supervisor;
 pub use self::supervisor::TestComponentSupervisor;

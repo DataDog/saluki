@@ -39,7 +39,7 @@
 //!
 //! - a top-level key (`dogstatsd_tcp_port`, `aggregate_window_duration_seconds`) is a top-level
 //!   field of the same name;
-//! - a nested key (`apm_config.default_env`) is a field on a matching chain of nested sub-structs.
+//! - a nested key (`apm_config.max_resource_len`) is a field on a matching chain of nested sub-structs.
 //!
 //! A mismatch does not error. The field deserializes to `None`, `seed` skips it, and the model
 //! keeps its default: the value silently fails to transport.
@@ -341,8 +341,6 @@ pub struct DataPlaneChecks {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct ApmConfig {
-    /// Default trace environment (`apm_config.default_env`).
-    pub default_env: Option<String>,
     /// Maximum length of a span's resource name, in bytes (`apm_config.max_resource_len`).
     ///
     /// Defaults to 5000 bytes. If set to `0`, all span resources are truncated to empty strings.
@@ -703,9 +701,6 @@ impl SalukiOnly {
 
         // domains.traces
         let traces = &mut config.domains.traces;
-        if let Some(v) = self.apm_config.default_env.clone() {
-            traces.default_env = v;
-        }
         traces.max_resource_len = self.apm_config.max_resource_len.unwrap_or(DEFAULT_MAX_RESOURCE_LEN);
         if let Some(v) = self.apm_config.error_sampling_enabled {
             traces.error_sampling_enabled = v;
@@ -765,7 +760,7 @@ mod tests {
         DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS, DEFAULT_DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_BYTES,
         DEFAULT_ENCODER_FLUSH_TIMEOUT, DEFAULT_ERROR_SAMPLING_ENABLED, DEFAULT_MAX_RESOURCE_LEN,
         DEFAULT_RARE_SAMPLER_CARDINALITY, DEFAULT_RARE_SAMPLER_COOLDOWN_SECS, DEFAULT_RARE_SAMPLER_TPS,
-        DEFAULT_REMOTE_AGENT_STRING_INTERNER_SIZE_BYTES, DEFAULT_TRACE_ENV, MAX_STRING_INTERNER_SIZE_BYTES,
+        DEFAULT_REMOTE_AGENT_STRING_INTERNER_SIZE_BYTES, MAX_STRING_INTERNER_SIZE_BYTES,
     };
     use agent_data_plane_config::domains::dogstatsd::TagValueMismatchAction;
     use serde_json::json;
@@ -845,7 +840,6 @@ mod tests {
             },
             // nested: apm_config
             "apm_config": {
-                "default_env": "staging",
                 "max_resource_len": 1234,
                 "error_sampling_enabled": true,
                 "rare_sampler": { "cardinality": 9, "cooldown": 1.5, "tps": 3.0 },
@@ -939,7 +933,6 @@ mod tests {
 
         // domains.traces
         let traces = &config.domains.traces;
-        assert_eq!(traces.default_env, "staging");
         assert_eq!(traces.max_resource_len, 1234);
         assert!(traces.error_sampling_enabled);
         assert_eq!(traces.rare_sampler.cardinality, 9);
@@ -1231,7 +1224,6 @@ mod tests {
         // Saluki-only trace defaults live in the traces-domain model, so absent keys must leave
         // ADP's historical sampler defaults in place.
         let traces = &config.domains.traces;
-        assert_eq!(traces.default_env, DEFAULT_TRACE_ENV);
         assert_eq!(traces.max_resource_len, DEFAULT_MAX_RESOURCE_LEN);
         assert_eq!(traces.error_sampling_enabled, DEFAULT_ERROR_SAMPLING_ENABLED);
         assert_eq!(traces.rare_sampler.tps, DEFAULT_RARE_SAMPLER_TPS);

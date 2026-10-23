@@ -523,7 +523,7 @@ impl ConnectionContext {
             http2_config: self.http2_config,
         };
 
-        let builder = self.supervisor.supervisable(connection).temporary();
+        let builder = self.supervisor.supervisable(connection);
         place_on_pool(builder, self.worker_pool.as_ref())
             .with_budget_bounded_shutdown()
             .spawn();
@@ -538,7 +538,7 @@ impl ConnectionContext {
             context: self.clone(),
         };
 
-        let builder = self.supervisor.supervisable(handshake).temporary();
+        let builder = self.supervisor.supervisable(handshake);
         place_on_pool(builder, self.worker_pool.as_ref())
             .with_budget_bounded_shutdown()
             .spawn();
@@ -607,6 +607,11 @@ impl Supervisable for TlsHandshake {
         TLS_HANDSHAKE_TASK_NAME
     }
 
+    fn can_restart(&self) -> bool {
+        // The first start takes the stream. See `take_once`.
+        false
+    }
+
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let stream = take_once(&self.stream, "TLS handshake")?;
         let remote_addr = self.remote_addr.clone();
@@ -665,6 +670,11 @@ where
         ShutdownStrategy::Graceful(Duration::MAX)
     }
 
+    fn can_restart(&self) -> bool {
+        // The first start takes the socket. See `take_once`.
+        false
+    }
+
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let io = take_once(&self.io, "HTTP connection")?;
         let remote_addr = self.remote_addr.clone();
@@ -695,7 +705,7 @@ where
 /// Takes the single-use value out of a worker, failing initialization if it has already been taken.
 ///
 /// A connection and a handshake are both built around a value that can't be recreated -- a socket -- so they run
-/// exactly once. Their restart policy says as much, and this is the backstop if that ever stops being true.
+/// exactly once. They report as much through `can_restart`, and this is the backstop if that ever stops being true.
 fn take_once<T>(slot: &Mutex<Option<T>>, what: &str) -> Result<T, InitializationError> {
     slot.lock()
         .expect("single-use worker mutex poisoned")

@@ -6,5 +6,6 @@ fixes:
     that clears ``additional_endpoints``. These settings now read as empty, as they do in the Datadog Agent,
     instead of failing startup or discarding the update.
   - |
-    Agent Data Plane now rejects an ``apm_config.replace_tags`` rule that has no ``name`` or no ``pattern``,
-    matching the Trace Agent. Previously such a rule was accepted.
+    When an ``apm_config.replace_tags`` rule has no ``name`` or no ``pattern``, Agent Data Plane now logs a
+    warning and applies none of the replace rules, matching the Trace Agent. Previously such a rule was
+    applied.

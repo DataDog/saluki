@@ -196,6 +196,20 @@ inventory:
       additional_attributes:
         config_registry_filename: forwarder.rs
 
+  apm_config.analyzed_rate_by_service:
+    support: full
+    pipelines: [traces]
+    description: "Legacy per-service event extraction rates"
+    test_support:
+      used_by: [NO_SMOKE]
+
+  apm_config.analyzed_spans:
+    support: full
+    pipelines: [traces]
+    description: "Per service|operation APM event extraction rates"
+    test_support:
+      used_by: [NO_SMOKE]
+
   apm_config.apm_non_local_traffic:
     support: full
     pipelines: [traces]
@@ -216,6 +230,15 @@ inventory:
     description: "Enable the APM rare-span sampler"
     test_support:
       used_by: [NO_SMOKE]
+
+  apm_config.env:
+    support: full
+    pipelines: [traces]
+    description: "Trace environment"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: encoders.rs
 
   apm_config.error_tracking_standalone.enabled:
     support: full
@@ -259,6 +282,13 @@ inventory:
     support: full
     pipelines: [traces]
     description: "Priority sampler service-signature catalog cap"
+    test_support:
+      used_by: [NO_SMOKE]
+
+  apm_config.max_events_per_second:
+    support: full
+    pipelines: [traces]
+    description: "Upper bound on sampled APM events per second"
     test_support:
       used_by: [NO_SMOKE]
 
@@ -1418,13 +1448,13 @@ inventory:
     documentation: "ADP bounds datagram queues with `dogstatsd_buffer_count_max`."
 
   dogstatsd_require_listener:
-    support: none
-    severity: medium
-    planned: true
-    issue: "#2556"
+    support: full
     pipelines: [dogstatsd]
     description: "Require an active DogStatsD listener"
-    documentation: "ADP does not honor this setting. DogStatsD startup fails if no listeners are configured or a configured listener cannot be created."
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   dogstatsd_so_rcvbuf:
     support: full
@@ -1653,8 +1683,11 @@ inventory:
       The core Agent defaults `env` to an empty string and attaches the configured environment to
       every metric, event, log, trace, and service check it emits.
 
-      ADP uses `env` for traces and APM stats only, and substitutes `none` when the setting is empty.
-      It does not apply this setting directly to the DogStatsD metrics path.
+      ADP uses `env` for traces and APM stats only. When `apm_config.env` is not set, a configured
+      `env` sets the trace environment. An empty `env` in the configuration file still takes
+      precedence over the `env:` global tags, and the trace environment becomes `none`. An empty
+      `DD_ENV` counts as unset. ADP does not apply this setting directly to the DogStatsD metrics
+      path.
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:
@@ -1671,8 +1704,11 @@ inventory:
 
   extra_tags:
     support: full
-    pipelines: [otlp]
+    pipelines: [otlp, traces]
     description: "Additional EKS Fargate OTLP metric tags"
+    documentation: |-
+      When neither `apm_config.env` nor `env` is set, the first `env:` entry in `tags`, then in
+      `extra_tags`, supplies the trace environment.
     test_support:
       used_by: [TypedConfigSystem]
       env_var_override: [DD_EXTRA_TAGS]
@@ -2103,17 +2139,6 @@ inventory:
       log_level: warn,agent_data_plane=debug,hyper=warn
       ```
 
-      ADP registers with the Agent, receives its configuration, and serves its status, flare,
-      and telemetry services through the shared subagent runtime, which logs under the
-      `datadog_agent_runtime` target. A plain level covers that target. To raise its
-      verbosity with advanced directives, name it alongside `agent_data_plane`:
-
-      ```yaml
-      log_level: warn,agent_data_plane=debug,datadog_agent_runtime=debug
-      ```
-
-      Span and field filters, such as `agent_data_plane[span{field=value}]=debug`, are not
-      supported. ADP fails to start if `log_level` contains one.
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:
@@ -3349,6 +3374,33 @@ inventory:
       additional_attributes:
         config_registry_filename: proxy.rs
 
+  remote_configuration.apm_sampling.enabled:
+    support: full
+    pipelines: [traces]
+    description: "Apply APM_SAMPLING remote configurations"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: remote_config.rs
+
+  remote_configuration.apm_semantics.enabled:
+    support: full
+    pipelines: [traces]
+    description: "Apply APM_SEMANTIC_CORE_DD remote configurations"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: remote_config.rs
+
+  remote_configuration.enabled:
+    support: full
+    pipelines: [traces]
+    description: "Enable Remote Configuration"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: remote_config.rs
+
   run_path:
     support: full
     pipelines: [cross_cutting]
@@ -3647,8 +3699,11 @@ inventory:
 
   tags:
     support: full
-    pipelines: [otlp]
+    pipelines: [otlp, traces]
     description: "Global tags for EKS Fargate OTLP metrics"
+    documentation: |-
+      When neither `apm_config.env` nor `env` is set, the first `env:` entry in `tags`, then in
+      `extra_tags`, supplies the trace environment.
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:
@@ -4017,8 +4072,6 @@ excluded:
   anomaly_detection.storage.point_retention: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
   apm_config.additional_endpoints: "ignored in initial audit 2026-04-23"
   apm_config.additional_profile_tags: "ignored in initial audit 2026-04-23"
-  apm_config.analyzed_rate_by_service: "ignored in initial audit 2026-04-23"
-  apm_config.analyzed_spans: "ignored in initial audit 2026-04-23"
   apm_config.apm_dd_url: "ignored in initial audit 2026-04-23"
   apm_config.bucket_size_seconds: "ignored in initial audit 2026-04-23"
   apm_config.client_stats_flush_interval: "ignored in initial audit 2026-04-23"
@@ -4039,7 +4092,6 @@ excluded:
   apm_config.disable_rare_sampler: "ignored in initial audit 2026-04-23"
   apm_config.enable_container_tags_buffer: "ignored in initial audit 2026-04-23"
   apm_config.enabled: "ignored in initial audit 2026-04-23"
-  apm_config.env: "ignored in initial audit 2026-04-23"
   apm_config.filter_tags.reject: "ignored in initial audit 2026-04-23"
   apm_config.filter_tags.require: "ignored in initial audit 2026-04-23"
   apm_config.filter_tags_regex.reject: "ignored in initial audit 2026-04-23"
@@ -4062,7 +4114,6 @@ excluded:
   apm_config.max_catalog_services: "ignored in initial audit 2026-04-23"
   apm_config.max_connections: "ignored in initial audit 2026-04-23"
   apm_config.max_cpu_percent: "ignored in initial audit 2026-04-23"
-  apm_config.max_events_per_second: "ignored in initial audit 2026-04-23"
   apm_config.max_memory: "ignored in initial audit 2026-04-23"
   apm_config.max_payload_size: "ignored in initial audit 2026-04-23"
   apm_config.max_remote_traces_per_second: "ignored in initial audit 2026-04-23"
@@ -5334,8 +5385,6 @@ excluded:
   remote_configuration.agent_integrations.block_list: "ignored in initial audit 2026-04-23"
   remote_configuration.agent_integrations.enabled: "ignored in initial audit 2026-04-23"
   remote_configuration.api_key: "ignored in initial audit 2026-04-23"
-  remote_configuration.apm_sampling.enabled: "ignored in initial audit 2026-04-23"
-  remote_configuration.apm_semantics.enabled: "2026-06-10 Trace-agent APM_SEMANTIC_CORE_DD RC subscription; APM/trace concern outside ADP scope."
   remote_configuration.clients.cache_bypass_limit: "ignored in initial audit 2026-04-23"
   remote_configuration.clients.ttl_seconds: "ignored in initial audit 2026-04-23"
   remote_configuration.config_root: "ignored in initial audit 2026-04-23"
@@ -5344,7 +5393,6 @@ excluded:
   remote_configuration.delegated_auth.provider: "ignored in initial audit 2026-04-23"
   remote_configuration.delegated_auth.refresh_interval_mins: "ignored in initial audit 2026-04-23"
   remote_configuration.director_root: "ignored in initial audit 2026-04-23"
-  remote_configuration.enabled: "ignored in initial audit 2026-04-23"
   remote_configuration.key: "ignored in initial audit 2026-04-23"
   remote_configuration.max_backoff_interval: "ignored in initial audit 2026-04-23"
   remote_configuration.no_tls: "ignored in initial audit 2026-04-23"

@@ -37,7 +37,7 @@ endif
 export ADP_STANDALONE_IPC_CERT_FILE := /tmp/adp-ipc-cert.pem
 
 # macOS integration-test settings.
-MACOS_TEST_AGENT_VERSION ?= 7.84.2
+MACOS_TEST_AGENT_VERSION ?= 7.84.3
 MACOS_TEST_AGENT_DMG_DIR ?= /tmp/saluki-dda-dmg-cache
 MACOS_TEST_AGENT_DMG_URL ?= https://s3.amazonaws.com/dd-agent/datadog-agent-$(MACOS_TEST_AGENT_VERSION)-1.$(shell uname -m).dmg
 MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
@@ -52,7 +52,7 @@ export PANORAMIC_LOG_DIR ?= $(SALUKI_TEST_OUTPUT_DIR)/panoramic
 # Pinned nightly toolchain shared by the Miri tests and API-doc generation, both of which rely on
 # nightly-only features. Keeping it in one variable ensures the two stay in lockstep; bump here to
 # move both at once.
-export RUST_NIGHTLY_VERSION ?= nightly-2026-01-18
+export RUST_NIGHTLY_VERSION ?= nightly-2026-04-11
 
 # Pinned nightly toolchain for the AIX cross-check. AIX has no prebuilt standard library, so the check builds it from
 # source, which doesn't work on RUST_NIGHTLY_VERSION or our stable toolchain. Fold this into RUST_NIGHTLY_VERSION once

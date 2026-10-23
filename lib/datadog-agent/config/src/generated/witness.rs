@@ -18,14 +18,18 @@ pub trait DatadogConfigWitness {
     fn consume_aggregator_stop_timeout(&mut self, value: i64);
     fn consume_allow_arbitrary_tags(&mut self, value: bool);
     fn consume_api_key(&mut self, value: String);
+    fn consume_apm_config_analyzed_rate_by_service(&mut self, value: HashMap<String, f64>);
+    fn consume_apm_config_analyzed_spans(&mut self, value: ::serde_json::Map<String, ::serde_json::Value>);
     fn consume_apm_config_apm_non_local_traffic(&mut self, value: bool);
     fn consume_apm_config_compute_stats_by_span_kind(&mut self, value: bool);
     fn consume_apm_config_enable_rare_sampler(&mut self, value: bool);
+    fn consume_apm_config_env(&mut self, value: String);
     fn consume_apm_config_error_tracking_standalone_enabled(&mut self, value: bool);
     fn consume_apm_config_errors_per_second(&mut self, value: f64);
     fn consume_apm_config_extra_sample_rate(&mut self, value: f64);
     fn consume_apm_config_features(&mut self, value: Vec<String>);
     fn consume_apm_config_max_catalog_entries(&mut self, value: i64);
+    fn consume_apm_config_max_events_per_second(&mut self, value: f64);
     fn consume_apm_config_max_traces_per_second(&mut self, value: f64);
     fn consume_apm_config_obfuscation_credit_cards_enabled(&mut self, value: bool);
     fn consume_apm_config_obfuscation_credit_cards_keep_values(&mut self, value: Vec<String>);
@@ -53,7 +57,7 @@ pub trait DatadogConfigWitness {
     fn consume_apm_config_probabilistic_sampler_hash_seed(&mut self, value: i64);
     fn consume_apm_config_probabilistic_sampler_sampling_percentage(&mut self, value: f64);
     fn consume_apm_config_receiver_port(&mut self, value: i64);
-    fn consume_apm_config_receiver_socket(&mut self, value: Option<String>);
+    fn consume_apm_config_receiver_socket(&mut self, value: String);
     fn consume_apm_config_replace_tags(&mut self, value: Vec<HashMap<String, String>>);
     fn consume_apm_config_target_traces_per_second(&mut self, value: f64);
     fn consume_auth_token_file_path(&mut self, value: String);
@@ -113,8 +117,9 @@ pub trait DatadogConfigWitness {
     fn consume_dogstatsd_origin_optout_enabled(&mut self, value: bool);
     fn consume_dogstatsd_pipe_name(&mut self, value: String);
     fn consume_dogstatsd_port(&mut self, value: i64);
+    fn consume_dogstatsd_require_listener(&mut self, value: bool);
     fn consume_dogstatsd_so_rcvbuf(&mut self, value: i64);
-    fn consume_dogstatsd_socket(&mut self, value: Option<String>);
+    fn consume_dogstatsd_socket(&mut self, value: String);
     fn consume_dogstatsd_stream_log_too_big(&mut self, value: bool);
     fn consume_dogstatsd_stream_socket(&mut self, value: String);
     fn consume_dogstatsd_string_interner_size(&mut self, value: i64);
@@ -228,6 +233,9 @@ pub trait DatadogConfigWitness {
     fn consume_proxy_http(&mut self, value: String);
     fn consume_proxy_https(&mut self, value: String);
     fn consume_proxy_no_proxy(&mut self, value: Vec<String>);
+    fn consume_remote_configuration_apm_sampling_enabled(&mut self, value: bool);
+    fn consume_remote_configuration_apm_semantics_enabled(&mut self, value: bool);
+    fn consume_remote_configuration_enabled(&mut self, value: bool);
     fn consume_run_path(&mut self, value: String);
     fn consume_secret_backend_command(&mut self, value: String);
     fn consume_secret_refresh_on_api_key_failure_interval(&mut self, value: i64);
@@ -281,9 +289,12 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_aggregator_stop_timeout(config.aggregator_stop_timeout.clone());
     consumer.consume_allow_arbitrary_tags(config.allow_arbitrary_tags.clone());
     consumer.consume_api_key(config.api_key.clone());
+    consumer.consume_apm_config_analyzed_rate_by_service(config.apm_config.analyzed_rate_by_service.clone());
+    consumer.consume_apm_config_analyzed_spans(config.apm_config.analyzed_spans.clone());
     consumer.consume_apm_config_apm_non_local_traffic(config.apm_config.apm_non_local_traffic.clone());
     consumer.consume_apm_config_compute_stats_by_span_kind(config.apm_config.compute_stats_by_span_kind.clone());
     consumer.consume_apm_config_enable_rare_sampler(config.apm_config.enable_rare_sampler.clone());
+    consumer.consume_apm_config_env(config.apm_config.env.clone());
     consumer.consume_apm_config_error_tracking_standalone_enabled(
         config.apm_config.error_tracking_standalone.enabled.clone(),
     );
@@ -291,6 +302,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_apm_config_extra_sample_rate(config.apm_config.extra_sample_rate.clone());
     consumer.consume_apm_config_features(config.apm_config.features.clone());
     consumer.consume_apm_config_max_catalog_entries(config.apm_config.max_catalog_entries.clone());
+    consumer.consume_apm_config_max_events_per_second(config.apm_config.max_events_per_second.clone());
     consumer.consume_apm_config_max_traces_per_second(config.apm_config.max_traces_per_second.clone());
     consumer.consume_apm_config_obfuscation_credit_cards_enabled(
         config.apm_config.obfuscation.credit_cards.enabled.clone(),
@@ -416,6 +428,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_dogstatsd_origin_optout_enabled(config.dogstatsd_origin_optout_enabled.clone());
     consumer.consume_dogstatsd_pipe_name(config.dogstatsd_pipe_name.clone());
     consumer.consume_dogstatsd_port(config.dogstatsd_port.clone());
+    consumer.consume_dogstatsd_require_listener(config.dogstatsd_require_listener.clone());
     consumer.consume_dogstatsd_so_rcvbuf(config.dogstatsd_so_rcvbuf.clone());
     consumer.consume_dogstatsd_socket(config.dogstatsd_socket.clone());
     consumer.consume_dogstatsd_stream_log_too_big(config.dogstatsd_stream_log_too_big.clone());
@@ -635,6 +648,11 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_proxy_http(config.proxy.http.clone());
     consumer.consume_proxy_https(config.proxy.https.clone());
     consumer.consume_proxy_no_proxy(config.proxy.no_proxy.clone());
+    consumer
+        .consume_remote_configuration_apm_sampling_enabled(config.remote_configuration.apm_sampling.enabled.clone());
+    consumer
+        .consume_remote_configuration_apm_semantics_enabled(config.remote_configuration.apm_semantics.enabled.clone());
+    consumer.consume_remote_configuration_enabled(config.remote_configuration.enabled.clone());
     consumer.consume_run_path(config.run_path.clone());
     consumer.consume_secret_backend_command(config.secret_backend_command.clone());
     consumer

@@ -230,7 +230,7 @@ impl ConfigurationUpdates {
     ///
     /// Returns [`Error::UpdateStreamClosed`] when the configuration stream closes. The stream does
     /// not reopen, so each later call fails in the same way at once.
-    pub fn run(&self) -> impl Future<Output = std::result::Result<(), Error>> + Send + 'static {
+    pub fn run(&self) -> impl Future<Output = Result<()>> + Send + 'static {
         let state = Arc::clone(&self.state);
         async move {
             // A panic does not poison this lock, so a later call takes over the state as the panic left it.
@@ -409,7 +409,8 @@ mod tests {
     use agent_data_plane_config::shared::V3SeriesMode;
     use agent_data_plane_config::Provenance;
     use agent_data_plane_config::{Live, SalukiConfiguration};
-    use datadog_agent_config::DatadogConfiguration;
+    use datadog_agent_config::{apply_datadog_env_vars, DatadogConfiguration};
+    use futures::StreamExt as _;
     use saluki_config::dynamic::{ConfigSetting, ConfigUpdate, Provenance as StreamProvenance};
     use serde_json::{json, Value};
     use tokio::sync::mpsc;
@@ -610,6 +611,39 @@ mod tests {
         assert!(config.shared.metrics_encoding.histogram.aggregates.is_empty());
         assert!(config.shared.endpoints.proxy.no_proxy.is_empty());
         assert!(config.shared.endpoints.additional_endpoints.is_empty());
+    }
+
+    // Regression: the Agent streams `DD_APM_ANALYZED_SPANS` as the raw JSON string it stores, and the
+    // map deserializers rejected it, so the startup gate failed and ADP restarted in a loop.
+    #[tokio::test]
+    async fn connected_startup_accepts_json_encoded_event_extraction_settings() {
+        let (agent_tx, agent_rx) = mpsc::channel(1);
+        agent_tx
+            .send(ConfigUpdate::snapshot([
+                ConfigSetting::explicit(
+                    "apm_config.analyzed_spans",
+                    json!(r#"{"test-service|operation": 0.75}"#),
+                ),
+                ConfigSetting::explicit(
+                    "apm_config.analyzed_rate_by_service",
+                    json!(r#"{"legacy-service": 0.5}"#),
+                ),
+            ]))
+            .await
+            .unwrap();
+        let base = SourceTree::all_explicit(json!({ "api_key": TEST_API_KEY }));
+
+        // The updates only include later updates. This test does not need them, so it never runs them.
+        let (system, _updates) = ConfigurationSystem::connected(agent_rx, base)
+            .await
+            .expect("startup accepts the streamed JSON strings");
+
+        let config = system.config();
+        assert_eq!(
+            config.domains.traces.analyzed_spans_by_service["test-service"]["operation"],
+            0.75
+        );
+        assert_eq!(config.domains.traces.analyzed_rate_by_service["legacy-service"], 0.5);
     }
 
     #[tokio::test]
@@ -935,6 +969,54 @@ mod tests {
             standalone_system(json!({ "dogstatsd_log_file_max_size": 10485760 })).expect("numeric byte size boots");
 
         assert_eq!(system.config().domains.dogstatsd.debug_log.log_file_max_size, 10485760);
+    }
+
+    /// Builds a standalone system from a configuration file value overlaid with environment variables.
+    ///
+    /// Applies the production environment reader to an explicit variable list instead of the process
+    /// environment, so the test needs no environment mutation.
+    fn standalone_system_with_env(mut file: Value, env: &[(&str, &str)]) -> Result<ConfigurationSystem, Error> {
+        let vars = env.iter().map(|(name, value)| (name.to_string(), value.to_string()));
+        apply_datadog_env_vars(&mut file, vars, true).expect("environment decodes");
+        standalone_system(file)
+    }
+
+    #[tokio::test]
+    async fn standalone_reads_log_file_max_size_from_numbers_strings_and_environment() {
+        // A YAML integer reaches the translator as its decimal string, a string keeps the Agent's unit
+        // grammar, and an environment variable arrives as the raw string. All three must land in the
+        // typed model as an explicit value.
+        let cases = [
+            (
+                "number",
+                standalone_system(json!({ "log_file_max_size": 10_485_760 })),
+                10_485_760,
+            ),
+            (
+                "string",
+                standalone_system(json!({ "log_file_max_size": "10MB" })),
+                10_485_760,
+            ),
+            (
+                "environment",
+                standalone_system_with_env(json!({}), &[("DD_LOG_FILE_MAX_SIZE", "0x10KB")]),
+                16_384,
+            ),
+        ];
+        for (source, system, expected) in cases {
+            let system = system.unwrap_or_else(|error| panic!("{source} boots: {error}"));
+            let file_max_size = &system.config().control.logging.file_max_size;
+            assert!(file_max_size.is_explicit(), "{source}");
+            assert_eq!(file_max_size.value, expected, "{source}");
+        }
+
+        // An environment variable overrides the file value, as it does for every other key.
+        let system = standalone_system_with_env(
+            json!({ "dogstatsd_log_file_max_size": "1KB" }),
+            &[("DD_DOGSTATSD_LOG_FILE_MAX_SIZE", "5KB")],
+        )
+        .expect("environment size boots");
+        assert_eq!(system.config().domains.dogstatsd.debug_log.log_file_max_size, 5_120);
     }
 
     #[test]
@@ -1443,6 +1525,36 @@ mod tests {
         assert!(*view);
         // A fixed view never resolves, so this bound is deterministic rather than timing-dependent.
         assert!(tokio::time::timeout(Duration::from_millis(100), view.changed())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn live_stream_yields_each_change() {
+        let (system, agent_tx) = connected_system(json!({})).await;
+        let mut levels = Box::pin(system.live(|c| &c.control.logging.level).into_stream());
+
+        for level in ["debug", "warn"] {
+            agent_tx
+                .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                    "log_level",
+                    json!(level),
+                )))
+                .await
+                .unwrap();
+
+            let updated = tokio::time::timeout(Duration::from_secs(2), levels.next())
+                .await
+                .expect("the stream observes the log level update");
+            assert_eq!(updated.as_deref(), Some(level));
+        }
+    }
+
+    #[tokio::test]
+    async fn fixed_live_stream_never_yields_or_ends() {
+        let mut values = Box::pin(Live::new_fixed(true).into_stream());
+        // Like `changed`, the stream of a fixed view never resolves, so this bound is deterministic.
+        assert!(tokio::time::timeout(Duration::from_millis(100), values.next())
             .await
             .is_err());
     }

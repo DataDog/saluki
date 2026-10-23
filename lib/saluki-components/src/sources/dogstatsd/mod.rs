@@ -7,7 +7,6 @@
 //! - Track dispatch failures without depending on whether all events were already iterated.
 
 use std::{
-    collections::VecDeque,
     future::Future,
     io, mem,
     num::NonZeroUsize,
@@ -47,7 +46,7 @@ use saluki_io::{
     buf::{BytesBuffer, ClearableIoBuffer as _, CollapsibleReadWriteIoBuffer as _, FixedSizeVec, ReadIoBuffer as _},
     deser::{
         codec::dogstatsd::*,
-        framing::{Framer as _, FramingError, LengthDelimitedFramer},
+        framing::{Framer as _, FramingError},
     },
     net::{
         listener::Listener,
@@ -105,8 +104,8 @@ enum Error {
         source: AcquireError,
     },
 
-    #[snafu(display("No listeners configured. Please specify a port (`dogstatsd_port`) or a socket path (`dogstatsd_socket` or `dogstatsd_stream_socket`) to enable a listener."))]
-    NoListenersConfigured,
+    #[snafu(display("No listeners could be created. Please specify a port (`dogstatsd_port`) or a socket path (`dogstatsd_socket` or `dogstatsd_stream_socket`) that can be listened on."))]
+    NoListeners,
 
     #[snafu(context(false))]
     Resolve { source: resolve::Error },
@@ -143,6 +142,30 @@ pub struct EnablePayloadsConfiguration {
 }
 
 const MIN_CAPTURE_DEPTH: usize = 1024;
+
+/// Which of the configured listeners the source requires.
+///
+/// This decides what happens when a listener can't be created, for example because its address is already in use.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ListenerRequirement {
+    /// Every configured listener must be created, and at least one must be configured.
+    ///
+    /// A listener that can't be created stops the source from starting.
+    #[default]
+    All,
+
+    /// At least one listener must be created.
+    ///
+    /// A listener that can't be created is logged and skipped. The source fails to start if
+    /// no listener remains.
+    AtLeastOne,
+
+    /// No listener is required.
+    ///
+    /// A listener that can't be created is logged and skipped. If no listener remains, the source runs without
+    /// listeners until shutdown, and the rest of the server process keeps running.
+    Optional,
+}
 
 /// DogStatsD source.
 ///
@@ -225,6 +248,18 @@ pub struct DogStatsDConfiguration {
     ///
     /// Enable this when diagnosing clients that send oversized UDS stream frames.
     pub stream_log_too_big: bool,
+
+    /// Which of the configured listeners the source requires.
+    ///
+    /// Defaults to [`ListenerRequirement::All`], where a listener that can't be created prevents the source from
+    /// starting. With [`ListenerRequirement::AtLeastOne`] or [`ListenerRequirement::Optional`], such a listener
+    /// is logged and skipped instead. If no listener remains, the source only fails to start under `AtLeastOne`;
+    /// under `Optional` the source runs without listeners until shutdown.
+    ///
+    /// Keep the default when every configured address is needed. Relax it when the server process should keep
+    /// running while some addresses are unavailable, and use `AtLeastOne` when a process supervisor should still
+    /// detect and restart a process that can receive no traffic.
+    pub listener_requirement: ListenerRequirement,
 
     /// The Windows named pipe name to listen on.
     ///
@@ -455,6 +490,7 @@ impl DogStatsDConfiguration {
             socket_path: None,
             socket_stream_path: None,
             stream_log_too_big: false,
+            listener_requirement: ListenerRequirement::default(),
             pipe_name: None,
             windows_pipe_security_descriptor: "D:AI(A;;GA;;;WD)".to_string(),
             disable_verbose_logs: false,
@@ -642,25 +678,64 @@ impl DogStatsDConfiguration {
         }
     }
 
+    /// Resolves the IP that UDP and TCP listeners bind to, if `bind_host` applies.
+    ///
+    /// The lookup is skipped when `non_local_traffic` is set, since `bind_host` is then unused, so an unresolvable
+    /// hostname that wouldn't be used doesn't stop the source from starting.
+    async fn resolve_bind_ip(&self) -> Result<Option<std::net::IpAddr>, Error> {
+        match &self.bind_host {
+            Some(host) if !self.non_local_traffic => resolve_bind_host(host).await.map(Some),
+            _ => Ok(None),
+        }
+    }
+
+    /// Handles `error`, raised because `listeners` can't be created.
+    ///
+    /// The error is not propagated if the listener requirement skips failed listeners.
+    fn handle_listener_failure(&self, error: Error, listeners: &str) -> Result<(), Error> {
+        // A key registered as a different type of resource is a programming error, not a listener that couldn't be
+        // created, so it's never skipped.
+        let is_key_collision = matches!(
+            error,
+            Error::FailedToAcquireListener {
+                source: AcquireError::TypeMismatch { .. },
+                ..
+            }
+        );
+        let fail = match self.listener_requirement {
+            ListenerRequirement::All => true,
+            ListenerRequirement::AtLeastOne | ListenerRequirement::Optional => false,
+        };
+        if is_key_collision || fail {
+            return Err(error);
+        }
+
+        error!(error = %error, "Can't create DogStatsD {}.", listeners);
+        Ok(())
+    }
+
     /// Acquires the appropriate `Listener` objects from the resource registry.
     ///
     /// The listeners are leased, not owned: the registry keeps the bound sockets when this source is torn down, so a
     /// rebuilt source gets the same sockets back rather than racing to re-bind addresses it just released.
+    ///
+    /// The listener requirement decides whether a listener that can't be created is skipped, and whether ending up with
+    /// no listener at all is an error.
     async fn build_listeners(&self, context: &BuildContext) -> Result<Vec<ResourceLease<Listener>>, Error> {
-        // Resolve `bind_host` to an IP (via DNS if needed). Skip the lookup when
-        // `non_local_traffic=true` since `bind_host` is ignored in that branch—matches Go's
-        // laziness and avoids failing startup on an unresolvable hostname that wouldn't be used.
-        let bind_host: Option<std::net::IpAddr> = if self.non_local_traffic {
-            None
-        } else {
-            match &self.bind_host {
-                Some(host) => Some(resolve_bind_host(host).await?),
-                None => None,
+        let addresses = match self.resolve_bind_ip().await {
+            Ok(bind_ip) => self.build_addresses(bind_ip),
+            Err(e) => {
+                // An unresolvable `bind_host` only prevents the UDP and TCP listeners.
+                self.handle_listener_failure(e, "UDP and TCP listeners")?;
+                self.build_addresses(None)
+                    .into_iter()
+                    .filter(|address| !matches!(address, ListenAddress::Udp(_) | ListenAddress::Tcp(_)))
+                    .collect()
             }
         };
 
-        let addresses = self.build_addresses(bind_host);
         self.warn_if_uds_origin_detection_unsupported(&addresses);
+
         let mut listeners = Vec::new();
         let socket_receive_buffer_size =
             (self.socket_receive_buffer_size != 0).then_some(self.socket_receive_buffer_size);
@@ -673,12 +748,21 @@ impl DogStatsDConfiguration {
             let spec = SocketSpecification::new(address)
                 .with_udp_streams(listener_streams)
                 .with_receive_buffer_size(socket_receive_buffer_size);
-            let listener = context
-                .acquire_resource(spec)
-                .await
-                .context(FailedToAcquireListener { listener_type })?;
+            match context.acquire_resource(spec).await {
+                Ok(listener) => listeners.push(listener),
+                Err(source) => self.handle_listener_failure(
+                    Error::FailedToAcquireListener { listener_type, source },
+                    &format!("{listener_type} listener"),
+                )?,
+            }
+        }
 
-            listeners.push(listener);
+        if listeners.is_empty() {
+            match self.listener_requirement {
+                ListenerRequirement::All | ListenerRequirement::AtLeastOne => return Err(Error::NoListeners),
+                // The server process keeps running. The source runs without listeners until shutdown.
+                ListenerRequirement::Optional => error!(error = %Error::NoListeners, "Could not start DogStatsD."),
+            }
         }
         Ok(listeners)
     }
@@ -688,14 +772,18 @@ impl DogStatsDConfiguration {
 impl SourceBuilder for DogStatsDConfiguration {
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
         let listeners = self.build_listeners(&context).await?;
-        if listeners.is_empty() {
-            return Err(Error::NoListenersConfigured.into());
-        }
 
         // Every listener requires at least one I/O buffer to ensure that all listeners can be serviced without
         // deadlocking any of the others. Multi-socket connectionless listeners require one buffer per yielded socket.
         let min_buffers: usize = listeners.iter().map(|listener| listener.min_buffer_reservation()).sum();
         let max_buffers = self.effective_max_buffer_count();
+        // Without listeners, `min_buffers` is zero, so the check below can't catch a capacity of zero. The datagram
+        // queue needs room for at least one buffer either way.
+        if max_buffers == 0 {
+            return Err(generic_error!(
+                "The maximum I/O buffer count must be greater than zero."
+            ));
+        }
         if max_buffers < min_buffers {
             return Err(generic_error!(
                 "The maximum I/O buffer count ({}) must be at least {} to service all configured listeners.",
@@ -963,7 +1051,7 @@ impl Source for DogStatsD {
         // every shutdown open until the component's budget elapsed.
         runtime::worker("io_buffer_pool_shrinker", self.io_buffer_pool_shrinker)
             .with_shutdown_strategy(ShutdownStrategy::Brutal)
-            .spawn_child();
+            .spawn();
 
         let (datagram_sender, datagram_receiver) = mpsc::channel(self.io_buffer_queue_capacity);
         let datagram_receiver = Arc::new(Mutex::new(datagram_receiver));
@@ -998,11 +1086,12 @@ impl Source for DogStatsD {
                 process_datagram_decoder(datagram_receiver, decoder_source_context, decoder_context),
             )
             .with_shutdown_timeout(Duration::MAX)
-            .spawn_child();
+            .spawn();
         }
         drop(datagram_receiver);
 
-        // For each listener, spawn a dedicated task to run it.
+        // For each listener, spawn a dedicated task to run it. There may be none, when no listener could be created and
+        // the listener requirement is `Optional`. The source then only waits for shutdown.
         for listener in self.listeners {
             let task_name = format!("listener_{}", listener.listen_address().listener_type());
             let listener_source_context = context.clone();
@@ -1031,9 +1120,8 @@ impl Source for DogStatsD {
                 listener_source_context,
                 listener_context,
             ))
-            .temporary()
             .needed()
-            .spawn_child();
+            .spawn();
         }
         drop(datagram_sender);
 
@@ -1112,9 +1200,14 @@ impl Supervisable for ListenerWorker {
     }
 
     fn shutdown_strategy(&self) -> ShutdownStrategy {
-        // No deadline of its own: the component's supervisor holds a single budget covering the source and everything
-        // it spawned.
+        // The listener has no shutdown timeout of its own. The topology shutdown timeout applies to the source and to
+        // everything that the source spawned.
         ShutdownStrategy::Graceful(Duration::MAX)
+    }
+
+    fn can_restart(&self) -> bool {
+        // The first start takes the listener, so there is nothing left to listen on a second time.
+        false
     }
 
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
@@ -1204,7 +1297,7 @@ async fn process_listener(
                     runtime::worker_with_shutdown(task_name, move |shutdown| {
                         process_stream(stream, handler_source_context, handler_context, shutdown)
                     })
-                    .spawn_child();
+                    .spawn();
                 }
                 Err(e) => {
                     error!(%listen_addr, error = %e, "Failed to accept connection. Stopping listener.");
@@ -1525,14 +1618,13 @@ impl DogStatsDDecoder {
         let mode = context.mode;
 
         let payload = received_payload(io_buffer, bytes_read);
-        capture_uds_traffic(
-            listen_addr,
-            &self.traffic_capture,
-            peer_addr,
-            process_origin,
-            payload,
-            &mut context.stream_capture,
-        );
+        capture_unixgram_traffic(listen_addr, &self.traffic_capture, peer_addr, process_origin, payload);
+
+        let capture_stream_frames = matches!(listen_addr, ListenAddress::Unix(_)) && self.traffic_capture.is_ongoing();
+        if capture_stream_frames {
+            context.stream_capture.update_peer_metadata(peer_addr);
+        }
+        context.framer.set_retain_outer_frames(capture_stream_frames);
 
         metrics.bytes_received().increment(bytes_read as u64);
         metrics.bytes_received_size().record(bytes_read as f64);
@@ -1567,6 +1659,13 @@ impl DogStatsDDecoder {
 
         loop {
             let frame_result = context.framer.next_frame(io_buffer, eof);
+            for outer_frame in context.framer.drain_outer_frames() {
+                let _ = self.traffic_capture.enqueue(build_capture_record(
+                    context.stream_capture.last_pid,
+                    process_origin,
+                    &outer_frame,
+                ));
+            }
             let completed_outer_frames = context.framer.take_completed_outer_frames();
             if completed_outer_frames > 0 {
                 metrics
@@ -1857,54 +1956,29 @@ fn capture_named_pipe_frame(traffic_capture: &TrafficCapture, frame: &[u8]) {
     }
 }
 
-fn capture_uds_traffic(
+fn capture_unixgram_traffic(
     listen_addr: &ListenAddress, traffic_capture: &TrafficCapture, peer_addr: &ConnectionAddress,
-    process_origin: Option<&ProcessOrigin>, payload: &[u8], stream_capture: &mut StreamCaptureState,
+    process_origin: Option<&ProcessOrigin>, payload: &[u8],
 ) {
-    if payload.is_empty() || !traffic_capture.is_ongoing() {
+    if payload.is_empty() || !matches!(listen_addr, ListenAddress::Unixgram(_)) || !traffic_capture.is_ongoing() {
         return;
     }
 
-    match listen_addr {
-        ListenAddress::Unixgram(_) => {
-            let _ = traffic_capture.enqueue(build_capture_record(
-                process_id_from_peer_addr(peer_addr),
-                process_origin,
-                payload,
-            ));
-        }
-        ListenAddress::Unix(_) => {
-            stream_capture.update_peer_metadata(peer_addr);
-            stream_capture.pending.extend(payload);
-
-            while let Ok(Some(outer_payload)) = stream_capture
-                .outer_framer
-                .next_frame(&mut stream_capture.pending, false)
-            {
-                let _ = traffic_capture.enqueue(build_capture_record(
-                    stream_capture.last_pid,
-                    process_origin,
-                    &outer_payload,
-                ));
-            }
-        }
-        _ => {}
-    }
+    let _ = traffic_capture.enqueue(build_capture_record(
+        process_id_from_peer_addr(peer_addr),
+        process_origin,
+        payload,
+    ));
 }
 
+/// Per-connection metadata used when capturing Unix stream traffic.
 struct StreamCaptureState {
-    outer_framer: LengthDelimitedFramer,
-    pending: VecDeque<u8>,
     last_pid: Option<i32>,
 }
 
 impl StreamCaptureState {
     fn new() -> Self {
-        Self {
-            outer_framer: LengthDelimitedFramer,
-            pending: VecDeque::new(),
-            last_pid: None,
-        }
+        Self { last_pid: None }
     }
 
     fn update_peer_metadata(&mut self, peer_addr: &ConnectionAddress) {
@@ -2729,6 +2803,147 @@ mod tests {
             Some(1)
         );
         assert_eq!(recorder.counter(processed_metric_key("unix", None)), Some(1));
+    }
+
+    fn length_delimited(payload: &[u8]) -> Vec<u8> {
+        let mut frame = (payload.len() as u32).to_le_bytes().to_vec();
+        frame.extend_from_slice(payload);
+        frame
+    }
+
+    /// Feeds `data` through the decoder the same way the connected stream reader does: each read fills whatever
+    /// space is left in the I/O buffer after collapsing any partial frame retained from the previous read.
+    async fn feed_connected_stream(
+        decoder: &mut DogStatsDDecoder, context: &mut BufferDecodeContext<'_>, mut io_buffer: BytesBuffer,
+        mut data: &[u8], peer_addr: &ConnectionAddress,
+    ) -> BytesBuffer {
+        use saluki_io::buf::CollapsibleReadWriteIoBuffer as _;
+
+        while !data.is_empty() {
+            io_buffer.collapse();
+            let bytes_read = io_buffer.remaining_mut().min(data.len());
+            io_buffer.put_slice(&data[..bytes_read]);
+            data = &data[bytes_read..];
+
+            let (received, returned_buffer) =
+                ReceivedBuffer::with_return(io_buffer, bytes_read, peer_addr.clone(), None);
+            let outcome = decoder.decode_buffer(context, received).await;
+            assert_eq!(outcome, DecodeOutcome::Continue);
+            io_buffer = returned_buffer.await.expect("decoder should return the I/O buffer");
+        }
+        io_buffer
+    }
+
+    async fn finish_capture(capture: &TrafficCapture, capture_path: &std::path::Path) -> Vec<(Vec<u8>, i32)> {
+        capture.stop_capture();
+        timeout(Duration::from_secs(2), async {
+            while capture.is_ongoing() {
+                yield_now().await;
+            }
+        })
+        .await
+        .expect("capture should stop");
+
+        let mut reader = TrafficCaptureReader::from_path(capture_path).expect("capture should be readable");
+        let mut records = Vec::new();
+        while let Some(record) = reader.read_next().expect("capture record should decode") {
+            records.push((record.payload, record.pid));
+        }
+        records
+    }
+
+    fn stream_test_payloads(count: usize) -> Vec<Vec<u8>> {
+        // 57 lines of 26 bytes gives 1,486-byte frames, which never align with the 8,192-byte I/O buffer.
+        (0..count).map(|_| b"capture.stream.metric:1|c\n".repeat(57)).collect()
+    }
+
+    #[tokio::test]
+    async fn uds_stream_capture_records_every_outer_frame_across_reads() {
+        let listen_addr = ListenAddress::Unix("/tmp/dsd.socket".into());
+        let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Credentials(ProcessCredentials {
+            pid: 42,
+            uid: 0,
+            gid: 0,
+        }));
+        let capture_directory = tempfile::tempdir().expect("temporary capture directory should be created");
+        let capture = TrafficCapture::new(capture_directory.path().to_path_buf(), 1);
+        let metrics = build_metrics(&listen_addr, &test_component_context(), false);
+        let (source_context, mut metrics_rx) = test_source_context();
+        tokio::spawn(async move { while metrics_rx.recv().await.is_some() {} });
+        let decoder_context = DecoderContext {
+            traffic_capture: capture.clone(),
+            ..test_decoder_context(false)
+        };
+        let mut decoder = DogStatsDDecoder::new(source_context, decoder_context);
+        let mut context = BufferDecodeContext::new(&listen_addr, false, &metrics, None, BufferDecodeMode::Connected);
+
+        let capture_path = capture
+            .start_capture(None, Duration::from_secs(30), false)
+            .expect("capture should start");
+        let payloads = stream_test_payloads(40);
+        let stream = payloads
+            .iter()
+            .flat_map(|payload| length_delimited(payload))
+            .collect::<Vec<_>>();
+        let io_buffer = test_io_buffer(&[], TEST_BUFFER_SIZE);
+        let io_buffer = feed_connected_stream(&mut decoder, &mut context, io_buffer, &stream, &peer_addr).await;
+        assert_eq!(io_buffer.remaining(), 0);
+
+        let records = finish_capture(&capture, &capture_path).await;
+        assert_eq!(records.len(), payloads.len());
+        for ((payload, pid), expected) in records.iter().zip(&payloads) {
+            assert_eq!(payload, expected);
+            assert_eq!(*pid, 42);
+        }
+    }
+
+    #[tokio::test]
+    async fn uds_stream_capture_starting_mid_frame_captures_from_next_whole_frame_and_stops_cleanly() {
+        let listen_addr = ListenAddress::Unix("/tmp/dsd.socket".into());
+        let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable);
+        let capture_directory = tempfile::tempdir().expect("temporary capture directory should be created");
+        let capture = TrafficCapture::new(capture_directory.path().to_path_buf(), 1);
+        let metrics = build_metrics(&listen_addr, &test_component_context(), false);
+        let (source_context, mut metrics_rx) = test_source_context();
+        tokio::spawn(async move { while metrics_rx.recv().await.is_some() {} });
+        let decoder_context = DecoderContext {
+            traffic_capture: capture.clone(),
+            ..test_decoder_context(false)
+        };
+        let mut decoder = DogStatsDDecoder::new(source_context, decoder_context);
+        let mut context = BufferDecodeContext::new(&listen_addr, false, &metrics, None, BufferDecodeMode::Connected);
+
+        let payloads = stream_test_payloads(20);
+        let stream = payloads
+            .iter()
+            .flat_map(|payload| length_delimited(payload))
+            .collect::<Vec<_>>();
+        let frame_len = stream.len() / payloads.len();
+
+        // Before capture starts, deliver the first frame plus half of the second.
+        let split = frame_len + frame_len / 2;
+        let io_buffer = test_io_buffer(&[], TEST_BUFFER_SIZE);
+        let io_buffer =
+            feed_connected_stream(&mut decoder, &mut context, io_buffer, &stream[..split], &peer_addr).await;
+        assert_eq!(io_buffer.remaining(), frame_len / 2);
+
+        let capture_path = capture
+            .start_capture(None, Duration::from_secs(30), false)
+            .expect("capture should start");
+        let io_buffer =
+            feed_connected_stream(&mut decoder, &mut context, io_buffer, &stream[split..], &peer_addr).await;
+        let records = finish_capture(&capture, &capture_path).await;
+
+        assert_eq!(records.len(), payloads.len() - 1);
+        for ((payload, _), expected) in records.iter().zip(&payloads[1..]) {
+            assert_eq!(payload, expected);
+        }
+
+        // Once capture has stopped, the connection keeps decoding without retaining any frames for capture.
+        let more = length_delimited(&payloads[0]);
+        let io_buffer = feed_connected_stream(&mut decoder, &mut context, io_buffer, &more, &peer_addr).await;
+        assert_eq!(io_buffer.remaining(), 0);
+        assert_eq!(context.framer.drain_outer_frames().count(), 0);
     }
 
     #[tokio::test]
@@ -4194,9 +4409,9 @@ mod tests {
 
 /// Tests covering the source's background work running as supervised children.
 ///
-/// The `tests` module above exercises the decode path in isolation. What matters here is the wiring: that `run` puts
-/// the pool shrinker, datagram decoders, listeners, and per-connection handlers under the component's supervisor, and
-/// that the whole subtree comes down cleanly and without dropping queued work.
+/// The `tests` module above exercises the decode path in isolation. Here, the wiring is the important part. These tests
+/// check that `run` puts the pool shrinker, datagram decoders, listeners, and per-connection handlers below the source
+/// as its own children. They also check that the whole subtree stops cleanly and does not drop queued work.
 #[cfg(test)]
 mod supervision {
     use std::net::SocketAddr;
@@ -4210,7 +4425,7 @@ mod supervision {
     use saluki_core::accounting::{ComponentRegistry, MemoryLimiter};
     use saluki_core::components::test_util::TestComponentSupervisor;
     #[cfg(unix)]
-    use saluki_core::components::{sources::SourceBuilder as _, BuildContext};
+    use saluki_core::components::test_util::{ComponentControl, NoInput, Outputs, TestComponentDriver};
     use saluki_core::{
         components::{
             sources::{Source as _, SourceContext},
@@ -4601,14 +4816,15 @@ mod supervision {
             .expect("client should connect");
 
         // Each connection adds two processes. One is the handler, below the listener. The other is the stream reader
-        // that the handler starts. The handler spawns the stream reader on the supervisor as a sibling, not as its own
-        // child.
+        // that the handler starts below itself.
         supervisor.wait_for_running_descendants(baseline + 2).await;
         let root = supervisor.tree_handle().snapshot().root;
         let listener_node = find_node(&root, "listener_tcp").expect("the listener is running");
+        let handler_node = find_node(listener_node, "conn_tcp")
+            .expect("the handler should hang beneath the listener that accepted its connection");
         assert!(
-            find_node(listener_node, "conn_tcp").is_some(),
-            "the handler should hang beneath the listener that accepted its connection"
+            find_node(handler_node, "stream_reader").is_some(),
+            "the stream reader should hang beneath the handler that started it"
         );
 
         let result = timeout(RUN_TIMEOUT, supervisor.shutdown())
@@ -4675,34 +4891,207 @@ mod supervision {
         assert_eq!(&buf[..read], b"after.teardown:1|c");
     }
 
+    /// Socket paths for a DogStatsD source, in a temporary directory unique to the test.
+    ///
+    /// Socket paths rather than ports: the configuration has to name the address concretely for the build to ask
+    /// for the same one, and a path in a temporary directory is unique by construction, so there is no ephemeral
+    /// port to discover and race over.
+    #[cfg(unix)]
+    struct ListenerPaths {
+        _temp_dir: tempfile::TempDir,
+        datagram: PathBuf,
+        stream: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl ListenerPaths {
+        fn new() -> Self {
+            let temp_dir = tempfile::tempdir().expect("temp directory should be created");
+            Self {
+                datagram: temp_dir.path().join("dogstatsd.socket"),
+                stream: temp_dir.path().join("dogstatsd-stream.socket"),
+                _temp_dir: temp_dir,
+            }
+        }
+
+        /// Configures a source to listen on both socket paths.
+        fn configure(&self, requirement: ListenerRequirement) -> DogStatsDConfiguration {
+            let mut config = listenerless_config(requirement);
+            config.socket_path = Some(self.datagram.to_string_lossy().into_owned());
+            config.socket_stream_path = Some(self.stream.to_string_lossy().into_owned());
+            config
+        }
+    }
+
+    #[cfg(unix)]
+    const LISTENER_REQUIREMENTS: [ListenerRequirement; 3] = [
+        ListenerRequirement::All,
+        ListenerRequirement::AtLeastOne,
+        ListenerRequirement::Optional,
+    ];
+
+    #[cfg(unix)]
+    fn listenerless_config(requirement: ListenerRequirement) -> DogStatsDConfiguration {
+        let mut config = DogStatsDConfiguration::for_test();
+        // The fixture defaults to the real DogStatsD port, which these tests have no business binding.
+        config.port = 0;
+        config.listener_requirement = requirement;
+        config
+    }
+
+    #[cfg(unix)]
+    type DriveResult = Result<(ComponentControl<NoInput>, Outputs<EventsBuffer>), GenericError>;
+
+    #[cfg(unix)]
+    async fn drive_source(registry: ResourceRegistry, config: DogStatsDConfiguration) -> DriveResult {
+        TestComponentDriver::options()
+            .with_resource_registry(registry)
+            .source(config)
+            .await
+    }
+
+    #[cfg(unix)]
+    async fn assert_runs_idle(result: DriveResult, requirement: ListenerRequirement) {
+        let (control, _outputs) = result
+            .unwrap_or_else(|error| panic!("the source should build without listeners ({requirement:?}): {error:#}"));
+        control.wait_until_ready().await;
+        assert!(
+            !control.is_finished(),
+            "the source should keep running without listeners ({requirement:?})"
+        );
+        control.shutdown().await.expect("the source should stop cleanly");
+    }
+
+    #[cfg(unix)]
+    fn assert_fails_to_start(result: DriveResult, requirement: ListenerRequirement, expected: &str) {
+        let Err(error) = result else {
+            panic!("the component build should fail ({requirement:?})");
+        };
+        let error = format!("{error:#}");
+        assert!(error.contains(expected), "unexpected error ({requirement:?}): {error}");
+    }
+
+    #[cfg(unix)]
+    const NO_LISTENERS: &str = "No listeners could be created";
+    #[cfg(unix)]
+    const ALREADY_LEASED: &str = "already leased";
+
     #[cfg(unix)]
     #[tokio::test]
-    async fn building_against_an_already_leased_address_says_so() {
-        // Two holders of one address is a conflict the registry can name, rather than the bind failure an operator
-        // would otherwise have to work backwards from.
-        //
-        // A socket path rather than a port: the configuration has to name the address concretely for the build to ask
-        // for the same one, and a path in a temporary directory is unique to this test by construction, so there is no
-        // ephemeral port to discover and race over.
-        let temp_dir = tempfile::tempdir().expect("temp directory should be created");
-        let socket_path = temp_dir.path().join("dogstatsd.socket");
+    async fn zero_io_buffer_capacity_fails_to_start_without_listeners() {
+        // Without listeners, no listener reserves a buffer, so the reservation check alone would accept a capacity of
+        // zero, and the datagram queue can't be created with no capacity.
+        let mut config = listenerless_config(ListenerRequirement::Optional);
+        config.buffer_count = 0;
+        config.buffer_count_max = 0;
 
-        let registry = ResourceRegistry::new();
-        let _held = leased_listener_from(&registry, ListenAddress::Unixgram(socket_path.clone())).await;
+        let result = drive_source(ResourceRegistry::new(), config).await;
+        assert_fails_to_start(
+            result,
+            ListenerRequirement::Optional,
+            "maximum I/O buffer count must be greater than zero",
+        );
+    }
 
-        let mut config = DogStatsDConfiguration::for_test();
-        config.socket_path = Some(socket_path.to_string_lossy().into_owned());
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn no_configured_listener_runs_idle_only_when_listeners_are_optional() {
+        for requirement in LISTENER_REQUIREMENTS {
+            let result = drive_source(ResourceRegistry::new(), listenerless_config(requirement)).await;
+            match requirement {
+                ListenerRequirement::All | ListenerRequirement::AtLeastOne => {
+                    assert_fails_to_start(result, requirement, NO_LISTENERS)
+                }
+                ListenerRequirement::Optional => assert_runs_idle(result, requirement).await,
+            }
+        }
+    }
 
-        // The fixture defaults to the real DogStatsD port, which this test has no business binding.
-        config.port = 0;
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn no_created_listener_runs_idle_only_when_listeners_are_optional() {
+        // Every configured address is already leased, so the build can create none of them.
+        for requirement in LISTENER_REQUIREMENTS {
+            let paths = ListenerPaths::new();
+            let registry = ResourceRegistry::new();
+            let _held_datagram = leased_listener_from(&registry, ListenAddress::Unixgram(paths.datagram.clone())).await;
+            let _held_stream = leased_listener_from(&registry, ListenAddress::Unix(paths.stream.clone())).await;
 
-        // The build and the existing holder have to share a registry for the conflict to exist at all;
-        // `BuildContext::test_source` would give the build one of its own.
-        let context = BuildContext::new(ComponentContext::test_source("dogstatsd"), registry);
-        let Err(error) = config.build(context).await else {
-            panic!("building against an address that is already leased should be refused");
-        };
-        let error = error.to_string();
-        assert!(error.contains("already leased"), "unexpected error: {error}");
+            let result = drive_source(registry, paths.configure(requirement)).await;
+            match requirement {
+                ListenerRequirement::All => assert_fails_to_start(result, requirement, ALREADY_LEASED),
+                ListenerRequirement::AtLeastOne => assert_fails_to_start(result, requirement, NO_LISTENERS),
+                ListenerRequirement::Optional => assert_runs_idle(result, requirement).await,
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn listener_that_cannot_be_created_is_skipped_unless_all_are_required() {
+        // The stream address is already leased, but the datagram listener can still be created.
+        for requirement in LISTENER_REQUIREMENTS {
+            let paths = ListenerPaths::new();
+            let registry = ResourceRegistry::new();
+            let _held_stream = leased_listener_from(&registry, ListenAddress::Unix(paths.stream.clone())).await;
+
+            let result = drive_source(registry, paths.configure(requirement)).await;
+            if requirement == ListenerRequirement::All {
+                assert_fails_to_start(result, requirement, ALREADY_LEASED);
+                continue;
+            }
+
+            let (control, mut outputs) = result.unwrap_or_else(|error| {
+                panic!("the source should build with the listener it could create ({requirement:?}): {error:#}")
+            });
+            control.wait_until_ready().await;
+            assert_datagram_listener_receives(&mut outputs, &paths.datagram).await;
+            control.shutdown().await.expect("the source should stop cleanly");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unresolvable_bind_host_skips_only_udp_and_tcp_unless_all_are_required() {
+        // An unresolvable `bind_host` prevents the UDP listener, but the datagram socket listener can still be created.
+        for requirement in LISTENER_REQUIREMENTS {
+            let paths = ListenerPaths::new();
+            let mut config = listenerless_config(requirement);
+            config.port = 8125;
+            config.bind_host = Some("unresolvable.invalid".to_string());
+            config.socket_path = Some(paths.datagram.to_string_lossy().into_owned());
+
+            let result = drive_source(ResourceRegistry::new(), config).await;
+            if requirement == ListenerRequirement::All {
+                assert_fails_to_start(result, requirement, "Could not resolve bind_host");
+                continue;
+            }
+
+            let (control, mut outputs) = result.unwrap_or_else(|error| {
+                panic!("the source should build with the socket listener ({requirement:?}): {error:#}")
+            });
+            control.wait_until_ready().await;
+            assert_datagram_listener_receives(&mut outputs, &paths.datagram).await;
+            control.shutdown().await.expect("the source should stop cleanly");
+        }
+    }
+
+    /// Sends a metric to the datagram socket at `path`, and asserts that the source emits it.
+    #[cfg(unix)]
+    async fn assert_datagram_listener_receives(outputs: &mut Outputs<EventsBuffer>, path: &std::path::Path) {
+        let sender = std::os::unix::net::UnixDatagram::unbound().expect("sender should be created");
+        sender
+            .send_to(b"survivor:1|c", path)
+            .expect("the datagram listener should accept a metric");
+        let events = timeout(RUN_TIMEOUT, outputs.named_output("metrics").next())
+            .await
+            .expect("the metric should arrive")
+            .expect("the metrics output should stay open");
+        let metric = events
+            .into_iter()
+            .next()
+            .and_then(|event| event.try_into_metric())
+            .expect("the output should carry the metric");
+        assert_eq!(metric.context().name(), "survivor");
     }
 }

@@ -1,0 +1,6 @@
+enhancements:
+  - |
+    Agent Data Plane now records how many items its last aggregation and event/service check encoder
+    flushes handled and how long they took, and reports them through the Datadog Agent telemetry
+    endpoint as ``aggregator.flush_count`` and ``aggregator.flush_time``. It also reports
+    ``aggregator.flush`` for events and service checks.

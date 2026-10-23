@@ -272,7 +272,6 @@ pub struct Config {
     ///
     /// This controls how payloads are generated, including the type of payload to generate and how many payloads to
     /// generate.
-    #[serde(with = "serde_yaml::with::singleton_map_recursive")]
     pub corpus: CorpusBlueprint,
 }
 
@@ -290,7 +289,7 @@ impl Config {
         let config_file_raw =
             std::fs::read_to_string(config_path).error_context("Failed to read configuration file.")?;
         let config: Self =
-            serde_yaml::from_str(&config_file_raw).error_context("Failed to parse configuration file.")?;
+            serde_saphyr::from_str(&config_file_raw).error_context("Failed to parse configuration file.")?;
         config.validate()?;
 
         Ok(config)
@@ -330,7 +329,44 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, Payload, TargetAddress};
+    use std::path::PathBuf;
+
+    use super::*;
+
+    fn collect_millstone_configs(dir: &Path, configs: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                collect_millstone_configs(&path, configs);
+            } else if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("millstone") && name.ends_with(".yaml"))
+            {
+                configs.push(path);
+            }
+        }
+    }
+
+    #[test]
+    fn every_test_case_config_parses() {
+        let test_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../test");
+        let mut configs = Vec::new();
+        collect_millstone_configs(&test_dir, &mut configs);
+        assert!(
+            !configs.is_empty(),
+            "no millstone configs found under {}",
+            test_dir.display()
+        );
+
+        for path in configs {
+            let config = Config::try_from_file(&path).unwrap_or_else(|e| panic!("{}: {e:?}", path.display()));
+            config
+                .corpus
+                .validate()
+                .unwrap_or_else(|e| panic!("{}: {e:?}", path.display()));
+        }
+    }
 
     #[test]
     fn parses_an_http_target() {
@@ -347,7 +383,7 @@ mod tests {
 
     #[test]
     fn parses_a_datadog_traces_corpus() {
-        let config: Config = serde_yaml::from_str(
+        let config: Config = serde_saphyr::from_str(
             r#"
 seed: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 target: "http://baseline:8126/v0.4/traces"
@@ -375,7 +411,7 @@ corpus:
         let http_path = http_path
             .map(|path| format!("http_path: \"{path}\"\n"))
             .unwrap_or_default();
-        serde_yaml::from_str(&format!(
+        serde_saphyr::from_str(&format!(
             r#"
 seed: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 target: "{target}"

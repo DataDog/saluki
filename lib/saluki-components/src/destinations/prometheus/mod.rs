@@ -180,13 +180,14 @@ impl Destination for Prometheus {
 
         let mut health = context.take_health_handle();
 
-        // The scrape endpoint runs as a supervised worker of its own rather than as part of this component: the
-        // component's supervisor is what stops it, and drains its in-flight connections, once this component is done.
+        // The scrape endpoint runs as a supervised child of this component, not as a part of its body. When this
+        // component is done, the scrape endpoint stops and drains its in-flight connections.
         runtime::nested_supervisor(
             build_scrape_server(listen_addr, Arc::clone(&payload), additional_routes)
                 .with_worker_pool(context.topology_context().global_thread_pool().clone())
                 .into_supervisor(),
         )
+        .needed()
         .spawn();
 
         health.mark_ready();

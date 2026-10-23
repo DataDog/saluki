@@ -2,6 +2,8 @@
 #![allow(dead_code)]
 use std::time::SystemTime;
 
+#[cfg(test)]
+use saluki_common::collections::FastHashMap;
 use saluki_core::data_model::event::trace::{AttributeValue, Trace};
 use stringtheory::MetaString;
 
@@ -115,11 +117,22 @@ fn to_sampler_env(tracer_env: &str, agent_env: &MetaString) -> MetaString {
 }
 
 #[cfg(test)]
+impl PrioritySampler {
+    pub(super) fn test_signature_sample_rates(&self) -> (FastHashMap<Signature, f64>, f64) {
+        self.sampler.get_all_signature_sample_rates()
+    }
+
+    pub(super) fn test_size(&self) -> i64 {
+        self.sampler.size()
+    }
+}
+
+#[cfg(test)]
 mod tests {
     // logic for these tests are taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/sampler/prioritysampler_test.go
     use std::time::{Duration, SystemTime};
 
-    use saluki_core::data_model::event::trace::{Span, Trace};
+    use saluki_core::data_model::event::trace::{Span, Trace, TraceIngestInfo};
     use stringtheory::MetaString;
 
     use super::*;
@@ -157,7 +170,7 @@ mod tests {
             0,      // error
         );
 
-        let mut trace = Trace::new(vec![root, child]);
+        let mut trace = Trace::new(vec![root, child], TraceIngestInfo::Datadog);
         trace.trace_id_low = trace_id;
         (trace, 0)
     }

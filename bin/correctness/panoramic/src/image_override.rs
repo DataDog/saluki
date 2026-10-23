@@ -121,7 +121,7 @@ mod tests {
 
     /// An integration case scoped to the linux runtime, with the intake sidecar enabled.
     fn integration_case(overrides: &ImageOverrides<'_>) -> Box<dyn Test> {
-        let case: IntegrationConfig = serde_yaml::from_str(
+        let case: IntegrationConfig = serde_saphyr::from_str(
             r#"
 name: integration-case
 timeout: 10s
@@ -136,7 +136,7 @@ procedure: []
     }
 
     fn correctness_case(overrides: &ImageOverrides<'_>) -> Box<dyn Test> {
-        let mut case: CorrectnessConfig = serde_yaml::from_str(
+        let mut case: CorrectnessConfig = serde_saphyr::from_str(
             r#"
 runtime: docker
 analysis_mode: metrics

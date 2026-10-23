@@ -1,0 +1,28 @@
+# Runs an AI code review on a pull request when a collaborator with write access comments `/dd-review`.
+#
+# Review guidance comes from `codereview_guideline.md` files, read from the default branch. A file at the repository
+# root applies to every pull request; a file in a subdirectory applies only when the pull request touches that
+# subdirectory. See: https://github.com/DataDog/code-review-action
+
+name: "Code review"
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  review:
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+    uses: DataDog/code-review-action/.github/workflows/code-review.yml@b4f43b4ac7a96b9ecc3484d77aa04ad41c07b420 # v1.3.0
+    with:
+      provider: claude
+      trigger_mode: on_demand
+      prompt_file_pattern: "**/codereview_guideline.md"
+      review_event: COMMENT_ONLY
+    secrets:
+      anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}

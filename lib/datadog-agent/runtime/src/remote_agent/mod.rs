@@ -1,8 +1,8 @@
 //! Remote agent registration and the services that the Datadog Agent queries.
 //!
 //! [`RemoteAgentBootstrap`] registers the process with the Datadog Agent over the Remote Agent Registry, keeps that
-//! registration alive, and creates everything that depends on it: the configuration stream, the status, flare, and
-//! telemetry services, and the workers that report diagnostic events back to the Datadog Agent.
+//! registration alive, and creates everything that depends on it: the configuration stream, and the workers that serve
+//! the status, flare, and telemetry services and report diagnostic events back to the Datadog Agent.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -29,6 +29,7 @@ use datadog_protos::agent::{
 use futures::StreamExt;
 use process_memory::Querier as MemoryQuerier;
 use prost_types::value::Kind;
+use saluki_api::{DynamicRoute, EndpointType};
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_common::task::spawn_traced_named;
 use saluki_config::dynamic::{ConfigSetting, ConfigUpdate, Provenance};
@@ -53,7 +54,7 @@ use tokio::{
     sync::{mpsc, oneshot, Mutex},
     time::{interval, MissedTickBehavior},
 };
-use tonic::{server::NamedService, Status};
+use tonic::{server::NamedService, service::Routes, Status};
 use tracing::{debug, error, info, warn};
 
 mod status;
@@ -67,7 +68,7 @@ const SESSION_ID_METADATA_KEY: &str = "session_id";
 /// Remote agent initialization.
 ///
 /// This helper type is used to coordinate the initialization of remote agent state by registering to the Core Agent and
-/// acquiring the necessary information to allow initialization of the subagent itself to proceed.
+/// acquiring the necessary information to allow initialization of the remote agent itself to proceed.
 pub struct RemoteAgentBootstrap {
     client: RemoteAgentClient,
     session_id: SessionIdHandle,
@@ -80,11 +81,21 @@ impl RemoteAgentBootstrap {
     ///
     /// A remote agent client is created and immediately attempts to register with the Core Agent, advertising
     /// `secure_api_listen_address` as the address where the Core Agent reaches the status, flare, and telemetry
-    /// services. This function does not return until registration finishes, whether successful or not.
+    /// services. This function does not return until the first registration attempt finishes, whether successful or
+    /// not.
+    ///
+    /// Registration runs in a background task that this function spawns outside of any supervision tree. The task
+    /// refreshes the registration periodically, and registers again whenever a refresh fails, for the rest of the
+    /// process's lifetime: it doesn't stop on shutdown, or when the returned `RemoteAgentBootstrap` is dropped.
     ///
     /// # Errors
     ///
-    /// If the configuration is invalid, an error is returned.
+    /// Returns an error if `secure_api_listen_address` isn't a valid gRPC target address, if the client can't connect
+    /// to the Core Agent, or if the first registration attempt fails.
+    ///
+    /// If the first registration attempt fails, the background task keeps running and retries registration
+    /// periodically, so it may still register with the Core Agent later. Treat this error as fatal rather than calling
+    /// this function again: each call starts another background task, and each task registers its own session.
     pub async fn new(
         client_config: &RemoteAgentClientConfiguration, secure_api_listen_address: &ListenAddress,
     ) -> Result<Self, GenericError> {
@@ -142,8 +153,8 @@ impl RemoteAgentBootstrap {
     /// Creates a worker that captures the dataspace from the supervisor context and makes it available to the
     /// diagnostic artifact collection service.
     ///
-    /// This worker must be added to the control plane supervisor. When it initializes, it runs inside the supervisor
-    /// process where the dataspace task-local is set, and fills the shared [`OnceLock`] so that `get_flare_files` can
+    /// This worker must be added to the supervision tree. When it initializes, it runs inside a supervisor process
+    /// where the dataspace task-local is set, and fills the shared [`OnceLock`] so that `get_flare_files` can
     /// collect diagnostic artifacts at request time. Without this, the gRPC handler tasks spawned by tonic would not
     /// have access to the dataspace since tonic's `tokio::spawn` does not propagate task-locals.
     pub fn create_dataspace_anchor(&self) -> DataspaceAnchorWorker {
@@ -160,34 +171,32 @@ impl RemoteAgentBootstrap {
         }
     }
 
-    /// Creates a new `StatusProviderServer` tied to this remote agent.
+    /// Creates a worker that serves the status, flare, and telemetry services on the privileged API endpoint.
     ///
-    /// The service always reports the built-in main section fields (version, Git commit, architecture, start time, and
-    /// the Agent version this build was compiled against), followed by the fields written by each of the given
-    /// `status_sections`, in order.
-    pub fn create_status_service(
-        &self, status_sections: Vec<Arc<dyn StatusSectionProvider>>,
-    ) -> StatusProviderServer<RemoteAgentImpl> {
-        StatusProviderServer::new(self.build_impl(status_sections, Vec::new()))
-    }
-
-    /// Creates a new `TelemetryProviderServer` tied to this remote agent.
+    /// The status service always reports the built-in main section fields (version, Git commit, architecture, start
+    /// time, and the Agent version this build was compiled against), followed by the fields written by each of the
+    /// given `status_sections`, in order.
     ///
-    /// The service reports the internal metrics that match the given `remapper_rules`, renamed to the names the
-    /// Datadog Agent expects. Metrics that match no rule are not reported, so if `remapper_rules` is empty, the service
-    /// reports no metrics at all.
-    pub fn create_telemetry_service(
-        &self, remapper_rules: Vec<RemapperRule>,
-    ) -> TelemetryProviderServer<RemoteAgentImpl> {
-        TelemetryProviderServer::new(self.build_impl(Vec::new(), remapper_rules))
-    }
+    /// The telemetry service reports the internal metrics that match the given `telemetry_rules`, renamed to the names
+    /// the Datadog Agent expects. Metrics that match no rule are not reported, so if `telemetry_rules` is empty, the
+    /// service reports no metrics at all.
+    pub fn create_services_worker(
+        &self, status_sections: Vec<Arc<dyn StatusSectionProvider>>, telemetry_rules: Vec<RemapperRule>,
+    ) -> RemoteAgentServicesWorker {
+        let routes = Routes::new(StatusProviderServer::new(self.build_impl(status_sections, Vec::new())))
+            .add_service(FlareProviderServer::new(self.build_impl(Vec::new(), Vec::new())))
+            .add_service(TelemetryProviderServer::new(
+                self.build_impl(Vec::new(), telemetry_rules),
+            ));
 
-    /// Creates a new `FlareProviderServer` tied to this remote agent.
-    pub fn create_flare_service(&self) -> FlareProviderServer<RemoteAgentImpl> {
-        FlareProviderServer::new(self.build_impl(Vec::new(), Vec::new()))
+        RemoteAgentServicesWorker { routes }
     }
 
     /// Creates a config stream that receives configuration events from the Core Agent.
+    ///
+    /// The stream is fed by a background task that this method spawns outside of any supervision tree. The task
+    /// reconnects whenever the stream from the Core Agent ends, and doesn't stop on shutdown. It only stops when it
+    /// tries to deliver an update after the returned receiver is dropped.
     pub fn create_config_stream(&self) -> mpsc::Receiver<ConfigUpdate> {
         let (sender, receiver) = mpsc::channel(100);
 
@@ -410,10 +419,7 @@ fn proto_value_to_serde_value(proto_val: &Option<prost_types::Value>) -> Value {
 }
 
 /// The implementation behind the status, flare, and telemetry services that the Datadog Agent queries.
-///
-/// Created through [`RemoteAgentBootstrap::create_status_service`], [`RemoteAgentBootstrap::create_flare_service`],
-/// and [`RemoteAgentBootstrap::create_telemetry_service`].
-pub struct RemoteAgentImpl {
+struct RemoteAgentImpl {
     started: DateTime<Utc>,
     internal_metrics: Reflector<AggregatedMetricsProcessor>,
     processor: Option<Mutex<TelemetryProcessor>>,
@@ -724,11 +730,40 @@ impl Supervisable for DataspaceAnchorWorker {
     }
 }
 
+/// A worker that serves the status, flare, and telemetry services on the privileged API endpoint.
+///
+/// The services are asserted as a dynamic gRPC route, so the privileged API endpoint in the same supervision tree serves
+/// them for as long as this worker runs.
+pub struct RemoteAgentServicesWorker {
+    routes: Routes,
+}
+
+#[async_trait]
+impl Supervisable for RemoteAgentServicesWorker {
+    fn name(&self) -> &str {
+        "remote-agent-services"
+    }
+
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+        let route = DynamicRoute::grpc(EndpointType::Privileged, self.routes.clone());
+
+        Ok(Box::pin(async move {
+            let dataspace =
+                DataspaceRegistry::try_current().ok_or_else(|| generic_error!("Dataspace not available."))?;
+
+            dataspace.assert(route, "remote-agent-services");
+
+            process_shutdown.await;
+            Ok(())
+        }))
+    }
+}
+
 /// A worker that reports diagnostic events to the Core Agent as remote agent events.
 ///
 /// It subscribes to [`DiagnosticEvent`]s emitted anywhere in the process converts the ones it recognizes into the
 /// Datadog Agent's remote agent event representation, and reports them to the Core Agent over the remote agent gRPC
-/// API.
+/// API. `InvalidApiKey` events are rate limited, so a sustained stream of them cannot flood the Core Agent.
 pub struct RemoteAgentEventReporter {
     client: RemoteAgentClient,
     session_id: SessionIdHandle,
@@ -761,6 +796,8 @@ async fn run_event_reporter(
 ) -> Result<(), GenericError> {
     debug!("Remote Agent event reporter started.");
 
+    let mut invalid_api_key_reports = InvalidApiKeyReportThrottle::default();
+
     while let Some(update) = subscription.recv().await {
         let DataspaceUpdate::Message(_, event) = update else {
             continue;
@@ -776,18 +813,55 @@ async fn run_event_reporter(
             continue;
         };
 
+        let invalid_api_key = matches!(event.details(), &DiagnosticDetails::InvalidApiKey);
+        if invalid_api_key && !invalid_api_key_reports.is_allowed() {
+            debug!("Throttling an InvalidApiKey event report.");
+            continue;
+        }
+
         let request = ReportRemoteAgentEventRequest {
             session_id: session_id.as_str().to_string(),
             events: vec![remote_agent_event],
         };
 
-        if let Err(e) = client.report_remote_agent_event(request).await {
-            warn!(error = %e, "Failed to report remote agent event to the Datadog Agent.");
+        match client.report_remote_agent_event(request).await {
+            Ok(_) => {
+                // The window opens only on delivery, so a failed report never holds back the next one.
+                if invalid_api_key {
+                    invalid_api_key_reports.record();
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to report remote agent event to the Datadog Agent.");
+            }
         }
     }
 
     debug!("Remote Agent event reporter stopped.");
     Ok(())
+}
+
+/// Minimum time between `InvalidApiKey` reports.
+const INVALID_API_KEY_REPORT_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Rate limits `InvalidApiKey` reports.
+///
+/// Checking and recording are separate so that only a delivered report opens the window: a report that never
+/// reaches the Core Agent leaves the next one free to send immediately.
+#[derive(Debug, Default)]
+struct InvalidApiKeyReportThrottle {
+    last_reported: Option<Instant>,
+}
+
+impl InvalidApiKeyReportThrottle {
+    fn is_allowed(&self) -> bool {
+        self.last_reported
+            .is_none_or(|last| last.elapsed() >= INVALID_API_KEY_REPORT_INTERVAL)
+    }
+
+    fn record(&mut self) {
+        self.last_reported = Some(Instant::now());
+    }
 }
 
 /// Converts a [`DiagnosticEvent`] into the Datadog Agent's remote agent event representation.
@@ -1015,5 +1089,40 @@ mod tests {
             converted.details,
             Some(RemoteAgentEventDetails::InvalidApiKey(_))
         ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn invalid_api_key_reports_are_throttled_to_thirty_seconds() {
+        let mut throttle = InvalidApiKeyReportThrottle::default();
+
+        assert!(throttle.is_allowed());
+        throttle.record();
+        assert!(!throttle.is_allowed());
+
+        tokio::time::advance(Duration::from_secs(30)).await;
+        assert!(throttle.is_allowed());
+        throttle.record();
+        assert!(!throttle.is_allowed());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_report_slightly_before_the_window_elapses_is_held() {
+        let mut throttle = InvalidApiKeyReportThrottle::default();
+
+        throttle.record();
+        tokio::time::advance(Duration::from_secs(29)).await;
+        assert!(!throttle.is_allowed());
+    }
+
+    #[test]
+    fn a_report_that_was_never_delivered_does_not_open_the_throttle_window() {
+        let mut throttle = InvalidApiKeyReportThrottle::default();
+
+        assert!(throttle.is_allowed());
+        assert!(throttle.is_allowed());
+        assert!(throttle.is_allowed());
+
+        throttle.record();
+        assert!(!throttle.is_allowed());
     }
 }

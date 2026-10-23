@@ -13,7 +13,7 @@ use base64::{engine::general_purpose, Engine as _};
 use proptest::prelude::*;
 use rmp::encode;
 use saluki_common::collections::FastHashMap;
-use saluki_core::data_model::event::trace::AttributeValue;
+use saluki_core::data_model::event::trace::{AttributeValue, TraceIngestInfo};
 use serde::Deserialize;
 use stringtheory::MetaString;
 
@@ -259,6 +259,7 @@ fn check_case(case: &Case) {
     for (index, (trace, chunk)) in traces.iter().zip(expected.chunks.iter()).enumerate() {
         let ctx = format!("case {name}, chunk {index}");
 
+        check!(ctx, trace.ingest_info(), TraceIngestInfo::Datadog);
         check!(ctx, trace.origin.as_ref(), chunk.origin);
         check!(ctx, trace.priority, chunk.priority);
         check!(ctx, trace.dropped_trace, chunk.dropped_trace);

@@ -1,11 +1,10 @@
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use agent_data_plane_config::{
-    control::MemoryMode,
     domains::{dogstatsd, multi_region_failover},
     shared::SharedConfiguration,
     SalukiConfiguration,
@@ -13,17 +12,16 @@ use agent_data_plane_config::{
 use agent_data_plane_config_system::{ConfigurationSystem, LoadedConfiguration};
 use argh::FromArgs;
 use bytesize::ByteSize;
+use datadog_agent_apm::{sampling::TraceSamplingSubscription, semantics::SemanticRegistryProvider};
 use datadog_agent_commons::{ipc::config::RemoteAgentClientConfiguration, platform::PlatformSettings};
-use datadog_agent_runtime::remote_agent::RemoteAgentBootstrap;
-use saluki_app::{
-    accounting::{initialize_memory_bounds, MemoryBoundsConfiguration, MemoryMode as AppMemoryMode},
-    bootstrap::BootstrapGuard,
-    metrics::emit_startup_metrics,
-    util::wait_for_shutdown_signal,
+use datadog_agent_runtime::{
+    env::RemoteAgentEnvironmentProvider,
+    facade::{Initialized, RemoteAgent},
 };
+use saluki_app::bootstrap::BootstrapGuard;
 use saluki_components::{
     config::{
-        AutoscalingFailoverConfiguration, ClusterAgentConfiguration, MetricsEndpointRoutingConfiguration,
+        AgentEnv, AutoscalingFailoverConfiguration, ClusterAgentConfiguration, MetricsEndpointRoutingConfiguration,
         MrfConfiguration,
     },
     decoders::otlp::OtlpDecoderConfiguration,
@@ -33,14 +31,17 @@ use saluki_components::{
     encoders::{
         BufferedIncrementalConfiguration, DatadogApmStatsEncoderConfiguration, DatadogEventsConfiguration,
         DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration,
-        DatadogTraceConfiguration, MetricsEndpointRouting,
+        DatadogTraceConfiguration,
     },
-    forwarders::{ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration, OtlpForwarderConfiguration},
+    forwarders::{
+        ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration, OtlpForwarderConfiguration,
+        RoutingTargetCatalog,
+    },
     relays::{apm::ApmRelayConfiguration, otlp::OtlpRelayConfiguration},
     sources::{
         ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDCaptureControl, DogStatsDConfiguration,
-        DogStatsDReplayAPIHandler, DogStatsDReplayControl, EnablePayloadsConfiguration, OriginEnrichmentConfiguration,
-        OtlpConfiguration,
+        DogStatsDReplayAPIHandler, DogStatsDReplayControl, EnablePayloadsConfiguration, ListenerRequirement,
+        OriginEnrichmentConfiguration, OtlpConfiguration,
     },
     transforms::{
         aggregate_context_snapshot_channel, AggregateConfiguration, ApmStatsTransformConfiguration,
@@ -49,13 +50,7 @@ use saluki_components::{
         ReplaceRule, TraceObfuscationConfiguration, TraceSamplerConfiguration, TraceTagReplacerConfiguration,
     },
 };
-use saluki_core::{
-    accounting::{ComponentBounds, ComponentRegistry},
-    data_model::origin::OriginTagCardinality,
-    health::HealthRegistry,
-    runtime::{state::ResourceRegistry, RestartMode, RestartStrategy, Supervisor, SupervisorError},
-    topology::TopologyBlueprint,
-};
+use saluki_core::{data_model::origin::OriginTagCardinality, runtime::Supervisor, topology::TopologyBlueprint};
 use saluki_env::{features, EnvironmentProvider as _, HostProvider as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::ListenAddress;
@@ -71,15 +66,13 @@ use crate::{
         ottl_filter_processor::OttlFilterConfiguration, ottl_transform_processor::OttlTransformConfiguration,
         static_tags::resolve_static_tags, tag_filterlist::TagFilterlistConfiguration,
     },
+    config::DataPlaneConfiguration,
     dogstatsd_contexts::DogStatsDContextDumpAPIHandler,
     internal::{
-        create_internal_supervisor, logging::LoggingConfigurationTranslator, ConfigUpdatesWorker,
+        create_control_plane_supervisor, logging::get_logging_translator, AdpLocalConfig, AgentDataPlane,
         DogStatsDControlSurface, TopologyControlSurfaces,
     },
-};
-use crate::{
-    config::{remote_agent_client_configuration, DataPlaneConfiguration},
-    internal::env::ADPEnvironmentProvider,
+    remote_config::{self, RemoteConfigSubscriptions},
 };
 
 /// Runs the data plane.
@@ -96,251 +89,73 @@ pub async fn handle_run_command(
     started: Instant, local_config: LoadedConfiguration, bootstrap_guard: &mut BootstrapGuard,
     bootstrap_supervisor: Supervisor,
 ) -> Result<(), GenericError> {
-    let app_details = saluki_metadata::get_app_details();
-    info!(
-        version = app_details.version().raw(),
-        git_hash = app_details.git_hash(),
-        target_arch = app_details.target_arch(),
-        build_time = app_details.build_time(),
-        process_id = std::process::id(),
-        "Agent Data Plane starting..."
-    );
-
-    // Use local sources for decisions required before the Agent configuration stream is available.
-    let bootstrap_dp_config = DataPlaneConfiguration::from_configuration(local_config.local());
-    let standalone = bootstrap_dp_config.standalone_mode();
-
-    // Resolve the authoritative configuration. Connected mode registers as a remote agent and takes
-    // the Core Agent's config stream as authority; standalone mode treats the local sources as
-    // authoritative. Both terminals block until the first configuration is received, deserialized,
-    // and translated, failing the boot if it cannot be -- the strict startup gate.
-    let (config_sys, ra_bootstrap, config_updates) = if standalone {
-        let config_sys = local_config
-            .standalone()
-            .await
-            .error_context("Failed to load configuration.")?;
-        (config_sys, None, None)
-    } else {
-        // Blocks until the Core Agent acknowledges registration.
-        let client_config = remote_agent_client_configuration(local_config.local())?;
-        let ra_bootstrap = async {
-            let secure_api_listen_address = bootstrap_dp_config.secure_api_listen_address()?;
-            RemoteAgentBootstrap::new(&client_config, &secure_api_listen_address).await
-        }
-        .await
-        .error_context("Failed to bootstrap remote agent state.")?;
-
-        // The configuration system owns the config stream: it reads `ConfigUpdate`s directly to
-        // build the typed model. `create_config_stream` stays on `ra_bootstrap`, which we keep to
-        // build the status/flare/telemetry services below.
-        let config_stream = ra_bootstrap.create_config_stream();
-
-        info!("Waiting for initial configuration from Datadog Agent...");
-        let (config_sys, config_updates) = local_config
-            .run(config_stream)
-            .await
-            .error_context("Failed to load initial configuration from the Datadog Agent.")?;
-        info!("Initial configuration received.");
-
-        (config_sys, Some(ra_bootstrap), Some(config_updates))
-    };
-
-    // Connected mode may have replaced the bootstrap-phase settings with the Agent's authoritative
-    // config, so reload logging to match. Standalone resolves the same local sources seen at
-    // bootstrap, making a reload redundant.
-    if !standalone {
-        match LoggingConfigurationTranslator::translate(&config_sys.config().control.logging) {
-            Ok(logging_config) => {
-                if let Err(e) = bootstrap_guard.logging_mut().reload(logging_config).await {
-                    warn!(
-                        error = %e,
-                        "Failed to reload logging from Agent configuration; continuing with bootstrap logging settings."
-                    );
-                }
-            }
-            Err(e) => warn!(
-                error = %e,
-                "Failed to translate logging configuration from Agent; continuing with bootstrap logging settings."
-            ),
-        }
-    }
+    // Resolve the authoritative configuration: connected mode registers as a remote agent and waits for the Core
+    // Agent's configuration, while standalone mode treats the local sources as authoritative.
+    let agent = RemoteAgent::<AgentDataPlane>::new(AdpLocalConfig::new(local_config), get_logging_translator().clone())
+        .with_start_time(started)
+        .start(bootstrap_guard, bootstrap_supervisor)
+        .await?;
 
     let (enabled, active_pipelines) = {
-        let config = config_sys.config();
+        let config = agent.config().system().config();
         let dp = DataPlaneConfiguration::from_configuration(&config);
         (dp.enabled(), dp.active_pipelines())
     };
 
-    if !standalone && !enabled {
+    if !agent.is_standalone() && !enabled {
         info!("Agent Data Plane is not enabled. Exiting.");
         return Ok(());
     }
 
-    config_sys
+    agent
+        .config()
+        .system()
         .check_compatibility(&active_pipelines)
         .error_context("Incompatible configuration detected.")?;
 
-    let remote_agent_client_config = if standalone {
-        None
-    } else {
-        Some(remote_agent_client_configuration(&config_sys.config())?)
-    };
-
     // Set up all of the building blocks for building our topologies and launching internal processes.
-    let component_registry = ComponentRegistry::default();
-    let health_registry = HealthRegistry::new();
-    let resource_registry = ResourceRegistry::new();
-    let (env_provider, maybe_env_supervisor) = ADPEnvironmentProvider::from_configuration(
-        standalone,
-        config_sys.config().control.ipc.remote_agent_string_interner_size_bytes,
-        &config_sys.config().shared.environment,
-        remote_agent_client_config.as_ref(),
-        &component_registry,
-        &health_registry,
-    )
-    .await?;
+    let mut agent = agent.initialize().await?;
+
+    let rc_products = remote_config::enabled_products(&agent.config().system().config());
+    let rc_subscriptions = RemoteConfigSubscriptions::subscribe(rc_products, &mut agent)
+        .await
+        .error_context("Failed to set up Remote Configuration.")?;
 
     // Create the blueprint for our primary topology.
-    let (mut blueprint, control_surfaces) = create_topology(
-        &config_sys,
-        remote_agent_client_config.as_ref(),
-        &env_provider,
-        &component_registry,
-    )
-    .await?;
+    let (blueprint, control_surfaces) = create_topology(&agent, rc_subscriptions).await?;
 
-    // Create the root supervisor up front so that a handle to the whole supervision tree can be handed to the
-    // control plane below, which serves it over the API. Nothing is added to it until the rest of the tree is built.
-    let root_restart_strategy = RestartStrategy::new(RestartMode::OneForOne, 0, Duration::from_secs(5));
-    let mut root_supervisor = Supervisor::new("adp-root")?.with_restart_strategy(root_restart_strategy);
-
-    // Create the internal supervisor which drives our control plane and internal observability.
-    let mut internal_supervisor = create_internal_supervisor(
-        &config_sys,
-        &component_registry,
-        health_registry.clone(),
-        control_surfaces,
-        ra_bootstrap,
-        bootstrap_guard.logging().controller(),
-        config_sys.current_handle(),
-        root_supervisor.tree_handle(),
-    )
-    .await
-    .error_context("Failed to create internal supervisor.")?;
-
-    // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
-    let bounds_config = {
-        let control = &config_sys.config().control;
-        MemoryBoundsConfiguration {
-            memory_limit: control.memory_limit.map(ByteSize::b),
-            memory_slop_factor: control.memory_slop_factor,
-            enable_global_limiter: control.enable_global_limiter,
-            memory_mode: match control.memory_mode {
-                MemoryMode::Disabled => AppMemoryMode::Disabled,
-                MemoryMode::Permissive => AppMemoryMode::Permissive,
-                MemoryMode::Strict => AppMemoryMode::Strict,
-            },
-        }
-    };
-    let memory_limiter = initialize_memory_bounds(bounds_config, component_registry.root())?;
-
-    if let Ok(val) = std::env::var("DD_ADP_WRITE_SIZING_GUIDE") {
-        if val != "false" {
-            if let Err(error) = write_sizing_guide(component_registry.as_bounds()) {
-                warn!("Failed to write sizing guide: {}", error);
-            } else {
-                return Ok(());
-            }
-        }
-    }
-
-    // Assemble the full supervision tree and run it.
-    //
-    // We run our internal supervisor (control plane, environment provider, etc) and our topology supervisor
-    // side-by-side, which means everyone has access to the same dataspace. This is crucial for allowing processes
-    // in the topology supervisor to (eventually) interact with components in the control plane, and vise versa.
-    blueprint
-        .with_health_registry(health_registry.clone())
-        .with_memory_limiter(memory_limiter)
-        .with_resource_registry(resource_registry.clone())
-        .with_environment_readiness(env_provider.wait_for_ready());
-
-    // Acquire a readiness handle before handing the blueprint off to the supervisor. This waits until the topology has
-    // registered its components in the health registry and they've all reported ready, rather than racing the supervisor
-    // and potentially observing an empty/already-ready registry before the topology's components even exist.
-    let topology_ready = blueprint.topology_ready();
-
-    root_supervisor.add_worker(bootstrap_supervisor);
-    internal_supervisor.add_worker(resource_registry.worker());
-
-    // Apply configuration updates from the Datadog Agent. Until the supervision tree starts, updates stay queued in the
-    // Agent configuration stream and are not applied.
-    //
-    // A restart of the worker recovers from a panic, but not from a closed configuration stream, which never reopens:
-    // the restarted worker fails again at once. The failure then escalates and stops ADP, rather than leaving ADP to run
-    // on a configuration that can no longer change.
-    if let Some(config_updates) = config_updates {
-        internal_supervisor.add_worker(ConfigUpdatesWorker::new(config_updates));
-    }
-
-    if let Some(env_supervisor) = maybe_env_supervisor {
-        internal_supervisor.add_worker(env_supervisor);
-    }
-    root_supervisor.add_worker(internal_supervisor);
-    root_supervisor.add_worker(blueprint);
-
-    // Once the topology is healthy, log readiness and emit our startup metrics.
-    tokio::spawn(async move {
-        // If the topology is torn down before it ever becomes ready (for example, shutdown during startup), `wait`
-        // returns `false` and we skip reporting readiness.
-        if topology_ready.wait().await {
-            info!(
-                topology_ready_ms = started.elapsed().as_millis(),
-                "Topology healthy. Waiting for interrupt..."
-            );
-
-            emit_startup_metrics();
-        }
-    });
-
-    info!("Agent Data Plane running.");
-    match root_supervisor.run_with_shutdown(wait_for_shutdown_signal()).await {
-        Ok(()) => {
-            info!("Agent Data Plane shut down successfully.");
-            Ok(())
-        }
-        // The shutdown ran to completion, but one or more components ignored graceful shutdown and had to be forcefully
-        // aborted after exceeding the shutdown timeout. Surface that plainly instead of reporting success -- but don't
-        // treat it as a fatal error: the process did stop, and mapping it through the error path would mislabel it as a
-        // boot/setup failure (and trip the boot assertion in `run_inner`).
-        Err(SupervisorError::ShutdownTimedOut { aborted }) => {
-            warn!(
-                aborted,
-                "Agent Data Plane shut down uncleanly: {aborted} component(s) had to be forcefully stopped after \
-                 exceeding the shutdown timeout. Check the preceding warnings for which components were affected."
-            );
-            Ok(())
-        }
-        Err(e) => Err(e.into()),
-    }
+    // Create the control plane, and then run: the remote agent builds the rest of the supervisors, and runs memory
+    // bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
+    let control_plane =
+        create_control_plane_supervisor(&agent, control_surfaces, bootstrap_guard.logging().controller())
+            .await
+            .error_context("Failed to create internal supervisor.")?;
+    agent.run(blueprint, control_plane).await
 }
 
 async fn create_topology(
-    config_system: &ConfigurationSystem, remote_agent_client_config: Option<&RemoteAgentClientConfiguration>,
-    env_provider: &ADPEnvironmentProvider, component_registry: &ComponentRegistry,
+    agent: &RemoteAgent<AgentDataPlane, Initialized>, rc_subscriptions: RemoteConfigSubscriptions,
 ) -> Result<(TopologyBlueprint, TopologyControlSurfaces), GenericError> {
+    let config_system = agent.config().system();
     let config = config_system.config();
     let dp = DataPlaneConfiguration::from_configuration(&config);
-    let mut blueprint = TopologyBlueprint::new("primary", component_registry);
+    let mut blueprint = TopologyBlueprint::new("primary", agent.component_registry());
     blueprint.with_shutdown_timeout(dp.stop_timeout());
     let shared = config.shared.clone();
 
     let mut control_surfaces = TopologyControlSurfaces::default();
+    let RemoteConfigSubscriptions {
+        trace_sampling,
+        semantic_registry,
+    } = rc_subscriptions;
 
     // If no data pipelines are enabled, then there's nothing for us to do.
     if !dp.data_pipelines_enabled() {
         return Err(generic_error!("No data pipelines are enabled. Exiting."));
     }
+
+    let remote_agent_client_config = agent.client_configuration();
+    let env_provider = agent.env_provider();
 
     // Create our baseline pipelines if necessary.
     //
@@ -352,27 +167,39 @@ async fn create_topology(
     // Notably, we _don't_ need either of these if all we're doing is running the OTLP pipeline in proxy mode, which
     // is the only reason we're differentiating here. Connected mode is the exception: liveness deliberately
     // provisions metric and service-check output paths even for proxy-only topologies.
+    let mut routing_targets = None;
     if dp.metrics_pipeline_required()
         || dp.logs_pipeline_required()
         || dp.events_pipeline_required()
         || dp.service_checks_pipeline_required()
         || dp.traces_pipeline_required()
     {
+        // The forwarder and every metrics encoder that addresses its payloads to specific endpoints share one catalog,
+        // so that both sides agree on what each routing target identifier means.
+        let catalog = Arc::new(RoutingTargetCatalog::new(
+            &shared.endpoints.primary_endpoint(),
+            &shared.endpoints.additional_endpoints,
+        )?);
         let dd_forwarder_config = DatadogForwarderConfiguration::from_configuration(
             &shared,
             config_system.live(|config| &config.shared.endpoints.api_key),
             config_system.live(|config| &config.shared.endpoints.additional_endpoints),
             config_system.live(|config| &config.shared.secrets),
-        );
+        )
+        .with_routing_targets(Arc::clone(&catalog));
         blueprint.add_forwarder("dd_out", dd_forwarder_config)?;
+        routing_targets = Some(catalog);
     }
 
     if dp.metrics_pipeline_required() {
+        let routing_targets =
+            routing_targets.ok_or_else(|| generic_error!("The metrics pipeline requires the Datadog forwarder."))?;
         add_baseline_metrics_pipeline_to_blueprint(
             &mut blueprint,
             config_system,
             remote_agent_client_config,
             &shared,
+            &routing_targets,
             env_provider,
         )
         .await?;
@@ -391,7 +218,14 @@ async fn create_topology(
     }
 
     if dp.traces_pipeline_required() {
-        add_baseline_traces_pipeline_to_blueprint(&mut blueprint, config_system, env_provider).await?;
+        add_baseline_traces_pipeline_to_blueprint(
+            &mut blueprint,
+            config_system,
+            env_provider,
+            trace_sampling,
+            semantic_registry.clone(),
+        )
+        .await?;
     }
 
     // Connected topologies emit liveness through the metric and service-check baselines created above. Standalone
@@ -412,7 +246,7 @@ async fn create_topology(
     }
 
     if dp.otlp_enabled() {
-        add_otlp_pipeline_to_blueprint(&mut blueprint, config_system, env_provider).await?;
+        add_otlp_pipeline_to_blueprint(&mut blueprint, config_system, env_provider, semantic_registry).await?;
     }
 
     if dp.apm_enabled() {
@@ -425,7 +259,7 @@ async fn create_topology(
 const LIVENESS_METRICS_DESTINATION: &str = "metrics_enrich";
 
 async fn add_liveness_source_to_blueprint(
-    blueprint: &mut TopologyBlueprint, env_provider: &ADPEnvironmentProvider, add_container_tags: bool,
+    blueprint: &mut TopologyBlueprint, env_provider: &RemoteAgentEnvironmentProvider, add_container_tags: bool,
 ) -> Result<(), GenericError> {
     let liveness_config = LivenessConfiguration::from_environment_provider(env_provider, add_container_tags).await?;
 
@@ -438,7 +272,7 @@ async fn add_liveness_source_to_blueprint(
 }
 
 async fn add_checks_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, checks_ipc_endpoint: &str, env_provider: &ADPEnvironmentProvider,
+    blueprint: &mut TopologyBlueprint, checks_ipc_endpoint: &str, env_provider: &RemoteAgentEnvironmentProvider,
 ) -> Result<(), GenericError> {
     let grpc_endpoint = ListenAddress::try_from(checks_ipc_endpoint)
         .map_err(|error| generic_error!("Invalid checks IPC endpoint `{checks_ipc_endpoint}`: {error}"))?;
@@ -462,7 +296,7 @@ async fn add_checks_pipeline_to_blueprint(
 async fn add_baseline_metrics_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
     remote_agent_client_config: Option<&RemoteAgentClientConfiguration>, shared: &SharedConfiguration,
-    env_provider: &ADPEnvironmentProvider,
+    routing_targets: &Arc<RoutingTargetCatalog>, env_provider: &RemoteAgentEnvironmentProvider,
 ) -> Result<(), GenericError> {
     // Create the back half of the metrics processing pipeline.
     let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
@@ -487,7 +321,7 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
     )?;
     blueprint.add_transform("metrics_enrich", metrics_enrich_config)?;
 
-    add_metrics_output_pipelines_to_blueprint(blueprint, shared, &endpoint_routing)?;
+    add_metrics_output_pipelines_to_blueprint(blueprint, shared, routing_targets, &endpoint_routing)?;
     add_mrf_metrics_pipeline_to_blueprint(blueprint, config_system, shared, &config.domains.multi_region_failover)?;
     add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, shared)?;
 
@@ -545,13 +379,12 @@ fn add_mrf_metrics_pipeline_to_blueprint(
 // Build both sides of metric filtering together: the ordinary stream excludes selected endpoints, and each
 // filtered stream targets only its policy's endpoints. This applies to both series and sketches.
 fn add_metrics_output_pipelines_to_blueprint(
-    blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration, routing: &MetricsEndpointRoutingConfiguration,
+    blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration, catalog: &Arc<RoutingTargetCatalog>,
+    routing: &MetricsEndpointRoutingConfiguration,
 ) -> Result<(), GenericError> {
     let mut dd_metrics_config = DatadogMetricsConfiguration::from_configuration(shared);
     if !routing.selected_endpoints().is_empty() {
-        dd_metrics_config = dd_metrics_config.with_endpoint_routing(MetricsEndpointRouting::AllExcept(
-            routing.selected_endpoints().iter().cloned().collect(),
-        ));
+        dd_metrics_config = dd_metrics_config.with_routing(Arc::clone(catalog), routing.unfiltered_targets(catalog));
     }
     blueprint
         .add_encoder("dd_metrics_encode", dd_metrics_config)?
@@ -566,7 +399,7 @@ fn add_metrics_output_pipelines_to_blueprint(
             policy.metric_prefix_allowlist.clone(),
         );
         let metrics_config = DatadogMetricsConfiguration::from_configuration(shared)
-            .with_endpoint_routing(MetricsEndpointRouting::Only(policy.endpoints.iter().cloned().collect()));
+            .with_routing(Arc::clone(catalog), policy.targets(catalog));
 
         blueprint
             .add_transform(filter_id.as_str(), filter_config)?
@@ -690,18 +523,33 @@ fn add_baseline_service_checks_pipeline_to_blueprint(
 }
 
 async fn add_baseline_traces_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, env_provider: &ADPEnvironmentProvider,
+    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
+    env_provider: &RemoteAgentEnvironmentProvider, trace_sampling: Option<TraceSamplingSubscription>,
+    semantic_registry: SemanticRegistryProvider,
 ) -> Result<(), GenericError> {
     let config = config_system.config();
+    let agent_env = AgentEnv::resolve(
+        config.domains.traces.apm_env.as_deref(),
+        config.domains.traces.env.as_deref(),
+        &config.shared.tags.tags,
+        &config.shared.tags.extra_tags,
+    );
     let dd_traces_config = DatadogTraceConfiguration::from_configuration(
         &config.domains.traces,
         &config.domains.otlp.traces,
         &config.shared,
+        agent_env.clone(),
     )
     .with_environment_provider(env_provider.clone())
     .await?;
-    let trace_sampler_config =
-        TraceSamplerConfiguration::from_configuration(&config.domains.traces, &config.domains.otlp.traces);
+    let mut trace_sampler_config = TraceSamplerConfiguration::from_configuration(
+        &config.domains.traces,
+        &config.domains.otlp.traces,
+        agent_env.clone(),
+    );
+    if let Some(trace_sampling) = trace_sampling {
+        trace_sampler_config = trace_sampler_config.with_remote_sampling(trace_sampling);
+    }
 
     let trace_obfuscation_config =
         TraceObfuscationConfiguration::from_configuration(&config.domains.traces.obfuscation);
@@ -730,13 +578,14 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .with_transform_builder("apm_onboarding", ApmOnboardingConfiguration)
         .with_transform_builder("trace_obfuscation", trace_obfuscation_config)
         .with_transform_builder("trace_tag_replacer", trace_tag_replacer_config);
-    let apm_stats_transform_config = ApmStatsTransformConfiguration::from_configuration(&config.domains.traces)
-        .with_environment_provider(env_provider.clone())
-        .await?;
-    let dd_apm_stats_encoder =
-        DatadogApmStatsEncoderConfiguration::from_configuration(&config.domains.traces, &config.shared)
+    let apm_stats_transform_config =
+        ApmStatsTransformConfiguration::from_configuration(&config.domains.traces, agent_env.clone())
+            .with_semantic_registry(semantic_registry)
             .with_environment_provider(env_provider.clone())
             .await?;
+    let dd_apm_stats_encoder = DatadogApmStatsEncoderConfiguration::from_configuration(&config.shared, agent_env)
+        .with_environment_provider(env_provider.clone())
+        .await?;
 
     blueprint
         .add_transform("traces_enrich", dd_traces_enrich_config)?
@@ -793,7 +642,7 @@ fn origin_tag_cardinality(cardinality: dogstatsd::OriginTagCardinality) -> Origi
 /// The caller creates `capture_control` and `replay_control` so that it keeps the handles the source binds to, which is
 /// how the capture and replay API surfaces reach the running source.
 fn dogstatsd_source_configuration(
-    config: &SalukiConfiguration, env_provider: &ADPEnvironmentProvider, default_hostname: MetaString,
+    config: &SalukiConfiguration, env_provider: &RemoteAgentEnvironmentProvider, default_hostname: MetaString,
     capture_control: DogStatsDCaptureControl, replay_control: DogStatsDReplayControl,
 ) -> DogStatsDConfiguration {
     let dogstatsd = &config.domains.dogstatsd;
@@ -826,6 +675,13 @@ fn dogstatsd_source_configuration(
         socket_path: listeners.socket.clone(),
         socket_stream_path: listeners.stream_socket.clone(),
         stream_log_too_big: listeners.stream_log_too_big,
+        // The Agent skips a listener that can't be created; `dogstatsd_require_listener` only decides whether running
+        // with none is fatal.
+        listener_requirement: if listeners.require_listener {
+            ListenerRequirement::AtLeastOne
+        } else {
+            ListenerRequirement::Optional
+        },
         pipe_name: listeners.pipe_name.clone(),
         windows_pipe_security_descriptor: listeners.windows_pipe_security_descriptor.clone(),
         disable_verbose_logs: dogstatsd.debug_log.disable_verbose_logs,
@@ -868,7 +724,8 @@ fn dogstatsd_source_configuration(
 }
 
 async fn add_dsd_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, env_provider: &ADPEnvironmentProvider,
+    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
+    env_provider: &RemoteAgentEnvironmentProvider,
 ) -> Result<DogStatsDControlSurface, GenericError> {
     // We're creating the "front half" of the DogStatsD pipeline, which deals solely with accepting DogStatsD payloads,
     // and enriching/processing them in DSD-specific ways, relevant to how the Datadog Agent is expected to behave.
@@ -1106,7 +963,8 @@ async fn add_apm_pipeline_to_blueprint(
 }
 
 async fn add_otlp_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, env_provider: &ADPEnvironmentProvider,
+    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
+    env_provider: &RemoteAgentEnvironmentProvider, semantic_registry: SemanticRegistryProvider,
 ) -> Result<(), GenericError> {
     let config = config_system.config();
     let dp = DataPlaneConfiguration::from_configuration(&config);
@@ -1127,7 +985,8 @@ async fn add_otlp_pipeline_to_blueprint(
         let config = config_system.config();
         let otlp_relay_config = OtlpRelayConfiguration::from_configuration(&config.domains.otlp.receiver);
         let otlp_decoder_config = OtlpDecoderConfiguration::from_configuration(&config.domains.otlp.traces)
-            .with_max_resource_len(config.domains.traces.max_resource_len);
+            .with_max_resource_len(config.domains.traces.max_resource_len)
+            .with_semantic_registry(semantic_registry);
 
         let local_agent_otlp_forwarder_config =
             OtlpForwarderConfiguration::from_configuration(&config.domains.otlp.traces, core_agent_otlp_grpc_endpoint);
@@ -1163,6 +1022,7 @@ async fn add_otlp_pipeline_to_blueprint(
         );
         let otlp_config = OtlpConfiguration::from_configuration(&config.domains.otlp, env_provider.workload().clone())
             .with_max_resource_len(config.domains.traces.max_resource_len)
+            .with_semantic_registry(semantic_registry)
             .with_static_metric_tags(static_tags)
             .with_default_hostname(default_hostname);
 
@@ -1177,28 +1037,6 @@ async fn add_otlp_pipeline_to_blueprint(
             .connect_components("otlp_in.logs", "dd_logs_encode")?
             .connect_components("otlp_in.traces", "traces_enrich")?;
     }
-    Ok(())
-}
-
-fn write_sizing_guide(bounds: ComponentBounds) -> Result<(), GenericError> {
-    use std::{
-        fs::File,
-        io::{BufWriter, Write},
-    };
-
-    let template = include_str!("../sizing_guide_template.html");
-    let mut output = BufWriter::new(File::create("sizing_guide.html")?);
-    for line in template.lines() {
-        if line.trim() == "<!-- INSERT GENERATED CONTENT -->" {
-            serde_json::to_writer_pretty(&mut output, &bounds.to_exprs())?;
-        } else {
-            output.write_all(line.as_bytes())?;
-        }
-        output.write_all(b"\n")?;
-    }
-    info!("Wrote sizing guide to sizing_guide.html");
-    output.flush()?;
-
     Ok(())
 }
 

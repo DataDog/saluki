@@ -33,6 +33,16 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::RawString,
     },
     EnvKey {
+        env_vars: &["DD_APM_CONFIG_ANALYZED_RATE_BY_SERVICE"],
+        path: &["apm_config", "analyzed_rate_by_service"],
+        decode: EnvDecode::JsonValue,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_ANALYZED_SPANS"],
+        path: &["apm_config", "analyzed_spans"],
+        decode: EnvDecode::TracesSpan,
+    },
+    EnvKey {
         env_vars: &["DD_APM_NON_LOCAL_TRAFFIC"],
         path: &["apm_config", "apm_non_local_traffic"],
         decode: EnvDecode::Bool,
@@ -46,6 +56,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_APM_ENABLE_RARE_SAMPLER"],
         path: &["apm_config", "enable_rare_sampler"],
         decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_ENV"],
+        path: &["apm_config", "env"],
+        decode: EnvDecode::RawString,
     },
     EnvKey {
         env_vars: &["DD_APM_ERROR_TRACKING_STANDALONE_ENABLED"],
@@ -71,6 +86,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_APM_CONFIG_MAX_CATALOG_ENTRIES"],
         path: &["apm_config", "max_catalog_entries"],
         decode: EnvDecode::Integer,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_MAX_EPS", "DD_MAX_EPS"],
+        path: &["apm_config", "max_events_per_second"],
+        decode: EnvDecode::Float,
     },
     EnvKey {
         env_vars: &["DD_APM_MAX_TPS", "DD_MAX_TPS"],
@@ -514,6 +534,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_DOGSTATSD_PORT"],
         path: &["dogstatsd_port"],
         decode: EnvDecode::Integer,
+    },
+    EnvKey {
+        env_vars: &["DD_DOGSTATSD_REQUIRE_LISTENER"],
+        path: &["dogstatsd_require_listener"],
+        decode: EnvDecode::Bool,
     },
     EnvKey {
         env_vars: &["DD_DOGSTATSD_SO_RCVBUF"],
@@ -1102,6 +1127,21 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_PROXY_NO_PROXY"],
         path: &["proxy", "no_proxy"],
         decode: EnvDecode::StringList,
+    },
+    EnvKey {
+        env_vars: &["DD_REMOTE_CONFIGURATION_APM_SAMPLING_ENABLED"],
+        path: &["remote_configuration", "apm_sampling", "enabled"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_REMOTE_CONFIGURATION_APM_SEMANTICS_ENABLED"],
+        path: &["remote_configuration", "apm_semantics", "enabled"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_REMOTE_CONFIGURATION_ENABLED"],
+        path: &["remote_configuration", "enabled"],
+        decode: EnvDecode::Bool,
     },
     EnvKey {
         env_vars: &["DD_RUN_PATH"],

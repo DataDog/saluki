@@ -120,7 +120,9 @@ impl Source for ChecksIPC {
             .with_http2_config(Http2Config::grpc_defaults())
             .with_worker_pool(context.topology_context().global_thread_pool().clone());
 
-        runtime::nested_supervisor(grpc_server.into_supervisor()).spawn();
+        runtime::nested_supervisor(grpc_server.into_supervisor())
+            .needed()
+            .spawn();
 
         health.mark_ready();
         debug!("Checks IPC source started.");

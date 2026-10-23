@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use saluki_common::resource_tracking::Track as _;
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_error::{generic_error, GenericError};
@@ -21,12 +22,12 @@ use crate::components::{
     forwarders::{ForwarderBuilder, ForwarderContext},
     relays::{RelayBuilder, RelayContext},
     sources::{SourceBuilder, SourceContext},
-    transforms::{TransformBuilder, TransformContext},
+    transforms::{SynchronousTransform, SynchronousTransformBuilder, Transform, TransformBuilder, TransformContext},
     BuildContext, ComponentContext, ComponentType,
 };
 use crate::health::{Health, HealthRegistry};
 use crate::runtime::state::{DataspaceRegistry, ResourceRegistry, CURRENT_DATASPACE};
-use crate::runtime::{self, SupervisorFuture};
+use crate::runtime::{self, ExitObserver, SupervisorFuture};
 use crate::support::SubsystemIdentifier;
 use crate::topology::component_worker::{
     ComponentWorker, DecoderRunnable, DestinationRunnable, EncoderRunnable, ForwarderRunnable, RelayRunnable,
@@ -52,7 +53,7 @@ const DEFAULT_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Runs a single component in a test.
 ///
 /// Each method takes a component builder and builds the component the way a topology would. It then connects a channel
-/// to the component's input and to each of its outputs, and runs the component as the significant child of a
+/// to the component's input and to each of its outputs, and runs the component as the needed child of a
 /// [`TestComponentSupervisor`], which is also how a topology runs it. What comes back is a [`ComponentControl`] for the
 /// input and the shutdown, along with the component's outputs.
 ///
@@ -127,6 +128,21 @@ impl TestComponentDriver {
         DriverOptions::default().transform(builder).await
     }
 
+    /// Builds and runs a synchronous transform with the default options.
+    ///
+    /// # Errors
+    ///
+    /// See [`DriverOptions::synchronous_transform`].
+    ///
+    /// # Panics
+    ///
+    /// See [`DriverOptions::synchronous_transform`].
+    pub async fn synchronous_transform<B: SynchronousTransformBuilder>(
+        builder: B,
+    ) -> Result<(ComponentControl<EventsBuffer>, Output<EventsBuffer>), GenericError> {
+        DriverOptions::default().synchronous_transform(builder).await
+    }
+
     /// Builds and runs an encoder with the default options.
     ///
     /// # Errors
@@ -182,6 +198,7 @@ pub struct DriverOptions {
     wait_timeout: Duration,
     shutdown_budget: Duration,
     resource_registry: ResourceRegistry,
+    withhold_shutdown: bool,
 }
 
 impl Default for DriverOptions {
@@ -192,6 +209,7 @@ impl Default for DriverOptions {
             wait_timeout: DEFAULT_WAIT_TIMEOUT,
             shutdown_budget: TEST_SHUTDOWN_BUDGET,
             resource_registry: ResourceRegistry::new(),
+            withhold_shutdown: false,
         }
     }
 }
@@ -256,10 +274,25 @@ impl DriverOptions {
         self
     }
 
+    /// Withholds the shutdown signal of its supervisor from a source or relay.
+    ///
+    /// The component gets a shutdown handle that the [`ComponentControl`] owns, in place of the one from its worker, so
+    /// it behaves like a component that ignores shutdown: [`ComponentControl::signal_shutdown`] only reaches the
+    /// supervisor, which aborts the component and every child still running once the shutdown budget runs out. Use it
+    /// to check what happens to the children of a component that is cut off. The handle only fires once the control is
+    /// dropped, or once [`ComponentControl::wait`] returns.
+    ///
+    /// Has no effect on other component types, which stop once their input closes.
+    pub fn with_shutdown_withheld(mut self) -> Self {
+        self.withhold_shutdown = true;
+        self
+    }
+
     /// Builds and runs a source.
     ///
     /// Each output the builder declares gets its own channel. The source's shutdown handle fires when its shutdown is
-    /// signalled through the returned [`ComponentControl`].
+    /// signalled through the returned [`ComponentControl`], unless
+    /// [`with_shutdown_withheld`][Self::with_shutdown_withheld] withholds it.
     ///
     /// # Errors
     ///
@@ -294,7 +327,8 @@ impl DriverOptions {
     /// Builds and runs a relay.
     ///
     /// Each output the builder declares gets its own channel. The relay's shutdown handle fires when its shutdown is
-    /// signalled through the returned [`ComponentControl`].
+    /// signalled through the returned [`ComponentControl`], unless
+    /// [`with_shutdown_withheld`][Self::with_shutdown_withheld] withholds it.
     ///
     /// # Errors
     ///
@@ -397,6 +431,47 @@ impl DriverOptions {
             .spawn(TransformRunnable { component, context }, Some(input))
             .await;
         Ok((control, outputs))
+    }
+
+    /// Builds and runs a synchronous transform.
+    ///
+    /// A synchronous transform has no run loop of its own, so it runs inside a transform that does for each buffer what
+    /// a chained transform does: call `transform_buffer`, then dispatch the buffer to the default output, its only
+    /// output. That transform marks itself ready once it starts, accepts every event type, and stops once its input
+    /// closes. A failed dispatch stops it with the dispatch error.
+    ///
+    /// # Errors
+    ///
+    /// If the builder fails to build the synchronous transform, an error is returned.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the component's supervisor fails to start.
+    pub async fn synchronous_transform<B: SynchronousTransformBuilder>(
+        self, builder: B,
+    ) -> Result<(ComponentControl<EventsBuffer>, Output<EventsBuffer>), GenericError> {
+        let harness = Harness::new(self, ComponentType::Transform);
+
+        builder.specify_bounds(&mut harness.bounds_builder());
+        let transform = harness.build(builder.build(harness.build_context())).await?;
+        drop(builder);
+
+        let (dispatcher, output) = harness.default_output();
+        let (input, consumer) = harness.input();
+        let context = TransformContext::new(
+            &harness.topology_context,
+            &harness.component_context,
+            harness.component_registry.clone(),
+            harness.register_health(),
+            dispatcher,
+            consumer,
+        );
+
+        let component = Box::new(SynchronousTransformRunner { transform });
+        let control = harness
+            .spawn(TransformRunnable { component, context }, Some(input))
+            .await;
+        Ok((control, output))
     }
 
     /// Builds and runs an encoder.
@@ -502,17 +577,17 @@ impl DriverOptions {
 /// The setup shared by every component type: a topology context, and the wiring around the component.
 ///
 /// Mirrors what a topology does for each component between adding it to the blueprint and running it.
-struct Harness {
+pub(super) struct Harness {
     options: DriverOptions,
-    component_context: ComponentContext,
-    identity: SubsystemIdentifier,
+    pub(super) component_context: ComponentContext,
+    pub(super) identity: SubsystemIdentifier,
     dataspace: DataspaceRegistry,
-    topology_context: TopologyContext,
-    component_registry: ComponentRegistry,
+    pub(super) topology_context: TopologyContext,
+    pub(super) component_registry: ComponentRegistry,
 }
 
 impl Harness {
-    fn new(options: DriverOptions, component_type: ComponentType) -> Self {
+    pub(super) fn new(options: DriverOptions, component_type: ComponentType) -> Self {
         let component_context = ComponentContext::new(
             &topology_identifier(TOPOLOGY_NAME),
             options.component_id.clone(),
@@ -563,7 +638,7 @@ impl Harness {
             .await
     }
 
-    fn register_health(&self) -> Health {
+    pub(super) fn register_health(&self) -> Health {
         self.topology_context
             .health_registry()
             .register_component(&self.identity)
@@ -573,7 +648,7 @@ impl Harness {
     /// Creates a dispatcher with one channel per output definition, returning the receiving ends as [`Output`]s.
     ///
     /// The dispatcher holds the only senders, so each output closes exactly when the component drops its dispatcher.
-    fn outputs<T, D>(
+    pub(super) fn outputs<T, D>(
         &self, definitions: &[OutputDefinition<D>],
     ) -> Result<(Dispatcher<T>, Vec<Output<T>>), GenericError>
     where
@@ -607,7 +682,7 @@ impl Harness {
     }
 
     /// Creates a dispatcher with only a default output, for decoders and encoders.
-    fn default_output<T: Dispatchable>(&self) -> (Dispatcher<T>, Output<T>) {
+    pub(super) fn default_output<T: Dispatchable>(&self) -> (Dispatcher<T>, Output<T>) {
         let (dispatcher, mut outputs) = self
             .outputs(&[OutputDefinition::default_output(())])
             .expect("a lone default output should always be valid");
@@ -618,24 +693,39 @@ impl Harness {
     /// Creates the component's input channel.
     ///
     /// The returned sender is the only one, so the input closes exactly when the control drops it.
-    fn input<T: Dispatchable>(&self) -> (mpsc::Sender<T>, Consumer<T>) {
+    pub(super) fn input<T: Dispatchable>(&self) -> (mpsc::Sender<T>, Consumer<T>) {
         let (sender, receiver) = mpsc::channel(self.options.interconnect_capacity.get());
         (sender, Consumer::new(self.component_context.clone(), receiver))
     }
 
     /// Starts the component's supervisor with the component running under it, returning the control for it.
     ///
-    /// The component runs the way a topology runs it: wrapped in a [`ComponentWorker`], as the one static, temporary,
-    /// significant child of a supervisor with [`AutoShutdown::AnySignificant`][crate::runtime::AutoShutdown]. So it
-    /// runs in a process of its own, in the component's span, with the supervisor's shutdown budget covering it, and
-    /// its `run` returning stops the supervisor along with every child the component spawned.
+    /// The component runs the way a topology runs it: wrapped in a [`ComponentWorker`], as the one static, one-shot,
+    /// needed child of the supervisor. So it runs in a process of its own, in the component's span, with the
+    /// supervisor's shutdown budget covering it, and its `run` returning stops the supervisor along with every child
+    /// the component spawned.
     async fn spawn<C, I>(self, runnable: C, input: Option<mpsc::Sender<I>>) -> ComponentControl<I>
     where
         C: RunnableComponent,
     {
         let (outcome_tx, outcome) = oneshot::channel();
-        let worker = ComponentWorker::new(self.component_context.clone(), Reporting { runnable, outcome_tx });
-        let worker = runtime::supervisable(worker).temporary().with_significant(true).build();
+        let (exit_tx, exit) = oneshot::channel();
+        let (withheld_shutdown, shutdown) = if self.options.withhold_shutdown {
+            let (coordinator, shutdown) = ShutdownHandle::paired();
+            (Some(coordinator), Some(shutdown))
+        } else {
+            (None, None)
+        };
+        let reporting = Reporting {
+            runnable,
+            outcome_tx,
+            shutdown,
+        };
+        let worker = ComponentWorker::new(self.component_context.clone(), reporting);
+        let worker = runtime::supervisable(worker)
+            .needed()
+            .observing_exit(ExitObserver::new(exit_tx))
+            .build();
         let supervisor = TestComponentSupervisor::start_with_worker(
             &self.identity.to_string(),
             self.options.shutdown_budget,
@@ -650,6 +740,8 @@ impl Harness {
             supervisor,
             input,
             outcome,
+            exit,
+            withheld_shutdown,
             wait_timeout: self.options.wait_timeout,
             shutdown_budget: self.options.shutdown_budget,
         }
@@ -667,14 +759,21 @@ pub(super) type RunOutcome = std::thread::Result<Result<(), GenericError>>;
 struct Reporting<C> {
     runnable: C,
     outcome_tx: oneshot::Sender<RunOutcome>,
+
+    /// The shutdown handle to run the component with in place of the one from its worker, when shutdown is withheld.
+    shutdown: Option<ShutdownHandle>,
 }
 
 impl<C: RunnableComponent> RunnableComponent for Reporting<C> {
     const WANTS_SHUTDOWN_SIGNAL: bool = C::WANTS_SHUTDOWN_SIGNAL;
 
     fn run_with_shutdown(self, process_shutdown: ShutdownHandle) -> SupervisorFuture {
-        let Self { runnable, outcome_tx } = self;
-        let mut run = runnable.run_with_shutdown(process_shutdown);
+        let Self {
+            runnable,
+            outcome_tx,
+            shutdown,
+        } = self;
+        let mut run = runnable.run_with_shutdown(shutdown.unwrap_or(process_shutdown));
 
         Box::pin(async move {
             // Catch a panic in any poll of `run`, rather than letting it unwind into the supervisor.
@@ -689,5 +788,25 @@ impl<C: RunnableComponent> RunnableComponent for Reporting<C> {
             let _ = outcome_tx.send(outcome);
             Ok(())
         })
+    }
+}
+
+/// Runs a synchronous transform on each buffer it receives, the way a chained transform runs each of its steps.
+struct SynchronousTransformRunner {
+    transform: Box<dyn SynchronousTransform + Send>,
+}
+
+#[async_trait]
+impl Transform for SynchronousTransformRunner {
+    async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
+        let mut health = context.take_health_handle();
+        health.mark_ready();
+
+        while let Some(mut buffer) = context.events().next().await {
+            self.transform.transform_buffer(&mut buffer);
+            context.dispatcher().dispatch(buffer).await?;
+        }
+
+        Ok(())
     }
 }
