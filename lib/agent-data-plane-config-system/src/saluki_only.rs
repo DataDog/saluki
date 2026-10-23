@@ -77,8 +77,9 @@ use agent_data_plane_config::control::MemoryMode;
 use agent_data_plane_config::defaults::{
     DEFAULT_ENABLE_GLOBAL_LIMITER, DEFAULT_MAX_RESOURCE_LEN, DEFAULT_MEMORY_SLOP_FACTOR, DEFAULT_METRICS_LEVEL,
     DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES, DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES,
-    DEFAULT_STATEFUL_METRICS_WORKERS, DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STATEFUL_METRICS_DICTIONARY_MAX_BYTES,
-    MAX_STRING_INTERNER_SIZE_BYTES,
+    DEFAULT_STATEFUL_METRICS_RETRY_MAX_AGE, DEFAULT_STATEFUL_METRICS_RETRY_MAX_ATTEMPTS,
+    DEFAULT_STATEFUL_METRICS_RETRY_MAX_BYTES, DEFAULT_STATEFUL_METRICS_WORKERS, DEFAULT_STRING_INTERNER_SIZE_BYTES,
+    MAX_STATEFUL_METRICS_DICTIONARY_MAX_BYTES, MAX_STRING_INTERNER_SIZE_BYTES,
 };
 use agent_data_plane_config::domains::dogstatsd::{validate_metric_tag_value_allowlists, MetricTagValueAllowlistEntry};
 use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter, OttlTransform};
@@ -253,6 +254,14 @@ pub struct DataPlane {
     /// as `256MiB`; defaults to 256 MiB and rejects zero.
     #[serde(deserialize_with = "deserialize_stateful_metrics_dictionary_max_bytes")]
     pub stateful_metrics_dictionary_max_bytes: NonZeroU64,
+    /// Per-worker byte budget for payloads Foldspace retains to retry itself, as a bare byte count or a byte-size
+    /// string; defaults to 8 MiB, and zero moves every waiting payload to the retry queue.
+    #[serde(deserialize_with = "deserialize_byte_size_u64")]
+    pub stateful_metrics_retry_max_bytes: u64,
+    /// How long a payload may wait inside Foldspace for an endpoint; defaults to two minutes, and zero disables it.
+    pub stateful_metrics_retry_max_age: DurationString,
+    /// Sends per payload before Foldspace moves it to the retry queue; defaults to eight, and zero is treated as one.
+    pub stateful_metrics_retry_max_attempts: u32,
     /// Whether ADP runs in standalone mode (`data_plane.standalone_mode`).
     pub standalone_mode: Option<bool>,
     /// Checks pipeline gate (`data_plane.checks.*`).
@@ -269,6 +278,9 @@ impl Default for DataPlane {
             stateful_metrics_workers: DEFAULT_STATEFUL_METRICS_WORKERS,
             stateful_metrics_dictionary_max_entries: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES,
             stateful_metrics_dictionary_max_bytes: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES,
+            stateful_metrics_retry_max_bytes: DEFAULT_STATEFUL_METRICS_RETRY_MAX_BYTES,
+            stateful_metrics_retry_max_age: DurationString::new(DEFAULT_STATEFUL_METRICS_RETRY_MAX_AGE),
+            stateful_metrics_retry_max_attempts: DEFAULT_STATEFUL_METRICS_RETRY_MAX_ATTEMPTS,
             standalone_mode: None,
             checks: DataPlaneChecks::default(),
             otlp: DataPlaneOtlp::default(),
@@ -437,6 +449,13 @@ where
     Ok(bytes)
 }
 
+fn deserialize_byte_size_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(ByteSize::deserialize(deserializer)?.as_u64())
+}
+
 fn deserialize_string_interner_size<'de, D>(deserializer: D) -> Result<NonZeroUsize, D::Error>
 where
     D: Deserializer<'de>,
@@ -564,6 +583,9 @@ impl SalukiOnly {
         config.domains.stateful_metrics.dictionary_max_entries =
             self.data_plane.stateful_metrics_dictionary_max_entries;
         config.domains.stateful_metrics.dictionary_max_bytes = self.data_plane.stateful_metrics_dictionary_max_bytes;
+        config.domains.stateful_metrics.retry_max_bytes = self.data_plane.stateful_metrics_retry_max_bytes;
+        config.domains.stateful_metrics.retry_max_age = self.data_plane.stateful_metrics_retry_max_age.as_duration();
+        config.domains.stateful_metrics.retry_max_attempts = self.data_plane.stateful_metrics_retry_max_attempts;
         // control
         if let Some(v) = self.data_plane.standalone_mode {
             config.control.standalone_mode = v;
@@ -803,7 +825,15 @@ mod tests {
                 "otlp": {
                     "receiver_grpc_endpoint_temporary": "0.0.0.0:19317",
                     "receiver_http_endpoint_temporary": "0.0.0.0:19318"
-                }
+                },
+                "stateful_metrics_endpoint": "http://127.0.0.1:9000",
+                "stateful_metrics_additional_endpoints": ["http://127.0.0.1:9001"],
+                "stateful_metrics_workers": 5,
+                "stateful_metrics_dictionary_max_entries": 12345,
+                "stateful_metrics_dictionary_max_bytes": "128MiB",
+                "stateful_metrics_retry_max_bytes": "2MiB",
+                "stateful_metrics_retry_max_age": "45s",
+                "stateful_metrics_retry_max_attempts": 3
             },
             // nested: apm_config
             "apm_config": {
@@ -917,6 +947,17 @@ mod tests {
 
         // domains.checks
         assert_eq!(config.domains.checks.ipc_endpoint, "localhost:5006");
+
+        // domains.stateful_metrics
+        let stateful = &config.domains.stateful_metrics;
+        assert_eq!(stateful.endpoint.as_deref(), Some("http://127.0.0.1:9000"));
+        assert_eq!(stateful.additional_endpoints, ["http://127.0.0.1:9001"]);
+        assert_eq!(stateful.workers.get(), 5);
+        assert_eq!(stateful.dictionary_max_entries.get(), 12345);
+        assert_eq!(stateful.dictionary_max_bytes.get(), 128 * 1024 * 1024);
+        assert_eq!(stateful.retry_max_bytes, 2 * 1024 * 1024);
+        assert_eq!(stateful.retry_max_age, Duration::from_secs(45));
+        assert_eq!(stateful.retry_max_attempts, 3);
     }
 
     /// `memory_limit` is a byte size the source may express as a bare integer (bytes) or a suffixed
