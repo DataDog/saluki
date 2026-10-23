@@ -568,15 +568,21 @@ mod tests {
         panic!("Unix domain socket at {} did not appear within 500ms", path.display());
     }
 
-    #[tokio::test]
-    async fn build_fails_without_any_configured_endpoint() {
-        // Listening nowhere is a configuration error, not a silent no-op: `build` must reject it.
-        let config = ApmRelayConfiguration {
-            receiver_endpoint: String::new(),
+    fn test_config(bind_host: Option<&str>, non_local_traffic: bool, receiver_port: u16) -> ApmRelayConfiguration {
+        ApmRelayConfiguration {
             receiver_socket: String::new(),
             proxy_destination: "http://127.0.0.1:8127".to_string(),
             capture_entity_resolver: None,
-        };
+            bind_host: bind_host.map(str::to_string),
+            non_local_traffic,
+            receiver_port,
+        }
+    }
+
+    #[tokio::test]
+    async fn build_fails_without_any_configured_endpoint() {
+        // Listening nowhere is a configuration error, not a silent no-op: `build` must reject it.
+        let config = test_config(None, false, 0);
 
         let error = match config.build(BuildContext::test_relay("apm_relay_no_endpoints")).await {
             Ok(_) => panic!("build should fail when no endpoint is configured"),
@@ -587,12 +593,7 @@ mod tests {
 
     #[tokio::test]
     async fn build_succeeds_with_only_tcp_endpoint_configured() {
-        let config = ApmRelayConfiguration {
-            receiver_endpoint: "0.0.0.0:8127".to_string(),
-            receiver_socket: String::new(),
-            proxy_destination: "http://127.0.0.1:8127".to_string(),
-            capture_entity_resolver: None,
-        };
+        let config = test_config(None, true, 8127);
 
         assert!(config
             .build(BuildContext::test_relay("apm_relay_tcp_only"))
@@ -602,12 +603,8 @@ mod tests {
 
     #[tokio::test]
     async fn build_fails_with_invalid_proxy_destination() {
-        let config = ApmRelayConfiguration {
-            receiver_endpoint: "127.0.0.1:8126".to_string(),
-            receiver_socket: String::new(),
-            proxy_destination: "ftp://127.0.0.1:8127".to_string(),
-            capture_entity_resolver: None,
-        };
+        let mut config = test_config(None, false, 8126);
+        config.proxy_destination = "ftp://127.0.0.1:8127".to_string();
 
         assert!(config
             .build(BuildContext::test_relay("apm_relay_bad_destination"))
@@ -616,35 +613,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_fails_with_invalid_endpoint_string() {
-        let config = ApmRelayConfiguration {
-            receiver_endpoint: "not a valid host:port".to_string(),
-
-            receiver_socket: String::new(),
-            proxy_destination: "http://127.0.0.1:8127".to_string(),
-            capture_entity_resolver: None,
-        };
+    async fn build_fails_with_unresolvable_bind_host() {
+        let config = test_config(Some("not a valid host"), false, 8126);
 
         let error = match config
-            .build(BuildContext::test_relay("apm_relay_invalid_endpoint"))
+            .build(BuildContext::test_relay("apm_relay_unresolvable_bind_host"))
             .await
         {
-            Ok(_) => panic!("build should fail for an invalid TCP receiver endpoint"),
+            Ok(_) => panic!("build should fail for an unresolvable bind host"),
             Err(error) => error,
         };
-        assert!(error.to_string().contains("Invalid APM relay TCP receiver endpoint"));
+        assert!(error.to_string().contains("Could not resolve bind_host"));
     }
 
-    #[test]
-    fn tcp_listen_address_parses_host_port() {
-        let config = ApmRelayConfiguration {
-            receiver_endpoint: "0.0.0.0:8127".to_string(),
-            receiver_socket: String::new(),
-            proxy_destination: "http://127.0.0.1:8127".to_string(),
-            capture_entity_resolver: None,
-        };
+    #[tokio::test]
+    async fn tcp_listen_address_defaults_to_loopback() {
+        let config = test_config(None, false, 8127);
         assert_eq!(
-            config.tcp_listen_address().unwrap().unwrap().to_string(),
+            config.tcp_listen_address().await.unwrap().unwrap().to_string(),
+            "tcp://127.0.0.1:8127"
+        );
+    }
+
+    #[tokio::test]
+    async fn tcp_listen_address_uses_bind_host() {
+        let config = test_config(Some("192.168.1.50"), false, 8127);
+        assert_eq!(
+            config.tcp_listen_address().await.unwrap().unwrap().to_string(),
+            "tcp://192.168.1.50:8127"
+        );
+    }
+
+    #[tokio::test]
+    async fn tcp_listen_address_non_local_traffic_overrides_bind_host() {
+        let config = test_config(Some("192.168.1.50"), true, 8127);
+        assert_eq!(
+            config.tcp_listen_address().await.unwrap().unwrap().to_string(),
             "tcp://0.0.0.0:8127"
         );
     }
@@ -652,12 +656,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn uds_listen_address_parses_path() {
-        let config = ApmRelayConfiguration {
-            receiver_endpoint: String::new(),
-            receiver_socket: "/tmp/apm.sock".to_string(),
-            proxy_destination: "http://127.0.0.1:8127".to_string(),
-            capture_entity_resolver: None,
-        };
+        let mut config = test_config(None, false, 0);
+        config.receiver_socket = "/tmp/apm.sock".to_string();
         assert_eq!(
             config.uds_listen_address().unwrap().unwrap().to_string(),
             "unix:///tmp/apm.sock"
