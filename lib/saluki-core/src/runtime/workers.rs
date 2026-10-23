@@ -7,10 +7,7 @@ use saluki_error::{generic_error, GenericError};
 
 use super::supervisable::{InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture};
 
-/// Fallback graceful shutdown period for a function-based worker.
-///
-/// Only consulted when nothing else bounds the worker: a child spawned through the builder defers to its supervisor's
-/// shutdown budget, and falls back to this when the supervisor has no budget at all.
+/// Graceful shutdown timeout for a function-based worker that isn't given an explicit shutdown strategy.
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// An output type that a function-based worker can produce.
@@ -47,8 +44,8 @@ type WorkerBody = Box<dyn FnOnce(ShutdownHandle) -> SupervisorFuture + Send>;
 /// [`wants_shutdown_signal`][Supervisable::wants_shutdown_signal]. Shutdown of a subtree is a _trigger_, not an
 /// enforcement: the workers within it keep running until their terminal conditions are reached, which is what lets a
 /// set of tasks connected by channels drain in dependency order without any of them having to know that order. The
-/// supervisor's [shutdown budget][crate::runtime::Supervisor::with_shutdown_budget] is the backstop for work that takes
-/// too long, and [`ShutdownStrategy::Brutal`] is the answer for work that has no terminal condition at all.
+/// worker's shutdown timeout (five seconds by default) is the backstop for work that takes too long, and
+/// [`ShutdownStrategy::Brutal`] is the answer for work that has no terminal condition at all.
 ///
 /// Some workers must observe shutdown, for example a worker that:
 ///
@@ -100,8 +97,8 @@ impl FnWorker {
 
     /// Creates a worker whose body gets the shutdown signal.
     ///
-    /// `f` is called once, when the worker starts. Its argument is the [`ShutdownHandle`] that the supervisor of the
-    /// worker fires when the worker must stop.
+    /// `f` is called once, when the worker starts. Its argument is the [`ShutdownHandle`] that the owner of the worker
+    /// fires when the worker must stop.
     ///
     /// Prefer [`worker_with_shutdown`][crate::runtime::worker_with_shutdown] and its counterpart on
     /// [`SupervisorHandle`][crate::runtime::SupervisorHandle]. These functions wrap this function with the correct

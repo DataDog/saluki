@@ -204,7 +204,6 @@ struct ChildHistory {
 pub(super) struct NodeConfig {
     pub(super) restart_strategy: RestartStrategy,
     pub(super) auto_shutdown: AutoShutdown,
-    pub(super) shutdown_budget: Option<Duration>,
     pub(super) dedicated_threads: Option<usize>,
 }
 
@@ -333,7 +332,6 @@ impl SupervisorNode {
                 config: NodeConfig {
                     restart_strategy: RestartStrategy::default(),
                     auto_shutdown: AutoShutdown::default(),
-                    shutdown_budget: None,
                     dedicated_threads: None,
                 },
                 run: None,
@@ -830,7 +828,6 @@ impl Walk {
             restart_intensity: config.restart_strategy.intensity(),
             restart_period_ms: duration_millis(config.restart_strategy.period()),
             auto_shutdown: config.auto_shutdown,
-            shutdown_budget_ms: config.shutdown_budget.map(duration_millis),
             dedicated_threads: config.dedicated_threads,
             restarts_performed,
             generation,
@@ -1058,8 +1055,7 @@ fn pending_children(state: &NodeInner) -> Vec<PendingChild> {
 
 /// Converts a duration to whole milliseconds, saturating rather than overflowing.
 ///
-/// Both a shutdown budget and a restart period come from configuration and can be arbitrarily large, up to and
-/// including [`Duration::MAX`], which is used elsewhere to mean `no deadline`.
+/// A restart period comes from configuration, and it can be as large as [`Duration::MAX`].
 fn duration_millis(duration: Duration) -> u64 {
     duration.as_millis().min(u128::from(u64::MAX)) as u64
 }

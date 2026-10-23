@@ -1,0 +1,5 @@
+fixes:
+  - |
+    The Checks IPC source, the OTLP source, and the OTLP relay no longer drop data that they already
+    accepted when Agent Data Plane shuts down. Each one now stops accepting new requests, finishes
+    the requests that are in flight, and dispatches everything that it accepted before it stops.

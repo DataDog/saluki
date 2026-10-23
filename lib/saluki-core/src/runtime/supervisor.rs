@@ -17,6 +17,7 @@ use tracing::{debug, error, warn};
 
 use super::{
     dedicated::{spawn_dedicated_runtime, RuntimeConfiguration, RuntimeMode},
+    halt::HaltWatch,
     restart::{RestartAction, RestartMode, RestartState, RestartStrategy, RestartType},
     scope::{Adoption, Edge, UnadoptedScope},
     supervisable::{InitializationError, ShutdownStrategy, Supervisable},
@@ -199,7 +200,8 @@ pub enum SupervisorError {
 ///   kind of child being described, and [`build`][crate::runtime::ChildBuilder::build] hands the result to
 ///   [`add_worker`][Supervisor::add_worker].
 ///
-/// Supervisors have no per-child settings of their own, so there is nothing to configure for a nested supervisor.
+/// A nested supervisor has fewer settings, which [`NestedSupervisorBuilder`][crate::runtime::NestedSupervisorBuilder]
+/// configures.
 pub struct ChildSpecification<S = WorkerSpec> {
     spec_inner: S,
 }
@@ -290,22 +292,6 @@ impl ChildSpecification<WorkerSpec> {
         self
     }
 
-    /// Gives this worker no shutdown deadline of its own, leaving it bounded solely by its supervisor's shutdown
-    /// budget.
-    ///
-    /// Use this for a worker whose acceptable drain time is a property of the subtree it belongs to rather than of the
-    /// worker itself -- a task spawned by a topology component, for instance, where what matters is that the component
-    /// as a whole stops in time. See [`Supervisor::with_shutdown_budget`].
-    ///
-    /// A supervisor with no budget has nothing to bound the worker with, so in that case the worker falls back to the
-    /// strategy it reports through [`Supervisable::shutdown_strategy`] rather than being left to stall the drain
-    /// indefinitely.
-    #[must_use]
-    pub(crate) fn with_budget_bounded_shutdown(mut self) -> Self {
-        self.spec_inner.options.shutdown = ChildShutdown::BudgetBounded;
-        self
-    }
-
     /// Sets whether this worker's owner can work without it. See [`Edge`].
     #[must_use]
     pub(crate) fn with_edge(mut self, edge: Edge) -> Self {
@@ -350,11 +336,11 @@ impl ChildSpecification<WorkerSpec> {
 // Crate-internal for the same reason as the worker surface above: `NestedSupervisorBuilder` is the public front end,
 // and going around it would allow combinations the builder refuses to express.
 //
-// Deliberately narrower than the worker surface, though. A nested supervisor bounds its own subtree through its
-// children's deadlines: `SupervisedChild::shutdown_strategy` reports `Graceful(Duration::MAX)` for one, and
-// `WorkerState::add_worker` exempts it from the parent's budget. Offering a shutdown setting here would let a caller
-// truncate a drain the subtree is already responsible for, so there isn't one. Placement is likewise absent: a nested
-// supervisor runs wherever its parent does, and its children carry their own placement.
+// Deliberately narrower than the worker surface, though. A nested supervisor bounds its own subtree through the
+// shutdown timeouts of its children: `SupervisedChild::shutdown_strategy` reports `Graceful(Duration::MAX)` for one.
+// Offering a shutdown setting here would let a caller truncate a drain the subtree is already responsible for, so there
+// isn't one. Placement is likewise absent: a nested supervisor runs wherever its parent does, and its children carry
+// their own placement.
 impl ChildSpecification<SupervisorSpec> {
     /// Sets whether this nested supervisor's owner can work without it. See [`Edge`].
     #[must_use]
@@ -377,6 +363,16 @@ impl ChildSpecification<SupervisorSpec> {
     #[must_use]
     pub(crate) fn with_significant(mut self, significant: bool) -> Self {
         self.spec_inner.options.significant = significant;
+        self
+    }
+
+    /// Makes the scope that holds this nested supervisor tell it to stop as soon as the owner of the scope is told to
+    /// stop. See [`NestedSupervisorBuilder::stops_with_owner`][builder].
+    ///
+    /// [builder]: crate::runtime::NestedSupervisorBuilder::stops_with_owner
+    #[must_use]
+    pub(crate) fn stopping_with_owner(mut self) -> Self {
+        self.spec_inner.options.stops_with_owner = true;
         self
     }
 }
@@ -559,8 +555,11 @@ impl SupervisedChild {
         })
     }
 
+    /// Creates the future that runs this child.
+    ///
+    /// Only a nested supervisor uses `halt`. A worker is halted by the `drive` wrapper around its future instead.
     pub(super) fn create_worker_future(
-        &self, process: Process, process_shutdown: ShutdownHandle,
+        &self, process: Process, process_shutdown: ShutdownHandle, halt: HaltWatch,
     ) -> Result<WorkerFuture, SupervisorError> {
         match self {
             Self::Worker(worker) => {
@@ -581,7 +580,7 @@ impl SupervisedChild {
                 match sup.runtime_mode() {
                     RuntimeMode::Ambient => {
                         // Run on the parent's ambient runtime.
-                        Ok(sup.as_nested_process(process, process_shutdown))
+                        Ok(sup.as_nested_process(process, process_shutdown, halt))
                     }
                     RuntimeMode::Dedicated(config) => {
                         // Spawn in a dedicated runtime on a new OS thread, passing the parent's
@@ -594,12 +593,17 @@ impl SupervisedChild {
                         // fix both, at the cost of renaming the affected resource groups and their metric labels.
                         let child_name = sup.supervisor_id.to_string();
                         let dataspace = process.dataspace().clone();
-                        let handle =
-                            spawn_dedicated_runtime(sup.inner_clone(), config.clone(), process_shutdown, dataspace)
-                                .map_err(|e| SupervisorError::FailedToInitialize {
-                                    child_name,
-                                    source: e.into(),
-                                })?;
+                        let handle = spawn_dedicated_runtime(
+                            sup.inner_clone(),
+                            config.clone(),
+                            process_shutdown,
+                            halt,
+                            dataspace,
+                        )
+                        .map_err(|e| SupervisorError::FailedToInitialize {
+                            child_name,
+                            source: e.into(),
+                        })?;
 
                         Ok(Box::pin(async move { handle.await.map_err(WorkerError::from) }))
                     }
@@ -627,12 +631,16 @@ pub(super) enum ChildShutdown {
 
     /// Use this strategy, overriding whatever the worker reports.
     Explicit(ShutdownStrategy),
+}
 
-    /// The child carries no deadline of its own and is bounded solely by its supervisor's shutdown budget.
-    ///
-    /// A supervisor with no budget has nothing to bound the child with, so this falls back to the worker's own
-    /// strategy rather than leaving the child free to stall the drain indefinitely.
-    BudgetBounded,
+impl ChildShutdown {
+    /// Resolves the shutdown strategy of a child from the strategy that the child reports for itself.
+    pub(super) fn resolve(self, worker_strategy: ShutdownStrategy) -> ShutdownStrategy {
+        match self {
+            Self::Worker => worker_strategy,
+            Self::Explicit(strategy) => strategy,
+        }
+    }
 }
 
 /// Per-child settings as configured on a [`ChildSpecification`], before they are resolved for a specific registration
@@ -664,6 +672,9 @@ pub(super) struct ChildOptions {
 
     /// Whether the child owns a resource group of its own.
     own_resource_group: bool,
+
+    /// Whether a nested supervisor is told to stop as soon as the owner of its scope is.
+    stops_with_owner: bool,
 
     /// Receives how the worker ended, for the component test harness.
     #[cfg(any(test, feature = "test-util"))]
@@ -715,6 +726,7 @@ impl ChildOptions {
             forwards_failures: self.forwards_failures,
             adopt: self.adopt,
             own_resource_group: self.own_resource_group,
+            stops_with_owner: self.stops_with_owner,
             #[cfg(any(test, feature = "test-util"))]
             exit_observer: self.exit_observer,
         }
@@ -731,6 +743,7 @@ impl ChildOptions {
 /// - how the shutdown strategy of the child is decided
 /// - how the termination of the child affects a scope that owns it
 /// - the scope that the child adopts, if there is one
+/// - whether a nested supervisor stops as soon as the owner of its scope is told to stop
 #[derive(Clone, Debug)]
 pub(super) struct ChildConfig {
     restart: RestartType,
@@ -741,6 +754,7 @@ pub(super) struct ChildConfig {
     forwards_failures: bool,
     adopt: Option<Adoption>,
     own_resource_group: bool,
+    stops_with_owner: bool,
     #[cfg(any(test, feature = "test-util"))]
     exit_observer: Option<ExitObserver>,
 }
@@ -776,12 +790,18 @@ impl ChildConfig {
         self.own_resource_group
     }
 
+    /// Returns whether the child is told to stop as soon as the owner of its scope is, rather than when the scope
+    /// closes.
+    pub(super) fn stops_with_owner(&self) -> bool {
+        self.stops_with_owner
+    }
+
     /// Returns whether the child's termination can stop its owner.
     ///
     /// A snapshot reports this value as significance. It is true for a needed child that can terminate without a
     /// restart, and for a child marked significant. A permanent child is always restarted. Thus, whatever its marks,
     /// the termination of a permanent child never stops its owner.
-    pub(super) fn stops_owner(&self) -> bool {
+    pub(super) fn can_stop_owner(&self) -> bool {
         self.restart != RestartType::Permanent && (self.significant || self.edge == Edge::Needed)
     }
 
@@ -809,8 +829,8 @@ impl ChildConfig {
 /// scope closes, and then the error of that child is the result of the worker. The harness needs that error to return
 /// it.
 ///
-/// The observer receives the result of the first start of the worker only. It receives nothing if the worker is aborted
-/// or panics.
+/// The observer receives the result of the first start of the worker only, including a halt (unclean if overdue, clean
+/// if brutal). It receives nothing if the worker panics, or if its task is aborted along with its owner's.
 #[cfg(any(test, feature = "test-util"))]
 #[derive(Clone)]
 pub(crate) struct ExitObserver(Arc<Mutex<Option<ExitSender>>>);
@@ -1092,34 +1112,6 @@ impl Supervisor {
         self
     }
 
-    /// Bounds how long this supervisor waits for its worker children during shutdown.
-    ///
-    /// Without a budget, a supervisor waits as long as each child's own [`ShutdownStrategy`] allows, and waits
-    /// indefinitely for any child that has no finite deadline of its own. A budget makes the supervisor responsible for
-    /// the deadline instead: children need no individual timeouts, and whatever is still running when the budget
-    /// elapses is forcefully aborted -- each one named in the logs, and counted in the resulting
-    /// [`SupervisorError::ShutdownTimedOut`].
-    ///
-    /// The budget is a ceiling, not a replacement: a child that also carries its own finite deadline is still held to
-    /// whichever elapses first.
-    ///
-    /// Since children are always drained concurrently, the budget bounds the drain as a whole rather than accruing
-    /// per child: it is measured from the moment shutdown begins, and every child is held to it simultaneously.
-    ///
-    /// Two kinds of child are outside it. A nested supervisor is never cut off by its parent's budget -- it bounds its
-    /// own subtree, and aborting it would both truncate that drain and, for a supervisor running on a dedicated
-    /// runtime, fail to stop it at all. A [`ShutdownStrategy::Brutal`] child is aborted up front and never waited on.
-    /// Neither can a budget bound work that ignores cancellation, since an abort only takes effect at an await point.
-    ///
-    /// Use this where one deadline for a whole subtree is more meaningful than a guess per worker -- a topology
-    /// component and its background tasks, for instance, where what matters is that the component as a whole stops in
-    /// time.
-    #[must_use]
-    pub fn with_shutdown_budget(self, budget: Duration) -> Self {
-        self.node.update_config(|config| config.shutdown_budget = Some(budget));
-        self
-    }
-
     /// Returns a handle for spawning dynamic children on this supervisor while it runs.
     ///
     /// The handle can be created before the supervisor starts and cloned freely. Spawning through it always succeeds,
@@ -1246,7 +1238,7 @@ impl Supervisor {
             name: entry.spec.name().into(),
             node: entry.spec.node(),
             restart: entry.config.restart,
-            significant: entry.config.stops_owner(),
+            significant: entry.config.can_stop_owner(),
         }
     }
 
@@ -1330,7 +1322,9 @@ impl Supervisor {
         }
     }
 
-    async fn run_inner(&self, process: Process, process_shutdown: ShutdownHandle) -> Result<(), SupervisorError> {
+    async fn run_inner(
+        &self, process: Process, process_shutdown: ShutdownHandle, halt: HaltWatch,
+    ) -> Result<(), SupervisorError> {
         // Publish a fresh spawn queue for this run so handles can spawn dynamic children into it; while it's set,
         // handles observe us as running.
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -1341,7 +1335,7 @@ impl Supervisor {
         // starts, and only the resulting name matches the resource group its allocations land in.
         self.node.begin_run(&process);
 
-        let result = self.supervise(process, process_shutdown, cmd_rx).await;
+        let result = self.supervise(process, process_shutdown, halt, cmd_rx).await;
 
         // The run is over. Clear the sender so later spawns are dropped rather than queued, and reset the
         // dynamic-children gauge. Dropping the receiver (owned by `supervise`) already discarded anything in flight.
@@ -1357,19 +1351,19 @@ impl Supervisor {
     }
 
     async fn supervise(
-        &self, process: Process, process_shutdown: ShutdownHandle, mut cmd_rx: mpsc::UnboundedReceiver<PendingSpawn>,
+        &self, process: Process, process_shutdown: ShutdownHandle, mut halt: HaltWatch,
+        mut cmd_rx: mpsc::UnboundedReceiver<PendingSpawn>,
     ) -> Result<(), SupervisorError> {
         // Read once: configuration can't change while a run is in flight, and this keeps the reap and spawn arms
         // below off the node's lock entirely.
         let NodeConfig {
             restart_strategy,
             auto_shutdown,
-            shutdown_budget,
             ..
         } = self.node.config();
 
         let mut restart_state = RestartState::new(restart_strategy);
-        let mut worker_state = WorkerState::new(process, self.handle(), shutdown_budget, Arc::clone(&self.node));
+        let mut worker_state = WorkerState::new(process, self.handle(), Arc::clone(&self.node));
 
         // The live roster of children -- both static (seeded below) and dynamic (added via the handle) -- keyed by a
         // stable id. A restart re-runs a child by id; a child that isn't restarted is removed from the roster.
@@ -1396,6 +1390,9 @@ impl Supervisor {
                 // Shutdown first, then reaping, then taking on new work -- so neither a flood of spawns nor a stream
                 // of exiting children can starve anything ranked above it.
                 biased;
+
+                // Halted by our owner: the teardown below sees this, and halts children instead of signalling them.
+                _ = halt.wait() => break Ok(()),
 
                 // Shutdown has been triggered; break out of the loop with a clean outcome and tear down below. (We
                 // can't touch `cmd_rx` in any arm's handler -- the `recv_many` arm below borrows it for the whole
@@ -1506,7 +1503,7 @@ impl Supervisor {
                                     // This drain is part of a restart, not a shutdown: any forced aborts here are
                                     // already logged per-worker, and the supervisor keeps running, so the count does
                                     // not feed the unclean-shutdown signal.
-                                    let _ = worker_state.shutdown_workers().await;
+                                    let _ = worker_state.shutdown_workers(&mut halt).await;
                                     // A one-for-all restart resets to the static roster; dynamic children are not
                                     // restored (they're lost on a supervisor-level restart, matching Erlang/OTP), and
                                     // temporary children are not restarted.
@@ -1563,7 +1560,7 @@ impl Supervisor {
                 "Discarded queued dynamic children during shutdown."
             );
         }
-        let aborted = worker_state.shutdown_workers().await;
+        let aborted = worker_state.shutdown_workers(&mut halt).await;
 
         // A requested shutdown that nonetheless had to forcefully abort one or more workers (here or anywhere in the
         // subtree below us) is surfaced as an unclean shutdown so it propagates up the tree rather than being reported
@@ -1578,7 +1575,7 @@ impl Supervisor {
         }
     }
 
-    fn as_nested_process(&self, process: Process, process_shutdown: ShutdownHandle) -> WorkerFuture {
+    fn as_nested_process(&self, process: Process, process_shutdown: ShutdownHandle, halt: HaltWatch) -> WorkerFuture {
         // Simple wrapper around `run_inner` to satisfy the return type signature needed when running the supervisor as
         // a nested child process in another supervisor.
         debug!(supervisor_id = %self.supervisor_id, "Nested supervisor starting.");
@@ -1587,7 +1584,7 @@ impl Supervisor {
         let sup = self.inner_clone();
 
         Box::pin(async move {
-            sup.run_inner(process, process_shutdown)
+            sup.run_inner(process, process_shutdown, halt)
                 .await
                 .map_err(WorkerError::from)
         })
@@ -1607,7 +1604,7 @@ impl Supervisor {
         })?;
 
         debug!(supervisor_id = %self.supervisor_id, "Supervisor starting.");
-        self.run_inner(process.clone(), process_shutdown)
+        self.run_inner(process.clone(), process_shutdown, HaltWatch::never())
             .into_process_future(process)
             .await
     }
@@ -1625,7 +1622,7 @@ impl Supervisor {
         // children once `shutdown` resolves. The trigger fires at most once (guarded), and otherwise fires on drop if
         // the supervisor returns on its own first.
         let (shutdown_coordinator, shutdown_handle) = ShutdownHandle::paired();
-        let run = self.run_with_shutdown_inner(shutdown_handle, None);
+        let run = self.run_with_shutdown_inner(shutdown_handle, HaltWatch::never(), None);
         pin!(run, shutdown);
 
         let mut shutdown_coordinator = Some(shutdown_coordinator);
@@ -1644,6 +1641,9 @@ impl Supervisor {
     /// This is an internal variant of `run_with_shutdown` that takes a `ShutdownHandle` directly, used when spawning
     /// supervisors in dedicated runtimes where the shutdown signal is already wrapped in a `ShutdownHandle`.
     ///
+    /// `halt` lets the owner of a nested supervisor on a dedicated runtime halt it. Other callers pass
+    /// `HaltWatch::never()`.
+    ///
     /// If `dataspace` is provided, the supervisor will use it instead of creating a new one. This is used to propagate
     /// the parent's dataspace across OS thread boundaries for dedicated runtimes.
     ///
@@ -1651,7 +1651,7 @@ impl Supervisor {
     ///
     /// If the supervisor exceeds its restart limits, or fails to initialize a child process, an error is returned.
     pub(crate) async fn run_with_shutdown_inner(
-        &mut self, process_shutdown: ShutdownHandle, dataspace: Option<DataspaceRegistry>,
+        &mut self, process_shutdown: ShutdownHandle, halt: HaltWatch, dataspace: Option<DataspaceRegistry>,
     ) -> Result<(), SupervisorError> {
         let process =
             Process::supervisor_with_dataspace(&self.supervisor_id, None, dataspace).context(InvalidName {
@@ -1659,7 +1659,7 @@ impl Supervisor {
             })?;
 
         debug!(supervisor_id = %self.supervisor_id, "Supervisor starting.");
-        self.run_inner(process.clone(), process_shutdown)
+        self.run_inner(process.clone(), process_shutdown, halt)
             .into_process_future(process)
             .await
     }
@@ -3203,71 +3203,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn budget_of_duration_max_does_not_leave_a_budget_bounded_child_unbounded() {
-        // `Duration::MAX` is the natural spelling of "no ceiling", and a budget too large to become a deadline bounds
-        // nothing at all. A budget-bounded child under one must therefore fall back to its own deadline: without that,
-        // setting `MAX` would be strictly *worse* than setting no budget, since the child would never be abandoned and
-        // the drain would hang.
-        let mut sup = Supervisor::new("test-sup").unwrap().with_shutdown_budget(Duration::MAX);
-        sup.add_worker(
-            ChildSpecification::worker(
-                MockWorker::ignore_shutdown("stuck")
-                    .with_graceful_timeout(Duration::from_millis(100))
-                    .one_shot(),
-            )
-            .with_budget_bounded_shutdown(),
-        );
-
-        let (tx, run) = run_supervisor_with_trigger(sup).await;
-        tx.send(()).unwrap();
-
-        let started = tokio::time::Instant::now();
-        let result = join_supervisor(run).await;
-        let elapsed = started.elapsed();
-
-        assert!(
-            matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 1 })),
-            "the worker's own deadline should have aborted it, got {result:?}"
-        );
-        assert!(
-            elapsed < Duration::from_secs(1),
-            "the child should have been bounded by its own 100ms deadline; took {elapsed:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn budget_bounded_child_falls_back_to_its_own_deadline_without_a_budget() {
-        // A one-shot child asks to be bounded by its supervisor's budget rather than carrying a deadline of its own.
-        // On a supervisor with no budget there'd be nothing bounding it at all, so it falls back to the strategy the
-        // worker reports -- here a short one, which is what lets this test finish rather than hang.
-        let mut sup = Supervisor::new("test-sup").unwrap();
-        sup.add_worker(
-            ChildSpecification::worker(
-                MockWorker::ignore_shutdown("stuck")
-                    .with_graceful_timeout(Duration::from_millis(100))
-                    .one_shot(),
-            )
-            .with_budget_bounded_shutdown(),
-        );
-
-        let (tx, run) = run_supervisor_with_trigger(sup).await;
-        tx.send(()).unwrap();
-
-        let started = tokio::time::Instant::now();
-        let result = join_supervisor(run).await;
-        let elapsed = started.elapsed();
-
-        assert!(
-            matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 1 })),
-            "the worker's own deadline should have aborted it, got {result:?}"
-        );
-        assert!(
-            elapsed < Duration::from_secs(1),
-            "the child should have been bounded by its own 100ms deadline; took {elapsed:?}"
-        );
-    }
-
-    #[tokio::test]
     async fn concurrent_shutdown_drains_many_children_quickly() {
         const CHILDREN: usize = 500;
         const SHUTDOWN_DELAY: Duration = Duration::from_millis(50);
@@ -3774,9 +3709,8 @@ mod tests {
     #[tokio::test]
     async fn equal_child_deadlines_abort_the_waiter_too() {
         // The counterpart: concurrent shutdown computes every deadline from one shared instant, so identical timeouts
-        // elapse in the same pass and the waiter is aborted alongside the child it was waiting on. This is also what a
-        // shutdown budget does to a whole subtree, which is why the budget is set at a level where losing the entire
-        // group at once is the intended outcome.
+        // elapse in the same pass and the waiter is aborted alongside the child it was waiting on. This is also what an
+        // owner's expired timeout does to everything in its scope.
         let (sup, waiter_finished) = build_drain_pair(
             ShutdownStrategy::Graceful(Duration::from_millis(100)),
             ShutdownStrategy::Graceful(Duration::from_millis(100)),
@@ -3793,84 +3727,6 @@ mod tests {
         assert!(
             !waiter_finished.load(Ordering::SeqCst),
             "the waiter should have been aborted mid-wait, not completed"
-        );
-    }
-
-    // -- Shutdown budget tests -------------------------------------------------------------
-
-    #[tokio::test]
-    async fn budget_bounds_children_that_have_no_deadline_of_their_own() {
-        // Without a budget, `Graceful(Duration::MAX)` children are waited on indefinitely and a stuck one hangs
-        // shutdown forever. A budget makes the supervisor responsible for the deadline instead, and each child it has
-        // to abort is still counted individually -- so an overrun says how many tasks were responsible, not merely
-        // that the group as a whole overran.
-        let mut sup = Supervisor::new("test-sup")
-            .unwrap()
-            .with_shutdown_budget(Duration::from_millis(100));
-
-        for name in ["stuck_one", "stuck_two"] {
-            sup.add_worker(
-                ChildSpecification::worker(FnWorker::new(name, pending::<()>()))
-                    .with_restart_type(RestartType::Temporary)
-                    .with_shutdown_strategy(ShutdownStrategy::Graceful(Duration::MAX)),
-            );
-        }
-
-        let (tx, handle) = run_supervisor_with_trigger(sup).await;
-        tx.send(()).unwrap();
-
-        let result = join_supervisor(handle).await;
-        assert!(
-            matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 2 })),
-            "the budget should have aborted both deadline-less children, got {result:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn budget_does_not_delay_children_that_stop_on_their_own() {
-        // The budget is a ceiling, not a wait. Asserting on elapsed time rather than merely on success is what makes
-        // this meaningful: a supervisor that waited out its budget regardless would still report `Ok`.
-        let mut sup = Supervisor::new("test-sup")
-            .unwrap()
-            .with_shutdown_budget(Duration::from_secs(30));
-        sup.add_worker(
-            ChildSpecification::worker(MockWorker::long_running("prompt").one_shot())
-                .with_shutdown_strategy(ShutdownStrategy::Graceful(Duration::MAX)),
-        );
-
-        let (tx, handle) = run_supervisor_with_trigger(sup).await;
-        let started = tokio::time::Instant::now();
-        tx.send(()).unwrap();
-
-        assert!(join_supervisor(handle).await.is_ok());
-        let elapsed = started.elapsed();
-        assert!(
-            elapsed < Duration::from_millis(500),
-            "shutdown should finish as soon as the child does, not burn the budget; took {elapsed:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn child_deadline_shorter_than_budget_still_wins() {
-        // A child that carries its own finite deadline is held to whichever elapses first, so a component can still
-        // bound one particular task more tightly than the budget covering the rest.
-        let mut sup = Supervisor::new("test-sup")
-            .unwrap()
-            .with_shutdown_budget(Duration::from_secs(30));
-        sup.add_worker(
-            ChildSpecification::worker(FnWorker::new("stuck", pending::<()>()))
-                .with_restart_type(RestartType::Temporary)
-                .with_shutdown_strategy(ShutdownStrategy::Graceful(Duration::from_millis(100))),
-        );
-
-        let (tx, handle) = run_supervisor_with_trigger(sup).await;
-        tx.send(()).unwrap();
-
-        // Again bounded at two seconds: if the 30-second budget had won, this would time out instead.
-        let result = join_supervisor(handle).await;
-        assert!(
-            matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 1 })),
-            "the child's own 100ms deadline should have won over the budget, got {result:?}"
         );
     }
 
@@ -3897,49 +3753,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn budget_bounds_the_whole_drain_rather_than_each_child() {
-        // The budget is measured once, from the start of the drain, and every child is held to that same instant --
-        // it does not reset per child. Three children that each ignore a 10-second deadline must all be aborted at
-        // the shared 150ms budget, not 30 seconds later.
-        let mut sup = Supervisor::new("test-sup")
-            .unwrap()
-            .with_shutdown_budget(Duration::from_millis(150));
-
-        for name in ["stuck_one", "stuck_two", "stuck_three"] {
-            sup.add_worker(
-                ChildSpecification::worker(FnWorker::new(name, pending::<()>()))
-                    .with_shutdown_strategy(ShutdownStrategy::Graceful(Duration::from_secs(10))),
-            );
-        }
-
-        let (tx, handle) = run_supervisor_with_trigger(sup).await;
-        tx.send(()).unwrap();
-
-        let result = join_supervisor(handle).await;
-        assert!(
-            matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 3 })),
-            "the budget should have bounded the whole drain, got {result:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn budget_of_duration_max_is_treated_as_no_budget() {
-        // `Duration::MAX` is the natural spelling of "no ceiling" and used to panic the supervisor task on an instant
-        // overflow.
-        let mut sup = Supervisor::new("test-sup").unwrap().with_shutdown_budget(Duration::MAX);
-        sup.add_worker(ChildSpecification::worker(
-            MockWorker::long_running("prompt").one_shot(),
-        ));
-
-        let (tx, handle) = run_supervisor_with_trigger(sup).await;
-        tx.send(()).unwrap();
-        assert!(join_supervisor(handle).await.is_ok());
-    }
-
-    #[tokio::test]
     async fn near_max_child_timeout_does_not_panic() {
-        // Resolving a graceful timeout to an instant makes anything just under `Duration::MAX` overflow unless it is
-        // added with `checked_add`. See `resolve_abort_deadline`.
+        // A timeout just under `Duration::MAX` overflows when added to an instant without `checked_add`.
         let mut sup = Supervisor::new("test-sup").unwrap();
         sup.add_worker(
             ChildSpecification::worker(MockWorker::long_running("prompt").one_shot())
@@ -3951,38 +3766,6 @@ mod tests {
         assert!(join_supervisor(handle).await.is_ok());
     }
 
-    #[tokio::test]
-    async fn budget_does_not_cut_off_a_nested_supervisor_mid_drain() {
-        // A nested supervisor bounds its own subtree, so a parent's budget must not abort it: doing so truncates the
-        // subtree's drain, discards its abort tally, and -- for a supervisor on a dedicated runtime, whose work is on
-        // another OS thread -- reports it as stopped without actually stopping it.
-        let slow = MockWorker::slow_shutdown("slow", Duration::from_millis(300));
-        let drained = slow.finish_count();
-
-        let mut nested = Supervisor::new("nested").unwrap();
-        nested.add_worker(
-            ChildSpecification::worker(slow.one_shot())
-                .with_shutdown_strategy(ShutdownStrategy::Graceful(Duration::from_secs(10))),
-        );
-
-        let mut parent = Supervisor::new("parent")
-            .unwrap()
-            .with_shutdown_budget(Duration::from_millis(50));
-        parent.add_worker(nested);
-
-        let (tx, handle) = run_supervisor_with_trigger(parent).await;
-        tx.send(()).unwrap();
-
-        let result = join_supervisor(handle).await;
-        assert!(
-            drained.load(Ordering::SeqCst) == 1,
-            "the nested subtree should have drained rather than being cut off by the parent's budget: {result:?}"
-        );
-        assert!(
-            result.is_ok(),
-            "the nested drain finished in time, so shutdown was clean: {result:?}"
-        );
-    }
     // -- Supervision tree snapshot tests ---------------------------------------------------
 
     fn find_node<'a>(nodes: &'a [NodeSnapshot], name: &str) -> &'a NodeSnapshot {
@@ -3999,8 +3782,7 @@ mod tests {
         let mut sup = Supervisor::new("test-sup")
             .unwrap()
             .with_restart_strategy(RestartStrategy::one_for_all().with_intensity_and_period(7, Duration::from_secs(11)))
-            .with_auto_shutdown(AutoShutdown::AnySignificant)
-            .with_shutdown_budget(Duration::from_secs(3));
+            .with_auto_shutdown(AutoShutdown::AnySignificant);
         sup.add_worker(MockWorker::long_running("worker1"));
 
         // A tree that hasn't started still has a declared shape, and configuration is known from the moment it is
@@ -4021,7 +3803,6 @@ mod tests {
         assert_eq!(supervision.restart_intensity, 7);
         assert_eq!(supervision.restart_period_ms, 11_000);
         assert_eq!(supervision.auto_shutdown, AutoShutdown::AnySignificant);
-        assert_eq!(supervision.shutdown_budget_ms, Some(3_000));
         assert_eq!(supervision.dedicated_threads, None);
         assert_eq!(supervision.generation, 0);
 
@@ -4635,7 +4416,7 @@ mod tests {
                     let mut inner = Supervisor::new("inner-sup").expect("valid name");
                     inner.add_worker(MockWorker::long_running("inner-worker"));
                     inner
-                        .run_with_shutdown_inner(process_shutdown, None)
+                        .run_with_shutdown_inner(process_shutdown, HaltWatch::never(), None)
                         .await
                         .map_err(Into::into)
                 }))
