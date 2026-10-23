@@ -53,8 +53,9 @@ buffered data or hang. Changes to component lifecycle should have tests that exe
 - Flag shutdown handling that differs between `select!` branches, such as one branch that cleans up a resource and
   another that exits without doing so.
 - Flag `Arc<T>` or `Mutex<T>` wrappers that nothing shares across tasks. Also flag misuse of Tokio synchronization
-  primitives where their documented semantics differ from what the code assumes. For example, a `Notify::notified()`
-  future only receives `notify_waiters()` calls made after the future was created.
+  primitives where their documented semantics differ from what the code assumes. For example, a `Notified` future
+  from `Notify::notified()` receives `notify_waiters()` calls as soon as it is created, but isn't guaranteed to
+  receive a `notify_one()` call until it is first polled or `enable()`d.
 - Flag synchronization patterns ported from Go, such as serializing every loop iteration through a rendezvous
   channel, when they don't fit Tokio's scheduling model.
 
@@ -65,8 +66,8 @@ input or configuration. Error messages should say what went wrong in plain langu
 configuration field involved.
 
 - Untyped errors use `saluki_error::GenericError`, with context added through `saluki_error::ErrorContext`
-  (`error_context` or `with_error_context`). Typed errors use `snafu`. Flag new uses of `anyhow` types directly,
-  `Box<dyn Error>`, or `String` as an error type.
+  (`error_context` or `with_error_context`). Typed errors use `snafu`. In non-test code, flag new uses of `anyhow`
+  types directly, `Box<dyn Error>`, or `String` as an error type.
 - When a recoverable condition can be handled by logging a warning and skipping the bad input, prefer that over
   panicking. Conditions that need someone's attention should log at `warn` or higher, not `info`.
 - Flag errors that are swallowed in a way that silently loses data.
@@ -79,14 +80,18 @@ configuration field involved.
 - Conversion methods should follow the Rust API Guidelines naming conventions. `as_` is a cheap borrow, `to_` is an
   expensive or owned conversion, and `into_` consumes `self`. Use an `into_parts(self)`-style method when callers need
   owned access to the internals.
-- Flag type and function names that repeat the enclosing module or type name, such as `eventd::EventPriority` instead
-  of `eventd::Priority`.
 - Flag hand-rolled logic that duplicates a method in the standard library or an existing workspace crate, such as a
   manual ASCII check instead of `char::is_ascii_alphanumeric`.
 - Flag constants or definitions duplicated across crates. Define them once and reference them from each place.
 - Flag new wrappers, traits, or layers of indirection that add nothing over the type they wrap.
-- Small, field-less enums should derive `Copy`. If such an enum maps to a string, give it a method that returns
-  `&'static str` rather than allocating.
+
+The following are minor. Report them as nits, ranked below correctness and performance findings:
+
+- Type and function names that repeat the enclosing module or type name, such as `eventd::EventPriority` instead of
+  `eventd::Priority`.
+- Small, field-less enums that don't derive `Copy`, or that allocate a `String` where a method returning
+  `&'static str` would do.
+- `TODO` comments and "not yet implemented" notes that don't say what is missing.
 
 ### Internal telemetry
 
@@ -122,6 +127,5 @@ such a refactor as a defect. If the change introduces a hazard that it leaves un
 - If a pull request changes behavior but does not update the corresponding docs, comments, or doc strings, flag it.
 - Reference documentation under `docs/reference/` describes how the code works today. Flag aspirational or
   inaccurate descriptions there.
-- Flag `TODO` comments and "not yet implemented" notes that don't say what is missing.
 - User-visible changes to `agent-data-plane` need a release note fragment under `releasenotes/notes/`, unless the pull
   request carries the `changelog/no-changelog` label.
