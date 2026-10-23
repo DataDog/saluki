@@ -1,4 +1,8 @@
-# Runs an AI code review on a pull request when a collaborator with write access comments `/dd-review`.
+# Runs an AI code review on a pull request:
+#
+# - automatically, when a pull request from a branch in this repository is opened, reopened, or marked ready for review
+#   (pull requests from forks, bots, and drafts are skipped)
+# - on demand, when a collaborator with write access comments `/dd-review`, including on pull requests from forks
 #
 # Review guidance comes from `codereview_guideline.md` files, read from the default branch. A file at the repository
 # root applies to every pull request; a file in a subdirectory applies only when the pull request touches that
@@ -7,6 +11,10 @@
 name: "Code review"
 
 on:
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+    branches:
+      - main
   issue_comment:
     types: [created]
 
@@ -14,6 +22,21 @@ permissions: {}
 
 jobs:
   review:
+    # Filter events here as well as in the reusable workflow's gate, so that unrelated pull request comments don't start
+    # a run at all.
+    if: >-
+      ${{
+        (
+          github.event_name == 'pull_request' &&
+          !contains(github.event.pull_request.user.login, '[bot]') &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          !github.event.pull_request.draft
+        ) || (
+          github.event_name == 'issue_comment' &&
+          github.event.issue.pull_request &&
+          startsWith(github.event.comment.body, '/dd-review')
+        )
+      }}
     permissions:
       contents: read
       pull-requests: write
@@ -22,7 +45,7 @@ jobs:
     uses: DataDog/code-review-action/.github/workflows/code-review.yml@b4f43b4ac7a96b9ecc3484d77aa04ad41c07b420 # v1.3.0
     with:
       provider: claude
-      trigger_mode: on_demand
+      trigger_mode: ${{ github.event_name == 'pull_request' && 'always' || 'on_demand' }}
       prompt_file_pattern: "**/codereview_guideline.md"
       review_event: COMMENT_ONLY
       telemetry_enabled: true
