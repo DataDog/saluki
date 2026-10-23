@@ -22,7 +22,6 @@ struct V3SerializerTelemetryInner {
     values_float32: Counter,
     values_float64: Counter,
     item_too_big: Counter,
-    payload_split_drops: Counter,
     split_max_points: Counter,
     split_payload_full: Counter,
     split_item_too_big: Counter,
@@ -58,7 +57,6 @@ impl V3SerializerTelemetry {
                 values_float32: builder.register_counter_with_tags("serializer.v3_values_count", ["type:float32"]),
                 values_float64: builder.register_counter_with_tags("serializer.v3_values_count", ["type:float64"]),
                 item_too_big: builder.register_counter("serializer.v3_item_too_big"),
-                payload_split_drops: builder.register_counter("serializer.v3_payload_split_drops_total"),
                 split_max_points: builder
                     .register_counter_with_tags("serializer.v3_payload_split_reason", ["reason:max_points"]),
                 split_payload_full: builder
@@ -88,10 +86,6 @@ impl V3SerializerTelemetry {
 
     pub(crate) fn record_item_too_big(&self) {
         self.inner.item_too_big.increment(1);
-    }
-
-    pub(crate) fn record_payload_split_drop(&self) {
-        self.inner.payload_split_drops.increment(1);
     }
 
     pub(crate) fn record_split_reason(&self, reason: V3PayloadSplitReason) {
