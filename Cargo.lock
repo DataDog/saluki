@@ -940,7 +940,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1650,7 +1650,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1744,7 +1744,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 [[package]]
 name = "foldspace-core"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/foldspace?rev=1d90861fcba4d82650d6a9c94539dfc6d409461d#1d90861fcba4d82650d6a9c94539dfc6d409461d"
+source = "git+https://github.com/DataDog/foldspace?rev=e7b76575f5c2b2b3987d5d24bbf3bba23ce19584#e7b76575f5c2b2b3987d5d24bbf3bba23ce19584"
 dependencies = [
  "patterns",
  "prost",
@@ -4132,7 +4132,7 @@ checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
 [[package]]
 name = "patterns"
 version = "0.0.0"
-source = "git+https://github.com/DataDog/foldspace?rev=1d90861fcba4d82650d6a9c94539dfc6d409461d#1d90861fcba4d82650d6a9c94539dfc6d409461d"
+source = "git+https://github.com/DataDog/foldspace?rev=e7b76575f5c2b2b3987d5d24bbf3bba23ce19584#e7b76575f5c2b2b3987d5d24bbf3bba23ce19584"
 dependencies = [
  "metrics",
  "regex-automata",
@@ -5011,7 +5011,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5082,7 +5082,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5611,7 +5611,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b55fb86dfd3a2f5f76ea78310a88f96c4ea21a3031f8d212443d56123fd0521"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6178,7 +6178,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7188,7 +7188,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

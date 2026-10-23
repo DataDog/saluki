@@ -2,6 +2,7 @@
 
 use foldspace_core::{
     LogicalMetricSeries, MetricOrigin as FoldspaceOrigin, MetricPoint, MetricResource, MetricSeriesType, MetricTagSet,
+    MetricTags,
 };
 use saluki_common::collections::FastHashSet;
 use saluki_core::data_model::event::metric::{Metric, MetricOrigin, MetricValues};
@@ -39,33 +40,34 @@ pub(super) fn convert(metric: &Metric) -> Option<LogicalMetricSeries> {
     let mut seen_resource_tags = FastHashSet::default();
     let mut device = None;
     for tag in origin_tags.into_iter().chain(tags) {
-        let tag = tag.as_str();
-        match tag.split_once(':') {
+        let tag_str = tag.as_str();
+        match tag_str.split_once(':') {
             Some(("device", value)) => {
-                if seen_resource_tags.insert(tag) {
+                if seen_resource_tags.insert(tag_str) {
                     device = (!value.is_empty()).then_some(value);
                 }
             }
             Some(("dd.internal.resource", value)) => {
-                if seen_resource_tags.insert(tag) {
+                if seen_resource_tags.insert(tag_str) {
                     if let Some((kind, name)) = value.split_once(':').filter(|(k, n)| !k.is_empty() && !n.is_empty()) {
                         resources.push(MetricResource::new(kind, name));
                     }
                 }
             }
-            _ => values.push(tag.to_owned()),
+            // Interned, shared, and inlined tags clone without copying their strings.
+            _ => values.push(tag.clone()),
         }
     }
     if let Some(device) = device {
         resources.insert(usize::from(host.is_some()), MetricResource::new("device", device));
     }
-    values.sort_unstable();
-    values.dedup();
+    values.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
+    values.dedup_by(|a, b| a.as_str() == b.as_str());
     let mut series = LogicalMetricSeries::new(context.name().as_ref(), kind, points)
-        // Already sorted, so the setter's sort only verifies the order.
+        // Already sorted, so the constructor's sort only verifies the order.
         .with_tags(MetricTagSet {
-            prefix: Vec::new(),
-            values,
+            prefix: MetricTags::default(),
+            values: MetricTags::shared(values),
         })
         .with_resources(resources)
         .with_interval(interval.map_or(0, |interval| interval.as_secs()));
