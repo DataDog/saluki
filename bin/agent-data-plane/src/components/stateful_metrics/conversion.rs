@@ -28,52 +28,47 @@ pub(super) fn convert(metric: &Metric) -> Option<LogicalMetricSeries> {
         return None;
     }
 
+    let context = metric.context();
+    let host = context.host().filter(|host| !host.is_empty());
     let mut resources = Vec::new();
-    if let Some(host) = metric.context().host().filter(|host| !host.is_empty()) {
+    if let Some(host) = host {
         resources.push(MetricResource::new("host", host));
     }
-    let mut seen = FastHashSet::default();
+    let (origin_tags, tags) = (context.origin_tags(), context.tags());
+    let mut values = Vec::with_capacity(origin_tags.len() + tags.len());
+    // Only the rare device and resource tags are deduplicated as they are read, by exact tag string: the last
+    // distinct `device` tag wins and resources keep first-seen order, origin tags first. The sort below
+    // deduplicates the rest.
+    let mut seen_resource_tags = FastHashSet::default();
     let mut device = None;
-    for tag in metric
-        .context()
-        .origin_tags()
-        .into_iter()
-        .chain(metric.context().tags())
-    {
-        if !seen.insert(tag) {
-            continue;
-        }
-        match (tag.name(), tag.value()) {
-            ("device", Some(value)) => device = (!value.is_empty()).then_some(value),
-            ("dd.internal.resource", Some(value)) => {
-                if let Some((kind, name)) = value.split_once(':') {
-                    if !kind.is_empty() && !name.is_empty() {
+    for tag in origin_tags.into_iter().chain(tags) {
+        let tag = tag.as_str();
+        match tag.split_once(':') {
+            Some(("device", value)) => {
+                if seen_resource_tags.insert(tag) {
+                    device = (!value.is_empty()).then_some(value);
+                }
+            }
+            Some(("dd.internal.resource", value)) => {
+                if seen_resource_tags.insert(tag) {
+                    if let Some((kind, name)) = value.split_once(':').filter(|(k, n)| !k.is_empty() && !n.is_empty()) {
                         resources.push(MetricResource::new(kind, name));
                     }
                 }
             }
-            _ => {}
+            _ => values.push(tag.to_owned()),
         }
     }
     if let Some(device) = device {
         resources.push(MetricResource::new("device", device));
     }
-
-    seen.clear();
-    let tags = metric
-        .context()
-        .tags()
-        .into_iter()
-        .chain(metric.context().origin_tags())
-        .filter(|tag| seen.insert(*tag))
-        .filter(|tag| !(matches!(tag.name(), "device" | "dd.internal.resource") && tag.value().is_some()))
-        .map(|tag| tag.as_str().to_owned())
-        .collect();
-    let mut series = LogicalMetricSeries::new(metric.context().name().as_ref(), kind, points)
-        // The setter sorts tags; constructing a standalone tag set would sort them twice.
+    values.sort_unstable();
+    values.dedup();
+    let mut series = LogicalMetricSeries::new(context.name().as_ref(), kind, points)
+        // Already sorted, so the setter's sort only verifies the order.
         .with_tags(MetricTagSet {
             prefix: Vec::new(),
-            values: tags,
+            values,
         })
         .with_resources(resources)
         .with_interval(interval.map_or(0, |interval| interval.as_secs()));

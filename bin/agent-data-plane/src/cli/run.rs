@@ -481,12 +481,17 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
             .add_destination(
                 "dd_stateful_metrics_out",
                 StatefulMetricsConfiguration {
-                    endpoint: endpoint.clone().into(),
+                    endpoints: std::iter::once(endpoint)
+                        .chain(&config.domains.stateful_metrics.additional_endpoints)
+                        .map(|endpoint| endpoint.clone().into())
+                        .collect(),
                     workers: config.domains.stateful_metrics.workers,
                     api_key: config_system.live(|config| &config.shared.endpoints.api_key),
                     compression_level: shared.endpoints.compression.effective_zstd_level(),
                     flush_timeout: shared.metrics_encoding.flush_timeout,
                     batch_capacity: shared.metrics_encoding.max_metrics_per_payload,
+                    dictionary_max_entries: config.domains.stateful_metrics.dictionary_max_entries,
+                    dictionary_max_bytes: config.domains.stateful_metrics.dictionary_max_bytes,
                     queue: DeliveryQueueConfiguration::from_configuration(shared),
                     stop_timeout: dp.stop_timeout(),
                 },
