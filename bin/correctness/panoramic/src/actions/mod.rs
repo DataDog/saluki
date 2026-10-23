@@ -9,7 +9,7 @@ mod dogstatsd_send;
 mod target_cli;
 mod target_exec;
 
-pub(crate) use target_exec::{execute_target_command, CommandDiagnostics};
+pub(crate) use target_exec::{docker_exec, execute_target_command, CommandDiagnostics, CommandError};
 
 const DEFAULT_CORE_AGENT_CONFIG_ENDPOINT_TEMPLATE: &str = "https://localhost:55001/agent/config/{key}";
 
@@ -24,7 +24,8 @@ pub trait Action: Send + Sync {
 
     /// Executes the action and returns a result shaped like an assertion result.
     ///
-    /// The step driver may drop this future on cancellation or a budget overrun. Release owned resources on drop.
+    /// Classify failures using [`AssertionStatus`](crate::assertions::AssertionStatus). Release resources on drop:
+    /// the step driver may drop this future on cancellation or a budget overrun.
     async fn execute(&self, ctx: &AssertionContext) -> AssertionResult;
 }
 
@@ -97,7 +98,7 @@ mod tests {
 
     use super::create_action;
     use crate::{
-        assertions::{AssertionContext, LogBuffer, TargetCommand},
+        assertions::{AssertionContext, AssertionStatus, LogBuffer, TargetCommand},
         config::{ActionConfig, HumanDuration},
     };
 
@@ -139,7 +140,7 @@ mod tests {
 
         let result = action.execute(&ctx).await;
 
-        assert!(!result.passed, "Windows target unexpectedly passed: {}", result.message);
+        assert_eq!(result.status, AssertionStatus::Errored, "{}", result.message);
         assert!(
             result.message.contains("Windows"),
             "unexpected message: {}",
@@ -168,7 +169,7 @@ mod tests {
 
         let result = action.execute(&ctx).await;
 
-        assert!(result.passed, "unexpected failure: {}", result.message);
+        assert_eq!(result.status, AssertionStatus::Passed, "{}", result.message);
         assert!(
             result
                 .message
@@ -207,8 +208,8 @@ mod tests {
         let pass_result = passing.execute(&ctx).await;
         let fail_result = failing.execute(&ctx).await;
 
-        assert!(pass_result.passed, "unexpected failure: {}", pass_result.message);
-        assert!(!fail_result.passed, "non-matching output unexpectedly passed");
+        assert_eq!(pass_result.status, AssertionStatus::Passed, "{}", pass_result.message);
+        assert_eq!(fail_result.status, AssertionStatus::Failed, "{}", fail_result.message);
         assert!(fail_result.message.contains("selected-output"));
         assert!(!fail_result.message.contains(matcher_secret));
     }

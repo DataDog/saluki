@@ -184,6 +184,8 @@ Steps execute sequentially. If any assertion or action fails, subsequent steps a
 
 Each step uses its `timeout`, `duration`, or `during` as its budget; `dogstatsd_replay` uses the [whole-action budget](#dogstatsd_replay). The driver allows 10s beyond that budget for the step to report its result, then stops it as `errored`. This makes the test a harness error (exit code 2), unless a parallel member failed. Case timeout or run cancellation interrupts unfinished steps and preserves completed results.
 
+Each polling attempt (an HTTP request, Docker exec, or intake poll) is limited to the shorter of 10s or the step's remaining time. Timed-out probes are retried while the step has time left. A step is `errored` if harness failures (such as Docker API or intake sidecar errors) prevent evaluation, or its configuration is invalid. An unmet expectation remains `failed` after any product observation, even if later probes encounter harness errors.
+
 ### Available actions
 
 #### `adp_cli`

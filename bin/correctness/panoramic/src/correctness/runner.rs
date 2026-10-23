@@ -24,7 +24,7 @@ use crate::correctness::{
     config::Runtime,
 };
 use crate::{
-    assertions::AssertionResult,
+    assertions::{AssertionResult, AssertionStatus},
     intake::{CollectedData, IntakeClient},
     reporter::{ErrorKind, PhaseTiming, TestResult},
     test::TestContext,
@@ -121,7 +121,7 @@ async fn run_docker_correctness_test(case: CorrectnessTestCase, tctx: TestContex
             total_duration,
             vec![AssertionResult {
                 name: "telemetry matches".to_string(),
-                passed: true,
+                status: AssertionStatus::Passed,
                 message: "No difference detected between baseline and comparison.".to_string(),
                 duration: analysis_duration,
             }],
@@ -134,7 +134,7 @@ async fn run_docker_correctness_test(case: CorrectnessTestCase, tctx: TestContex
                 total_duration,
                 vec![AssertionResult {
                     name: "telemetry matches".to_string(),
-                    passed: false,
+                    status: AssertionStatus::Failed,
                     message: full_message,
                     duration: analysis_duration,
                 }],

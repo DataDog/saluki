@@ -324,7 +324,7 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::*;
-    use crate::assertions::AssertionResult;
+    use crate::assertions::{AssertionResult, AssertionStatus};
     use crate::events::create_event_channel;
     use crate::machine_output::RUN_REPORT_FILE_NAME;
     use crate::reporter::{ErrorKind, OutputFormat, TestResult};
@@ -453,10 +453,10 @@ mod tests {
         interrupts
     }
 
-    fn result(name: &str, passed: bool) -> TestResult {
+    fn result(name: &str, status: AssertionStatus) -> TestResult {
         let assertion = AssertionResult {
             name: "log_contains".to_string(),
-            passed,
+            status,
             message: String::new(),
             duration: Duration::from_millis(1),
         };
@@ -674,7 +674,7 @@ mod tests {
         );
         let mut collector = RunCollector::start(report, false);
         collector.observe(&TestEvent::TestStarted { name: "a".to_string() });
-        collector.observe(&completed(result("a", true)));
+        collector.observe(&completed(result("a", AssertionStatus::Passed)));
 
         collector.finish(Ok(()));
 
@@ -690,10 +690,18 @@ mod tests {
         let timed_out = || TestResult::errored("t", ErrorKind::Timeout, "slow", Duration::from_secs(1), Vec::new());
         let setup_error = || TestResult::errored("e", ErrorKind::Setup, "boom", Duration::from_secs(1), Vec::new());
         let cases = [
-            ("pass", vec![result("a", true)], false, ExitCode::SUCCESS),
+            (
+                "pass",
+                vec![result("a", AssertionStatus::Passed)],
+                false,
+                ExitCode::SUCCESS,
+            ),
             (
                 "pass and fail",
-                vec![result("a", true), result("b", false)],
+                vec![
+                    result("a", AssertionStatus::Passed),
+                    result("b", AssertionStatus::Failed),
+                ],
                 false,
                 ExitCode::from(EXIT_ASSERTION_FAILURE),
             ),
@@ -706,13 +714,13 @@ mod tests {
             // Harness errors take precedence over assertion failures.
             (
                 "fail and timeout",
-                vec![result("b", false), timed_out()],
+                vec![result("b", AssertionStatus::Failed), timed_out()],
                 false,
                 ExitCode::from(EXIT_HARNESS_ERROR),
             ),
             (
                 "pass, then interrupt",
-                vec![result("a", true)],
+                vec![result("a", AssertionStatus::Passed)],
                 true,
                 ExitCode::from(EXIT_HARNESS_ERROR),
             ),
@@ -754,7 +762,7 @@ mod tests {
         );
         let mut collector = RunCollector::start(report, false);
         collector.observe(&TestEvent::TestStarted { name: "a".to_string() });
-        collector.observe(&completed(result("a", true)));
+        collector.observe(&completed(result("a", AssertionStatus::Passed)));
         collector.finish(Ok(()));
         let (tx, mut interrupts) = Interrupts::manual();
 

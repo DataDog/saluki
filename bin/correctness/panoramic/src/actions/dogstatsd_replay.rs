@@ -1,12 +1,13 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use saluki_error::generic_error;
+use tokio::time::Instant;
 
 use super::{
-    target_exec::{execute_target_command, CommandDiagnostics},
+    target_exec::{execute_target_command, CommandDiagnostics, CommandError},
     Action,
 };
-use crate::assertions::{AssertionContext, AssertionResult};
+use crate::assertions::{AssertionContext, AssertionResult, AssertionStatus};
 
 /// Runs a complete DogStatsD capture and replay flow against the tested ADP process.
 pub(super) struct DogstatsdReplayAction {
@@ -29,15 +30,6 @@ impl DogstatsdReplayAction {
             stats_duration_secs,
             expected_metrics,
             command_timeout,
-        }
-    }
-
-    fn failure(&self, started: Instant, message: impl Into<String>) -> AssertionResult {
-        AssertionResult {
-            name: self.name().to_string(),
-            passed: false,
-            message: message.into(),
-            duration: started.elapsed(),
         }
     }
 }
@@ -75,11 +67,20 @@ impl Action for DogstatsdReplayAction {
         .await
         {
             Ok(output) => output,
-            Err(error) => return self.failure(started, format!("Failed to start DogStatsD capture: {error}")),
+            Err(error) => {
+                return AssertionResult::new(
+                    self.name(),
+                    started,
+                    error.status(),
+                    format!("Failed to start DogStatsD capture: {error}"),
+                )
+            }
         };
         let capture_path = match capture_path_from_output(&capture_output) {
             Ok(path) => path,
-            Err(error) => return self.failure(started, error.to_string()),
+            Err(error) => {
+                return AssertionResult::new(self.name(), started, AssertionStatus::Failed, error.to_string())
+            }
         };
 
         if let Err(error) = execute_target_command(
@@ -91,8 +92,10 @@ impl Action for DogstatsdReplayAction {
         )
         .await
         {
-            return self.failure(
+            return AssertionResult::new(
+                self.name(),
                 started,
+                error.status(),
                 format!("Failed to send DogStatsD traffic for capture: {error}"),
             );
         }
@@ -113,8 +116,10 @@ impl Action for DogstatsdReplayAction {
             capture_path,
         ]);
         let deadline = Instant::now() + self.command_timeout;
-        let mut last_replay_error = None;
+        let mut last_replay_error: Option<CommandError> = None;
         let mut last_missing_metrics = Vec::new();
+        // At the replay deadline, any product observation makes the result `failed` rather than `errored`.
+        let mut replay_ran = false;
 
         loop {
             let stats = execute_target_command(
@@ -136,6 +141,7 @@ impl Action for DogstatsdReplayAction {
             match replay_result {
                 Ok(_) => match stats_result {
                     Ok(stats_output) => {
+                        replay_ran = true;
                         let missing_metrics: Vec<&str> = self
                             .expected_metrics
                             .iter()
@@ -148,21 +154,38 @@ impl Action for DogstatsdReplayAction {
                         last_missing_metrics = missing_metrics.into_iter().map(str::to_string).collect();
                     }
                     Err(error) => {
-                        return self.failure(
+                        return AssertionResult::new(
+                            self.name(),
                             started,
+                            error.status(),
                             format!("Failed to collect DogStatsD replay statistics: {error}"),
                         )
                     }
                 },
-                Err(error) => last_replay_error = Some(error.to_string()),
+                Err(error) => {
+                    replay_ran |= matches!(error, CommandError::Failed(_));
+                    last_replay_error = Some(error);
+                }
             }
 
             if Instant::now() >= deadline {
+                let status = if replay_ran {
+                    AssertionStatus::Failed
+                } else {
+                    AssertionStatus::Errored
+                };
                 if let Some(error) = last_replay_error {
-                    return self.failure(started, format!("Failed to replay DogStatsD capture: {error}"));
+                    return AssertionResult::new(
+                        self.name(),
+                        started,
+                        status,
+                        format!("Failed to replay DogStatsD capture: {error}"),
+                    );
                 }
-                return self.failure(
+                return AssertionResult::new(
+                    self.name(),
                     started,
+                    status,
                     format!(
                         "DogStatsD replay statistics did not contain expected metric(s): {}",
                         last_missing_metrics.join(", ")
@@ -174,7 +197,7 @@ impl Action for DogstatsdReplayAction {
 
         AssertionResult {
             name: self.name().to_string(),
-            passed: true,
+            status: AssertionStatus::Passed,
             message: self.description(),
             duration: started.elapsed(),
         }

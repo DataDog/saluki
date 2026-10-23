@@ -1,16 +1,16 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use airlock::docker;
-use bollard::{
-    container::LogOutput,
-    exec::{CreateExecOptions, StartExecResults},
-};
-use futures::TryStreamExt as _;
 use reqwest::ClientBuilder;
+use saluki_error::GenericError;
+use tokio::time::Instant;
 use tracing::trace;
 
-use crate::assertions::{Assertion, AssertionContext, AssertionResult};
+use crate::actions::docker_exec;
+use crate::assertions::{Assertion, AssertionContext, AssertionResult, AssertionStatus, Attempts};
 use crate::config::HttpStatusMatcher;
+use crate::probe::{probe, ProbeError, PROBE_TIMEOUT};
+
+const RETRY_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Assertion that probes an HTTP/HTTPS endpoint and checks the response status code.
 ///
@@ -100,7 +100,7 @@ impl Assertion for HttpCheckAssertion {
         // so we use a real HTTP client. Windows targets are not (the container's listener is
         // bound to its own loopback / internal port), so we shell out to `curl.exe` via
         // `docker exec` inside the container.
-        let probe = if ctx.target_is_windows() {
+        let http_probe = if ctx.target_is_windows() {
             HttpProbe::InContainerCurl {
                 container_name: ctx.container_name.clone(),
                 insecure_skip_verify: self.insecure_skip_verify,
@@ -112,66 +112,79 @@ impl Assertion for HttpCheckAssertion {
             {
                 Ok(client) => HttpProbe::HostClient { client },
                 Err(e) => {
-                    return AssertionResult {
-                        name: self.name().to_string(),
-                        passed: false,
-                        message: format!("Failed to build HTTP client: {}.", e),
-                        duration: started.elapsed(),
-                    };
+                    return AssertionResult::new(
+                        self.name(),
+                        started,
+                        AssertionStatus::Errored,
+                        format!("Failed to build HTTP client: {}.", e),
+                    );
                 }
             }
         };
+        let what = http_probe.what(&endpoint);
+        let mut attempts = Attempts::default();
 
         loop {
+            if ctx.cancel_token.is_cancelled() {
+                return AssertionResult::new(
+                    self.name(),
+                    started,
+                    attempts.status(),
+                    attempts.explain_cancelled("Assertion cancelled."),
+                );
+            }
+            if ctx.container_exit_token.is_cancelled() {
+                let message = attempts.explain_cancelled("Assertion cancelled because container exited.");
+                return AssertionResult::new(self.name(), started, AssertionStatus::Failed, message);
+            }
+
             if Instant::now() > deadline {
-                return AssertionResult {
-                    name: self.name().to_string(),
-                    passed: false,
-                    message: format!("{} did not happen within {:?}.", self.description(), self.timeout),
-                    duration: started.elapsed(),
-                };
+                let summary = format!("{} did not happen within {:?}.", self.description(), self.timeout);
+                return AssertionResult::new(
+                    self.name(),
+                    started,
+                    attempts.status(),
+                    attempts.explain_expired(&summary),
+                );
             }
 
-            if ctx.cancel_token.is_cancelled() || ctx.container_exit_token.is_cancelled() {
-                return AssertionResult {
-                    name: self.name().to_string(),
-                    passed: false,
-                    message: "Assertion cancelled because container exited.".to_string(),
-                    duration: started.elapsed(),
-                };
-            }
-
-            let response_status = probe.get_status(&endpoint).await;
-
-            match response_status {
-                Ok(Some(actual)) => {
-                    if self.status_matches(actual) {
-                        return AssertionResult {
-                            name: self.name().to_string(),
-                            passed: true,
-                            message: format!("HTTP endpoint '{}' returned status {}.", endpoint, actual),
-                            duration: started.elapsed(),
-                        };
-                    }
-                    trace!(
-                        endpoint = %endpoint,
-                        actual = actual,
-                        "HTTP check returned non-matching status, retrying..."
+            let limit = deadline.saturating_duration_since(Instant::now()).min(PROBE_TIMEOUT);
+            match probe(&what, limit, &ctx.cancel_token, http_probe.get_status(&endpoint)).await {
+                Ok(Answer::Status(actual)) if self.status_matches(actual) => {
+                    let message = format!("HTTP endpoint '{}' returned status {}.", endpoint, actual);
+                    return AssertionResult::new(self.name(), started, AssertionStatus::Passed, message);
+                }
+                Ok(Answer::Status(actual)) => {
+                    trace!(endpoint = %endpoint, actual, "HTTP check returned non-matching status, retrying...");
+                    attempts.observed(format_args!("status {actual}"));
+                }
+                Ok(Answer::TargetError(error)) => {
+                    trace!(endpoint = %endpoint, error = %error, "HTTP check request failed, retrying...");
+                    attempts.observed(error);
+                }
+                Ok(Answer::HarnessError(error)) => {
+                    trace!(endpoint = %endpoint, error = %error, "HTTP check could not send its request, retrying...");
+                    attempts.errored(error);
+                }
+                Err(error @ ProbeError::Cancelled { .. }) => {
+                    return AssertionResult::new(
+                        self.name(),
+                        started,
+                        attempts.status(),
+                        attempts.explain_cancelled(error),
                     );
                 }
-                Ok(None) => {
-                    trace!(endpoint = %endpoint, "HTTP check produced no status, retrying...");
-                }
-                Err(e) => {
-                    trace!(
-                        endpoint = %endpoint,
-                        error = %e,
-                        "HTTP check request failed, retrying..."
-                    );
-                }
+                // Direct requests test the target; a stalled Docker exec prevents evaluation.
+                Err(error @ ProbeError::TimedOut { .. }) => match http_probe {
+                    HttpProbe::HostClient { .. } => attempts.observed(error),
+                    HttpProbe::InContainerCurl { .. } => attempts.errored(error),
+                },
             }
 
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            // The next iteration reports cancellation.
+            ctx.cancel_token
+                .run_until_cancelled(tokio::time::sleep(RETRY_INTERVAL))
+                .await;
         }
     }
 }
@@ -193,17 +206,34 @@ enum HttpProbe {
     },
 }
 
+/// The outcome of one HTTP request.
+enum Answer {
+    /// The endpoint answered with this status.
+    Status(u16),
+    /// The request failed, for example through a refused connection or `curl.exe` error.
+    TargetError(String),
+    /// The harness couldn't send the request.
+    HarnessError(String),
+}
+
 impl HttpProbe {
-    /// Returns the HTTP status code observed for `endpoint`, if any.
-    ///
-    /// `Ok(Some(status))` is the only success path. `Ok(None)` means the request did not
-    /// produce a status (for example, `curl.exe` exited non-zero); `Err` is reserved for
-    /// transport-level failures the caller should log and retry.
-    async fn get_status(&self, endpoint: &str) -> Result<Option<u16>, String> {
+    /// Names the request to `endpoint` for probe messages.
+    fn what(&self, endpoint: &str) -> String {
+        match self {
+            Self::HostClient { .. } => format!("GET {endpoint}"),
+            Self::InContainerCurl { container_name, .. } => {
+                format!("GET {endpoint} with curl.exe in container '{container_name}'")
+            }
+        }
+    }
+
+    /// Sends one request to `endpoint`.
+    async fn get_status(&self, endpoint: &str) -> Answer {
         match self {
             Self::HostClient { client } => match client.get(endpoint).send().await {
-                Ok(resp) => Ok(Some(resp.status().as_u16())),
-                Err(e) => Err(e.to_string()),
+                Ok(resp) => Answer::Status(resp.status().as_u16()),
+                Err(e) if e.is_builder() => Answer::HarnessError(format!("{:#}", GenericError::from(e))),
+                Err(e) => Answer::TargetError(format!("{:#}", GenericError::from(e))),
             },
             Self::InContainerCurl {
                 container_name,
@@ -213,10 +243,7 @@ impl HttpProbe {
     }
 }
 
-async fn get_status_in_container(
-    container_name: &str, endpoint: &str, insecure_skip_verify: bool,
-) -> Result<Option<u16>, String> {
-    let docker = docker::connect().map_err(|e| format!("Failed to connect to Docker: {}", e))?;
+async fn get_status_in_container(container_name: &str, endpoint: &str, insecure_skip_verify: bool) -> Answer {
     let endpoint = endpoint.replace("localhost", "127.0.0.1");
     let mut cmd = vec!["curl.exe".to_string()];
     if insecure_skip_verify {
@@ -230,44 +257,16 @@ async fn get_status_in_container(
         "%{http_code}".to_string(),
         endpoint,
     ]);
-    let exec = docker
-        .create_exec(
-            container_name,
-            CreateExecOptions::<String> {
-                cmd: Some(cmd),
-                attach_stdout: Some(true),
-                attach_stderr: Some(false),
-                ..Default::default()
-            },
-        )
-        .await
-        .map_err(|e| format!("Failed to create exec: {}", e))?;
-    let exec_id = exec.id.clone();
-    let result = docker
-        .start_exec(&exec_id, None)
-        .await
-        .map_err(|e| format!("Failed to start exec: {}", e))?;
 
-    let mut stdout = String::new();
-    if let StartExecResults::Attached { mut output, .. } = result {
-        while let Some(chunk) = output
-            .try_next()
-            .await
-            .map_err(|e| format!("Failed to read exec output: {}", e))?
-        {
-            if let LogOutput::StdOut { message } = chunk {
-                stdout.push_str(&String::from_utf8_lossy(&message));
-            }
-        }
+    let output = match docker_exec(container_name, cmd).await {
+        Ok(output) => output,
+        Err(e) => return Answer::HarnessError(format!("{e:#}")),
+    };
+    if !output.succeeded() {
+        return Answer::TargetError(format!("curl.exe exited {:?}.", output.exit_code));
     }
-
-    let inspect = docker
-        .inspect_exec(&exec_id)
-        .await
-        .map_err(|e| format!("Failed to inspect exec: {}", e))?;
-    if inspect.exit_code != Some(0) {
-        return Ok(None);
+    match output.stdout.trim().parse::<u16>() {
+        Ok(status) if status != 0 => Answer::Status(status),
+        _ => Answer::TargetError(format!("curl.exe reported no status: '{}'.", output.stdout.trim())),
     }
-
-    Ok(stdout.trim().parse::<u16>().ok().filter(|status| *status != 0))
 }

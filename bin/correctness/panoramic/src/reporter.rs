@@ -180,7 +180,7 @@ pub enum ErrorKind {
     Setup,
     /// The test exceeded its timeout.
     Timeout,
-    /// The harness could not evaluate a step, for example because it overran its budget.
+    /// A budget overrun, harness failure, or invalid configuration prevented evaluation of a step.
     Evaluation,
     /// The harness was interrupted or failed internally.
     Internal,
@@ -365,11 +365,7 @@ impl TestResult {
                 step,
                 member: None,
                 name: result.name,
-                status: if result.passed {
-                    StepStatus::Passed
-                } else {
-                    StepStatus::Failed
-                },
+                status: result.status.into(),
                 message: result.message,
                 duration: result.duration,
             })
@@ -839,6 +835,7 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::{each_outcome, step, NOT_RUN_KIND, PASS_ISSUE, TIMEOUT_CAUSE};
     use super::*;
+    use crate::assertions::AssertionStatus;
     use crate::collector::RunCollector;
     use crate::events::TestEvent;
 
@@ -888,10 +885,10 @@ mod tests {
             TestResult::errored("t", ErrorKind::Timeout, "slow", Duration::from_secs(121), Vec::new())
                 .with_timeout_attribution(attribution)
         };
-        let assertions = |passed| {
+        let assertions = |status| {
             vec![AssertionResult {
                 name: "log_contains".to_string(),
-                passed,
+                status,
                 message: "message".to_string(),
                 duration: Duration::from_millis(1),
             }]
@@ -936,11 +933,21 @@ mod tests {
                 vec!["Error: Failed to start container.", "No such image."],
             ),
             (
-                TestResult::from_assertions("f", Duration::from_secs(1), assertions(false), Vec::new()),
+                TestResult::from_assertions(
+                    "f",
+                    Duration::from_secs(1),
+                    assertions(AssertionStatus::Failed),
+                    Vec::new(),
+                ),
                 vec![],
             ),
             (
-                TestResult::from_assertions("p", Duration::from_secs(1), assertions(true), Vec::new()),
+                TestResult::from_assertions(
+                    "p",
+                    Duration::from_secs(1),
+                    assertions(AssertionStatus::Passed),
+                    Vec::new(),
+                ),
                 vec![],
             ),
         ];

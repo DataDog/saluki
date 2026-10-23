@@ -48,6 +48,7 @@ use crate::{
     assertions::{AssertionContext, LogBuffer, TargetCommand},
     config::parse_port_spec,
     integration::IntegrationTestCase,
+    probe::{probe, ProbeError},
     record::Verdict,
     reporter::{ErrorKind, PhaseTiming, TestResult},
     test::{Test, TestContext},
@@ -228,9 +229,9 @@ impl UnixIntegrationRunner {
         info!(test = %test_name, "Core Agent process started.");
 
         let phase = self.tctx.phases.enter("core_agent_ipc_ready");
-        if let Err(e) = wait_for_agent_ipc_ready(&state_dir, CORE_AGENT_IPC_READY_TIMEOUT).await {
+        if let Err(e) = wait_for_agent_ipc_ready(&state_dir, &self.tctx.test_cancel_token()).await {
             phase_timings.push(phase.finish());
-            let result = make_error_result(test_name, started, "core_agent_ipc_ready", e, phase_timings);
+            let result = make_error_result(test_name, started, "core_agent_ipc_ready", e.into(), phase_timings);
             return self.fail_setup(result, agent, started).await;
         }
         phase_timings.push(phase.finish());
@@ -418,21 +419,24 @@ fn build_adp_forced_env(auth_token_path: String) -> Vec<(&'static str, String)> 
     vec![("DD_AUTH_TOKEN_FILE_PATH", auth_token_path)]
 }
 
-async fn wait_for_agent_ipc_ready(state_dir: &Path, timeout: Duration) -> Result<(), GenericError> {
+/// Waits up to [`CORE_AGENT_IPC_READY_TIMEOUT`] for the Core Agent to write its IPC credentials to `state_dir`.
+///
+/// # Errors
+///
+/// Returns a [`ProbeError`] naming the wait if it times out or `cancel` fires first.
+async fn wait_for_agent_ipc_ready(state_dir: &Path, cancel: &CancellationToken) -> Result<(), ProbeError> {
     let auth_token = state_dir.join("auth_token");
     let ipc_cert = state_dir.join("ipc_cert.pem");
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if auth_token.is_file() && ipc_cert.is_file() {
-            return Ok(());
+    let what = format!(
+        "the Core Agent to write 'auth_token' and 'ipc_cert.pem' to '{}'",
+        state_dir.display()
+    );
+    let written = async {
+        while !(auth_token.is_file() && ipc_cert.is_file()) {
+            tokio::time::sleep(CORE_AGENT_IPC_READY_POLL).await;
         }
-        tokio::time::sleep(CORE_AGENT_IPC_READY_POLL).await;
-    }
-    Err(saluki_error::generic_error!(
-        "Core Agent did not write 'auth_token' and 'ipc_cert.pem' to '{}' within {:?}.",
-        state_dir.display(),
-        timeout
-    ))
+    };
+    probe(&what, CORE_AGENT_IPC_READY_TIMEOUT, cancel, written).await
 }
 
 struct TestStateDir {
@@ -507,6 +511,29 @@ impl LogSink for PanoramicLogSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn the_core_agent_ipc_wait_names_itself_and_its_budget() {
+        let state_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let started = tokio::time::Instant::now();
+
+        let waited = tokio::time::timeout(
+            Duration::from_secs(120),
+            wait_for_agent_ipc_ready(state_dir.path(), &CancellationToken::new()),
+        )
+        .await
+        .expect("the wait should expire within the bound");
+
+        let error = waited.expect_err("the Core Agent never writes its credentials");
+        assert_eq!(started.elapsed(), Duration::from_secs(60));
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Timed out after 60s waiting for the Core Agent to write 'auth_token' and 'ipc_cert.pem' to '{}'.",
+                state_dir.path().display()
+            )
+        );
+    }
 
     #[test]
     fn adp_env_points_ipc_credentials_at_test_state_dir() {
