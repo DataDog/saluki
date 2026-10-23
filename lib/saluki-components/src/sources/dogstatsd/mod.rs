@@ -54,7 +54,7 @@ use saluki_io::{
         ConnectionAddress, ListenAddress, ProcessCredentialsError, ProcessIdentity, SocketSpecification, Stream,
     },
 };
-use snafu::{ResultExt as _, Snafu};
+use snafu::Snafu;
 use stringtheory::MetaString;
 use tokio::{
     pin, select,
@@ -684,7 +684,7 @@ impl DogStatsDConfiguration {
     /// hostname that wouldn't be used doesn't stop the source from starting.
     async fn resolve_bind_ip(&self) -> Result<Option<std::net::IpAddr>, Error> {
         match &self.bind_host {
-            Some(host) if !self.non_local_traffic => resolve_bind_host(host).await.map(Some),
+            Some(host) if !self.non_local_traffic => Ok(Some(resolve_bind_host(host).await?)),
             _ => Ok(None),
         }
     }
