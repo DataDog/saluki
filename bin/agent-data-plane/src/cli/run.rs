@@ -1127,6 +1127,7 @@ mod tests {
                 Live::new_fixed(MetricFilter {
                     values: vec!["tenant.raw.blocked".to_string()],
                     match_prefix: false,
+                    prefix_rules: Vec::new(),
                 }),
             );
             let tag_filter = TagFilterlistConfiguration::new(

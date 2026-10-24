@@ -1,0 +1,6 @@
+---
+features:
+  - |
+    Add ``metric_filterlist_prefix`` support for DogStatsD metric filtering. You can now block
+    metric-name prefixes with per-rule ``except_exact`` and ``except_prefix`` exceptions, and apply
+    these updates at runtime through remote configuration.
