@@ -23,6 +23,7 @@ pub struct RemapperRule {
     new_name: &'static str,
     remapped_tags: Vec<(&'static str, &'static str)>,
     additional_tags: Vec<MetaString>,
+    all_original_tags_except: Option<Vec<&'static str>>,
     continue_matching: bool,
     help_text: Option<&'static str>,
 }
@@ -37,6 +38,7 @@ impl RemapperRule {
             new_name,
             remapped_tags: Vec::new(),
             additional_tags: Vec::new(),
+            all_original_tags_except: None,
             continue_matching: false,
             help_text: None,
         }
@@ -53,6 +55,7 @@ impl RemapperRule {
             new_name,
             remapped_tags: Vec::new(),
             additional_tags: Vec::new(),
+            all_original_tags_except: None,
             continue_matching: false,
             help_text: None,
         }
@@ -116,6 +119,23 @@ impl RemapperRule {
     {
         self.additional_tags
             .extend(additional_tags.into_iter().map(MetaString::from_static));
+        self
+    }
+
+    /// Copies all source tags except tags whose names are in `excluded_tags`.
+    ///
+    /// This is useful when a metric carries a dynamic set of labels alongside component-specific tags.
+    /// Explicit copies and renames configured with `with_original_tags` or `with_remapped_tags` take precedence:
+    /// their source names are not copied again, even if also listed in `excluded_tags`. Exclusions apply only
+    /// to this catch-all copy, not to explicit mappings. Output order is explicit mappings in rule order,
+    /// remaining source tags in source order, then `with_additional_tags`.
+    ///
+    /// Calling this method again replaces the previous exclusion list.
+    pub fn with_all_original_tags_except<I>(mut self, excluded_tags: I) -> Self
+    where
+        I: IntoIterator<Item = &'static str>,
+    {
+        self.all_original_tags_except = Some(excluded_tags.into_iter().collect());
         self
     }
 
@@ -200,6 +220,17 @@ impl RemapperRule {
                         }
                     }
                 }
+            }
+        }
+
+        if let Some(excluded_tags) = &self.all_original_tags_except {
+            for tag in metric_tags {
+                if excluded_tags.contains(&tag.name())
+                    || self.remapped_tags.iter().any(|(source, _)| *source == tag.name())
+                {
+                    continue;
+                }
+                new_tags.push(tag.clone().into_inner());
             }
         }
 
@@ -307,6 +338,21 @@ mod tests {
         let context = Context::from_static_parts("src.metric", &["region:us-east-1", "host:web01"]);
 
         assert_eq!(remapped_tags(&rule, &context), ["region:us-east-1", "hostname:web01"]);
+    }
+
+    #[test]
+    fn copies_dynamic_original_tags_excluding_component_tags() {
+        let rule = RemapperRule::by_name_and_tags("src.metric", &["component_id:dsd_agg"], "dst.metric")
+            .with_all_original_tags_except(["component_id"]);
+        let context = Context::from_static_parts(
+            "src.metric",
+            &["component_id:dsd_agg", "pod_name:pod-1", "kube_namespace:default"],
+        );
+
+        let tags = remapped_tags(&rule, &context);
+        assert_eq!(tags.len(), 2);
+        assert!(tags.contains(&"pod_name:pod-1".to_string()));
+        assert!(tags.contains(&"kube_namespace:default".to_string()));
     }
 
     #[test]

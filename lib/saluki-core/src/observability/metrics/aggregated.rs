@@ -7,7 +7,7 @@
 use std::{
     iter::Once,
     pin::Pin,
-    sync::{Arc, OnceLock},
+    sync::{Arc, OnceLock, RwLock},
 };
 
 use futures::{stream::StreamExt as _, Stream};
@@ -125,6 +125,8 @@ impl AggregatedMetric {
 
 struct Inner {
     metrics: HashMap<Context, AggregatedMetric>,
+    // Keep a scrape from observing both sides of a gauge-set replacement.
+    snapshot_lock: RwLock<()>,
 }
 
 /// Aggregated metrics state.
@@ -133,11 +135,14 @@ pub struct AggregatedMetricsState {
 }
 
 impl AggregatedMetricsState {
-    /// Visits all metrics.
+    /// Visits all metrics from a consistent processed snapshot.
+    ///
+    /// The callback must not process updates into this state or recursively visit it.
     pub fn visit_metrics<F>(&self, mut visitor: F)
     where
         F: FnMut(&Context, &AggregatedMetricValue),
     {
+        let _snapshot = self.inner.snapshot_lock.read().unwrap();
         self.inner
             .metrics
             .pin()
@@ -236,12 +241,29 @@ impl Processor for AggregatedMetricsProcessor {
         AggregatedMetricsState {
             inner: Arc::new(Inner {
                 metrics: HashMap::new(),
+                snapshot_lock: RwLock::new(()),
             }),
         }
     }
 
     fn process(&self, input: Self::Input, state: &Self::State) {
+        let _snapshot = state.inner.snapshot_lock.write().unwrap();
         let metrics = state.inner.metrics.pin();
+
+        if input.gauges_are_complete {
+            let gauges: saluki_common::collections::FastHashSet<_> = input
+                .upserts
+                .iter()
+                .filter_map(|event| event.try_as_metric())
+                .filter(|metric| matches!(metric.values(), MetricValues::Gauge(_)))
+                .map(|metric| metric.context())
+                .collect();
+            // Gauge snapshots are authoritative, unlike counter/histogram deltas. Reconcile before
+            // inserting new series so lost eviction messages cannot accumulate stale gauge identities.
+            metrics.retain(|context, metric| {
+                !matches!(metric.value, AggregatedMetricValue::Gauge(_)) || gauges.contains(context)
+            });
+        }
 
         // Record (or merge) the metric values produced this flush.
         for event in input.upserts {
@@ -477,7 +499,7 @@ mod tests {
         processor.process(
             MetricsSnapshot {
                 upserts: vec![Event::Metric(Metric::counter(context.clone(), 14.0))],
-                evictions: Vec::new(),
+                ..MetricsSnapshot::default()
             },
             &state,
         );
@@ -500,6 +522,7 @@ mod tests {
             MetricsSnapshot {
                 upserts: Vec::new(),
                 evictions: vec![context],
+                ..MetricsSnapshot::default()
             },
             &state,
         );

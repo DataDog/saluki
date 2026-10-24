@@ -1123,7 +1123,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `syslog_rfc`                                                                               | Use RFC-style syslog header                        |
 | `syslog_uri`                                                                               | Syslog destination URI                             |
 | `tags`                                                                                     | Global tags for EKS Fargate OTLP metrics           |
-| `telemetry.dogstatsd_origin`                                                               | Per-origin processed-metrics telemetry             |
+| `telemetry.dogstatsd_origin`                                                               | Per-origin processed metrics and context counts    |
 | `tls_handshake_timeout`                                                                    | HTTP TLS handshake timeout                         |
 | `use_proxy_for_cloud_metadata`                                                             | Proxy cloud metadata endpoints                     |
 | `use_v2_api.series`                                                                        | Send series via V2 protobuf endpoint               |
@@ -1386,6 +1386,15 @@ key logging. Protect the generated file as sensitive data.
 
 When neither `apm_config.env` nor `env` is set, the first `env:` entry in `tags`, then in
 `extra_tags`, supplies the trace environment.
+
+### `telemetry.dogstatsd_origin`
+
+Disabled by default. When enabled, ADP reports active aggregation contexts grouped by resolved origin tags.
+This breakdown has at most 200 series: 199 origin groups and one `origin_overflow:true` series.
+Contexts without resolved origin tags are skipped. Groups exceeding 32 tags or 4096 source-tag bytes,
+and new groups when all slots are occupied, contribute to overflow instead of losing their counts.
+Each context retains its original assignment until expiry; freed slots can admit new contexts.
+This limit is separate from the DogStatsD source's per-origin processed-counter limit.
 
 ### `tls_handshake_timeout`
 
