@@ -58,6 +58,11 @@ pub struct SharedConfiguration {
     /// DogStatsD context dumps. Defaults to unset when configuration does not provide a concrete
     /// `run_path`.
     pub run_path: Option<PathBuf>,
+
+    /// Host that listeners bind to when their own settings do not name one (`bind_host`).
+    ///
+    /// Read by the DogStatsD and APM listeners. `None` leaves each listener at its own default host.
+    pub bind_host: Option<String>,
 }
 
 /// Host identity and container runtime discovery inputs.

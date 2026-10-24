@@ -21,6 +21,8 @@ use tokio::{
 
 use super::addr::{ConnectionAddress, ProcessIdentity};
 #[cfg(unix)]
+use super::addr::{ProcessCredentials, ProcessCredentialsError};
+#[cfg(unix)]
 use super::unix::{unix_recvmsg, unixgram_recvmsg};
 
 /// A connection-oriented socket.
@@ -55,14 +57,35 @@ impl Connection {
         }
     }
 
-    pub(super) fn remote_addr(&self) -> ConnectionAddress {
+    /// Returns the address of the remote peer.
+    ///
+    /// For a Unix domain socket, this is the identity of the process that connected, as captured by the kernel at
+    /// connect time.
+    pub(crate) fn remote_addr(&self) -> ConnectionAddress {
         match self {
             Self::Tcp(_, addr) => ConnectionAddress::SocketLike(*addr),
             #[cfg(unix)]
-            Self::Unix(_) => ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable),
+            Self::Unix(inner) => ConnectionAddress::ProcessLike(unix_peer_identity(inner)),
             #[cfg(windows)]
             Self::NamedPipe(_) => ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable),
         }
+    }
+}
+
+/// Reads the peer process credentials of a connected Unix domain socket (`SO_PEERCRED` on Linux).
+#[cfg(unix)]
+fn unix_peer_identity(stream: &UnixStream) -> ProcessIdentity {
+    match stream.peer_cred() {
+        Ok(creds) => match creds.pid() {
+            Some(0) => ProcessIdentity::Error(ProcessCredentialsError::ZeroPid),
+            Some(pid) => ProcessIdentity::Credentials(ProcessCredentials {
+                pid,
+                uid: creds.uid(),
+                gid: creds.gid(),
+            }),
+            None => ProcessIdentity::Error(ProcessCredentialsError::UnsupportedPlatform),
+        },
+        Err(_) => ProcessIdentity::Error(ProcessCredentialsError::InvalidCredentials),
     }
 }
 
