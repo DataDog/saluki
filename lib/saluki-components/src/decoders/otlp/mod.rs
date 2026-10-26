@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use agent_data_plane_config::domains;
 use async_trait::async_trait;
 use datadog_agent_apm::semantics::SemanticRegistryProvider;
 use otlp_protos::opentelemetry::proto::collector::trace::v1::ExportTraceServiceRequest;
@@ -21,15 +20,15 @@ use tokio::{
 };
 use tracing::{debug, error, warn};
 
-use crate::common::otlp::traces::translator::OtlpTracesTranslator;
+use crate::common::otlp::traces::translator::{OtlpTracesSettings, OtlpTracesTranslator};
 use crate::common::otlp::{
     build_metrics, Metrics, OTLP_LOGS_GRPC_SERVICE_PATH, OTLP_METRICS_GRPC_SERVICE_PATH, OTLP_TRACES_GRPC_SERVICE_PATH,
 };
 
 /// Configuration for the OTLP decoder.
 pub struct OtlpDecoderConfiguration {
-    /// Resolved OTLP trace ingestion settings.
-    traces: domains::otlp::Traces,
+    /// Trace translation settings.
+    traces: OtlpTracesSettings,
 
     /// Maximum length of a span's resource name, in bytes.
     ///
@@ -41,10 +40,10 @@ pub struct OtlpDecoderConfiguration {
 }
 
 impl OtlpDecoderConfiguration {
-    /// Creates a new `OtlpDecoderConfiguration` from the resolved OTLP trace configuration.
-    pub fn from_configuration(traces: &domains::otlp::Traces) -> Self {
+    /// Creates a new `OtlpDecoderConfiguration` that translates traces with the given settings.
+    pub fn new(traces: OtlpTracesSettings) -> Self {
         Self {
-            traces: traces.clone(),
+            traces,
             max_resource_len: usize::MAX,
             semantic_registry: SemanticRegistryProvider::default(),
         }
@@ -212,16 +211,18 @@ mod tests {
     use datadog_agent_apm::semantics::test_util::TestRegistryPublisher;
 
     use super::*;
-    use crate::common::otlp::traces::translator::{custom_status_code_registry, translate_custom_status_code};
+    use crate::common::otlp::traces::translator::{
+        custom_status_code_registry, traces_settings, translate_custom_status_code,
+    };
 
     #[test]
     fn injected_provider_reaches_the_traces_translator() {
         let (publisher, provider) = TestRegistryPublisher::new();
-        let traces = domains::otlp::Traces {
+        let traces = OtlpTracesSettings {
             string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
-            ..Default::default()
+            ..traces_settings()
         };
-        let mut translator = OtlpDecoderConfiguration::from_configuration(&traces)
+        let mut translator = OtlpDecoderConfiguration::new(traces)
             .with_semantic_registry(provider)
             .traces_translator();
         let metrics = Metrics::for_tests();

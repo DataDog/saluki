@@ -29,6 +29,7 @@ use crate::internal::logging::get_translated_logging_config;
 mod cli;
 use self::cli::*;
 
+mod component_inputs;
 mod components;
 mod config;
 mod dogstatsd_contexts;

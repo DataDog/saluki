@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use agent_data_plane_config::domains;
 use async_trait::async_trait;
 use axum::body::Bytes;
 use otlp_protos::opentelemetry::proto::collector::logs::v1::ExportLogsServiceRequest;
@@ -38,8 +37,8 @@ use tokio::time::{interval, MissedTickBehavior};
 use tracing::{debug, error};
 
 use crate::common::otlp::{
-    build_metrics, resolve_grpc_http2_config, CorsConfiguration, Metrics, OtlpHandler, OtlpServerConfiguration,
-    OtlpTlsConfiguration,
+    build_metrics, receiver::OtlpReceiver, traces::translator::OtlpTracesSettings, CorsConfiguration, Metrics,
+    OtlpHandler, OtlpServerConfiguration, OtlpTlsConfiguration,
 };
 
 mod logs;
@@ -48,8 +47,12 @@ mod resolver;
 use datadog_agent_apm::semantics::SemanticRegistryProvider;
 
 use self::logs::translator::OtlpLogsTranslator;
+pub use self::metrics::config::{
+    CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, OtlpMetricsSettings, SummaryMode,
+};
 use self::metrics::translator::OtlpMetricsTranslator;
 use self::resolver::build_context_resolver;
+pub use self::resolver::OtlpContextSettings;
 use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::traces::translator::OtlpTracesTranslator;
 
@@ -67,153 +70,67 @@ fn parse_configured_metric_tags(raw: &str) -> SharedTagSet {
     tags.into_shared()
 }
 
-/// Builds component-owned CORS settings from the resolved configuration model.
-fn cors_configuration(cors: &domains::otlp::Cors) -> CorsConfiguration {
-    CorsConfiguration {
-        allowed_origins: cors.allowed_origins.clone(),
-        allowed_headers: cors.allowed_headers.clone(),
-        exposed_headers: cors.exposed_headers.clone(),
-        max_age: cors.max_age,
-    }
-}
-
-/// Builds an `OtlpTlsConfiguration` from resolved TLS settings, if TLS is enabled.
-///
-/// TLS is enabled when both `cert_file` and `key_file` are non-empty. When `ca_file` is also non-empty, the server
-/// requests client certificates and verifies them against the CA certificates in that file, but does not require a
-/// client certificate (optional verification).
-///
-/// # Errors
-///
-/// Returns an error if any TLS field is set without the others required to form a valid TLS configuration. Both
-/// `cert_file` and `key_file` must be provided together to enable TLS, and `ca_file` must not be set without them.
-/// Setting only a subset is treated as a configuration error rather than silently downgrading to plaintext.
-fn build_tls_config(tls: &domains::otlp::Tls) -> Result<Option<OtlpTlsConfiguration>, GenericError> {
-    match (tls.cert_file.is_empty(), tls.key_file.is_empty()) {
-        (true, true) => {
-            if !tls.ca_file.is_empty() {
-                Err(generic_error!(
-                    "OTLP receiver TLS `ca_file` is set but `cert_file` and `key_file` are empty. All three must \
-                     be provided together, or `ca_file` must be omitted when TLS is disabled."
-                ))
-            } else {
-                Ok(None)
-            }
-        }
-        (false, false) => {
-            let mut config = OtlpTlsConfiguration::new(tls.cert_file.clone().into(), tls.key_file.clone().into());
-            if !tls.ca_file.is_empty() {
-                config = config.with_ca_file(tls.ca_file.clone().into());
-            }
-            Ok(Some(config))
-        }
-        (true, false) => Err(generic_error!(
-            "OTLP receiver TLS `key_file` is set but `cert_file` is empty. Both must be provided to enable TLS."
-        )),
-        (false, true) => Err(generic_error!(
-            "OTLP receiver TLS `cert_file` is set but `key_file` is empty. Both must be provided to enable TLS."
-        )),
-    }
-}
-
 /// Applies resolved static tags using replacement semantics.
-fn apply_static_metric_tags(otlp: &mut domains::otlp::Domain, static_tags: Vec<String>) {
+fn apply_static_metric_tags(metrics: &mut OtlpMetricsSettings, static_tags: Vec<String>) {
     if !static_tags.is_empty() {
-        otlp.metrics.tags = static_tags.join(",");
+        metrics.tags = static_tags.join(",");
     }
 }
 
 /// Configuration for the OTLP source.
 pub struct OtlpConfiguration {
-    default_hostname: MetaString,
+    /// Hostname of metrics whose resource carries none.
+    pub default_hostname: MetaString,
 
-    /// Resolved OTLP domain slice.
-    otlp: domains::otlp::Domain,
+    /// Receiver settings.
+    pub receiver: OtlpReceiver,
+
+    /// Metrics translation settings.
+    pub metrics: OtlpMetricsSettings,
+
+    /// Whether OTLP traces are accepted.
+    pub traces_enabled: bool,
+
+    /// Trace translation settings.
+    pub traces: OtlpTracesSettings,
+
+    /// Context resolver settings.
+    pub contexts: OtlpContextSettings,
 
     /// Maximum length of a span's resource name, in bytes.
     ///
-    /// Defaults to `usize::MAX`, meaning resource names are not truncated.
-    max_resource_len: usize,
+    /// Resource names longer than this limit are truncated to the limit, on a UTF-8 boundary. If set to `0`, every
+    /// resource name is truncated to an empty string. Use `usize::MAX` to never truncate them.
+    pub max_resource_len: usize,
 
-    /// Supplies attribute mappings for trace translation. Defaults to embedded mappings without remote updates.
-    semantic_registry: SemanticRegistryProvider,
+    /// Supplies attribute mappings for registry-based trace lookups.
+    ///
+    /// Pass a subscribed provider to receive remote mapping updates. The translator reads one registry snapshot per
+    /// `ResourceSpans` batch, so an update cannot change mappings midway through that batch. Metrics and logs are
+    /// unaffected.
+    pub semantic_registry: SemanticRegistryProvider,
 
     /// Workload provider to utilize for origin detection/enrichment.
-    workload_provider: Arc<dyn WorkloadProvider + Send + Sync>,
+    pub workload_provider: Arc<dyn WorkloadProvider + Send + Sync>,
 }
 
 impl OtlpConfiguration {
-    /// Creates a new `OtlpConfiguration` from the resolved OTLP configuration and workload provider.
-    ///
-    pub fn from_configuration<W>(otlp: &domains::otlp::Domain, workload_provider: W) -> Self
-    where
-        W: WorkloadProvider + Send + Sync + 'static,
-    {
-        Self {
-            default_hostname: MetaString::default(),
-            otlp: otlp.clone(),
-            max_resource_len: usize::MAX,
-            semantic_registry: SemanticRegistryProvider::default(),
-            workload_provider: Arc::new(workload_provider),
-        }
-    }
-
     /// Replaces the configured metric tags when static tags are required.
     pub fn with_static_metric_tags(mut self, static_tags: Vec<String>) -> Self {
-        apply_static_metric_tags(&mut self.otlp, static_tags);
+        apply_static_metric_tags(&mut self.metrics, static_tags);
         self
     }
 
     fn traces_translator(&self) -> OtlpTracesTranslator {
         OtlpTracesTranslator::new(
-            self.otlp.traces.clone(),
+            self.traces.clone(),
             self.max_resource_len,
             self.semantic_registry.clone(),
         )
     }
 
     fn metrics_translator_config(&self) -> metrics::config::OtlpMetricsTranslatorConfig {
-        let mut config = metrics::config::OtlpMetricsTranslatorConfig::default()
-            .with_summary_mode(self.otlp.metrics.summaries.mode)
-            .with_histogram_mode(self.otlp.metrics.histogram_mode)
-            .with_send_histogram_aggregations(self.otlp.metrics.send_histogram_aggregations)
-            .with_cumulative_monotonic_mode(self.otlp.metrics.sums.cumulative_monotonic_mode)
-            .with_initial_cumulative_monotonic_value(self.otlp.metrics.sums.initial_cumulative_monotonic_value)
-            .with_resource_attributes_as_tags(self.otlp.metrics.resource_attributes_as_tags)
-            .with_instrumentation_scope_metadata_as_tags(self.otlp.metrics.instrumentation_scope_metadata_as_tags)
-            .with_delta_ttl(self.otlp.metrics.delta_ttl);
-        config.tag_cardinality = self.otlp.metrics.tag_cardinality;
-        config
-    }
-
-    /// Sets the default hostname used when OTLP metrics do not carry a resource hostname.
-    pub fn with_default_hostname(mut self, hostname: impl Into<MetaString>) -> Self {
-        self.default_hostname = hostname.into();
-        self
-    }
-
-    /// Sets the maximum length of a span's resource name, in bytes.
-    ///
-    /// Resource names longer than this limit are truncated to the limit, on a UTF-8 boundary. Defaults to `usize::MAX`
-    /// (unbounded), which matches the source's behavior before resource name truncation was introduced.
-    ///
-    /// If set to `0`, every resource name is truncated to an empty string. Pass through the configured value
-    /// unmodified, including `0`, so the configured behavior is always honored.
-    pub fn with_max_resource_len(mut self, max_resource_len: usize) -> Self {
-        self.max_resource_len = max_resource_len;
-        self
-    }
-
-    /// Sets the provider of attribute mappings used by registry-based trace lookups.
-    ///
-    /// Pass a subscribed provider to receive remote mapping updates. The translator reads one registry snapshot per
-    /// `ResourceSpans` batch, so an update cannot change mappings midway through that batch. Metrics and logs are
-    /// unaffected.
-    ///
-    /// Defaults to embedded mappings without remote updates.
-    pub fn with_semantic_registry(mut self, semantic_registry: SemanticRegistryProvider) -> Self {
-        self.semantic_registry = semantic_registry;
-        self
+        metrics::config::OtlpMetricsTranslatorConfig::from_settings(&self.metrics)
     }
 }
 
@@ -232,7 +149,7 @@ impl SourceBuilder for OtlpConfiguration {
     }
 
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
-        if !self.otlp.receiver.metrics_enabled && !self.otlp.receiver.logs_enabled && !self.otlp.traces.enabled {
+        if !self.receiver.metrics_enabled && !self.receiver.logs_enabled && !self.traces_enabled {
             return Err(generic_error!(
                 "OTLP metrics, logs and traces support is disabled. Please enable at least one of them."
             ));
@@ -240,13 +157,13 @@ impl SourceBuilder for OtlpConfiguration {
 
         let grpc_listen_str = format!(
             "{}://{}",
-            self.otlp.receiver.grpc.transport.as_str(),
-            self.otlp.receiver.grpc.endpoint
+            self.receiver.grpc.transport.as_str(),
+            self.receiver.grpc.endpoint
         );
         let grpc_endpoint = ListenAddress::try_from(grpc_listen_str.as_str())
             .map_err(|e| generic_error!("Invalid gRPC endpoint address '{}': {}", grpc_listen_str, e))?;
 
-        let http_endpoint_str = &self.otlp.receiver.http.endpoint;
+        let http_endpoint_str = &self.receiver.http.endpoint;
         let http_socket_addr = http_endpoint_str
             .to_socket_addrs()
             .map_err(|e| generic_error!("Invalid HTTP endpoint address '{}': {}", http_endpoint_str, e))?
@@ -257,20 +174,17 @@ impl SourceBuilder for OtlpConfiguration {
 
         // Metrics resolve their full OTLP entity list at the resource boundary. Keep the context resolver free of an
         // origin resolver so it cannot apply the legacy RawOrigin-only lookup a second time. Logs retain that resolver.
-        let context_resolver = build_context_resolver(&self.otlp.contexts, context.component_context(), None)?;
+        let context_resolver = build_context_resolver(&self.contexts, context.component_context(), None)?;
         let metrics_translator_config = self.metrics_translator_config();
 
-        let metric_tags = parse_configured_metric_tags(&self.otlp.metrics.tags);
+        let metric_tags = parse_configured_metric_tags(&self.metrics.tags);
         let traces_translator = self.traces_translator();
-        let grpc_max_recv_msg_size_bytes = self.otlp.receiver.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
-        let grpc_http2_config = resolve_grpc_http2_config(
-            &self.otlp.receiver.grpc.keepalive,
-            self.otlp.receiver.grpc.max_concurrent_streams,
-        );
-        let http_max_request_body_size = self.otlp.receiver.http.max_request_body_size;
-        let cors = cors_configuration(&self.otlp.receiver.http.cors);
-        let http_tls_config = build_tls_config(&self.otlp.receiver.http.tls)?;
-        let grpc_tls_config = build_tls_config(&self.otlp.receiver.grpc.tls)?;
+        let grpc_max_recv_msg_size_bytes = self.receiver.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
+        let grpc_http2_config = self.receiver.grpc.http2_config();
+        let http_max_request_body_size = self.receiver.http.max_request_body_size;
+        let cors = self.receiver.http.cors.clone();
+        let http_tls_config = self.receiver.http.tls.build()?;
+        let grpc_tls_config = self.receiver.grpc.tls.build()?;
         let metrics = build_metrics(context.component_context());
         let translator_metrics =
             metrics::telemetry::OtlpMetricsTranslatorMetrics::from_component_context(context.component_context());
@@ -631,24 +545,67 @@ async fn run_converter(
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroUsize;
+    use std::sync::Arc;
     use std::time::Duration;
 
-    use agent_data_plane_config::domains;
-    use agent_data_plane_config::domains::otlp::{
-        CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
-    };
     use datadog_agent_apm::semantics::test_util::TestRegistryPublisher;
+    use datadog_agent_apm::semantics::SemanticRegistryProvider;
     use otlp_protos::opentelemetry::proto::collector::logs::v1::logs_service_client::LogsServiceClient;
     use otlp_protos::opentelemetry::proto::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
     use prost::Message;
     use saluki_core::components::{test_util::TestComponentDriver, ComponentContext};
+    use saluki_core::data_model::origin::OriginTagCardinality;
     use saluki_core::runtime::state::{DataspaceUpdate, IdentifierFilter};
     use saluki_io::net::BoundListenAddress;
     use saluki_metrics::test::TestRecorder;
+    use stringtheory::MetaString;
 
-    use super::{apply_static_metric_tags, parse_configured_metric_tags, ExportLogsServiceRequest, OtlpConfiguration};
-    use crate::common::otlp::traces::translator::{custom_status_code_registry, translate_custom_status_code};
+    use super::{
+        apply_static_metric_tags, parse_configured_metric_tags, CumulativeMonotonicMode, ExportLogsServiceRequest,
+        HistogramMode, InitialCumulativeMonotonicValue, OtlpConfiguration, OtlpContextSettings, OtlpMetricsSettings,
+        SummaryMode,
+    };
+    use crate::common::otlp::receiver::receiver;
+    use crate::common::otlp::traces::translator::{
+        custom_status_code_registry, traces_settings, translate_custom_status_code,
+    };
     use crate::common::otlp::{build_metrics, Metrics, OtlpHandler};
+
+    /// Returns metrics settings carrying the configuration defaults.
+    fn metrics_settings() -> OtlpMetricsSettings {
+        OtlpMetricsSettings {
+            tag_cardinality: OriginTagCardinality::Low,
+            histogram_mode: HistogramMode::Distributions,
+            send_histogram_aggregations: false,
+            resource_attributes_as_tags: false,
+            instrumentation_scope_metadata_as_tags: true,
+            cumulative_monotonic_mode: CumulativeMonotonicMode::ToDelta,
+            initial_cumulative_monotonic_value: InitialCumulativeMonotonicValue::Auto,
+            tags: String::new(),
+            summary_mode: SummaryMode::Gauges,
+            delta_ttl: Duration::from_secs(3600),
+        }
+    }
+
+    /// Returns source settings carrying the configuration defaults.
+    fn source_configuration() -> OtlpConfiguration {
+        OtlpConfiguration {
+            default_hostname: MetaString::default(),
+            receiver: receiver(),
+            metrics: metrics_settings(),
+            traces_enabled: false,
+            traces: traces_settings(),
+            contexts: OtlpContextSettings {
+                allow_context_heap_allocs: true,
+                cached_contexts_limit: 500_000,
+                cached_tagsets_limit: 500_000,
+                string_interner_size: 2 * 1024 * 1024,
+            },
+            max_resource_len: usize::MAX,
+            semantic_registry: SemanticRegistryProvider::default(),
+            workload_provider: Arc::new(saluki_env::workload::providers::NoopWorkloadProvider),
+        }
+    }
 
     fn tags(raw: &str) -> Vec<String> {
         parse_configured_metric_tags(raw)
@@ -657,23 +614,20 @@ mod tests {
             .collect()
     }
 
-    fn config_with_metrics(metrics: domains::otlp::Metrics) -> OtlpConfiguration {
-        let otlp = domains::otlp::Domain {
+    fn config_with_metrics(metrics: OtlpMetricsSettings) -> OtlpConfiguration {
+        OtlpConfiguration {
             metrics,
-            ..Default::default()
-        };
-        OtlpConfiguration::from_configuration(&otlp, saluki_env::workload::providers::NoopWorkloadProvider)
+            ..source_configuration()
+        }
     }
 
     #[test]
     fn injected_provider_reaches_the_traces_translator() {
         let (publisher, provider) = TestRegistryPublisher::new();
-        let mut otlp = domains::otlp::Domain::default();
-        otlp.traces.string_interner_size = std::num::NonZeroUsize::new(64 * 1024).unwrap();
-        let mut translator =
-            OtlpConfiguration::from_configuration(&otlp, saluki_env::workload::providers::NoopWorkloadProvider)
-                .with_semantic_registry(provider)
-                .traces_translator();
+        let mut config = source_configuration();
+        config.traces.string_interner_size = NonZeroUsize::new(64 * 1024).unwrap();
+        config.semantic_registry = provider;
+        let mut translator = config.traces_translator();
         let metrics = Metrics::for_tests();
         assert_eq!(translate_custom_status_code(&mut translator, &metrics), None);
 
@@ -683,22 +637,23 @@ mod tests {
 
     #[test]
     fn empty_static_tags_preserve_explicit_otlp_metric_tags() {
-        let mut otlp = domains::otlp::Domain::default();
-        otlp.metrics.tags = "configured:true".to_string();
+        let mut metrics = metrics_settings();
+        metrics.tags = "configured:true".to_string();
 
-        apply_static_metric_tags(&mut otlp, Vec::new());
+        apply_static_metric_tags(&mut metrics, Vec::new());
 
-        assert_eq!(otlp.metrics.tags, "configured:true");
+        assert_eq!(metrics.tags, "configured:true");
     }
 
     #[test]
     fn static_metric_tags_replace_explicit_otlp_metric_tags() {
-        let mut otlp = domains::otlp::Domain::default();
-        otlp.metrics.tags = "configured:true".to_string();
+        let config = config_with_metrics(OtlpMetricsSettings {
+            tags: "configured:true".to_string(),
+            ..metrics_settings()
+        })
+        .with_static_metric_tags(vec!["provider_kind:autopilot".to_string()]);
 
-        apply_static_metric_tags(&mut otlp, vec!["provider_kind:autopilot".to_string()]);
-
-        assert_eq!(otlp.metrics.tags, "provider_kind:autopilot");
+        assert_eq!(config.metrics.tags, "provider_kind:autopilot");
     }
 
     #[test]
@@ -708,9 +663,9 @@ mod tests {
             HistogramMode::Counters,
             HistogramMode::Distributions,
         ] {
-            let config = config_with_metrics(domains::otlp::Metrics {
+            let config = config_with_metrics(OtlpMetricsSettings {
                 histogram_mode: mode,
-                ..Default::default()
+                ..metrics_settings()
             });
 
             assert_eq!(config.metrics_translator_config().hist_mode, mode);
@@ -721,9 +676,9 @@ mod tests {
     fn summary_mode_flows_to_metrics_translator() {
         // `gauges` emits one gauge per quantile (quantiles on); `noquantiles` omits them.
         for (mode, expected_quantiles) in [(SummaryMode::Gauges, true), (SummaryMode::NoQuantiles, false)] {
-            let config = config_with_metrics(domains::otlp::Metrics {
-                summaries: domains::otlp::Summaries { mode },
-                ..Default::default()
+            let config = config_with_metrics(OtlpMetricsSettings {
+                summary_mode: mode,
+                ..metrics_settings()
             });
 
             assert_eq!(config.metrics_translator_config().quantiles, expected_quantiles);
@@ -733,9 +688,9 @@ mod tests {
     #[test]
     fn histogram_aggregation_flows_to_metrics_translator() {
         for send in [false, true] {
-            let config = config_with_metrics(domains::otlp::Metrics {
+            let config = config_with_metrics(OtlpMetricsSettings {
                 send_histogram_aggregations: send,
-                ..Default::default()
+                ..metrics_settings()
             });
 
             assert_eq!(config.metrics_translator_config().send_histogram_aggregations, send);
@@ -744,10 +699,10 @@ mod tests {
 
     #[test]
     fn nobuckets_with_histogram_aggregations_is_valid() {
-        let config = config_with_metrics(domains::otlp::Metrics {
+        let config = config_with_metrics(OtlpMetricsSettings {
             histogram_mode: HistogramMode::NoBuckets,
             send_histogram_aggregations: true,
-            ..Default::default()
+            ..metrics_settings()
         });
 
         assert!(config.metrics_translator_config().validate().is_ok());
@@ -756,34 +711,21 @@ mod tests {
     #[test]
     fn nobuckets_without_histogram_aggregations_is_invalid() {
         // Match the Agent: `nobuckets` without aggregation metrics emits nothing and is invalid.
-        let config = config_with_metrics(domains::otlp::Metrics {
+        let config = config_with_metrics(OtlpMetricsSettings {
             histogram_mode: HistogramMode::NoBuckets,
             send_histogram_aggregations: false,
-            ..Default::default()
+            ..metrics_settings()
         });
 
         assert!(config.metrics_translator_config().validate().is_err());
     }
 
     #[test]
-    fn cumulative_monotonic_sum_mode_defaults_to_delta_conversion() {
-        assert_eq!(
-            config_with_metrics(domains::otlp::Metrics::default())
-                .metrics_translator_config()
-                .cumulative_monotonic_mode,
-            CumulativeMonotonicMode::ToDelta
-        );
-    }
-
-    #[test]
     fn cumulative_monotonic_mode_flows_to_metrics_translator() {
         for mode in [CumulativeMonotonicMode::ToDelta, CumulativeMonotonicMode::RawValue] {
-            let config = config_with_metrics(domains::otlp::Metrics {
-                sums: domains::otlp::Sums {
-                    cumulative_monotonic_mode: mode,
-                    ..Default::default()
-                },
-                ..Default::default()
+            let config = config_with_metrics(OtlpMetricsSettings {
+                cumulative_monotonic_mode: mode,
+                ..metrics_settings()
             });
 
             assert_eq!(config.metrics_translator_config().cumulative_monotonic_mode, mode);
@@ -797,12 +739,9 @@ mod tests {
             InitialCumulativeMonotonicValue::Drop,
             InitialCumulativeMonotonicValue::Keep,
         ] {
-            let config = config_with_metrics(domains::otlp::Metrics {
-                sums: domains::otlp::Sums {
-                    initial_cumulative_monotonic_value: value,
-                    ..Default::default()
-                },
-                ..Default::default()
+            let config = config_with_metrics(OtlpMetricsSettings {
+                initial_cumulative_monotonic_value: value,
+                ..metrics_settings()
             });
 
             assert_eq!(
@@ -815,38 +754,32 @@ mod tests {
     #[test]
     fn delta_ttl_flows_to_metrics_translator() {
         // An explicit TTL overrides the 3600s default end-to-end into the translator config.
-        let config = config_with_metrics(domains::otlp::Metrics {
+        let config = config_with_metrics(OtlpMetricsSettings {
             delta_ttl: Duration::from_secs(7200),
-            ..Default::default()
+            ..metrics_settings()
         });
 
         assert_eq!(config.metrics_translator_config().delta_ttl, Duration::from_secs(7200));
     }
 
     #[test]
-    fn delta_ttl_defaults_to_3600s() {
-        assert_eq!(
-            config_with_metrics(domains::otlp::Metrics::default())
-                .metrics_translator_config()
-                .delta_ttl,
-            Duration::from_secs(3600)
-        );
-    }
+    fn tag_settings_flow_to_metrics_translator() {
+        let config = config_with_metrics(OtlpMetricsSettings {
+            tag_cardinality: OriginTagCardinality::High,
+            resource_attributes_as_tags: true,
+            ..metrics_settings()
+        });
+        let translator_config = config.metrics_translator_config();
 
-    #[test]
-    fn instrumentation_scope_metadata_as_tags_defaults_to_true() {
-        assert!(
-            config_with_metrics(domains::otlp::Metrics::default())
-                .metrics_translator_config()
-                .instrumentation_scope_metadata_as_tags
-        );
+        assert_eq!(translator_config.tag_cardinality, OriginTagCardinality::High);
+        assert!(translator_config.resource_attributes_as_tags);
     }
 
     #[test]
     fn instrumentation_scope_metadata_as_tags_flows_to_metrics_translator() {
-        let config = config_with_metrics(domains::otlp::Metrics {
+        let config = config_with_metrics(OtlpMetricsSettings {
             instrumentation_scope_metadata_as_tags: false,
-            ..Default::default()
+            ..metrics_settings()
         });
 
         assert!(
@@ -961,16 +894,14 @@ mod tests {
         const REQUESTS: usize = 16;
         const RECORDS: usize = 512;
 
-        let mut otlp = domains::otlp::Domain::default();
-        otlp.receiver.logs_enabled = true;
-        otlp.receiver.grpc.endpoint = "127.0.0.1:0".to_string();
-        otlp.receiver.grpc.max_recv_msg_size_mib = 4;
+        let mut config = source_configuration();
+        config.receiver.logs_enabled = true;
+        config.receiver.grpc.endpoint = "127.0.0.1:0".to_string();
+        config.receiver.grpc.max_recv_msg_size_mib = 4;
         // The configuration translator resolves a zero keepalive to these defaults.
-        otlp.receiver.grpc.keepalive.time = Duration::from_secs(2 * 60 * 60);
-        otlp.receiver.grpc.keepalive.timeout = Duration::from_secs(20);
-        otlp.receiver.http.endpoint = "127.0.0.1:0".to_string();
-        let config =
-            OtlpConfiguration::from_configuration(&otlp, saluki_env::workload::providers::NoopWorkloadProvider);
+        config.receiver.grpc.keepalive.time = Duration::from_secs(2 * 60 * 60);
+        config.receiver.grpc.keepalive.timeout = Duration::from_secs(20);
+        config.receiver.http.endpoint = "127.0.0.1:0".to_string();
 
         let (mut control, mut outputs) = TestComponentDriver::options()
             .with_interconnect_capacity(NonZeroUsize::MIN)

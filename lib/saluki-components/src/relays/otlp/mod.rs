@@ -1,6 +1,5 @@
 use std::sync::LazyLock;
 
-use agent_data_plane_config::domains;
 use async_trait::async_trait;
 use axum::body::Bytes;
 use saluki_common::buf::FrozenChunkedBytesBuffer;
@@ -9,7 +8,7 @@ use saluki_core::components::relays::{Relay, RelayBuilder, RelayContext};
 use saluki_core::components::BuildContext;
 use saluki_core::data_model::payload::{GrpcPayload, Payload, PayloadMetadata, PayloadType};
 use saluki_core::topology::OutputDefinition;
-use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_error::{ErrorContext as _, GenericError};
 use saluki_io::net::{server::http::Http2Config, ListenAddress};
 use stringtheory::MetaString;
 use tokio::select;
@@ -17,71 +16,19 @@ use tokio::sync::mpsc;
 use tracing::{debug, error};
 
 use crate::common::otlp::{
-    build_metrics, resolve_grpc_http2_config, CorsConfiguration, Metrics, OtlpHandler, OtlpServerConfiguration,
+    build_metrics, receiver::OtlpReceiver, CorsConfiguration, Metrics, OtlpHandler, OtlpServerConfiguration,
     OtlpTlsConfiguration, OTLP_LOGS_GRPC_SERVICE_PATH, OTLP_METRICS_GRPC_SERVICE_PATH, OTLP_TRACES_GRPC_SERVICE_PATH,
 };
 
-/// Builds component-owned CORS settings from the resolved configuration model.
-fn cors_configuration(cors: &domains::otlp::Cors) -> CorsConfiguration {
-    CorsConfiguration {
-        allowed_origins: cors.allowed_origins.clone(),
-        allowed_headers: cors.allowed_headers.clone(),
-        exposed_headers: cors.exposed_headers.clone(),
-        max_age: cors.max_age,
-    }
-}
-
-/// Builds an `OtlpTlsConfiguration` from resolved TLS settings, if TLS is enabled.
-///
-/// TLS is enabled when both `cert_file` and `key_file` are non-empty. When `ca_file` is also non-empty, the server
-/// requests client certificates and verifies them against the CA certificates in that file, but does not require a
-/// client certificate (optional verification).
-///
-/// # Errors
-///
-/// Returns an error if any TLS field is set without the others required to form a valid TLS configuration. Both
-/// `cert_file` and `key_file` must be provided together to enable TLS, and `ca_file` must not be set without them.
-/// Setting only a subset is treated as a configuration error rather than silently downgrading to plaintext.
-fn build_tls_config(tls: &domains::otlp::Tls) -> Result<Option<OtlpTlsConfiguration>, GenericError> {
-    match (tls.cert_file.is_empty(), tls.key_file.is_empty()) {
-        (true, true) => {
-            if !tls.ca_file.is_empty() {
-                Err(generic_error!(
-                    "OTLP receiver TLS `ca_file` is set but `cert_file` and `key_file` are empty. All three must \
-                     be provided together, or `ca_file` must be omitted when TLS is disabled."
-                ))
-            } else {
-                Ok(None)
-            }
-        }
-        (false, false) => {
-            let mut config = OtlpTlsConfiguration::new(tls.cert_file.clone().into(), tls.key_file.clone().into());
-            if !tls.ca_file.is_empty() {
-                config = config.with_ca_file(tls.ca_file.clone().into());
-            }
-            Ok(Some(config))
-        }
-        (true, false) => Err(generic_error!(
-            "OTLP receiver TLS `key_file` is set but `cert_file` is empty. Both must be provided to enable TLS."
-        )),
-        (false, true) => Err(generic_error!(
-            "OTLP receiver TLS `cert_file` is set but `key_file` is empty. Both must be provided to enable TLS."
-        )),
-    }
-}
-
 /// Configuration for the OTLP relay.
-#[derive(Default)]
 pub struct OtlpRelayConfiguration {
-    receiver: domains::otlp::Receiver,
+    receiver: OtlpReceiver,
 }
 
 impl OtlpRelayConfiguration {
-    /// Creates relay configuration from typed OTLP receiver settings.
-    pub fn from_configuration(receiver: &domains::otlp::Receiver) -> Self {
-        Self {
-            receiver: receiver.clone(),
-        }
+    /// Creates a new `OtlpRelayConfiguration` that receives with the given settings.
+    pub fn new(receiver: OtlpReceiver) -> Self {
+        Self { receiver }
     }
 
     fn http_endpoint(&self) -> ListenAddress {
@@ -121,19 +68,16 @@ impl RelayBuilder for OtlpRelayConfiguration {
     }
 
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Relay + Send>, GenericError> {
-        let http_tls_config = build_tls_config(&self.receiver.http.tls)?;
-        let grpc_tls_config = build_tls_config(&self.receiver.grpc.tls)?;
+        let http_tls_config = self.receiver.http.tls.build()?;
+        let grpc_tls_config = self.receiver.grpc.tls.build()?;
 
         Ok(Box::new(OtlpRelay {
             http_endpoint: self.http_endpoint(),
             grpc_endpoint: self.grpc_endpoint(),
             grpc_max_recv_msg_size_bytes: self.grpc_max_recv_msg_size_bytes(),
-            grpc_http2_config: resolve_grpc_http2_config(
-                &self.receiver.grpc.keepalive,
-                self.receiver.grpc.max_concurrent_streams,
-            ),
+            grpc_http2_config: self.receiver.grpc.http2_config(),
             http_max_request_body_size: self.receiver.http.max_request_body_size,
-            cors: cors_configuration(&self.receiver.http.cors),
+            cors: self.receiver.http.cors.clone(),
             http_tls_config,
             grpc_tls_config,
             metrics: build_metrics(context.component_context()),
@@ -330,8 +274,6 @@ mod tests {
     use std::num::NonZeroUsize;
     use std::time::Duration;
 
-    use agent_data_plane_config::domains;
-    use agent_data_plane_config::domains::otlp::GrpcTransport;
     use otlp_protos::opentelemetry::proto::collector::logs::v1::{
         logs_service_client::LogsServiceClient, ExportLogsServiceRequest,
     };
@@ -341,28 +283,17 @@ mod tests {
     use saluki_io::net::BoundListenAddress;
 
     use super::OtlpRelayConfiguration;
-
-    fn relay(receiver: domains::otlp::Receiver) -> OtlpRelayConfiguration {
-        OtlpRelayConfiguration::from_configuration(&receiver)
-    }
+    use crate::common::otlp::receiver::{receiver, GrpcTransport};
 
     #[test]
     fn endpoints_combine_transport_and_address() {
-        let config = relay(domains::otlp::Receiver {
-            grpc: domains::otlp::GrpcReceiver {
-                endpoint: "0.0.0.0:4317".to_string(),
-                transport: GrpcTransport::Tcp,
-                max_recv_msg_size_mib: 4,
-                ..Default::default()
-            },
-            http: domains::otlp::HttpReceiver {
-                endpoint: "0.0.0.0:4318".to_string(),
-                transport: "tcp".to_string(),
-                cors: Default::default(),
-                ..Default::default()
-            },
-            ..Default::default()
-        });
+        let mut receiver = receiver();
+        receiver.grpc.endpoint = "0.0.0.0:4317".to_string();
+        receiver.grpc.transport = GrpcTransport::Tcp;
+        receiver.grpc.max_recv_msg_size_mib = 4;
+        receiver.http.endpoint = "0.0.0.0:4318".to_string();
+        receiver.http.transport = "tcp".to_string();
+        let config = OtlpRelayConfiguration::new(receiver);
 
         assert_eq!(config.grpc_endpoint().to_string(), "tcp://0.0.0.0:4317");
         assert_eq!(config.http_endpoint().to_string(), "tcp://0.0.0.0:4318");
@@ -370,13 +301,9 @@ mod tests {
 
     #[test]
     fn grpc_max_recv_msg_size_converts_mib_to_bytes() {
-        let config = relay(domains::otlp::Receiver {
-            grpc: domains::otlp::GrpcReceiver {
-                max_recv_msg_size_mib: 8,
-                ..Default::default()
-            },
-            ..Default::default()
-        });
+        let mut receiver = receiver();
+        receiver.grpc.max_recv_msg_size_mib = 8;
+        let config = OtlpRelayConfiguration::new(receiver);
 
         assert_eq!(config.grpc_max_recv_msg_size_bytes(), 8 * 1024 * 1024);
     }
@@ -385,24 +312,14 @@ mod tests {
     async fn accepted_payloads_are_dispatched_before_the_relay_stops() {
         const EXPORTS: usize = 16;
 
-        let config = relay(domains::otlp::Receiver {
-            grpc: domains::otlp::GrpcReceiver {
-                endpoint: "127.0.0.1:0".to_string(),
-                max_recv_msg_size_mib: 4,
-                // The configuration translator resolves a zero keepalive to these defaults.
-                keepalive: domains::otlp::KeepaliveServerParameters {
-                    time: Duration::from_secs(2 * 60 * 60),
-                    timeout: Duration::from_secs(20),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-            http: domains::otlp::HttpReceiver {
-                endpoint: "127.0.0.1:0".to_string(),
-                ..Default::default()
-            },
-            ..Default::default()
-        });
+        let mut receiver = receiver();
+        receiver.grpc.endpoint = "127.0.0.1:0".to_string();
+        receiver.grpc.max_recv_msg_size_mib = 4;
+        // The configuration translator resolves a zero keepalive to these defaults.
+        receiver.grpc.keepalive.time = Duration::from_secs(2 * 60 * 60);
+        receiver.grpc.keepalive.timeout = Duration::from_secs(20);
+        receiver.http.endpoint = "127.0.0.1:0".to_string();
+        let config = OtlpRelayConfiguration::new(receiver);
 
         // The output holds one payload, so the relay still has the others queued when it is told to stop.
         let (mut control, mut outputs) = TestComponentDriver::options()

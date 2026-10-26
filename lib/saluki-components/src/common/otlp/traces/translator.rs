@@ -1,7 +1,7 @@
 use std::collections::hash_map::IntoIter;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use agent_data_plane_config::domains;
 use datadog_agent_apm::semantics::{Registry, SemanticRegistryProvider};
 use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common, any_value::Value as OtlpValue};
 use otlp_protos::opentelemetry::proto::resource::v1::Resource as OtlpResource;
@@ -169,8 +169,36 @@ struct TraceEntry {
     rejected: bool,
 }
 
+/// Settings of OTLP trace translation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OtlpTracesSettings {
+    /// Size of the string interner backing translated traces, in bytes.
+    pub string_interner_size: NonZeroUsize,
+
+    /// Percentage of traces the OTLP receiver keeps, stamped on translated traces as their sampling rate. A value of
+    /// `0` or below, or `100` or above, stamps a rate of `1.0`.
+    pub probabilistic_sampler_sampling_percentage: f64,
+
+    /// Whether spans are marked top-level by their span kind.
+    pub enable_compute_top_level_by_span_kind: bool,
+
+    /// Whether spans missing intake-required fields are translated rather than rejected.
+    pub ignore_missing_datadog_fields: bool,
+}
+
+/// Returns trace translation settings carrying the configuration defaults.
+#[cfg(test)]
+pub(crate) fn traces_settings() -> OtlpTracesSettings {
+    OtlpTracesSettings {
+        string_interner_size: NonZeroUsize::new(512 * 1024).unwrap(),
+        probabilistic_sampler_sampling_percentage: 0.0,
+        enable_compute_top_level_by_span_kind: true,
+        ignore_missing_datadog_fields: false,
+    }
+}
+
 pub struct OtlpTracesTranslator {
-    config: domains::otlp::Traces,
+    config: OtlpTracesSettings,
     /// Receiver sampling rate stamped on every translated trace.
     receiver_sampling_rate: f64,
     /// Maximum length of a span's resource name, in bytes.
@@ -189,7 +217,7 @@ impl OtlpTracesTranslator {
     /// The configured sampling percentage becomes the receiver sampling rate stamped on every trace. Rates outside
     /// `(0, 1)` and NaN normalize to `1.0`. This matches `OTLPReceiver.samplingRate` in the Go trace agent, except
     /// that the Go trace agent propagates NaN.
-    pub fn new(config: domains::otlp::Traces, max_resource_len: usize, registry: SemanticRegistryProvider) -> Self {
+    pub fn new(config: OtlpTracesSettings, max_resource_len: usize, registry: SemanticRegistryProvider) -> Self {
         let interner = GenericMapInterner::new(config.string_interner_size);
         let string_builder = StringBuilder::new().with_interner(interner.clone());
         let rate = config.probabilistic_sampler_sampling_percentage / 100.0;
@@ -451,6 +479,9 @@ mod tests {
     use super::*;
     use crate::common::otlp::{build_metrics, Metrics};
 
+    /// Default maximum resource name length, in bytes.
+    const MAX_RESOURCE_LEN: usize = 5000;
+
     fn string_kv(key: &str, value: &str) -> KeyValue {
         KeyValue {
             key: key.to_string(),
@@ -522,12 +553,12 @@ mod tests {
 
     fn translate(resource_spans: ResourceSpans) -> Vec<Trace> {
         let mut translator = OtlpTracesTranslator::new(
-            domains::otlp::Traces {
+            OtlpTracesSettings {
                 string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
                 enable_compute_top_level_by_span_kind: true,
-                ..Default::default()
+                ..traces_settings()
             },
-            agent_data_plane_config::defaults::DEFAULT_MAX_RESOURCE_LEN,
+            MAX_RESOURCE_LEN,
             SemanticRegistryProvider::default(),
         );
         let metrics = Metrics::for_tests();
@@ -541,11 +572,11 @@ mod tests {
     fn translate_spans_uses_registry_published_after_construction() {
         let (publisher, provider) = TestRegistryPublisher::new();
         let mut translator = OtlpTracesTranslator::new(
-            domains::otlp::Traces {
+            OtlpTracesSettings {
                 string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
-                ..Default::default()
+                ..traces_settings()
             },
-            agent_data_plane_config::defaults::DEFAULT_MAX_RESOURCE_LEN,
+            MAX_RESOURCE_LEN,
             provider,
         );
         let metrics = Metrics::for_tests();
@@ -593,11 +624,11 @@ mod tests {
     fn translate_spans_resolves_peer_service_with_registry_published_after_construction() {
         let (publisher, provider) = TestRegistryPublisher::new();
         let mut translator = OtlpTracesTranslator::new(
-            domains::otlp::Traces {
+            OtlpTracesSettings {
                 string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
-                ..Default::default()
+                ..traces_settings()
             },
-            agent_data_plane_config::defaults::DEFAULT_MAX_RESOURCE_LEN,
+            MAX_RESOURCE_LEN,
             provider,
         );
         let metrics = Metrics::for_tests();
@@ -652,12 +683,12 @@ mod tests {
         ];
         for (percentage, expected) in cases {
             let mut translator = OtlpTracesTranslator::new(
-                domains::otlp::Traces {
+                OtlpTracesSettings {
                     probabilistic_sampler_sampling_percentage: percentage,
                     string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
-                    ..Default::default()
+                    ..traces_settings()
                 },
-                agent_data_plane_config::defaults::DEFAULT_MAX_RESOURCE_LEN,
+                MAX_RESOURCE_LEN,
                 SemanticRegistryProvider::default(),
             );
             let rs = build_resource_spans(
@@ -781,9 +812,9 @@ mod tests {
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
 
         let mut translator = OtlpTracesTranslator::new(
-            domains::otlp::Traces {
+            OtlpTracesSettings {
                 string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
-                ..Default::default()
+                ..traces_settings()
             },
             5000,
             SemanticRegistryProvider::default(),

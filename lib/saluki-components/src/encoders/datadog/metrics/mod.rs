@@ -1,6 +1,5 @@
 use std::{collections::HashMap, collections::VecDeque, ops::Range, sync::Arc, time::Duration};
 
-use agent_data_plane_config::shared::{SharedConfiguration, V3SeriesMode};
 use async_trait::async_trait;
 use ddsketch::DDSketch;
 use http::{HeaderValue, Method, Request};
@@ -44,7 +43,7 @@ use crate::{
             V3EndpointConfig,
         },
         io::RB_BUFFER_CHUNK_SIZE,
-        protocol::{MetricsPayloadInfo, UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig},
+        protocol::{MetricsPayloadInfo, UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig, V3SeriesMode},
         request_builder::{RequestBuilder, RequestBuilderError},
         routing::{MetricsRoutingTargets, RoutingTargetCatalog, RoutingTargetKind, RoutingTargetSet},
         telemetry::ComponentTelemetry,
@@ -135,7 +134,7 @@ pub struct DatadogMetricsConfiguration {
     /// Maximum number of input metrics to encode into a single request payload.
     ///
     /// This applies both to the series and sketches endpoints.
-    max_metrics_per_payload: usize,
+    pub max_metrics_per_payload: usize,
 
     /// Maximum compressed size, in bytes, of generic payloads.
     ///
@@ -144,7 +143,7 @@ pub struct DatadogMetricsConfiguration {
     /// the Agent's default intake-safe limit of 2,621,440 bytes, so larger configured values do not allow payloads that
     /// intake may reject. If set to `0`, every non-empty compressed payload exceeds the limit and is dropped during
     /// flush.
-    max_payload_size: usize,
+    pub max_payload_size: usize,
 
     /// Maximum uncompressed size, in bytes, of generic payloads.
     ///
@@ -153,7 +152,7 @@ pub struct DatadogMetricsConfiguration {
     /// is clamped to the Agent's default intake-safe limit of 4,194,304 bytes, so larger configured values do not allow
     /// payloads that intake may reject. Values smaller than the minimum endpoint framing size prevent the request
     /// builder from starting.
-    max_uncompressed_payload_size: usize,
+    pub max_uncompressed_payload_size: usize,
 
     /// Maximum compressed size, in bytes, of a V2 series payload.
     ///
@@ -161,7 +160,7 @@ pub struct DatadogMetricsConfiguration {
     /// instead. The effective value is clamped to the V2 series API limit of 512,000 bytes, so larger configured values
     /// do not allow payloads that intake would reject. If set to `0`, every non-empty compressed payload exceeds the
     /// limit and is dropped during flush.
-    max_series_payload_size: usize,
+    pub max_series_payload_size: usize,
 
     /// Maximum uncompressed size, in bytes, of a V2 series payload.
     ///
@@ -170,7 +169,7 @@ pub struct DatadogMetricsConfiguration {
     /// values do not allow payloads that intake would reject. This limit protects the encoder before compression, so
     /// compressed payload size may still force a separate flush. Values smaller than the minimum endpoint framing size
     /// prevent the request builder from starting.
-    max_series_uncompressed_payload_size: usize,
+    pub max_series_uncompressed_payload_size: usize,
 
     /// Maximum number of data points, across all series, to encode into a single series request payload.
     ///
@@ -178,7 +177,7 @@ pub struct DatadogMetricsConfiguration {
     /// distributions). A single metric series may contribute multiple data points when it carries more than one
     /// timestamp/value pair. When encoding an input would cause the running data point total to exceed this limit, the
     /// current payload is flushed first and the input is placed in the next payload.
-    max_series_points_per_payload: usize,
+    pub max_series_points_per_payload: usize,
 
     /// Flush timeout for pending requests.
     ///
@@ -187,94 +186,64 @@ pub struct DatadogMetricsConfiguration {
     /// before flushing the in-flight request payload. This allows for the possibility of other events to be processed
     /// and written into the request payload, thereby maximizing the payload size and reducing the number of requests
     /// generated and sent overall.
-    flush_timeout: Duration,
+    pub flush_timeout: Duration,
 
     /// Compression kind to use for the request payloads.
-    compressor_kind: String,
+    pub compressor_kind: String,
 
     /// Effective zstd compression level for the request payloads.
-    zstd_compressor_level: i32,
+    pub zstd_compressor_level: i32,
 
     /// Whether to use the V2 API for series metrics.
     ///
     /// When `true`, series metrics are sent to the V2 protobuf endpoint (`/api/v2/series`). When `false`, series
     /// metrics are sent to the legacy V1 JSON endpoint (`/api/v1/series`). Sketch metrics always use the V2 endpoint
     /// (`/api/beta/sketches`) regardless of this setting.
-    use_v2_series_api: bool,
+    pub use_v2_series_api: bool,
 
     /// Whether to log metric payload contents before encoding.
     ///
     /// This logs decoded metric objects, not the encoded JSON/protobuf HTTP body.
-    log_payloads: bool,
+    pub log_payloads: bool,
 
-    /// Additional tags to apply to all forwarded metrics.
-    additional_tags: Option<SharedTagSet>,
+    /// Additional tags to apply to all forwarded metrics, if any.
+    pub additional_tags: Option<SharedTagSet>,
 
     /// V3 API configuration for per-endpoint V3 support.
     ///
     /// Configures which endpoints receive V3 payloads.
-    v3_api: V3ApiConfig,
+    pub v3_api: V3ApiConfig,
 
     /// Agent-compatible V3 API configuration.
-    use_v3_api: UseV3ApiConfig,
+    pub use_v3_api: UseV3ApiConfig,
 
     /// Metrics routing to an alternate intake.
-    opw_metrics: OpwMetricsConfiguration,
+    pub opw_metrics: OpwMetricsConfiguration,
 
     /// The primary metrics endpoint, as configured and not altered in any way.
-    primary_endpoint: String,
+    pub primary_endpoint: String,
 
     /// Additional endpoints that metrics may be dual-shipped to, keyed by endpoint URL with their API keys.
-    additional_endpoints: HashMap<String, Vec<String>>,
+    pub additional_endpoints: HashMap<String, Vec<String>>,
 
     /// Routing targets that series and sketch payloads emitted by this encoder are addressed to.
     ///
-    /// When unset, payloads are not addressed to specific targets and reach every endpoint of the forwarder.
-    routing: Option<MetricsRouting>,
+    /// When unset, payloads are not addressed to specific targets and reach every endpoint of the forwarder. See
+    /// [`with_routing`](Self::with_routing).
+    pub routing: Option<MetricsRouting>,
 }
 
 /// The routing targets an encoder addresses its payloads to, and the catalog they belong to.
+///
+/// Set with [`DatadogMetricsConfiguration::with_routing`].
 #[derive(Clone)]
 #[cfg_attr(test, derive(Debug, PartialEq))]
-struct MetricsRouting {
+pub struct MetricsRouting {
     catalog: Arc<RoutingTargetCatalog>,
     targets: Arc<MetricsRoutingTargets>,
 }
 
 impl DatadogMetricsConfiguration {
-    /// Creates a new `DatadogMetricsConfiguration` from the resolved shared configuration.
-    pub fn from_configuration(shared: &SharedConfiguration) -> Self {
-        let endpoints = &shared.endpoints;
-        let metrics = &shared.metrics_encoding;
-
-        Self {
-            max_metrics_per_payload: metrics.max_metrics_per_payload,
-            max_payload_size: metrics.max_payload_size,
-            max_uncompressed_payload_size: metrics.max_uncompressed_payload_size,
-            max_series_payload_size: metrics.max_series_payload_size,
-            max_series_uncompressed_payload_size: metrics.max_series_uncompressed_payload_size,
-            max_series_points_per_payload: metrics.max_series_points_per_payload,
-            flush_timeout: metrics.flush_timeout,
-            compressor_kind: endpoints.compression.compressor_kind.clone(),
-            zstd_compressor_level: endpoints.compression.effective_zstd_level(),
-            use_v2_series_api: metrics.use_v2_series_api,
-            log_payloads: metrics.log_payloads,
-            additional_tags: None,
-            v3_api: (&metrics.v3_api).into(),
-            use_v3_api: UseV3ApiConfig { series: metrics.into() },
-            opw_metrics: OpwMetricsConfiguration::from_configuration(endpoints),
-            primary_endpoint: endpoints.primary_endpoint(),
-            additional_endpoints: endpoints.additional_endpoints.clone(),
-            routing: None,
-        }
-    }
-
-    /// Sets additional tags to be applied uniformly to all metrics forwarded by this destination.
-    pub fn with_additional_tags(mut self, additional_tags: SharedTagSet) -> Self {
-        self.additional_tags = Some(additional_tags);
-        self
-    }
-
     /// Addresses series and sketch payloads to the given routing targets.
     ///
     /// The forwarder these payloads are sent to must share `catalog`. Protocol selection then considers only the
@@ -1838,13 +1807,6 @@ fn content_encoding_for_scheme(compression_scheme: CompressionScheme) -> Option<
 mod tests {
     use std::{collections::HashMap, io::Cursor};
 
-    use agent_data_plane_config::{
-        shared::{
-            AltMetricsIntake, MetricsEncoding as TypedMetricsEncoding, V3ApiSettings as TypedV3ApiSettings,
-            V3SeriesMode,
-        },
-        ConfigValue,
-    };
     use bytes::Bytes;
     use datadog_protos::metrics::v3::MetricData as V3MetricData;
     use protobuf::Message as _;
@@ -1862,26 +1824,16 @@ mod tests {
     use tokio::time::timeout;
 
     use super::*;
-    use crate::common::datadog::test_util::shared_configuration;
+    use crate::common::datadog::{
+        config::OpwMetricsSettings,
+        test_util::{datadog_metrics_configuration, default_series_config},
+    };
 
-    /// Returns an encoder built from shared configuration shaped like a translated Agent configuration.
-    fn metrics_config_from(shared: &SharedConfiguration) -> DatadogMetricsConfiguration {
-        DatadogMetricsConfiguration::from_configuration(shared)
-    }
-
-    /// Returns the Agent-compatible V3 series settings a default configuration resolves to.
-    fn agent_series_config() -> UseV3ApiSeriesConfig {
-        (&TypedMetricsEncoding::default()).into()
-    }
-
-    /// Returns a catalog built from the endpoints of `shared`, the way the topology builds the one it shares.
-    fn catalog_for(shared: &SharedConfiguration) -> Arc<RoutingTargetCatalog> {
+    /// Returns a catalog built from the endpoints of `config`, the way the topology builds the one it shares.
+    fn catalog_for(config: &DatadogMetricsConfiguration) -> Arc<RoutingTargetCatalog> {
         Arc::new(
-            RoutingTargetCatalog::new(
-                &shared.endpoints.primary_endpoint(),
-                &shared.endpoints.additional_endpoints,
-            )
-            .expect("catalog should build"),
+            RoutingTargetCatalog::new(&config.primary_endpoint, &config.additional_endpoints)
+                .expect("catalog should build"),
         )
     }
 
@@ -1891,7 +1843,7 @@ mod tests {
             METRICS_SERIES_V1_PATH, METRICS_SERIES_V2_PATH, METRICS_SERIES_V3_BETA_PATH, METRICS_SKETCHES_PATH,
         };
 
-        let catalog = catalog_for(&shared_configuration());
+        let catalog = catalog_for(&datadog_metrics_configuration());
         for targets in [RoutingTargetSet::new(), catalog.select(|_| true)] {
             let routing_targets = Arc::new(MetricsRoutingTargets::new(targets));
             for (path, info) in [
@@ -1931,57 +1883,6 @@ mod tests {
     // leave payloads unaddressed, and nothing here would notice.
 
     #[test]
-    fn v3_api_settings_come_from_resolved_configuration() {
-        let mut shared = shared_configuration();
-        shared.metrics_encoding.v3_api.compression_level = 7;
-        shared.metrics_encoding.v3_api.sketches = TypedV3ApiSettings {
-            endpoints: vec!["https://app.datadoghq.eu".to_string()],
-        };
-
-        let config = metrics_config_from(&shared);
-
-        assert_eq!(7, config.v3_api.compression_level);
-        assert_eq!(
-            Some("https://app.datadoghq.eu"),
-            config.v3_api.sketches.endpoints.first().map(String::as_str)
-        );
-    }
-
-    #[test]
-    fn metrics_routing_comes_from_resolved_configuration() {
-        let mut shared = shared_configuration();
-        shared.endpoints.compression.compressor_kind = "zstd".to_string();
-        shared.endpoints.opw_intake = AltMetricsIntake {
-            enabled: true,
-            url: "https://opw.example.com".to_string(),
-            use_v3_series: true,
-        };
-        shared.metrics_encoding.use_v2_series_api = false;
-        shared.metrics_encoding.v3_api.compression_level = 7;
-        shared.metrics_encoding.v3_series_mode = V3SeriesMode::Disabled;
-        shared.metrics_encoding.v3_series_endpoint_modes =
-            HashMap::from([("https://app.datadoghq.com".to_string(), V3SeriesMode::Enabled)]);
-
-        let config = metrics_config_from(&shared);
-
-        assert_eq!("zstd", config.compressor_kind);
-        assert!(!config.use_v2_series_api);
-        assert_eq!(7, config.v3_api.compression_level);
-        assert_eq!(V3SeriesMode::Disabled, config.use_v3_api.series.enabled);
-        assert_eq!(
-            Some(&V3SeriesMode::Enabled),
-            config.use_v3_api.series.endpoints.get("https://app.datadoghq.com")
-        );
-        // A selected endpoint means alternate-intake routing is enabled; it carries the URL and V3 override.
-        let opw = config
-            .opw_metrics
-            .selected_endpoint()
-            .expect("alternate intake routing should be selected");
-        assert_eq!("https://opw.example.com", opw.url);
-        assert!(opw.use_v3_series);
-    }
-
-    #[test]
     fn metrics_v3_disabled_by_compressor_uses_v2_only() {
         assert_eq!(MetricsEncoderMode::V2Only, metrics_encoder_mode_for_config(true, true));
         assert_eq!(
@@ -1994,13 +1895,12 @@ mod tests {
     fn mixed_v2_and_v3_endpoints_require_both_series_encoders() {
         // The primary Datadog endpoint is V3-authoritative under `datadog_only`, while the additional
         // endpoint is not a Datadog URL and stays on V2.
-        let mut shared = shared_configuration();
-        shared.metrics_encoding.v3_series_mode = V3SeriesMode::DatadogOnly;
-        shared.endpoints.additional_endpoints = HashMap::from([(
+        let mut config = datadog_metrics_configuration();
+        config.use_v3_api.series.enabled = V3SeriesMode::DatadogOnly;
+        config.additional_endpoints = HashMap::from([(
             "https://custom.example.com".to_string(),
             vec!["additional-api-key".to_string()],
         )]);
-        let config = metrics_config_from(&shared);
 
         assert!(config.requires_v2_series(false).expect("endpoints should resolve"));
         assert!(config.requires_v3_series(false).expect("endpoints should resolve"));
@@ -2011,13 +1911,13 @@ mod tests {
         // The primary Datadog endpoint is V3-authoritative under `datadog_only`, while the custom additional endpoint
         // stays on V2. Each target set therefore proves that primary and additional endpoints can both be selected or
         // excluded.
-        let mut shared = shared_configuration();
-        shared.metrics_encoding.v3_series_mode = V3SeriesMode::DatadogOnly;
-        shared.endpoints.additional_endpoints = HashMap::from([(
+        let mut base = datadog_metrics_configuration();
+        base.use_v3_api.series.enabled = V3SeriesMode::DatadogOnly;
+        base.additional_endpoints = HashMap::from([(
             "https://custom.example.com".to_string(),
             vec!["additional-api-key".to_string()],
         )]);
-        let catalog = catalog_for(&shared);
+        let catalog = catalog_for(&base);
         let primary = catalog.select(|target| target.kind() == RoutingTargetKind::Primary);
         let additional = catalog.select(|target| target.kind() == RoutingTargetKind::Additional);
 
@@ -2027,7 +1927,7 @@ mod tests {
             (catalog.select(|_| true), true, true),
             (RoutingTargetSet::new(), false, false),
         ] {
-            let config = metrics_config_from(&shared).with_routing(Arc::clone(&catalog), targets);
+            let config = base.clone().with_routing(Arc::clone(&catalog), targets);
             assert_eq!(config.requires_v2_series(false).unwrap(), expects_v2);
             assert_eq!(config.requires_v3_series(false).unwrap(), expects_v3);
         }
@@ -2037,32 +1937,32 @@ mod tests {
     fn alternate_metrics_intakes_inherit_the_primary_target_but_keep_their_protocol() {
         for use_vector in [false, true] {
             for use_v3_series in [false, true] {
-                let mut shared = shared_configuration();
+                let mut base = datadog_metrics_configuration();
                 // Give ordinary endpoints the opposite protocol so using the wrong destination is observable.
-                shared.metrics_encoding.v3_series_mode = if use_v3_series {
+                base.use_v3_api.series.enabled = if use_v3_series {
                     V3SeriesMode::Disabled
                 } else {
                     V3SeriesMode::Enabled
                 };
-                let alternate = AltMetricsIntake {
+                let alternate = OpwMetricsSettings {
                     enabled: true,
                     url: "https://alternate.example.com".to_string(),
                     use_v3_series,
                 };
                 if use_vector {
-                    shared.endpoints.vector_intake = alternate;
+                    base.opw_metrics.vector = alternate;
                 } else {
-                    shared.endpoints.opw_intake = alternate;
+                    base.opw_metrics.observability_pipelines_worker = alternate;
                 }
-                shared.endpoints.additional_endpoints = HashMap::from([(
+                base.additional_endpoints = HashMap::from([(
                     "https://alternate.example.com".to_string(),
                     vec!["additional-key".to_string()],
                 )]);
-                let catalog = catalog_for(&shared);
+                let catalog = catalog_for(&base);
                 let primary = catalog.select(|target| target.kind() == RoutingTargetKind::Primary);
                 let additional = catalog.select(|target| target.kind() == RoutingTargetKind::Additional);
                 for (targets, expects_v3) in [(primary, use_v3_series), (additional, !use_v3_series)] {
-                    let config = metrics_config_from(&shared).with_routing(Arc::clone(&catalog), targets);
+                    let config = base.clone().with_routing(Arc::clone(&catalog), targets);
                     assert_eq!(config.requires_v2_series(false).unwrap(), !expects_v3);
                     assert_eq!(config.requires_v3_series(false).unwrap(), expects_v3);
                 }
@@ -2072,10 +1972,9 @@ mod tests {
 
     #[test]
     fn all_v2_endpoints_do_not_require_v3_series() {
-        let mut shared = shared_configuration();
-        shared.metrics_encoding.v3_series_mode = V3SeriesMode::DatadogOnly;
-        shared.endpoints.dd_url = ConfigValue::explicit("http://127.0.0.1:9091".to_string());
-        let config = metrics_config_from(&shared);
+        let mut config = datadog_metrics_configuration();
+        config.use_v3_api.series.enabled = V3SeriesMode::DatadogOnly;
+        config.primary_endpoint = "http://127.0.0.1:9091".to_string();
 
         assert!(config.requires_v2_series(false).expect("endpoints should resolve"));
         assert!(!config.requires_v3_series(false).expect("endpoints should resolve"));
@@ -2083,9 +1982,8 @@ mod tests {
 
     #[test]
     fn enabled_v3_series_mode_requires_only_v3_series() {
-        let mut shared = shared_configuration();
-        shared.metrics_encoding.v3_series_mode = V3SeriesMode::Enabled;
-        let config = metrics_config_from(&shared);
+        let mut config = datadog_metrics_configuration();
+        config.use_v3_api.series.enabled = V3SeriesMode::Enabled;
 
         assert!(!config.requires_v2_series(false).expect("endpoints should resolve"));
         assert!(config.requires_v3_series(false).expect("endpoints should resolve"));
@@ -2093,10 +1991,9 @@ mod tests {
 
     #[test]
     fn v1_series_configuration_takes_precedence_over_v3() {
-        let mut shared = shared_configuration();
-        shared.metrics_encoding.use_v2_series_api = false;
-        shared.metrics_encoding.v3_series_mode = V3SeriesMode::Enabled;
-        let config = metrics_config_from(&shared);
+        let mut config = datadog_metrics_configuration();
+        config.use_v2_series_api = false;
+        config.use_v3_api.series.enabled = V3SeriesMode::Enabled;
 
         let series_v3_can_be_enabled =
             series_v3_can_be_enabled_for_config(config.use_v2_series_api, None, false, &config.use_v3_api.series);
@@ -2116,12 +2013,11 @@ mod tests {
 
     #[test]
     fn endpoint_override_uses_the_overridden_endpoint_protocol() {
-        let mut shared = shared_configuration();
-        shared.metrics_encoding.v3_series_mode = V3SeriesMode::Disabled;
-        shared.endpoints.dd_url = ConfigValue::explicit("https://primary.example.com".to_string());
-        shared.metrics_encoding.v3_series_endpoint_modes =
+        let mut config = datadog_metrics_configuration();
+        config.use_v3_api.series.enabled = V3SeriesMode::Disabled;
+        config.primary_endpoint = "https://primary.example.com".to_string();
+        config.use_v3_api.series.endpoints =
             HashMap::from([("https://v3-mrf.example.com".to_string(), V3SeriesMode::Enabled)]);
-        let config = metrics_config_from(&shared);
 
         let v2_mrf_config = config
             .clone()
@@ -2144,19 +2040,19 @@ mod tests {
 
     #[test]
     fn an_endpoint_override_drops_the_configured_additional_and_alternate_endpoints() {
-        let mut shared = shared_configuration();
-        shared.endpoints.dd_url = ConfigValue::explicit("https://primary.example.com".to_string());
-        shared.endpoints.additional_endpoints = HashMap::from([(
+        let mut config = datadog_metrics_configuration();
+        config.primary_endpoint = "https://primary.example.com".to_string();
+        config.additional_endpoints = HashMap::from([(
             "https://additional.example.com".to_string(),
             vec!["additional-api-key".to_string()],
         )]);
-        shared.endpoints.opw_intake = AltMetricsIntake {
+        config.opw_metrics.observability_pipelines_worker = OpwMetricsSettings {
             enabled: true,
             url: "https://opw.example.com".to_string(),
             use_v3_series: true,
         };
 
-        let config = metrics_config_from(&shared).with_metrics_endpoint_override("https://mrf.example.com".to_string());
+        let config = config.with_metrics_endpoint_override("https://mrf.example.com".to_string());
 
         assert_eq!("https://mrf.example.com", config.primary_endpoint);
         assert!(config.additional_endpoints.is_empty());
@@ -2165,9 +2061,9 @@ mod tests {
 
     #[test]
     fn v2_series_only_override_requires_only_v2_series() {
-        let mut shared = shared_configuration();
-        shared.metrics_encoding.v3_series_mode = V3SeriesMode::Enabled;
-        let config = metrics_config_from(&shared).with_v2_series_only();
+        let mut config = datadog_metrics_configuration();
+        config.use_v3_api.series.enabled = V3SeriesMode::Enabled;
+        let config = config.with_v2_series_only();
 
         assert_eq!(V3SeriesMode::Disabled, config.use_v3_api.series.enabled);
         assert!(config.use_v3_api.series.endpoints.is_empty());
@@ -2177,20 +2073,20 @@ mod tests {
 
     #[test]
     fn agent_default_v3_does_not_enable_opw_only_encoder_mode() {
-        let series_config = agent_series_config();
+        let series_config = default_series_config();
         // An alternate intake whose URL cannot resolve does not fall through to the Vector intake.
-        let mut shared = shared_configuration();
-        shared.endpoints.opw_intake = AltMetricsIntake {
-            enabled: true,
-            url: "http://[::1".to_string(),
-            use_v3_series: false,
+        let opw_metrics = OpwMetricsConfiguration {
+            observability_pipelines_worker: OpwMetricsSettings {
+                enabled: true,
+                url: "http://[::1".to_string(),
+                use_v3_series: false,
+            },
+            vector: OpwMetricsSettings {
+                enabled: true,
+                url: "http://vector.example.com".to_string(),
+                use_v3_series: false,
+            },
         };
-        shared.endpoints.vector_intake = AltMetricsIntake {
-            enabled: true,
-            url: "http://vector.example.com".to_string(),
-            use_v3_series: false,
-        };
-        let opw_metrics = OpwMetricsConfiguration::from_configuration(&shared.endpoints);
         let invalid_metrics_primary_override = selected_metrics_primary_v3_override(&opw_metrics);
 
         assert!(!series_v3_can_be_enabled_for_config(
@@ -3112,9 +3008,8 @@ mod tests {
         let _local = metrics::set_default_local_recorder(&recorder);
 
         // A lone Datadog endpoint under `datadog_only` is authoritative V3, so there's no V2 series encoder.
-        let mut shared = shared_configuration();
-        shared.metrics_encoding.v3_series_mode = V3SeriesMode::DatadogOnly;
-        let mut config = metrics_config_from(&shared);
+        let mut config = datadog_metrics_configuration();
+        config.use_v3_api.series.enabled = V3SeriesMode::DatadogOnly;
         config.max_series_points_per_payload = 3;
         config.flush_timeout = Duration::from_millis(250);
         assert!(!config.requires_v2_series(false).expect("endpoints should resolve"));
@@ -3273,28 +3168,21 @@ mod tests {
 
 #[cfg(test)]
 mod payload_limits {
-    use super::{v2, DatadogMetricsConfiguration};
-    use crate::common::datadog::{clamp_payload_limits, test_util::shared_configuration};
+    use super::v2;
+    use crate::common::datadog::{clamp_payload_limits, test_util::datadog_metrics_configuration};
 
     #[test]
-    fn payload_limits_come_from_resolved_configuration() {
-        let mut shared = shared_configuration();
-        shared.metrics_encoding.max_payload_size = 4321;
-        shared.metrics_encoding.max_uncompressed_payload_size = 8765;
-        shared.metrics_encoding.max_series_payload_size = 1234;
-        shared.metrics_encoding.max_series_uncompressed_payload_size = 5678;
-        shared.metrics_encoding.max_series_points_per_payload = 500;
-        shared.metrics_encoding.max_metrics_per_payload = 42;
+    fn v3_payload_limits_come_from_the_series_limits() {
+        let mut config = datadog_metrics_configuration();
+        config.max_series_payload_size = 1234;
+        config.max_series_uncompressed_payload_size = 5678;
+        config.max_series_points_per_payload = 500;
 
-        let config = DatadogMetricsConfiguration::from_configuration(&shared);
+        let limits = config.v3_payload_limits();
 
-        assert_eq!(4321, config.max_payload_size);
-        assert_eq!(8765, config.max_uncompressed_payload_size);
-        assert_eq!(1234, config.max_series_payload_size);
-        assert_eq!(5678, config.max_series_uncompressed_payload_size);
-        assert_eq!(500, config.max_series_points_per_payload);
-        assert_eq!(500, config.v3_payload_limits().max_points_per_payload);
-        assert_eq!(42, config.max_metrics_per_payload);
+        assert_eq!(1234, limits.max_compressed_size);
+        assert_eq!(5678, limits.max_uncompressed_size);
+        assert_eq!(500, limits.max_points_per_payload);
     }
 
     #[test]

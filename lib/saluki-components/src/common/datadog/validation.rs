@@ -348,10 +348,6 @@ mod tests {
         Arc,
     };
 
-    use agent_data_plane_config::{
-        shared::{AltMetricsIntake, SharedConfiguration},
-        ConfigValue, SalukiConfiguration,
-    };
     use axum::{extract::RawQuery, routing::get, Router};
     use saluki_core::runtime::test_util::TestSupervisor;
     use saluki_tls::initialize_default_crypto_provider;
@@ -360,17 +356,19 @@ mod tests {
     use super::*;
     use crate::common::datadog::{
         api_key::ApiKeyRefresher,
-        config::ForwarderConfiguration,
-        endpoints::ResolvedEndpoint,
-        test_util::{shared_configuration, LiveConfiguration},
+        config::{ForwarderConfiguration, OpwMetricsSettings},
+        endpoints::{EndpointConfiguration, ResolvedEndpoint},
+        test_util::{forwarder_configuration, LiveConfiguration, LiveRoot},
     };
 
-    /// Returns shared configuration whose primary endpoint is `dd_url`, with `primary-key` as its API key.
-    fn shared_configuration_for(dd_url: &str) -> SharedConfiguration {
-        let mut shared = shared_configuration();
-        shared.endpoints.api_key = "primary-key".to_string();
-        shared.endpoints.dd_url = ConfigValue::explicit(dd_url.to_string());
-        shared
+    /// Returns a forwarder configuration whose primary endpoint is `dd_url`, with `primary-key` as its API key.
+    fn forwarder_configuration_for(
+        dd_url: &str, additional_endpoints: HashMap<String, Vec<String>>,
+    ) -> ForwarderConfiguration {
+        ForwarderConfiguration {
+            endpoint: EndpointConfiguration::new("primary-key".to_string(), dd_url.to_string(), additional_endpoints),
+            ..forwarder_configuration()
+        }
     }
 
     fn validation_url_for(raw_endpoint: &str) -> String {
@@ -414,12 +412,14 @@ mod tests {
         let _ = initialize_default_crypto_provider();
 
         let url = start_key_aware_validation_server("rotated-key").await;
-        let endpoints = ForwarderConfiguration::from_configuration(&shared_configuration_for(&url))
+        let endpoints = forwarder_configuration_for(&url, HashMap::new())
             .build_routable_endpoints()
             .expect("endpoints should resolve");
 
-        let mut live_config = SalukiConfiguration::default();
-        live_config.shared.endpoints.api_key = "primary-key".to_string();
+        let mut live_config = LiveRoot {
+            api_key: "primary-key".to_string(),
+            ..LiveRoot::default()
+        };
         let mut live = LiveConfiguration::new(live_config.clone());
         let refresher =
             ApiKeyRefresher::new(&endpoints, &live.api_keys()).expect("the endpoint should follow the live views");
@@ -452,7 +452,7 @@ mod tests {
 
         assert_eq!(await_readiness(&mut readiness_rx).await, ValidationReadiness::NotReady);
 
-        live_config.shared.endpoints.api_key = "rotated-key".to_string();
+        live_config.api_key = "rotated-key".to_string();
         live.publisher.publish(live_config);
 
         assert_eq!(await_readiness(&mut readiness_rx).await, ValidationReadiness::Ready);
@@ -505,21 +505,22 @@ mod tests {
 
     #[tokio::test]
     async fn validation_targets_include_primary_additional_and_opw() {
-        let mut shared = shared_configuration_for("http://primary.example.com");
-        shared.endpoints.additional_endpoints = HashMap::from([(
-            "http://additional.example.com".to_string(),
-            vec![
-                "additional-key".to_string(),
-                "additional-key".to_string(),
-                String::new(),
-            ],
-        )]);
-        shared.endpoints.opw_intake = AltMetricsIntake {
+        let mut forwarder_config = forwarder_configuration_for(
+            "http://primary.example.com",
+            HashMap::from([(
+                "http://additional.example.com".to_string(),
+                vec![
+                    "additional-key".to_string(),
+                    "additional-key".to_string(),
+                    String::new(),
+                ],
+            )]),
+        );
+        forwarder_config.opw_metrics.observability_pipelines_worker = OpwMetricsSettings {
             enabled: true,
             url: "http://opw.example.com".to_string(),
             use_v3_series: false,
         };
-        let forwarder_config = ForwarderConfiguration::from_configuration(&shared);
         let endpoints = forwarder_config
             .build_routable_endpoints()
             .expect("endpoints should resolve");
@@ -549,16 +550,16 @@ mod tests {
         // Validation reads the same cells the request path does, so a rotated key reaches validation
         // without rebuilding the endpoint set.
         let url = "http://additional.example.com";
-        let mut shared = shared_configuration_for("http://primary.example.com");
-        shared.endpoints.additional_endpoints =
-            HashMap::from([(url.to_string(), vec!["old-additional-key".to_string()])]);
+        let additional_endpoints = HashMap::from([(url.to_string(), vec!["old-additional-key".to_string()])]);
 
-        let mut live_config = SalukiConfiguration::default();
-        live_config.shared.endpoints.api_key = "primary-key".to_string();
-        live_config.shared.endpoints.additional_endpoints = shared.endpoints.additional_endpoints.clone();
+        let mut live_config = LiveRoot {
+            api_key: "primary-key".to_string(),
+            additional_endpoints: additional_endpoints.clone(),
+            ..LiveRoot::default()
+        };
         let mut live = LiveConfiguration::new(live_config.clone());
 
-        let endpoints = ForwarderConfiguration::from_configuration(&shared)
+        let endpoints = forwarder_configuration_for("http://primary.example.com", additional_endpoints)
             .build_routable_endpoints()
             .expect("endpoints should resolve");
         let refresher =
@@ -567,7 +568,7 @@ mod tests {
         supervisor.scope(async move { refresher.spawn() }).await;
 
         // Rotate the key at the configured position, and add a URL no endpoint was built for.
-        live_config.shared.endpoints.additional_endpoints = HashMap::from([
+        live_config.additional_endpoints = HashMap::from([
             (url.to_string(), vec!["new-additional-key".to_string()]),
             (
                 "http://new.example.com".to_string(),
@@ -635,7 +636,7 @@ mod tests {
 
         // A validation server that rejects the key with a 403, so validation concludes it is invalid.
         let invalid_url = start_validation_server(StatusCode::FORBIDDEN).await;
-        let forwarder_config = ForwarderConfiguration::from_configuration(&shared_configuration_for(&invalid_url));
+        let forwarder_config = forwarder_configuration_for(&invalid_url, HashMap::new());
         let endpoints = forwarder_config
             .build_routable_endpoints()
             .expect("endpoints should resolve");
@@ -670,7 +671,7 @@ mod tests {
 
         // A validation server that accepts the key, so validation concludes it is valid.
         let valid_url = start_validation_server(StatusCode::OK).await;
-        let forwarder_config = ForwarderConfiguration::from_configuration(&shared_configuration_for(&valid_url));
+        let forwarder_config = forwarder_configuration_for(&valid_url, HashMap::new());
         let endpoints = forwarder_config
             .build_routable_endpoints()
             .expect("endpoints should resolve");

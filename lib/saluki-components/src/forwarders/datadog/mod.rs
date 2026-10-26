@@ -1,6 +1,5 @@
 use std::{collections::HashMap, sync::Arc};
 
-use agent_data_plane_config::shared::{Secrets, SharedConfiguration};
 use async_trait::async_trait;
 use http::Uri;
 use saluki_common::buf::FrozenChunkedBytesBuffer;
@@ -45,39 +44,39 @@ pub struct DatadogForwarderConfiguration {
     /// Live views the endpoints take their API keys from.
     api_keys: LiveApiKeys,
 
-    /// Live view of the secrets settings the retry policy's gate reads.
-    secrets: Live<Secrets>,
+    /// Whether secret resolution might replace a rejected API key, which the retry policy's gate reads.
+    secrets_in_use: Live<bool>,
 }
 
 impl DatadogForwarderConfiguration {
-    /// Creates a new `DatadogForwarderConfiguration` from the resolved shared configuration.
+    /// Creates a new `DatadogForwarderConfiguration` that forwards to the endpoints of `forwarder`.
     ///
     /// `api_key` and `additional_endpoints` are the live views the endpoints take their API keys from, so that a key an
-    /// operator rotates while the process runs reaches the next request. `secrets` is the live view the retry policy's
-    /// gate reads to decide whether a rejected key is worth retrying.
-    pub fn from_configuration(
-        shared: &SharedConfiguration, api_key: Live<String>, additional_endpoints: Live<HashMap<String, Vec<String>>>,
-        secrets: Live<Secrets>,
+    /// operator rotates while the process runs reaches the next request. `secrets_in_use` is the live view the retry
+    /// policy's gate reads to decide whether a rejected key is worth retrying.
+    pub fn new(
+        forwarder: ForwarderConfiguration, api_key: Live<String>,
+        additional_endpoints: Live<HashMap<String, Vec<String>>>, secrets_in_use: Live<bool>,
     ) -> Self {
         Self {
-            forwarder_config: ForwarderConfiguration::from_configuration(shared),
+            forwarder_config: forwarder,
             api_keys: LiveApiKeys {
                 primary: Some(ApiKeyView::Required(api_key)),
                 additional: Some(additional_endpoints),
             },
-            secrets,
+            secrets_in_use,
         }
     }
 
     /// Creates a new `DatadogForwarderConfiguration` that forwards to a single endpoint override.
     ///
-    /// The override replaces the configured endpoints entirely, and `api_key_view` is the live view its key comes from.
-    /// Multi-Region Failover needs this: it has its own key, not the primary one, and configuration can leave that key
-    /// unset. `secrets` serves the same purpose as in [`from_configuration`](Self::from_configuration): it decides
-    /// whether the override's rejected key is worth retrying.
+    /// The override replaces the endpoints of `forwarder` entirely, and `api_key_view` is the live view its key comes
+    /// from. Multi-Region Failover needs this: it has its own key, not the primary one, and configuration can leave
+    /// that key unset. `secrets_in_use` serves the same purpose as in [`new`](Self::new): it decides whether the
+    /// override's rejected key is worth retrying.
     pub fn for_endpoint_override(
-        shared: &SharedConfiguration, dd_url: String, api_key: String, api_key_view: Live<Option<String>>,
-        secrets: Live<Secrets>,
+        forwarder: ForwarderConfiguration, dd_url: String, api_key: String, api_key_view: Live<Option<String>>,
+        secrets_in_use: Live<bool>,
     ) -> Self {
         let destination = SingleDestination {
             url: dd_url,
@@ -86,12 +85,12 @@ impl DatadogForwarderConfiguration {
         };
 
         Self {
-            forwarder_config: ForwarderConfiguration::for_single_destination(shared, &destination),
+            forwarder_config: forwarder.for_single_destination(&destination),
             api_keys: LiveApiKeys {
                 primary: Some(ApiKeyView::Optional(api_key_view)),
                 additional: None,
             },
-            secrets,
+            secrets_in_use,
         }
     }
 
@@ -101,7 +100,7 @@ impl DatadogForwarderConfiguration {
     /// must be built from the same endpoint configuration as this forwarder. Without a catalog, a payload addressed to
     /// specific targets reaches no endpoint.
     pub fn with_routing_targets(mut self, routing_targets: Arc<RoutingTargetCatalog>) -> Self {
-        self.forwarder_config = self.forwarder_config.with_routing_targets(routing_targets);
+        self.forwarder_config.routing_targets = Some(routing_targets);
         self
     }
 }
@@ -120,7 +119,7 @@ impl ForwarderBuilder for DatadogForwarderConfiguration {
             self.forwarder_config.clone(),
             LiveForwarderConfiguration {
                 api_keys: self.api_keys.clone(),
-                secrets: self.secrets.clone(),
+                secrets_in_use: self.secrets_in_use.clone(),
             },
             get_dd_endpoint_name,
             telemetry.clone(),
@@ -150,13 +149,13 @@ impl MemoryBounds for DatadogForwarderConfiguration {
                 "in-flight requests",
                 UsageExpr::config(
                     "forwarder_retry_queue_payloads_max_size",
-                    self.forwarder_config.retry().queue_max_size_bytes() as usize,
+                    self.forwarder_config.retry.queue_max_size_bytes as usize,
                 ),
                 UsageExpr::product(
                     "high priority queue",
                     UsageExpr::config(
                         "forwarder_high_prio_buffer_size",
-                        self.forwarder_config.endpoint_buffer_size(),
+                        self.forwarder_config.endpoint_buffer_size,
                     ),
                     // TODO: The default compressed size limit just so happens to be the biggest one we currently default with on our side,
                     // but it's not clear that this will always be the case.
@@ -242,13 +241,12 @@ fn get_dd_endpoint_name(uri: &Uri) -> Option<MetaString> {
 
 #[cfg(test)]
 mod tests {
-    use agent_data_plane_config::SalukiConfiguration;
     use saluki_core::runtime::test_util::TestSupervisor;
 
     use super::*;
     use crate::common::datadog::{
         api_key::ApiKeyRefresher,
-        test_util::{shared_configuration, LiveConfiguration},
+        test_util::{forwarder_configuration, LiveConfiguration, LiveRoot},
     };
 
     #[test]
@@ -316,17 +314,19 @@ mod tests {
 
     #[tokio::test]
     async fn an_endpoint_override_follows_the_failover_key_and_not_the_primary_one() {
-        let mut live_config = SalukiConfiguration::default();
-        live_config.shared.endpoints.api_key = "primary-api-key".to_string();
-        live_config.domains.multi_region_failover.api_key = Some("mrf-api-key".to_string());
+        let mut live_config = LiveRoot {
+            api_key: "primary-api-key".to_string(),
+            override_api_key: Some("mrf-api-key".to_string()),
+            ..LiveRoot::default()
+        };
         let mut live = LiveConfiguration::new(live_config.clone());
 
         let config = DatadogForwarderConfiguration::for_endpoint_override(
-            &shared_configuration(),
+            forwarder_configuration(),
             "http://mrf.example.test".to_string(),
             "mrf-api-key".to_string(),
-            live.source.live(|config| &config.domains.multi_region_failover.api_key),
-            live.source.live(|config| &config.shared.secrets),
+            live.source.live(|root| &root.override_api_key),
+            live.source.live(|root| &root.secrets_in_use),
         );
 
         let endpoints = config
@@ -345,10 +345,10 @@ mod tests {
         supervisor.scope(async move { refresher.spawn() }).await;
 
         // Rotate the primary key first: the override does not follow it.
-        live_config.shared.endpoints.api_key = "rotated-primary-api-key".to_string();
+        live_config.api_key = "rotated-primary-api-key".to_string();
         live.publisher.publish(live_config.clone());
 
-        live_config.domains.multi_region_failover.api_key = Some("rotated-mrf-api-key".to_string());
+        live_config.override_api_key = Some("rotated-mrf-api-key".to_string());
         live.publisher.publish(live_config);
 
         let endpoint = endpoints[0].endpoint();

@@ -7,7 +7,6 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use agent_data_plane_config::domains;
 use async_trait::async_trait;
 use datadog_agent_apm::semantics::SemanticRegistryProvider;
 use saluki_core::{
@@ -64,31 +63,35 @@ const MAX_STATS_GROUPS_PER_EVENT: usize = 4000;
 /// Aggregates incoming `Trace` events into time-bucketed statistics, emitting
 /// `TraceStats` events.
 pub struct ApmStatsTransformConfiguration {
-    compute_stats_by_span_kind: bool,
-    peer_tags_aggregation: bool,
-    peer_tags: Vec<MetaString>,
-    agent_env: AgentEnv,
-    default_hostname: Option<String>,
-    workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
-    semantic_registry: SemanticRegistryProvider,
+    /// Whether stats are computed separately per span kind.
+    pub compute_stats_by_span_kind: bool,
+
+    /// Whether stats are aggregated by peer tags.
+    pub peer_tags_aggregation: bool,
+
+    /// Custom span tags promoted to peer tags, in addition to those from the semantic registry.
+    pub peer_tags: Vec<MetaString>,
+
+    /// Environment used for traces whose spans and payload carry none.
+    pub agent_env: AgentEnv,
+
+    /// Hostname of emitted stats.
+    ///
+    /// If unset, stats carry an empty hostname. See [`with_environment_provider`](Self::with_environment_provider).
+    pub default_hostname: Option<String>,
+
+    /// Workload provider used to resolve container tags, if any.
+    pub workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
+
+    /// Provider of semantic mappings used to choose peer tag names for stats grouping.
+    ///
+    /// Peer tags describe the remote service or resource a span calls. The transform combines their names from the
+    /// registry with configured custom peer tags. With a subscribed provider, it checks for changed mappings before
+    /// each input event buffer; all spans in that buffer use the same key set.
+    pub semantic_registry: SemanticRegistryProvider,
 }
 
 impl ApmStatsTransformConfiguration {
-    /// Creates a new `ApmStatsTransformConfiguration` from the resolved traces configuration.
-    ///
-    /// Traces whose spans and payload carry no environment are aggregated under `agent_env`.
-    pub fn from_configuration(config: &domains::traces::Domain, agent_env: AgentEnv) -> Self {
-        Self {
-            compute_stats_by_span_kind: config.compute_stats_by_span_kind,
-            peer_tags_aggregation: config.peer_tags_aggregation,
-            peer_tags: config.peer_tags.iter().cloned().map(MetaString::from).collect(),
-            agent_env,
-            default_hostname: None,
-            workload_provider: None,
-            semantic_registry: SemanticRegistryProvider::default(),
-        }
-    }
-
     /// Sets the default hostname using the environment provider.
     pub async fn with_environment_provider<E>(mut self, env_provider: E) -> Result<Self, GenericError>
     where
@@ -97,29 +100,6 @@ impl ApmStatsTransformConfiguration {
         let hostname = env_provider.host().get_hostname().await?;
         self.default_hostname = Some(hostname);
         Ok(self)
-    }
-
-    /// Sets the workload provider.
-    ///
-    /// Defaults to unset.
-    pub fn with_workload_provider<W>(mut self, workload_provider: W) -> Self
-    where
-        W: WorkloadProvider + Send + Sync + 'static,
-    {
-        self.workload_provider = Some(Arc::new(workload_provider));
-        self
-    }
-
-    /// Sets the provider of semantic mappings used to choose peer tag names for stats grouping.
-    ///
-    /// Peer tags describe the remote service or resource a span calls. The transform combines their names from the
-    /// registry with configured custom peer tags. With a subscribed provider, it checks for changed mappings before
-    /// each input event buffer; all spans in that buffer use the same key set.
-    ///
-    /// Defaults to embedded mappings without remote updates.
-    pub fn with_semantic_registry(mut self, semantic_registry: SemanticRegistryProvider) -> Self {
-        self.semantic_registry = semantic_registry;
-        self
     }
 }
 
@@ -550,6 +530,19 @@ mod tests {
         ts - ts % bsize
     }
 
+    /// Returns stats settings carrying the configuration defaults.
+    fn stats_configuration(agent_env: AgentEnv) -> ApmStatsTransformConfiguration {
+        ApmStatsTransformConfiguration {
+            compute_stats_by_span_kind: false,
+            peer_tags_aggregation: false,
+            peer_tags: Vec::new(),
+            agent_env,
+            default_hostname: None,
+            workload_provider: None,
+            semantic_registry: SemanticRegistryProvider::default(),
+        }
+    }
+
     /// Creates a test span with the given parameters.
     #[allow(clippy::too_many_arguments)]
     fn test_span(
@@ -607,15 +600,13 @@ mod tests {
 
         let now = now_nanos();
         let (publisher, provider) = TestRegistryPublisher::new();
-        let config = domains::traces::Domain {
+        let config = ApmStatsTransformConfiguration {
             compute_stats_by_span_kind: true,
             peer_tags_aggregation: true,
-            ..Default::default()
+            semantic_registry: provider,
+            ..stats_configuration(AgentEnv::resolve(None, None, &[], &[]))
         };
-        let builder =
-            ApmStatsTransformConfiguration::from_configuration(&config, AgentEnv::resolve(None, None, &[], &[]))
-                .with_semantic_registry(provider);
-        let (control, mut outputs) = TestComponentDriver::transform(builder)
+        let (control, mut outputs) = TestComponentDriver::transform(config)
             .await
             .expect("transform should build");
 
@@ -666,7 +657,7 @@ mod tests {
     #[tokio::test]
     async fn traces_without_an_env_aggregate_under_the_agent_env() {
         let agent_env = AgentEnv::resolve(None, Some("Prod"), &[], &[]);
-        let config = ApmStatsTransformConfiguration::from_configuration(&domains::traces::Domain::default(), agent_env);
+        let config = stats_configuration(agent_env);
         let (control, mut outputs) = TestComponentDriver::transform(config)
             .await
             .expect("the transform should start");

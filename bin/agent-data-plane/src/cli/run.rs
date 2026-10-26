@@ -5,8 +5,9 @@ use std::{
 };
 
 use agent_data_plane_config::{
-    domains::{dogstatsd, multi_region_failover},
-    shared::SharedConfiguration,
+    defaults::DEFAULT_ENCODER_FLUSH_TIMEOUT,
+    domains::multi_region_failover,
+    shared::{Secrets, SharedConfiguration},
     SalukiConfiguration,
 };
 use agent_data_plane_config_system::{ConfigurationSystem, LoadedConfiguration};
@@ -22,7 +23,6 @@ use saluki_app::bootstrap::BootstrapGuard;
 use saluki_components::{
     config::{
         AgentEnv, AutoscalingFailoverConfiguration, ClusterAgentConfiguration, MetricsEndpointRoutingConfiguration,
-        MrfConfiguration,
     },
     decoders::otlp::OtlpDecoderConfiguration,
     destinations::{
@@ -30,8 +30,7 @@ use saluki_components::{
     },
     encoders::{
         BufferedIncrementalConfiguration, DatadogApmStatsEncoderConfiguration, DatadogEventsConfiguration,
-        DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration,
-        DatadogTraceConfiguration,
+        DatadogLogsConfiguration, DatadogServiceChecksConfiguration,
     },
     forwarders::{
         ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration, OtlpForwarderConfiguration,
@@ -44,13 +43,13 @@ use saluki_components::{
         OriginEnrichmentConfiguration, OtlpConfiguration,
     },
     transforms::{
-        aggregate_context_snapshot_channel, AggregateConfiguration, ApmStatsTransformConfiguration,
-        AutoscalingFailoverGatewayConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
-        DogStatsDMapperProfile, DogStatsDMetricMapping, HistogramConfiguration, HostEnrichmentConfiguration,
-        ReplaceRule, TraceObfuscationConfiguration, TraceSamplerConfiguration, TraceTagReplacerConfiguration,
+        aggregate_context_snapshot_channel, AggregateConfiguration, AutoscalingFailoverGatewayConfiguration,
+        ChainedConfiguration, DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping,
+        HistogramConfiguration, HostEnrichmentConfiguration, ReplaceRule, TraceObfuscationConfiguration,
+        TraceTagReplacerConfiguration,
     },
 };
-use saluki_core::{data_model::origin::OriginTagCardinality, runtime::Supervisor, topology::TopologyBlueprint};
+use saluki_core::{runtime::Supervisor, topology::TopologyBlueprint};
 use saluki_env::{features, EnvironmentProvider as _, HostProvider as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::ListenAddress;
@@ -58,13 +57,19 @@ use stringtheory::MetaString;
 use tracing::{debug, info, warn};
 
 use crate::{
+    component_inputs::{
+        apm_stats_configuration, datadog_metrics_configuration, forwarder_configuration, metric_mirroring,
+        metric_name_filter, mrf_configuration, obfuscation_configuration, origin_tag_cardinality,
+        otlp_context_settings, otlp_metrics_settings, otlp_receiver, otlp_traces_settings, ottl_error_mode,
+        resolve_static_tags, tag_filter_entries, tag_value_allowlist, trace_configuration, trace_sampler_configuration,
+    },
     components::{
         apm_onboarding::ApmOnboardingConfiguration, dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
         dogstatsd_post_aggregate_filter::DogStatsDPostAggregateFilterConfiguration,
         dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration, host_tags::HostTagsConfiguration,
         liveness::LivenessConfiguration, metric_filter::MetricFilterConfiguration,
         ottl_filter_processor::OttlFilterConfiguration, ottl_transform_processor::OttlTransformConfiguration,
-        static_tags::resolve_static_tags, tag_filterlist::TagFilterlistConfiguration,
+        tag_filterlist::TagFilterlistConfiguration,
     },
     config::DataPlaneConfiguration,
     dogstatsd_contexts::DogStatsDContextDumpAPIHandler,
@@ -182,11 +187,11 @@ async fn create_topology(
             &shared.endpoints.primary_endpoint(),
             &shared.endpoints.additional_endpoints,
         )?);
-        let dd_forwarder_config = DatadogForwarderConfiguration::from_configuration(
-            &shared,
+        let dd_forwarder_config = DatadogForwarderConfiguration::new(
+            forwarder_configuration(&shared),
             config_system.live(|config| &config.shared.endpoints.api_key),
             config_system.live(|config| &config.shared.endpoints.additional_endpoints),
-            config_system.live(|config| &config.shared.secrets),
+            config_system.live(|config| &config.shared.secrets).map(Secrets::in_use),
         )
         .with_routing_targets(Arc::clone(&catalog));
         blueprint.add_forwarder("dd_out", dd_forwarder_config)?;
@@ -316,10 +321,11 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         }
     }
 
-    let endpoint_routing = MetricsEndpointRoutingConfiguration::from_configuration(
+    let endpoint_routing = MetricsEndpointRoutingConfiguration::new(
         &config.domains.metrics_endpoint_routing.metric_allowlists,
         &config.domains.metrics_endpoint_routing.metric_prefix_allowlists,
-        &shared.endpoints,
+        &shared.endpoints.primary_endpoint(),
+        &shared.endpoints.additional_endpoints,
     )?;
     blueprint.add_transform("metrics_enrich", metrics_enrich_config)?;
 
@@ -334,7 +340,7 @@ fn add_mrf_metrics_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, shared: &SharedConfiguration,
     mrf: &multi_region_failover::Domain,
 ) -> Result<(), GenericError> {
-    let mrf_config = MrfConfiguration::from_configuration(mrf);
+    let mrf_config = mrf_configuration(mrf);
 
     let Some((mrf_dd_url, mrf_api_key)) = mrf_config.metrics_endpoint_override() else {
         if mrf_config.is_enabled() {
@@ -351,17 +357,18 @@ fn add_mrf_metrics_pipeline_to_blueprint(
 
     let mrf_gateway_config = MetricFilterConfiguration::for_mrf(
         mrf_config.is_enabled(),
-        config_system.live(|config| &config.domains.multi_region_failover.metric_mirroring),
+        config_system
+            .live(|config| &config.domains.multi_region_failover.metric_mirroring)
+            .map(metric_mirroring),
     );
-    let mrf_metrics_config =
-        DatadogMetricsConfiguration::from_configuration(shared).with_metrics_endpoint_override(mrf_dd_url.clone());
+    let mrf_metrics_config = datadog_metrics_configuration(shared).with_metrics_endpoint_override(mrf_dd_url.clone());
 
     let mrf_forwarder_config = DatadogForwarderConfiguration::for_endpoint_override(
-        shared,
+        forwarder_configuration(shared),
         mrf_dd_url,
         mrf_api_key,
         config_system.live(|config| &config.domains.multi_region_failover.api_key),
-        config_system.live(|config| &config.shared.secrets),
+        config_system.live(|config| &config.shared.secrets).map(Secrets::in_use),
     );
 
     blueprint
@@ -384,7 +391,7 @@ fn add_metrics_output_pipelines_to_blueprint(
     blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration, catalog: &Arc<RoutingTargetCatalog>,
     routing: &MetricsEndpointRoutingConfiguration,
 ) -> Result<(), GenericError> {
-    let mut dd_metrics_config = DatadogMetricsConfiguration::from_configuration(shared);
+    let mut dd_metrics_config = datadog_metrics_configuration(shared);
     if !routing.selected_endpoints().is_empty() {
         dd_metrics_config = dd_metrics_config.with_routing(Arc::clone(catalog), routing.unfiltered_targets(catalog));
     }
@@ -400,8 +407,8 @@ fn add_metrics_output_pipelines_to_blueprint(
             policy.metric_allowlist.clone(),
             policy.metric_prefix_allowlist.clone(),
         );
-        let metrics_config = DatadogMetricsConfiguration::from_configuration(shared)
-            .with_routing(Arc::clone(catalog), policy.targets(catalog));
+        let metrics_config =
+            datadog_metrics_configuration(shared).with_routing(Arc::clone(catalog), policy.targets(catalog));
 
         blueprint
             .add_transform(filter_id.as_str(), filter_config)?
@@ -445,9 +452,9 @@ fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
     }
 
     let af_gateway_config = AutoscalingFailoverGatewayConfiguration::new(af_config);
-    let af_metrics_config = DatadogMetricsConfiguration::from_configuration(shared).with_v2_series_only();
+    let af_metrics_config = datadog_metrics_configuration(shared).with_v2_series_only();
     let cluster_agent_forwarder_config =
-        ClusterAgentForwarderConfiguration::from_configuration(shared, ca_url, ca_token)
+        ClusterAgentForwarderConfiguration::new(forwarder_configuration(shared), ca_url, ca_token)
             .error_context("Failed to configure Cluster Agent forwarder.")?;
 
     blueprint
@@ -469,10 +476,11 @@ fn add_baseline_logs_pipeline_to_blueprint(
 ) -> Result<(), GenericError> {
     // Create the back half of the logs processing pipeline.
     let compression = &shared.endpoints.compression;
-    let dd_logs_config = BufferedIncrementalConfiguration::from_encoder_builder(DatadogLogsConfiguration::new(
-        &compression.compressor_kind,
-        compression.effective_zstd_level(),
-    ));
+    // TODO: the buffered encoders ignore `metrics_encoding.flush_timeout` and always use its default.
+    let dd_logs_config = BufferedIncrementalConfiguration::new(
+        DatadogLogsConfiguration::new(&compression.compressor_kind, compression.effective_zstd_level()),
+        DEFAULT_ENCODER_FLUSH_TIMEOUT,
+    );
 
     blueprint
         // Components.
@@ -488,13 +496,16 @@ fn add_baseline_events_pipeline_to_blueprint(
 ) -> Result<(), GenericError> {
     let metrics_encoding = &shared.metrics_encoding;
     let compression = &shared.endpoints.compression;
-    let dd_events_config = BufferedIncrementalConfiguration::from_encoder_builder(DatadogEventsConfiguration {
-        max_payload_size: metrics_encoding.max_payload_size,
-        max_uncompressed_payload_size: metrics_encoding.max_uncompressed_payload_size,
-        compressor_kind: compression.compressor_kind.clone(),
-        zstd_level: compression.effective_zstd_level(),
-        log_payloads: metrics_encoding.log_payloads,
-    });
+    let dd_events_config = BufferedIncrementalConfiguration::new(
+        DatadogEventsConfiguration {
+            max_payload_size: metrics_encoding.max_payload_size,
+            max_uncompressed_payload_size: metrics_encoding.max_uncompressed_payload_size,
+            compressor_kind: compression.compressor_kind.clone(),
+            zstd_level: compression.effective_zstd_level(),
+            log_payloads: metrics_encoding.log_payloads,
+        },
+        DEFAULT_ENCODER_FLUSH_TIMEOUT,
+    );
 
     blueprint
         .add_encoder("dd_events_encode", dd_events_config)?
@@ -508,14 +519,16 @@ fn add_baseline_service_checks_pipeline_to_blueprint(
 ) -> Result<(), GenericError> {
     let metrics_encoding = &shared.metrics_encoding;
     let compression = &shared.endpoints.compression;
-    let dd_service_checks_config =
-        BufferedIncrementalConfiguration::from_encoder_builder(DatadogServiceChecksConfiguration {
+    let dd_service_checks_config = BufferedIncrementalConfiguration::new(
+        DatadogServiceChecksConfiguration {
             max_payload_size: metrics_encoding.max_payload_size,
             max_uncompressed_payload_size: metrics_encoding.max_uncompressed_payload_size,
             compressor_kind: compression.compressor_kind.clone(),
             zstd_level: compression.effective_zstd_level(),
             log_payloads: metrics_encoding.log_payloads,
-        });
+        },
+        DEFAULT_ENCODER_FLUSH_TIMEOUT,
+    );
 
     blueprint
         .add_encoder("dd_service_checks_encode", dd_service_checks_config)?
@@ -536,7 +549,7 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         &config.shared.tags.tags,
         &config.shared.tags.extra_tags,
     );
-    let dd_traces_config = DatadogTraceConfiguration::from_configuration(
+    let dd_traces_config = trace_configuration(
         &config.domains.traces,
         &config.domains.otlp.traces,
         &config.shared,
@@ -544,17 +557,16 @@ async fn add_baseline_traces_pipeline_to_blueprint(
     )
     .with_environment_provider(env_provider.clone())
     .await?;
-    let mut trace_sampler_config = TraceSamplerConfiguration::from_configuration(
+    let trace_sampler_config = trace_sampler_configuration(
         &config.domains.traces,
         &config.domains.otlp.traces,
         agent_env.clone(),
+        trace_sampling.unwrap_or_default(),
     );
-    if let Some(trace_sampling) = trace_sampling {
-        trace_sampler_config = trace_sampler_config.with_remote_sampling(trace_sampling);
-    }
 
-    let trace_obfuscation_config =
-        TraceObfuscationConfiguration::from_configuration(&config.domains.traces.obfuscation);
+    let trace_obfuscation_config = TraceObfuscationConfiguration {
+        config: obfuscation_configuration(&config.domains.traces.obfuscation),
+    };
     let trace_tag_replacer_config = TraceTagReplacerConfiguration::new(
         config
             .domains
@@ -570,9 +582,17 @@ async fn add_baseline_traces_pipeline_to_blueprint(
             .collect(),
     );
 
-    let ottl_filter_config = OttlFilterConfiguration::from_configuration(&config.domains.traces.ottl_filter);
+    let ottl_filter = &config.domains.traces.ottl_filter;
+    let ottl_filter_config = OttlFilterConfiguration::new(
+        ottl_error_mode(ottl_filter.error_mode),
+        ottl_filter.span_conditions.clone(),
+    );
 
-    let ottl_transform_config = OttlTransformConfiguration::from_configuration(&config.domains.traces.ottl_transform);
+    let ottl_transform = &config.domains.traces.ottl_transform;
+    let ottl_transform_config = OttlTransformConfiguration::new(
+        ottl_error_mode(ottl_transform.error_mode),
+        ottl_transform.trace_statements.clone(),
+    );
 
     let dd_traces_enrich_config = ChainedConfiguration::default()
         .with_transform_builder("ottl_filter", ottl_filter_config)
@@ -581,13 +601,13 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .with_transform_builder("trace_obfuscation", trace_obfuscation_config)
         .with_transform_builder("trace_tag_replacer", trace_tag_replacer_config);
     let apm_stats_transform_config =
-        ApmStatsTransformConfiguration::from_configuration(&config.domains.traces, agent_env.clone())
-            .with_semantic_registry(semantic_registry)
+        apm_stats_configuration(&config.domains.traces, agent_env.clone(), semantic_registry)
             .with_environment_provider(env_provider.clone())
             .await?;
-    let dd_apm_stats_encoder = DatadogApmStatsEncoderConfiguration::from_configuration(&config.shared, agent_env)
-        .with_environment_provider(env_provider.clone())
-        .await?;
+    let dd_apm_stats_encoder =
+        DatadogApmStatsEncoderConfiguration::new(config.shared.metrics_encoding.flush_timeout, agent_env)
+            .with_environment_provider(env_provider.clone())
+            .await?;
 
     blueprint
         .add_transform("traces_enrich", dd_traces_enrich_config)?
@@ -626,16 +646,6 @@ fn dogstatsd_capture_path(capture_path: &Path, run_path: &Option<PathBuf>) -> Pa
             );
             PathBuf::new()
         }
-    }
-}
-
-/// Maps the configured tag cardinality onto the cardinality the context resolver understands.
-fn origin_tag_cardinality(cardinality: dogstatsd::OriginTagCardinality) -> OriginTagCardinality {
-    match cardinality {
-        dogstatsd::OriginTagCardinality::None => OriginTagCardinality::None,
-        dogstatsd::OriginTagCardinality::Low => OriginTagCardinality::Low,
-        dogstatsd::OriginTagCardinality::Orchestrator => OriginTagCardinality::Orchestrator,
-        dogstatsd::OriginTagCardinality::High => OriginTagCardinality::High,
     }
 }
 
@@ -783,7 +793,9 @@ async fn add_dsd_pipeline_to_blueprint(
     let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::new(
         prefix_filter.metric_namespace.clone(),
         prefix_filter.metric_namespace_blocklist.clone(),
-        config_system.live(|config| &config.domains.dogstatsd.metric_filter),
+        config_system
+            .live(|config| &config.domains.dogstatsd.metric_filter)
+            .map(metric_name_filter),
     );
     let mapper = &typed.domains.dogstatsd.mapper;
     let mapper_profiles = mapper
@@ -809,11 +821,12 @@ async fn add_dsd_pipeline_to_blueprint(
     let dsd_enrich_config =
         ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", dsd_mapper_config);
     let dsd_tag_filterlist_config = TagFilterlistConfiguration::new(
-        config_system.live(|config| &config.domains.dogstatsd.tag_filterlist),
-        &typed.domains.dogstatsd.tag_value_allowlist,
+        config_system
+            .live(|config| &config.domains.dogstatsd.tag_filterlist)
+            .map(|entries| tag_filter_entries(entries)),
+        &tag_value_allowlist(&typed.domains.dogstatsd.tag_value_allowlist),
         typed.domains.dogstatsd.aggregation.aggregator_tag_filter_cache_capacity,
-    )
-    .error_context("Failed to configure metric tag filterlist transform.")?;
+    );
     let aggregation = &typed.domains.dogstatsd.aggregation;
     let histogram = &typed.shared.metrics_encoding.histogram;
     let dsd_hist_config = HistogramConfiguration::try_new(
@@ -835,7 +848,9 @@ async fn add_dsd_pipeline_to_blueprint(
     };
     let dsd_no_agg_split_config = DogStatsDNoAggSplitConfiguration::new(aggregation.passthrough_idle_flush_timeout);
     let dsd_post_agg_filter_config = DogStatsDPostAggregateFilterConfiguration::new(
-        config_system.live(|config| &config.domains.dogstatsd.metric_filter),
+        config_system
+            .live(|config| &config.domains.dogstatsd.metric_filter)
+            .map(metric_name_filter),
         &histogram.aggregates,
         &histogram.percentiles,
     )
@@ -988,13 +1003,13 @@ async fn add_otlp_pipeline_to_blueprint(
         );
 
         let config = config_system.config();
-        let otlp_relay_config = OtlpRelayConfiguration::from_configuration(&config.domains.otlp.receiver);
-        let otlp_decoder_config = OtlpDecoderConfiguration::from_configuration(&config.domains.otlp.traces)
+        let otlp_relay_config = OtlpRelayConfiguration::new(otlp_receiver(&config.domains.otlp.receiver));
+        let otlp_decoder_config = OtlpDecoderConfiguration::new(otlp_traces_settings(&config.domains.otlp.traces))
             .with_max_resource_len(config.domains.traces.max_resource_len)
             .with_semantic_registry(semantic_registry);
 
         let local_agent_otlp_forwarder_config =
-            OtlpForwarderConfiguration::from_configuration(&config.domains.otlp.traces, core_agent_otlp_grpc_endpoint);
+            OtlpForwarderConfiguration::new(config.domains.otlp.traces.internal_port, core_agent_otlp_grpc_endpoint);
 
         blueprint
             // Components.
@@ -1025,11 +1040,19 @@ async fn add_otlp_pipeline_to_blueprint(
             &config.shared.tags,
             features::is_ecs_fargate(),
         );
-        let otlp_config = OtlpConfiguration::from_configuration(&config.domains.otlp, env_provider.workload().clone())
-            .with_max_resource_len(config.domains.traces.max_resource_len)
-            .with_semantic_registry(semantic_registry)
-            .with_static_metric_tags(static_tags)
-            .with_default_hostname(default_hostname);
+        let otlp = &config.domains.otlp;
+        let otlp_config = OtlpConfiguration {
+            default_hostname: default_hostname.into(),
+            receiver: otlp_receiver(&otlp.receiver),
+            metrics: otlp_metrics_settings(&otlp.metrics),
+            traces_enabled: otlp.traces.enabled,
+            traces: otlp_traces_settings(&otlp.traces),
+            contexts: otlp_context_settings(&otlp.contexts),
+            max_resource_len: config.domains.traces.max_resource_len,
+            semantic_registry,
+            workload_provider: Arc::new(env_provider.workload().clone()),
+        }
+        .with_static_metric_tags(static_tags);
 
         blueprint
             // Components.

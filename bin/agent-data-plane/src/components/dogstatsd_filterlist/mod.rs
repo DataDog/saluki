@@ -4,6 +4,16 @@ use agent_data_plane_config::domains::dogstatsd::{MetricFilter, MetricPrefixRule
 
 use super::metric_name::{is_normalized, normalize_into, normalize_prefix_into, NameBuf};
 
+/// Metric names or prefixes that the DogStatsD filters drop.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MetricNameFilter {
+    /// Metric names or prefixes that are dropped. An empty list disables filtering.
+    pub values: Vec<String>,
+
+    /// Whether entries match by prefix rather than exact name.
+    pub match_prefix: bool,
+}
+
 /// Compiled blocklist for metric names that should be filtered.
 ///
 /// `metric_filterlist` entries are exact names by default. They are treated as prefixes only when

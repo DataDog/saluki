@@ -1,6 +1,5 @@
 use std::time::{Duration, Instant};
 
-use agent_data_plane_config::defaults::DEFAULT_ENCODER_FLUSH_TIMEOUT;
 use async_trait::async_trait;
 use saluki_common::sync::shutdown::ShutdownCoordinator;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -32,7 +31,7 @@ pub struct BufferedIncrementalConfiguration<EB> {
     /// and written into the request payload, thereby maximizing the payload size and reducing the number of requests
     /// generated and sent overall.
     ///
-    /// Defaults to 2 seconds.
+    /// If set to zero, a minimal timeout is used.
     flush_timeout: Duration,
 
     encoder_builder: EB,
@@ -42,10 +41,10 @@ impl<EB> BufferedIncrementalConfiguration<EB>
 where
     EB: IncrementalEncoderBuilder,
 {
-    /// Creates a new `BufferedIncrementalConfiguration` from the given incremental encoder builder.
-    pub fn from_encoder_builder(encoder_builder: EB) -> Self {
+    /// Creates a new `BufferedIncrementalConfiguration` that drives the given incremental encoder builder.
+    pub fn new(encoder_builder: EB, flush_timeout: Duration) -> Self {
         Self {
-            flush_timeout: DEFAULT_ENCODER_FLUSH_TIMEOUT,
+            flush_timeout,
             encoder_builder,
         }
     }
