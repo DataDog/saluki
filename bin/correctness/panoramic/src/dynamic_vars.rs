@@ -62,15 +62,20 @@ use std::{collections::HashMap, time::Duration};
 
 use airlock::driver::Driver;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::config::{ActionConfig, AssertionConfig, AssertionStep, IntegrationConfig};
+use crate::probe::probe;
 
 /// Prefix for dynamic variable env vars in the test config.
 pub const ENV_PREFIX: &str = "PANORAMIC_DYNAMIC_";
 
 /// Placeholder pattern: `{{PANORAMIC_DYNAMIC_<KEY>}}`.
 const PLACEHOLDER_NEEDLE: &str = "{{PANORAMIC_DYNAMIC_";
+
+/// Written by the init script once every dynamic variable is resolved.
+const READY_SENTINEL: &str = "/airlock/dynamic/.ready";
 
 /// Returns `true` if the test case defines any `PANORAMIC_DYNAMIC_*` env vars.
 pub fn has_dynamic_vars(test_case: &IntegrationConfig) -> bool {
@@ -110,16 +115,41 @@ pub async fn resolve_windows_vars(
 
 /// Reads resolved dynamic variable values from `/airlock/dynamic/` inside the container.
 ///
-/// Waits for `/airlock/dynamic/.ready`, then reads each key file. The caller supplies the timeout and cancellation.
-pub async fn read_resolved_vars(driver: &Driver) -> Result<HashMap<String, String>, GenericError> {
-    while driver
-        .exec_in_container(vec!["cat".to_string(), "/airlock/dynamic/.ready".to_string()])
-        .await
-        .is_err()
-    {
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+/// Waits for `/airlock/dynamic/.ready`, then reads each key file. `timeout` covers the wait and the reads, and `cancel`
+/// ends them early.
+///
+/// # Errors
+///
+/// Returns an error if a read fails, or if `timeout` expires or `cancel` fires first. A wait that ends before the
+/// sentinel appears names the last error from checking for it.
+pub async fn read_resolved_vars(
+    driver: &Driver, timeout: Duration, cancel: &CancellationToken,
+) -> Result<HashMap<String, String>, GenericError> {
+    let mut last_ready_error = None;
+    let read = probe("the target's dynamic variables", timeout, cancel, async {
+        while let Err(error) = driver
+            .exec_in_container(vec!["cat".to_string(), READY_SENTINEL.to_string()])
+            .await
+        {
+            last_ready_error = Some(error);
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        last_ready_error = None;
+        read_vars(driver).await
+    })
+    .await;
 
+    match (read, last_ready_error) {
+        (Ok(vars), _) => vars,
+        (Err(error), Some(last_ready_error)) => Err(generic_error!(
+            "{error}\nLast check for {READY_SENTINEL}: {last_ready_error:#}"
+        )),
+        (Err(error), None) => Err(error.into()),
+    }
+}
+
+/// Reads each key file in `/airlock/dynamic/`.
+async fn read_vars(driver: &Driver) -> Result<HashMap<String, String>, GenericError> {
     let listing = driver
         .exec_in_container(vec!["ls".to_string(), "/airlock/dynamic/".to_string()])
         .await

@@ -728,15 +728,8 @@ impl IntegrationRunner {
             let resolved_vars = if self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME {
                 crate::dynamic_vars::resolve_windows_vars(&self.test_case.config, details.container_ip()).await
             } else {
-                probe(
-                    "the target's dynamic variables",
-                    DYNAMIC_VARS_TIMEOUT,
-                    &self.tctx.test_cancel_token(),
-                    crate::dynamic_vars::read_resolved_vars(&driver),
-                )
-                .await
-                .map_err(GenericError::from)
-                .and_then(|vars| vars)
+                crate::dynamic_vars::read_resolved_vars(&driver, DYNAMIC_VARS_TIMEOUT, &self.tctx.test_cancel_token())
+                    .await
             };
 
             match resolved_vars {
