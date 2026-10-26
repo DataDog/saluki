@@ -353,6 +353,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.traces.analyzed_spans_by_service = rates_by_service;
     }
 
+    fn consume_apm_config_apm_non_local_traffic(&mut self, value: bool) {
+        self.config.domains.apm.non_local_traffic = value;
+    }
+
     fn consume_apm_config_compute_stats_by_span_kind(&mut self, value: bool) {
         self.config.domains.traces.compute_stats_by_span_kind = value;
     }
@@ -515,6 +519,18 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_apm_config_probabilistic_sampler_sampling_percentage(&mut self, value: f64) {
         self.config.domains.traces.probabilistic_sampler.sampling_percentage = value;
+    }
+
+    fn consume_apm_config_receiver_port(&mut self, value: i64) {
+        if let Some(port) = self.parse_port("apm_config.receiver_port", value) {
+            self.config.domains.apm.receiver_port = port;
+        }
+    }
+
+    fn consume_apm_config_receiver_socket(&mut self, value: String) {
+        // The schema's platform default is applied by the generated model; an explicit empty string disables the
+        // socket.
+        self.config.domains.apm.receiver_socket = non_empty(value);
     }
 
     fn consume_apm_config_replace_tags(&mut self, value: Vec<HashMap<String, String>>) {
@@ -2138,6 +2154,55 @@ mod tests {
             let errors = errors.unwrap_or_else(|| panic!("{key} = {value} should record a translation error"));
             assert!(errors.to_string().contains(key));
             assert!(errors.to_string().contains("between 0 and 65535"));
+        }
+    }
+
+    #[test]
+    fn apm_receiver_settings_translate_to_the_apm_domain() {
+        let (config, errors) = translate_explicit(json!({
+            "apm_config": {
+                "receiver_port": 9126,
+                "receiver_socket": "/tmp/apm.socket",
+                "apm_non_local_traffic": true,
+            },
+        }));
+
+        assert!(errors.is_none());
+        let apm = &config.domains.apm;
+        assert_eq!(apm.receiver_port, 9126);
+        assert_eq!(apm.receiver_socket.as_deref(), Some("/tmp/apm.socket"));
+        assert!(apm.non_local_traffic);
+    }
+
+    #[test]
+    fn apm_receiver_defaults_match_the_trace_agent() {
+        let (config, errors) = translate_explicit(json!({}));
+
+        assert!(errors.is_none());
+        let apm = &config.domains.apm;
+        assert_eq!(apm.receiver_port, 8126);
+        assert!(!apm.non_local_traffic);
+        // The socket default is platform-specific: on by default only where the trace-agent enables it.
+        let expected_socket =
+            cfg!(any(target_os = "linux", target_os = "aix")).then_some("/var/run/datadog/apm.socket");
+        assert_eq!(apm.receiver_socket.as_deref(), expected_socket);
+    }
+
+    #[test]
+    fn an_empty_apm_receiver_socket_disables_the_socket() {
+        let (config, errors) = translate_explicit(json!({ "apm_config": { "receiver_socket": "" } }));
+
+        assert!(errors.is_none());
+        assert_eq!(config.domains.apm.receiver_socket, None);
+    }
+
+    #[test]
+    fn out_of_range_apm_receiver_ports_record_translation_errors() {
+        for value in [-1, 70_000] {
+            let (_, errors) = translate_explicit(json!({ "apm_config": { "receiver_port": value } }));
+
+            let errors = errors.unwrap_or_else(|| panic!("receiver_port = {value} should record a translation error"));
+            assert!(errors.to_string().contains("apm_config.receiver_port"));
         }
     }
 

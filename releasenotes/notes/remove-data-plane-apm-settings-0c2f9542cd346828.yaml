@@ -1,0 +1,6 @@
+---
+upgrade:
+  - |
+    Remove the ``data_plane.apm.*`` settings (``enabled``, ``receiver_endpoint``, ``receiver_socket``,
+    ``max_payload_size``, ``non_local_traffic``, and ``dispatch_timeout``). They configured a trace receiver that
+    was never started, so setting them had no effect, and they are no longer recognized.
