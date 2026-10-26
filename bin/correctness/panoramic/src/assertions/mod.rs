@@ -912,7 +912,7 @@ mod tests {
         assert_eq!(statuses(&steps), [("intake_has_metric", None, StepStatus::Errored)]);
         // The final probe uses the step's remaining budget rather than a full probe timeout.
         assert_eq!(elapsed, Duration::from_secs(30));
-        let first_line = "Timed out after 9s waiting for the intake sidecar's metrics dump.";
+        let first_line = "Timed out after 9s waiting for the intake sidecar's metrics dump.: deadline has elapsed";
         assert_eq!(
             steps[0].message.lines().next(),
             Some(first_line),
@@ -1017,9 +1017,9 @@ mod tests {
             ]
         );
         assert!(
-            steps[1]
-                .message
-                .starts_with("Timed out after 5s waiting for the intake sidecar's metrics dump.\n"),
+            steps[1].message.starts_with(
+                "Timed out after 5s waiting for the intake sidecar's metrics dump.: deadline has elapsed\n"
+            ),
             "{}",
             steps[1].message
         );

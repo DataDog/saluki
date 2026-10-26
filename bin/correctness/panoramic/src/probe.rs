@@ -1,5 +1,6 @@
 //! Bounded, cancellable waits for harness operations.
 
+use std::error::Error;
 use std::fmt;
 use std::future::Future;
 use std::time::Duration;
@@ -16,19 +17,30 @@ pub(crate) enum ProbeError {
     /// The cancellation token fired.
     Cancelled { what: String, waited: Duration },
     /// The operation didn't finish within its limit.
-    TimedOut { what: String, limit: Duration },
+    TimedOut {
+        what: String,
+        limit: Duration,
+        source: Box<dyn Error + Send + Sync>,
+    },
 }
 
 impl fmt::Display for ProbeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Cancelled { what, waited } => write!(f, "Cancelled after {waited:.1?} waiting for {what}."),
-            Self::TimedOut { what, limit } => write!(f, "Timed out after {limit:?} waiting for {what}."),
+            Self::TimedOut { what, limit, .. } => write!(f, "Timed out after {limit:?} waiting for {what}."),
         }
     }
 }
 
-impl std::error::Error for ProbeError {}
+impl Error for ProbeError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Cancelled { .. } => None,
+            Self::TimedOut { source, .. } => Some(source.as_ref()),
+        }
+    }
+}
 
 /// Awaits `operation` for at most `limit`, returning early if `cancel` fires.
 ///
@@ -48,9 +60,10 @@ where
     let started = Instant::now();
     match cancel.run_until_cancelled(tokio::time::timeout(limit, operation)).await {
         Some(Ok(output)) => Ok(output),
-        Some(Err(_)) => Err(ProbeError::TimedOut {
+        Some(Err(e)) => Err(ProbeError::TimedOut {
             what: what.to_string(),
             limit,
+            source: Box::new(e),
         }),
         None => Err(ProbeError::Cancelled {
             what: what.to_string(),
