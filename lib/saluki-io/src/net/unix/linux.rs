@@ -8,7 +8,8 @@ use socket2::{Domain, MaybeUninitSlice, MsgHdrMut, Protocol, SockAddr, SockAddrS
 use tokio::net::UnixDatagram;
 
 use super::ancillary::{ControlMessage, SocketCredentialsAncillaryData};
-use crate::net::addr::{ConnectionAddress, ProcessCredentials, ProcessCredentialsError, ProcessIdentity};
+use super::process_identity_from_credentials;
+use crate::net::addr::{ConnectionAddress, ProcessCredentialsError, ProcessIdentity};
 
 /// Enables the `SO_PASSCRED` option on the given socket.
 ///
@@ -86,12 +87,7 @@ where
         }
 
         match credentials {
-            Some(creds) if creds.pid == 0 => ProcessIdentity::Error(ProcessCredentialsError::ZeroPid),
-            Some(creds) => ProcessIdentity::Credentials(ProcessCredentials {
-                pid: creds.pid,
-                uid: creds.uid,
-                gid: creds.gid,
-            }),
+            Some(creds) => process_identity_from_credentials(creds.pid, creds.uid, creds.gid),
             None => ProcessIdentity::Error(ProcessCredentialsError::InvalidCredentials),
         }
     } else {
