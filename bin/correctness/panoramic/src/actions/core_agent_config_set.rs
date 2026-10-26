@@ -8,9 +8,7 @@ use tokio::time::Instant;
 
 use super::{docker_exec, Action};
 use crate::assertions::{AssertionContext, AssertionResult, AssertionStatus, Attempts};
-use crate::probe::{probe, ProbeError, PROBE_TIMEOUT};
-
-const RETRY_INTERVAL: Duration = Duration::from_millis(500);
+use crate::probe::{probe, ProbeError, POLL_INTERVAL, PROBE_TIMEOUT};
 
 pub(super) struct CoreAgentConfigSetAction {
     pub(super) key: String,
@@ -150,7 +148,7 @@ impl Action for CoreAgentConfigSetAction {
 
             // The next iteration reports cancellation.
             ctx.cancel_token
-                .run_until_cancelled(tokio::time::sleep(RETRY_INTERVAL))
+                .run_until_cancelled(tokio::time::sleep(POLL_INTERVAL))
                 .await;
         }
     }

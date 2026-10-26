@@ -8,9 +8,7 @@ use tracing::trace;
 use crate::actions::docker_exec;
 use crate::assertions::{Assertion, AssertionContext, AssertionResult, AssertionStatus, Attempts};
 use crate::config::HttpStatusMatcher;
-use crate::probe::{probe, ProbeError, PROBE_TIMEOUT};
-
-const RETRY_INTERVAL: Duration = Duration::from_millis(500);
+use crate::probe::{probe, ProbeError, POLL_INTERVAL, PROBE_TIMEOUT};
 
 /// Assertion that probes an HTTP/HTTPS endpoint and checks the response status code.
 ///
@@ -183,7 +181,7 @@ impl Assertion for HttpCheckAssertion {
 
             // The next iteration reports cancellation.
             ctx.cancel_token
-                .run_until_cancelled(tokio::time::sleep(RETRY_INTERVAL))
+                .run_until_cancelled(tokio::time::sleep(POLL_INTERVAL))
                 .await;
         }
     }

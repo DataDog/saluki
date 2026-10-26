@@ -14,12 +14,10 @@ use crate::intake::metrics::{
     NormalizedMetrics,
 };
 use crate::intake::IntakeClient;
-use crate::probe::{probe, ProbeError, PROBE_TIMEOUT};
+use crate::probe::{probe, ProbeError, POLL_INTERVAL, PROBE_TIMEOUT};
 
 /// Names the intake request in probe messages.
 const METRICS_DUMP: &str = "the intake sidecar's metrics dump";
-
-const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Most metric contexts with the expected name that a failure message lists.
 const MAX_CANDIDATES: usize = 10;

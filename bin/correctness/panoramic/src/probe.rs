@@ -11,6 +11,9 @@ use tokio_util::sync::CancellationToken;
 /// Maximum duration of one polling attempt.
 pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Pause between polling attempts.
+pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(500);
+
 /// Why [`probe`] returned without its operation's output.
 #[derive(Debug)]
 pub(crate) enum ProbeError {

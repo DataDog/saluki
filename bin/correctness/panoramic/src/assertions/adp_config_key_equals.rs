@@ -8,12 +8,11 @@ use tracing::trace;
 use crate::{
     actions::{execute_target_command, CommandDiagnostics, CommandError},
     assertions::{Assertion, AssertionContext, AssertionResult, AssertionStatus, Attempts},
-    probe::PROBE_TIMEOUT,
+    probe::{POLL_INTERVAL, PROBE_TIMEOUT},
 };
 
 const DEFAULT_ADP_CONFIG_ENDPOINT: &str = "https://localhost:55101/config";
 const ADP_CONFIG_CLI_DIAGNOSTIC_LABEL: &str = "ADP configuration CLI command";
-const CONFIG_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Copy)]
 enum AdpConfigEndpoint {
@@ -173,7 +172,7 @@ impl Assertion for AdpConfigKeyEqualsAssertion {
             if remaining.is_zero() {
                 return self.timed_out_result(started, &attempts, last_observed.as_ref());
             }
-            let retry_delay = remaining.min(CONFIG_POLL_INTERVAL);
+            let retry_delay = remaining.min(POLL_INTERVAL);
             tokio::select! {
                 _ = ctx.cancel_token.cancelled() => return self.cancelled_result(started, &attempts, ctx),
                 _ = ctx.container_exit_token.cancelled() => return self.cancelled_result(started, &attempts, ctx),
