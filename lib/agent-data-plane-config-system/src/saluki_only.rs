@@ -283,6 +283,10 @@ pub struct DataPlane {
 }
 
 /// `data_plane.experimental.*`: unstable ADP features.
+///
+/// New unstable ADP-only features go here, rather than under the older top-level `experimental.*` namespace, which
+/// keeps them next to the other `data_plane.*` settings. Settings here may change, move, or be removed without backward
+/// compatibility.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct DataPlaneExperimental {
