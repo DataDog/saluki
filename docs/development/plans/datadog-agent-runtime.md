@@ -103,7 +103,6 @@ Every pull request in the stack checks its changes against these.
 - Health registry and memory bounds identifiers, such as `env_provider.*`.
 - Flare artifact names and size limits.
 - Refresh and retry intervals.
-- The order of children under `adp-root` and `internal-sup`.
 
 ### Log targets
 
