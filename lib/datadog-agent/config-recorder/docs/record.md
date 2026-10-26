@@ -358,10 +358,11 @@ string value, which `sanitizeValue` would not produce from a map (`configstream.
    silently.
 4. The 5 s wait is accepted; it costs seconds only for updates that issued a notification whose
    event is dropped, since an update with `after == before` is not waited on (§4.2).
-5. The size cap and the pin check are a Rust test in the `datadog-agent-config` crate (it owns
-   `_version.txt`), so ordinary CI checks them without Go. The same test recomputes
-   `inputs_digest` (§2) and fails when it differs, naming `make build-agent-config-corpus`.
-   It also checks the corpus against the overlay (case.md §3.2): the keys of the `breadth` and
-   `unsupported` case lines equal the modeled and unsupported schema keys, and every `excluded`
-   key is still excluded. The overlay is not a digest input, so an overlay edit that changes no
-   key's group needs no regeneration.
+5. Rust tests in `datadog-agent-config-corpus` check the size cap and the schema pin, so ordinary
+   CI checks them without Go. They recompute `inputs_digest` (§2) and fail when it differs,
+   naming `make build-agent-config-corpus`.
+   They also check the corpus against itself and the vendored schema (case.md §3.2): the keys of
+   the `breadth` case lines equal the keys the baseline case recorded, and the `unsupported`
+   and `excluded` keys are not among them. The keys the baseline case recorded and each case's
+   group are facts fixed at recording time. They change only when the corpus is re-recorded,
+   so an edit to ADP's support for a key needs no regeneration.

@@ -100,8 +100,10 @@ make build-agent-config-corpus
 ```
 
 Regenerate after you bump `lib/datadog-agent/config/schema/core/_version.txt`, or after you change
-the recorder (`go/`) or the cases. The run is deterministic: a second run gives a byte-identical
-corpus.
+the recorder (`go/`) or the cases as deliberate corpus work. Do not regenerate for an edit to a
+key's support in `schema_overlay.yaml`: the keys the baseline case recorded and the case groups
+stay as recorded until the next regeneration. The run is deterministic: a second run gives a
+byte-identical corpus.
 
 Bumping the schema pin (`_version.txt`) also requires:
 
@@ -198,8 +200,10 @@ When a check fails because the corpus is stale, regenerate it with `make build-a
   `REVIEWED_AT_AGENT_COMMIT` (`lib/datadog-agent/config-corpus/src/lists.rs`) is not `_version.txt`.
 - `corpus_inputs_digest_is_current`: `go/`, `cases/`, `agent_codegen.py` or `regenerate.sh` changed
   since the corpus was recorded.
-- `corpus_groups_match_overlay`: the keys of the generated case groups no longer match the vendored
-  schema and `schema_overlay.yaml`, for example after a key's `support` changed.
+- `corpus_groups_are_complete`: the case groups disagree with the keys the baseline case recorded
+  or with the vendored schema, for example `breadth` lacks a baseline key, an `unsupported` or
+  `excluded` key is a baseline key, or a group has no started case. It does not read
+  `schema_overlay.yaml`.
 - `corpus_env_cases_stream_env_source`: a key in an env-only `breadth` or `unsupported` case did
   not stream the source `environment-variable`, so its env name is not the Agent's.
 - `vendored_schema_has_no_unrecorded_shapes`: the vendored schema grew a shape (a deprecated key
