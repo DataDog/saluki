@@ -144,10 +144,11 @@ impl CommandError {
     }
 }
 
+/// Renders the whole error chain, so a step message keeps the cause.
 impl fmt::Display for CommandError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Harness(error) | Self::Failed(error) => error.fmt(f),
+            Self::Harness(error) | Self::Failed(error) => write!(f, "{error:#}"),
         }
     }
 }
@@ -482,6 +483,23 @@ mod tests {
 
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
         assert!(err.to_string().contains("fail-message"));
+    }
+
+    #[tokio::test]
+    async fn a_command_that_cannot_start_reports_why() {
+        let command = ["panoramic-missing-program".to_string()];
+        let diagnostics = CommandDiagnostics::full(&command);
+
+        let error = exec_on_host_collect(&command, &diagnostics, None)
+            .await
+            .expect_err("a missing program should fail to start");
+
+        let message = error.to_string();
+        let (context, cause) = message
+            .split_once(".: ")
+            .expect("the message should keep the spawn error");
+        assert_eq!(context, "Failed to run host command 'panoramic-missing-program'");
+        assert!(!cause.is_empty(), "{message}");
     }
 
     fn slow_host_command() -> Vec<String> {
