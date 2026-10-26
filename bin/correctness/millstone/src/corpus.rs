@@ -60,10 +60,10 @@ fn get_finalized_corpus_blueprint(config: &Config) -> Result<CorpusBlueprint, Ge
     let mut blueprint = config.corpus.clone();
 
     // When generating DogStatsD payloads, we need to set the length-delimited framing mode when UDS is being used in
-    // SOCK_STREAM mode.
+    // SOCK_STREAM mode. HTTP over UDS carries each payload as a request body, which needs no framing.
     match &mut blueprint.payload {
         Payload::DogStatsD(dsd_config) => {
-            if let TargetAddress::Unix(_) = config.target {
+            if matches!(config.target, TargetAddress::Unix(_)) && config.http_path.is_none() {
                 dsd_config.length_prefix_framed = true;
             }
         }
@@ -167,4 +167,50 @@ where
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dogstatsd_config(target: &str, http_path: Option<&str>) -> Config {
+        let http_path = http_path
+            .map(|path| format!("http_path: \"{path}\"\n"))
+            .unwrap_or_default();
+        serde_saphyr::from_str(&format!(
+            r#"
+seed: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+target: "{target}"
+{http_path}volume: 10
+corpus:
+  size: 10
+  payload:
+    dogstatsd: {{}}
+"#
+        ))
+        .unwrap()
+    }
+
+    fn is_length_prefix_framed(config: &Config) -> bool {
+        match get_finalized_corpus_blueprint(config).unwrap().payload {
+            Payload::DogStatsD(dsd_config) => dsd_config.length_prefix_framed,
+            _ => panic!("expected a DogStatsD payload"),
+        }
+    }
+
+    #[test]
+    fn dogstatsd_over_a_unix_stream_is_length_prefix_framed() {
+        assert!(is_length_prefix_framed(&dogstatsd_config(
+            "unix:///tmp/dsd.socket",
+            None
+        )));
+    }
+
+    #[test]
+    fn dogstatsd_over_http_over_unix_is_not_framed() {
+        assert!(!is_length_prefix_framed(&dogstatsd_config(
+            "unix:///tmp/dsd.socket",
+            Some("/v1/dogstatsd")
+        )));
+    }
 }
