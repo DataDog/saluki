@@ -426,10 +426,7 @@ fn render_leaves(resolved: &[ResolvedKey]) -> String {
             None => "|_| LeafValue::Uncompared".to_string(),
         };
 
-        out.push_str(&format!(
-            "    Leaf {{ key: \"{}\", get: {} }},\n",
-            key.dotted, get
-        ));
+        out.push_str(&format!("    Leaf {{ key: \"{}\", get: {} }},\n", key.dotted, get));
     }
     out.push_str("];\n");
 
