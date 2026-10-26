@@ -63,6 +63,9 @@ pub use self::status::{StatusBuilder, StatusSectionProvider, StatusSectionWriter
 const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const REFRESH_FAILED_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 
+// RAR sessions can change without restarting the process. Keep this identity for the entire process lifetime.
+static PROCESS_INSTANCE_ID: OnceLock<String> = OnceLock::new();
+
 const SESSION_ID_METADATA_KEY: &str = "session_id";
 
 /// Remote agent initialization.
@@ -211,6 +214,7 @@ impl RemoteAgentBootstrap {
 
 struct RemoteAgentState {
     pid: u32,
+    process_instance_id: String,
     display_name: String,
     flavor: String,
     api_listen_addr: String,
@@ -231,6 +235,9 @@ impl RemoteAgentState {
 
         let state = Self {
             pid: std::process::id(),
+            process_instance_id: PROCESS_INSTANCE_ID
+                .get_or_init(|| uuid::Uuid::new_v4().to_string())
+                .clone(),
             display_name,
             flavor,
             api_listen_addr: api_listen_addr.to_string(),
@@ -268,6 +275,7 @@ async fn run_remote_agent_registration_loop(mut client: RemoteAgentClient, mut s
                 match client
                     .register_remote_agent(
                         state.pid,
+                        &state.process_instance_id,
                         &state.display_name,
                         &state.flavor,
                         &state.api_listen_addr,
@@ -892,6 +900,26 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn remote_agent_process_id_is_shared_across_states_and_sessions() {
+        let address = || GrpcTargetAddress::Tcp("127.0.0.1:1234".parse().unwrap());
+        let (first, _) = RemoteAgentState::new(address(), vec![]);
+        let first_id = first.process_instance_id.clone();
+        assert!(uuid::Uuid::parse_str(&first_id).is_ok());
+        assert_eq!(first.pid, std::process::id());
+
+        // Changing RAR sessions does not create a new process identity.
+        first.session_id.update(Some(SessionId::new("session-a").unwrap()));
+        first.session_id.update(None);
+        first.session_id.update(Some(SessionId::new("session-b").unwrap()));
+        assert_eq!(first.process_instance_id, first_id);
+
+        // Even a second bootstrap in the same process uses the original identity, not a new UUID.
+        let (second, _) = RemoteAgentState::new(address(), vec![]);
+        assert_eq!(second.pid, first.pid);
+        assert_eq!(second.process_instance_id, first_id);
+    }
 
     #[test]
     fn cap_artifact_data_leaves_small_payloads_unchanged() {
