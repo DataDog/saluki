@@ -476,3 +476,6 @@ fn spawn_topology_healthy_check(blueprint: &mut TopologyBlueprint, started: Inst
         }
     });
 }
+
+#[cfg(test)]
+mod tests;
