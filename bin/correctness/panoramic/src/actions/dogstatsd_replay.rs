@@ -32,6 +32,27 @@ impl DogstatsdReplayAction {
             command_timeout,
         }
     }
+
+    /// Reports a statistics run that failed.
+    ///
+    /// An earlier replay that reached ADP keeps the step `failed`, even when this error is the harness's.
+    fn stats_failed(
+        &self, started: Instant, error: CommandError, replay_ran: bool, last_missing_metrics: &[String],
+    ) -> AssertionResult {
+        let status = if replay_ran {
+            AssertionStatus::Failed
+        } else {
+            error.status()
+        };
+        let mut message = format!("Failed to collect DogStatsD replay statistics: {error}");
+        if !last_missing_metrics.is_empty() {
+            message.push_str(&format!(
+                "\nAn earlier replay's statistics did not contain expected metric(s): {}",
+                last_missing_metrics.join(", ")
+            ));
+        }
+        AssertionResult::new(self.name(), started, status, message)
+    }
 }
 
 #[async_trait::async_trait]
@@ -153,14 +174,7 @@ impl Action for DogstatsdReplayAction {
                         }
                         last_missing_metrics = missing_metrics.into_iter().map(str::to_string).collect();
                     }
-                    Err(error) => {
-                        return AssertionResult::new(
-                            self.name(),
-                            started,
-                            error.status(),
-                            format!("Failed to collect DogStatsD replay statistics: {error}"),
-                        )
-                    }
+                    Err(error) => return self.stats_failed(started, error, replay_ran, &last_missing_metrics),
                 },
                 Err(error) => {
                     replay_ran |= matches!(error, CommandError::Failed(_));
@@ -235,6 +249,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{capture_path_from_output, duration_as_go_duration, stats_output_contains_metric};
+    use super::{CommandError, DogstatsdReplayAction};
+    use crate::assertions::AssertionStatus;
 
     #[cfg(unix)]
     #[tokio::test]
@@ -294,6 +310,44 @@ mod tests {
             results[0].message.starts_with("Interrupted after "),
             "{}",
             results[0].message
+        );
+    }
+
+    #[test]
+    fn a_statistics_harness_error_after_a_replay_keeps_the_step_failed() {
+        // A harness error used to override an earlier replay's missing metrics and turn the step `errored`.
+        let action = DogstatsdReplayAction::new(
+            Vec::new(),
+            Duration::from_secs(1),
+            1,
+            vec!["replay.requests".to_string()],
+            Duration::from_secs(5),
+        );
+        let harness_error = || CommandError::Harness(saluki_error::generic_error!("Docker API failed."));
+
+        let after_replay = action.stats_failed(
+            tokio::time::Instant::now(),
+            harness_error(),
+            true,
+            &["replay.requests".to_string()],
+        );
+        assert_eq!(after_replay.status, AssertionStatus::Failed, "{}", after_replay.message);
+        assert_eq!(
+            after_replay.message,
+            "Failed to collect DogStatsD replay statistics: Docker API failed.\n\
+             An earlier replay's statistics did not contain expected metric(s): replay.requests"
+        );
+
+        let before_replay = action.stats_failed(tokio::time::Instant::now(), harness_error(), false, &[]);
+        assert_eq!(
+            before_replay.status,
+            AssertionStatus::Errored,
+            "{}",
+            before_replay.message
+        );
+        assert_eq!(
+            before_replay.message,
+            "Failed to collect DogStatsD replay statistics: Docker API failed."
         );
     }
 
