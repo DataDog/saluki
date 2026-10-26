@@ -248,6 +248,9 @@ async fn get_status_in_container(container_name: &str, endpoint: &str, insecure_
         cmd.push("-k".to_string());
     }
     cmd.extend([
+        // Abandoning a probe doesn't stop its exec, so curl bounds itself to keep retries from piling up.
+        "--max-time".to_string(),
+        PROBE_TIMEOUT.as_secs().to_string(),
         "-s".to_string(),
         "-o".to_string(),
         "NUL".to_string(),

@@ -45,9 +45,12 @@ impl CoreAgentConfigSetAction {
         }
 
         let endpoint = self.endpoint().replace("localhost", "127.0.0.1");
+        // Abandoning a probe doesn't stop its exec, so curl bounds itself to keep retries from piling up.
+        let max_time = PROBE_TIMEOUT.as_secs();
         let command = if ctx.target_is_windows() {
             let script = format!(
-                "$tok = Get-Content -Raw 'C:\\ProgramData\\Datadog\\auth_token'; curl.exe -ks -X POST -H \"Authorization: Bearer $tok\" --data-urlencode \"value={}\" \"{}\" -o NUL -w \"%{{http_code}}\"",
+                "$tok = Get-Content -Raw 'C:\\ProgramData\\Datadog\\auth_token'; curl.exe -ks --max-time {} -X POST -H \"Authorization: Bearer $tok\" --data-urlencode \"value={}\" \"{}\" -o NUL -w \"%{{http_code}}\"",
+                max_time,
                 powershell_quote(value),
                 powershell_quote(&endpoint)
             );
@@ -60,7 +63,8 @@ impl CoreAgentConfigSetAction {
             ]
         } else {
             let script = format!(
-                "tok=$(cat /etc/datadog-agent/auth_token) && curl -ks -X POST -H \"Authorization: Bearer $tok\" --data-urlencode value={} {} -o /tmp/panoramic-core-agent-config-set -w '%{{http_code}}'",
+                "tok=$(cat /etc/datadog-agent/auth_token) && curl -ks --max-time {} -X POST -H \"Authorization: Bearer $tok\" --data-urlencode value={} {} -o /tmp/panoramic-core-agent-config-set -w '%{{http_code}}'",
+                max_time,
                 shell_quote(value),
                 shell_quote(&endpoint)
             );
@@ -321,4 +325,47 @@ fn form_encode(value: &str) -> String {
         }
     }
     encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use airlock::driver::ContainerOs;
+    use serde_json::Value;
+    use tokio_util::sync::CancellationToken;
+
+    use super::{CoreAgentConfigSetAction, Setter};
+    use crate::assertions::test_support::host_context;
+    use crate::probe::PROBE_TIMEOUT;
+
+    #[tokio::test]
+    async fn in_container_requests_are_bounded_by_curl_itself() {
+        // A probe that times out abandons its `docker exec` without stopping it, so only curl's own limit keeps
+        // stalled requests from accumulating across retries.
+        let action = CoreAgentConfigSetAction::new(
+            "log_level".to_string(),
+            Value::String("debug".to_string()),
+            "https://localhost:5001/config/{key}".to_string(),
+            Duration::from_secs(30),
+        );
+        let max_time = format!(" --max-time {} ", PROBE_TIMEOUT.as_secs());
+
+        for target_os in [ContainerOs::Linux, ContainerOs::Windows] {
+            let mut ctx = host_context(CancellationToken::new());
+            ctx.is_host_process = false;
+            ctx.target_os = Some(target_os);
+
+            let setter = action
+                .setter(&ctx, "debug")
+                .await
+                .expect("a container setter should build");
+
+            let Setter::Container { command, .. } = setter else {
+                panic!("a container target should get a container setter");
+            };
+            let script = command.last().expect("the command should end with its script");
+            assert!(script.contains(&max_time), "{target_os:?}: {script}");
+        }
+    }
 }
