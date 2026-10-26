@@ -146,9 +146,14 @@ impl<'a> DataPlaneConfiguration<'a> {
         self.config.domains.otlp.proxy.traces_enabled
     }
 
+    /// Returns `true` if the APM pipeline is enabled.
+    pub const fn apm_enabled(&self) -> bool {
+        self.config.control.apm
+    }
+
     /// Returns `true` if any data pipelines are enabled.
     pub const fn data_pipelines_enabled(&self) -> bool {
-        self.checks_enabled() || self.dogstatsd_enabled() || self.otlp_enabled()
+        self.checks_enabled() || self.dogstatsd_enabled() || self.otlp_enabled() || self.apm_enabled()
     }
 
     /// Returns `true` if the metrics pipeline is required.
@@ -430,6 +435,22 @@ mod tests {
 
         assert!(dp.traces_pipeline_required());
         assert!(dp.metrics_pipeline_required());
+    }
+
+    #[test]
+    fn connected_apm_only_requires_liveness_baseline_pipelines() {
+        // The APM relay forwards every request to the trace-agent, so it needs no baseline pipeline of its own, but
+        // connected mode still forwards the liveness metric and service check.
+        let mut config = pipeline_configuration(false, false, false, false, false);
+        config.control.apm = true;
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+
+        assert!(dp.data_pipelines_enabled());
+        assert!(dp.metrics_pipeline_required());
+        assert!(!dp.logs_pipeline_required());
+        assert!(!dp.events_pipeline_required());
+        assert!(dp.service_checks_pipeline_required());
+        assert!(!dp.traces_pipeline_required());
     }
 
     #[test]

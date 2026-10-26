@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Add a relay that forwards all requests made to the APM TCP/UDS endpoints to the go trace-agent.

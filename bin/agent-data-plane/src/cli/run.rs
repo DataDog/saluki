@@ -37,7 +37,7 @@ use saluki_components::{
         ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration, OtlpForwarderConfiguration,
         RoutingTargetCatalog,
     },
-    relays::otlp::OtlpRelayConfiguration,
+    relays::{apm::ApmRelayConfiguration, otlp::OtlpRelayConfiguration},
     sources::{
         ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDCaptureControl, DogStatsDConfiguration,
         DogStatsDReplayAPIHandler, DogStatsDReplayControl, EnablePayloadsConfiguration, ListenerRequirement,
@@ -247,6 +247,10 @@ async fn create_topology(
 
     if dp.otlp_enabled() {
         add_otlp_pipeline_to_blueprint(&mut blueprint, config_system, env_provider, semantic_registry).await?;
+    }
+
+    if dp.apm_enabled() {
+        add_apm_pipeline_to_blueprint(&mut blueprint, config_system, env_provider).await?;
     }
 
     Ok((blueprint, control_surfaces))
@@ -942,6 +946,21 @@ async fn add_dsd_pipeline_to_blueprint(
         replay_api_handler,
         context_dump_api_handler,
     })
+}
+
+async fn add_apm_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
+    env_provider: &RemoteAgentEnvironmentProvider,
+) -> Result<(), GenericError> {
+    let config = config_system.config();
+    // In standalone mode there is no workload provider, so the resolver finds nothing and the relay forwards requests
+    // without a container ID, as it did before.
+    let dd_traces_relay = ApmRelayConfiguration::from_configuration(&config)
+        .with_capture_entity_resolver(Arc::new(env_provider.workload().clone()));
+    blueprint
+        .add_relay("dd_traces_relay", dd_traces_relay)?
+        .connect_components("dd_traces_relay.traces", "dd_out")?; // the relay currently does not have an output
+    Ok(())
 }
 
 async fn add_otlp_pipeline_to_blueprint(
