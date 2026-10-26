@@ -74,3 +74,99 @@ where
         }),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error as _;
+    use std::future::pending;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    use tokio::time::Instant;
+    use tokio_util::sync::CancellationToken;
+
+    use super::{probe, ProbeError};
+
+    #[tokio::test]
+    async fn a_completed_operation_returns_its_output_unchanged() {
+        let output = probe(
+            "an operation",
+            Duration::from_secs(1),
+            &CancellationToken::new(),
+            async { vec![1, 2, 3] },
+        )
+        .await;
+
+        assert_eq!(output.expect("a ready operation should complete"), [1, 2, 3]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_already_cancelled_probe_returns_without_polling_its_operation() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let polled = AtomicBool::new(false);
+
+        let result = probe("an operation", Duration::from_secs(10), &cancel, async {
+            polled.store(true, Ordering::SeqCst);
+        })
+        .await;
+
+        let error = result.expect_err("a cancelled token should win");
+        assert!(
+            matches!(
+                error,
+                ProbeError::Cancelled {
+                    waited: Duration::ZERO,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        assert!(!polled.load(Ordering::SeqCst), "the operation should not be polled");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancellation_during_the_wait_reports_how_long_it_waited() {
+        let cancel = CancellationToken::new();
+        let canceller = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            canceller.cancel();
+        });
+
+        let result = probe("an operation", Duration::from_secs(10), &cancel, pending::<()>()).await;
+
+        let error = result.expect_err("cancellation should end the wait");
+        assert!(
+            matches!(error, ProbeError::Cancelled { waited, .. } if waited == Duration::from_millis(1500)),
+            "{error:?}"
+        );
+        assert_eq!(error.to_string(), "Cancelled after 1.5s waiting for an operation.");
+        assert!(error.source().is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_operation_that_outlasts_its_limit_times_out_with_the_elapsed_cause() {
+        let started = Instant::now();
+
+        let result = probe(
+            "an operation",
+            Duration::from_secs(2),
+            &CancellationToken::new(),
+            pending::<()>(),
+        )
+        .await;
+
+        assert_eq!(started.elapsed(), Duration::from_secs(2));
+        let error = result.expect_err("the limit should end the wait");
+        assert!(
+            matches!(error, ProbeError::TimedOut { limit, .. } if limit == Duration::from_secs(2)),
+            "{error:?}"
+        );
+        assert_eq!(error.to_string(), "Timed out after 2s waiting for an operation.");
+        assert_eq!(
+            error.source().map(ToString::to_string).as_deref(),
+            Some("deadline has elapsed")
+        );
+    }
+}
