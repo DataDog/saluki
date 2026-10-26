@@ -44,11 +44,13 @@ jobs:
       id-token: write
     uses: DataDog/code-review-action/.github/workflows/code-review.yml@b4f43b4ac7a96b9ecc3484d77aa04ad41c07b420 # v1.3.0
     with:
-      provider: claude
+      provider: codex
       trigger_mode: ${{ github.event_name == 'pull_request' && 'always' || 'on_demand' }}
       prompt_file_pattern: "**/codereview_guideline.md"
       review_event: COMMENT_ONLY
       telemetry_enabled: true
       datadog_sts_policy: saluki-code-review-telemetry
     secrets:
+      openai_api_key: ${{ secrets.OPEN_API_KEY }}
+      # Keeps `/dd-review claude` available as an on-demand override.
       anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
