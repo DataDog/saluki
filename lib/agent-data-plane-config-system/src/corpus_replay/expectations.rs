@@ -8,9 +8,10 @@
 //! with no check (or two entries for one check) fails, and so does an entry whose result changed.
 //!
 //! A check only exists where a comparison was actually performed. A recorded read whose getter no
-//! leaf kind stands for, an explicit-only read, or a read of another getter than the one compared
-//! produces no check at all: an expectation that names it is unused, never an improvement. A
-//! recorded result whose shape does not match its getter is a corpus fault and always fails.
+//! leaf kind stands for, an explicit-only read, a read of another getter than the one compared, or
+//! a read of a leaf whose type has no comparison rule produces no check at all: an expectation that
+//! names it is unused, never an improvement. A recorded result whose shape does not match its
+//! getter is a corpus fault and always fails.
 //!
 //! The deserialize, translate and validate tiers check every operation of a replayed stream (an
 //! update's setting, or each setting a snapshot carries) at each stage that actually ran, and
@@ -288,13 +289,16 @@ pub(crate) struct Collected {
 }
 
 /// Whether a recorded read was deliberately never compared: no leaf kind stands for its getter, it
-/// is an explicit-only read, or another getter than the compared one. Such a row is no check at
-/// all, so an expectation naming it is unused.
+/// is an explicit-only read, it is of another getter than the compared one, or the leaf's type has
+/// no comparison rule. Such a row is no check at all, so an expectation naming it is unused.
 fn skipped(verdict: &Verdict) -> bool {
     matches!(
         verdict,
         Verdict::NotCompared {
-            reason: Reason::NotEmulated { .. } | Reason::ExplicitOnly | Reason::OtherGetter { .. },
+            reason: Reason::NotEmulated { .. }
+                | Reason::ExplicitOnly
+                | Reason::OtherGetter { .. }
+                | Reason::UncomparableLeafType,
         }
     )
 }
@@ -1150,7 +1154,7 @@ mod tests {
     use saluki_config::dynamic::{ConfigSetting, ConfigUpdate};
     use serde_json::json;
 
-    use super::super::compare::{LeafKind, Reason};
+    use super::super::compare::Reason;
     use super::super::corpus;
     use super::super::driver::{Commit, Replay, Validation};
     use super::super::expected::expectations;
@@ -1263,27 +1267,6 @@ mod tests {
         );
     }
 
-    /// The [`LeafKind`] a kind name stands for; `LeafKind` itself is not name-addressable.
-    fn kind_of_name(name: &str) -> LeafKind {
-        match name {
-            "Bool" => LeafKind::Bool,
-            "Duration" => LeafKind::Duration,
-            "F64" => LeafKind::F64,
-            "F64Map" => LeafKind::F64Map,
-            "I64" => LeafKind::I64,
-            "JsonList" => LeafKind::JsonList,
-            "JsonMap" => LeafKind::JsonMap,
-            "OptionI64" => LeafKind::OptionI64,
-            "OptionStr" => LeafKind::OptionStr,
-            "Str" => LeafKind::Str,
-            "StringList" => LeafKind::StringList,
-            "StringListMap" => LeafKind::StringListMap,
-            "StringMap" => LeafKind::StringMap,
-            "StringMapList" => LeafKind::StringMapList,
-            other => panic!("{other} is not a leaf kind name"),
-        }
-    }
-
     /// The emulation list decides every recorded (leaf kind, getter) pair of the corpus: a getter
     /// the kind stands for is compared, a getter it does not stand for is reported as not
     /// emulated, and no recorded result has a shape its getter cannot have.
@@ -1298,11 +1281,11 @@ mod tests {
                 continue;
             };
             let (kind, getter) = (row.kind.expect("filtered"), row.getter.expect("filtered"));
-            let emulated = kind_of_name(kind).emulated().contains(&getter);
+            let emulated = kind.emulated().contains(&getter);
             let compared = !matches!(verdict, Verdict::NotCompared { .. });
             if emulated != compared {
                 disagreements.push(format!(
-                    "{row}: the emulation list says {getter} {} by a {kind} leaf",
+                    "{row}: the emulation list says {getter} {} by a {kind:?} leaf",
                     if emulated { "is emulated" } else { "is not emulated" }
                 ));
             }

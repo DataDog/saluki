@@ -39,6 +39,8 @@ pub(crate) enum Reason {
     ResultShape,
     /// The value is compared only with `compared`, and this read is of another getter.
     OtherGetter { compared: Getter },
+    /// The leaf's Rust type has no [`LeafKind`], so no rule compares it.
+    UncomparableLeafType,
 }
 
 impl fmt::Display for Reason {
@@ -48,11 +50,12 @@ impl fmt::Display for Reason {
             Reason::ExplicitOnly => f.write_str("explicit-only reads are not compared with a leaf"),
             Reason::ResultShape => f.write_str("the result does not have its getter's shape"),
             Reason::OtherGetter { compared } => write!(f, "the value is compared only with {compared}"),
+            Reason::UncomparableLeafType => f.write_str("the leaf's type has no comparison rule"),
         }
     }
 }
 
-/// The kind of a `LeafValue`: one per variant.
+/// The kind of a `LeafValue`: one per variant except [`LeafValue::Uncompared`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LeafKind {
     Bool,
@@ -91,8 +94,9 @@ impl LeafKind {
         LeafKind::StringMapList,
     ];
 
-    pub(crate) fn of(leaf: &LeafValue<'_>) -> LeafKind {
-        match leaf {
+    /// Returns `None` for [`LeafValue::Uncompared`], which has no kind.
+    pub(crate) fn of(leaf: &LeafValue<'_>) -> Option<LeafKind> {
+        Some(match leaf {
             LeafValue::Bool(_) => LeafKind::Bool,
             LeafValue::Duration(_) => LeafKind::Duration,
             LeafValue::F64(_) => LeafKind::F64,
@@ -107,7 +111,8 @@ impl LeafKind {
             LeafValue::StringListMap(_) => LeafKind::StringListMap,
             LeafValue::StringMap(_) => LeafKind::StringMap,
             LeafValue::StringMapList(_) => LeafKind::StringMapList,
-        }
+            LeafValue::Uncompared => return None,
+        })
     }
 
     /// The getters this kind stands for (comparison.md §3). Only `I64` has two: `GetInt` and
@@ -145,7 +150,9 @@ pub(crate) fn compare_result(leaf: LeafValue<'_>, getter: Getter, result: &Gette
     if matches!(getter, Getter::ReadConfigSection | Getter::IsConfigured) {
         return not_compared(Reason::ExplicitOnly);
     }
-    let kind = LeafKind::of(&leaf);
+    let Some(kind) = LeafKind::of(&leaf) else {
+        return not_compared(Reason::UncomparableLeafType);
+    };
     if !kind.emulated().contains(&getter) {
         return not_compared(Reason::NotEmulated {
             kind,
@@ -526,7 +533,7 @@ mod tests {
     fn every_leaf_kind_has_an_emulated_getter_with_a_rule() {
         for &kind in LeafKind::ALL {
             let leaf = sample(kind);
-            assert_eq!(LeafKind::of(&leaf), kind);
+            assert_eq!(LeafKind::of(&leaf), Some(kind));
             assert!(!kind.emulated().is_empty(), "{kind:?} has no emulated getter");
             for &getter in kind.emulated() {
                 assert!(
@@ -537,12 +544,35 @@ mod tests {
         }
     }
 
+    /// Every key the baseline case recorded is a supported leaf of a listed kind. A supported leaf
+    /// outside that set may have no kind.
     #[test]
-    fn every_supported_leaf_has_a_listed_kind() {
+    fn every_surface_key_has_a_listed_kind() {
         let config = DatadogConfiguration::default();
-        for leaf in LEAVES {
+        let surface = super::super::corpus().surface().expect("the baseline case started");
+        for key in surface {
+            let leaf = LEAVES
+                .iter()
+                .find(|leaf| leaf.key == key)
+                .unwrap_or_else(|| panic!("{key}: the baseline case recorded it, but it is not a supported leaf"));
             let kind = LeafKind::of(&(leaf.get)(&config));
-            assert!(LeafKind::ALL.contains(&kind), "{}: {kind:?} is not listed", leaf.key);
+            assert!(
+                kind.is_some_and(|kind| LeafKind::ALL.contains(&kind)),
+                "{key}: {kind:?} is not a listed kind"
+            );
+        }
+    }
+
+    #[test]
+    fn a_leaf_of_an_uncomparable_type_is_not_compared() {
+        for getter in [Getter::Get, Getter::GetString, Getter::GetBool] {
+            assert_eq!(
+                compare_result(LeafValue::Uncompared, getter, &sample_result(getter)),
+                Verdict::NotCompared {
+                    reason: Reason::UncomparableLeafType
+                },
+                "{getter}"
+            );
         }
     }
 

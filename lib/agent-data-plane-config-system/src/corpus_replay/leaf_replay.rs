@@ -153,7 +153,8 @@ type Isolated = Rc<Result<DatadogConfiguration, Fault>>;
 pub(crate) struct Isolator {
     /// Every path a leaf can be read from (its key and each alias), to the leaf's index in `LEAVES`.
     by_key: HashMap<String, usize>,
-    kinds: Vec<&'static str>,
+    /// Each leaf's kind, by index in `LEAVES`; `None` for a leaf whose type has no kind.
+    kinds: Vec<Option<LeafKind>>,
     /// The configuration every field of which holds its default.
     default: DatadogConfiguration,
     cache: HashMap<(usize, String), Isolated>,
@@ -175,7 +176,7 @@ impl Isolator {
         }
         Self {
             by_key,
-            kinds: LEAVES.iter().map(|leaf| kind_name(&(leaf.get)(&default))).collect(),
+            kinds: LEAVES.iter().map(|leaf| LeafKind::of(&(leaf.get)(&default))).collect(),
             default,
             cache: HashMap::new(),
         }
@@ -216,6 +217,7 @@ pub(crate) fn kind_name(leaf: &LeafValue<'_>) -> &'static str {
         LeafValue::StringListMap(_) => "StringListMap",
         LeafValue::StringMap(_) => "StringMap",
         LeafValue::StringMapList(_) => "StringMapList",
+        LeafValue::Uncompared => "Uncompared",
     }
 }
 
@@ -240,8 +242,8 @@ pub(crate) struct Row {
     pub(crate) leaf: Option<&'static str>,
     /// The recorded getter; `None` for a key that is not modeled, which gets one row in all.
     pub(crate) getter: Option<Getter>,
-    /// The leaf's `LeafValue` variant name; `None` for a key that is not modeled.
-    pub(crate) kind: Option<&'static str>,
+    /// The leaf's kind; `None` for a key that is not modeled, or for a leaf whose type has no kind.
+    pub(crate) kind: Option<LeafKind>,
     /// The value at `key`'s path in the folded tree at this checkpoint, or `None` if the tree does
     /// not hold it.
     pub(crate) streamed: Option<Value>,
@@ -334,7 +336,7 @@ pub(crate) fn checkpoint_rows(
             continue;
         };
         let leaf = &LEAVES[index];
-        let kind = Some(isolator.kinds[index]);
+        let kind = isolator.kinds[index];
         let isolated = isolator.isolate(index, tree);
         if let Err(Fault::Panic(p)) = &*isolated {
             rows.push(row(
@@ -348,14 +350,15 @@ pub(crate) fn checkpoint_rows(
             ));
             break;
         }
-        let verdicts = match &*isolated {
-            Ok(config) => compare_leaf((leaf.get)(config), &read.getters),
+        let verdicts = match (kind, &*isolated) {
+            // No rule compares a leaf of this type, whether or not it deserialized.
+            (None, _) => compare_leaf(LeafValue::Uncompared, &read.getters),
+            (Some(_), Ok(config)) => compare_leaf((leaf.get)(config), &read.getters),
             // Only the getter the leaf's kind stands for would have been compared with the leaf. Every
             // other getter keeps its verdict, which depends only on the kind, so the default leaf gives it.
-            Err(fault) => {
-                let default = (leaf.get)(&isolator.default);
-                let emulated = LeafKind::of(&default).emulated();
-                compare_leaf(default, &read.getters)
+            (Some(kind), Err(fault)) => {
+                let emulated = kind.emulated();
+                compare_leaf((leaf.get)(&isolator.default), &read.getters)
                     .into_iter()
                     .map(|(getter, verdict)| match (emulated.contains(&getter), fault) {
                         (false, _) => (getter, verdict),
@@ -532,7 +535,7 @@ mod tests {
         // A bool key the Agent's snapshot agrees with, which a list cannot deserialize into.
         let target = clean
             .iter()
-            .find(|row| row.kind == Some("Bool") && row.result == RowResult::Leaf(Verdict::Match))
+            .find(|row| row.kind == Some(LeafKind::Bool) && row.result == RowResult::Leaf(Verdict::Match))
             .map(|row| row.key.clone())
             .expect("the baseline has a matching bool key");
         let mut poisoned = tree.clone();
