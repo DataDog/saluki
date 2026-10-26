@@ -577,7 +577,7 @@ inventory:
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:
-        config_registry_filename: dogstatsd.rs
+        config_registry_filename: shared.rs
 
   cluster_agent.auth_token:
     support: full
