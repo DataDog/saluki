@@ -45,14 +45,13 @@ use std::{
 };
 
 use agent_data_plane_config::shared::Secrets;
-use agent_data_plane_config::Live;
 use bytes::Buf;
 use futures::FutureExt as _;
 use http::{Request, StatusCode, Uri};
 use http_body::Body;
 use http_body_util::BodyExt as _;
 use hyper::{body::Incoming, Response};
-use saluki_common::{collections::FastHashMap, hash::hash_single_stable, time::get_unix_timestamp};
+use saluki_common::{collections::FastHashMap, hash::hash_single_stable, sync::live::Live, time::get_unix_timestamp};
 use saluki_core::components::ComponentContext;
 use saluki_core::diagnostic::{DiagnosticDetails, DiagnosticEvent, DiagnosticsEmitter};
 use saluki_core::runtime::{self, get_sanitized_name};

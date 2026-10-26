@@ -15,15 +15,13 @@ mod telemetry;
 
 use std::{collections::hash_map::Entry, num::NonZeroUsize, time::Duration};
 
-use agent_data_plane_config::{
-    domains::dogstatsd::{
-        validate_metric_tag_value_allowlists, FilterAction, MetricTagFilterEntry, MetricTagValueAllowlistEntry,
-        TagValueMismatchAction,
-    },
-    Live,
+use agent_data_plane_config::domains::dogstatsd::{
+    validate_metric_tag_value_allowlists, FilterAction, MetricTagFilterEntry, MetricTagValueAllowlistEntry,
+    TagValueMismatchAction,
 };
 use async_trait::async_trait;
 use saluki_common::collections::{FastHashMap, FastHashSet};
+use saluki_common::sync::live::Live;
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
     cache::{Cache, CacheBuilder},

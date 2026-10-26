@@ -21,9 +21,9 @@ use std::collections::HashMap;
 use std::future;
 use std::sync::Arc;
 
-use agent_data_plane_config::Live;
 use arc_swap::ArcSwap;
 use http::{header::InvalidHeaderValue, HeaderValue};
+use saluki_common::sync::live::Live;
 use saluki_core::runtime::{self, ShutdownStrategy};
 use stringtheory::MetaString;
 use tokio::sync::watch;

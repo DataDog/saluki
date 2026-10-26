@@ -11,9 +11,10 @@ use std::time::Duration;
 
 use agent_data_plane_config::{
     shared::{Compression, Endpoints, Forwarder, MetricsEncoding, SharedConfiguration, Tls},
-    ConfigValue, Live, SalukiConfiguration,
+    ConfigValue, SalukiConfiguration,
 };
 use arc_swap::ArcSwap;
+use saluki_common::sync::live::Live;
 use tokio::sync::watch;
 
 use super::api_key::{ApiKeyView, LiveApiKeys};

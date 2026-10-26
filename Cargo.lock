@@ -77,10 +77,7 @@ dependencies = [
 name = "agent-data-plane-config"
 version = "0.1.0"
 dependencies = [
- "arc-swap",
- "futures",
  "serde",
- "tokio",
 ]
 
 [[package]]
@@ -94,6 +91,7 @@ dependencies = [
  "datadog-agent-config-overlay-model",
  "futures",
  "saluki-antithesis",
+ "saluki-common",
  "saluki-config",
  "saluki-error",
  "serde",
@@ -5597,8 +5595,10 @@ dependencies = [
 name = "saluki-common"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "bytes",
  "foldhash 0.2.0",
+ "futures",
  "http-body",
  "http-body-util",
  "indexmap",

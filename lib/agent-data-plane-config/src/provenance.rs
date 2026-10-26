@@ -42,8 +42,7 @@ pub enum Provenance {
 /// }
 /// ```
 ///
-/// Equality covers both fields: a value that keeps its contents but becomes explicit is a change, and
-/// a [`Live`](crate::Live) view of it wakes.
+/// Equality covers both fields, so a `Live<ConfigValue<T>>` view can report provenance-only changes.
 ///
 /// Serialization emits the value alone, so the shape of a serialized
 /// [`SalukiConfiguration`](crate::SalukiConfiguration) does not depend on which fields track

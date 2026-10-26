@@ -1,10 +1,10 @@
 use std::{collections::HashMap, sync::Arc};
 
 use agent_data_plane_config::shared::{Secrets, SharedConfiguration};
-use agent_data_plane_config::Live;
 use async_trait::async_trait;
 use http::Uri;
 use saluki_common::buf::FrozenChunkedBytesBuffer;
+use saluki_common::sync::live::Live;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_core::{
     components::{forwarders::*, BuildContext},

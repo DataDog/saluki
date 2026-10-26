@@ -5,14 +5,9 @@ edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 
-# Otherwise a pure data model: avoid adding workspace dependencies. The three blessed exceptions are
-# tokio[sync], arc-swap, and futures, which back the live config view (`Live<T>`) and its `Stream` form; the
-# model owns that view so a consumer gets it without depending on the raw map or the Datadog source.
+# Keep runtime infrastructure out of this data-model crate.
 [dependencies]
-arc-swap = { workspace = true }
-futures = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-tokio = { workspace = true, features = ["sync"] }
 
 [lints]
 workspace = true

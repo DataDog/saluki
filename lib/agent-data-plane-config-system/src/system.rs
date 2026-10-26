@@ -5,9 +5,10 @@ use std::future::Future;
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
 
-use agent_data_plane_config::{Live, SalukiConfiguration};
+use agent_data_plane_config::SalukiConfiguration;
 use arc_swap::ArcSwap;
 use datadog_agent_config::{DatadogConfiguration, TranslateErrors};
+use saluki_common::sync::live::Live;
 use saluki_config::dynamic::ConfigUpdate;
 use serde::Deserialize;
 use serde_json::Value;
@@ -408,7 +409,7 @@ mod tests {
     use agent_data_plane_config::domains::dogstatsd::{MetricPrefixRule, OriginTagCardinality};
     use agent_data_plane_config::shared::V3SeriesMode;
     use agent_data_plane_config::Provenance;
-    use agent_data_plane_config::{Live, SalukiConfiguration};
+    use agent_data_plane_config::SalukiConfiguration;
     use datadog_agent_config::{apply_datadog_env_vars, DatadogConfiguration};
     use futures::StreamExt as _;
     use saluki_config::dynamic::{ConfigSetting, ConfigUpdate, Provenance as StreamProvenance};
@@ -1553,16 +1554,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fixed_view_never_changes() {
-        let mut view: Live<bool> = Live::new_fixed(true);
-        assert!(*view);
-        // A fixed view never resolves, so this bound is deterministic rather than timing-dependent.
-        assert!(tokio::time::timeout(Duration::from_millis(100), view.changed())
-            .await
-            .is_err());
-    }
-
-    #[tokio::test]
     async fn live_stream_yields_each_change() {
         let (system, agent_tx) = connected_system(json!({})).await;
         let mut levels = Box::pin(system.live(|c| &c.control.logging.level).into_stream());
@@ -1581,15 +1572,6 @@ mod tests {
                 .expect("the stream observes the log level update");
             assert_eq!(updated.as_deref(), Some(level));
         }
-    }
-
-    #[tokio::test]
-    async fn fixed_live_stream_never_yields_or_ends() {
-        let mut values = Box::pin(Live::new_fixed(true).into_stream());
-        // Like `changed`, the stream of a fixed view never resolves, so this bound is deterministic.
-        assert!(tokio::time::timeout(Duration::from_millis(100), values.next())
-            .await
-            .is_err());
     }
 
     #[tokio::test]

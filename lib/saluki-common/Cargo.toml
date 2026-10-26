@@ -9,8 +9,10 @@ repository = { workspace = true }
 workspace = true
 
 [dependencies]
+arc-swap = { workspace = true }
 bytes = { workspace = true }
 foldhash = { workspace = true }
+futures = { workspace = true }
 http-body = { workspace = true }
 indexmap = { workspace = true }
 itoa = { workspace = true }

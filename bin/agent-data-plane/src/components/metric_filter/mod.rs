@@ -2,9 +2,10 @@
 
 use std::collections::HashSet;
 
-use agent_data_plane_config::{domains::multi_region_failover::MetricMirroring, Live};
+use agent_data_plane_config::domains::multi_region_failover::MetricMirroring;
 use async_trait::async_trait;
 use metrics::{Counter, Gauge};
+use saluki_common::sync::live::Live;
 use saluki_components::config::metrics_endpoint_routing::compact_metric_prefixes;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
