@@ -29,6 +29,10 @@ pub struct Domain {
     /// Whether the TCP listener accepts traffic from other hosts (`apm_config.apm_non_local_traffic`).
     ///
     /// When `true`, the listener binds every interface, overriding `bind_host`, as the trace-agent does.
+    ///
+    /// The trace-agent also binds every interface when it runs in a container and neither `bind_host` nor
+    /// `apm_config.apm_non_local_traffic` is explicitly set. That fallback lives in the trace-agent rather than in the
+    /// configuration, so this field reads `false` in that case, and isn't enough on its own to match the trace-agent.
     pub non_local_traffic: bool,
 
     /// Where the relocated trace-agent listens, as a URL (`data_plane.experimental.apm.proxy_destination`).
