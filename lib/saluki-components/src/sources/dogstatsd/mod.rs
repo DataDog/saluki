@@ -49,8 +49,8 @@ use saluki_io::{
         framing::{Framer as _, FramingError},
     },
     net::{
+        dns::{resolve_host, ResolveHostError},
         listener::Listener,
-        resolve::{self, resolve_bind_host},
         ConnectionAddress, ListenAddress, ProcessCredentialsError, ProcessIdentity, SocketSpecification, Stream,
     },
 };
@@ -107,8 +107,8 @@ enum Error {
     #[snafu(display("No listeners could be created. Please specify a port (`dogstatsd_port`) or a socket path (`dogstatsd_socket` or `dogstatsd_stream_socket`) that can be listened on."))]
     NoListeners,
 
-    #[snafu(context(false))]
-    Resolve { source: resolve::Error },
+    #[snafu(context(false), display("Could not resolve bind_host: {}", source))]
+    UnresolvableBindHost { source: ResolveHostError },
 }
 
 /// Baseline byte cost per interner entry, used to convert the Core Agent's entry-count-based
@@ -621,7 +621,7 @@ impl DogStatsDConfiguration {
     /// actually binds the listeners on the system.
     ///
     /// `bind_host` is the pre-resolved IP that UDP and TCP listeners should bind to (provided by
-    /// `resolve_bind_host`). Precedence matches the Agent:
+    /// `resolve_bind_ip`). Precedence matches the Agent:
     ///   - `non_local_traffic=true` → `0.0.0.0` (`bind_host` ignored)
     ///   - `bind_host=Some(ip)`     → `ip`
     ///   - `bind_host=None`         → `127.0.0.1`
@@ -684,7 +684,7 @@ impl DogStatsDConfiguration {
     /// hostname that wouldn't be used doesn't stop the source from starting.
     async fn resolve_bind_ip(&self) -> Result<Option<std::net::IpAddr>, Error> {
         match &self.bind_host {
-            Some(host) if !self.non_local_traffic => Ok(Some(resolve_bind_host(host).await?)),
+            Some(host) if !self.non_local_traffic => Ok(Some(resolve_host(host).await?)),
             _ => Ok(None),
         }
     }
