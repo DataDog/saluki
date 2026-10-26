@@ -49,11 +49,12 @@ use saluki_io::{
         framing::{Framer as _, FramingError},
     },
     net::{
-        listener::Listener, ConnectionAddress, ListenAddress, ProcessCredentialsError, ProcessIdentity,
-        SocketSpecification, Stream,
+        listener::Listener,
+        resolve::{self, resolve_bind_host},
+        ConnectionAddress, ListenAddress, ProcessCredentialsError, ProcessIdentity, SocketSpecification, Stream,
     },
 };
-use snafu::{ResultExt as _, Snafu};
+use snafu::Snafu;
 use stringtheory::MetaString;
 use tokio::{
     pin, select,
@@ -106,11 +107,8 @@ enum Error {
     #[snafu(display("No listeners could be created. Please specify a port (`dogstatsd_port`) or a socket path (`dogstatsd_socket` or `dogstatsd_stream_socket`) that can be listened on."))]
     NoListeners,
 
-    #[snafu(display("Could not resolve bind_host '{}': {}", host, source))]
-    UnresolvableBindHost { host: String, source: std::io::Error },
-
-    #[snafu(display("bind_host '{}' resolved to zero IP addresses.", host))]
-    BindHostHasNoAddresses { host: String },
+    #[snafu(context(false))]
+    Resolve { source: resolve::Error },
 }
 
 /// Baseline byte cost per interner entry, used to convert the Core Agent's entry-count-based
@@ -470,21 +468,6 @@ impl EolRequired {
     }
 }
 
-/// Resolves a `bind_host` string to an `IpAddr`.
-///
-/// Accepts either an IP literal (no DNS required) or a hostname (resolved via async DNS). Returns
-/// `UnresolvableBindHost` if the lookup fails, or `BindHostHasNoAddresses` if it succeeds but
-/// returns no addresses.
-async fn resolve_bind_host(host: &str) -> Result<std::net::IpAddr, Error> {
-    let mut addrs = tokio::net::lookup_host((host, 0u16))
-        .await
-        .context(UnresolvableBindHost { host: host.to_string() })?;
-    addrs
-        .next()
-        .map(|sa| sa.ip())
-        .ok_or_else(|| Error::BindHostHasNoAddresses { host: host.to_string() })
-}
-
 #[cfg(test)]
 impl DogStatsDConfiguration {
     /// Creates a fixture configuration, for tests that exercise source behavior rather than configuration.
@@ -701,7 +684,7 @@ impl DogStatsDConfiguration {
     /// hostname that wouldn't be used doesn't stop the source from starting.
     async fn resolve_bind_ip(&self) -> Result<Option<std::net::IpAddr>, Error> {
         match &self.bind_host {
-            Some(host) if !self.non_local_traffic => resolve_bind_host(host).await.map(Some),
+            Some(host) if !self.non_local_traffic => Ok(Some(resolve_bind_host(host).await?)),
             _ => Ok(None),
         }
     }
