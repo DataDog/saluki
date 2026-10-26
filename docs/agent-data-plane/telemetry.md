@@ -31,8 +31,13 @@ ADP series on the Core Agent endpoint carry an `emitter` label so you can distin
 Core Agent series.
 
 > [!NOTE]
-> `telemetry.enabled` does not control these ADP endpoints. ADP ignores that core Agent
+> `telemetry.enabled` does not control these ADP endpoints. ADP ignores that Core Agent
 > configuration key, and the internal telemetry routes are registered by ADP itself.
+
+To use the Core Agent's combined `/telemetry` endpoint, set `telemetry.enabled: true` in the
+**Core Agent** configuration. This key defaults to `false`; without it, the Core Agent does not
+serve `/telemetry`. This prerequisite applies to both combined-scrape examples below and to
+queries against `/telemetry`, but not to ADP's local `/metrics` or `/compat/metrics` routes.
 
 ## Configure a scrape
 
@@ -143,13 +148,13 @@ used by the proposed bridge, including known gaps. These names are *not* the nam
 | `dogstatsd/MetricPackets`, `MetricParseErrors`, `EventPackets`, `EventParseErrors`, `ServiceCheckPackets`, `ServiceCheckParseErrors` | `dogstatsd__processed{message_type=...,state=...}` | Exact only with both labels selected. The bridge maps each path separately: `metrics`, `events`, or `service_checks`, crossed with `ok` or `error`. |
 | `dogstatsd-uds/OriginDetectionErrors` | `dogstatsd__uds_origin_detection_error` | Known gap: the bridge expects `dogstatsd__uds_origin_detection_errors` (plural), so the current RAR family name does not match. Do not assume this expvar receives the ADP value yet. |
 | `forwarder/Transactions/Success` | `transactions__success` | Approximate: ADP counts `/api/v1/validate` as a transaction, while the legacy value does not. The bridge maps the series; filter out that endpoint in OpenMetrics queries for like-for-like comparison. |
-| `forwarder/Transactions/Errors`, `HTTPErrors`, and `ErrorsByType/*` | `transactions__errors{error_type=...}` and `transactions__http_errors` | Exact for the mapped error types. The bridge selects `dns_lookup_failure`, `tls_handshake_failure`, `connection_failure`, `writing_failure`, or `invalid_request` for the corresponding `ErrorsByType` expvar. |
+| `forwarder/Transactions/Errors`, `HTTPErrors`, and `ErrorsByType/*` | `transactions__errors{error_type=...}` and `transactions__http_errors` | The bridge maps `Errors` and `HTTPErrors`. **Known gap:** its `ErrorsByType/*` selectors do not match ADP's error-type labels, so those paths do not receive the corresponding ADP counts. For ADP queries, select `dns_error`, `tls_error`, `connection_error`, or `wrote_request_error` on `transactions__errors`; there is no ADP `invalid_request` label for `SentRequestErrors`. |
 | `forwarder/Transactions/RetryQueueSize` | `transactions__retry_queue_size{domain=...}` | Exact gauge. The bridge combines the per-domain queue sizes into the legacy value. |
 | `forwarder/Transactions/DroppedOnInput` | `transactions__dropped` | Not equivalent and **not bridged**: ADP counts a broader set of failed requests, not only retry-queue drops. Query the ADP series separately. |
-| `aggregator/DogstatsdContexts`, `DogstatsdMetricSample`, `SeriesFlushed` | `aggregator__dogstatsd_contexts`, `aggregator__processed{data_type="dogstatsd_metrics"}`, `aggregator__flush{data_type="series"}` | Mapped by the bridge. The contexts value is a gauge; the sample and flushed-series values are counters. |
+| `aggregator/DogstatsdContexts`, `DogstatsdMetricSample`, `SeriesFlushed` | `aggregator__dogstatsd_contexts`, `aggregator__processed{data_type="dogstatsd_metrics"}`, `aggregator__flush{data_type="series"}` | Mapped by the bridge. The contexts value comes from an INFO-level context-resolver gauge (not the DEBUG-only aggregate-transform gauge); the sample and flushed-series values are counters. |
 | `aggregator/Event`, `ServiceCheck`, `EventsFlushed`, `ServiceCheckFlushed` | `aggregator__processed` and `aggregator__flush`, selecting `data_type="events"` or `"service_checks"` | Mapped by the bridge with a distinct `data_type` selector for each path. These include encoder-proxy telemetry; compare semantics before replacing existing dashboards. |
 | `aggregator/FlushCount/*/LastFlush`, `Flush/*FlushTime/LastFlush` | `aggregator__flush_count{flush_type=...}`, `aggregator__flush_time{flush_type=...}` | Available counts and timings are mapped by the bridge. These are per-process snapshots, not meaningful combined totals in an OpenMetrics query; keep them separate by `emitter`. Not every legacy timing has an ADP equivalent. |
-| `aggregator/NumberOfFlush` | `aggregator__number_of_flush` | Mapped, but the ADP counter is DEBUG-level and counts non-empty flushes. It is absent at default verbosity and not an exact substitute. |
+| `aggregator/NumberOfFlush` | `aggregator__number_of_flush` | Mapped. The ADP counter is INFO-level and available at default verbosity, but it counts non-empty flushes and is not an exact substitute. |
 | Splitter and serializer | V3 metrics such as `serializer__v3_payload_split_reason{reason="item_too_big"}` | Not bridged. The Core Agent no longer has the legacy splitter expvar subtree. ADP splits proactively rather than using a split-and-retry loop; the V3 payload-split give-up counter is not emitted. |
 | Scheduler and Logs Agent | No ADP series | These paths are unaffected and remain local to the Agent. |
 
