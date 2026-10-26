@@ -7,7 +7,6 @@
 //!
 //! [OpenTelemetry Transform processor]: https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/release/v0.144.x/processor/transformprocessor
 
-use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlTransform as TypedOttlTransform};
 use async_trait::async_trait;
 use ottl::{CallbackMap, EnumMap, OttlParser};
 use saluki_common::collections::FastHashMap;
@@ -23,17 +22,24 @@ use tracing::{debug, error};
 
 mod span_context;
 use self::span_context::{SpanTransformContext, SpanTransformFamily};
+use crate::components::ottl_error_mode::OttlErrorMode;
 
 /// Configuration for the OTTL Transform processor.
 #[derive(Clone, Debug)]
 pub struct OttlTransformConfiguration {
-    config: TypedOttlTransform,
+    error_mode: OttlErrorMode,
+    trace_statements: Vec<String>,
 }
 
 impl OttlTransformConfiguration {
-    /// Creates an `OttlTransformConfiguration` from the resolved typed traces configuration.
-    pub fn from_configuration(config: &TypedOttlTransform) -> Self {
-        Self { config: config.clone() }
+    /// Creates a processor that applies `trace_statements` to each span, in order.
+    ///
+    /// `error_mode` decides whether later statements still run after one fails.
+    pub fn new(error_mode: OttlErrorMode, trace_statements: Vec<String>) -> Self {
+        Self {
+            error_mode,
+            trace_statements,
+        }
     }
 }
 
@@ -55,7 +61,7 @@ impl SynchronousTransformBuilder for OttlTransformConfiguration {
         let enums = EnumMap::new();
 
         let mut span_parsers = Vec::new();
-        for statement in &self.config.trace_statements {
+        for statement in &self.trace_statements {
             let statement = statement.trim();
             if statement.is_empty() {
                 continue;
@@ -71,7 +77,7 @@ impl SynchronousTransformBuilder for OttlTransformConfiguration {
         }
 
         Ok(Box::new(OttlTransform {
-            error_mode: self.config.error_mode,
+            error_mode: self.error_mode,
             span_parsers,
         }))
     }
@@ -178,7 +184,7 @@ mod tests {
         BuildContext::test_transform("ottl_transform")
     }
 
-    fn test_config(value: Option<serde_json::Value>) -> TypedOttlTransform {
+    fn test_config(value: Option<serde_json::Value>) -> OttlTransformConfiguration {
         let root = value
             .and_then(|value| value.get("ottl_transform_config").cloned())
             .unwrap_or_default();
@@ -195,15 +201,11 @@ mod tests {
             .filter_map(serde_json::Value::as_str)
             .map(str::to_owned)
             .collect();
-        TypedOttlTransform {
-            error_mode,
-            trace_statements,
-        }
+        OttlTransformConfiguration::new(error_mode, trace_statements)
     }
 
     async fn build_transform(cfg_json: Option<serde_json::Value>) -> Box<dyn SynchronousTransform + Send> {
-        let typed = test_config(cfg_json);
-        let ottl_config = OttlTransformConfiguration::from_configuration(&typed);
+        let ottl_config = test_config(cfg_json);
         let ctx = test_component_context();
         ottl_config.build(ctx).await.expect("build should succeed")
     }
@@ -211,7 +213,7 @@ mod tests {
     // ---- Group 1: Configuration and build ----
 
     #[tokio::test]
-    async fn from_configuration_absent_key_returns_default() {
+    async fn absent_configuration_leaves_spans_unchanged() {
         let mut transform = build_transform(None).await;
         let span = make_span(1, 1, HashMap::from([("a".into(), "b".into())]));
         let trace = make_trace(vec![span], None);
@@ -232,8 +234,7 @@ mod tests {
                 "trace_statements": ["syntax error !!"]
             }
         });
-        let typed = test_config(Some(cfg_json));
-        let ottl_config = OttlTransformConfiguration::from_configuration(&typed);
+        let ottl_config = test_config(Some(cfg_json));
         let ctx = test_component_context();
         let result = ottl_config.build(ctx).await;
         assert!(result.is_err(), "invalid OTTL syntax must make build fail");
@@ -551,43 +552,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[tokio::test]
-    async fn omitted_error_mode_defaults_to_propagate() {
-        // Per the transform processor spec, an omitted `error_mode` defaults to `Propagate`. Behaviorally,
-        // that means a statement error stops the rest of the span's statements (unlike ignore/silent, which
-        // continue). The config key is omitted here to exercise that default path.
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": [
-                    "set(resource.attributes[\"x\"], \"fail\")",
-                    "set(attributes[\"after\"], \"yes\")"
-                ]
-            }
-        });
-        let typed = test_config(Some(cfg_json));
-        let ottl_config = OttlTransformConfiguration::from_configuration(&typed);
-        assert_eq!(
-            ottl_config.config.error_mode,
-            OttlErrorMode::Propagate,
-            "omitted error_mode must default to Propagate"
-        );
-
-        let mut transform = ottl_config
-            .build(test_component_context())
-            .await
-            .expect("build should succeed");
-        let span = make_span(1, 1, HashMap::new());
-        let trace = make_trace(vec![span], None);
-        let mut buffer = EventsBuffer::default();
-        assert!(buffer.try_push(Event::Trace(trace)).is_none());
-        transform.transform_buffer(&mut buffer);
-        assert_eq!(
-            get_span_attr(&buffer, 0, "after"),
-            None,
-            "default (propagate) must stop processing after the first statement error"
-        );
     }
 
     // ---- Group 6: Multi-span and multi-trace (integration) ----

@@ -35,6 +35,7 @@ impl OtlpMetricsTranslatorMetrics {
     }
 
     /// Creates a no-op instance for use in tests where real metric recording is not needed.
+    #[cfg(test)]
     pub fn for_tests() -> Self {
         Self {
             errors_translate: Counter::noop(),

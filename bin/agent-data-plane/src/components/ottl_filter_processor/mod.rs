@@ -5,7 +5,6 @@
 //!
 //! [OpenTelemetry filterprocessor]: https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/release/v0.144.x/processor/filterprocessor
 
-use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter as TypedOttlFilter};
 use async_trait::async_trait;
 use ottl::{CallbackMap, EnumMap, OttlParser, Value};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -20,16 +19,24 @@ use tracing::{debug, error};
 mod span_context;
 use span_context::{SpanFilterContext, SpanFilterFamily};
 
-/// Configuration for the OTTL filter processor, loaded from the data plane config.
+use crate::components::ottl_error_mode::OttlErrorMode;
+
+/// Configuration for the OTTL filter processor.
 #[derive(Clone, Debug)]
 pub struct OttlFilterConfiguration {
-    config: TypedOttlFilter,
+    error_mode: OttlErrorMode,
+    span_conditions: Vec<String>,
 }
 
 impl OttlFilterConfiguration {
-    /// Creates configuration from the resolved typed traces configuration.
-    pub fn from_configuration(config: &TypedOttlFilter) -> Self {
-        Self { config: config.clone() }
+    /// Creates a filter that drops each span matching any of `span_conditions`.
+    ///
+    /// `error_mode` decides what happens to a span when a condition fails to evaluate.
+    pub fn new(error_mode: OttlErrorMode, span_conditions: Vec<String>) -> Self {
+        Self {
+            error_mode,
+            span_conditions,
+        }
     }
 }
 
@@ -47,7 +54,7 @@ impl SynchronousTransformBuilder for OttlFilterConfiguration {
         let enums = EnumMap::new();
 
         let mut span_parsers = Vec::new();
-        for condition in &self.config.span_conditions {
+        for condition in &self.span_conditions {
             let condition = condition.trim();
             if condition.is_empty() {
                 continue;
@@ -63,7 +70,7 @@ impl SynchronousTransformBuilder for OttlFilterConfiguration {
         }
 
         Ok(Box::new(OttlFilter {
-            error_mode: self.config.error_mode,
+            error_mode: self.error_mode,
             span_parsers,
         }))
     }
@@ -175,16 +182,12 @@ mod tests {
             .filter_map(serde_json::Value::as_str)
             .map(str::to_owned)
             .collect();
-        let typed = TypedOttlFilter {
-            error_mode,
-            span_conditions,
-        };
-        OttlFilterConfiguration::from_configuration(&typed)
+        OttlFilterConfiguration::new(error_mode, span_conditions)
     }
 
     /// When `ottl_filter_config` is absent, config defaults to empty conditions and no spans are dropped.
     #[tokio::test]
-    async fn from_configuration_absent_key_returns_default() {
+    async fn absent_configuration_leaves_spans_unchanged() {
         let ottl_config = test_config(serde_json::json!({}));
         let ctx = test_component_context();
         let mut transform = ottl_config.build(ctx).await.expect("build should succeed");
@@ -424,36 +427,6 @@ mod tests {
                 case.error_mode
             );
         }
-    }
-
-    /// With `error_mode` omitted, the documented default (`Propagate`) drops the span when a condition errors.
-    #[tokio::test]
-    async fn omitted_error_mode_defaults_to_propagate() {
-        let cfg_json = serde_json::json!({
-            "ottl_filter_config": { "traces": { "span": ["attributes[\"x\"] > 1"] } }
-        });
-        let ottl_config = test_config(cfg_json);
-        assert_eq!(
-            ottl_config.config.error_mode,
-            OttlErrorMode::Propagate,
-            "omitted error_mode must default to Propagate"
-        );
-
-        let mut transform = ottl_config
-            .build(test_component_context())
-            .await
-            .expect("build should succeed");
-        // `x` is a string, so `attributes["x"] > 1` errors during evaluation; propagate drops the span.
-        let span = make_span(1, 1, HashMap::from([("x".into(), "string".into())]));
-        let trace = make_trace(vec![span], None);
-        let mut buffer = EventsBuffer::default();
-        assert!(buffer.try_push(Event::Trace(trace)).is_none());
-        transform.transform_buffer(&mut buffer);
-        assert_eq!(
-            span_count_in_buffer(&buffer),
-            0,
-            "default (propagate) must drop the span when a condition errors"
-        );
     }
 
     /// `transform_buffer` removes only spans that match the condition; remaining spans are unchanged and in order.

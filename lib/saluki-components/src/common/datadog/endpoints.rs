@@ -4,7 +4,6 @@ use std::{
     sync::LazyLock,
 };
 
-use agent_data_plane_config::shared::{self, V3SeriesMode};
 use http::uri::Authority;
 use regex::Regex;
 use saluki_error::{ErrorContext as _, GenericError};
@@ -15,7 +14,7 @@ use tracing::{debug, error};
 use url::Url;
 
 use super::api_key::ApiKeyCell;
-use super::protocol::{MetricsPayloadInfo, MetricsProtocolVersion, UseV3ApiSeriesConfig};
+use super::protocol::{MetricsPayloadInfo, MetricsProtocolVersion, UseV3ApiSeriesConfig, V3SeriesMode};
 use super::routing::RoutingTargetId;
 
 static DD_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
@@ -253,8 +252,8 @@ pub(crate) struct SingleDestination {
 }
 
 /// Endpoint configuration for sending payloads to the Datadog platform.
-#[derive(Clone)]
-#[cfg_attr(test, derive(Debug, PartialEq))]
+#[derive(Clone, PartialEq)]
+#[cfg_attr(test, derive(Debug))]
 pub struct EndpointConfiguration {
     /// The API key to use.
     api_key: String,
@@ -267,12 +266,15 @@ pub struct EndpointConfiguration {
 }
 
 impl EndpointConfiguration {
-    /// Creates a new `EndpointConfiguration` from the resolved endpoint configuration.
-    pub(crate) fn from_configuration(endpoints: &shared::Endpoints) -> Self {
+    /// Creates a new `EndpointConfiguration`.
+    ///
+    /// `primary_endpoint` is the effective endpoint, already chosen by the caller. It is normalized when the endpoint
+    /// is built.
+    pub fn new(api_key: String, primary_endpoint: String, additional_endpoints: HashMap<String, Vec<String>>) -> Self {
         Self {
-            api_key: endpoints.api_key.clone(),
-            primary_endpoint: endpoints.primary_endpoint(),
-            additional_endpoints: endpoints.additional_endpoints.clone(),
+            api_key,
+            primary_endpoint,
+            additional_endpoints,
         }
     }
 
@@ -594,13 +596,14 @@ fn compute_traces_authority(endpoint: &Url) -> Option<Authority> {
 
 #[cfg(test)]
 mod tests {
-    use agent_data_plane_config::ConfigValue;
-
     use super::*;
 
-    /// Returns the Agent-compatible V3 series settings a default configuration resolves to.
+    /// Returns the V3 series settings the Agent's schema defaults resolve to.
     fn agent_series_config() -> UseV3ApiSeriesConfig {
-        (&shared::MetricsEncoding::default()).into()
+        UseV3ApiSeriesConfig {
+            enabled: V3SeriesMode::DatadogOnly,
+            endpoints: HashMap::new(),
+        }
     }
 
     fn additional_endpoints(endpoints: &[(&str, &[&str])]) -> HashMap<String, Vec<String>> {
@@ -718,33 +721,24 @@ mod tests {
     }
 
     #[test]
-    fn the_primary_endpoint_is_built_from_resolved_configuration() {
-        // Endpoint resolution belongs to the configuration layer; the component version-prefixes the
-        // resolved Datadog endpoint and uses a non-Datadog override verbatim.
+    fn the_primary_endpoint_is_version_prefixed_only_for_datadog_endpoints() {
         let prefix = get_data_plane_version_prefix();
         let cases = [
             (
-                "site-derived endpoint",
-                ConfigValue::explicit("us3.datadoghq.com".to_string()),
-                ConfigValue::defaulted("https://app.datadoghq.com".to_string()),
+                "Datadog endpoint",
+                "https://app.us3.datadoghq.com",
                 format!("https://{prefix}.us3.datadoghq.com/"),
             ),
             (
-                "explicit dd_url used verbatim",
-                ConfigValue::explicit("us3.datadoghq.com".to_string()),
-                ConfigValue::explicit("https://dogpound.io/".to_string()),
+                "non-Datadog endpoint used verbatim",
+                "https://dogpound.io/",
                 "https://dogpound.io/".to_string(),
             ),
         ];
 
-        for (name, site, dd_url, expected_endpoint) in cases {
-            let endpoints = shared::Endpoints {
-                api_key: "fake-api-key".to_string(),
-                site,
-                dd_url,
-                ..Default::default()
-            };
-            let config = EndpointConfiguration::from_configuration(&endpoints);
+        for (name, primary_endpoint, expected_endpoint) in cases {
+            let config =
+                EndpointConfiguration::new("fake-api-key".to_string(), primary_endpoint.to_string(), HashMap::new());
 
             let resolved = config.build_primary_endpoint().expect(name);
             assert_eq!(expected_endpoint, resolved.endpoint().to_string(), "{name}");
@@ -894,7 +888,7 @@ mod tests {
 
         series_config = UseV3ApiSeriesConfig {
             enabled: V3SeriesMode::Disabled,
-            ..Default::default()
+            endpoints: HashMap::new(),
         };
         series_config
             .endpoints
@@ -985,12 +979,7 @@ mod tests {
     fn the_configured_endpoint_keeps_the_agent_endpoint_shape() {
         // The configured endpoint is matched against V3 endpoint lists, so it must stay in the shape
         // the Agent uses, before version prefixing.
-        let endpoints = shared::Endpoints {
-            site: ConfigValue::defaulted("datadoghq.com".to_string()),
-            dd_url: ConfigValue::defaulted("https://app.datadoghq.com".to_string()),
-            ..Default::default()
-        };
-        let config = EndpointConfiguration::from_configuration(&endpoints);
+        let config = EndpointConfiguration::new(String::new(), "https://app.datadoghq.com".to_string(), HashMap::new());
 
         assert_eq!(
             "https://app.datadoghq.com",
@@ -999,42 +988,5 @@ mod tests {
                 .expect("endpoint should resolve")
                 .configured_endpoint()
         );
-    }
-
-    #[test]
-    fn an_explicit_dd_url_overrides_site_even_at_the_schema_default() {
-        // The Agent sends `dd_url` at its schema default even when only `site` is configured, so the
-        // URL alone cannot express an override: an operator who explicitly sets the default URL still
-        // overrides `site`, and a defaulted URL does not.
-        let cases = [
-            (
-                "explicit default URL overrides site",
-                ConfigValue::explicit("https://app.datadoghq.com".to_string()),
-                "https://app.datadoghq.com",
-            ),
-            (
-                "defaulted URL leaves the endpoint to site",
-                ConfigValue::defaulted("https://app.datadoghq.com".to_string()),
-                "https://app.datadoghq.eu",
-            ),
-        ];
-
-        for (name, dd_url, expected) in cases {
-            let endpoints = shared::Endpoints {
-                site: ConfigValue::explicit("datadoghq.eu".to_string()),
-                dd_url,
-                ..Default::default()
-            };
-            let config = EndpointConfiguration::from_configuration(&endpoints);
-
-            assert_eq!(
-                expected,
-                config
-                    .build_primary_endpoint()
-                    .expect("endpoint should resolve")
-                    .configured_endpoint(),
-                "{name}"
-            );
-        }
     }
 }

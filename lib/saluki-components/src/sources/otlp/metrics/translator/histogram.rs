@@ -1,6 +1,5 @@
 //! Translation of OTLP explicit-bucket histogram data points.
 
-use agent_data_plane_config::domains::otlp::HistogramMode;
 use ddsketch::{Bucket, DDSketch};
 use otlp_protos::opentelemetry::proto::metrics::v1::{DataPointFlags, HistogramDataPoint as OtlpHistogramDataPoint};
 use saluki_core::data_model::event::Event;
@@ -9,6 +8,7 @@ use tracing::warn;
 
 use super::go_float::GoFloat;
 use super::{infer_delta_interval, is_skippable, DataType, Dimensions, OtlpMetricsTranslator, TranslationContext};
+use crate::sources::otlp::metrics::config::HistogramMode;
 
 #[derive(Debug, Default)]
 pub(super) struct HistogramInfo {

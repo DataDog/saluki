@@ -5,15 +5,13 @@
 //! OTLP traces could report the wrong receiver rate, and native traces reported a rate they never had.
 //!
 //! OTLP traces come from the OTLP translator, which stamps the receiver sampling rate on each trace but doesn't sample.
-//! Native traces come from the v1 decoder. The sampler and the encoder are built from configuration and run as
-//! components. Most cases stamp 50% on the trace while the downstream OTLP configuration says 100%, so a rate read
-//! from downstream configuration shows up as `1.00` on the wire. The default case stamps 100% and checks the default
-//! output.
+//! Native traces come from the v1 decoder. The sampler and encoder run as components. The tests check that the stamped
+//! receiver rate survives sampling and encoding, independently of APM sampling decisions, and that native traces carry
+//! no OTLP receiver rate on the wire.
 
 use std::collections::HashMap;
 use std::time::Duration;
 
-use agent_data_plane_config::{domains, SharedConfiguration};
 use base64::{engine::general_purpose, Engine as _};
 use datadog_agent_apm::semantics::SemanticRegistryProvider;
 use datadog_protos::traces::AgentPayload;
@@ -29,14 +27,17 @@ use saluki_core::data_model::event::trace::{AttributeValue, Trace};
 use saluki_core::data_model::event::Event;
 use stringtheory::MetaString;
 
-use super::DatadogTraceConfiguration;
-use crate::common::otlp::traces::translator::OtlpTracesTranslator;
+use super::{trace_configuration, DatadogTraceConfiguration};
+use crate::common::otlp::traces::translator::{traces_settings, OtlpTracesSettings, OtlpTracesTranslator};
 use crate::common::otlp::Metrics;
 use crate::config::AgentEnv;
 use crate::decoders::datadog::decode_v1_payload;
-use crate::transforms::TraceSamplerConfiguration;
+use crate::transforms::{sampler_configuration, TraceSamplerConfiguration};
 
 const RECEIVER_SAMPLING_PERCENTAGE: f64 = 50.0;
+
+/// Default maximum resource name length, in bytes.
+const MAX_RESOURCE_LEN: usize = 5000;
 
 // Deterministic receiver sampling decisions at a rate of 0.5, from the Go trace agent's `TestCreateChunks`:
 // https://github.com/DataDog/datadog-agent/blob/c6f7e0bc2d5744601a10f231751948ac7a4ee781/pkg/trace/api/otlp_test.go#L740-L810
@@ -120,11 +121,11 @@ fn otlp_trace(receiver_sampling_percentage: f64, trace_id_low: u64, error: bool)
     };
 
     let mut translator = OtlpTracesTranslator::new(
-        domains::otlp::Traces {
+        OtlpTracesSettings {
             probabilistic_sampler_sampling_percentage: receiver_sampling_percentage,
-            ..Default::default()
+            ..traces_settings()
         },
-        agent_data_plane_config::defaults::DEFAULT_MAX_RESOURCE_LEN,
+        MAX_RESOURCE_LEN,
         SemanticRegistryProvider::default(),
     );
     let mut traces: Vec<Trace> = translator
@@ -159,28 +160,29 @@ fn mark_span(trace: &mut Trace, span_index: usize, key: &'static str) {
         .insert(MetaString::from_static(key), AttributeValue::Float(1.0));
 }
 
-/// Returns a traces domain with the Datadog schema defaults the sampler and encoder read.
-fn traces_domain() -> domains::traces::Domain {
-    domains::traces::Domain {
+/// Returns sampler settings with the Datadog schema defaults the sampler reads.
+fn sampler() -> TraceSamplerConfiguration {
+    TraceSamplerConfiguration {
         target_traces_per_second: 10.0,
         errors_per_second: 10.0,
         max_events_per_second: 200.0,
-        ..Default::default()
+        ..sampler_configuration(AgentEnv::resolve(None, None, &[], &[]))
     }
 }
 
 /// Runs `traces` through the trace sampler and the trace encoder, and decodes every encoded chunk.
-async fn sample_and_encode(traces_domain: domains::traces::Domain, traces: Vec<Trace>) -> Vec<WireChunk> {
-    let downstream_otlp = domains::otlp::Traces {
-        probabilistic_sampler_sampling_percentage: 100.0,
-        ..Default::default()
+///
+/// The encoder shares the sampler's targets and Error Tracking Standalone setting, as both read them from the same
+/// configuration.
+async fn sample_and_encode(sampler: TraceSamplerConfiguration, traces: Vec<Trace>) -> Vec<WireChunk> {
+    let encoder = DatadogTraceConfiguration {
+        flush_timeout: Duration::from_millis(10),
+        target_traces_per_second: sampler.target_traces_per_second,
+        errors_per_second: sampler.errors_per_second,
+        error_tracking_standalone: sampler.error_tracking_standalone,
+        ..trace_configuration(sampler.agent_env.clone())
     };
-    let mut shared = SharedConfiguration::default();
-    shared.endpoints.compression.compressor_kind = "zstd".to_string();
-    shared.metrics_encoding.flush_timeout = Duration::from_millis(10);
 
-    let agent_env = AgentEnv::resolve(None, None, &[], &[]);
-    let sampler = TraceSamplerConfiguration::from_configuration(&traces_domain, &downstream_otlp, agent_env.clone());
     let (sampler, mut sampler_outputs) = TestComponentDriver::transform(sampler)
         .await
         .expect("trace sampler should build");
@@ -188,7 +190,6 @@ async fn sample_and_encode(traces_domain: domains::traces::Domain, traces: Vec<T
     sampler.shutdown().await.expect("trace sampler should stop cleanly");
     let sampled = sampler_outputs.default_output().collect_events().await;
 
-    let encoder = DatadogTraceConfiguration::from_configuration(&traces_domain, &downstream_otlp, &shared, agent_env);
     let (encoder, mut payloads) = TestComponentDriver::encoder(encoder)
         .await
         .expect("trace encoder should build");
@@ -253,7 +254,7 @@ fn split_by_protocol(mut chunks: Vec<WireChunk>) -> (WireChunk, WireChunk) {
 #[tokio::test]
 async fn default_configuration_keeps_traces_and_reports_receiver_rate_for_otlp_only() {
     let traces = vec![otlp_trace(100.0, RECEIVER_DROPPED_TRACE_ID, false), native_trace(1)];
-    let (otlp, native) = split_by_protocol(sample_and_encode(traces_domain(), traces).await);
+    let (otlp, native) = split_by_protocol(sample_and_encode(sampler(), traces).await);
 
     assert_eq!(otlp.priority, 1);
     assert!(!otlp.dropped_trace);
@@ -273,7 +274,7 @@ async fn single_span_sampling_rescues_receiver_drop_with_apm_sampler_disabled() 
     let mut native = native_trace(0);
     mark_span(&mut native, 0, KEY_SPAN_SAMPLING_MECHANISM);
 
-    let (otlp, native) = split_by_protocol(sample_and_encode(traces_domain(), vec![otlp, native]).await);
+    let (otlp, native) = split_by_protocol(sample_and_encode(sampler(), vec![otlp, native]).await);
 
     assert_eq!(otlp.priority, 2);
     assert!(!otlp.dropped_trace);
@@ -287,15 +288,15 @@ async fn single_span_sampling_rescues_receiver_drop_with_apm_sampler_disabled() 
 
 #[tokio::test]
 async fn apm_probabilistic_sampler_keep_reports_receiver_rate() {
-    let mut traces_domain = traces_domain();
-    traces_domain.probabilistic_sampler.enabled = true;
-    traces_domain.probabilistic_sampler.sampling_percentage = 100.0;
+    let mut sampler = sampler();
+    sampler.probabilistic_sampler_enabled = true;
+    sampler.sampling_percentage = 100.0;
     // The receiver rate would drop this trace, but the APM sampler decides once it is enabled.
     let traces = vec![
         otlp_trace(RECEIVER_SAMPLING_PERCENTAGE, RECEIVER_DROPPED_TRACE_ID, false),
         native_trace(1),
     ];
-    let (otlp, native) = split_by_protocol(sample_and_encode(traces_domain, traces).await);
+    let (otlp, native) = split_by_protocol(sample_and_encode(sampler, traces).await);
 
     assert_eq!(otlp.priority, 1);
     assert!(!otlp.dropped_trace);
@@ -310,15 +311,15 @@ async fn apm_probabilistic_sampler_keep_reports_receiver_rate() {
 
 #[tokio::test]
 async fn single_span_sampling_rescues_apm_probabilistic_sampler_drop() {
-    let mut traces_domain = traces_domain();
-    traces_domain.probabilistic_sampler.enabled = true;
-    traces_domain.probabilistic_sampler.sampling_percentage = 0.0;
+    let mut sampler = sampler();
+    sampler.probabilistic_sampler_enabled = true;
+    sampler.sampling_percentage = 0.0;
     let mut otlp = otlp_trace(RECEIVER_SAMPLING_PERCENTAGE, RECEIVER_KEPT_TRACE_ID, false);
     mark_span(&mut otlp, 1, KEY_SPAN_SAMPLING_MECHANISM);
     let mut native = native_trace(1);
     mark_span(&mut native, 0, KEY_SPAN_SAMPLING_MECHANISM);
 
-    let (otlp, native) = split_by_protocol(sample_and_encode(traces_domain, vec![otlp, native]).await);
+    let (otlp, native) = split_by_protocol(sample_and_encode(sampler, vec![otlp, native]).await);
 
     assert_eq!(otlp.priority, 2);
     assert_eq!(otlp.span_ids, [2]);
@@ -330,8 +331,8 @@ async fn single_span_sampling_rescues_apm_probabilistic_sampler_drop() {
 
 #[tokio::test]
 async fn analyzed_events_from_dropped_traces_report_receiver_rate() {
-    let mut traces_domain = traces_domain();
-    traces_domain.analyzed_rate_by_service =
+    let mut sampler = sampler();
+    sampler.analyzed_rate_by_service =
         HashMap::from([(OTLP_SERVICE.to_string(), 1.0), (NATIVE_SERVICE.to_string(), 1.0)]);
     // Only the roots are top-level, so only the roots are extracted as events.
     let mut otlp = otlp_trace(RECEIVER_SAMPLING_PERCENTAGE, RECEIVER_DROPPED_TRACE_ID, false);
@@ -339,7 +340,7 @@ async fn analyzed_events_from_dropped_traces_report_receiver_rate() {
     let mut native = native_trace(0);
     mark_span(&mut native, 0, KEY_TOP_LEVEL);
 
-    let (otlp, native) = split_by_protocol(sample_and_encode(traces_domain, vec![otlp, native]).await);
+    let (otlp, native) = split_by_protocol(sample_and_encode(sampler, vec![otlp, native]).await);
 
     assert!(otlp.dropped_trace);
     assert_eq!(otlp.span_ids, [1]);
@@ -352,8 +353,8 @@ async fn analyzed_events_from_dropped_traces_report_receiver_rate() {
 
 #[tokio::test]
 async fn error_tracking_standalone_reports_receiver_rate() {
-    let mut traces_domain = traces_domain();
-    traces_domain.error_tracking_standalone_enabled = true;
+    let mut sampler = sampler();
+    sampler.error_tracking_standalone = true;
     let native_error_trace = {
         let mut trace = native_trace(1);
         let spans = trace.spans().iter().cloned().map(|span| span.with_error(1)).collect();
@@ -367,7 +368,7 @@ async fn error_tracking_standalone_reports_receiver_rate() {
         native_trace(1),
     ];
     // Non-error traces are forwarded as dropped.
-    let (non_error, error): (Vec<_>, Vec<_>) = sample_and_encode(traces_domain, traces)
+    let (non_error, error): (Vec<_>, Vec<_>) = sample_and_encode(sampler, traces)
         .await
         .into_iter()
         .partition(|chunk| chunk.dropped_trace);
@@ -398,7 +399,7 @@ async fn same_trace_id_from_both_protocols_encodes_separate_chunks() {
     native.trace_id_high = otlp.trace_id_high;
     native.trace_id_low = otlp.trace_id_low;
 
-    let (otlp, native) = split_by_protocol(sample_and_encode(traces_domain(), vec![otlp, native]).await);
+    let (otlp, native) = split_by_protocol(sample_and_encode(sampler(), vec![otlp, native]).await);
 
     assert_eq!(otlp.trace_id_low, RECEIVER_KEPT_TRACE_ID);
     assert_eq!(native.trace_id_low, RECEIVER_KEPT_TRACE_ID);
