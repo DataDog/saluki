@@ -28,8 +28,11 @@
 //! which is stated from the streamed `api_key`, not read back from the validator. Two results that
 //! share one identity are an ambiguous check and fail; none is merged away.
 //!
-//! A recorded panic or case fault abandons the checks its case had left, so an unused expectation for
-//! a key that case holds is not reported (the panic or fault itself always fails).
+//! A recorded panic or case fault abandons the checks its case had left, and always fails. Its report
+//! lists every expectation for a key that case holds, in the abandoned tiers, whose check did not run:
+//! the identity, the expected ADP result and where the entry is written. Each such expectation is
+//! listed by the first abandonment that covers it and is not reported again as unused; the listing
+//! says only that the check did not run, not why.
 //!
 //! Two kinds of entry exist:
 //!
@@ -900,6 +903,34 @@ fn origin_summary(cases_of_origin: &BTreeMap<&str, Vec<&Case>>, origin: &str) ->
     )
 }
 
+/// A recorded panic or case fault, which abandoned the checks its case had left.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum Abandonment {
+    /// The case fault at this index of [`Collected::faults`].
+    Fault(usize),
+    /// The panic result at this index of [`Collected::results`].
+    Panic(usize),
+}
+
+/// Lists `expectations`, whose checks did not run, for the report of the abandonment that covers
+/// them.
+fn unrun(expectations: &[&Expectation]) -> String {
+    let mut out = String::new();
+    let _ = write!(
+        out,
+        "\n\nExpectations for this case's keys in the abandoned tiers whose checks did not run ({}):",
+        expectations.len()
+    );
+    for e in expectations {
+        let _ = write!(
+            out,
+            "\n- Check: {}\n  Expected ADP ({:?}): {}\n  Expectation: {}",
+            e.check, e.status, e.adp, e.at
+        );
+    }
+    out
+}
+
 /// Judges `collected` against `table`.
 #[track_caller]
 pub(crate) fn judge(corpus: &Corpus, collected: &Collected, table: &[Expectation]) -> Judgement {
@@ -919,41 +950,6 @@ pub(crate) fn judge(corpus: &Corpus, collected: &Collected, table: &[Expectation
             .map(|cases| cases.iter().map(|c| c.name.clone()).collect())
             .unwrap_or_default()
     };
-
-    for fault in &collected.faults {
-        match fault_case(corpus, fault) {
-            Some(case) => {
-                let key = CheckKey {
-                    origin: case.name.clone(),
-                    tier: Tier::Leaf,
-                    at: String::new(),
-                    getter: String::new(),
-                    key: String::new(),
-                };
-                acc.problem(
-                    true,
-                    key,
-                    format!(
-                        "CASE ABANDONED (the remaining cases still ran): {fault}\n\nCase: {}\nInput file: {}\nInput: {}",
-                        case.name,
-                        input_location(case),
-                        original_input(case)
-                    ),
-                    [case.name.clone()],
-                );
-            }
-            None => {
-                let key = CheckKey {
-                    origin: fault.clone(),
-                    tier: Tier::Leaf,
-                    at: String::new(),
-                    getter: String::new(),
-                    key: String::new(),
-                };
-                acc.problem(true, key, format!("CASE ABANDONED: {fault}"), Vec::new())
-            }
-        }
-    }
 
     // Index the table; a check with two entries, or an entry for an unknown origin, is a problem.
     let mut by_check: BTreeMap<&CheckKey, Vec<&Expectation>> = BTreeMap::new();
@@ -992,14 +988,94 @@ pub(crate) fn judge(corpus: &Corpus, collected: &Collected, table: &[Expectation
         }
     }
 
+    // A recorded panic or case fault abandoned the checks its case had left. Every expectation whose
+    // check did not run and that an abandonment covers is listed in that abandonment's report, by the
+    // first one that covers it; only the expectations no abandonment covers are reported as unused.
+    // Only entries for keys the abandoned case holds are covered, not those of other cases sharing its
+    // origin.
+    let mut abandonments: Vec<(Abandonment, &Case, Option<u8>)> = Vec::new();
+    for (index, fault) in collected.faults.iter().enumerate() {
+        if let Some(case) = fault_case(corpus, fault) {
+            abandonments.push((Abandonment::Fault(index), case, None));
+        }
+    }
+    for (index, result) in collected.results.iter().enumerate() {
+        if matches!(result.mismatch, Some(Mismatch { adp: Adp::Panic(_) })) {
+            if let Some(case) = corpus.case(&result.case) {
+                abandonments.push((Abandonment::Panic(index), case, Some(result.key.tier.family())));
+            }
+        }
+    }
+    let ran: BTreeSet<&CheckKey> = collected.results.iter().map(|r| &r.key).collect();
+    let mut unused: Vec<&Expectation> = Vec::new();
+    let mut did_not_run: BTreeMap<Abandonment, Vec<&Expectation>> = BTreeMap::new();
+    for (check, entries) in &by_check {
+        if ran.contains(check) || !cases_of_origin.contains_key(check.origin.as_str()) {
+            continue;
+        }
+        let covering = abandonments.iter().find(|(_, case, family)| {
+            case.check_origin() == check.origin
+                && family.is_none_or(|family| family == check.tier.family())
+                && case_holds_key(case, &check.key)
+        });
+        match covering {
+            Some((abandonment, _, _)) => did_not_run.entry(*abandonment).or_default().push(entries[0]),
+            None => unused.push(entries[0]),
+        }
+    }
+    // Empty for an abandonment that covers no expectation.
+    let unrun_listing = |abandonment: Abandonment| {
+        did_not_run
+            .get(&abandonment)
+            .map_or_else(String::new, |expectations| unrun(expectations))
+    };
+
+    for (index, fault) in collected.faults.iter().enumerate() {
+        let listing = unrun_listing(Abandonment::Fault(index));
+        match fault_case(corpus, fault) {
+            Some(case) => {
+                let key = CheckKey {
+                    origin: case.name.clone(),
+                    tier: Tier::Leaf,
+                    at: String::new(),
+                    getter: String::new(),
+                    key: String::new(),
+                };
+                acc.problem(
+                    true,
+                    key,
+                    format!(
+                        "CASE ABANDONED (the remaining cases still ran): {fault}\n\nCase: {}\nInput file: {}\nInput: {}{listing}",
+                        case.name,
+                        input_location(case),
+                        original_input(case)
+                    ),
+                    [case.name.clone()],
+                );
+            }
+            None => {
+                let key = CheckKey {
+                    origin: fault.clone(),
+                    tier: Tier::Leaf,
+                    at: String::new(),
+                    getter: String::new(),
+                    key: String::new(),
+                };
+                acc.problem(true, key, format!("CASE ABANDONED: {fault}"), Vec::new())
+            }
+        }
+    }
+
     let mut seen: BTreeMap<&CheckKey, &CheckResult> = BTreeMap::new();
-    for result in &collected.results {
+    for (index, result) in collected.results.iter().enumerate() {
+        // Empty unless this result is a panic whose abandonment covers an expectation.
+        let listing = unrun_listing(Abandonment::Panic(index));
         if let Some(first) = seen.insert(&result.key, result) {
             acc.problem(
                 false,
                 result.key.clone(),
                 format!(
-                    "AMBIGUOUS CHECK: two replay results share one identity.\n\nCases: {} and {}\nCheck: {}\n\nA check must have one identity; the judge cannot tell which result an expectation applies to.",
+                    "AMBIGUOUS CHECK: two replay results share one identity.\n\nCases: {} and {}\nCheck: {}\n\nA check must have one identity; the judge cannot tell which result an expectation applies to.{listing}",
                     first.case, result.case, result.key
                 ),
                 [first.case.clone(), result.case.clone()],
@@ -1046,7 +1122,7 @@ pub(crate) fn judge(corpus: &Corpus, collected: &Collected, table: &[Expectation
                     false,
                     result.key.clone(),
                     format!(
-                        "{context}\n\nUNEXPECTED RESULT: ADP did not meet this check's expectation.\n\nExpected ADP: {}\nActual ADP: {}\nRecorded Agent: {}\n\nDecide whether ADP is wrong (add a known-bug entry) or deliberately different (add an intentional entry).\nExpectation: add one in corpus_replay/expected.rs; the failing assertion is at {assertion}.",
+                        "{context}\n\nUNEXPECTED RESULT: ADP did not meet this check's expectation.\n\nExpected ADP: {}\nActual ADP: {}\nRecorded Agent: {}\n\nDecide whether ADP is wrong (add a known-bug entry) or deliberately different (add an intentional entry).\nExpectation: add one in corpus_replay/expected.rs; the failing assertion is at {assertion}.{listing}",
                         result.agent, m.adp, recorded
                     ),
                     [result.case.clone()],
@@ -1063,7 +1139,7 @@ pub(crate) fn judge(corpus: &Corpus, collected: &Collected, table: &[Expectation
                     false,
                     result.key.clone(),
                     format!(
-                        "{context}\n\nCHANGED RESULT ({:?}): the expectation no longer describes ADP.\n\nExpected current ADP: {}\nDesired (recorded Agent): {}\nActual ADP: {}\n\nCause: {}{never}\nExpectation: {}",
+                        "{context}\n\nCHANGED RESULT ({:?}): the expectation no longer describes ADP.\n\nExpected current ADP: {}\nDesired (recorded Agent): {}\nActual ADP: {}\n\nCause: {}{never}\nExpectation: {}{listing}",
                         e.status, e.adp, result.agent, m.adp, e.cause, e.at
                     ),
                     [result.case.clone()],
@@ -1072,39 +1148,13 @@ pub(crate) fn judge(corpus: &Corpus, collected: &Collected, table: &[Expectation
         }
     }
 
-    // A recorded panic or case fault abandoned the checks the case had left, so an entry for one of
-    // them is not evidence that it stopped running. Only entries for keys the abandoned case holds
-    // are covered, not those of other cases sharing its origin; the panic or fault itself already fails.
-    let mut abandoned: Vec<(&Case, Option<u8>)> = Vec::new();
-    for fault in &collected.faults {
-        abandoned.extend(fault_case(corpus, fault).map(|case| (case, None)));
-    }
-    for result in &collected.results {
-        if matches!(result.mismatch, Some(Mismatch { adp: Adp::Panic(_) })) {
-            abandoned.extend(
-                corpus
-                    .case(&result.case)
-                    .map(|case| (case, Some(result.key.tier.family()))),
-            );
-        }
-    }
-    let is_abandoned = |check: &CheckKey| {
-        abandoned.iter().any(|(case, family)| {
-            case.check_origin() == check.origin
-                && family.is_none_or(|family| family == check.tier.family())
-                && case_holds_key(case, &check.key)
-        })
-    };
-
-    // An entry whose check never ran. A comparison that was never performed is not an improvement.
-    for (check, entries) in &by_check {
-        if seen.contains_key(check) || !cases_of_origin.contains_key(check.origin.as_str()) || is_abandoned(check) {
-            continue;
-        }
-        let e = entries[0];
+    // An entry whose check never ran and that no abandonment covers. A comparison that was never
+    // performed is not an improvement.
+    for e in unused {
+        let check = &e.check;
         acc.problem(
             false,
-            (*check).clone(),
+            check.clone(),
             format!(
                 "UNUSED EXPECTATION: no replay produced a check with this identity.\n\nCases: {}\nCheck: {}\nExpected ADP: {}\nCause: {}\n\nThe check may have stopped running: a removed key, a different checkpoint, getter or key, or a deserialization that blocks its translation. Remove this expectation, or fix the check it names.\nExpectation: {}",
                 origin_summary(&cases_of_origin, &check.origin),
@@ -1155,6 +1205,123 @@ mod tests {
         }
         if let Some(message) = judge(corpus, &collected, &table).message() {
             panic!("{message}");
+        }
+    }
+
+    /// A started case that records at least one key, and its first key.
+    fn case_and_key() -> (&'static Case, &'static str) {
+        corpus()
+            .cases
+            .iter()
+            .find_map(|case| match &case.outcome {
+                Outcome::Started(started) => started.keys.first().map(|line| (case, line.key.as_str())),
+                Outcome::StartupError(_) => None,
+            })
+            .expect("the corpus has a started case with a key line")
+    }
+
+    /// A known-bug expectation for `key` of `case` in `tier`, written at the caller.
+    #[track_caller]
+    fn pinned(case: &'static Case, tier: Tier, getter: &'static str, key: &'static str) -> Expectation {
+        known_bug(Entry {
+            origin: case.check_origin(),
+            tier,
+            at: "snapshot",
+            getter,
+            key,
+            adp: Adp::error("pinned rejection"),
+            cause: Cause {
+                name: "judge test",
+                why: "a check that did not run",
+                issue: Some(1),
+            },
+        })
+    }
+
+    /// Returns the problems whose text names `expectation`'s check.
+    fn naming<'a>(judgement: &'a Judgement, expectation: &Expectation) -> Vec<&'a String> {
+        let check = expectation.check.to_string();
+        judgement.problems.iter().filter(|p| p.contains(&check)).collect()
+    }
+
+    /// Asserts that `problem` lists `expectation` as one whose check did not run, with its identity,
+    /// expected ADP result and location.
+    #[track_caller]
+    fn assert_lists_unrun(problem: &str, expectation: &Expectation) {
+        assert!(problem.contains("whose checks did not run"), "{problem}");
+        let entry = format!(
+            "- Check: {}\n  Expected ADP ({:?}): {}\n  Expectation: {}",
+            expectation.check, expectation.status, expectation.adp, expectation.at
+        );
+        assert!(problem.contains(&entry), "{problem}\n\nlacks:\n{entry}");
+    }
+
+    /// A panic fails, and its report lists each expectation of its tiers whose check did not run for
+    /// a key its case holds. An expectation outside those tiers is reported as unused instead, and
+    /// neither is reported twice.
+    #[test]
+    fn a_panic_report_lists_the_expectations_of_its_tiers_that_did_not_run() {
+        let (case, key) = case_and_key();
+        let panic = CheckResult {
+            key: CheckKey {
+                origin: case.check_origin().into(),
+                tier: Tier::Translate,
+                at: "snapshot".into(),
+                getter: "-".into(),
+                key: "<panic>".into(),
+            },
+            case: case.name.clone(),
+            streamed: "<absent>".into(),
+            agent: ACCEPTED.into(),
+            mismatch: Some(Mismatch {
+                adp: Adp::Panic("translate: boom".into()),
+            }),
+        };
+        let collected = Collected {
+            results: vec![panic],
+            faults: Vec::new(),
+        };
+        let table = [
+            pinned(case, Tier::Validate, "-", key),
+            pinned(case, Tier::Leaf, "GetString", key),
+        ];
+        let (unrun, other) = (&table[0], &table[1]);
+
+        let judgement = judge(corpus(), &collected, &table);
+        assert!(judgement.message().is_some(), "a panic always fails");
+        assert_eq!(judgement.problems.len(), 2, "{:#?}", judgement.problems);
+
+        let listed = naming(&judgement, unrun);
+        assert_eq!(listed.len(), 1, "{listed:#?}");
+        assert!(listed[0].contains("PANIC translate: boom"), "{}", listed[0]);
+        assert_lists_unrun(listed[0], unrun);
+
+        let unused = naming(&judgement, other);
+        assert_eq!(unused.len(), 1, "{unused:#?}");
+        assert!(unused[0].starts_with("UNUSED EXPECTATION"), "{}", unused[0]);
+    }
+
+    /// A case fault fails, and its report lists every expectation for a key its case holds whose check
+    /// did not run, in any tier, instead of reporting them as unused.
+    #[test]
+    fn a_case_fault_report_lists_the_expectations_that_did_not_run() {
+        let (case, key) = case_and_key();
+        let collected = Collected {
+            results: Vec::new(),
+            faults: vec![format!("case {:?}: the stream cannot be built", case.name)],
+        };
+        let table = [
+            pinned(case, Tier::Leaf, "GetString", key),
+            pinned(case, Tier::Translate, "-", key),
+        ];
+
+        let judgement = judge(corpus(), &collected, &table);
+        assert!(judgement.message().is_some(), "a case fault always fails");
+        assert_eq!(judgement.problems.len(), 1, "{:#?}", judgement.problems);
+        let report = &judgement.problems[0];
+        assert!(report.starts_with("CASE ABANDONED"), "{report}");
+        for expectation in &table {
+            assert_lists_unrun(report, expectation);
         }
     }
 
