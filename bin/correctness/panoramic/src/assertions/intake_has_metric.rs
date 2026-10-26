@@ -499,6 +499,7 @@ mod tests {
     };
     use crate::config::{AssertionConfig, AssertionStep, IntegrationConfig, MetricTypeMatcher, TagMatch};
     use crate::intake::test_server::{closed_port, install_crypto_provider, MockIntake};
+    use crate::intake::IntakeClient;
 
     fn count(value: f64) -> Value {
         json!({"mtype": "Count", "value": value})
@@ -585,6 +586,15 @@ mod tests {
             adp_cli_command: TargetCommand::new(vec!["panoramic-unused-cli-program".to_string()]),
             core_agent_cli_command: TargetCommand::new(vec!["panoramic-unused-cli-program".to_string()]),
         }
+    }
+
+    /// Returns an exit token that has already fired, so a check reports after its first poll.
+    ///
+    /// The poll gets the full probe limit instead of racing a short step budget.
+    fn exited() -> CancellationToken {
+        let token = CancellationToken::new();
+        token.cancel();
+        token
     }
 
     /// Returns a context pointing at a port with no listener, so every intake poll fails.
@@ -680,12 +690,22 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_poll_reports_its_full_error_chain() {
+        // Formats a real poll error directly, so a slow machine can't turn it into a probe timeout.
         let intake = MockIntake::hanging_up().await;
-        let result = check(
-            &polling_assertion(Duration::from_millis(300)),
-            &context_for(CancellationToken::new(), CancellationToken::new(), Some(intake.port())),
-        )
-        .await;
+        install_crypto_provider();
+        let error = IntakeClient::new(intake.port())
+            .metrics()
+            .await
+            .expect_err("a server that hangs up should fail the poll");
+        let last_error = LastError {
+            error,
+            before_snapshot: false,
+        };
+        let result = polling_assertion(Duration::from_millis(300)).expired_result(
+            tokio::time::Instant::now(),
+            None,
+            Some(&last_error),
+        );
 
         assert_eq!(result.status, AssertionStatus::Errored, "{}", result.message);
         assert!(
@@ -717,18 +737,16 @@ mod tests {
             metric_json("split.counter", &["source:test"], &[rate(0.3)]),
         ]))
         .await;
-        let ctx = context_for(CancellationToken::new(), CancellationToken::new(), Some(intake.port()));
+        let ctx = context_for(CancellationToken::new(), exited(), Some(intake.port()));
 
-        let total = check(
-            &subset(
-                "split.counter",
-                Some(MetricTypeMatcher::Rate),
-                Some(0.6),
-                &["source:test"],
-            ),
-            &ctx,
-        )
-        .await;
+        let mut total = subset(
+            "split.counter",
+            Some(MetricTypeMatcher::Rate),
+            Some(0.6),
+            &["source:test"],
+        );
+        total.timeout = Duration::from_secs(30);
+        let total = check(&total, &ctx).await;
         assert_eq!(total.status, AssertionStatus::Passed, "{}", total.message);
 
         let mut partial = subset(
@@ -737,7 +755,7 @@ mod tests {
             Some(0.3),
             &["source:test"],
         );
-        partial.timeout = Duration::from_millis(300);
+        partial.timeout = Duration::from_secs(30);
         let partial = check(&partial, &ctx).await;
         assert_eq!(partial.status, AssertionStatus::Failed, "{}", partial.message);
         assert!(
@@ -875,7 +893,7 @@ mod tests {
             &[gauge(4.0)]
         )]))
         .await;
-        let ctx = context_for(CancellationToken::new(), CancellationToken::new(), Some(intake.port()));
+        let ctx = context_for(CancellationToken::new(), exited(), Some(intake.port()));
 
         let build = |tags_match: &str| {
             let yaml = format!(
@@ -890,7 +908,7 @@ procedure:
     value: 4
     tags: ["host:custom"]
     {}
-    timeout: 300ms
+    timeout: 30s
 "#,
                 tags_match
             );

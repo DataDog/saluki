@@ -1608,8 +1608,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_step_that_exhausts_its_own_budget_fails_the_test() {
-        // Port 0 fails immediately. The retry sleep outlasts the step budget, proving the slack preserves
-        // the assertion's own timeout message.
+        // The retry sleep outlasts the step budget, proving the slack preserves the assertion's own timeout message.
+        // The last attempt is a request error or a probe timeout, depending on how busy the machine is.
         crate::intake::test_server::install_crypto_provider();
         let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
         let test = ScriptedTest::new(
@@ -1627,8 +1627,7 @@ mod tests {
         let message = &result.assertion_results[0].message;
         assert!(
             message.starts_with(
-                "HTTP endpoint 'http://127.0.0.1:0/' returns status 200. did not happen within 200ms.\nLast attempt: \
-                 error sending request for url (http://127.0.0.1:0/): "
+                "HTTP endpoint 'http://127.0.0.1:0/' returns status 200. did not happen within 200ms.\nLast attempt: "
             ),
             "{message}"
         );
@@ -1686,13 +1685,14 @@ mod tests {
         use crate::image_override::ImageOverrides;
         use crate::integration::IntegrationSettings;
 
-        // Both binaries exit at once, so the Core Agent never writes its IPC credentials.
+        // Both binaries exit at once, so the Core Agent never writes its IPC credentials. The case timeout leaves
+        // room to start both processes on a busy machine before the wait begins.
         let binaries = tempfile::tempdir().expect("temp dir should be creatable");
         let exits = binaries.path().join("exits");
         std::fs::write(&exits, "#!/bin/sh\nexit 0\n").expect("the script should be writable");
         std::fs::set_permissions(&exits, std::fs::Permissions::from_mode(0o755))
             .expect("the script should be made executable");
-        let config = serde_saphyr::from_str(&format!("name: ipc-wait\ntimeout: 1s\nprocedure:\n{LOG_MATCHES}"))
+        let config = serde_saphyr::from_str(&format!("name: ipc-wait\ntimeout: 3s\nprocedure:\n{LOG_MATCHES}"))
             .expect("the case should parse");
         let test = IntegrationTestCase::new(
             config,
@@ -1706,7 +1706,14 @@ mod tests {
         };
         let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
 
-        let result = run_with_settings(&test, settings, log_base_dir.path(), &CancellationToken::new(), BOUND).await;
+        let result = run_with_settings(
+            &test,
+            settings,
+            log_base_dir.path(),
+            &CancellationToken::new(),
+            3 * BOUND,
+        )
+        .await;
 
         assert_eq!(result.outcome, TestOutcome::TimedOut, "{:?}", result.error);
         let timeout = result

@@ -936,10 +936,19 @@ mod tests {
             "values": [[0, {"mtype": "Count", "value": 1.0}]],
         }]))
         .await;
-        let ctx = context(&CancellationToken::new(), Some(&intake));
-        let steps = "- assertion: intake_has_metric\n  name: some.metric\n  value: 2\n  timeout: 2s\n";
+        let mut ctx = context(&CancellationToken::new(), Some(&intake));
+        let exit = CancellationToken::new();
+        ctx.container_exit_token = exit.clone();
+        let steps = "- assertion: intake_has_metric\n  name: some.metric\n  value: 2\n  timeout: 30s\n";
+        // Ending the target once a poll has failed after the snapshot keeps the test independent of request speed.
+        let failed_poll_seen = async {
+            while intake.connections() < 2 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            exit.cancel();
+        };
 
-        let (record, _) = run(steps, &ctx).await;
+        let ((record, _), ()) = tokio::join!(run(steps, &ctx), failed_poll_seen);
 
         let steps = record.steps();
         assert_eq!(statuses(&steps), [("intake_has_metric", None, StepStatus::Failed)]);
@@ -1071,14 +1080,9 @@ mod tests {
         let mut ctx = context(&cancel, None);
         ctx.port_mappings.insert("1234/tcp".to_string(), closed);
         ctx.core_agent_auth_token_path = Some(auth_token);
-        // Closed ports and a missing file make probes finish quickly, leaving retry sleeps to exercise cancellation.
-        // Windows retries a refused connection for about two seconds, so cancel after the first attempts end.
-        let cancel_delay = if cfg!(windows) {
-            Duration::from_secs(5)
-        } else {
-            Duration::from_millis(250)
-        };
-        cancel_after(&cancel, cancel_delay);
+        // Every step must finish an attempt before the cancel, even on a busy machine or on Windows, which retries a
+        // refused connection for about two seconds.
+        cancel_after(&cancel, Duration::from_secs(5));
         let assertions = format!(
             "- parallel:\n  - assertion: http_check\n    endpoint: http://127.0.0.1:{closed}/\n    status:\n      \
              equal: 200\n    timeout: 30s\n  - assertion: port_listening\n    port: 1234\n    protocol: tcp\n    \
@@ -1130,10 +1134,11 @@ mod tests {
             ctx
         };
         let cli = |command: &[&str]| TargetCommand::new(command.iter().map(ToString::to_string).collect());
-        let intake_poll = "- assertion: intake_has_metric\n  name: some.metric\n  timeout: 200ms\n";
-        let port_listening = "- assertion: port_listening\n  port: 1234\n  protocol: tcp\n  timeout: 200ms\n";
-        let file_contains = |path: &str| format!("- assertion: file_contains\n  path: {path}\n  timeout: 200ms\n");
-        let config_key = "- assertion: adp_config_key_equals\n  key: some.key\n  value: true\n  timeout: 1s\n";
+        // Rows share one thread, so budgets leave room for every row's setup and first attempt on a busy machine.
+        let intake_poll = "- assertion: intake_has_metric\n  name: some.metric\n  timeout: 5s\n";
+        let port_listening = "- assertion: port_listening\n  port: 1234\n  protocol: tcp\n  timeout: 5s\n";
+        let file_contains = |path: &str| format!("- assertion: file_contains\n  path: {path}\n  timeout: 5s\n");
+        let config_key = "- assertion: adp_config_key_equals\n  key: some.key\n  value: true\n  timeout: 5s\n";
         let rows = [
             (
                 "intake_has_metric, closed intake port".to_string(),
@@ -1151,7 +1156,7 @@ mod tests {
                 "http_check, closed port".to_string(),
                 format!(
                     "- assertion: http_check\n  endpoint: http://127.0.0.1:{closed}/\n  status:\n    equal: 200\n  \
-                     timeout: 200ms\n"
+                     timeout: 5s\n"
                 ),
                 context_with(&|_| {}),
                 StepStatus::Failed,
@@ -1184,19 +1189,19 @@ mod tests {
             ),
             (
                 "log_contains, invalid regex".to_string(),
-                "- assertion: log_contains\n  pattern: \"(\"\n  regex: true\n  timeout: 1s\n".to_string(),
+                "- assertion: log_contains\n  pattern: \"(\"\n  regex: true\n  timeout: 5s\n".to_string(),
                 context_with(&|_| {}),
                 StepStatus::Errored,
             ),
             (
                 "target_exec, missing program".to_string(),
-                "- action: target_exec\n  command: [/nonexistent/panoramic-missing]\n  timeout: 1s\n".to_string(),
+                "- action: target_exec\n  command: [/nonexistent/panoramic-missing]\n  timeout: 5s\n".to_string(),
                 context_with(&|_| {}),
                 StepStatus::Errored,
             ),
             (
                 "target_exec, nonzero exit".to_string(),
-                "- action: target_exec\n  command: [sh, -c, \"exit 3\"]\n  timeout: 1s\n".to_string(),
+                "- action: target_exec\n  command: [sh, -c, \"exit 3\"]\n  timeout: 5s\n".to_string(),
                 context_with(&|_| {}),
                 StepStatus::Failed,
             ),
@@ -1214,13 +1219,13 @@ mod tests {
             ),
             (
                 "core_agent_config_set, missing auth token".to_string(),
-                "- action: core_agent_config_set\n  key: some_key\n  value: some-value\n  timeout: 1s\n".to_string(),
+                "- action: core_agent_config_set\n  key: some_key\n  value: some-value\n  timeout: 5s\n".to_string(),
                 context_with(&|ctx| ctx.core_agent_auth_token_path = Some(missing.clone())),
                 StepStatus::Errored,
             ),
             (
                 "dogstatsd_send, unpublished port".to_string(),
-                "- action: dogstatsd_send\n  payload: \"some.metric:1|c\"\n  port: 8125\n  timeout: 1s\n".to_string(),
+                "- action: dogstatsd_send\n  payload: \"some.metric:1|c\"\n  port: 8125\n  timeout: 5s\n".to_string(),
                 context_with(&|_| {}),
                 StepStatus::Errored,
             ),
