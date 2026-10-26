@@ -8,7 +8,7 @@ use std::{
 
 use bytes::BufMut;
 use tokio::net::{UnixDatagram, UnixStream};
-use tracing::trace;
+use tracing::{debug, trace};
 
 #[cfg(target_os = "linux")]
 mod ancillary;
@@ -91,7 +91,10 @@ pub(crate) fn unix_peer_identity(socket: &UnixStream) -> ProcessIdentity {
             Some(pid) => process_identity_from_credentials(pid, creds.uid(), creds.gid()),
             None => ProcessIdentity::Error(ProcessCredentialsError::UnsupportedPlatform),
         },
-        Err(_) => ProcessIdentity::Error(ProcessCredentialsError::InvalidCredentials),
+        Err(e) => {
+            debug!(error = %e, "Failed to look up peer credentials for Unix domain socket connection.");
+            ProcessIdentity::Error(ProcessCredentialsError::PeerLookupFailed)
+        }
     }
 }
 

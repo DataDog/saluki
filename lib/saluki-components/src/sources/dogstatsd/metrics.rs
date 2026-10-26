@@ -261,7 +261,7 @@ impl Metrics {
         match error {
             ProcessCredentialsError::InvalidCredentials => Some(&self.origin_detection_invalid_credentials_errors),
             ProcessCredentialsError::ZeroPid => Some(&self.origin_detection_zero_pid_errors),
-            ProcessCredentialsError::UnsupportedPlatform => None,
+            ProcessCredentialsError::UnsupportedPlatform | ProcessCredentialsError::PeerLookupFailed => None,
         }
     }
 
