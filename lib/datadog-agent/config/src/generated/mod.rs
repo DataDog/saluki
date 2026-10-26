@@ -15,7 +15,9 @@ pub(crate) mod env_keys;
 
 /// Table of every supported key's dotted name, serde aliases, and a borrowing accessor into
 /// `DatadogConfiguration`.
-pub mod leaves;
+pub mod leaves {
+    include!(concat!(env!("OUT_DIR"), "/leaves.rs"));
+}
 
 /// Witness trait and fallible driver over the supported Datadog configuration keys.
 pub mod witness;
