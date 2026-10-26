@@ -115,7 +115,9 @@ A result whose shape disagrees with its getter is a failing corpus check.
 - `ReadConfigSection` returns only the leaves a user configured. agent-data-plane reads the OTLP
   receiver leaves one by one through typed readers that fill schema defaults
   (`datadog_translator.rs`), so no single leaf holds what the section map holds. Comparing the
-  section needs the source tree's provenance, which is not part of a `LeafValue`.
+  section needs the source tree's provenance, which is not part of a `LeafValue`. Some supported
+  receiver leaves, such as the gRPC keepalive and TLS file settings, are not keys of the baseline
+  case, so no case compares them with a leaf.
 - `IsConfigured` is a property of the key's sources, not of its value. agent-data-plane keeps it
   as provenance in its source tree, not in the typed leaf.
 

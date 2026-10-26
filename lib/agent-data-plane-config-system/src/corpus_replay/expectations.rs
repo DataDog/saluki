@@ -7,6 +7,11 @@
 //! that is expected today. Each entry is used exactly once: a check with no entry fails, an entry
 //! with no check (or two entries for one check) fails, and so does an entry whose result changed.
 //!
+//! The corpus alone decides which checks exist; ADP's current support decides only their results.
+//! The leaf and bootstrap tiers check the key lines whose key is in the recorded surface, the key
+//! set of the baseline case (`Corpus::surface`). The deserialize, translate and validate tiers check
+//! every operation the case records, whether or not ADP models its key.
+//!
 //! A check only exists where a comparison was actually performed. A recorded read whose getter no
 //! leaf kind stands for, an explicit-only read, a read of another getter than the one compared, or
 //! a read of a leaf whose type has no comparison rule produces no check at all: an expectation that
@@ -14,14 +19,14 @@
 //! getter is a corpus fault and always fails.
 //!
 //! The deserialize, translate and validate tiers check every operation of a replayed stream (an
-//! update's setting, or each setting a snapshot carries) at each stage that actually ran, and
-//! record successes too: a key that passes gets a check that passes, so an expectation pinning a
-//! rejection becomes "this check now passes" the moment the rejection is fixed, while a removed key
-//! or a check that never runs again stays "no check has this identity." A stage that did not run
-//! because an earlier one failed yields no check and is never inferred to have succeeded. Validation
-//! is compared with the contract in `expected_validation`, which is stated from the streamed
-//! `api_key`, not read back from the validator. Two results that share one identity are an ambiguous
-//! check and fail; none is merged away.
+//! update's setting, or each setting a snapshot carries), under the key the case recorded, at each
+//! stage that actually ran, and record successes too: a key that passes gets a check that passes,
+//! so an expectation pinning a rejection becomes "this check now passes" the moment the rejection
+//! is fixed, while a removed key or a check that never runs again stays "no check has this
+//! identity." A stage that did not run because an earlier one failed yields no check and is never
+//! inferred to have succeeded. Validation is compared with the contract in `expected_validation`,
+//! which is stated from the streamed `api_key`, not read back from the validator. Two results that
+//! share one identity are an ambiguous check and fail; none is merged away.
 //!
 //! A recorded panic or case fault abandons the checks its case had left, so an unused expectation for
 //! a key that case holds is not reported (the panic or fault itself always fails).
@@ -41,7 +46,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Write as _};
 use std::panic::Location;
 
-use datadog_agent_config::{Leaf, LEAVES};
 use datadog_agent_config_corpus::{Case, Corpus, Getter, GetterResult, GoFloat, GoValue, Outcome};
 use saluki_config::dynamic::ConfigUpdate;
 use serde_json::Value as JsonValue;
@@ -71,7 +75,7 @@ pub(crate) enum Tier {
     /// Whether the whole configuration still deserializes after a streamed update, by operation:
     /// the update's setting, or each setting a snapshot carries.
     Deserialize,
-    /// Whether a streamed update translates: each modeled setting it carries, against the Agent's
+    /// Whether a streamed update translates: each operation it carries, against the Agent's
     /// acceptance of the same update.
     Translate,
     /// The typed result of validating what an update translated to, by operation. The contract is
@@ -426,16 +430,6 @@ fn render_go_map(m: &BTreeMap<String, GoValue>) -> String {
     )
 }
 
-/// Every key a supported leaf can be streamed under: its dotted key and each alias, as a sibling
-/// of the key's last segment.
-fn leaf_keys(leaf: &Leaf) -> impl Iterator<Item = String> + '_ {
-    let parent = leaf.key.rsplit_once('.').map(|(parent, _)| parent);
-    std::iter::once(leaf.key.to_string()).chain(leaf.aliases.iter().map(move |alias| match parent {
-        Some(parent) => format!("{parent}.{alias}"),
-        None => (*alias).to_string(),
-    }))
-}
-
 /// Runs every tier over the corpus and returns one [`CheckResult`] per performed comparison, plus
 /// every successful translation of the translate tier.
 pub(crate) fn collect(corpus: &Corpus) -> Collected {
@@ -443,7 +437,14 @@ pub(crate) fn collect(corpus: &Corpus) -> Collected {
     let case_of = |name: &str| corpus.case(name).expect("replay rows name corpus cases");
     let streamed = |v: &Option<serde_json::Value>| v.as_ref().map_or("<absent>".to_string(), ToString::to_string);
 
-    let (rows, faults) = corpus_rows(corpus);
+    // The value tiers compare only the keys of the recorded surface.
+    let surface = corpus.surface().unwrap_or_else(|| {
+        out.faults
+            .push("the baseline case did not start, so the corpus records no surface to compare".into());
+        BTreeSet::new()
+    });
+
+    let (rows, faults) = corpus_rows(corpus, &surface);
     out.faults.extend(faults);
     for row in rows {
         let (RowResult::Leaf(verdict), Some(getter)) = (&row.result, row.getter) else {
@@ -490,7 +491,7 @@ pub(crate) fn collect(corpus: &Corpus) -> Collected {
         });
     }
 
-    let bootstrap = corpus_bootstrap(corpus);
+    let bootstrap = corpus_bootstrap(corpus, &surface);
     for row in bootstrap.rows {
         let (RowResult::Leaf(verdict), Some(getter)) = (&row.result, row.getter) else {
             continue;
@@ -535,29 +536,12 @@ pub(crate) fn collect(corpus: &Corpus) -> Collected {
         });
     }
 
-    let canon = leaf_key_canons();
     for case in &corpus.cases {
         if matches!(case.outcome, Outcome::Started(_)) {
-            collect_translation(corpus, case, &canon, &mut out);
+            collect_translation(corpus, case, &mut out);
         }
     }
     out
-}
-
-/// Maps every key a supported leaf can be streamed under to the leaf's primary key, so a check
-/// keeps one identity whether the case streamed the key itself or one of its aliases.
-fn leaf_key_canons() -> BTreeMap<String, &'static str> {
-    let mut canon = BTreeMap::new();
-    // Primary keys first, so an alias spelled like another leaf's key never takes that key over.
-    for leaf in LEAVES {
-        canon.insert(leaf.key.to_string(), leaf.key);
-    }
-    for leaf in LEAVES {
-        for path in leaf_keys(leaf).skip(1) {
-            canon.entry(path).or_insert(leaf.key);
-        }
-    }
-    canon
 }
 
 /// The validation a step must get, stated from the streamed `api_key` alone and not from the
@@ -613,8 +597,7 @@ const ACCEPTED: &str = "the Agent accepted the update";
 ///   operation of a step whose translation ran passes, so fixing one of several errors is seen;
 /// - validation: the typed result against [`expected_validation`].
 fn step_checks(
-    step: &StepRecord, is_snapshot: bool, operations: &[String], supported: &BTreeSet<&str>,
-    canon: &BTreeMap<String, &'static str>, isolate: &mut dyn FnMut(&str) -> Option<Adp>,
+    step: &StepRecord, is_snapshot: bool, operations: &[String], isolate: &mut dyn FnMut(&str) -> Option<Adp>,
 ) -> Vec<StepCheck> {
     let mut checks = Vec::new();
     let mut add = |tier: Tier, key: &str, agent: &str, adp: Option<Adp>| {
@@ -665,14 +648,13 @@ fn step_checks(
     if let Some(failure) = failure.filter(|f| f.stage == Stage::Translate) {
         // One check per key: several errors on one key are joined, in recorded order.
         for (key, error) in &failure.translate_errors {
-            let key = canon.get(key).copied().unwrap_or(key);
             rejected.entry(key).or_default().push(error);
         }
     }
     for (key, errors) in &rejected {
         add(Tier::Translate, key, ACCEPTED, Some(Adp::Error(errors.join("\n"))));
     }
-    for operation in operations.iter().filter(|o| supported.contains(o.as_str())) {
+    for operation in operations {
         if !rejected.contains_key(operation.as_str()) {
             add(Tier::Translate, operation, ACCEPTED, None);
         }
@@ -699,7 +681,7 @@ fn step_checks(
 /// the keys the case itself records in its first snapshot: the baseline keys every case streams
 /// belong to the baseline case's own checks. Batched cases therefore never share a check identity,
 /// and when two results do, the judge fails them as ambiguous instead of merging them.
-fn collect_translation(corpus: &Corpus, case: &Case, canon: &BTreeMap<String, &'static str>, out: &mut Collected) {
+fn collect_translation(corpus: &Corpus, case: &Case, out: &mut Collected) {
     let own: BTreeSet<&str> = match &case.outcome {
         Outcome::Started(started) => started
             .keys
@@ -724,7 +706,6 @@ fn collect_translation(corpus: &Corpus, case: &Case, canon: &BTreeMap<String, &'
         }
     };
     let snapshot_tree = fold_case(corpus, &case.name).ok().map(|f| f.snapshot);
-    let supported: BTreeSet<&str> = canon.values().copied().collect();
     let mut isolator = Isolator::new();
     for (step, update) in steps.iter().zip(&updates) {
         let at = match &step.key {
@@ -739,17 +720,14 @@ fn collect_translation(corpus: &Corpus, case: &Case, canon: &BTreeMap<String, &'
                 .and_then(|tree| lookup(tree, key))
                 .map_or("<absent>".to_string(), ToString::to_string),
         };
-        // Record each operation under its key's primary spelling, so the check keeps one identity
-        // whether the case streamed the key itself or one of its aliases.
-        let primary = |key: &str| canon.get(key).map_or(key.to_string(), |k| (*k).to_string());
         let operations: BTreeSet<String> = match update {
             ConfigUpdate::Snapshot(settings) => settings
                 .iter()
                 .map(|s| s.key.as_str())
                 .filter(|k| own.contains(k))
-                .map(primary)
+                .map(str::to_string)
                 .collect(),
-            ConfigUpdate::Partial(setting) => std::iter::once(primary(&setting.key)).collect(),
+            ConfigUpdate::Partial(setting) => std::iter::once(setting.key.clone()).collect(),
         };
         let operations: Vec<String> = operations.into_iter().collect();
         let mut isolate = |key: &str| {
@@ -764,7 +742,7 @@ fn collect_translation(corpus: &Corpus, case: &Case, canon: &BTreeMap<String, &'
             }
         };
         let is_snapshot = matches!(update, ConfigUpdate::Snapshot(_));
-        for check in step_checks(step, is_snapshot, &operations, &supported, canon, &mut isolate) {
+        for check in step_checks(step, is_snapshot, &operations, &mut isolate) {
             out.results.push(CheckResult {
                 streamed: streamed_of(&check.key),
                 key: CheckKey {
@@ -826,17 +804,12 @@ fn fault_case<'a>(corpus: &'a Corpus, fault: &str) -> Option<&'a Case> {
     corpus.case(name.split('"').next()?)
 }
 
-/// Whether `case` records `key` (under any spelling) or `key` is a `<marker>` that any of its steps can
-/// yield.
-fn case_holds_key(case: &Case, key: &str, canon: &BTreeMap<String, &'static str>) -> bool {
+/// Whether `case` records `key` or `key` is a `<marker>` that any of its steps can yield.
+fn case_holds_key(case: &Case, key: &str) -> bool {
     let Outcome::Started(started) = &case.outcome else {
         return false;
     };
-    key.starts_with('<')
-        || started
-            .keys
-            .iter()
-            .any(|line| line.key == key || canon.get(&line.key).is_some_and(|primary| *primary == key))
+    key.starts_with('<') || started.keys.iter().any(|line| line.key == key)
 }
 
 /// The problems found, in a stable order, with the number of failed checks and distinct cases.
@@ -1102,7 +1075,6 @@ pub(crate) fn judge(corpus: &Corpus, collected: &Collected, table: &[Expectation
     // A recorded panic or case fault abandoned the checks the case had left, so an entry for one of
     // them is not evidence that it stopped running. Only entries for keys the abandoned case holds
     // are covered, not those of other cases sharing its origin; the panic or fault itself already fails.
-    let canon = leaf_key_canons();
     let mut abandoned: Vec<(&Case, Option<u8>)> = Vec::new();
     for fault in &collected.faults {
         abandoned.extend(fault_case(corpus, fault).map(|case| (case, None)));
@@ -1120,7 +1092,7 @@ pub(crate) fn judge(corpus: &Corpus, collected: &Collected, table: &[Expectation
         abandoned.iter().any(|(case, family)| {
             case.check_origin() == check.origin
                 && family.is_none_or(|family| family == check.tier.family())
-                && case_holds_key(case, &check.key, &canon)
+                && case_holds_key(case, &check.key)
         })
     };
 
@@ -1149,7 +1121,6 @@ pub(crate) fn judge(corpus: &Corpus, collected: &Collected, table: &[Expectation
 
 #[cfg(test)]
 mod tests {
-    use datadog_agent_config::LEAVES;
     use datadog_agent_config_corpus::Outcome;
     use saluki_config::dynamic::{ConfigSetting, ConfigUpdate};
     use serde_json::json;
@@ -1159,25 +1130,6 @@ mod tests {
     use super::super::driver::{Commit, Replay, Validation};
     use super::super::expected::expectations;
     use super::*;
-
-    /// Supported leaves that no started case compares with a getter today. Growing this list is a
-    /// coverage regression; a case that starts comparing one makes
-    /// [`every_supported_leaf_is_compared_by_a_real_comparison`] fail until it is removed.
-    // TODO: Compare receiver sections and provenance: https://github.com/DataDog/saluki/issues/2760.
-    const UNCOMPARED_LEAVES: &[&str] = &[
-        "otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_age",
-        "otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_age_grace",
-        "otlp_config.receiver.protocols.grpc.keepalive.server_parameters.time",
-        "otlp_config.receiver.protocols.grpc.keepalive.server_parameters.timeout",
-        "otlp_config.receiver.protocols.grpc.tls.ca_file",
-        "otlp_config.receiver.protocols.grpc.tls.cert_file",
-        "otlp_config.receiver.protocols.grpc.tls.key_file",
-        "otlp_config.receiver.protocols.http.cors.exposed_headers",
-        "otlp_config.receiver.protocols.http.cors.max_age",
-        "otlp_config.receiver.protocols.http.tls.ca_file",
-        "otlp_config.receiver.protocols.http.tls.cert_file",
-        "otlp_config.receiver.protocols.http.tls.key_file",
-    ];
 
     /// Replays the whole corpus and requires every check to match the Agent or its expectation.
     #[test]
@@ -1249,22 +1201,46 @@ mod tests {
         );
     }
 
-    /// Every supported leaf is compared (Match or Differs) by at least one case, except the listed ones.
+    /// The keys the baseline case recorded.
+    fn surface() -> BTreeSet<&'static str> {
+        corpus().surface().expect("the baseline case started")
+    }
+
+    /// Every key of the recorded surface is compared (Match or Differs) by at least one case. A key
+    /// ADP stops supporting, or whose type no rule compares, fails here.
     #[test]
-    fn every_supported_leaf_is_compared_by_a_real_comparison() {
-        let (rows, faults) = corpus_rows(corpus());
+    fn every_surface_key_is_compared_by_a_real_comparison() {
+        let surface = surface();
+        let (rows, faults) = corpus_rows(corpus(), &surface);
         assert!(faults.is_empty(), "{faults:#?}");
         let compared: BTreeSet<&str> = rows
             .iter()
             .filter(|row| matches!(row.result, RowResult::Leaf(Verdict::Match | Verdict::Differs { .. })))
-            .filter_map(|row| row.leaf)
+            .map(|row| row.key.as_str())
             .collect();
-        let uncompared: BTreeSet<&str> = LEAVES.iter().map(|l| l.key).filter(|k| !compared.contains(k)).collect();
-        let listed: BTreeSet<&str> = UNCOMPARED_LEAVES.iter().copied().collect();
-        assert_eq!(
-            uncompared, listed,
-            "leaves no case compares (left) versus UNCOMPARED_LEAVES (right)"
-        );
+        let uncompared: Vec<&str> = surface.iter().copied().filter(|k| !compared.contains(k)).collect();
+        assert!(uncompared.is_empty(), "surface keys no case compares: {uncompared:#?}");
+    }
+
+    /// Every leaf and bootstrap check is about a key of the recorded surface, so ADP's current
+    /// support cannot add a value check. The bootstrap `<boot>` check is exempt: it is about the
+    /// whole case, whose base failed to build, not about a key.
+    #[test]
+    fn per_key_checks_are_limited_to_the_surface() {
+        let surface = surface();
+        let collected = collect(corpus());
+        let mut checked = 0;
+        let outside: Vec<String> = collected
+            .results
+            .iter()
+            .filter(|r| matches!(r.key.tier, Tier::Leaf | Tier::Bootstrap))
+            .filter(|r| !(r.key.tier == Tier::Bootstrap && r.key.key == "<boot>"))
+            .inspect(|_| checked += 1)
+            .filter(|r| !surface.contains(r.key.key.as_str()))
+            .map(|r| r.key.to_string())
+            .collect();
+        assert!(checked > 0, "the corpus produces leaf and bootstrap checks");
+        assert!(outside.is_empty(), "checks outside the surface: {outside:#?}");
     }
 
     /// The emulation list decides every recorded (leaf kind, getter) pair of the corpus: a getter
@@ -1273,7 +1249,7 @@ mod tests {
     #[test]
     fn the_emulation_list_decides_every_recorded_getter_pair() {
         let corpus = corpus();
-        let (rows, _) = corpus_rows(corpus);
+        let (rows, _) = corpus_rows(corpus, &surface());
         let (derived, _) = corpus_derived_rows(corpus);
         let mut disagreements = Vec::new();
         for row in rows.iter().filter(|r| r.kind.is_some() && r.getter.is_some()) {
@@ -1383,10 +1359,8 @@ mod tests {
     fn checks_of(
         step: &StepRecord, is_snapshot: bool, operations: &[&str], isolate: &mut dyn FnMut(&str) -> Option<Adp>,
     ) -> Vec<(Tier, String, Option<Adp>)> {
-        let canon = leaf_key_canons();
-        let supported: BTreeSet<&str> = canon.values().copied().collect();
         let operations: Vec<String> = operations.iter().map(ToString::to_string).collect();
-        step_checks(step, is_snapshot, &operations, &supported, &canon, isolate)
+        step_checks(step, is_snapshot, &operations, isolate)
             .into_iter()
             .map(|c| (c.tier, c.key, c.adp))
             .collect()
@@ -1470,6 +1444,23 @@ mod tests {
             [Tier::Deserialize, Tier::Translate, Tier::Validate]
         );
         assert!(checks.iter().all(|c| c.2.is_none()), "{checks:?}");
+    }
+
+    /// An operation on a key the typed configuration does not model still gets a translate check,
+    /// which passes when the translator does not reject it.
+    #[test]
+    fn an_unmodeled_operation_gets_a_translate_check() {
+        // Not a schema key, so no support change can make it a leaf.
+        let key = "corpus_replay_test.unmodeled_key";
+        assert!(
+            Isolator::new().leaf_index(key).is_none(),
+            "{key} is not a supported leaf"
+        );
+        let mut replay = Replay::new(Commit::Translated);
+        replay.apply(&snapshot_of(&[("api_key", json!("k"))]));
+        let (step, _) = replay.apply(&set(key, json!(false)));
+        let checks = checks_of(&step, false, &[key], &mut no_isolation);
+        assert_eq!(only(&checks, Tier::Translate), [(key, None)], "{checks:?}");
     }
 
     /// A snapshot's whole-configuration error is attributed to the settings that reject in isolation,
