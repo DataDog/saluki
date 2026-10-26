@@ -9,7 +9,7 @@ use tokio::net::UnixDatagram;
 
 use super::ancillary::{ControlMessage, SocketCredentialsAncillaryData};
 use super::process_identity_from_credentials;
-use crate::net::addr::{ConnectionAddress, ProcessCredentialsError, ProcessIdentity};
+use crate::net::addr::{ConnectionAddress, ProcessCredentials, ProcessCredentialsError, ProcessIdentity};
 
 /// Enables the `SO_PASSCRED` option on the given socket.
 ///
