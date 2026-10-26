@@ -1283,31 +1283,24 @@ mod tests {
         harness.shutdown().await;
     }
 
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn requests_over_unix_socket_carry_the_peer_process_credentials() {
-        let tempdir = tempfile::tempdir().expect("should create temp dir");
-        let socket_path = tempdir.path().join("http.sock");
-        let listen_address = ListenAddress::Unix(socket_path.clone());
-
-        // Answers with the peer process ID the server attached to the request.
-        let routes = Router::new().fallback(|ConnectInfo(addr): ConnectInfo<ConnectionAddress>| async move {
-            match addr.process_credentials() {
-                Some(creds) => creds.pid.to_string(),
-                None => format!("no credentials: {addr}"),
+    /// Builds a router that answers every request with the peer address the server attached to it.
+    fn peer_address_routes() -> Router {
+        Router::new().fallback(|ConnectInfo(addr): ConnectInfo<ConnectionAddress>| async move {
+            match addr {
+                ConnectionAddress::SocketLike(addr) => addr.to_string(),
+                ConnectionAddress::ProcessLike(identity) => match identity.credentials() {
+                    Some(creds) => creds.pid.to_string(),
+                    None => format!("no credentials: {}", ConnectionAddress::ProcessLike(identity)),
+                },
             }
-        });
-
-        let harness = ServerTestHarness::start("http-unix-peer-credentials", move |supervisor, server_id| {
-            let server = HttpServer::from_listen_address(listen_address)
-                .add_routes(routes)
-                .with_server_id(server_id);
-            supervisor.add_worker(server.into_supervisor());
         })
-        .await;
-        harness.bound_address().await;
+    }
 
-        let mut stream = connect_unix(&socket_path).await;
+    /// Sends a `GET /` request over `stream`, returning the response body.
+    async fn get_response_body<S>(mut stream: S) -> String
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
         stream
             .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
             .await
@@ -1318,9 +1311,102 @@ mod tests {
             .expect("response should arrive in time")
             .expect("should read response");
 
+        match response.split_once("\r\n\r\n") {
+            Some((_, body)) => body.to_string(),
+            None => panic!("response should have a body: {response:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn requests_over_tcp_carry_the_peer_socket_address() {
+        let harness = ServerTestHarness::start("http-tcp-peer-address", |supervisor, server_id| {
+            let server = HttpServer::from_listen_address(ListenAddress::tcp_loopback(0))
+                .add_routes(peer_address_routes())
+                .with_server_id(server_id);
+            supervisor.add_worker(server.into_supervisor());
+        })
+        .await;
+        let address = match harness.bound_address().await {
+            BoundListenAddress::Tcp(addr) => addr,
+            other_addr => panic!("expected TCP address, got {:?}", other_addr),
+        };
+
+        let stream = connect_tcp(address).await;
+        let client_address = stream.local_addr().expect("should have a local address");
+
+        assert_eq!(get_response_body(stream).await, client_address.to_string());
+
+        harness.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn requests_over_tls_carry_the_peer_socket_address() {
+        // The address is captured before the TLS handshake, which runs on a child of its own, so it has to be carried
+        // over to the connection.
+        let _ = saluki_tls::initialize_default_crypto_provider();
+        let cert = SelfSignedCert::localhost();
+        let cert_chain = cert.cert_chain();
+        let tls_config = server_tls_config(&cert);
+
+        let harness = ServerTestHarness::start("http-tls-peer-address", move |supervisor, server_id| {
+            let server = HttpServer::from_listen_address(ListenAddress::tcp_loopback(0))
+                .add_routes(peer_address_routes())
+                .with_tls_config(tls_config)
+                .with_server_id(server_id);
+            supervisor.add_worker(server.into_supervisor());
+        })
+        .await;
+        let address = match harness.bound_address().await {
+            BoundListenAddress::Tcp(addr) => addr,
+            other_addr => panic!("expected TCP address, got {:?}", other_addr),
+        };
+
+        let mut roots = rustls::RootCertStore::empty();
+        for cert in cert_chain {
+            roots.add(cert).expect("should trust the self-signed cert");
+        }
+        let mut client_config = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        client_config.alpn_protocols = vec![b"http/1.1".to_vec()];
+
+        let stream = connect_tcp(address).await;
+        let client_address = stream.local_addr().expect("should have a local address");
+        let server_name = rustls::pki_types::ServerName::try_from("localhost").expect("should be a valid server name");
+        let tls_stream = timeout(
+            TEST_TIMEOUT,
+            tokio_rustls::TlsConnector::from(Arc::new(client_config)).connect(server_name, stream),
+        )
+        .await
+        .expect("handshake should complete in time")
+        .expect("handshake should succeed");
+
+        assert_eq!(get_response_body(tls_stream).await, client_address.to_string());
+
+        harness.shutdown().await;
+    }
+
+    // Only on platforms where the peer PID of a Unix domain socket is available: elsewhere, the identity holds the
+    // `UnsupportedPlatform` reason instead.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn requests_over_unix_socket_carry_the_peer_process_credentials() {
+        let tempdir = tempfile::tempdir().expect("should create temp dir");
+        let socket_path = tempdir.path().join("http.sock");
+        let listen_address = ListenAddress::Unix(socket_path.clone());
+
+        let harness = ServerTestHarness::start("http-unix-peer-credentials", move |supervisor, server_id| {
+            let server = HttpServer::from_listen_address(listen_address)
+                .add_routes(peer_address_routes())
+                .with_server_id(server_id);
+            supervisor.add_worker(server.into_supervisor());
+        })
+        .await;
+        harness.bound_address().await;
+
         // This process is the one that connected.
-        let body = response.split("\r\n\r\n").nth(1).unwrap_or_default();
-        assert_eq!(body, std::process::id().to_string(), "unexpected response: {response}");
+        let stream = connect_unix(&socket_path).await;
+        assert_eq!(get_response_body(stream).await, std::process::id().to_string());
 
         harness.shutdown().await;
     }
