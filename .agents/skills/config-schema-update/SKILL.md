@@ -111,6 +111,8 @@ are the steps and what to look for.
    pass.
 5. Run the replay tests: `cargo nextest run --lib -p agent-data-plane-config-system
    corpus_replay`. A failing check is a difference between ADP and the recorded Agent result.
+   Keys that became supported since the last recording are now in the baseline case, so their
+   value checks run for the first time; triage their differences here.
    Expectations name checks by their stable origin, not by batch name or update position, so
    inserting an update of another key leaves existing identities unchanged. Updates of the same
    key are distinguished by their occurrence. Decide each difference:
