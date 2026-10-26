@@ -15,6 +15,9 @@ use crate::{
     target::TargetSender,
 };
 
+/// How long to wait for the target to be ready before applying the start delay.
+const TARGET_READY_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Load driver.
 ///
 /// This struct is the central point of the application, taking the provided configuration and generating the intended
@@ -74,6 +77,18 @@ impl Driver {
         let mut partial_sends = 0;
 
         let max_payloads = self.config.volume.get();
+
+        if self.config.start_delay_secs > 0 {
+            // The delay gives the target time to finish starting up, so it only counts from when the target is ready.
+            self.sender
+                .wait_until_ready(TARGET_READY_TIMEOUT)
+                .error_context("Target did not become ready before the start delay.")?;
+            info!(
+                "Target is ready. Waiting {} seconds before sending.",
+                self.config.start_delay_secs
+            );
+            std::thread::sleep(Duration::from_secs(self.config.start_delay_secs));
+        }
 
         // If we're trying to align to an aggregation bucket's start, figure out how long we need to wait and then add 1
         // second to that just to ensure we don't start sending until we're within the bucket window.
@@ -150,7 +165,7 @@ impl Driver {
             let facts = RunFacts {
                 seed: self.config.seed.iter().map(|b| format!("{:02x}", b)).collect(),
                 payload_kind: self.config.corpus.payload.name(),
-                target_kind: self.config.target.kind(),
+                target_kind: self.config.target_kind(),
                 send_delay_us: self.config.send_delay_us,
                 volume: max_payloads,
                 payloads_sent,
