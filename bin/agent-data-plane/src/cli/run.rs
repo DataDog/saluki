@@ -75,7 +75,7 @@ use crate::{
     dogstatsd_contexts::DogStatsDContextDumpAPIHandler,
     internal::{
         create_control_plane_supervisor, logging::get_logging_translator, AdpLocalConfig, AgentDataPlane,
-        DogStatsDControlSurface, TopologyControlSurfaces,
+        DogStatsDAPIWorker,
     },
     remote_config::{self, RemoteConfigSubscriptions},
 };
@@ -127,20 +127,19 @@ pub async fn handle_run_command(
         .error_context("Failed to set up Remote Configuration.")?;
 
     // Create the blueprint for our primary topology.
-    let (blueprint, control_surfaces) = create_topology(&agent, rc_subscriptions).await?;
+    let (blueprint, dogstatsd_api) = create_topology(&agent, rc_subscriptions).await?;
 
     // Create the control plane, and then run: the remote agent builds the rest of the supervisors, and runs memory
     // bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
-    let control_plane =
-        create_control_plane_supervisor(&agent, control_surfaces, bootstrap_guard.logging().controller())
-            .await
-            .error_context("Failed to create internal supervisor.")?;
+    let control_plane = create_control_plane_supervisor(&agent, dogstatsd_api, bootstrap_guard.logging().controller())
+        .await
+        .error_context("Failed to create internal supervisor.")?;
     agent.run(blueprint, control_plane).await
 }
 
 async fn create_topology(
     agent: &RemoteAgent<AgentDataPlane, Initialized>, rc_subscriptions: RemoteConfigSubscriptions,
-) -> Result<(TopologyBlueprint, TopologyControlSurfaces), GenericError> {
+) -> Result<(TopologyBlueprint, Option<DogStatsDAPIWorker>), GenericError> {
     let config_system = agent.config().system();
     let config = config_system.config();
     let dp = DataPlaneConfiguration::from_configuration(&config);
@@ -148,7 +147,6 @@ async fn create_topology(
     blueprint.with_shutdown_timeout(dp.stop_timeout());
     let shared = config.shared.clone();
 
-    let mut control_surfaces = TopologyControlSurfaces::default();
     let RemoteConfigSubscriptions {
         trace_sampling,
         semantic_registry,
@@ -247,10 +245,11 @@ async fn create_topology(
         add_checks_pipeline_to_blueprint(&mut blueprint, &config.domains.checks.ipc_endpoint, env_provider).await?;
     }
 
-    if dp.dogstatsd_enabled() {
-        let dsd_control_surface = add_dsd_pipeline_to_blueprint(&mut blueprint, config_system, env_provider).await?;
-        control_surfaces.attach_dogstatsd(dsd_control_surface);
-    }
+    let dogstatsd_api = if dp.dogstatsd_enabled() {
+        Some(add_dsd_pipeline_to_blueprint(&mut blueprint, config_system, env_provider).await?)
+    } else {
+        None
+    };
 
     if dp.otlp_enabled() {
         add_otlp_pipeline_to_blueprint(&mut blueprint, config_system, env_provider, semantic_registry).await?;
@@ -260,7 +259,7 @@ async fn create_topology(
         add_apm_pipeline_to_blueprint(&mut blueprint, config_system, env_provider).await?;
     }
 
-    Ok((blueprint, control_surfaces))
+    Ok((blueprint, dogstatsd_api))
 }
 
 const LIVENESS_METRICS_DESTINATION: &str = "metrics_enrich";
@@ -740,7 +739,7 @@ fn dogstatsd_source_configuration(
 async fn add_dsd_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
     env_provider: &RemoteAgentEnvironmentProvider,
-) -> Result<DogStatsDControlSurface, GenericError> {
+) -> Result<DogStatsDAPIWorker, GenericError> {
     // We're creating the "front half" of the DogStatsD pipeline, which deals solely with accepting DogStatsD payloads,
     // and enriching/processing them in DSD-specific ways, relevant to how the Datadog Agent is expected to behave.
     //
@@ -960,7 +959,7 @@ async fn add_dsd_pipeline_to_blueprint(
             .add_destination("dsd_debug_log_out", dsd_debug_log_config)?
             .connect_components("dsd_in.metrics", "dsd_debug_log_out")?;
     }
-    Ok(DogStatsDControlSurface {
+    Ok(DogStatsDAPIWorker {
         stats_api_handler,
         capture_api_handler,
         replay_api_handler,
