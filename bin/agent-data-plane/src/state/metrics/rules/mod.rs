@@ -1,7 +1,6 @@
 use saluki_core::observability::metrics::RemapperRule;
 
 mod aggregation;
-mod compat;
 mod dogstatsd;
 mod serializer;
 mod transaction;
@@ -17,9 +16,4 @@ pub fn get_datadog_agent_remappings() -> Vec<RemapperRule> {
     rules.extend(self::transaction::get_transaction_remappings());
     rules.extend(self::serializer::get_serializer_remappings());
     rules
-}
-
-/// Returns remapper rules that expose ADP telemetry under Core Agent `go_expvar`-compatible names.
-pub fn get_compat_remappings() -> Vec<RemapperRule> {
-    self::compat::get_compat_remappings()
 }

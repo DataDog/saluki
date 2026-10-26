@@ -13,48 +13,33 @@ use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_error::generic_error;
 use tokio::sync::Mutex;
 
-use super::{get_shared_metrics_state, AggregatedMetricsProcessor, Reflector, RemapperRule, TelemetryProcessor};
+use super::{get_shared_metrics_state, AggregatedMetricsProcessor, Reflector, TelemetryProcessor};
 use crate::runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture};
 
-/// State shared by the telemetry API routes.
+/// State shared by the telemetry API route.
 #[derive(Clone)]
 pub struct InternalTelemetryState {
     metrics: Reflector<AggregatedMetricsProcessor>,
-    raw: Arc<Mutex<TelemetryProcessor>>,
-    compat: Arc<Mutex<TelemetryProcessor>>,
+    processor: Arc<Mutex<TelemetryProcessor>>,
 }
 
-/// API handler that exposes the internal telemetry routes (`/metrics`, and optionally `/compat/metrics`) on the
-/// unprivileged endpoint.
+/// API handler that exposes `/metrics` on the unprivileged endpoint.
 pub struct InternalTelemetryAPIHandler {
     state: InternalTelemetryState,
-    compat_enabled: bool,
 }
 
 impl InternalTelemetryAPIHandler {
-    fn new(metrics: Reflector<AggregatedMetricsProcessor>, compat_remapper_rules: Option<Vec<RemapperRule>>) -> Self {
-        let compat_enabled = compat_remapper_rules.is_some();
-        let compat_remapper_rules = compat_remapper_rules.unwrap_or_default();
-
+    fn new(metrics: Reflector<AggregatedMetricsProcessor>) -> Self {
         Self {
             state: InternalTelemetryState {
                 metrics,
-                raw: Arc::new(Mutex::new(TelemetryProcessor::new())),
-                compat: Arc::new(Mutex::new(
-                    TelemetryProcessor::new().with_remapper_rules(compat_remapper_rules),
-                )),
+                processor: Arc::new(Mutex::new(TelemetryProcessor::new())),
             },
-            compat_enabled,
         }
     }
 
     async fn metrics_handler(State(state): State<InternalTelemetryState>) -> impl IntoResponse {
-        let mut processor = state.raw.lock().await;
-        processor.process(state.metrics.state())
-    }
-
-    async fn compat_metrics_handler(State(state): State<InternalTelemetryState>) -> impl IntoResponse {
-        let mut processor = state.compat.lock().await;
+        let mut processor = state.processor.lock().await;
         processor.process(state.metrics.state())
     }
 }
@@ -67,34 +52,14 @@ impl APIHandler for InternalTelemetryAPIHandler {
     }
 
     fn generate_routes(&self) -> Router<Self::State> {
-        let router = Router::new().route("/metrics", get(Self::metrics_handler));
-        if self.compat_enabled {
-            router.route("/compat/metrics", get(Self::compat_metrics_handler))
-        } else {
-            router
-        }
+        Router::new().route("/metrics", get(Self::metrics_handler))
     }
 }
 
 /// A worker that exposes the process's internal telemetry on the unprivileged API endpoint.
 ///
-/// Asserts these routes on the unprivileged endpoint:
-///
-/// - `GET /metrics`: the full aggregated metrics state, rendered as Prometheus text exposition.
-/// - `GET /compat/metrics`, when compatibility remapper rules are configured: the subset of metrics that match the
-///   rules, rendered with their remapped names.
-pub struct InternalTelemetryAPIWorker {
-    compat_remapper_rules: Option<Vec<RemapperRule>>,
-}
-
-impl InternalTelemetryAPIWorker {
-    /// Creates a new `InternalTelemetryAPIWorker`.
-    ///
-    /// When `compat_remapper_rules` is `Some`, the worker also serves `/compat/metrics` with those rules.
-    pub fn new(compat_remapper_rules: Option<Vec<RemapperRule>>) -> Self {
-        Self { compat_remapper_rules }
-    }
-}
+/// Asserts `GET /metrics`, serving the full aggregated metrics state as Prometheus text exposition.
+pub struct InternalTelemetryAPIWorker;
 
 #[async_trait]
 impl Supervisable for InternalTelemetryAPIWorker {
@@ -104,7 +69,7 @@ impl Supervisable for InternalTelemetryAPIWorker {
 
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let metrics = get_shared_metrics_state();
-        let handler = InternalTelemetryAPIHandler::new(metrics, self.compat_remapper_rules.clone());
+        let handler = InternalTelemetryAPIHandler::new(metrics);
         let route = DynamicRoute::http(EndpointType::Unprivileged, &handler);
 
         Ok(Box::pin(async move {
@@ -129,9 +94,9 @@ mod tests {
     use super::*;
     use crate::observability::metrics::MetricsSnapshot;
 
-    fn handler(compat_remapper_rules: Option<Vec<RemapperRule>>) -> InternalTelemetryAPIHandler {
+    fn handler() -> InternalTelemetryAPIHandler {
         let (metrics, _worker) = Reflector::new(stream::empty::<Vec<MetricsSnapshot>>(), AggregatedMetricsProcessor);
-        InternalTelemetryAPIHandler::new(metrics, compat_remapper_rules)
+        InternalTelemetryAPIHandler::new(metrics)
     }
 
     async fn status(handler: &InternalTelemetryAPIHandler, path: &str) -> StatusCode {
@@ -146,13 +111,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compat_route_is_only_served_with_compat_rules() {
-        let without_compat = handler(None);
-        assert_eq!(status(&without_compat, "/metrics").await, StatusCode::OK);
-        assert_eq!(status(&without_compat, "/compat/metrics").await, StatusCode::NOT_FOUND);
-
-        let with_compat = handler(Some(Vec::new()));
-        assert_eq!(status(&with_compat, "/metrics").await, StatusCode::OK);
-        assert_eq!(status(&with_compat, "/compat/metrics").await, StatusCode::OK);
+    async fn serves_only_metrics_route() {
+        let handler = handler();
+        assert_eq!(status(&handler, "/metrics").await, StatusCode::OK);
+        assert_eq!(status(&handler, "/compat/metrics").await, StatusCode::NOT_FOUND);
     }
 }

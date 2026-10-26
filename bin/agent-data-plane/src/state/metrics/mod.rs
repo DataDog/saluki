@@ -1,5 +1,5 @@
 mod rules;
-pub use self::rules::{get_compat_remappings, get_datadog_agent_remappings};
+pub use self::rules::get_datadog_agent_remappings;
 
 #[cfg(test)]
 mod tests {
@@ -171,184 +171,6 @@ mod tests {
             "transactions__success_bytes{domain=\"https://api.datadoghq.com\",",
             "endpoint=\"/api/v1/series\",proto_version="
         )));
-    }
-
-    #[test]
-    fn render_compat_telemetry() {
-        let metrics = vec![
-            Event::Metric(Metric::counter(
-                Context::from_static_parts(
-                    "adp.component_events_received_total",
-                    &["component_id:dsd_in", "message_type:metrics"],
-                ),
-                11.0,
-            )),
-            Event::Metric(Metric::counter(
-                Context::from_static_parts(
-                    "adp.component_packets_received_total",
-                    &["component_id:dsd_in", "listener_type:unix"],
-                ),
-                7.0,
-            )),
-            Event::Metric(Metric::counter(
-                Context::from_static_parts(
-                    "adp.component_packets_received_total",
-                    &["component_id:dsd_in", "listener_type:unixgram"],
-                ),
-                5.0,
-            )),
-            Event::Metric(Metric::counter(
-                Context::from_static_parts(
-                    "adp.component_packets_received_total",
-                    &["component_id:dsd_in", "listener_type:udp", "state:error"],
-                ),
-                13.0,
-            )),
-            Event::Metric(Metric::counter(
-                Context::from_static_parts(
-                    "adp.component_packets_received_total",
-                    &["component_id:dsd_in", "listener_type:unix", "state:error"],
-                ),
-                17.0,
-            )),
-            Event::Metric(Metric::counter(
-                Context::from_static_parts(
-                    "adp.component_packets_received_total",
-                    &["component_id:dsd_in", "listener_type:unixgram", "state:error"],
-                ),
-                19.0,
-            )),
-            Event::Metric(Metric::counter(
-                Context::from_static_parts(
-                    "adp.component_errors_total",
-                    &["component_id:dsd_in", "listener_type:udp", "error_type:framing"],
-                ),
-                23.0,
-            )),
-            Event::Metric(Metric::counter(
-                Context::from_static_parts(
-                    "adp.component_errors_total",
-                    &["component_id:dsd_in", "listener_type:unix", "error_type:framing"],
-                ),
-                29.0,
-            )),
-            Event::Metric(Metric::counter(
-                Context::from_static_parts(
-                    "adp.component_errors_total",
-                    &["component_id:dsd_in", "listener_type:unixgram", "error_type:framing"],
-                ),
-                31.0,
-            )),
-            Event::Metric(Metric::counter(
-                Context::from_static_parts(
-                    "adp.network_http_requests_errors_total",
-                    &["error_type:connection_error", "error_scope:phase"],
-                ),
-                3.0,
-            )),
-            Event::Metric(Metric::counter(
-                Context::from_static_parts(
-                    "adp.network_http_requests_errors_total",
-                    &["error_type:cant_send", "error_scope:transaction"],
-                ),
-                1.0,
-            )),
-            Event::Metric(Metric::counter(
-                Context::from_static_parts(
-                    "adp.network_http_requests_errors_total",
-                    &["error_type:sent_request_error", "error_scope:transaction"],
-                ),
-                2.0,
-            )),
-            Event::Metric(Metric::gauge("adp.network_http_retry_queue_size", 2.0)),
-            Event::Metric(Metric::gauge(
-                Context::from_static_parts(
-                    "adp.network_http_retry_queue_bytes_per_sec",
-                    &["domain:https://api.datadoghq.com"],
-                ),
-                10.0,
-            )),
-            Event::Metric(Metric::gauge(
-                Context::from_static_parts(
-                    "adp.network_http_retry_queue_capacity_secs",
-                    &["domain:https://api.datadoghq.com"],
-                ),
-                30.0,
-            )),
-            Event::Metric(Metric::gauge(
-                Context::from_static_parts(
-                    "adp.network_http_retry_queue_capacity_bytes",
-                    &["domain:https://api.datadoghq.com"],
-                ),
-                300.0,
-            )),
-        ];
-
-        let output = render_with(get_compat_remappings(), metrics);
-
-        assert!(output.contains("dogstatsd_metric_packets 11"));
-        assert!(output.contains("dogstatsd_uds_packets 48"));
-        assert!(output.contains("dogstatsd_udp_packet_reading_errors 13"));
-        assert!(output.contains("dogstatsd_uds_packet_reading_errors 36"));
-        assert!(!output.contains("dogstatsd_udp_packet_reading_errors 23"));
-        assert!(!output.contains("dogstatsd_uds_packet_reading_errors 60"));
-        assert!(
-            output.contains("forwarder_transactions_errors_by_type_connection_errors{source=\"agent-data-plane\"} 3")
-        );
-        assert!(
-            output.contains("forwarder_transactions_errors_by_type_sent_request_errors{source=\"agent-data-plane\"} 2")
-        );
-        assert!(output.contains("forwarder_transactions_errors{source=\"agent-data-plane\"} 3"));
-        assert!(output.contains("forwarder_transactions_retry_queue_size{source=\"agent-data-plane\"} 2"));
-        assert!(output.contains(
-            "retry_queue_duration_bytes_per_sec{domain=\"https://api.datadoghq.com\",source=\"agent-data-plane\"} 10"
-        ));
-        assert!(output.contains(
-            "retry_queue_duration_capacity_secs{domain=\"https://api.datadoghq.com\",source=\"agent-data-plane\"} 30"
-        ));
-        assert!(output.contains(
-            "retry_queue_duration_capacity_bytes{domain=\"https://api.datadoghq.com\",source=\"agent-data-plane\"} 300"
-        ));
-    }
-
-    #[test]
-    fn compat_remappings_cover_expected_names() {
-        let rules = get_compat_remappings();
-        let expected_names = [
-            "dogstatsd_event_packets",
-            "dogstatsd_event_parse_errors",
-            "dogstatsd_metric_packets",
-            "dogstatsd_metric_parse_errors",
-            "dogstatsd_service_check_packets",
-            "dogstatsd_service_check_parse_errors",
-            "dogstatsd_udp_packets",
-            "dogstatsd_udp_bytes",
-            "dogstatsd_udp_packet_reading_errors",
-            "dogstatsd_uds_packets",
-            "dogstatsd_uds_bytes",
-            "dogstatsd_uds_packet_reading_errors",
-            "dogstatsd_uds_origin_detection_errors",
-            "forwarder_transactions_dropped",
-            "forwarder_transactions_success",
-            "forwarder_transactions_errors",
-            "forwarder_transactions_http_errors",
-            "forwarder_transactions_errors_by_type_connection_errors",
-            "forwarder_transactions_errors_by_type_dns_errors",
-            "forwarder_transactions_errors_by_type_tls_errors",
-            "forwarder_transactions_errors_by_type_wrote_request_errors",
-            "forwarder_transactions_errors_by_type_sent_request_errors",
-            "forwarder_transactions_retry_queue_size",
-            "retry_queue_duration_bytes_per_sec",
-            "retry_queue_duration_capacity_secs",
-            "retry_queue_duration_capacity_bytes",
-        ];
-
-        for expected_name in expected_names {
-            assert!(
-                rules.iter().any(|rule| rule.remapped_name() == expected_name),
-                "missing compat rule for {expected_name}"
-            );
-        }
     }
 
     #[test]
@@ -839,7 +661,7 @@ mod tests {
     }
 
     #[test]
-    fn uds_origin_detection_errors_keep_reason_for_rar_but_aggregate_for_compat() {
+    fn uds_origin_detection_errors_keep_reason_for_rar() {
         let metrics: Vec<_> = [("reason:zero_pid", 2.0), ("reason:invalid_credentials", 3.0)]
             .into_iter()
             .map(|(reason, count)| {
@@ -853,7 +675,7 @@ mod tests {
             })
             .collect();
 
-        let rar_output = render_with(get_datadog_agent_remappings(), metrics.clone());
+        let rar_output = render_with(get_datadog_agent_remappings(), metrics);
         assert!(
             rar_output.contains("dogstatsd__uds_origin_detection_error{reason=\"zero_pid\"} 2"),
             "{rar_output}"
@@ -861,12 +683,6 @@ mod tests {
         assert!(
             rar_output.contains("dogstatsd__uds_origin_detection_error{reason=\"invalid_credentials\"} 3"),
             "{rar_output}"
-        );
-
-        let compat_output = render_with(get_compat_remappings(), metrics);
-        assert!(
-            compat_output.contains("dogstatsd_uds_origin_detection_errors 5"),
-            "{compat_output}"
         );
     }
 
