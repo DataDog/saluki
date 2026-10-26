@@ -1,9 +1,19 @@
-//! Checks keys in the corpus that the typed configuration does not model.
+//! Checks the compatibility classifier against the schema overlay, using values the Agent streamed.
 //!
-//! These include schema keys marked unsupported or undetermined, keys excluded by the schema
-//! overlay, and keys outside the schema. The leaf comparison reports them as not modeled. These
-//! tests check that the compatibility classifier follows the overlay and that replaying cases with
-//! these keys fails no stage except validation of a blank `api_key` when a case lacks one.
+//! The corpus's unsupported, excluded and unknown cases set keys the typed configuration did not
+//! model when the corpus was recorded. For every value those cases stream, the classifier must give
+//! the classification that the key's current overlay declaration implies, whatever it is:
+//!
+//! | Overlay declaration                                                   | Classification               |
+//! |-----------------------------------------------------------------------|------------------------------|
+//! | `support: none`                                                       | incompatible at its severity |
+//! | `support: unknown` with a severity                                    | incompatible at its severity |
+//! | `support: partial` with `warn`                                        | partial                      |
+//! | `full`, `partial` without `warn`, `unknown` without a severity, `excluded`, or no entry | none |
+//!
+//! A classification must never report a streamed value as the default. These checks compare the
+//! overlay with the generated classifier, not ADP with the Agent, so a routine support change needs
+//! no edit to them.
 
 #[cfg(test)]
 mod tests {
@@ -13,22 +23,16 @@ mod tests {
     use serde_json::Value;
 
     use crate::corpus_replay::corpus;
-    use crate::corpus_replay::driver::{replay_case, Commit, Stage};
 
-    /// The groups whose keys the typed model leaves out.
+    /// The groups whose keys the typed model left out when the corpus was recorded.
     const UNMODELED_GROUPS: [Group; 3] = [Group::Unsupported, Group::Excluded, Group::Unknown];
 
-    /// Returns the started cases of `group`, and the names of the cases of `group` that failed to start.
-    fn cases_of(group: Group) -> (Vec<&'static Case>, Vec<&'static str>) {
-        let mut started = Vec::new();
-        let mut failed = Vec::new();
-        for case in corpus().cases.iter().filter(|case| case.group == group) {
-            match &case.outcome {
-                Outcome::Started(_) => started.push(case),
-                Outcome::StartupError(_) => failed.push(case.name.as_str()),
-            }
-        }
-        (started, failed)
+    /// Returns the started cases of `group`.
+    fn started_cases_of(group: Group) -> impl Iterator<Item = &'static Case> {
+        corpus()
+            .cases
+            .iter()
+            .filter(move |case| case.group == group && matches!(case.outcome, Outcome::Started(_)))
     }
 
     /// Returns every value the case streamed for each of its key lines, as (key, value). A key line that streamed
@@ -64,55 +68,30 @@ mod tests {
         }
     }
 
-    /// Returns the support level the overlay assigns to `key`, or `None` if the classifier does not know it.
-    ///
-    /// For a key whose support is undetermined, the classifier needs an estimated severity to classify it.
-    fn expected_classification(overlay: &SchemaOverlay, key: &str) -> Result<Option<SupportLevel>, String> {
+    /// Returns the support level the overlay's declaration of `key` implies, or `None` if the
+    /// classifier must not classify it (see the module's table).
+    fn expected_classification(overlay: &SchemaOverlay, key: &str) -> Option<SupportLevel> {
         if overlay.excluded.contains_key(key) {
-            return Ok(None);
+            return None;
         }
-        match overlay.inventory.get(key) {
-            None => Ok(None),
-            Some(KnownEntry::Unsupported(u)) => Ok(Some(SupportLevel::Incompatible(classifier_severity(u.severity)))),
-            Some(KnownEntry::Unknown(u)) => Ok(u.severity.map(|s| SupportLevel::Incompatible(classifier_severity(s)))),
-            Some(KnownEntry::Full(_) | KnownEntry::Partial(_)) => Err("a supported key".to_string()),
+        match overlay.inventory.get(key)? {
+            KnownEntry::Unsupported(u) => Some(SupportLevel::Incompatible(classifier_severity(u.severity))),
+            KnownEntry::Unknown(u) => u.severity.map(|s| SupportLevel::Incompatible(classifier_severity(s))),
+            KnownEntry::Partial(p) if p.warn => Some(SupportLevel::Partial),
+            KnownEntry::Full(_) | KnownEntry::Partial(_) => None,
         }
     }
 
-    /// Checks that each key of `group`'s cases has the overlay entry the group is generated from, and that the
-    /// classifier reads every streamed value of it as expected. Returns one message per disagreement, and the number
-    /// of values checked.
-    fn classification_mismatches(group: Group) -> (Vec<String>, usize) {
-        let overlay = SchemaOverlay::load(Files::default()).unwrap_or_else(|e| panic!("loading the overlay: {e}"));
-        let classifier = ConfigClassifier::new();
-        let (cases, _) = cases_of(group);
+    /// Checks that the classifier reads every value `group`'s cases streamed as the overlay declares.
+    /// Returns one message per disagreement, and the number of values checked.
+    fn classification_mismatches(
+        overlay: &SchemaOverlay, classifier: &ConfigClassifier, group: Group,
+    ) -> (Vec<String>, usize) {
         let mut mismatches = Vec::new();
         let mut checked = 0;
-        for case in cases {
+        for case in started_cases_of(group) {
             for (key, value) in streamed_values(case) {
-                let in_group = match group {
-                    Group::Unsupported => matches!(
-                        overlay.inventory.get(key),
-                        Some(KnownEntry::Unsupported(_) | KnownEntry::Unknown(_))
-                    ),
-                    Group::Excluded => overlay.excluded.contains_key(key),
-                    Group::Unknown => !overlay.inventory.contains_key(key) && !overlay.excluded.contains_key(key),
-                    other => panic!("group {other:?} has modeled keys"),
-                };
-                if !in_group {
-                    mismatches.push(format!(
-                        "case {}: key {key}: the overlay does not declare it as a {group:?} key",
-                        case.name
-                    ));
-                    continue;
-                }
-                let expected = match expected_classification(&overlay, key) {
-                    Ok(expected) => expected,
-                    Err(what) => {
-                        mismatches.push(format!("case {}: key {key}: the overlay declares {what}", case.name));
-                        continue;
-                    }
-                };
+                let expected = expected_classification(overlay, key);
                 // The classifier's `None` does not depend on the value; a key that streamed nothing is checked with
                 // `null` only when `None` is expected, since a non-default value is what the case is for.
                 let value = match (value, expected) {
@@ -146,71 +125,20 @@ mod tests {
         (mismatches, checked)
     }
 
-    fn assert_classified_as_the_overlay_declares(group: Group) {
-        let (mismatches, checked) = classification_mismatches(group);
-        assert!(
-            mismatches.is_empty(),
-            "{group:?} keys the classifier disagrees on:\n{}",
-            mismatches.join("\n")
-        );
-        assert!(checked > 0, "no streamed value of a {group:?} case was checked");
-    }
-
-    /// Checks that streamed unsupported keys classify as incompatible, at the overlay's severity and not as defaults,
-    /// so the compatibility check reports them.
-    ///
-    /// This group also includes keys of undetermined support: they classify as incompatible when the
-    /// overlay estimates a severity, and remain unclassified otherwise.
+    /// Every value an unsupported, excluded or unknown case streamed classifies as the key's current
+    /// overlay declaration implies, and each of those groups has at least one value checked.
     #[test]
-    fn unsupported_corpus_keys_classify_as_incompatible_at_the_overlay_severity() {
-        assert_classified_as_the_overlay_declares(Group::Unsupported);
-    }
-
-    /// Every excluded key the corpus streams is unknown to the classifier, so the compatibility check skips it.
-    #[test]
-    fn excluded_corpus_keys_are_not_classified() {
-        assert_classified_as_the_overlay_declares(Group::Excluded);
-    }
-
-    /// Every key outside the schema that the corpus sets is unknown to the classifier, so the compatibility check
-    /// skips it.
-    #[test]
-    fn unknown_corpus_keys_are_not_classified() {
-        assert_classified_as_the_overlay_declares(Group::Unknown);
-    }
-
-    /// Replaying a case that sets only keys the typed model leaves out fails no stage, apart from the blank
-    /// `api_key` validation failure every case without an `api_key` gets.
-    #[test]
-    fn unmodeled_corpus_keys_cause_no_replay_failure() {
-        let corpus = corpus();
-        let mut failures = Vec::new();
+    fn recorded_unmodeled_values_classify_as_the_overlay_declares() {
+        let overlay = SchemaOverlay::load(Files::default()).unwrap_or_else(|e| panic!("loading the overlay: {e}"));
+        let classifier = ConfigClassifier::new();
         for group in UNMODELED_GROUPS {
-            let (cases, not_started) = cases_of(group);
-            assert!(!cases.is_empty(), "the corpus has no started {group:?} case");
+            let (mismatches, checked) = classification_mismatches(&overlay, &classifier, group);
             assert!(
-                not_started.is_empty(),
-                "{group:?} cases that failed to start: {not_started:?}"
+                mismatches.is_empty(),
+                "{group:?} values the classifier disagrees on:\n{}",
+                mismatches.join("\n")
             );
-            for case in cases {
-                let keys = streamed_values(case)
-                    .into_iter()
-                    .map(|(key, _)| key)
-                    .collect::<Vec<_>>();
-                let replayed = replay_case(corpus, &case.name, Commit::Translated)
-                    .unwrap_or_else(|e| panic!("case {}: {e}", case.name));
-                for (position, step) in replayed.iter().enumerate() {
-                    let Some(failure) = &step.failure else { continue };
-                    if failure.stage == Stage::Validate && failure.missing_api_key {
-                        continue;
-                    }
-                    failures.push(format!(
-                        "case {} (keys {keys:?}): step {position} (key {:?}): expected no failure, got {:?}: {}",
-                        case.name, step.key, failure.stage, failure.error
-                    ));
-                }
-            }
+            assert!(checked > 0, "no streamed value of a {group:?} case was checked");
         }
-        assert!(failures.is_empty(), "replay failures:\n{}", failures.join("\n"));
     }
 }

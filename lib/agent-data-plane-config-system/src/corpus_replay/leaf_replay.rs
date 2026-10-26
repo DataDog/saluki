@@ -1,6 +1,10 @@
-//! Produces one verdict per recorded getter for every modeled key line of every started corpus case,
-//! and one not-modeled row for every other key line, at both of the corpus's checkpoints (record.md
-//! §5.3).
+//! Produces one verdict per recorded getter for every key line of every started corpus case whose
+//! key is in the recorded surface, and one not-modeled row for every other key line, at both of the
+//! corpus's checkpoints (record.md §5.3).
+//!
+//! The recorded surface is the key set of the baseline case: the keys ADP modeled when the corpus
+//! was recorded ([`Corpus::surface`]). It, not ADP's current support, decides which value rows
+//! exist; ADP's current support decides only their verdicts.
 //!
 //! This is the leaf tier. The comparison applies every streamed update, even one the typed
 //! configuration would reject: the Agent applied it, and using the last committed state instead would
@@ -12,7 +16,7 @@
 //! take their defaults. The generated model has no flattened fields and permits unknown fields, so
 //! fields deserialize independently. The isolation test checks this for the whole corpus.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::rc::Rc;
 
@@ -226,8 +230,8 @@ pub(crate) fn kind_name(leaf: &LeafValue<'_>) -> &'static str {
 pub(crate) enum RowResult {
     /// The key is a supported leaf; this is its verdict against one recorded getter.
     Leaf(Verdict),
-    /// The key is not a supported leaf (unsupported by the overlay, or a section key), so nothing
-    /// is compared for it.
+    /// The key is outside the recorded surface, or ADP no longer supports it as a leaf, so nothing is
+    /// compared for it.
     NotModeled,
 }
 
@@ -315,8 +319,11 @@ pub(crate) fn reads_at<'a>(
 }
 
 /// Produces the rows for `reads` at one checkpoint, reading each key's leaf from `tree` in isolation.
+///
+/// Only a key in `surface` gets a verdict; every other key gets one not-modeled row.
 pub(crate) fn checkpoint_rows(
-    isolator: &mut Isolator, case: &str, checkpoint: Checkpoint, tree: &Value, reads: &[(&str, &Read)],
+    isolator: &mut Isolator, surface: &BTreeSet<&str>, case: &str, checkpoint: Checkpoint, tree: &Value,
+    reads: &[(&str, &Read)],
 ) -> Vec<Row> {
     let mut rows = Vec::new();
     for &(key, read) in reads {
@@ -331,7 +338,8 @@ pub(crate) fn checkpoint_rows(
             streamed: streamed.clone(),
             result,
         };
-        let Some(&index) = isolator.by_key.get(key) else {
+        let index = surface.contains(key).then(|| isolator.by_key.get(key)).flatten();
+        let Some(&index) = index else {
             rows.push(row(None, None, None, RowResult::NotModeled));
             continue;
         };
@@ -383,12 +391,13 @@ pub(crate) fn checkpoint_rows(
     rows
 }
 
-/// Produces every row of the corpus's started cases, sorted by case, checkpoint, key and getter.
+/// Produces every row of the corpus's started cases, sorted by case, checkpoint, key and getter. Only
+/// keys in `surface` get verdicts (see [`checkpoint_rows`]).
 ///
 /// Also returns every case-level fault: a case whose stream cannot be built or whose fold panicked, a
 /// case whose stream and recorded updates disagree, or a key line whose final read is not present
 /// exactly when the case has updates. A faulty case contributes no rows; the others are still replayed.
-pub(crate) fn corpus_rows(corpus: &Corpus) -> (Vec<Row>, Vec<String>) {
+pub(crate) fn corpus_rows(corpus: &Corpus, surface: &BTreeSet<&str>) -> (Vec<Row>, Vec<String>) {
     let mut rows = Vec::new();
     let mut errors = Vec::new();
     for case in &corpus.cases {
@@ -418,7 +427,7 @@ pub(crate) fn corpus_rows(corpus: &Corpus) -> (Vec<Row>, Vec<String>) {
         for (checkpoint, tree) in checkpoints {
             match reads_at(&case.name, &started.keys, checkpoint, has_updates) {
                 Ok(reads) => {
-                    let checkpoint_rows = checkpoint_rows(&mut isolator, &case.name, checkpoint, tree, &reads);
+                    let checkpoint_rows = checkpoint_rows(&mut isolator, surface, &case.name, checkpoint, tree, &reads);
                     let panicked = checkpoint_rows
                         .iter()
                         .any(|r| matches!(r.result, RowResult::Leaf(Verdict::Panicked { .. })));
@@ -520,6 +529,41 @@ mod tests {
         assert!(failures.is_empty(), "isolation invariant violated: {failures:#?}");
     }
 
+    /// A supported key outside the recorded surface gets one not-modeled row and no verdict, and
+    /// every other key keeps its rows.
+    #[test]
+    fn a_supported_key_outside_the_surface_gets_no_verdict() {
+        let corpus = corpus();
+        let case = corpus.case(BASELINE_CASE).expect("the corpus has the baseline case");
+        let Outcome::Started(started) = &case.outcome else {
+            panic!("the baseline case starts");
+        };
+        let reads = reads_at(&case.name, &started.keys, Checkpoint::Snapshot, false).expect("snapshot reads");
+        let tree = fold_case(corpus, &case.name).expect("the baseline replays").snapshot;
+        let mut isolator = Isolator::new();
+        let mut surface = corpus.surface().expect("the baseline case started");
+        let full = checkpoint_rows(&mut isolator, &surface, &case.name, Checkpoint::Snapshot, &tree, &reads);
+
+        let target = full
+            .iter()
+            .find(|row| matches!(row.result, RowResult::Leaf(Verdict::Match)))
+            .map(|row| row.key.clone())
+            .expect("the baseline has a matching key");
+        assert!(isolator.leaf_index(&target).is_some(), "{target} is a supported leaf");
+        surface.remove(target.as_str());
+        let rows = checkpoint_rows(&mut isolator, &surface, &case.name, Checkpoint::Snapshot, &tree, &reads);
+
+        let (of_target, others): (Vec<&Row>, Vec<&Row>) = rows.iter().partition(|row| row.key == target);
+        assert_eq!(of_target.len(), 1, "{of_target:?}");
+        assert_eq!(of_target[0].result, RowResult::NotModeled);
+        assert_eq!(
+            (of_target[0].leaf, of_target[0].getter, of_target[0].kind),
+            (None, None, None)
+        );
+        let full_others: Vec<&Row> = full.iter().filter(|row| row.key != target).collect();
+        assert_eq!(others, full_others, "only {target} changes");
+    }
+
     #[test]
     fn a_rejected_value_rejects_only_its_own_key() {
         let corpus = corpus();
@@ -530,7 +574,8 @@ mod tests {
         let reads = reads_at(&case.name, &started.keys, Checkpoint::Snapshot, false).expect("snapshot reads");
         let tree = fold_case(corpus, &case.name).expect("the baseline replays").snapshot;
         let mut isolator = Isolator::new();
-        let clean = checkpoint_rows(&mut isolator, &case.name, Checkpoint::Snapshot, &tree, &reads);
+        let surface = corpus.surface().expect("the baseline case started");
+        let clean = checkpoint_rows(&mut isolator, &surface, &case.name, Checkpoint::Snapshot, &tree, &reads);
 
         // A bool key the Agent's snapshot agrees with, which a list cannot deserialize into.
         let target = clean
@@ -546,7 +591,14 @@ mod tests {
             "the whole tree rejects the list"
         );
 
-        let rows = checkpoint_rows(&mut isolator, &case.name, Checkpoint::Snapshot, &poisoned, &reads);
+        let rows = checkpoint_rows(
+            &mut isolator,
+            &surface,
+            &case.name,
+            Checkpoint::Snapshot,
+            &poisoned,
+            &reads,
+        );
         assert_eq!(rows.len(), clean.len());
         let (mut matches, mut rejected) = (0, 0);
         for (row, before) in rows.iter().zip(&clean) {

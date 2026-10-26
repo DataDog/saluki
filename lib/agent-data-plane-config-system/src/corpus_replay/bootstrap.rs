@@ -4,13 +4,15 @@
 //! Before the Agent's configuration stream arrives, ADP reads `datadog.yaml` and the environment
 //! itself; standalone mode uses those inputs instead of the stream. This bootstrap comparison gives
 //! ADP the exact YAML and environment recorded for each case, applying the environment after the
-//! file. It compares each supported setting in isolation against the Agent's getter result, as the
-//! streamed-value comparison does. A difference may come from how ADP reads YAML or the environment,
-//! or from a value the Agent changed during loading that ADP's bootstrap reader cannot see.
+//! file. It compares each setting of the recorded surface in isolation against the Agent's getter
+//! result, as the streamed-value comparison does. A difference may come from how ADP reads YAML or
+//! the environment, or from a value the Agent changed during loading that ADP's bootstrap reader
+//! cannot see.
 //!
 //! Only cases that started without a fleet policy or CLI override qualify: their first Agent
 //! snapshot comes from YAML, environment variables, and defaults alone. Later updates are not compared.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use datadog_agent_config_corpus::{Corpus, Inputs, Outcome};
@@ -60,10 +62,11 @@ fn case_base(inputs: &Inputs) -> Result<serde_json::Value, Fault> {
     }
 }
 
-/// Replays every started case in scope through the bootstrap reader.
+/// Replays every started case in scope through the bootstrap reader. Only keys in `surface` get
+/// verdicts (see [`checkpoint_rows`]).
 ///
 /// Rows are sorted by case, key and getter; aborts by case.
-pub(crate) fn corpus_bootstrap(corpus: &Corpus) -> BootstrapResults {
+pub(crate) fn corpus_bootstrap(corpus: &Corpus, surface: &BTreeSet<&str>) -> BootstrapResults {
     let mut results = BootstrapResults {
         rows: Vec::new(),
         aborts: Vec::new(),
@@ -91,6 +94,7 @@ pub(crate) fn corpus_bootstrap(corpus: &Corpus) -> BootstrapResults {
             .expect("the snapshot checkpoint pairs every key line with its snapshot read");
         results.rows.extend(checkpoint_rows(
             &mut Isolator::new(),
+            surface,
             &case.name,
             Checkpoint::Snapshot,
             &base,
