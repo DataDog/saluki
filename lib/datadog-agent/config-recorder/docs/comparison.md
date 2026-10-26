@@ -7,7 +7,8 @@ per key. The implementation is `lib/agent-data-plane-config-system/src/corpus_re
 ## 1. Scope
 
 - Compared: one `LeafValue` read from `DatadogConfiguration` through `LEAVES` against one recorded
-  `GetterRead` of the same key, at one checkpoint (`reads.snapshot` or `reads.final`).
+  `GetterRead` of the same key, at one checkpoint (`reads.snapshot` or `reads.final`), for a key of
+  the recorded surface (§10).
 - Not compared here: values agent-data-plane computes from settings, such as its stop timeout or a
   byte size parsed from a string. The derived tier (`derived.rs`) compares each one against the Agent
   getter that computes the same value: `GetInt` on `data_plane.stop_timeout`, and `GetSizeInBytes` on
@@ -38,6 +39,11 @@ per key. The implementation is `lib/agent-data-plane-config-system/src/corpus_re
 | `StringListMap` | `&HashMap<String, Vec<String>>`     |
 | `StringMap`     | `&HashMap<String, String>`          |
 | `StringMapList` | `&[HashMap<String, String>]`        |
+
+A supported key whose Rust type no kind covers reads as `LeafValue::Uncompared`, which carries no
+value and has no kind. Every getter read of it is `NotCompared` (§5), so it produces no check.
+While the key is outside the recorded surface, no value check reads it. Once a recording brings it
+into the surface, the replay coverage test fails until the type gets a kind and its rules (§9).
 
 ## 3. Emulation
 
@@ -102,7 +108,7 @@ The generic rule, for a `serde_json::Value` against a `Get` value:
 | `Match`       | The rule holds.                                                                           |
 | `Differs`     | The rule fails. Both sides must be rendered exactly: every digit of a float, every element of a list, maps in key order. |
 | `AdpRejects`  | `DatadogConfiguration` failed to deserialize, so there is no leaf. The replay produces it, not a rule. |
-| `NotCompared` | No rule applies: the getter is not the emulated one, the getter is explicit-only (§6), or the result shape is not the getter's. |
+| `NotCompared` | No rule applies: the getter is not the emulated one, the getter is explicit-only (§6), the leaf's type has no kind (§2), or the result shape is not the getter's. |
 
 `NotCompared` carries its reason. A getter with no corresponding ADP value produces no assertion;
 coverage tests check the recorded getter pairs against the emulation table. It is not a match.
@@ -181,8 +187,9 @@ No normalization is allowed beyond decisions 5, 6, 8 and 11.
 
 ## 9. Adding a leaf kind or a getter
 
-1. A new leaf kind: add it to the generator (`lib/datadog-agent/config/build/witness_gen.rs`), which
-   writes `LEAVES` and `LeafValue`, and to the tables in §2, §3 and §4.
+1. A new leaf kind: add it to the generator's table of known types
+   (`lib/datadog-agent/config/build/witness_gen.rs`), which writes `LEAVES` and `LeafValue`, and to
+   the tables in §2, §3 and §4. Until then, a key of that type reads as `LeafValue::Uncompared` (§2).
 2. A new rule: implement it in `compare.rs` for the (kind, getter) pair, with unit tests that
    cover a match, a difference, and a result shape the getter cannot return.
 3. A new derived value: add a row to `DERIVATIONS` in `derived.rs`, or give the reason it is not
@@ -194,3 +201,30 @@ No normalization is allowed beyond decisions 5, 6, 8 and 11.
    value, and the reason in the typed expectation beside the replay code. Link known bugs to their
    Saluki issue through the expectation's cause. A fix changes production code and that expectation
    together, never the recorded corpus.
+
+## 10. Which checks exist
+
+The corpus alone decides which replay checks exist. ADP's current support decides only their
+results.
+
+The **recorded surface** is the set of keys of the `baseline-default` case: every key ADP modeled
+when the corpus was recorded (case.md §3.2). The replay reads it from the corpus, so it changes only
+when the corpus is re-recorded, never for an edit to a key's support.
+
+| Check kind                                         | Which checks exist                                                                  | ADP's support decides |
+|----------------------------------------------------|-------------------------------------------------------------------------------------|-----------------------|
+| Value checks: leaf and bootstrap getter reads      | each key line whose key is in the recorded surface, per recorded getter and checkpoint | results only    |
+| Operation checks: deserialize, translate, validate | every operation a case records, whether or not ADP models its key                   | results only    |
+| Failure markers: `<whole tree>`, `<boot>`, a translate rejection of a key that is not an operation | only when a stage fails in a way no operation check carries | —   |
+| Panics and case faults                             | whenever one happens                                                                | —               |
+| Derived checks                                     | the fixed `DERIVATIONS` table (`derived.rs`)                                        | results only    |
+
+A support edit that preserves recorded behavior adds or removes no checks:
+
+- A newly supported key that a case records gets no value comparison until a re-recording brings it
+  into the recorded surface. The case's operation checks, its value checks for keys of the surface,
+  its bootstrap checks and its derived checks stay as they were.
+- If the edit changes a recorded outcome, either an existing check gets a new result or a failure
+  marker appears. Both fail until ADP is fixed or the expectation is deliberately edited.
+- A panic or case fault always fails. Its report lists the expectations of its case, in the tiers it
+  abandoned, whose checks did not run.
