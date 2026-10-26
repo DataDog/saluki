@@ -43,9 +43,13 @@ the Go writer's implementation. This avoids copying writer bugs into both sides.
 ## Checks and maintenance
 
 The crate's unit tests check the parser with small examples and validate the checked-in corpus.
-They catch stale recordings by comparing the recorded Agent commit, hashes of the recorder's
-inputs, and covered settings with the current schema and ADP support inventory. They also
-check the size limit and sources recorded for environment-only cases.
+They catch stale recordings by comparing the recorded Agent commit and hashes of the recorder's
+inputs with the current pin and files. Coverage checks use the baseline case's recorded keys
+and the vendored schema, not ADP's current support inventory. The tests also check the size limit
+and sources recorded for environment-only cases.
+
+The keys of the baseline case are fixed when the corpus is recorded. Changing ADP's support for
+a key does not change them and does not require a new recording.
 
 From the repository root, run:
 
