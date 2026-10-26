@@ -179,13 +179,19 @@ impl TargetSender {
             .as_ref()
             .ok_or_else(|| saluki_error::generic_error!("Runtime not available for HTTP readiness check."))?;
 
-        let deadline = std::time::Instant::now() + timeout;
+        let deadline = tokio::time::Instant::now() + timeout;
         loop {
-            let not_ready = match runtime.block_on(probe_http_target(backend)) {
+            // The probe is bounded by the deadline as well: a target can accept the connection and then never answer.
+            let probe = runtime.block_on(async {
+                tokio::time::timeout_at(deadline, probe_http_target(backend))
+                    .await
+                    .unwrap_or_else(|_| Err("timed out waiting for a response".to_string()))
+            });
+            let not_ready = match probe {
                 Ok(()) => return Ok(()),
                 Err(reason) => reason,
             };
-            if std::time::Instant::now() >= deadline {
+            if tokio::time::Instant::now() >= deadline {
                 return Err(saluki_error::generic_error!(
                     "HTTP target '{}' was not ready within {:?}: {}",
                     backend.display_target,
@@ -621,13 +627,14 @@ impl tonic::codec::Decoder for NoopDecoder {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::os::unix::net::UnixListener;
+    use std::time::Duration;
     use std::{
         io::{BufRead as _, BufReader, Read, Write},
         net::TcpListener,
         thread,
     };
-    #[cfg(unix)]
-    use std::{os::unix::net::UnixListener, time::Duration};
 
     #[cfg(unix)]
     use super::create_unix_http_client;
@@ -770,6 +777,26 @@ mod tests {
             .to_string();
 
         assert!(error.contains("was not ready"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn gives_up_on_an_http_target_that_never_answers() {
+        // The listener is never accepted from, but the kernel still completes the handshake, so the probe connects and
+        // then waits for a response that never comes.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let sender = http_sender(&listener, &[]);
+
+        let started = std::time::Instant::now();
+        let error = sender
+            .wait_until_ready(Duration::from_millis(250))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("timed out"), "unexpected error: {error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the probe should honor the timeout"
+        );
     }
 
     #[test]

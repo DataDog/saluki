@@ -25,7 +25,7 @@ serde = { workspace = true }
 serde-saphyr = { workspace = true }
 serde_json = { workspace = true }
 simdutf8 = { workspace = true }
-tokio = { workspace = true, features = ["net", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "time"] }
 tonic = { workspace = true }
 tower = { workspace = true }
 tracing = { workspace = true }
