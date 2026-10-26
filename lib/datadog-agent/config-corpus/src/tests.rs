@@ -434,3 +434,19 @@ fn first_snapshot_layers() {
     let base = c.first_snapshot("baseline-default").unwrap();
     assert_eq!(base.len(), 3);
 }
+
+#[test]
+fn surface_is_the_baseline_key_lines() {
+    // Keys recorded outside the baseline do not expand the surface.
+    let line = key(r#"{"getter":"GetInt","result":2}"#).replace(r#""key":"a""#, r#""key":"d""#);
+    let c = ok(&format!("{CASE}\n{line}"));
+    assert_eq!(c.surface().unwrap().into_iter().collect::<Vec<_>>(), ["a", "b", "c"]);
+
+    // A baseline that did not start has no surface, rather than an empty one.
+    let header_and_failed = format!(
+        "{HEADER}\n{}\n",
+        r#"{"case":"baseline-default","group":"baseline","inputs":{"keys":[{"key":"a"}]},"startup_error":"bad","type":"case","why":[]}"#
+    );
+    let failed = read(header_and_failed.as_bytes()).unwrap_or_else(|v| panic!("{v:#?}"));
+    assert!(failed.surface().is_none());
+}

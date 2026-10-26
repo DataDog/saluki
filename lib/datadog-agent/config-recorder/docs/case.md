@@ -113,6 +113,11 @@ and the `excluded` key names). Keys are compared lowercased. A schema key is a l
 `node_type: setting`. *Modeled* keys have `support` `full` or `partial`; *unsupported* keys have
 `none` or `unknown`.
 
+The generator applies the overlay once, when it records. From then on, the keys of the
+`baseline` case (the *recorded surface*) and each case's group are facts of the corpus. They
+change only on a re-recording, which happens at an Agent pin update or as deliberate corpus
+work, never for an edit to a key's support.
+
 | Group         | Keys                                                                 | Sources              |
 |---------------|----------------------------------------------------------------------|----------------------|
 | `baseline`    | every modeled schema key, in one case                                | none                 |

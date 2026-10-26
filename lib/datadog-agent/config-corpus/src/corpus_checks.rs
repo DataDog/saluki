@@ -5,7 +5,7 @@
 //! recordings, the **corpus**, is checked in as `config-recorder/corpus.jsonl`.
 //!
 //! These tests use [`crate::read`] to validate the file, then compare its Agent commit, input hashes,
-//! and covered settings with the vendored schema, recorder files, and ADP support inventory. They
+//! and covered settings with the vendored schema and recorder files. They
 //! also check size limits, recorded environment sources, and unique identities for recorded reads.
 //! Failures identify stale or invalid recordings before other tests use them to judge ADP behavior.
 //!
@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use datadog_agent_config_overlay_model::schema_gen::{load_schema_from_value, EnvBinding};
-use datadog_agent_config_overlay_model::{load_resolved_schema, Files, KnownEntry, SchemaOverlay};
+use datadog_agent_config_overlay_model::{load_resolved_schema, Files};
 use sha2::{Digest, Sha256};
 
 use crate::{Case, Corpus, Group, Inputs, KeyLine, Outcome, Source, REVIEWED_AT_AGENT_COMMIT};
@@ -270,9 +270,18 @@ fn key_lines(case: &Case) -> impl Iterator<Item = &KeyLine> {
     keys.iter()
 }
 
+/// The recorded case groups are complete and consistent with the surface (the keys of the baseline
+/// case) and the vendored schema. The check reads nothing that changes between recordings except the
+/// schema pin, so a change to ADP's support for a key cannot fail it.
 #[test]
-fn corpus_groups_match_overlay() {
+fn corpus_groups_are_complete() {
     let Some(corpus) = corpus() else { return };
+    let surface: BTreeSet<String> = corpus
+        .surface()
+        .expect("the baseline case did not start; run the recorder and read its startup error")
+        .into_iter()
+        .map(str::to_string)
+        .collect();
     let files = Files::default();
     let schema = load_resolved_schema(&files.datadog_schema).unwrap_or_else(|e| panic!("schema: {e}"));
     let fields = load_schema_from_value(&schema);
@@ -282,35 +291,13 @@ fn corpus_groups_match_overlay() {
         .filter(|(_, f)| !matches!(f.env, EnvBinding::None))
         .map(|(k, _)| k.to_lowercase())
         .collect();
-    let overlay = SchemaOverlay::load(files).unwrap_or_else(|e| panic!("overlay: {e}"));
-    let mut modeled = BTreeSet::new();
-    let mut unsupported = BTreeSet::new();
-    for (key, entry) in &overlay.inventory {
-        let key = key.to_lowercase();
-        match entry {
-            KnownEntry::Full(_) | KnownEntry::Partial(_) => modeled.insert(key),
-            KnownEntry::Unsupported(_) | KnownEntry::Unknown(_) => unsupported.insert(key),
-        };
-    }
-    let excluded: BTreeSet<String> = overlay.excluded.keys().map(|k| k.to_lowercase()).collect();
-    let adp_class = |k: &str| -> &'static str {
-        if !leaves.contains(k) {
-            "unknown (not a schema leaf)"
-        } else if modeled.contains(k) {
-            "baseline/breadth (modeled)"
-        } else if unsupported.contains(k) {
-            "unsupported"
-        } else if excluded.contains(k) {
-            "excluded"
-        } else {
-            "unclassified"
-        }
-    };
 
     // (group, source) -> keys, and key -> the groups that record it.
     let mut sets: BTreeMap<(Group, &'static str), BTreeSet<String>> = BTreeMap::new();
     let mut groups_of: BTreeMap<String, BTreeSet<Group>> = BTreeMap::new();
     let mut problems = Vec::new();
+    // Per group: (cases that started, cases with a startup error).
+    let mut outcomes: BTreeMap<Group, (usize, usize)> = BTreeMap::new();
     for case in &corpus.cases {
         let source = input_source(&case.inputs);
         let expected_source = match case.group {
@@ -323,6 +310,11 @@ fn corpus_groups_match_overlay() {
                 "case {}: group {} with inputs of kind {source}",
                 case.name, case.group
             ));
+        }
+        let counts = outcomes.entry(case.group).or_default();
+        match case.outcome {
+            Outcome::Started(_) => counts.0 += 1,
+            Outcome::StartupError(_) => counts.1 += 1,
         }
         for line in key_lines(case) {
             let key = line.key.to_lowercase();
@@ -337,7 +329,7 @@ fn corpus_groups_match_overlay() {
             .get(k)
             .map(|g| g.iter().map(|g| g.as_str()).collect::<Vec<_>>().join(", "))
             .unwrap_or_else(|| "absent".into());
-        format!("  {k}: expected {}, actual {actual}", adp_class(k))
+        format!("  {k}: recorded in {actual}")
     };
     let mut compare = |label: &str, expected: BTreeSet<String>, actual: BTreeSet<String>| {
         for (what, diff) in [
@@ -350,41 +342,29 @@ fn corpus_groups_match_overlay() {
             }
         }
     };
-    let modeled_leaves = &modeled & &leaves;
-    let unsupported_leaves = &unsupported & &leaves;
-    compare("baseline", modeled_leaves.clone(), recorded(Group::Baseline, "none"));
-    compare(
-        "breadth yaml cases",
-        modeled_leaves.clone(),
-        recorded(Group::Breadth, "yaml"),
-    );
+    compare("breadth yaml cases", surface.clone(), recorded(Group::Breadth, "yaml"));
     compare(
         "breadth env cases",
-        &modeled_leaves & &env_leaves,
+        &surface & &env_leaves,
         recorded(Group::Breadth, "env"),
     );
+    let unsupported_keys = &recorded(Group::Unsupported, "env") | &recorded(Group::Unsupported, "yaml");
     compare(
-        "unsupported yaml cases",
-        unsupported_leaves.clone(),
-        recorded(Group::Unsupported, "yaml"),
-    );
-    compare(
-        "unsupported env cases",
-        &unsupported_leaves & &env_leaves,
-        recorded(Group::Unsupported, "env"),
+        "unsupported cases (keys in the baseline case)",
+        BTreeSet::new(),
+        &unsupported_keys & &surface,
     );
     let excluded_keys = &recorded(Group::Excluded, "env") | &recorded(Group::Excluded, "yaml");
-    let excluded_leaves = &excluded & &leaves;
     compare(
-        "excluded cases (keys that are no longer excluded leaves)",
-        &excluded_keys & &excluded_leaves,
-        excluded_keys.clone(),
+        "excluded cases (keys in the baseline case)",
+        BTreeSet::new(),
+        &excluded_keys & &surface,
     );
     let unknown_keys = &recorded(Group::Unknown, "env") | &recorded(Group::Unknown, "yaml");
     compare(
         "unknown cases (keys that are schema leaves)",
-        &unknown_keys - &leaves,
-        unknown_keys.clone(),
+        BTreeSet::new(),
+        &unknown_keys & &leaves,
     );
     let depth_keys: BTreeSet<String> = sets
         .iter()
@@ -392,10 +372,19 @@ fn corpus_groups_match_overlay() {
         .flat_map(|(_, keys)| keys.iter().cloned())
         .collect();
     compare(
-        "depth cases (keys that are not modeled schema leaves)",
-        &depth_keys & &modeled_leaves,
+        "depth cases (keys that are not in the baseline case)",
+        &depth_keys & &surface,
         depth_keys.clone(),
     );
+    for group in [Group::Unsupported, Group::Excluded, Group::Unknown] {
+        let (started, failed) = outcomes.get(&group).copied().unwrap_or_default();
+        if started == 0 {
+            problems.push(format!("no case of group {group} started"));
+        }
+        if failed > 0 {
+            problems.push(format!("{failed} case(s) of group {group} ended in a startup error"));
+        }
+    }
     let depth_cases: Vec<&str> = corpus
         .cases
         .iter()
@@ -413,8 +402,8 @@ fn corpus_groups_match_overlay() {
 
     assert!(
         problems.is_empty(),
-        "the corpus's case groups disagree with schema_overlay.yaml and the vendored schema; the corpus may be \
-         stale, run `{REGENERATE}`; {DISAGREE}:\n{}",
+        "the corpus's case groups are incomplete or disagree with the vendored schema; if the Agent schema pin or \
+         the recorder changed, run `{REGENERATE}`; {DISAGREE}:\n{}",
         problems.join("\n")
     );
 }

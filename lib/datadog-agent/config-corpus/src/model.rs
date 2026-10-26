@@ -9,7 +9,7 @@
 //! recorded defaults with a case's changes to recover its starting settings. [`Violation`] and
 //! [`Rule`] describe format errors rather than differences between Agent and ADP behavior.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::num::NonZeroU64;
 
@@ -355,6 +355,21 @@ impl Corpus {
             .binary_search_by(|c| c.name.as_bytes().cmp(name.as_bytes()))
             .ok()
             .map(|i| &self.cases[i])
+    }
+
+    /// The keys of the [`BASELINE_CASE`] key lines: every key ADP modeled when the corpus was recorded.
+    ///
+    /// The set is fixed at recording time. It changes only when the corpus is re-recorded, never
+    /// when ADP's support for a key changes afterwards. Keys are lowercase, as the reader requires.
+    ///
+    /// Returns `None` when the baseline case did not start, so a missing baseline cannot pass as an
+    /// empty set. [`crate::read`] rejects a corpus without a baseline case, but not one whose
+    /// baseline hit a startup error.
+    pub fn surface(&self) -> Option<BTreeSet<&str>> {
+        let Outcome::Started(baseline) = &self.case(BASELINE_CASE)?.outcome else {
+            return None;
+        };
+        Some(baseline.keys.iter().map(|k| k.key.as_str()).collect())
     }
 
     /// Rebuilds a case's first snapshot, key to setting, by the three layers of record.md §3.2:
