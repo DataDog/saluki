@@ -448,11 +448,24 @@ pub(crate) fn corpus_rows(corpus: &Corpus, surface: &BTreeSet<&str>) -> (Vec<Row
 mod tests {
     use std::collections::BTreeMap;
 
-    use datadog_agent_config_corpus::BASELINE_CASE;
+    use datadog_agent_config_corpus::{Case, BASELINE_CASE};
     use serde_json::json;
 
     use super::*;
+    use crate::corpus_replay::compare::Reason;
     use crate::corpus_replay::corpus;
+
+    /// The baseline case, its key lines paired with their snapshot reads, and its folded snapshot.
+    fn baseline_snapshot() -> (&'static Case, Vec<(&'static str, &'static Read)>, Value) {
+        let corpus = corpus();
+        let case = corpus.case(BASELINE_CASE).expect("the corpus has the baseline case");
+        let Outcome::Started(started) = &case.outcome else {
+            panic!("the baseline case starts");
+        };
+        let reads = reads_at(&case.name, &started.keys, Checkpoint::Snapshot, false).expect("snapshot reads");
+        let tree = fold_case(corpus, &case.name).expect("the baseline replays").snapshot;
+        (case, reads, tree)
+    }
 
     /// Renders a leaf exactly and deterministically: `Debug` is exact for floats and lists, but a
     /// `HashMap` prints in iteration order, so maps are rendered with their entries sorted.
@@ -533,15 +546,9 @@ mod tests {
     /// every other key keeps its rows.
     #[test]
     fn a_supported_key_outside_the_surface_gets_no_verdict() {
-        let corpus = corpus();
-        let case = corpus.case(BASELINE_CASE).expect("the corpus has the baseline case");
-        let Outcome::Started(started) = &case.outcome else {
-            panic!("the baseline case starts");
-        };
-        let reads = reads_at(&case.name, &started.keys, Checkpoint::Snapshot, false).expect("snapshot reads");
-        let tree = fold_case(corpus, &case.name).expect("the baseline replays").snapshot;
+        let (case, reads, tree) = baseline_snapshot();
         let mut isolator = Isolator::new();
-        let mut surface = corpus.surface().expect("the baseline case started");
+        let mut surface = corpus().surface().expect("the baseline case started");
         let full = checkpoint_rows(&mut isolator, &surface, &case.name, Checkpoint::Snapshot, &tree, &reads);
 
         let target = full
@@ -564,17 +571,61 @@ mod tests {
         assert_eq!(others, full_others, "only {target} changes");
     }
 
+    /// A leaf whose type has no kind gets `NotCompared` for every recorded getter, both when it
+    /// deserializes and when it is rejected, and every other key keeps its rows.
+    #[test]
+    fn a_leaf_without_a_kind_is_not_compared() {
+        let (case, reads, tree) = baseline_snapshot();
+        let mut isolator = Isolator::new();
+        let surface = corpus().surface().expect("the baseline case started");
+        let clean = checkpoint_rows(&mut isolator, &surface, &case.name, Checkpoint::Snapshot, &tree, &reads);
+
+        // A bool key the Agent's snapshot agrees with, which a list cannot deserialize into, and
+        // whose recorded getters include no explicit-only read, which is reported as such first.
+        let getters_of = |key: &str| -> Vec<Getter> {
+            let (_, read) = reads.iter().find(|(k, _)| *k == key).expect("the key has a read");
+            read.getters.iter().map(|r| r.getter).collect()
+        };
+        let target = clean
+            .iter()
+            .filter(|row| row.kind == Some(LeafKind::Bool) && row.result == RowResult::Leaf(Verdict::Match))
+            .map(|row| row.key.as_str())
+            .find(|key| {
+                getters_of(key)
+                    .iter()
+                    .all(|g| !matches!(g, Getter::ReadConfigSection | Getter::IsConfigured))
+            })
+            .expect("the baseline has a matching bool key with no explicit-only read");
+        let index = isolator.leaf_index(target).expect("the target is a supported leaf");
+        let mut poisoned = tree.clone();
+        let object = poisoned.as_object_mut().expect("the tree is an object");
+        insert(object, target, json!([true]));
+        assert!(isolator.isolate(index, &poisoned).is_err(), "{target} rejects the list");
+
+        // What `Isolator::new` records for a leaf whose accessor reads `LeafValue::Uncompared`.
+        isolator.kinds[index] = None;
+        let not_compared = RowResult::Leaf(Verdict::NotCompared {
+            reason: Reason::UncomparableLeafType,
+        });
+        let clean_others: Vec<&Row> = clean.iter().filter(|row| row.key != target).collect();
+        for tree in [&tree, &poisoned] {
+            let rows = checkpoint_rows(&mut isolator, &surface, &case.name, Checkpoint::Snapshot, tree, &reads);
+            let (of_target, others): (Vec<&Row>, Vec<&Row>) = rows.iter().partition(|row| row.key == target);
+            let getters: Vec<Option<Getter>> = getters_of(target).into_iter().map(Some).collect();
+            assert_eq!(of_target.iter().map(|row| row.getter).collect::<Vec<_>>(), getters);
+            for row in &of_target {
+                assert_eq!((row.leaf, row.kind), (Some(target), None), "{row}");
+                assert_eq!(row.result, not_compared, "{row}");
+            }
+            assert_eq!(others, clean_others, "only {target} changes");
+        }
+    }
+
     #[test]
     fn a_rejected_value_rejects_only_its_own_key() {
-        let corpus = corpus();
-        let case = corpus.case(BASELINE_CASE).expect("the corpus has the baseline case");
-        let Outcome::Started(started) = &case.outcome else {
-            panic!("the baseline case starts");
-        };
-        let reads = reads_at(&case.name, &started.keys, Checkpoint::Snapshot, false).expect("snapshot reads");
-        let tree = fold_case(corpus, &case.name).expect("the baseline replays").snapshot;
+        let (case, reads, tree) = baseline_snapshot();
         let mut isolator = Isolator::new();
-        let surface = corpus.surface().expect("the baseline case started");
+        let surface = corpus().surface().expect("the baseline case started");
         let clean = checkpoint_rows(&mut isolator, &surface, &case.name, Checkpoint::Snapshot, &tree, &reads);
 
         // A bool key the Agent's snapshot agrees with, which a list cannot deserialize into.

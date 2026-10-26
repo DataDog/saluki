@@ -107,3 +107,51 @@ pub(crate) fn corpus_bootstrap(corpus: &Corpus, surface: &BTreeSet<&str>) -> Boo
     results.aborts.sort_by(|a, b| a.0.cmp(&b.0));
     results
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::corpus_replay::compare::Verdict;
+    use crate::corpus_replay::corpus;
+    use crate::corpus_replay::leaf_replay::RowResult;
+
+    /// A key removed from the surface gets one not-modeled row in each case that records it, and every
+    /// other row, abort and count stays as it was.
+    #[test]
+    fn bootstrap_compares_only_the_keys_of_the_given_surface() {
+        let corpus = corpus();
+        let mut surface = corpus.surface().expect("the baseline case started");
+        let full = corpus_bootstrap(corpus, &surface);
+        let target = full
+            .rows
+            .iter()
+            .find(|row| row.result == RowResult::Leaf(Verdict::Match))
+            .map(|row| row.key.clone())
+            .expect("a bootstrap row matches");
+        let cases: Vec<&str> = full
+            .rows
+            .iter()
+            .filter(|row| row.key == target)
+            .map(|row| row.case.as_str())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+
+        surface.remove(target.as_str());
+        let reduced = corpus_bootstrap(corpus, &surface);
+
+        let (of_target, others): (Vec<&Row>, Vec<&Row>) = reduced.rows.iter().partition(|row| row.key == target);
+        assert_eq!(of_target.iter().map(|row| row.case.as_str()).collect::<Vec<_>>(), cases);
+        for row in &of_target {
+            assert_eq!(row.result, RowResult::NotModeled, "{row}");
+            assert_eq!((row.leaf, row.getter, row.kind), (None, None, None), "{row}");
+        }
+        let full_others: Vec<&Row> = full.rows.iter().filter(|row| row.key != target).collect();
+        assert_eq!(others, full_others, "only {target} changes");
+        assert_eq!(
+            (reduced.in_scope, reduced.out_of_scope),
+            (full.in_scope, full.out_of_scope)
+        );
+        assert_eq!(format!("{:?}", reduced.aborts), format!("{:?}", full.aborts));
+    }
+}
