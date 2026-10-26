@@ -35,7 +35,8 @@ A generated witness trait creates a compile-time obligation to translate every s
 
 | Responsibility | Canonical location |
 |---|---|
-| Source-agnostic typed model and `Live<T>` | `lib/agent-data-plane-config/` |
+| Source-agnostic typed model | `lib/agent-data-plane-config/` |
+| `Live<T>`, a live view of a shared value | `lib/saluki-common/src/sync/live.rs` |
 | Loading, translation, authority, updates, compatibility | `lib/agent-data-plane-config-system/` |
 | Datadog source model, witness, classifier, environment decoding | `lib/datadog-agent/config/` |
 | Hand-edited ADP support inventory for Datadog schema keys | `lib/datadog-agent/config/schema/schema_overlay.yaml` |
@@ -66,14 +67,12 @@ The intended end state is:
 
 ### The `saluki-components` dependency
 
-Initially we wanted `saluki-components` to depend on `agent-data-plane-config`, but we changed our mind. We can't end
-this dependency immediately because of `Live<T>` and `ConfigValue<T>`. However, most migrations don't require these
-types. Migrations that don't require them **SHOULD NOT** depend on types in `agent-data-plane-config`, and should
-instead rely on the binary to copy data into fields or an arguments struct that the component presents.
+Components **SHOULD NOT** accept model types from `agent-data-plane-config`. The binary supplies values through
+fields or argument structs defined by the component. For live values, use `Live<T>` from `saluki-common`.
 
-The end state removes `agent-data-plane-config` from the `saluki-components` `Cargo.toml`. Minimize the impact of that
-change when migrating components. Some migrations predate this design change: they're temporary exceptions, so don't
-follow them.
+Existing dependencies remain through model slices (`SharedConfiguration` and `domains::*`) and `defaults` constants.
+These are exceptions, not patterns for new migrations. `ConfigValue<T>` occurs within those slices; model methods such
+as `Endpoints::primary_endpoint` resolve provenance and return effective values.
 
 ## Datadog versus Saluki keys
 

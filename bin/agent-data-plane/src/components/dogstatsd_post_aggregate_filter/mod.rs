@@ -1,8 +1,9 @@
 //! DogStatsD post-aggregate metric filter transform.
 //!
 //! Drops post-aggregation scalar metrics whose generated histogram aggregate names match the metric filterlist.
-use agent_data_plane_config::{domains::dogstatsd::MetricFilter, Live};
+use agent_data_plane_config::domains::dogstatsd::MetricFilter;
 use async_trait::async_trait;
+use saluki_common::sync::live::Live;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{

@@ -1,8 +1,9 @@
 //! DogStatsD metric prefix and listener-side metric filter transform.
 
-use agent_data_plane_config::{domains::dogstatsd::MetricFilter, Live};
+use agent_data_plane_config::domains::dogstatsd::MetricFilter;
 use async_trait::async_trait;
 use metrics::{Counter, Gauge};
+use saluki_common::sync::live::Live;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::data_model::event::{
     metric::{Metric, MetricValues},

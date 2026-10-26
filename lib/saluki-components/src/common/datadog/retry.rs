@@ -8,8 +8,8 @@ use std::{
 };
 
 use agent_data_plane_config::shared::{self, Secrets};
-use agent_data_plane_config::Live;
 use http::{Response, StatusCode};
+use saluki_common::sync::live::Live;
 use saluki_core::runtime::{self, ShutdownStrategy};
 use saluki_io::net::util::retry::{
     ExponentialBackoff, RetryCauseTelemetry, RetryClassifier, RollingExponentialBackoffRetryPolicy,

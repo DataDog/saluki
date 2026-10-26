@@ -1,9 +1,9 @@
 use std::{io::Write, path::PathBuf};
 
-use agent_data_plane_config::Live;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use saluki_common::collections::FastHashMap;
+use saluki_common::sync::live::Live;
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{
@@ -230,7 +230,8 @@ mod tests {
     };
     use std::{sync::Arc, time::Duration};
 
-    use agent_data_plane_config::{Live, SalukiConfiguration};
+    use agent_data_plane_config::SalukiConfiguration;
+    use saluki_common::sync::live::Live;
     use saluki_core::{
         components::test_util::TestComponentDriver,
         data_model::event::{
