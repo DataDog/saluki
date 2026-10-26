@@ -427,7 +427,7 @@ mod tests {
         for derivation in DERIVATIONS {
             match (derivation.derive)(&config) {
                 Derived::Exact(leaf) => assert!(
-                    LeafKind::of(&leaf).emulated().contains(&derivation.getter),
+                    LeafKind::of(&leaf).is_some_and(|kind| kind.emulated().contains(&derivation.getter)),
                     "{}: a {} value is not compared with {}",
                     derivation.key,
                     kind_name(&leaf),
