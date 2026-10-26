@@ -419,7 +419,7 @@ impl Assertion for IntakeHasMetricAssertion {
                 return self.unmatched_result(started, summary, false, snapshot.as_ref(), last_error.as_ref());
             }
 
-            // Poll at least once, even with no time left.
+            // Always poll once. Like every poll, it gets only the step's remaining time.
             if polled && Instant::now() >= deadline {
                 return self.expired_result(started, snapshot.as_ref(), last_error.as_ref());
             }
@@ -631,6 +631,24 @@ mod tests {
         assert!(
             result.message.contains("before the target exited"),
             "unexpected message: {}",
+            result.message
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_step_shorter_than_the_probe_limit_ends_at_its_own_deadline() {
+        // Giving the first poll a full probe limit would hold a short step up to 10s past its own budget.
+        let intake = MockIntake::unresponsive().await;
+        let ctx = context_for(CancellationToken::new(), CancellationToken::new(), Some(intake.port()));
+
+        let result = check(&polling_assertion(Duration::from_millis(200)), &ctx).await;
+
+        assert_eq!(result.status, AssertionStatus::Errored, "{}", result.message);
+        assert_eq!(result.duration, Duration::from_millis(200));
+        assert_eq!(
+            result.message.lines().next(),
+            Some("Timed out after 200ms waiting for the intake sidecar's metrics dump.: deadline has elapsed"),
+            "{}",
             result.message
         );
     }
