@@ -41,6 +41,7 @@ stringtheory = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tonic = { workspace = true, features = ["router"] }
 tracing = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
 
 # The targets where Tokio supports task dumps. This must match the `cfg` guarding the task dump code.
 [target.'cfg(all(target_os = "linux", any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64", target_arch = "s390x")))'.dependencies]

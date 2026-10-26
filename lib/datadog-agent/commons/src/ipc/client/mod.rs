@@ -190,16 +190,21 @@ impl RemoteAgentClient {
 
     /// Registers a Remote Agent with the Agent.
     ///
+    /// `pid` is the OS process ID. `process_instance_id` identifies the process lifetime across RAR sessions, so a
+    /// restarted process must send a new ID even if it has the same PID.
+    ///
     /// # Errors
     ///
     /// If there is an error sending the request to the Agent API, an error will be returned.
     pub async fn register_remote_agent(
-        &mut self, pid: u32, display_name: &str, flavor: &str, api_endpoint: &str, services: Vec<String>,
+        &mut self, pid: u32, process_instance_id: &str, display_name: &str, flavor: &str, api_endpoint: &str,
+        services: Vec<String>,
     ) -> Result<Response<RegisterRemoteAgentResponse>, GenericError> {
         let mut client = self.remote_agent_client.clone();
         let response = client
             .register_remote_agent(RegisterRemoteAgentRequest {
                 pid: pid.to_string(),
+                process_instance_id: process_instance_id.to_string(),
                 flavor: flavor.to_string(),
                 display_name: display_name.to_string(),
                 api_endpoint_uri: api_endpoint.to_string(),
