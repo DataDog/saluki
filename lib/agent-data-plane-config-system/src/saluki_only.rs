@@ -298,8 +298,12 @@ pub struct DataPlaneExperimental {
 #[serde(default)]
 pub struct DataPlaneExperimentalApm {
     /// Whether the APM proxy runs (`data_plane.experimental.apm.enabled`).
+    ///
+    /// Defaults to `false`.
     pub enabled: Option<bool>,
     /// URL of the relocated trace-agent (`data_plane.experimental.apm.proxy_destination`).
+    ///
+    /// Defaults to `http://127.0.0.1:8127`.
     pub proxy_destination: Option<String>,
 }
 

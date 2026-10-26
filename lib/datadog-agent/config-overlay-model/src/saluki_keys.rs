@@ -146,7 +146,10 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
              Agent moves the trace-agent's receiver to that address.
 
 \
-             > Settings under `experimental` are unstable and may change, move, or be removed.",
+             > [!WARNING]
+\
+             > Settings under `experimental` are unstable and may change, move, or be removed. Do not rely on \
+             backward compatibility.",
         ),
         value_type: "ValueType::Bool",
         schema_default: Some("false"),

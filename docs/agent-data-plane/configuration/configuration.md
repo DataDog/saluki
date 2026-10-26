@@ -826,7 +826,8 @@ The example endpoint must also be configured as the primary or an additional end
 
 With `data_plane.experimental.apm.enabled` set, ADP takes over the trace-agent's receiver. It listens where the trace-agent normally does (`apm_config.receiver_port`, `apm_config.receiver_socket`, `apm_config.apm_non_local_traffic`, and `bind_host`) and forwards every request to the trace-agent at `data_plane.experimental.apm.proxy_destination`. The Datadog Agent moves the trace-agent's receiver to that address.
 
-> Settings under `experimental` are unstable and may change, move, or be removed.
+> [!WARNING]
+> Settings under `experimental` are unstable and may change, move, or be removed. Do not rely on backward compatibility.
 
 ### `data_plane.otlp.receiver_grpc_endpoint_temporary`
 
