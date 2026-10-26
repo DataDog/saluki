@@ -184,6 +184,16 @@ impl Http2Config {
 /// A caller that has already built the exact router it wants can hand it over with [`with_routes`][Self::with_routes],
 /// which bypasses all of the above.
 ///
+/// # Peer address
+///
+/// Every request carries the address of the peer that sent it, which handlers read with the
+/// [`ConnectInfo<ConnectionAddress>`][ConnectInfo] extractor:
+///
+/// - Over TCP, with or without TLS, it's the peer's socket address.
+/// - Over a Unix domain socket, it's the identity of the peer process: its PID, UID, and GID. The identity is captured
+///   once, when the peer connects, so it's fixed for the life of the connection, and the PID may refer to a process that
+///   has since exited. When the platform doesn't provide the PID, or the lookup fails, it holds the reason instead.
+///
 /// # Supervision
 ///
 /// The server must be run under supervision, and can be converted to a [`Supervisor`] to do so. A number of child workers
