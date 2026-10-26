@@ -8,7 +8,8 @@
 //! - [`DriverOptions`] can also build only the context that the driver would pass to a component, as
 //!   [`ContextParts`], for a test that drives a piece of a component with a real context.
 //! - [`TestComponentSupervisor`] is the topology supervisor on its own, for code that spawns supervised children but
-//!   isn't a whole component. The driver runs every component under one. Prefer it over
+//!   isn't a whole component, or that runs as a static worker (see
+//!   [`start_with`][TestComponentSupervisor::start_with]). The driver runs every component under one. Prefer it over
 //!   `Supervisor::new(..).handle()`, which looks equivalent but never runs, so every child spawned on it is dropped.
 //!
 //! # Driving a component
