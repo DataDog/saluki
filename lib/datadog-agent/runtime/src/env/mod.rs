@@ -241,3 +241,16 @@ impl EnvironmentProvider for RemoteAgentEnvironmentProvider {
         &self.autodiscovery_provider
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn standalone_requires_a_non_empty_hostname() {
+        for hostname in [None, Some(String::new())] {
+            let result = RemoteAgentEnvironmentProvider::standalone(&HostSettings { hostname }, &HealthRegistry::new());
+            assert!(result.is_err());
+        }
+    }
+}
