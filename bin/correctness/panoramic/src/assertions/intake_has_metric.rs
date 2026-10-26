@@ -402,7 +402,8 @@ impl Assertion for IntakeHasMetricAssertion {
         };
 
         let client = IntakeClient::new(intake_port);
-        let deadline = started + self.timeout;
+        // Building the client can be slow on a busy machine, so the budget starts after it.
+        let deadline = Instant::now() + self.timeout;
         let mut snapshot = None;
         let mut last_error: Option<LastError> = None;
         let mut polled = false;

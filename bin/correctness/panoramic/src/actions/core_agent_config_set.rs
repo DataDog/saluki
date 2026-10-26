@@ -88,7 +88,6 @@ impl Action for CoreAgentConfigSetAction {
 
     async fn execute(&self, ctx: &AssertionContext) -> AssertionResult {
         let started = Instant::now();
-        let deadline = started + self.timeout;
 
         if let Err(e) = validate_runtime_key(&self.key) {
             return AssertionResult::new(self.name(), started, AssertionStatus::Errored, e.to_string());
@@ -98,6 +97,8 @@ impl Action for CoreAgentConfigSetAction {
             Err(e) => return AssertionResult::new(self.name(), started, AssertionStatus::Errored, format!("{e:#}")),
         };
 
+        // Preparing the setter can be slow on a busy machine, so the budget starts after it.
+        let deadline = Instant::now() + self.timeout;
         let mut attempts = Attempts::default();
         loop {
             if ctx.cancel_token.is_cancelled() {

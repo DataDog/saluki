@@ -92,8 +92,6 @@ impl Assertion for HttpCheckAssertion {
 
     async fn check(&self, ctx: &AssertionContext) -> AssertionResult {
         let started = Instant::now();
-        let deadline = started + self.timeout;
-
         let endpoint = self.resolve_endpoint(ctx);
 
         // Pick a probe strategy. Linux/host targets are reachable directly from the test runner,
@@ -122,6 +120,8 @@ impl Assertion for HttpCheckAssertion {
             }
         };
         let what = http_probe.what(&endpoint);
+        // Building the client can be slow on a busy machine, so the budget starts after it.
+        let deadline = Instant::now() + self.timeout;
         let mut attempts = Attempts::default();
 
         loop {
