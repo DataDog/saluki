@@ -679,9 +679,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_poll_reports_its_full_error_chain() {
+        let intake = MockIntake::hanging_up().await;
         let result = check(
             &polling_assertion(Duration::from_millis(300)),
-            &context(CancellationToken::new(), CancellationToken::new()),
+            &context_for(CancellationToken::new(), CancellationToken::new(), Some(intake.port())),
         )
         .await;
 

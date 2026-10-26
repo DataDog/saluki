@@ -30,7 +30,8 @@ impl IntakeClient {
                 .read_timeout(INTAKE_READ_TIMEOUT)
                 .build()
                 .expect("the intake HTTP client should build"),
-            base_url: format!("http://localhost:{}", port),
+            // `localhost` can try IPv6 first, which delays each connection on Windows.
+            base_url: format!("http://127.0.0.1:{}", port),
         }
     }
 

@@ -1072,7 +1072,13 @@ mod tests {
         ctx.port_mappings.insert("1234/tcp".to_string(), closed);
         ctx.core_agent_auth_token_path = Some(auth_token);
         // Closed ports and a missing file make probes finish quickly, leaving retry sleeps to exercise cancellation.
-        cancel_after(&cancel, Duration::from_millis(250));
+        // Windows retries a refused connection for about two seconds, so cancel after the first attempts end.
+        let cancel_delay = if cfg!(windows) {
+            Duration::from_secs(5)
+        } else {
+            Duration::from_millis(250)
+        };
+        cancel_after(&cancel, cancel_delay);
         let assertions = format!(
             "- parallel:\n  - assertion: http_check\n    endpoint: http://127.0.0.1:{closed}/\n    status:\n      \
              equal: 200\n    timeout: 30s\n  - assertion: port_listening\n    port: 1234\n    protocol: tcp\n    \
