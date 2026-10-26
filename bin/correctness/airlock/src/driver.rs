@@ -907,7 +907,13 @@ impl Driver {
         Ok(details)
     }
 
-    async fn start_container(&self) -> Result<DriverDetails, GenericError> {
+    /// Starts the container that [`Driver::create`] created.
+    ///
+    /// # Errors
+    ///
+    /// If there is an error while starting or inspecting the container, or while preparing its log files, it will be
+    /// returned.
+    pub async fn start_container(&self) -> Result<DriverDetails, GenericError> {
         debug!(
             driver_id = self.config.driver_id,
             isolation_group = self.isolation_group_id,
@@ -972,6 +978,20 @@ impl Driver {
     /// If there is an error while creating the network or shared volume, while pulling the container image, or while
     /// creating or starting the container, it will be returned.
     pub async fn start(&mut self) -> Result<DriverDetails, GenericError> {
+        self.create().await?;
+        self.start_container().await
+    }
+
+    /// Creates the container and the resources it needs, without starting it.
+    ///
+    /// This makes every request that creates something in the isolation group, so once it returns, starting the
+    /// container creates nothing more.
+    ///
+    /// # Errors
+    ///
+    /// If there is an error while creating the network or shared volume, while pulling the container image, or while
+    /// creating the container, it will be returned.
+    pub async fn create(&self) -> Result<(), GenericError> {
         self.create_network_if_missing().await?;
         self.create_image_if_missing().await?;
         self.create_volume_if_missing().await?;
@@ -980,8 +1000,7 @@ impl Driver {
         }
 
         self.create_container().await?;
-        self.connect_to_additional_networks().await?;
-        self.start_container().await
+        self.connect_to_additional_networks().await
     }
 
     /// Waits until the container is marked as healthy.
@@ -1774,6 +1793,73 @@ mod tests {
         for container_removal in &requests[1..3] {
             assert!(container_removal.contains("force=true"), "{container_removal}");
         }
+    }
+
+    #[tokio::test]
+    async fn creating_a_container_does_not_start_it() {
+        // Callers treat only a cancelled `create` as able to leave resources behind, so creating must not start the
+        // container and starting must create nothing.
+        let daemon = FakeDaemon::start(
+            |method, path| match (method, path.split('?').next().unwrap_or_default()) {
+                ("GET", "/networks") => (200, r#"[{"Name": "airlock-ab12cd34"}]"#),
+                ("POST", "/images/create") => (200, "{}"),
+                ("GET", "/volumes") => (200, r#"{"Volumes": [], "Warnings": []}"#),
+                ("POST", "/volumes/create") => (
+                    201,
+                    r#"{"Name": "airlock-ab12cd34", "Driver": "local", "Mountpoint": "/x", "Labels": {},
+                        "Options": {}, "Scope": "local"}"#,
+                ),
+                ("POST", "/containers/create") => (201, r#"{"Id": "c1", "Warnings": []}"#),
+                ("POST", "/containers/airlock-ab12cd34-target/start") => (204, ""),
+                ("GET", "/containers/airlock-ab12cd34-target/json") => (200, "{}"),
+                _ => (500, r#"{"message": "unexpected request"}"#),
+            },
+        )
+        .await;
+        // A Windows container skips the shared volume fix-up, which starts a helper container of its own.
+        let driver = Driver {
+            isolation_group_id: GROUP.to_string(),
+            isolation_group_name: format!("airlock-{GROUP}"),
+            container_name: format!("airlock-{GROUP}-target"),
+            config: DriverConfig::from_image("target", "example:latest".to_string())
+                .with_container_os(ContainerOs::Windows),
+            docker: daemon.docker.clone(),
+            log_dir: None,
+        };
+        let paths = || -> Vec<String> {
+            let requests = daemon.requests.lock().unwrap();
+            requests
+                .iter()
+                .map(|request| request.split('?').next().unwrap_or_default().to_string())
+                .collect()
+        };
+
+        tokio::time::timeout(BOUND, driver.create())
+            .await
+            .expect("creation should finish within the bound")
+            .expect("creation should succeed");
+
+        let created = paths();
+        assert_eq!(
+            created.last().map(String::as_str),
+            Some("POST /containers/create"),
+            "{created:?}"
+        );
+        assert!(!created.iter().any(|path| path.ends_with("/start")), "{created:?}");
+
+        let details = tokio::time::timeout(BOUND, driver.start_container())
+            .await
+            .expect("starting should finish within the bound")
+            .expect("starting should succeed");
+
+        assert_eq!(details.container_name(), "airlock-ab12cd34-target");
+        assert_eq!(
+            paths()[created.len()..],
+            [
+                "POST /containers/airlock-ab12cd34-target/start",
+                "GET /containers/airlock-ab12cd34-target/json",
+            ]
+        );
     }
 
     #[tokio::test]

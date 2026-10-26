@@ -646,7 +646,7 @@ impl IntegrationRunner {
         // Create and start the driver.
         let phase = self.tctx.phases.enter("container_start");
         debug!(test = %test_name, "Creating container driver...");
-        let mut driver = match Driver::from_config(self.isolation_group_id.clone(), driver_config) {
+        let driver = match Driver::from_config(self.isolation_group_id.clone(), driver_config) {
             Ok(driver) => driver,
             Err(e) => {
                 error!(test = %test_name, error = %e, "Failed to create container driver.");
@@ -656,7 +656,7 @@ impl IntegrationRunner {
         };
 
         info!(test = %test_name, "Starting container...");
-        let details = match self.start_container(&mut driver).await {
+        let details = match self.start_container(&driver).await {
             Ok(details) => details,
             Err(e) => {
                 error!(test = %test_name, error = %e, "Failed to start container.");
@@ -842,20 +842,31 @@ impl IntegrationRunner {
         result
     }
 
-    /// Starts `driver`'s container, stopping on test cancellation.
+    /// Creates and starts `driver`'s container, stopping on test cancellation.
     ///
-    /// Cancellation marks the group unsettled: Docker may finish creating resources after cleanup lists the group.
-    async fn start_container(&self, driver: &mut Driver) -> Result<DriverDetails, GenericError> {
-        match self.tctx.test_cancel_token().run_until_cancelled(driver.start()).await {
-            Some(started) => started,
+    /// Cancellation during creation marks the group unsettled: Docker may finish creating resources after cleanup lists
+    /// the group. Starting creates nothing, so cancellation after creation leaves the group settled.
+    async fn start_container(&self, driver: &Driver) -> Result<DriverDetails, GenericError> {
+        let cancel = self.tctx.test_cancel_token();
+        match cancel.run_until_cancelled(driver.create()).await {
+            Some(created) => created?,
             None => {
                 self.tctx.ledger.mark_unsettled(&self.isolation_group_id);
+                return Err(generic_error!(
+                    "Cancelled while creating a container in isolation group '{}'.",
+                    self.isolation_group_id
+                ));
+            }
+        }
+        cancel
+            .run_until_cancelled(driver.start_container())
+            .await
+            .unwrap_or_else(|| {
                 Err(generic_error!(
                     "Cancelled while starting a container in isolation group '{}'.",
                     self.isolation_group_id
                 ))
-            }
-        }
+            })
     }
 
     async fn build_driver_config(&self) -> Result<DriverConfig, GenericError> {
@@ -963,7 +974,7 @@ impl IntegrationRunner {
 
         let mut driver = Driver::from_config(self.isolation_group_id.clone(), config)?
             .with_logging(self.tctx.log_dir().to_path_buf());
-        let details = self.start_container(&mut driver).await?;
+        let details = self.start_container(&driver).await?;
 
         // Bound the health wait and watch cancellation so an unhealthy sidecar releases the test promptly.
         probe(
