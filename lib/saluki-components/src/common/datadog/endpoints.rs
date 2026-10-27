@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    fmt,
     str::FromStr,
     sync::LazyLock,
 };
@@ -252,8 +253,9 @@ pub(crate) struct SingleDestination {
 }
 
 /// Endpoint configuration for sending payloads to the Datadog platform.
+///
+/// `Debug` includes endpoint URLs but omits API keys.
 #[derive(Clone, PartialEq)]
-#[cfg_attr(test, derive(Debug))]
 pub struct EndpointConfiguration {
     /// The API key to use.
     api_key: String,
@@ -314,6 +316,15 @@ impl EndpointConfiguration {
     pub(crate) fn build_additional_endpoints(&self) -> Result<Vec<ResolvedEndpoint>, GenericError> {
         resolve_additional_endpoints(&self.additional_endpoints)
             .error_context("Failed parsing/resolving the additional destination endpoints.")
+    }
+}
+
+impl fmt::Debug for EndpointConfiguration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EndpointConfiguration")
+            .field("primary_endpoint", &self.primary_endpoint)
+            .field("additional_endpoints", &self.additional_endpoints.keys())
+            .finish_non_exhaustive()
     }
 }
 
@@ -616,6 +627,26 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn endpoint_configuration_debug_omits_api_keys() {
+        let config = EndpointConfiguration::new(
+            "primary-secret".to_string(),
+            "https://primary.example.com".to_string(),
+            additional_endpoints(&[(
+                "https://additional.example.com",
+                &["additional-secret", "another-secret"],
+            )]),
+        );
+
+        for debug in [format!("{config:?}"), format!("{config:#?}")] {
+            assert!(debug.contains("https://primary.example.com"), "{debug}");
+            assert!(debug.contains("https://additional.example.com"), "{debug}");
+            for key in ["primary-secret", "additional-secret", "another-secret"] {
+                assert!(!debug.contains(key), "API key exposed in Debug output");
+            }
+        }
     }
 
     #[test]

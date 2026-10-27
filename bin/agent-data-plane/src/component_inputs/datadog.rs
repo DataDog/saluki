@@ -307,16 +307,16 @@ mod tests {
         assert_eq!(34, config.request_timeout_secs);
         assert_eq!(24, config.endpoint_buffer_size);
         // The primary endpoint comes from the explicit site, because `dd_url` is only at its default.
-        assert!(
+        assert_eq!(
+            EndpointConfiguration::new(
+                "primary-key".to_string(),
+                "https://app.datadoghq.eu".to_string(),
+                HashMap::from([(
+                    "https://additional.example.com".to_string(),
+                    vec!["additional-key".to_string()],
+                )]),
+            ),
             config.endpoint
-                == EndpointConfiguration::new(
-                    "primary-key".to_string(),
-                    "https://app.datadoghq.eu".to_string(),
-                    HashMap::from([(
-                        "https://additional.example.com".to_string(),
-                        vec!["additional-key".to_string()],
-                    )]),
-                )
         );
         assert_eq!(expected_opw_metrics(), config.opw_metrics);
         assert_eq!(ForwarderHttpProtocol::Http1, config.http_protocol);
