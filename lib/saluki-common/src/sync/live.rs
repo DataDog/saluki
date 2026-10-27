@@ -220,7 +220,7 @@ impl<T: Clone + PartialEq + 'static> Live<T> {
     /// Each item comes from [`changed`](Self::changed): the stream skips the current snapshot but can yield a change
     /// pending before conversion. Intermediate values may be skipped. The stream never ends, even for fixed views or
     /// after the publisher drops.
-    pub fn into_changes(self) -> impl Stream<Item = T> + Send + 'static
+    pub fn into_stream(self) -> impl Stream<Item = T> + Send + 'static
     where
         T: Send,
     {
@@ -347,7 +347,7 @@ mod tests {
 
     #[test]
     fn fixed_live_stream_never_yields_or_ends() {
-        let mut values = spawn(Live::new_fixed(true).into_changes());
+        let mut values = spawn(Live::new_fixed(true).into_stream());
         assert_pending!(values.poll_next());
     }
 
@@ -431,7 +431,7 @@ mod tests {
             .source
             .live(|root| &root.selected)
             .project(|selected| &selected.value);
-        let mut values = spawn(child.into_changes());
+        let mut values = spawn(child.into_stream());
 
         shared.update(|root| root.unrelated = 1);
         assert_pending!(values.poll_next());
@@ -449,7 +449,7 @@ mod tests {
     fn stream_starts_with_the_next_change_not_the_current_snapshot() {
         let mut shared = Shared::new();
         shared.update(|root| root.selected.value = 1);
-        let mut values = spawn(shared.source.live(|root| &root.selected.value).into_changes());
+        let mut values = spawn(shared.source.live(|root| &root.selected.value).into_stream());
 
         assert_pending!(values.poll_next());
 
@@ -463,7 +463,7 @@ mod tests {
         let view = shared.source.live(|root| &root.selected.value);
 
         shared.update(|root| root.selected.value = 1);
-        let mut values = spawn(view.into_changes());
+        let mut values = spawn(view.into_stream());
 
         assert_eq!(assert_ready!(values.poll_next()), Some(1));
         assert_pending!(values.poll_next());
@@ -472,7 +472,7 @@ mod tests {
     #[test]
     fn stream_coalesces_unprocessed_updates_to_the_latest_value() {
         let mut shared = Shared::new();
-        let mut values = spawn(shared.source.live(|root| &root.selected.value).into_changes());
+        let mut values = spawn(shared.source.live(|root| &root.selected.value).into_stream());
 
         shared.update(|root| root.selected.value = 1);
         shared.update(|root| root.selected.value = 2);
@@ -485,7 +485,7 @@ mod tests {
     fn dynamic_view_and_stream_park_after_the_publisher_drops() {
         let shared = Shared::new();
         let mut view = shared.source.live(|root| &root.selected.value);
-        let mut values = spawn(shared.source.live(|root| &root.selected.value).into_changes());
+        let mut values = spawn(shared.source.live(|root| &root.selected.value).into_stream());
         drop(shared);
 
         assert_pending!(spawn(view.changed()).poll());
@@ -525,7 +525,7 @@ mod tests {
         {
         }
 
-        assert_send_static(&Live::new_fixed(Cell::new(1)).into_changes());
+        assert_send_static(&Live::new_fixed(Cell::new(1)).into_stream());
     }
 
     #[test]
@@ -643,7 +643,7 @@ mod tests {
     fn after_the_publisher_drops_views_process_an_unseen_update_then_stay_pending() {
         let mut shared = Shared::new();
         let mut view = shared.source.live(|root| &root.selected.value);
-        let mut values = spawn(shared.source.live(|root| &root.selected.value).into_changes());
+        let mut values = spawn(shared.source.live(|root| &root.selected.value).into_stream());
         shared.update(|root| root.selected.value = 1);
         let Shared { publisher, source } = shared;
         drop(publisher);

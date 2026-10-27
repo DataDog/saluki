@@ -1541,7 +1541,7 @@ mod tests {
     #[tokio::test]
     async fn live_stream_yields_each_change() {
         let (system, agent_tx) = connected_system(json!({})).await;
-        let mut levels = Box::pin(system.live(|c| &c.control.logging.level).into_changes());
+        let mut levels = Box::pin(system.live(|c| &c.control.logging.level).into_stream());
 
         for level in ["debug", "warn"] {
             agent_tx
