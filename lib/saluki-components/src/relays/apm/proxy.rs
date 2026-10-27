@@ -3,11 +3,11 @@
 //! Every request the APM relay does not handle itself is forwarded, unchanged apart from hop-by-hop headers, to the
 //! trace-agent at the configured destination, and the trace-agent's response is streamed back to the client.
 
-#[cfg(unix)]
-use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
+#[cfg(unix)]
+use std::{ffi::OsStr, os::unix::ffi::OsStrExt as _, path::PathBuf};
 
 use axum::body::Body;
 use axum::extract::Request as AxumRequest;
@@ -99,8 +99,10 @@ impl TraceAgentProxy {
             #[cfg(unix)]
             "unix" => {
                 // `unix://relative/path` parses with `relative` as the host, so a host means the path was not
-                // absolute.
-                let path = PathBuf::from(url.path());
+                // absolute. The URL path is percent-encoded, so a socket path with, for example, a space in it has to
+                // be decoded first.
+                let decoded = percent_encoding::percent_decode_str(url.path()).collect::<Vec<u8>>();
+                let path = PathBuf::from(OsStr::from_bytes(&decoded));
                 if url.host_str().is_some_and(|host| !host.is_empty()) || !path.is_absolute() {
                     return Err(generic_error!(
                         "APM proxy destination `{destination}` must name an absolute socket path."
@@ -384,6 +386,23 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::CREATED);
         assert_eq!(seen.lock().await.uri, "/info");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn decodes_a_percent_encoded_unix_domain_socket_path() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let socket_path = dir.path().join("trace agent.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path).expect("should bind the socket");
+        let seen = Arc::new(AsyncMutex::new(Seen::default()));
+        let router = fake_trace_agent(Arc::clone(&seen));
+        tokio::spawn(async move { axum::serve(listener, router).await });
+
+        let destination = format!("unix://{}", socket_path.display()).replace(' ', "%20");
+        let proxy = TraceAgentProxy::from_destination(&destination).expect("destination should parse");
+        let response = proxy.forward(request("GET", "/info", &[], "")).await;
+
+        assert_eq!(response.status(), StatusCode::CREATED);
     }
 
     #[tokio::test]
