@@ -10,42 +10,9 @@ use tokio::sync::watch;
 
 /// Borrowed access to the source's projected value, hiding the source type.
 ///
-/// Implementations must call `f` exactly once per `with` call.
-trait Source<T>: Send + Sync {
-    fn with(&self, f: &mut dyn FnMut(&T));
-}
-
+/// Calling a source must call its callback exactly once.
 // Borrowed projections let nested views clone only their selected `T`, not the shared source.
-struct Root<S, P> {
-    cell: Arc<ArcSwap<S>>,
-    project: P,
-}
-
-impl<S, T, P> Source<T> for Root<S, P>
-where
-    S: Send + Sync,
-    P: for<'a> Fn(&'a S) -> &'a T + Send + Sync,
-{
-    fn with(&self, f: &mut dyn FnMut(&T)) {
-        let guard = self.cell.load();
-        f((self.project)(&guard));
-    }
-}
-
-struct Child<T, F> {
-    parent: Arc<dyn Source<T>>,
-    project: F,
-}
-
-impl<T, U, F> Source<U> for Child<T, F>
-where
-    T: 'static,
-    F: for<'a> Fn(&'a T) -> &'a U + Send + Sync,
-{
-    fn with(&self, f: &mut dyn FnMut(&U)) {
-        self.parent.with(&mut |value| f((self.project)(value)));
-    }
-}
+type Source<T> = Arc<dyn Fn(&mut dyn FnMut(&T)) + Send + Sync>;
 
 /// A typed view of one projection of a shared value.
 ///
@@ -60,7 +27,7 @@ pub struct Live<T> {
 enum Inner<T> {
     Fixed(T),
     Dynamic {
-        source: Arc<dyn Source<T>>,
+        source: Source<T>,
 
         // Notifications carry no value and may include changes outside this view's projection.
         tick: watch::Receiver<()>,
@@ -80,12 +47,16 @@ impl<T: Clone + PartialEq + 'static> Live<T> {
     where
         S: Send + Sync + 'static,
     {
-        Self::from_source(Arc::new(Root { cell, project }), tick)
+        let source: Source<T> = Arc::new(move |f: &mut dyn FnMut(&T)| {
+            let guard = cell.load();
+            f(project(&guard));
+        });
+        Self::from_source(source, tick)
     }
 
-    fn from_source(source: Arc<dyn Source<T>>, tick: watch::Receiver<()>) -> Self {
+    fn from_source(source: Source<T>, tick: watch::Receiver<()>) -> Self {
         let mut snapshot = None;
-        source.with(&mut |value| snapshot = Some(value.clone()));
+        source(&mut |value| snapshot = Some(value.clone()));
         let snapshot = snapshot.expect("a source always passes its current value to the callback");
         Self {
             inner: Inner::Dynamic { source, tick, snapshot },
@@ -114,7 +85,7 @@ impl<T: Clone + PartialEq + 'static> Live<T> {
                     std::future::pending::<()>().await;
                 }
                 let mut changed = false;
-                source.with(&mut |latest| {
+                source(&mut |latest| {
                     if *latest != *snapshot {
                         *snapshot = latest.clone();
                         changed = true;
@@ -153,13 +124,11 @@ impl<T: Clone + PartialEq + 'static> Live<T> {
     {
         match &self.inner {
             Inner::Fixed(value) => Live::new_fixed(f(value).clone()),
-            Inner::Dynamic { source, tick, .. } => Live::from_source(
-                Arc::new(Child {
-                    parent: Arc::clone(source),
-                    project: f,
-                }),
-                tick.clone(),
-            ),
+            Inner::Dynamic { source, tick, .. } => {
+                let parent = Arc::clone(source);
+                let source: Source<U> = Arc::new(move |g: &mut dyn FnMut(&U)| parent(&mut |value| g(f(value))));
+                Live::from_source(source, tick.clone())
+            }
         }
     }
 }
