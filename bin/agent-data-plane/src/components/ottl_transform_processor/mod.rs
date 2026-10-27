@@ -22,12 +22,12 @@ use tracing::{debug, error};
 
 mod span_context;
 use self::span_context::{SpanTransformContext, SpanTransformFamily};
-use crate::components::ottl_error_mode::OttlErrorMode;
+use crate::components::ottl::ErrorMode;
 
 /// Configuration for the OTTL Transform processor.
 #[derive(Clone, Debug)]
 pub struct OttlTransformConfiguration {
-    error_mode: OttlErrorMode,
+    error_mode: ErrorMode,
     trace_statements: Vec<String>,
 }
 
@@ -35,7 +35,7 @@ impl OttlTransformConfiguration {
     /// Creates a processor that applies `trace_statements` to each span, in order.
     ///
     /// `error_mode` decides whether later statements still run after one fails.
-    pub fn new(error_mode: OttlErrorMode, trace_statements: Vec<String>) -> Self {
+    pub fn new(error_mode: ErrorMode, trace_statements: Vec<String>) -> Self {
         Self {
             error_mode,
             trace_statements,
@@ -91,7 +91,7 @@ impl MemoryBounds for OttlTransformConfiguration {
 
 /// Synchronous transform that applies OTTL statements to each span in a trace.
 pub struct OttlTransform {
-    error_mode: OttlErrorMode,
+    error_mode: ErrorMode,
     span_parsers: Vec<ottl::Parser<SpanTransformFamily>>,
 }
 
@@ -108,11 +108,11 @@ impl OttlTransform {
             match parser.execute(&mut ctx) {
                 Ok(_) => {}
                 Err(e) => match self.error_mode {
-                    OttlErrorMode::Ignore => {
+                    ErrorMode::Ignore => {
                         error!(error = %e, "OTTL transform statement error; ignoring");
                     }
-                    OttlErrorMode::Silent => {}
-                    OttlErrorMode::Propagate => {
+                    ErrorMode::Silent => {}
+                    ErrorMode::Propagate => {
                         // The OTel spec drops the entire payload on propagate errors,
                         // but the SynchronousTransform API does not support error propagation.
                         // We log and stop processing further statements for this span.
@@ -189,9 +189,9 @@ mod tests {
             .and_then(|value| value.get("ottl_transform_config").cloned())
             .unwrap_or_default();
         let error_mode = match root.get("error_mode").and_then(serde_json::Value::as_str) {
-            Some("ignore") => OttlErrorMode::Ignore,
-            Some("silent") => OttlErrorMode::Silent,
-            _ => OttlErrorMode::Propagate,
+            Some("ignore") => ErrorMode::Ignore,
+            Some("silent") => ErrorMode::Silent,
+            _ => ErrorMode::Propagate,
         };
         let trace_statements = root
             .get("trace_statements")
@@ -497,7 +497,7 @@ mod tests {
     #[tokio::test]
     async fn error_mode_controls_processing_after_a_statement_error() {
         // After a statement errors, `error_mode` decides whether later statements still run: ignore/silent
-        // continue, propagate stops processing the span. One case per `OttlErrorMode` arm. The first statement
+        // continue, propagate stops processing the span. One case per `ErrorMode` arm. The first statement
         // (setting a read-only resource attribute) always errors.
         struct Case {
             error_mode: &'static str,
