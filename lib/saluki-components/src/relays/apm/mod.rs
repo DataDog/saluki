@@ -84,6 +84,7 @@ pub struct ApmRelayConfiguration {
 #[derive(Clone)]
 struct Metrics {
     requests_relayed_total: Counter,
+    requests_failed_total: Counter,
 }
 
 impl ApmRelayConfiguration {
@@ -285,11 +286,15 @@ impl ApmRelayAPIHandler {
         }): State<RelayState>,
         mut request: AxumRequest,
     ) -> impl IntoResponse {
-        metrics.requests_relayed_total().increment(1);
         if let Some(resolver) = capture_entity_resolver.as_deref() {
             add_peer_container_id(&mut request, resolver);
         }
-        proxy.forward(request).await
+        let result = proxy.forward(request).await;
+        match &result {
+            Ok(_) => metrics.requests_relayed_total().increment(1),
+            Err(_) => metrics.requests_failed_total().increment(1),
+        }
+        result
     }
 }
 
@@ -434,6 +439,39 @@ mod tests {
         add_peer_container_id(&mut request, &FixedContainerResolver);
 
         assert!(!request.headers().contains_key(CONTAINER_ID_HEADER));
+    }
+
+    #[tokio::test]
+    async fn counts_a_request_the_trace_agent_never_received_as_failed() {
+        let recorder = saluki_metrics::test::TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let router = test_router();
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/v0.4/traces")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+
+        let metric_key = |name| {
+            metrics::Key::from_parts(
+                name,
+                vec![
+                    metrics::Label::new("component_id", "dd_traces_relay"),
+                    metrics::Label::new("component_type", "relays"),
+                ],
+            )
+        };
+        assert_eq!(recorder.counter(metric_key("component_requests_failed_total")), Some(1));
+        assert_eq!(
+            recorder.counter(metric_key("component_requests_relayed_total")),
+            Some(0)
+        );
     }
 
     #[tokio::test]

@@ -4,7 +4,10 @@
 //! trace-agent at the configured destination, and the trace-agent's response is streamed back to the client.
 
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::task::{Context, Poll};
 #[cfg(unix)]
 use std::{ffi::OsStr, os::unix::ffi::OsStrExt as _, path::PathBuf};
@@ -19,7 +22,7 @@ use http_body::{Body as HttpBody, Frame, SizeHint};
 use rustls::RootCertStore;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::client::http::{HttpClient, HttpProtocol};
-use tracing::debug;
+use tracing::{debug, info, warn};
 use url::Url;
 
 /// Headers that describe a single connection rather than the request, and so must not be forwarded across a proxy
@@ -45,6 +48,31 @@ pub(super) struct TraceAgentProxy {
     /// Scheme and authority requests are rewritten to. For a Unix domain socket destination the client ignores the
     /// authority and connects to the socket, but a request URI still needs one.
     base_uri: Uri,
+
+    /// Whether the last attempt to reach the trace-agent failed.
+    ///
+    /// Only the first failure after a success is logged as a warning, so a trace-agent that is down logs once rather
+    /// than once per request.
+    unreachable: Arc<AtomicBool>,
+}
+
+/// Error from forwarding a request to the trace-agent.
+#[derive(Debug)]
+pub(super) enum ForwardError {
+    /// The request's path couldn't be carried over to the trace-agent.
+    InvalidUri,
+
+    /// The trace-agent couldn't be reached, or didn't answer.
+    Unreachable,
+}
+
+impl IntoResponse for ForwardError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::InvalidUri => StatusCode::BAD_REQUEST.into_response(),
+            Self::Unreachable => StatusCode::BAD_GATEWAY.into_response(),
+        }
+    }
 }
 
 impl TraceAgentProxy {
@@ -123,20 +151,27 @@ impl TraceAgentProxy {
         Ok(Self {
             client: Arc::new(Mutex::new(builder.build()?)),
             base_uri,
+            unreachable: Arc::new(AtomicBool::new(false)),
         })
     }
 
     /// Forwards `request` to the trace-agent and returns its response.
     ///
-    /// A failure to reach the trace-agent is answered with `502 Bad Gateway`.
-    pub(super) async fn forward(&self, request: AxumRequest) -> Response {
+    /// Any response from the trace-agent is returned as is, including an error status. Converted into a response, a
+    /// [`ForwardError`] is answered with `400 Bad Request` if the request couldn't be carried over, or
+    /// `502 Bad Gateway` if the trace-agent couldn't be reached.
+    ///
+    /// # Errors
+    ///
+    /// If the request's path can't be carried over, or the trace-agent can't be reached, an error is returned.
+    pub(super) async fn forward(&self, request: AxumRequest) -> Result<Response, ForwardError> {
         let (mut parts, body) = request.into_parts();
 
         parts.uri = match self.upstream_uri(parts.uri.path_and_query()) {
             Ok(uri) => uri,
             Err(e) => {
                 debug!(error = %e, "Failed to build the upstream URI for a proxied APM request.");
-                return StatusCode::BAD_REQUEST.into_response();
+                return Err(ForwardError::InvalidUri);
             }
         };
         strip_hop_by_hop_headers(&mut parts.headers);
@@ -155,13 +190,24 @@ impl TraceAgentProxy {
             .clone();
         match client.send(upstream_request).await {
             Ok(response) => {
+                if self.unreachable.swap(false, Ordering::Relaxed) {
+                    info!("The trace-agent is reachable again; APM requests are being relayed.");
+                }
                 let (mut parts, body) = response.into_parts();
                 strip_hop_by_hop_headers(&mut parts.headers);
-                Response::from_parts(parts, Body::new(body))
+                Ok(Response::from_parts(parts, Body::new(body)))
             }
             Err(e) => {
-                debug!(error = %e, "Failed to forward APM request to the trace-agent.");
-                StatusCode::BAD_GATEWAY.into_response()
+                if self.unreachable.swap(true, Ordering::Relaxed) {
+                    debug!(error = %e, "Failed to forward APM request to the trace-agent.");
+                } else {
+                    warn!(
+                        error = %e,
+                        "Failed to forward APM request to the trace-agent. Requests are dropped until it is reachable \
+                         again; further failures are logged at debug level."
+                    );
+                }
+                Err(ForwardError::Unreachable)
             }
         }
     }
@@ -311,7 +357,8 @@ mod tests {
                 &[("datadog-meta-lang", "python"), ("content-type", "application/msgpack")],
                 "payload",
             ))
-            .await;
+            .await
+            .into_response();
 
         assert_eq!(response.status(), StatusCode::CREATED);
         assert_eq!(response.headers().get("x-trace-agent").unwrap(), "yes");
@@ -342,7 +389,8 @@ mod tests {
                 ],
                 "",
             ))
-            .await;
+            .await
+            .into_response();
 
         assert!(response.headers().get("connection").is_none());
 
@@ -359,7 +407,7 @@ mod tests {
 
         let mut http2_request = request("GET", "/info", &[], "");
         *http2_request.version_mut() = Version::HTTP_2;
-        let response = proxy.forward(http2_request).await;
+        let response = proxy.forward(http2_request).await.into_response();
 
         assert_eq!(response.status(), StatusCode::CREATED);
         assert_eq!(seen.lock().await.uri, "/info");
@@ -382,7 +430,7 @@ mod tests {
 
         let proxy = TraceAgentProxy::from_destination(&format!("unix://{}", socket_path.display()))
             .expect("destination should parse");
-        let response = proxy.forward(request("GET", "/info", &[], "")).await;
+        let response = proxy.forward(request("GET", "/info", &[], "")).await.into_response();
 
         assert_eq!(response.status(), StatusCode::CREATED);
         assert_eq!(seen.lock().await.uri, "/info");
@@ -400,7 +448,7 @@ mod tests {
 
         let destination = format!("unix://{}", socket_path.display()).replace(' ', "%20");
         let proxy = TraceAgentProxy::from_destination(&destination).expect("destination should parse");
-        let response = proxy.forward(request("GET", "/info", &[], "")).await;
+        let response = proxy.forward(request("GET", "/info", &[], "")).await.into_response();
 
         assert_eq!(response.status(), StatusCode::CREATED);
     }
@@ -415,7 +463,7 @@ mod tests {
         drop(listener);
 
         let proxy = TraceAgentProxy::from_destination(&format!("http://{addr}")).expect("destination should parse");
-        let response = proxy.forward(request("GET", "/info", &[], "")).await;
+        let response = proxy.forward(request("GET", "/info", &[], "")).await.into_response();
 
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     }
