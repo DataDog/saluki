@@ -59,13 +59,17 @@ Use `ConfigValue<T>` in `SalukiConfiguration` when a default must be detectable,
 
 ### Dependency boundaries
 
-The intended end state is:
-
-- `agent-data-plane-config` depends on neither the raw map nor the Datadog source model.
+- `agent-data-plane-config` links no workspace crate, so it depends on neither the raw map nor the Datadog source
+  model.
 - `agent-data-plane-config-system` bridges sources to the model and constructs no components.
 - `saluki-components` and `bin/agent-data-plane/src/components/` never depend on `agent-data-plane-config`, not even
   in tests.
 - The rest of `bin/agent-data-plane` adapts the model into the inputs each component defines.
+
+The `architecture-tests` crate in `test/architecture/` checks these boundaries through dependency graphs and syntax
+scans. Its crate documentation lists the guards and their limits.
+Run them with `cargo nextest run -p architecture-tests`. When a guard fails, inspect the reported dependency or code:
+syntax matches can be false positives.
 
 ### Component inputs
 
