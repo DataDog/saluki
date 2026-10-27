@@ -5,9 +5,9 @@ use saluki_error::{generic_error, GenericError};
 use tokio::sync::{mpsc, oneshot};
 
 use super::driver::RunOutcome;
-use super::supervisor::{poll_until, TestComponentSupervisor};
 use crate::components::ComponentContext;
 use crate::data_model::event::Event;
+use crate::runtime::test_util::{poll_until, TestSupervisor};
 use crate::runtime::SupervisorError;
 use crate::topology::interconnect::Dispatchable;
 use crate::topology::{EventsBuffer, TopologyContext};
@@ -31,7 +31,7 @@ pub enum NoInput {}
 pub struct ComponentControl<I> {
     pub(super) component_context: ComponentContext,
     pub(super) topology_context: TopologyContext,
-    pub(super) supervisor: TestComponentSupervisor,
+    pub(super) supervisor: TestSupervisor,
     pub(super) input: Option<mpsc::Sender<I>>,
     pub(super) outcome: oneshot::Receiver<RunOutcome>,
 
@@ -62,10 +62,10 @@ impl<I> ComponentControl<I> {
     /// Returns the component's supervisor.
     ///
     /// Children the component spawns run in its scope, below the component. Use the supervisor to wait for them with
-    /// [`wait_for_running_descendants`][TestComponentSupervisor::wait_for_running_descendants], to count them, or to
+    /// [`wait_for_running_descendants`][TestSupervisor::wait_for_running_descendants], to count them, or to
     /// reach the dataspace they share with the component. The component itself runs under the supervisor too, so it is
     /// one of those descendants.
-    pub fn supervisor(&self) -> &TestComponentSupervisor {
+    pub fn supervisor(&self) -> &TestSupervisor {
         &self.supervisor
     }
 

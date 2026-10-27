@@ -243,7 +243,7 @@ fn get_dd_endpoint_name(uri: &Uri) -> Option<MetaString> {
 #[cfg(test)]
 mod tests {
     use agent_data_plane_config::SalukiConfiguration;
-    use saluki_core::components::test_util::TestComponentSupervisor;
+    use saluki_core::runtime::test_util::TestSupervisor;
 
     use super::*;
     use crate::common::datadog::{
@@ -341,7 +341,7 @@ mod tests {
 
         // The refresher spawns on the ambient supervisor, and the supervisor is what keeps it running for the rest of
         // the test.
-        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        let supervisor = TestSupervisor::start("test_forwarder").await;
         supervisor.scope(async move { refresher.spawn() }).await;
 
         // Rotate the primary key first: the override does not follow it.

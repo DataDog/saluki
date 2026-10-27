@@ -359,7 +359,7 @@ mod tests {
     use std::time::Duration;
 
     use agent_data_plane_config::SalukiConfiguration;
-    use saluki_core::components::test_util::TestComponentSupervisor;
+    use saluki_core::runtime::test_util::TestSupervisor;
 
     use super::*;
     use crate::common::datadog::{
@@ -395,8 +395,8 @@ mod tests {
     /// it would panic for want of an ambient supervisor. The returned supervisor is what keeps the refresher running,
     /// so a caller has to hold it for as long as the rotation under test needs to land.
     #[must_use]
-    async fn spawn_refresher(refresher: ApiKeyRefresher) -> TestComponentSupervisor {
-        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+    async fn spawn_refresher(refresher: ApiKeyRefresher) -> TestSupervisor {
+        let supervisor = TestSupervisor::start("test_forwarder").await;
         supervisor.scope(async move { refresher.spawn() }).await;
 
         supervisor
@@ -407,7 +407,7 @@ mod tests {
     #[must_use]
     async fn spawn_datadog_endpoints(
         live: &LiveConfiguration, additional: &[(&str, &[&str])],
-    ) -> (TestComponentSupervisor, Vec<RoutableEndpoint>) {
+    ) -> (TestSupervisor, Vec<RoutableEndpoint>) {
         let endpoints = datadog_endpoints(additional);
 
         let refresher =

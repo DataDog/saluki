@@ -193,3 +193,6 @@ mod workers;
 pub use self::workers::{FnWorker, IntoWorkerResult};
 
 mod worker_state;
+
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_util;

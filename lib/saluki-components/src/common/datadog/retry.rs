@@ -304,7 +304,7 @@ mod tests {
     use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
     use http::{Request, Response};
     use metrics::{Key, Label};
-    use saluki_core::components::test_util::TestComponentSupervisor;
+    use saluki_core::runtime::test_util::TestSupervisor;
     use saluki_metrics::{test::TestRecorder, MetricsBuilder};
     use tower::retry::Policy;
 
@@ -495,7 +495,7 @@ mod tests {
 
         // The refresher spawns on the ambient supervisor, and the supervisor is what keeps it running for the rest of
         // the test.
-        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        let supervisor = TestSupervisor::start("test_forwarder").await;
         supervisor.scope(async move { refresher.spawn() }).await;
 
         let retry_config = test_retry_config();

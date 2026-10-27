@@ -1,16 +1,17 @@
 //! Test helpers for running components.
 //!
-//! This module has three levels of helper:
+//! This module has two levels of helper:
 //!
 //! - [`TestComponentDriver`] builds one component from its builder, connects its input and outputs, and runs it the way
 //!   the topology would. It returns a [`ComponentControl`] to feed and stop the component, and an [`Outputs`] (or a
 //!   single [`Output`]) to observe what it dispatches.
 //! - [`DriverOptions`] can also build only the context that the driver would pass to a component, as
 //!   [`ContextParts`], for a test that drives a piece of a component with a real context.
-//! - [`TestComponentSupervisor`] is the topology supervisor on its own, for code that spawns supervised children but
-//!   isn't a whole component, or that runs as a static worker (see
-//!   [`start_with`][TestComponentSupervisor::start_with]). The driver runs every component under one. Prefer it over
-//!   `Supervisor::new(..).handle()`, which looks equivalent but never runs, so every child spawned on it is dropped.
+//!
+//! The driver runs every component as the needed static worker of a [`TestSupervisor`], the way the topology runs it.
+//! For code that spawns supervised children but isn't a whole component, use a [`TestSupervisor`] directly.
+//!
+//! [`TestSupervisor`]: crate::runtime::test_util::TestSupervisor
 //!
 //! # Driving a component
 //!
@@ -100,9 +101,6 @@ pub use self::output::{Output, Outputs};
 
 mod prebuilt;
 pub use self::prebuilt::PrebuiltSource;
-
-mod supervisor;
-pub use self::supervisor::TestComponentSupervisor;
 
 #[cfg(test)]
 mod tests;
