@@ -6,7 +6,8 @@
 //! computed from settings, while `bootstrap` compares what ADP reads directly from a case's YAML and
 //! environment, without the Agent stream. `expectations` holds the machinery that compares every
 //! result with the hand-edited table in `expected`, by check identity; the default expectation is
-//! that ADP matches the recorded Agent.
+//! that ADP matches the recorded Agent. For startup defaults that legitimately vary by platform,
+//! `platform_defaults` computes the expected host value from the schema and recording.
 //!
 //! The corpus and its contract (`lib/datadog-agent/config-recorder/docs/record.md`) are owned
 //! elsewhere; this module only reads them through `datadog_agent_config_corpus::read`.
@@ -24,6 +25,7 @@ mod expectations;
 mod expected;
 mod leaf_replay;
 mod loader;
+mod platform_defaults;
 
 /// The checked-in corpus, parsed once and shared by every test that reads it.
 static CORPUS_ONE: OnceLock<Corpus> = OnceLock::new();

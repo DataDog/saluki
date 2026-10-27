@@ -1,16 +1,22 @@
-//! The hand-edited expectations for the corpus replay. Edit this table directly.
+//! Handwritten expected results for replay checks that differ from the recorded Agent.
 //!
-//! An entry pins ADP's exact result for one check where ADP does not match the recorded Agent;
-//! see `expectations.rs` for the rules. A fix in ADP makes its entry fail with
-//! `remove this check's expectation`. Entries are written as [`Entry`] data and sorted by check identity:
-//! origin, tier, checkpoint, getter, key. Entries whose [`Cause`] is `agent-load-write`,
-//! `translator-rejects-value`, `wire-number-loss`, `raw-json-representation`, `nil-map-element`,
-//! `numeric-map-representation` or `recorded-platform-default` are `intentional`: the Agent writes
-//! the value only while starting up, ADP rejects an invalid enum or size string, the wire format
-//! loses the number, ADP decodes structure from a raw string, ADP cannot hold nil maps, ADP reads
-//! numeric map values as floats where the getter keeps integers, or platform defaults differ
-//! from the recording. Every other entry is a `known_bug`. Causes link
-//! tracking issues without changing which individual checks they explain.
+//! Edit this table directly; `expectations.rs` enforces exact results and rejects stale entries.
+//! Entries are sorted by check identity: origin (a stable case or case-family name), replay tier,
+//! checkpoint, getter and setting key.
+//!
+//! These [`Cause`] values mark an [`Entry`] as `intentional` (an expected difference):
+//! - `agent-load-write`: Agent-only startup adjustments.
+//! - `translator-rejects-value`: ADP rejects an invalid enum or size string.
+//! - `wire-number-loss`: the wire format loses numeric precision.
+//! - `raw-json-representation`: ADP decodes structure from a raw string.
+//! - `nil-map-element`: ADP cannot represent nil maps.
+//! - `numeric-map-representation`: ADP reads numeric map values as floats instead of integers.
+//!
+//! Other entries are `known_bug`: ADP should match the Agent. Fixing a bug makes its entry fail,
+//! so remove it. Causes link tracking issues; each expectation applies to one check.
+//!
+//! When the schema and recording justify a platform-specific default, `platform_defaults.rs` computes
+//! its expectation. Otherwise, this table still applies.
 
 use super::expectations::Tier::{Bootstrap, Derived, Deserialize, Leaf, Translate};
 use super::expectations::{intentional, known_bug, Adp, Cause, Entry, Expectation};
@@ -62,20 +68,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             key: "dogstatsd_log_file",
             adp: Adp::value("\"${log_path}/dogstatsd_info/dogstatsd-stats.log\""),
             cause: UNRESOLVED_AGENT_DEFAULT,
-        }),
-        #[cfg(not(any(target_os = "linux", target_os = "aix")))]
-        intentional(Entry {
-            origin: "baseline-default",
-            tier: Bootstrap,
-            at: "snapshot",
-            getter: "GetString",
-            key: "dogstatsd_socket",
-            adp: Adp::value("\"\""),
-            cause: Cause {
-                name: "recorded-platform-default",
-                why: "the corpus records Linux defaults; ADP uses the schema's empty default outside Linux and AIX",
-                issue: None,
-            },
         }),
         known_bug(Entry {
             origin: "baseline-default",
