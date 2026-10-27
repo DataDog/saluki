@@ -44,6 +44,10 @@
 //!   result and the reason.
 //!
 //! A panic in a production call is not an expected result: it always fails.
+//!
+//! For bootstrap (loading YAML and environment before the Agent stream arrives), `platform_defaults`
+//! computes intentional entries from the schema and recording. A duplicate handwritten entry fails;
+//! neither entry replaces the other.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Write as _};
@@ -58,6 +62,7 @@ use super::compare::{Reason, Verdict};
 use super::derived::corpus_derived_rows;
 use super::driver::{case_updates, replay_case, Commit, Stage, StepRecord, Validation};
 use super::leaf_replay::{corpus_rows, fold_case, lookup, Checkpoint, Fault, Isolator, RowResult};
+use super::platform_defaults::PlatformDefaults;
 use super::Panicked;
 
 /// The directory of the handwritten case files, relative to the repository root.
@@ -216,15 +221,33 @@ pub(crate) struct Entry {
     pub(crate) cause: Cause,
 }
 
-/// One hand-edited expectation: the exact ADP result for one check.
+/// The exact ADP result required for a check identified by [`CheckKey`].
 #[derive(Debug)]
 pub(crate) struct Expectation {
     pub(crate) check: CheckKey,
     pub(crate) status: Status,
     pub(crate) adp: Adp,
     pub(crate) cause: Cause,
-    /// Where the entry is written, so a failure points at the line to edit.
-    pub(crate) at: &'static Location<'static>,
+    /// The source to inspect when the check fails.
+    pub(crate) at: Basis,
+}
+
+/// Where an expectation comes from.
+#[derive(Debug)]
+pub(crate) enum Basis {
+    /// Location of the handwritten entry in `expected.rs`.
+    Table(&'static Location<'static>),
+    /// How the schema and recording determine the expected host default.
+    PlatformDefault(String),
+}
+
+impl fmt::Display for Basis {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Basis::Table(location) => write!(f, "{location}"),
+            Basis::PlatformDefault(evidence) => f.write_str(evidence),
+        }
+    }
 }
 
 /// Builds a known-bug expectation: ADP is wrong today, and the desired result is the Agent's.
@@ -263,7 +286,7 @@ fn expectation(
         status,
         adp,
         cause,
-        at: Location::caller(),
+        at: Basis::Table(Location::caller()),
     }
 }
 
@@ -284,12 +307,16 @@ pub(crate) struct CheckResult {
     pub(crate) agent: String,
     /// `None` when ADP matched the Agent (or translated successfully, for the translate tier).
     pub(crate) mismatch: Option<Mismatch>,
+    /// Whether the schema explains a platform difference, shown on failure.
+    pub(crate) note: Option<String>,
 }
 
 /// Every check of the corpus, and every case-level fault that stopped a case from being replayed.
 #[derive(Debug, Default)]
 pub(crate) struct Collected {
     pub(crate) results: Vec<CheckResult>,
+    /// Schema-generated expectations, checked alongside the handwritten table.
+    pub(crate) platform_defaults: Vec<Expectation>,
     /// Faults that abandoned a case or tier state (a stream that cannot be built, a panic in a
     /// fold), as `case: text`. The remaining cases are still replayed.
     pub(crate) faults: Vec<String>,
@@ -361,7 +388,7 @@ fn recorded_agent(case: &Case, checkpoint: Checkpoint, key: &str, getter: Getter
 }
 
 /// Renders a recorded getter result in the comparison's own terms.
-fn render_result(result: &GetterResult) -> String {
+pub(crate) fn render_result(result: &GetterResult) -> String {
     match result {
         GetterResult::Bool(b) | GetterResult::IsConfigured(b) => b.to_string(),
         GetterResult::String(s) => format!("{s:?}"),
@@ -433,9 +460,14 @@ fn render_go_map(m: &BTreeMap<String, GoValue>) -> String {
     )
 }
 
-/// Runs every tier over the corpus and returns one [`CheckResult`] per performed comparison, plus
-/// every successful translation of the translate tier.
+/// Runs all replay tiers, collecting comparisons and successful translations as [`CheckResult`]s,
+/// plus platform-default expectations for this host.
 pub(crate) fn collect(corpus: &Corpus) -> Collected {
+    collect_for(corpus, &PlatformDefaults::for_host())
+}
+
+/// Like [`collect`], but uses the supplied platform rules. ADP still runs on the real host.
+pub(crate) fn collect_for(corpus: &Corpus, platform_defaults: &PlatformDefaults) -> Collected {
     let mut out = Collected::default();
     let case_of = |name: &str| corpus.case(name).expect("replay rows name corpus cases");
     let streamed = |v: &Option<serde_json::Value>| v.as_ref().map_or("<absent>".to_string(), ToString::to_string);
@@ -469,6 +501,7 @@ pub(crate) fn collect(corpus: &Corpus) -> Collected {
             streamed: streamed(&row.streamed),
             agent: recorded_agent(case, row.checkpoint, &row.key, getter),
             mismatch: mismatch_of(verdict),
+            note: None,
         });
     }
 
@@ -491,6 +524,7 @@ pub(crate) fn collect(corpus: &Corpus) -> Collected {
             streamed: streamed(&row.streamed),
             agent: recorded_agent(case, row.checkpoint, row.key, row.getter),
             mismatch: mismatch_of(&row.verdict),
+            note: None,
         });
     }
 
@@ -503,18 +537,26 @@ pub(crate) fn collect(corpus: &Corpus) -> Collected {
             continue;
         }
         let case = case_of(&row.case);
+        let key = CheckKey {
+            origin: case.check_origin().into(),
+            tier: Tier::Bootstrap,
+            at: at_name(row.checkpoint).into(),
+            getter: getter.to_string(),
+            key: row.key.clone(),
+        };
+        // Determine the expected default without consulting ADP's result.
+        let assessment = platform_defaults.assess(corpus, case, &key, row.kind);
+        let note = assessment.map(|assessment| {
+            out.platform_defaults.extend(assessment.expectation);
+            assessment.note
+        });
         out.results.push(CheckResult {
-            key: CheckKey {
-                origin: case.check_origin().into(),
-                tier: Tier::Bootstrap,
-                at: at_name(row.checkpoint).into(),
-                getter: getter.to_string(),
-                key: row.key.clone(),
-            },
+            key,
             case: row.case.clone(),
             streamed: streamed(&row.streamed),
             agent: recorded_agent(case, row.checkpoint, &row.key, getter),
             mismatch: mismatch_of(verdict),
+            note,
         });
     }
     // A case whose bootstrap base cannot be built aborts ADP's boot; the Agent started.
@@ -536,6 +578,7 @@ pub(crate) fn collect(corpus: &Corpus) -> Collected {
             streamed: "<the case's YAML and environment>".into(),
             agent: "the Agent started".into(),
             mismatch: Some(Mismatch { adp }),
+            note: None,
         });
     }
 
@@ -758,6 +801,7 @@ fn collect_translation(corpus: &Corpus, case: &Case, out: &mut Collected) {
                 case: case.name.clone(),
                 agent: check.agent,
                 mismatch: check.adp.map(|adp| Mismatch { adp }),
+                note: None,
             });
         }
     }
@@ -879,14 +923,18 @@ impl Acc {
 /// The context every check failure shows first: the case, its input, the check's identity, and the
 /// streamed value it compared.
 fn check_context(result: &CheckResult, case: &Case) -> String {
-    format!(
+    let mut context = format!(
         "Case: {}\nInput file: {}\nCheck: {}\nInput: {}\nStreamed value: {}",
         result.case,
         input_location(case),
         result.key,
         original_input(case),
         result.streamed
-    )
+    );
+    if let Some(note) = &result.note {
+        let _ = write!(context, "\nPlatform default: {note}");
+    }
+    context
 }
 
 /// The cases of an origin with their input locations, or why there are none.
@@ -931,7 +979,7 @@ fn unrun(expectations: &[&Expectation]) -> String {
     out
 }
 
-/// Judges `collected` against `table`.
+/// Checks results against both handwritten and schema-generated expectations.
 #[track_caller]
 pub(crate) fn judge(corpus: &Corpus, collected: &Collected, table: &[Expectation]) -> Judgement {
     let assertion = Location::caller();
@@ -953,7 +1001,7 @@ pub(crate) fn judge(corpus: &Corpus, collected: &Collected, table: &[Expectation
 
     // Index the table; a check with two entries, or an entry for an unknown origin, is a problem.
     let mut by_check: BTreeMap<&CheckKey, Vec<&Expectation>> = BTreeMap::new();
-    for e in table {
+    for e in table.iter().chain(&collected.platform_defaults) {
         by_check.entry(&e.check).or_default().push(e);
     }
     for (check, entries) in &by_check {
@@ -963,7 +1011,7 @@ pub(crate) fn judge(corpus: &Corpus, collected: &Collected, table: &[Expectation
                 false,
                 (*check).clone(),
                 format!(
-                    "DUPLICATE EXPECTATION: this check is written {} times.\n\nCheck: {}\nCases: {}\nWritten at: {}\n\nKeep exactly one entry; a check is pinned once.",
+                    "DUPLICATE EXPECTATION: this check is written {} times.\n\nCheck: {}\nCases: {}\nWritten at: {}\n\nKeep exactly one expectation per check. If a handwritten entry duplicates an automatic platform-default expectation, remove the handwritten entry or investigate the schema and recorded inputs.",
                     entries.len(),
                     check,
                     origin_summary(&cases_of_origin, &check.origin),
@@ -1103,9 +1151,10 @@ pub(crate) fn judge(corpus: &Corpus, collected: &Collected, table: &[Expectation
                 } else {
                     ("This check now matches the Agent.", result.agent.clone())
                 };
-                let advice = match e.status {
-                    Status::KnownBug => "This is an improvement for this check only, not evidence that the bug is fixed everywhere. Remove this check's known-bug expectation so it asserts the recorded Agent result directly.",
-                    Status::Intentional => "This expectation pins deliberate ADP behavior, so its disappearance is unexpected, not an improvement. Restore the deliberate behavior; only if the behavior is being deliberately revised, change or remove this expectation and its explanation in the same change.",
+                let advice = match (&e.at, e.status) {
+                    (Basis::PlatformDefault(_), _) => "This expectation is derived from the schema's platform default for this host, not a table entry to edit. ADP returned the recorded value instead of this host's default. Check ADP's default selection, the schema, and the recorded operating system and container/Fargate flags shown above.",
+                    (Basis::Table(_), Status::KnownBug) => "This is an improvement for this check only, not evidence that the bug is fixed everywhere. Remove this check's known-bug expectation so it asserts the recorded Agent result directly.",
+                    (Basis::Table(_), Status::Intentional) => "This expectation pins deliberate ADP behavior, so its disappearance is unexpected, not an improvement. Restore the deliberate behavior; only if the behavior is being deliberately revised, change or remove this expectation and its explanation in the same change.",
                 };
                 acc.problem(
                     false,
@@ -1276,10 +1325,11 @@ mod tests {
             mismatch: Some(Mismatch {
                 adp: Adp::Panic("translate: boom".into()),
             }),
+            note: None,
         };
         let collected = Collected {
             results: vec![panic],
-            faults: Vec::new(),
+            ..Collected::default()
         };
         let table = [
             pinned(case, Tier::Validate, "-", key),
@@ -1307,8 +1357,8 @@ mod tests {
     fn a_case_fault_report_lists_the_expectations_that_did_not_run() {
         let (case, key) = case_and_key();
         let collected = Collected {
-            results: Vec::new(),
             faults: vec![format!("case {:?}: the stream cannot be built", case.name)],
+            ..Collected::default()
         };
         let table = [
             pinned(case, Tier::Leaf, "GetString", key),
