@@ -84,8 +84,9 @@ Each pull request checks off its own item.
     dev-dependency on `tokio` gains the `test-util` feature, for `start_paused`.
   - `prefix_matching_blocklist_applies_after_prefixing` now blocks `foo.` rather than `fo`, so it fails without the
     trailing period.
-- [ ] **10. Encoders conversions.**
-  - Converts the test listed under [Encoders](#encoders).
+- [x] **10. Encoders conversions.**
+  - Converts the test listed under [Encoders](#encoders). Authoritative V3 series come from `datadog_only` mode with
+    a lone Datadog endpoint, and the test asserts that the built configuration has no V2 series encoder.
 - [ ] **11. Misc conversions and cleanup.** Needs F5 and F8.
   - Converts the setups listed under [Misc](#misc), and adds `saluki-core` with the `test-util` feature to the
     dev-dependencies of `saluki-app` and `saluki-io`.
