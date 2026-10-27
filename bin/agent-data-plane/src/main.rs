@@ -118,6 +118,15 @@ async fn async_main(started: Instant) -> Result<(), GenericError> {
         .await
         .error_context("Failed to complete bootstrap phase.")?;
 
+    if let Some(error) = &local_config.yaml_fallback_error {
+        warn!(
+            error = %error,
+            path = %bootstrap_config_path.display(),
+            "Datadog-style YAML key resolution failed; reading every key as written for the entire file. \
+             Dotted and differently cased Datadog settings may be ignored. Use nested lowercase setting names."
+        );
+    }
+
     // Bootstrap-integration probe: proves the Antithesis SDK is linked, cataloging works, and the
     // instrumentation path is wired.
     saluki_antithesis::reachable!("agent-data-plane completed bootstrap");

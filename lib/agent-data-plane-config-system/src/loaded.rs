@@ -39,6 +39,11 @@ pub struct LoadedConfiguration {
     // Strictly translated local snapshot exposed before authority selection and used by standalone
     // mode.
     local: SalukiConfiguration,
+    /// The error that caused the whole file to be read with every key as written.
+    ///
+    /// `None` when Datadog-style key resolution succeeded. Callers should report this after logging
+    /// is initialized: the fallback also ignores valid dotted and differently cased Datadog keys.
+    pub yaml_fallback_error: Option<Error>,
 }
 
 impl LoadedConfiguration {
@@ -52,31 +57,46 @@ impl LoadedConfiguration {
     /// The file's Datadog keys are read as the Datadog Agent reads them (see [`datadog_yaml`]). If
     /// that reading cannot be built or translated but the file read with every key as written can,
     /// the second reading is used: a respelled key whose value cannot be translated is ignored rather
-    /// than failing the load. A value that translates is kept, even if a component later rejects it.
+    /// than failing the load. [`yaml_fallback_error`](Self::yaml_fallback_error) retains the cause.
+    /// Both readings use the same file contents. A value that translates is kept, even if a component
+    /// later rejects it.
     ///
     /// # Errors
     ///
     /// Returns an error if a local source cannot be read, decoded, deserialized, or translated.
     pub async fn load(path: impl AsRef<Path>, env: EnvPrecedence) -> Result<Self, Error> {
         let path = path.as_ref();
+        let text = std::fs::read_to_string(path).map_err(|e| Error::Base {
+            message: format!("read `{}`: {e}", path.display()),
+        })?;
         // Every value the local sources supply was set explicitly: the file set it or an environment
         // variable supplied it.
-        let (error, base) = match build_base(path, env, KeyReading::Datadog).map(SourceTree::all_explicit) {
+        let (error, base) = match build_base(path, &text, env, KeyReading::Datadog).map(SourceTree::all_explicit) {
             Ok(base) => match translate_strict(&base) {
-                Ok(local) => return Ok(Self { base, local }),
+                Ok(local) => {
+                    return Ok(Self {
+                        base,
+                        local,
+                        yaml_fallback_error: None,
+                    })
+                }
                 Err(error) => (error, Some(base)),
             },
             Err(error) => (error, None),
         };
 
-        let Ok(plain) = build_base(path, env, KeyReading::AsWritten).map(SourceTree::all_explicit) else {
+        let Ok(plain) = build_base(path, &text, env, KeyReading::AsWritten).map(SourceTree::all_explicit) else {
             return Err(error);
         };
         if base.as_ref() == Some(&plain) {
             return Err(error);
         }
         match translate_strict(&plain) {
-            Ok(local) => Ok(Self { base: plain, local }),
+            Ok(local) => Ok(Self {
+                base: plain,
+                local,
+                yaml_fallback_error: Some(error),
+            }),
             Err(_) => Err(error),
         }
     }
@@ -130,20 +150,18 @@ enum KeyReading {
     AsWritten,
 }
 
-/// Builds the typed base: the configuration file parsed to its nested shape, with environment
-/// variables read directly and decoded into the schema's shapes on top.
+/// Builds the typed base from captured file contents and environment variables.
+///
+/// `path` identifies the file in parse errors; this function does not read it.
 ///
 /// `reading` sets how the file's keys are read. A null-valued key is dropped and an empty file is an
 /// empty object. The environment is then overlaid via the generated Datadog reader, the Saluki-only
 /// reader, and the canonical proxy variables. `env` sets whether the environment overwrites the file
 /// (`AfterFile`) or only fills absent keys (`BeforeFile`); `Disabled` skips the environment entirely.
-fn build_base(path: &Path, env: EnvPrecedence, reading: KeyReading) -> Result<Value, Error> {
-    let text = std::fs::read_to_string(path).map_err(|e| Error::Base {
-        message: format!("read `{}`: {e}", path.display()),
-    })?;
+fn build_base(path: &Path, text: &str, env: EnvPrecedence, reading: KeyReading) -> Result<Value, Error> {
     let parsed = match reading {
-        KeyReading::Datadog => datadog_yaml::from_str(&text),
-        KeyReading::AsWritten => saluki_config::yaml::from_str(&text).map_err(|e| e.to_string()),
+        KeyReading::Datadog => datadog_yaml::from_str(text),
+        KeyReading::AsWritten => saluki_config::yaml::from_str(text).map_err(|e| e.to_string()),
     };
     let mut base = parsed.map_err(|e| Error::Base {
         message: format!("parse `{}`: {e}", path.display()),
@@ -195,24 +213,48 @@ mod tests {
         )
         .unwrap();
         std::env::set_var("DD_DOGSTATSD_PORT", "9125");
+        let text = std::fs::read_to_string(&path).unwrap();
 
         // AfterFile: the environment wins over the file, the decoded value is a real number, an
         // explicitly null key is dropped, and an unrelated file key is preserved.
-        let base = build_base(&path, EnvPrecedence::AfterFile, KeyReading::Datadog).expect("base builds");
+        let base = build_base(&path, &text, EnvPrecedence::AfterFile, KeyReading::Datadog).expect("base builds");
         assert_eq!(base.get("dogstatsd_port"), Some(&json!(9125)));
         assert_eq!(base.get("dogstatsd_non_local_traffic"), Some(&json!(false)));
         assert!(base.get("empty_key").is_none());
 
         // BeforeFile: the file wins over the environment.
-        let base = build_base(&path, EnvPrecedence::BeforeFile, KeyReading::Datadog).expect("base builds");
+        let base = build_base(&path, &text, EnvPrecedence::BeforeFile, KeyReading::Datadog).expect("base builds");
         assert_eq!(base.get("dogstatsd_port"), Some(&json!(8125)));
 
         // Disabled: the environment is ignored entirely.
-        let base = build_base(&path, EnvPrecedence::Disabled, KeyReading::Datadog).expect("base builds");
+        let base = build_base(&path, &text, EnvPrecedence::Disabled, KeyReading::Datadog).expect("base builds");
         assert_eq!(base.get("dogstatsd_port"), Some(&json!(8125)));
 
         std::env::remove_var("DD_DOGSTATSD_PORT");
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn both_key_readings_use_the_captured_file_contents() {
+        // Regression: the fallback reread the file, allowing its base and the first error to describe
+        // different contents. Both readings now use the text captured by load.
+        let path = std::env::temp_dir().join(format!("adp_captured_yaml_{}.yaml", std::process::id()));
+        std::fs::write(&path, "DogStatsD_Port: abc\nLog_Level: debug\n").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, "dogstatsd_port: 9999\nlog_level: warn\n").unwrap();
+
+        let datadog = build_base(&path, &text, EnvPrecedence::Disabled, KeyReading::Datadog).unwrap();
+        let plain = build_base(&path, &text, EnvPrecedence::Disabled, KeyReading::AsWritten).unwrap();
+        std::fs::remove_file(&path).ok();
+
+        assert_eq!(datadog, json!({"dogstatsd_port": "abc", "log_level": "debug"}));
+        assert_eq!(plain, json!({"DogStatsD_Port": "abc", "Log_Level": "debug"}));
+        assert!(matches!(
+            translate_strict(&SourceTree::all_explicit(datadog)),
+            Err(Error::Deserialize { .. })
+        ));
+        let config = translate_strict(&SourceTree::all_explicit(plain)).expect("fallback translates");
+        assert_eq!(config.domains.dogstatsd.listeners.port, 8125);
     }
 
     #[tokio::test]
@@ -228,6 +270,7 @@ mod tests {
 
         assert_eq!(config.control.logging.level, "warn");
         assert_eq!(config.domains.dogstatsd.listeners.port, 9125);
+        assert!(loaded.yaml_fallback_error.is_none());
 
         std::fs::remove_file(&path).ok();
     }
@@ -764,7 +807,8 @@ mod tests {
         std::fs::write(&path, "dogstatsd_port: 8125\n").unwrap();
         std::env::set_var("DD_DOGSTATSD_PORT", "not-a-number");
 
-        let result = build_base(&path, EnvPrecedence::AfterFile, KeyReading::Datadog);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let result = build_base(&path, &text, EnvPrecedence::AfterFile, KeyReading::Datadog);
 
         std::env::remove_var("DD_DOGSTATSD_PORT");
         std::fs::remove_file(&path).ok();
@@ -778,8 +822,9 @@ mod tests {
         std::fs::write(&path, "{}\n").unwrap();
         std::env::set_var("DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES", "12MiB");
 
+        let text = std::fs::read_to_string(&path).unwrap();
         let base = SourceTree::all_explicit(
-            build_base(&path, EnvPrecedence::AfterFile, KeyReading::Datadog).expect("base builds"),
+            build_base(&path, &text, EnvPrecedence::AfterFile, KeyReading::Datadog).expect("base builds"),
         );
         let config = translate_strict(&base).expect("human-readable byte size translates");
 
@@ -796,7 +841,8 @@ mod tests {
     fn base_from_file(test: &str, contents: &str) -> Result<Value, Error> {
         let path = std::env::temp_dir().join(format!("adp_{test}_{}.yaml", std::process::id()));
         std::fs::write(&path, contents).unwrap();
-        let base = build_base(&path, EnvPrecedence::Disabled, KeyReading::Datadog);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let base = build_base(&path, &text, EnvPrecedence::Disabled, KeyReading::Datadog);
         std::fs::remove_file(&path).ok();
         base
     }
@@ -847,6 +893,7 @@ mod tests {
         assert_eq!(control.api_listen_address, "127.0.0.1:9111");
         assert_eq!(control.logging.level, "debug");
         assert!(control.otlp);
+        assert!(loaded.yaml_fallback_error.is_none());
     }
 
     #[test]
@@ -943,7 +990,8 @@ mod tests {
     fn translates_with(test: &str, yaml: &str, reading: KeyReading) -> bool {
         let path = std::env::temp_dir().join(format!("adp_{test}_{reading:?}_{}.yaml", std::process::id()));
         std::fs::write(&path, yaml).unwrap();
-        let base = build_base(&path, EnvPrecedence::Disabled, reading);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let base = build_base(&path, &text, EnvPrecedence::Disabled, reading);
         std::fs::remove_file(&path).ok();
         base.is_ok_and(|base| translate_strict(&SourceTree::all_explicit(base)).is_ok())
     }
@@ -1153,6 +1201,7 @@ mod tests {
             "Log_Level: [a]\n",
             "DATA_PLANE: {standalone_mode: maybe}\n",
             "data_plane.otlp.enabled: maybe\n",
+            "Dogstatsd_Tag_Cardinality: bogus\n",
             "DogStatsD_Port: abc\nLog_Level: debug\n",
         ];
         for (index, yaml) in cases.into_iter().enumerate() {
@@ -1161,11 +1210,19 @@ mod tests {
                 translates_with_keys_as_written(&test, yaml),
                 "{yaml:?} did not load before"
             );
-            assert!(
-                !translates_with(&test, yaml, KeyReading::Datadog),
-                "{yaml:?} needs no fallback"
-            );
+            let base = SourceTree::all_explicit(base_from_file(&test, yaml).expect("base builds"));
+            let error = translate_strict(&base).expect_err("Agent-style reading cannot be translated");
             let loaded = try_load(&test, yaml).unwrap_or_else(|e| panic!("{yaml:?}: {e}"));
+            // Regression: load discarded the fallback cause before logging was initialized.
+            assert_eq!(
+                loaded
+                    .yaml_fallback_error
+                    .as_ref()
+                    .expect("fallback retains its cause")
+                    .to_string(),
+                error.to_string(),
+                "{yaml:?}"
+            );
             let config = loaded.local();
             assert_eq!(config.control.logging.level, default_level, "{yaml:?}");
             assert!(!config.control.standalone_mode, "{yaml:?}");
