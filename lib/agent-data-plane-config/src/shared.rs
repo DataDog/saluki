@@ -61,11 +61,16 @@ pub struct SharedConfiguration {
 
     /// Host that network listeners bind to (`bind_host`).
     ///
-    /// Defaults to unset, which leaves each listener at its own default host (`127.0.0.1` for DogStatsD). A blank value
-    /// is normalized to unset. Read by the DogStatsD UDP and TCP listeners; the Unix socket and named pipe listeners
-    /// ignore it. `dogstatsd_non_local_traffic` takes precedence and makes DogStatsD bind to `0.0.0.0` regardless of
-    /// this value.
-    pub bind_host: Option<String>,
+    /// An unset value leaves each listener at its own default host (`127.0.0.1`), and a blank value is normalized to
+    /// unset. Read by the DogStatsD UDP and TCP listeners, and by the APM relay's TCP listener; Unix socket and named
+    /// pipe listeners ignore it. `dogstatsd_non_local_traffic` and `apm_config.apm_non_local_traffic` take precedence
+    /// for their own listeners and bind to `0.0.0.0` regardless of this value.
+    ///
+    /// The provenance matters to the APM relay: like the trace-agent, it binds every interface in a container only
+    /// when neither this nor `apm_config.apm_non_local_traffic` was set explicitly. The Agent's schema defaults this
+    /// to `localhost`, so the value alone can't tell. The value stays an `Option` because a blank value is unset
+    /// whether or not it was set explicitly.
+    pub bind_host: ConfigValue<Option<String>>,
 }
 
 /// Host identity and container runtime discovery inputs.

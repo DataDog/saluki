@@ -688,7 +688,7 @@ fn dogstatsd_source_configuration(
         windows_pipe_security_descriptor: listeners.windows_pipe_security_descriptor.clone(),
         disable_verbose_logs: dogstatsd.debug_log.disable_verbose_logs,
         eol_required: listeners.eol_required.clone(),
-        bind_host: config.shared.bind_host.clone(),
+        bind_host: config.shared.bind_host.value.clone(),
         non_local_traffic: listeners.non_local_traffic,
         autoscale_udp_listeners: listeners.autoscale_udp_listeners,
         allow_context_heap_allocations: contexts.allow_context_heap_allocs,
@@ -957,7 +957,7 @@ async fn add_apm_pipeline_to_blueprint(
     let config = config_system.config();
     // In standalone mode there is no workload provider, so the resolver finds nothing and the relay forwards requests
     // without a container ID, as it did before.
-    let dd_traces_relay = ApmRelayConfiguration::from_configuration(&config)
+    let dd_traces_relay = ApmRelayConfiguration::from_configuration(&config, datadog_agent_config::is_containerized())
         .with_capture_entity_resolver(Arc::new(env_provider.workload().clone()));
     blueprint
         .add_relay("dd_traces_relay", dd_traces_relay)?

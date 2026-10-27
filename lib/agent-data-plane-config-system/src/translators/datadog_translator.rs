@@ -354,7 +354,8 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_apm_config_apm_non_local_traffic(&mut self, value: bool) {
-        self.config.domains.apm.non_local_traffic = value;
+        let provenance = self.sources.provenance("apm_config.apm_non_local_traffic");
+        self.config.domains.apm.non_local_traffic = ConfigValue::new(value, provenance);
     }
 
     fn consume_apm_config_compute_stats_by_span_kind(&mut self, value: bool) {
@@ -588,7 +589,8 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_bind_host(&mut self, value: String) {
-        self.config.shared.bind_host = non_empty(value);
+        let provenance = self.sources.provenance("bind_host");
+        self.config.shared.bind_host = ConfigValue::new(non_empty(value), provenance);
     }
 
     fn consume_cluster_agent_auth_token(&mut self, value: String) {
@@ -2171,7 +2173,7 @@ mod tests {
         let apm = &config.domains.apm;
         assert_eq!(apm.receiver_port, 9126);
         assert_eq!(apm.receiver_socket.as_deref(), Some("/tmp/apm.socket"));
-        assert!(apm.non_local_traffic);
+        assert_explicit(&apm.non_local_traffic, true);
     }
 
     #[test]
@@ -2181,7 +2183,7 @@ mod tests {
         assert!(errors.is_none());
         let apm = &config.domains.apm;
         assert_eq!(apm.receiver_port, 8126);
-        assert!(!apm.non_local_traffic);
+        assert!(!apm.non_local_traffic.value);
         // The socket default is platform-specific: on by default only where the trace-agent enables it.
         let expected_socket =
             cfg!(any(target_os = "linux", target_os = "aix")).then_some("/var/run/datadog/apm.socket");
@@ -2239,7 +2241,7 @@ mod tests {
         }));
 
         assert!(errors.is_none());
-        assert_eq!(config.shared.bind_host, None);
+        assert_eq!(config.shared.bind_host.value, None);
         let listeners = &config.domains.dogstatsd.listeners;
         assert_eq!(listeners.pipe_name, None);
         assert_eq!(listeners.socket, None);
@@ -2436,6 +2438,33 @@ mod tests {
                 .get("https://app.datadoghq.com"),
             Some(&V3SeriesMode::Disabled)
         );
+    }
+
+    #[test]
+    fn apm_listen_host_settings_keep_their_provenance() {
+        let (config, errors) = translate_stream(&[
+            ("bind_host", json!("localhost"), StreamProvenance::Default),
+            (
+                "apm_config.apm_non_local_traffic",
+                json!(true),
+                StreamProvenance::Default,
+            ),
+        ]);
+        assert!(errors.is_none());
+        assert_defaulted(&config.shared.bind_host, Some("localhost".to_string()));
+        assert_defaulted(&config.domains.apm.non_local_traffic, true);
+
+        let (config, errors) = translate_stream(&[
+            ("bind_host", json!("10.0.0.1"), StreamProvenance::Explicit),
+            (
+                "apm_config.apm_non_local_traffic",
+                json!(false),
+                StreamProvenance::Explicit,
+            ),
+        ]);
+        assert!(errors.is_none());
+        assert_explicit(&config.shared.bind_host, Some("10.0.0.1".to_string()));
+        assert_explicit(&config.domains.apm.non_local_traffic, false);
     }
 
     #[test]

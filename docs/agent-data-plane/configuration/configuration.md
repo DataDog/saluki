@@ -419,7 +419,6 @@ default values.
 | Config Key                                   | Description                                  |
 | -------------------------------------------- | -------------------------------------------- |
 | `aggregator_stop_timeout`                    | Timeout (s) for aggregator flush on stop     |
-| `apm_config.apm_non_local_traffic`           | Accept non-local traffic on the APM receiver |
 | `apm_config.features`                        | Beta APM feature flags                       |
 | `cri_socket_path`                            | containerd/CRI socket path                   |
 | `dogstatsd_mapper_cache_size`                | Mapper result LRU cache size                 |
@@ -455,18 +454,6 @@ Support is partial because ADP does not apply this timeout only to an aggregator
 Shutdown is coordinated by the Saluki topology: sources stop first, downstream inputs close,
 and the aggregate transform performs its final flush when its input stream ends. Whether open
 aggregation windows are included is controlled by `dogstatsd_flush_incomplete_buckets`.
-
-### `apm_config.apm_non_local_traffic`
-
-With `data_plane.experimental.apm.enabled` set, ADP binds the trace receiver on every interface
-when `apm_config.apm_non_local_traffic` is `true`, overriding `bind_host`, as the trace-agent
-does.
-
-When the Agent runs in a container and neither `bind_host` nor `apm_config.apm_non_local_traffic`
-is set, the trace-agent also binds every interface, so that tracers in other containers can reach
-it. ADP doesn't apply that fallback yet, and keeps binding `127.0.0.1`. In Kubernetes,
-`apm_config.apm_non_local_traffic` already defaults to `true`, so this only affects other
-container runtimes. Set `apm_config.apm_non_local_traffic: true` explicitly there.
 
 ### `apm_config.features`
 
@@ -923,6 +910,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `api_key`                                                                                  | API key for endpoint auth                          |
 | `apm_config.analyzed_rate_by_service`                                                      | Legacy per-service event extraction rates          |
 | `apm_config.analyzed_spans`                                                                | Per service|operation APM event extraction rates   |
+| `apm_config.apm_non_local_traffic`                                                         | Accept non-local traffic on the APM receiver       |
 | `apm_config.compute_stats_by_span_kind`                                                    | Compute APM stats per span kind                    |
 | `apm_config.enable_rare_sampler`                                                           | Enable the APM rare-span sampler                   |
 | `apm_config.env`                                                                           | Trace environment                                  |

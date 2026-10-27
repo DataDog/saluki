@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, LazyLock};
 
-use agent_data_plane_config::SalukiConfiguration;
+use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
 use async_trait::async_trait;
 use axum::extract::{ConnectInfo, Request as AxumRequest, State};
 use axum::response::IntoResponse;
@@ -89,14 +89,23 @@ struct Metrics {
 
 impl ApmRelayConfiguration {
     /// Creates a new `ApmRelayConfiguration` from the resolved configuration.
-    pub fn from_configuration(config: &SalukiConfiguration) -> Self {
+    ///
+    /// `containerized` is whether ADP runs in the Datadog Agent's container image, where the TCP listener binds every
+    /// interface unless its host is configured, as the trace-agent's does.
+    pub fn from_configuration(config: &SalukiConfiguration, containerized: bool) -> Self {
+        let (bind_host, non_local_traffic) = resolve_listen_host(
+            &config.shared.bind_host,
+            config.domains.apm.non_local_traffic,
+            containerized,
+        );
+
         // receiver_port `0` disables the TCP listener
         Self {
             receiver_socket: config.domains.apm.receiver_socket.clone().unwrap_or_default(),
             proxy_destination: config.domains.apm.proxy_destination.to_owned(),
             capture_entity_resolver: None,
-            bind_host: config.shared.bind_host.clone(),
-            non_local_traffic: config.domains.apm.non_local_traffic,
+            bind_host,
+            non_local_traffic,
             receiver_port: config.domains.apm.receiver_port,
         }
     }
@@ -141,6 +150,26 @@ impl ApmRelayConfiguration {
                     self.receiver_socket
                 )
             })
+    }
+}
+
+/// Resolves the host the TCP listener binds to, as the trace-agent resolves its receiver host.
+///
+/// Returns the host to bind, if any, and whether to bind every interface instead. When `bind_host` or
+/// `apm_non_local_traffic` was set explicitly, they apply as configured. When neither was, the listener binds every
+/// interface in a container, so that tracers in other containers can reach it, and the default host otherwise.
+fn resolve_listen_host(
+    bind_host: &ConfigValue<Option<String>>, non_local_traffic: ConfigValue<bool>, containerized: bool,
+) -> (Option<String>, bool) {
+    if bind_host.is_explicit() || non_local_traffic.is_explicit() {
+        let host = if bind_host.is_explicit() {
+            bind_host.value.clone()
+        } else {
+            None
+        };
+        (host, non_local_traffic.value)
+    } else {
+        (None, containerized)
     }
 }
 
@@ -637,6 +666,58 @@ mod tests {
 
         let result = control.wait().await;
         assert!(result.is_err(), "the relay should fail when its listener can't bind");
+    }
+
+    #[test]
+    fn listen_host_follows_explicit_settings() {
+        let host = Some("10.0.0.1".to_string());
+
+        // An explicit `bind_host` applies, in a container or not.
+        for containerized in [false, true] {
+            assert_eq!(
+                resolve_listen_host(
+                    &ConfigValue::explicit(host.clone()),
+                    ConfigValue::defaulted(false),
+                    containerized
+                ),
+                (host.clone(), false)
+            );
+        }
+
+        // `apm_non_local_traffic` overrides it, even at its default value once `bind_host` is explicit, as in
+        // Kubernetes where it defaults to `true`.
+        assert_eq!(
+            resolve_listen_host(
+                &ConfigValue::explicit(host.clone()),
+                ConfigValue::defaulted(true),
+                false
+            ),
+            (host.clone(), true)
+        );
+
+        // An explicit `apm_non_local_traffic: false` keeps a container on the default host.
+        assert_eq!(
+            resolve_listen_host(
+                &ConfigValue::defaulted(Some("localhost".to_string())),
+                ConfigValue::explicit(false),
+                true
+            ),
+            (None, false)
+        );
+    }
+
+    #[test]
+    fn listen_host_binds_every_interface_in_a_container_when_unset() {
+        let defaulted_host = ConfigValue::defaulted(Some("localhost".to_string()));
+
+        assert_eq!(
+            resolve_listen_host(&defaulted_host, ConfigValue::defaulted(false), true),
+            (None, true)
+        );
+        assert_eq!(
+            resolve_listen_host(&defaulted_host, ConfigValue::defaulted(false), false),
+            (None, false)
+        );
     }
 
     #[tokio::test]
