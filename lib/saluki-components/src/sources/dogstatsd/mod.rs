@@ -23,14 +23,11 @@ use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder, MemoryLimiter, UsageExpr},
     components::{sources::*, BuildContext},
-    data_model::{
-        event::{
-            eventd::EventD,
-            metric::{Metric, MetricMetadata, MetricOrigin},
-            service_check::ServiceCheck,
-            Event, EventType,
-        },
-        tags::{RawTags, RawTagsFilter},
+    data_model::event::{
+        eventd::EventD,
+        metric::{Metric, MetricMetadata, MetricOrigin},
+        service_check::ServiceCheck,
+        Event, EventType,
     },
     pooling::{ElasticObjectPool, ObjectPool as _},
     runtime::{
@@ -67,7 +64,7 @@ use self::forwarder::{PacketForwarder, PacketForwarderTarget};
 
 mod framer;
 use self::framer::{get_framer, DsdFramer};
-use crate::sources::dogstatsd::tags::{WellKnownTags, WellKnownTagsFilterPredicate};
+use crate::sources::dogstatsd::tags::WellKnownTags;
 
 mod filters;
 use self::filters::EnablePayloadsFilter;
@@ -2173,7 +2170,8 @@ fn handle_metric_packet(
     packet: MetricPacket, context_resolvers: &mut ContextResolvers, process_origin: Option<&ProcessOrigin>,
     additional_tags: &[String], default_hostname: &MetaString,
 ) -> Option<Metric> {
-    let well_known_tags = WellKnownTags::from_raw_tags(&packet.tags);
+    let (well_known_tags, mut tags) = WellKnownTags::split_raw_tags(&packet.tags);
+    tags.extend(additional_tags.iter().map(String::as_str));
 
     let origin = origin_from_metric_packet(&packet, &well_known_tags);
     let origin_tags = context_resolvers.resolve_origin_tags(origin, process_origin);
@@ -2185,13 +2183,11 @@ fn handle_metric_packet(
         context_resolvers.primary()
     };
 
-    let tags = get_filtered_tags_iterator(&packet.tags, additional_tags);
-
     let hostname = well_known_tags.hostname.unwrap_or(default_hostname);
 
     // Try to resolve the context for this metric.
     let maybe_context =
-        context_resolver.resolve_with_host_and_origin_tags(packet.metric_name, hostname, tags, origin_tags);
+        context_resolver.resolve_with_host_and_origin_tags(packet.metric_name, hostname, &tags, origin_tags);
 
     match maybe_context {
         Some(context) => {
@@ -2214,14 +2210,14 @@ fn handle_event_packet(
     packet: EventPacket, context_resolvers: &mut ContextResolvers, process_origin: Option<&ProcessOrigin>,
     additional_tags: &[String],
 ) -> Option<EventD> {
-    let well_known_tags = WellKnownTags::from_raw_tags(&packet.tags);
+    let (well_known_tags, mut tags) = WellKnownTags::split_raw_tags(&packet.tags);
+    tags.extend(additional_tags.iter().map(String::as_str));
 
     let origin = origin_from_event_packet(&packet, &well_known_tags);
     let origin_tags = context_resolvers.resolve_origin_tags(origin, process_origin);
 
-    let tags = get_filtered_tags_iterator(&packet.tags, additional_tags);
     let tags_resolver = context_resolvers.tags();
-    let tags = tags_resolver.create_tag_set(tags)?;
+    let tags = tags_resolver.create_tag_set(&tags)?;
 
     // When no d: field is present, backfill the current time—matching the stock Datadog Agent's
     // behavior in pkg/aggregator/aggregator.go (addEvent), which sets e.Ts = time.Now().Unix()
@@ -2257,14 +2253,14 @@ fn handle_service_check_packet(
     packet: ServiceCheckPacket, context_resolvers: &mut ContextResolvers, process_origin: Option<&ProcessOrigin>,
     additional_tags: &[String],
 ) -> Option<ServiceCheck> {
-    let well_known_tags = WellKnownTags::from_raw_tags(&packet.tags);
+    let (well_known_tags, mut tags) = WellKnownTags::split_raw_tags(&packet.tags);
+    tags.extend(additional_tags.iter().map(String::as_str));
 
     let origin = origin_from_service_check_packet(&packet, &well_known_tags);
     let origin_tags = context_resolvers.resolve_origin_tags(origin, process_origin);
 
-    let tags = get_filtered_tags_iterator(&packet.tags, additional_tags);
     let tags_resolver = context_resolvers.tags();
-    let tags = tags_resolver.create_tag_set(tags)?;
+    let tags = tags_resolver.create_tag_set(&tags)?;
 
     // When no d: field is present, backfill the current time—matching the stock Datadog Agent's
     // behavior, which sets the timestamp to time.Now().Unix() for any service check with a zero
@@ -2281,14 +2277,6 @@ fn handle_service_check_packet(
         .with_message(packet.message.map(|s| s.into()));
 
     Some(service_check)
-}
-
-fn get_filtered_tags_iterator<'a>(
-    raw_tags: &'a RawTags<'_>, additional_tags: &'a [String],
-) -> impl Iterator<Item = &'a str> + Clone {
-    // This filters out "well-known" tags from the raw tags in the DogStatsD packet, and then chains on any additional tags
-    // that were configured on the source.
-    RawTagsFilter::exclude(raw_tags, WellKnownTagsFilterPredicate).chain(additional_tags.iter().map(|s| s.as_str()))
 }
 
 async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &SourceContext) {
