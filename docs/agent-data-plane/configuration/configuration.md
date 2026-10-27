@@ -734,7 +734,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `apm_config.obfuscation.sql.replace_digits`                     | Replace digits in SQL obfuscation                          |                       |
 | `apm_config.obfuscation.sql.table_names`                        | Collect table names during obfuscation                     |                       |
 | `data_plane.experimental.apm.enabled`                           | Run the experimental APM proxy in front of the trace-agent | false                 |
-| `data_plane.experimental.apm.proxy_destination`                 | URL of the relocated trace-agent the APM proxy forwards to | http://127.0.0.1:8127 |
+| `data_plane.experimental.apm.proxy_destination`                 | HTTP or Unix socket URL of the relocated trace-agent       | http://127.0.0.1:8127 |
 | `data_plane.otlp.receiver_grpc_endpoint_temporary`              | ADP OTLP gRPC listen endpoint                              | localhost:6317        |
 | `data_plane.otlp.receiver_http_endpoint_temporary`              | ADP OTLP HTTP listen endpoint                              | localhost:6318        |
 | `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts                        | true                  |
@@ -838,6 +838,8 @@ The example endpoint must also be configured as the primary or an additional end
 ### `data_plane.experimental.apm.*`
 
 With `data_plane.experimental.apm.enabled` set, ADP takes over the trace-agent's receiver. It listens where the trace-agent normally does (`apm_config.receiver_port`, `apm_config.receiver_socket`, `apm_config.apm_non_local_traffic`, and `bind_host`) and forwards every request to the trace-agent at `data_plane.experimental.apm.proxy_destination`. The Datadog Agent moves the trace-agent's receiver to that address.
+
+`data_plane.experimental.apm.proxy_destination` accepts either an HTTP endpoint (`http://host:port`, such as the default `http://127.0.0.1:8127`) or a Unix domain socket (`unix:///path/to/socket`, such as `unix:///var/run/datadog/trace-agent.socket`).
 
 > [!WARNING]
 > Settings under `experimental` are unstable and may change, move, or be removed. Do not rely on backward compatibility.

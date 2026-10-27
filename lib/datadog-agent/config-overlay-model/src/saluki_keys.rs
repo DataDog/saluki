@@ -146,6 +146,11 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
              Agent moves the trace-agent's receiver to that address.
 
 \
+             `data_plane.experimental.apm.proxy_destination` accepts either an HTTP endpoint \
+             (`http://host:port`, such as the default `http://127.0.0.1:8127`) or a Unix domain socket \
+             (`unix:///path/to/socket`, such as `unix:///var/run/datadog/trace-agent.socket`).
+
+\
              > [!WARNING]
 \
              > Settings under `experimental` are unstable and may change, move, or be removed. Do not rely on \
@@ -163,7 +168,7 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
     },
     SalukiKey {
         yaml_path: "data_plane.experimental.apm.proxy_destination",
-        description: "URL of the relocated trace-agent the APM proxy forwards to",
+        description: "HTTP or Unix socket URL of the relocated trace-agent",
         default: "http://127.0.0.1:8127",
         documentation: None,
         value_type: "ValueType::String",
