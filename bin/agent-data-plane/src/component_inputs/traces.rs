@@ -16,7 +16,7 @@ use saluki_components::{
 };
 use stringtheory::MetaString;
 
-use crate::components::ottl_error_mode::OttlErrorMode;
+use crate::components::ottl::ErrorMode;
 
 /// Builds the trace encoder settings, without a default hostname.
 pub(crate) fn trace_configuration(
@@ -133,11 +133,11 @@ pub(crate) fn obfuscation_configuration(obfuscation: &traces::Obfuscation) -> Ob
 }
 
 /// Maps the configured OTTL error mode onto the processors' error mode.
-pub(crate) fn ottl_error_mode(mode: traces::OttlErrorMode) -> OttlErrorMode {
+pub(crate) fn ottl_error_mode(mode: traces::OttlErrorMode) -> ErrorMode {
     match mode {
-        traces::OttlErrorMode::Ignore => OttlErrorMode::Ignore,
-        traces::OttlErrorMode::Silent => OttlErrorMode::Silent,
-        traces::OttlErrorMode::Propagate => OttlErrorMode::Propagate,
+        traces::OttlErrorMode::Ignore => ErrorMode::Ignore,
+        traces::OttlErrorMode::Silent => ErrorMode::Silent,
+        traces::OttlErrorMode::Propagate => ErrorMode::Propagate,
     }
 }
 
@@ -385,9 +385,9 @@ mod tests {
     #[test]
     fn ottl_error_mode_maps_every_variant() {
         for (configured, expected) in [
-            (traces::OttlErrorMode::Ignore, OttlErrorMode::Ignore),
-            (traces::OttlErrorMode::Silent, OttlErrorMode::Silent),
-            (traces::OttlErrorMode::Propagate, OttlErrorMode::Propagate),
+            (traces::OttlErrorMode::Ignore, ErrorMode::Ignore),
+            (traces::OttlErrorMode::Silent, ErrorMode::Silent),
+            (traces::OttlErrorMode::Propagate, ErrorMode::Propagate),
         ] {
             assert_eq!(expected, ottl_error_mode(configured), "{configured:?}");
         }

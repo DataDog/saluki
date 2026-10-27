@@ -7,7 +7,7 @@ pub mod host_tags;
 pub mod liveness;
 pub mod metric_filter;
 mod metric_name;
-pub mod ottl_error_mode;
+pub mod ottl;
 pub mod ottl_filter_processor;
 pub mod ottl_transform_processor;
 pub mod tag_filterlist;

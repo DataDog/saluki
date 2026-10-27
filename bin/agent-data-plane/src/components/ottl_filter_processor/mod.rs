@@ -19,12 +19,12 @@ use tracing::{debug, error};
 mod span_context;
 use span_context::{SpanFilterContext, SpanFilterFamily};
 
-use crate::components::ottl_error_mode::OttlErrorMode;
+use crate::components::ottl::ErrorMode;
 
 /// Configuration for the OTTL filter processor.
 #[derive(Clone, Debug)]
 pub struct OttlFilterConfiguration {
-    error_mode: OttlErrorMode,
+    error_mode: ErrorMode,
     span_conditions: Vec<String>,
 }
 
@@ -32,7 +32,7 @@ impl OttlFilterConfiguration {
     /// Creates a filter that drops each span matching any of `span_conditions`.
     ///
     /// `error_mode` decides what happens to a span when a condition fails to evaluate.
-    pub fn new(error_mode: OttlErrorMode, span_conditions: Vec<String>) -> Self {
+    pub fn new(error_mode: ErrorMode, span_conditions: Vec<String>) -> Self {
         Self {
             error_mode,
             span_conditions,
@@ -84,7 +84,7 @@ impl MemoryBounds for OttlFilterConfiguration {
 
 /// Synchronous transform that drops spans matching OTTL conditions.
 pub struct OttlFilter {
-    error_mode: OttlErrorMode,
+    error_mode: ErrorMode,
     span_parsers: Vec<ottl::Parser<SpanFilterFamily>>,
 }
 
@@ -111,11 +111,11 @@ impl OttlFilter {
                 }
                 Ok(_) => continue,
                 Err(e) => match self.error_mode {
-                    OttlErrorMode::Ignore => {
+                    ErrorMode::Ignore => {
                         error!(error = %e, "OTTL filter condition error; ignoring");
                     }
-                    OttlErrorMode::Silent => {}
-                    OttlErrorMode::Propagate => {
+                    ErrorMode::Silent => {}
+                    ErrorMode::Propagate => {
                         //propagate: The processor returns the error up the pipeline. This will result in the payload
                         // being dropped from the collector.
                         // AZH: The current API of SynchronousTransform::transform_buffer does not propagate errors;
@@ -170,9 +170,9 @@ mod tests {
     fn test_config(value: serde_json::Value) -> OttlFilterConfiguration {
         let root = value.get("ottl_filter_config").cloned().unwrap_or_default();
         let error_mode = match root.get("error_mode").and_then(serde_json::Value::as_str) {
-            Some("ignore") => OttlErrorMode::Ignore,
-            Some("silent") => OttlErrorMode::Silent,
-            _ => OttlErrorMode::Propagate,
+            Some("ignore") => ErrorMode::Ignore,
+            Some("silent") => ErrorMode::Silent,
+            _ => ErrorMode::Propagate,
         };
         let span_conditions = root
             .pointer("/traces/span")
