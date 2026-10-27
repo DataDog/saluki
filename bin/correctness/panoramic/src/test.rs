@@ -8,6 +8,7 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::deadline::Deadline;
+use crate::record::CaseRecord;
 use crate::reporter::{PhaseTracker, TestResult};
 
 /// Signal used to notify kind-runtime tests when the cluster is ready.
@@ -70,6 +71,9 @@ pub(crate) struct TestContext {
 
     /// Where a test marks the phase it is executing, so the runner can name it if a deadline fires.
     pub(crate) phases: PhaseTracker,
+
+    /// Step states and verdict shared with the runner for reporting after cancellation.
+    pub(crate) record: CaseRecord,
 }
 
 impl TestContext {
@@ -83,6 +87,7 @@ impl TestContext {
             settings,
             kind_ready: None,
             phases: PhaseTracker::default(),
+            record: CaseRecord::default(),
         }
     }
 
