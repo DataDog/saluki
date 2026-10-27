@@ -208,6 +208,23 @@ impl<'a> DataPlaneConfiguration<'a> {
         self.otlp_enabled() && (!self.otlp_proxy_enabled() || !self.otlp_proxy_traces_enabled())
     }
 
+    /// Returns `true` if the Datadog forwarder is required, because at least one baseline pipeline is.
+    pub const fn datadog_forwarder_required(&self) -> bool {
+        self.metrics_pipeline_required()
+            || self.logs_pipeline_required()
+            || self.events_pipeline_required()
+            || self.service_checks_pipeline_required()
+            || self.traces_pipeline_required()
+    }
+
+    /// Returns `true` if the APM relay is enabled without the Datadog forwarder it currently connects to.
+    ///
+    /// The relay has no output path of its own, but a topology can't hold a component with no connections, so it is
+    /// connected to the Datadog forwarder. In standalone mode with no other data pipeline, there is no forwarder.
+    pub const fn apm_relay_lacks_forwarder(&self) -> bool {
+        self.apm_enabled() && !self.datadog_forwarder_required()
+    }
+
     /// Returns the set of [`Pipeline`] variants that are active based on our configuration.
     pub fn active_pipelines(&self) -> HashSet<Pipeline> {
         let mut s = HashSet::new();
@@ -451,6 +468,23 @@ mod tests {
         assert!(!dp.events_pipeline_required());
         assert!(dp.service_checks_pipeline_required());
         assert!(!dp.traces_pipeline_required());
+    }
+
+    #[test]
+    fn standalone_apm_only_lacks_the_forwarder_its_relay_connects_to() {
+        let mut config = pipeline_configuration(false, false, false, false, false);
+        config.control.apm = true;
+        config.control.standalone_mode = true;
+        assert!(DataPlaneConfiguration::from_configuration(&config).apm_relay_lacks_forwarder());
+
+        // Connected mode always provisions the liveness pipelines, and with them the forwarder.
+        config.control.standalone_mode = false;
+        assert!(!DataPlaneConfiguration::from_configuration(&config).apm_relay_lacks_forwarder());
+
+        // As does another data pipeline in standalone mode.
+        config.control.standalone_mode = true;
+        config.control.dogstatsd = true;
+        assert!(!DataPlaneConfiguration::from_configuration(&config).apm_relay_lacks_forwarder());
     }
 
     #[test]
