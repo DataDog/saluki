@@ -367,6 +367,15 @@ pub enum ProcessIdentity {
 }
 
 impl ProcessIdentity {
+    /// Builds the identity of a peer process from its credentials, rejecting a zero PID.
+    pub(crate) fn new(pid: i32, uid: u32, gid: u32) -> Self {
+        if pid == 0 {
+            Self::Error(ProcessCredentialsError::ZeroPid)
+        } else {
+            Self::Credentials(ProcessCredentials { pid, uid, gid })
+        }
+    }
+
     /// Returns process credentials, if they were detected.
     pub fn credentials(&self) -> Option<&ProcessCredentials> {
         match self {
