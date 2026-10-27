@@ -490,7 +490,7 @@ mod tests {
     #[tokio::test]
     async fn the_403_gate_follows_a_secrets_configuration_change() {
         let mut live_config = LiveConfiguration::new(SalukiConfiguration::default());
-        let refresher = SecretsGateRefresher::new(live_config.live(|config| &config.shared.secrets));
+        let refresher = SecretsGateRefresher::new(live_config.source.live(|config| &config.shared.secrets));
         let gate = refresher.gate.clone();
 
         // The refresher spawns on the ambient supervisor, and the supervisor is what keeps it running for the rest of
@@ -506,14 +506,14 @@ mod tests {
 
         // The same policy instance reads the gate on every response, so turning secrets management on
         // changes the gate without rebuilding the service.
-        live_config.publish(configuration_with(Secrets {
+        live_config.publisher.publish(configuration_with(Secrets {
             backend_command: Some("/bin/true".to_string()),
             refresh_on_api_key_failure_interval: 0,
         }));
         await_gate(&gate, true).await;
         assert!(would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
 
-        live_config.publish(SalukiConfiguration::default());
+        live_config.publisher.publish(SalukiConfiguration::default());
         await_gate(&gate, false).await;
         assert!(!would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
     }

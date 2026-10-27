@@ -541,7 +541,7 @@ mod tests {
         let mut live = LiveConfiguration::new(config("start-key", &[]));
         let (_supervisor, endpoints) = spawn_datadog_endpoints(&live, &[]).await;
 
-        live.publish(config("rotated-key", &[]));
+        live.publisher.publish(config("rotated-key", &[]));
 
         await_api_key(endpoints[0].endpoint(), "rotated-key").await;
     }
@@ -555,7 +555,7 @@ mod tests {
         let mut changes = refresher.changes();
         let _supervisor = spawn_refresher(refresher).await;
 
-        live.publish(config("rotated-key", &[]));
+        live.publisher.publish(config("rotated-key", &[]));
 
         tokio::time::timeout(Duration::from_secs(2), changes.changed())
             .await
@@ -572,7 +572,7 @@ mod tests {
         let mut changes = refresher.changes();
         let _supervisor = spawn_refresher(refresher).await;
 
-        live.publish(config("key\nvalue", &[]));
+        live.publisher.publish(config("key\nvalue", &[]));
 
         assert!(
             tokio::time::timeout(Duration::from_millis(100), changes.changed())
@@ -590,7 +590,7 @@ mod tests {
 
         // The rotation lands after the endpoints were built and before the views exist, so it is
         // already the views' baseline and no later change reports it.
-        live.publish(config("rotated-key", &[]));
+        live.publisher.publish(config("rotated-key", &[]));
 
         let refresher =
             ApiKeyRefresher::new(&endpoints, &live.api_keys()).expect("the endpoints should follow the live views");
@@ -605,7 +605,8 @@ mod tests {
         let mut live = LiveConfiguration::new(config("start-key", additional));
         let endpoints = datadog_endpoints(additional);
 
-        live.publish(config("start-key", &[(ADDITIONAL_URL, &["rotated-extra-key"])]));
+        live.publisher
+            .publish(config("start-key", &[(ADDITIONAL_URL, &["rotated-extra-key"])]));
 
         let refresher =
             ApiKeyRefresher::new(&endpoints, &live.api_keys()).expect("the endpoints should follow the live views");
@@ -633,7 +634,7 @@ mod tests {
             ApiKeyRefresher::new(&endpoints, &live.api_keys()).expect("both primary endpoints should follow the view");
         let _supervisor = spawn_refresher(refresher).await;
 
-        live.publish(config("rotated-key", &[]));
+        live.publisher.publish(config("rotated-key", &[]));
 
         for endpoint in &endpoints {
             await_api_key(endpoint.endpoint(), "rotated-key").await;
@@ -646,7 +647,7 @@ mod tests {
         let mut live = LiveConfiguration::new(config("start-key", additional));
         let (_supervisor, endpoints) = spawn_datadog_endpoints(&live, additional).await;
 
-        live.publish(config(
+        live.publisher.publish(config(
             "start-key",
             &[(ADDITIONAL_URL, &["extra-key-1", "rotated-extra-key"])],
         ));
@@ -670,7 +671,8 @@ mod tests {
         let mut live = LiveConfiguration::new(config("start-key", additional));
         let (_supervisor, endpoints) = spawn_datadog_endpoints(&live, additional).await;
 
-        live.publish(config("start-key", &[(ADDITIONAL_URL, &["rotated-extra-key"])]));
+        live.publisher
+            .publish(config("start-key", &[(ADDITIONAL_URL, &["rotated-extra-key"])]));
 
         let by_position: HashMap<usize, &ResolvedEndpoint> = endpoints
             .iter()
@@ -702,7 +704,7 @@ mod tests {
             .expect("endpoint should resolve");
         let api_keys = LiveApiKeys {
             primary: Some(ApiKeyView::Optional(
-                live.live(|config| &config.domains.multi_region_failover.api_key),
+                live.source.live(|config| &config.domains.multi_region_failover.api_key),
             )),
             additional: None,
         };
@@ -711,7 +713,7 @@ mod tests {
 
         let mut rotated = SalukiConfiguration::default();
         rotated.domains.multi_region_failover.api_key = Some("rotated-failover-key".to_string());
-        live.publish(rotated);
+        live.publisher.publish(rotated);
 
         // The optional view must carry configured values even though it can also report absence.
         await_api_key(endpoints[0].endpoint(), "rotated-failover-key").await;

@@ -453,7 +453,7 @@ mod tests {
         assert_eq!(await_readiness(&mut readiness_rx).await, ValidationReadiness::NotReady);
 
         live_config.shared.endpoints.api_key = "rotated-key".to_string();
-        live.publish(live_config);
+        live.publisher.publish(live_config);
 
         assert_eq!(await_readiness(&mut readiness_rx).await, ValidationReadiness::Ready);
     }
@@ -574,7 +574,7 @@ mod tests {
                 vec!["ignored-new-domain-key".to_string()],
             ),
         ]);
-        live.publish(live_config);
+        live.publisher.publish(live_config);
 
         let targets = tokio::time::timeout(Duration::from_secs(2), async {
             loop {

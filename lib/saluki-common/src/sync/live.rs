@@ -97,15 +97,17 @@ pub struct LiveSource<S> {
     tick: watch::Receiver<()>,
 }
 
-impl<S> LiveSource<S>
-where
-    S: Send + Sync + 'static,
-{
+impl<S> LiveSource<S> {
     /// Returns the current root value.
     pub fn load(&self) -> Arc<S> {
         self.cell.load_full()
     }
+}
 
+impl<S> LiveSource<S>
+where
+    S: Send + Sync + 'static,
+{
     /// Creates a view of one projection of the root value, starting from the current root.
     pub fn live<T>(&self, project: impl for<'a> Fn(&'a S) -> &'a T + Send + Sync + 'static) -> Live<T>
     where
@@ -277,7 +279,9 @@ mod tests {
     use std::cell::Cell;
     use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{mpsc, Arc, Barrier};
+    use std::thread;
+    use std::time::Duration;
 
     use tokio_test::{assert_pending, assert_ready, task::spawn};
 
@@ -305,13 +309,6 @@ mod tests {
         fn new() -> Self {
             let (publisher, source) = channel(Root::default());
             Self { publisher, source }
-        }
-
-        fn live<T>(&self, project: impl for<'a> Fn(&'a Root) -> &'a T + Send + Sync + 'static) -> Live<T>
-        where
-            T: Clone + PartialEq + 'static,
-        {
-            self.source.live(project)
         }
 
         fn update(&mut self, f: impl FnOnce(&mut Root)) {
@@ -353,7 +350,7 @@ mod tests {
     #[test]
     fn dynamic_view_keeps_its_snapshot_until_changed_processes_the_update() {
         let mut shared = Shared::new();
-        let mut view = shared.live(|root| &root.selected.value);
+        let mut view = shared.source.live(|root| &root.selected.value);
 
         shared.update(|root| root.selected.value = 1);
         assert_eq!(*view, 0);
@@ -365,7 +362,7 @@ mod tests {
     #[test]
     fn project_follows_the_selected_child_while_the_parent_snapshot_stays_unchanged() {
         let mut shared = Shared::new();
-        let parent = shared.live(|root| root);
+        let parent = shared.source.live(|root| root);
         let mut child = parent
             .project(|root| &root.selected)
             .project(|selected| &selected.value);
@@ -380,7 +377,7 @@ mod tests {
     #[test]
     fn project_reads_the_source_for_the_child_initial_snapshot() {
         let mut shared = Shared::new();
-        let parent = shared.live(|root| &root.selected);
+        let parent = shared.source.live(|root| &root.selected);
 
         shared.update(|root| root.selected.value = 1);
         let child = parent.project(|selected| &selected.value);
@@ -392,7 +389,10 @@ mod tests {
     #[test]
     fn projected_view_ignores_unrelated_and_unchanged_values() {
         let mut shared = Shared::new();
-        let mut child = shared.live(|root| &root.selected).project(|selected| &selected.value);
+        let mut child = shared
+            .source
+            .live(|root| &root.selected)
+            .project(|selected| &selected.value);
         let mut changed = spawn(child.changed());
         assert_pending!(changed.poll());
 
@@ -415,7 +415,10 @@ mod tests {
     #[test]
     fn projected_stream_ignores_unrelated_and_unchanged_values() {
         let mut shared = Shared::new();
-        let child = shared.live(|root| &root.selected).project(|selected| &selected.value);
+        let child = shared
+            .source
+            .live(|root| &root.selected)
+            .project(|selected| &selected.value);
         let mut values = spawn(child.into_changes());
 
         shared.update(|root| root.unrelated = 1);
@@ -434,7 +437,7 @@ mod tests {
     fn stream_starts_with_the_next_change_not_the_current_snapshot() {
         let mut shared = Shared::new();
         shared.update(|root| root.selected.value = 1);
-        let mut values = spawn(shared.live(|root| &root.selected.value).into_changes());
+        let mut values = spawn(shared.source.live(|root| &root.selected.value).into_changes());
 
         assert_pending!(values.poll_next());
 
@@ -445,7 +448,7 @@ mod tests {
     #[test]
     fn stream_yields_an_update_pending_before_conversion() {
         let mut shared = Shared::new();
-        let view = shared.live(|root| &root.selected.value);
+        let view = shared.source.live(|root| &root.selected.value);
 
         shared.update(|root| root.selected.value = 1);
         let mut values = spawn(view.into_changes());
@@ -457,7 +460,7 @@ mod tests {
     #[test]
     fn stream_coalesces_unprocessed_updates_to_the_latest_value() {
         let mut shared = Shared::new();
-        let mut values = spawn(shared.live(|root| &root.selected.value).into_changes());
+        let mut values = spawn(shared.source.live(|root| &root.selected.value).into_changes());
 
         shared.update(|root| root.selected.value = 1);
         shared.update(|root| root.selected.value = 2);
@@ -469,8 +472,8 @@ mod tests {
     #[test]
     fn dynamic_view_and_stream_park_after_the_publisher_drops() {
         let shared = Shared::new();
-        let mut view = shared.live(|root| &root.selected.value);
-        let mut values = spawn(shared.live(|root| &root.selected.value).into_changes());
+        let mut view = shared.source.live(|root| &root.selected.value);
+        let mut values = spawn(shared.source.live(|root| &root.selected.value).into_changes());
         drop(shared);
 
         assert_pending!(spawn(view.changed()).poll());
@@ -481,7 +484,7 @@ mod tests {
     #[test]
     fn clone_has_its_own_snapshot_and_notification_cursor() {
         let mut shared = Shared::new();
-        let mut original = shared.live(|root| &root.selected.value);
+        let mut original = shared.source.live(|root| &root.selected.value);
         let mut clone = original.clone();
 
         shared.update(|root| root.selected.value = 1);
@@ -497,7 +500,7 @@ mod tests {
         let shared = Shared::new();
         assert_eq!(format!("{:?}", Live::new_fixed(1)), "Live::Fixed(1)");
         assert_eq!(
-            format!("{:?}", shared.live(|root| &root.selected.value)),
+            format!("{:?}", shared.source.live(|root| &root.selected.value)),
             "Live::Dynamic { snapshot: 0, .. }"
         );
     }
@@ -535,7 +538,7 @@ mod tests {
         let mut shared = Shared::new();
         shared.update(|root| root.selected.value = 1);
         assert_eq!(shared.source.load().selected.value, 1);
-        assert_eq!(*shared.live(|root| &root.selected.value), 1);
+        assert_eq!(*shared.source.live(|root| &root.selected.value), 1);
 
         // With no source left, the channel has no receivers.
         let Shared { mut publisher, source } = shared;
@@ -550,7 +553,7 @@ mod tests {
 
         let reads = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&reads);
-        let mut view = shared.live(move |root| {
+        let mut view = shared.source.live(move |root| {
             counter.fetch_add(1, Ordering::Relaxed);
             &root.selected.value
         });
@@ -566,6 +569,32 @@ mod tests {
 
         shared.update(|root| root.selected.value = 2);
         assert_eq!(assert_ready!(changed.poll()), 2);
+    }
+
+    #[test]
+    fn a_publication_during_view_creation_remains_unseen_by_the_new_view() {
+        let (mut publisher, source) = channel(0_u32);
+        let (loaded_tx, loaded_rx) = mpsc::channel();
+        let finish_projection = Arc::new(Barrier::new(2));
+        let release = Arc::clone(&finish_projection);
+        let creating = thread::spawn(move || {
+            source.live(move |value| {
+                if *value == 0 {
+                    // Hold the initial root while another thread publishes its replacement.
+                    loaded_tx.send(()).unwrap();
+                    release.wait();
+                }
+                value
+            })
+        });
+
+        loaded_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        publisher.publish(1);
+        finish_projection.wait();
+        let mut view = creating.join().unwrap();
+
+        assert_eq!(*view, 0);
+        assert_eq!(assert_ready!(spawn(view.changed()).poll()), 1);
     }
 
     #[test]
@@ -601,8 +630,8 @@ mod tests {
     #[test]
     fn after_the_publisher_drops_views_process_an_unseen_update_then_stay_pending() {
         let mut shared = Shared::new();
-        let mut view = shared.live(|root| &root.selected.value);
-        let mut values = spawn(shared.live(|root| &root.selected.value).into_changes());
+        let mut view = shared.source.live(|root| &root.selected.value);
+        let mut values = spawn(shared.source.live(|root| &root.selected.value).into_changes());
         shared.update(|root| root.selected.value = 1);
         let Shared { publisher, source } = shared;
         drop(publisher);

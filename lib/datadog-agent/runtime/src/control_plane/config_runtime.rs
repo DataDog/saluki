@@ -24,7 +24,7 @@ impl RuntimeConfigSnapshot {
     /// Creates a `RuntimeConfigSnapshot` that serializes the configuration `load` returns at the time of each request.
     pub fn from_loader<T, F>(load: F) -> Self
     where
-        T: Serialize + 'static,
+        T: Serialize,
         F: Fn() -> Arc<T> + Send + Sync + 'static,
     {
         Self {
