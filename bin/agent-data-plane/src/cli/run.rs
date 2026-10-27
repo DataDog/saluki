@@ -496,6 +496,7 @@ fn add_baseline_events_pipeline_to_blueprint(
 ) -> Result<(), GenericError> {
     let metrics_encoding = &shared.metrics_encoding;
     let compression = &shared.endpoints.compression;
+    // TODO: the buffered encoders ignore `metrics_encoding.flush_timeout` and always use its default.
     let dd_events_config = BufferedIncrementalConfiguration::new(
         DatadogEventsConfiguration {
             max_payload_size: metrics_encoding.max_payload_size,
@@ -519,6 +520,7 @@ fn add_baseline_service_checks_pipeline_to_blueprint(
 ) -> Result<(), GenericError> {
     let metrics_encoding = &shared.metrics_encoding;
     let compression = &shared.endpoints.compression;
+    // TODO: the buffered encoders ignore `metrics_encoding.flush_timeout` and always use its default.
     let dd_service_checks_config = BufferedIncrementalConfiguration::new(
         DatadogServiceChecksConfiguration {
             max_payload_size: metrics_encoding.max_payload_size,
