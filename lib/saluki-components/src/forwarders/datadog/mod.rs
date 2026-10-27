@@ -325,8 +325,8 @@ mod tests {
             &shared_configuration(),
             "http://mrf.example.test".to_string(),
             "mrf-api-key".to_string(),
-            live.live(|config| &config.domains.multi_region_failover.api_key),
-            live.live(|config| &config.shared.secrets),
+            live.source.live(|config| &config.domains.multi_region_failover.api_key),
+            live.source.live(|config| &config.shared.secrets),
         );
 
         let endpoints = config
@@ -346,10 +346,10 @@ mod tests {
 
         // Rotate the primary key first: the override does not follow it.
         live_config.shared.endpoints.api_key = "rotated-primary-api-key".to_string();
-        live.publish(live_config.clone());
+        live.publisher.publish(live_config.clone());
 
         live_config.domains.multi_region_failover.api_key = Some("rotated-mrf-api-key".to_string());
-        live.publish(live_config);
+        live.publisher.publish(live_config);
 
         let endpoint = endpoints[0].endpoint();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {

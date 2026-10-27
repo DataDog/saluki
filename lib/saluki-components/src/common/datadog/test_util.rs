@@ -12,7 +12,7 @@ use agent_data_plane_config::{
     shared::{Compression, Endpoints, Forwarder, MetricsEncoding, SharedConfiguration, Tls},
     ConfigValue, SalukiConfiguration,
 };
-use saluki_common::sync::live::{self, Live, LivePublisher, LiveSource};
+use saluki_common::sync::live::{self, LivePublisher, LiveSource};
 
 use super::api_key::{ApiKeyView, LiveApiKeys};
 
@@ -77,8 +77,8 @@ pub(crate) fn shared_configuration() -> SharedConfiguration {
 /// This stands in for the configuration system: `publish` is what the system does once it has
 /// translated an update. Keeping the publisher keeps the views' channel open.
 pub(crate) struct LiveConfiguration {
-    publisher: LivePublisher<SalukiConfiguration>,
-    source: LiveSource<SalukiConfiguration>,
+    pub(crate) publisher: LivePublisher<SalukiConfiguration>,
+    pub(crate) source: LiveSource<SalukiConfiguration>,
 }
 
 impl LiveConfiguration {
@@ -88,29 +88,13 @@ impl LiveConfiguration {
         Self { publisher, source }
     }
 
-    /// Replaces the configuration and notifies the views, as the system does after a successful
-    /// translation.
-    pub(crate) fn publish(&mut self, config: SalukiConfiguration) {
-        self.publisher.publish(config);
-    }
-
     /// Returns the live views a Datadog forwarder's endpoints take their API keys from.
     pub(crate) fn api_keys(&self) -> LiveApiKeys {
         LiveApiKeys {
             primary: Some(ApiKeyView::Required(
-                self.live(|config| &config.shared.endpoints.api_key),
+                self.source.live(|config| &config.shared.endpoints.api_key),
             )),
-            additional: Some(self.live(|config| &config.shared.endpoints.additional_endpoints)),
+            additional: Some(self.source.live(|config| &config.shared.endpoints.additional_endpoints)),
         }
-    }
-
-    /// Returns a live view of one projection of the current configuration.
-    pub(crate) fn live<T>(
-        &self, project: impl for<'a> Fn(&'a SalukiConfiguration) -> &'a T + Send + Sync + 'static,
-    ) -> Live<T>
-    where
-        T: Clone + PartialEq + 'static,
-    {
-        self.source.live(project)
     }
 }
