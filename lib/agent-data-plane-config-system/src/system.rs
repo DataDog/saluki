@@ -83,10 +83,8 @@ type Result<T> = std::result::Result<T, Error>;
 /// publishes each accepted version.
 pub struct ConfigurationSystem {
     current: LiveSource<SalukiConfiguration>,
-    // The merged sources the current configuration was translated from, kept so consumers that work
-    // a key at a time have a by-key view carrying provenance. The update task publishes the typed
-    // configuration while it holds the write lock, so a reader never sees sources newer than the
-    // typed configuration. Separate reads of the two can still observe different versions.
+    // Retained for by-key readers that need source values and provenance. The update task holds the write lock
+    // until it has also published the typed configuration. Loading each separately can still return different versions.
     sources: Arc<RwLock<Arc<SourceTree>>>,
 }
 
@@ -168,7 +166,7 @@ impl ConfigurationSystem {
 
     /// Loads the current translated configuration.
     ///
-    /// The returned value is one whole version; a concurrent refresh never tears the read.
+    /// The returned `Arc` keeps that version available even after a later update.
     pub fn config(&self) -> Arc<SalukiConfiguration> {
         self.current.load()
     }

@@ -21,7 +21,9 @@ pub struct RuntimeConfigSnapshot {
 }
 
 impl RuntimeConfigSnapshot {
-    /// Creates a `RuntimeConfigSnapshot` that serializes the configuration `load` returns at the time of each request.
+    /// Creates a `RuntimeConfigSnapshot` that calls `load` once per request and serializes the returned configuration.
+    ///
+    /// The loader is retained for later requests. Each returned `Arc` keeps its version alive until serialization finishes.
     pub fn from_loader<T, F>(load: F) -> Self
     where
         T: Serialize,

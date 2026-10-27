@@ -169,9 +169,9 @@ that the typed model doesn't carry, so they read the sources rather than the mod
 ### Runtime updates
 
 Startup translation is strict. Live updates are translated against tentative state. On success, the update task
-replaces the retained sources and publishes the typed model while holding the sources lock, so a reader never sees
-sources newer than the model. On failure, it keeps the last-known-good model and leaves the sources as they were.
-Separate reads of the model and the sources can still observe different versions.
+replaces the retained sources and publishes the typed model before releasing the sources lock. Separate reads of the
+model and the sources can still observe different versions; they don't form a combined snapshot. On failure, the task
+keeps the last-known-good model and leaves the sources as they were.
 
 `ConfigurationSystem` holds the read-only `LiveSource` of a `live::channel`, and the update task owns its only
 `LivePublisher`. Tests that need a changing value create their own channel and publish replacements through it.
