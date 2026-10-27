@@ -1,8 +1,8 @@
 //! Remote agent registration and the services that the Datadog Agent queries.
 //!
 //! [`RemoteAgentBootstrap`] registers the process with the Datadog Agent over the Remote Agent Registry, keeps that
-//! registration alive, and creates everything that depends on it: the configuration stream, the status, flare, and
-//! telemetry services, and the workers that report diagnostic events back to the Datadog Agent.
+//! registration alive, and creates everything that depends on it: the configuration stream, and the workers that serve
+//! the status, flare, and telemetry services and report diagnostic events back to the Datadog Agent.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -29,6 +29,7 @@ use datadog_protos::agent::{
 use futures::StreamExt;
 use process_memory::Querier as MemoryQuerier;
 use prost_types::value::Kind;
+use saluki_api::{DynamicRoute, EndpointType};
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_common::task::spawn_traced_named;
 use saluki_config::dynamic::{ConfigSetting, ConfigUpdate, Provenance};
@@ -53,7 +54,7 @@ use tokio::{
     sync::{mpsc, oneshot, Mutex},
     time::{interval, MissedTickBehavior},
 };
-use tonic::{server::NamedService, Status};
+use tonic::{server::NamedService, service::Routes, Status};
 use tracing::{debug, error, info, warn};
 
 mod status;
@@ -152,8 +153,8 @@ impl RemoteAgentBootstrap {
     /// Creates a worker that captures the dataspace from the supervisor context and makes it available to the
     /// diagnostic artifact collection service.
     ///
-    /// This worker must be added to the control plane supervisor. When it initializes, it runs inside the supervisor
-    /// process where the dataspace task-local is set, and fills the shared [`OnceLock`] so that `get_flare_files` can
+    /// This worker must be added to the supervision tree. When it initializes, it runs inside a supervisor process
+    /// where the dataspace task-local is set, and fills the shared [`OnceLock`] so that `get_flare_files` can
     /// collect diagnostic artifacts at request time. Without this, the gRPC handler tasks spawned by tonic would not
     /// have access to the dataspace since tonic's `tokio::spawn` does not propagate task-locals.
     pub fn create_dataspace_anchor(&self) -> DataspaceAnchorWorker {
@@ -170,31 +171,25 @@ impl RemoteAgentBootstrap {
         }
     }
 
-    /// Creates a new `StatusProviderServer` tied to this remote agent.
+    /// Creates a worker that serves the status, flare, and telemetry services on the privileged API endpoint.
     ///
-    /// The service always reports the built-in main section fields (version, Git commit, architecture, start time, and
-    /// the Agent version this build was compiled against), followed by the fields written by each of the given
-    /// `status_sections`, in order.
-    pub fn create_status_service(
-        &self, status_sections: Vec<Arc<dyn StatusSectionProvider>>,
-    ) -> StatusProviderServer<RemoteAgentImpl> {
-        StatusProviderServer::new(self.build_impl(status_sections, Vec::new()))
-    }
-
-    /// Creates a new `TelemetryProviderServer` tied to this remote agent.
+    /// The status service always reports the built-in main section fields (version, Git commit, architecture, start
+    /// time, and the Agent version this build was compiled against), followed by the fields written by each of the
+    /// given `status_sections`, in order.
     ///
-    /// The service reports the internal metrics that match the given `remapper_rules`, renamed to the names the
-    /// Datadog Agent expects. Metrics that match no rule are not reported, so if `remapper_rules` is empty, the service
-    /// reports no metrics at all.
-    pub fn create_telemetry_service(
-        &self, remapper_rules: Vec<RemapperRule>,
-    ) -> TelemetryProviderServer<RemoteAgentImpl> {
-        TelemetryProviderServer::new(self.build_impl(Vec::new(), remapper_rules))
-    }
+    /// The telemetry service reports the internal metrics that match the given `telemetry_rules`, renamed to the names
+    /// the Datadog Agent expects. Metrics that match no rule are not reported, so if `telemetry_rules` is empty, the
+    /// service reports no metrics at all.
+    pub fn create_services_worker(
+        &self, status_sections: Vec<Arc<dyn StatusSectionProvider>>, telemetry_rules: Vec<RemapperRule>,
+    ) -> RemoteAgentServicesWorker {
+        let routes = Routes::new(StatusProviderServer::new(self.build_impl(status_sections, Vec::new())))
+            .add_service(FlareProviderServer::new(self.build_impl(Vec::new(), Vec::new())))
+            .add_service(TelemetryProviderServer::new(
+                self.build_impl(Vec::new(), telemetry_rules),
+            ));
 
-    /// Creates a new `FlareProviderServer` tied to this remote agent.
-    pub fn create_flare_service(&self) -> FlareProviderServer<RemoteAgentImpl> {
-        FlareProviderServer::new(self.build_impl(Vec::new(), Vec::new()))
+        RemoteAgentServicesWorker { routes }
     }
 
     /// Creates a config stream that receives configuration events from the Core Agent.
@@ -424,10 +419,7 @@ fn proto_value_to_serde_value(proto_val: &Option<prost_types::Value>) -> Value {
 }
 
 /// The implementation behind the status, flare, and telemetry services that the Datadog Agent queries.
-///
-/// Created through [`RemoteAgentBootstrap::create_status_service`], [`RemoteAgentBootstrap::create_flare_service`],
-/// and [`RemoteAgentBootstrap::create_telemetry_service`].
-pub struct RemoteAgentImpl {
+struct RemoteAgentImpl {
     started: DateTime<Utc>,
     internal_metrics: Reflector<AggregatedMetricsProcessor>,
     processor: Option<Mutex<TelemetryProcessor>>,
@@ -732,6 +724,35 @@ impl Supervisable for DataspaceAnchorWorker {
         }
 
         Ok(Box::pin(async move {
+            process_shutdown.await;
+            Ok(())
+        }))
+    }
+}
+
+/// A worker that serves the status, flare, and telemetry services on the privileged API endpoint.
+///
+/// The services are asserted as a dynamic gRPC route, so the privileged API endpoint in the same supervision tree serves
+/// them for as long as this worker runs.
+pub struct RemoteAgentServicesWorker {
+    routes: Routes,
+}
+
+#[async_trait]
+impl Supervisable for RemoteAgentServicesWorker {
+    fn name(&self) -> &str {
+        "remote-agent-services"
+    }
+
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+        let route = DynamicRoute::grpc(EndpointType::Privileged, self.routes.clone());
+
+        Ok(Box::pin(async move {
+            let dataspace =
+                DataspaceRegistry::try_current().ok_or_else(|| generic_error!("Dataspace not available."))?;
+
+            dataspace.assert(route, "remote-agent-services");
+
             process_shutdown.await;
             Ok(())
         }))

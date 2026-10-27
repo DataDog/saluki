@@ -4,7 +4,7 @@ use std::time::Duration;
 use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
 use datadog_agent_commons::ipc::config::{IpcAuthConfiguration, RemoteAgentClientConfiguration};
 use datadog_agent_config::classifier::Pipeline;
-use datadog_agent_runtime::env::WorkloadSettings;
+use datadog_agent_runtime::env::{HostSettings, WorkloadSettings};
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::ListenAddress;
 
@@ -41,9 +41,13 @@ pub(crate) fn workload_settings(config: &SalukiConfiguration) -> WorkloadSetting
     settings
 }
 
-/// Returns the hostname to report in standalone mode, if one was set explicitly.
-pub(crate) fn standalone_hostname(config: &SalukiConfiguration) -> Option<String> {
-    explicit(&config.shared.environment.hostname)
+/// Translates the typed hostname into the host provider's settings.
+///
+/// The hostname is only carried over when it was set explicitly.
+pub(crate) fn host_settings(config: &SalukiConfiguration) -> HostSettings {
+    let mut settings = HostSettings::default();
+    settings.hostname = explicit(&config.shared.environment.hostname);
+    settings
 }
 
 fn explicit<T: Clone>(value: &ConfigValue<T>) -> Option<T> {
@@ -306,13 +310,13 @@ mod tests {
     }
 
     #[test]
-    fn standalone_hostname_requires_an_explicit_value() {
+    fn host_settings_require_an_explicit_hostname() {
         let mut config = SalukiConfiguration::default();
         config.shared.environment.hostname = ConfigValue::defaulted("defaulted-host".to_string());
-        assert_eq!(standalone_hostname(&config), None);
+        assert_eq!(host_settings(&config).hostname, None);
 
         config.shared.environment.hostname = ConfigValue::explicit("explicit-host".to_string());
-        assert_eq!(standalone_hostname(&config).as_deref(), Some("explicit-host"));
+        assert_eq!(host_settings(&config).hostname.as_deref(), Some("explicit-host"));
     }
 
     fn pipeline_configuration(

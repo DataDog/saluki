@@ -5,16 +5,17 @@ use saluki_error::{generic_error, GenericError};
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 
-use super::TestComponentDriver;
+use super::{PrebuiltSource, TestComponentDriver, TestComponentSupervisor};
 use crate::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use crate::components::{
     destinations::{Destination, DestinationBuilder, DestinationContext},
     sources::{Source, SourceBuilder, SourceContext},
-    transforms::{Transform, TransformBuilder, TransformContext},
+    transforms::{SynchronousTransform, SynchronousTransformBuilder, Transform, TransformBuilder, TransformContext},
     BuildContext,
 };
 use crate::data_model::event::{metric::Metric, Event, EventType};
-use crate::runtime::state::IdentifierFilter;
+use crate::data_model::payload::PayloadType;
+use crate::runtime::state::{DataspaceRegistry, DataspaceUpdate, IdentifierFilter};
 use crate::runtime::{self, FnWorker, ShutdownStrategy, SupervisorError};
 use crate::topology::{EventsBuffer, OutputDefinition};
 
@@ -106,7 +107,7 @@ impl Source for AssertingSource {
     }
 }
 
-/// A source that ignores its shutdown handle, so that it never stops unless it's aborted.
+/// A source that ignores its shutdown handle, so that it never stops unless it's halted.
 struct StuckSource;
 
 #[async_trait]
@@ -114,6 +115,34 @@ impl Source for StuckSource {
     async fn run(self: Box<Self>, _context: SourceContext) -> Result<(), GenericError> {
         std::future::pending().await
     }
+}
+
+/// A source that marks itself ready, and reports that its shutdown handle fired before it returns.
+struct ShutdownReportingSource {
+    shutdown_seen: oneshot::Sender<()>,
+}
+
+#[async_trait]
+impl Source for ShutdownReportingSource {
+    async fn run(self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
+        let shutdown = context.take_shutdown_handle();
+        let mut health = context.take_health_handle();
+        health.mark_ready();
+
+        shutdown.await;
+        let _ = self.shutdown_seen.send(());
+        Ok(())
+    }
+}
+
+/// Returns a [`ShutdownReportingSource`], and the receiver it reports to.
+fn shutdown_reporting_source() -> (PrebuiltSource, oneshot::Receiver<()>) {
+    let (shutdown_seen, seen) = oneshot::channel();
+    let source = PrebuiltSource::new(
+        Box::new(ShutdownReportingSource { shutdown_seen }),
+        vec![OutputDefinition::default_output(EventType::Metric)],
+    );
+    (source, seen)
 }
 
 /// Builds whichever source it holds.
@@ -143,7 +172,7 @@ enum ChildBehavior {
     /// Finishes once the destination's `run` returns.
     StopsWithComponent,
 
-    /// Never finishes, so the supervisor has to abort it.
+    /// Never finishes, so it has to be halted.
     IgnoresShutdown,
 
     /// Never finishes, and is aborted as soon as the supervisor stops. The destination returns after its first event,
@@ -274,6 +303,28 @@ impl MemoryBounds for FailingTransformBuilder {
     fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
 }
 
+/// A synchronous transform that removes every metric named `drop`.
+struct DropNamed;
+
+impl SynchronousTransform for DropNamed {
+    fn transform_buffer(&mut self, buffer: &mut EventsBuffer) {
+        buffer.remove_if(|event| matches!(event, Event::Metric(metric) if metric.context().name() == "drop"));
+    }
+}
+
+struct DropNamedBuilder;
+
+#[async_trait]
+impl SynchronousTransformBuilder for DropNamedBuilder {
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
+        Ok(Box::new(DropNamed))
+    }
+}
+
+impl MemoryBounds for DropNamedBuilder {
+    fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+}
+
 #[tokio::test]
 async fn source_routes_each_declared_output_and_stops_on_shutdown() {
     let (control, mut outputs) = TestComponentDriver::source(TwoOutputSourceBuilder::new())
@@ -326,7 +377,7 @@ async fn children_spawned_from_run_join_the_component_supervisor() {
 #[tokio::test]
 async fn child_ignoring_shutdown_surfaces_as_shutdown_timed_out() {
     let control = TestComponentDriver::options()
-        .with_shutdown_budget(Duration::from_millis(100))
+        .with_shutdown_timeout(Duration::from_millis(100))
         .destination(SpawningDestinationBuilder {
             child: ChildBehavior::IgnoresShutdown,
         })
@@ -340,7 +391,7 @@ async fn child_ignoring_shutdown_surfaces_as_shutdown_timed_out() {
     let error = control
         .shutdown()
         .await
-        .expect_err("aborting the child should make the shutdown unclean");
+        .expect_err("halting the child should make the shutdown unclean");
     let elapsed = started.elapsed();
 
     let supervisor_error = error
@@ -348,13 +399,14 @@ async fn child_ignoring_shutdown_surfaces_as_shutdown_timed_out() {
         .expect("the error should come from the supervisor");
     assert!(
         matches!(supervisor_error, SupervisorError::ShutdownTimedOut { aborted: 1 }),
-        "expected exactly one aborted child, got {supervisor_error:?}"
+        "expected exactly one halted child, got {supervisor_error:?}"
     );
 
-    // The default budget is five seconds, so finishing well inside that shows the configured budget was applied.
+    // The component and child timeouts both default to five seconds, so finishing well inside that shows the configured
+    // timeout bounded the child.
     assert!(
         elapsed < Duration::from_secs(3),
-        "the 100ms budget should have bounded the shutdown; took {elapsed:?}"
+        "the 100ms timeout should have bounded the shutdown; took {elapsed:?}"
     );
 }
 
@@ -428,7 +480,7 @@ async fn needed_child_failing_before_run_returns_fails_the_component() {
 #[tokio::test]
 async fn needed_child_failing_while_run_waits_fails_the_component() {
     // The child fails while the destination still waits for its input, so the scope stops `run` before it returns. That
-    // is the child's failure, not an abort at the end of the shutdown budget.
+    // is the child's failure, not a halt at the end of the shutdown timeout.
     let control = TestComponentDriver::destination(SpawningDestinationBuilder {
         child: ChildBehavior::NeededFailsWhileRunWaits,
     })
@@ -444,10 +496,7 @@ async fn needed_child_failing_while_run_waits_fails_the_component() {
         message.contains("child failed on purpose"),
         "the error should come from the child: {message}"
     );
-    assert!(
-        !message.contains("shutdown budget"),
-        "the failure is not an abort: {message}"
-    );
+    assert!(!message.contains("was halted"), "the failure is not a halt: {message}");
 }
 
 #[tokio::test]
@@ -476,9 +525,9 @@ async fn input_drain_wait_returns_once_the_component_has_stopped() {
 }
 
 #[tokio::test]
-async fn run_ignoring_shutdown_is_aborted_within_the_shutdown_budget() {
+async fn run_ignoring_shutdown_is_halted_within_the_shutdown_timeout() {
     let (control, _outputs) = TestComponentDriver::options()
-        .with_shutdown_budget(Duration::from_millis(100))
+        .with_shutdown_timeout(Duration::from_millis(100))
         .source(SourceBuilderFor { source: || StuckSource })
         .await
         .expect("source should build");
@@ -487,7 +536,7 @@ async fn run_ignoring_shutdown_is_aborted_within_the_shutdown_budget() {
     let error = control
         .shutdown()
         .await
-        .expect_err("aborting the source should make the shutdown unclean");
+        .expect_err("halting the source should make the shutdown unclean");
     let elapsed = started.elapsed();
 
     let supervisor_error = error
@@ -495,18 +544,18 @@ async fn run_ignoring_shutdown_is_aborted_within_the_shutdown_budget() {
         .expect("the error should come from the supervisor");
     assert!(
         matches!(supervisor_error, SupervisorError::ShutdownTimedOut { aborted: 1 }),
-        "expected only the source to be aborted, got {supervisor_error:?}"
+        "expected only the source to be halted, got {supervisor_error:?}"
     );
     assert!(
-        error.to_string().contains("didn't stop within the shutdown budget"),
-        "the error should say that the component itself was aborted: {error:#}"
+        error.to_string().contains("didn't stop within its shutdown timeout"),
+        "the error should say that the component itself was halted: {error:#}"
     );
 
-    // The deadline for `run` to stop is the budget plus the five-second wait timeout, so finishing well inside that
-    // shows that the budget bounded the run.
+    // The deadline for `run` to stop is the shutdown timeout plus the five-second wait timeout, so finishing well
+    // inside that shows that the shutdown timeout bounded the run.
     assert!(
         elapsed < Duration::from_secs(3),
-        "the 100ms budget should have bounded the shutdown; took {elapsed:?}"
+        "the 100ms timeout should have bounded the shutdown; took {elapsed:?}"
     );
 }
 
@@ -548,4 +597,311 @@ async fn unbounded_wait_timeout_is_accepted_by_every_wait() {
     control.send_event(Event::Metric(Metric::counter("drained", 1.0))).await;
     control.wait_until_input_drained().await;
     control.shutdown().await.expect("destination should stop cleanly");
+}
+
+#[tokio::test]
+async fn wait_until_returns_once_the_condition_holds() {
+    let (control, _outputs) = TestComponentDriver::source(SourceBuilderFor {
+        source: || AssertingSource,
+    })
+    .await
+    .expect("source should build");
+
+    let dataspace = control.supervisor().dataspace().clone();
+    control
+        .wait_until(
+            || {
+                !dataspace
+                    .current_values::<SourceState>(IdentifierFilter::exact("state"))
+                    .is_empty()
+            },
+            || "the source asserts its state".to_string(),
+        )
+        .await;
+
+    control
+        .shutdown()
+        .await
+        .expect("source should stop cleanly on shutdown");
+}
+
+#[tokio::test]
+#[should_panic(
+    expected = "timed out after 10ms waiting until the condition holds for component 'topology.test.sources.test'"
+)]
+async fn wait_until_panics_with_its_description_once_the_wait_timeout_elapses() {
+    let (control, _outputs) = TestComponentDriver::options()
+        .with_wait_timeout(Duration::from_millis(10))
+        .source(SourceBuilderFor { source: || StuckSource })
+        .await
+        .expect("source should build");
+
+    control.wait_until(|| false, || "the condition holds".to_string()).await;
+}
+
+#[tokio::test]
+#[should_panic(
+    expected = "the condition holds for component 'topology.test.transforms.test'; its `run` has already returned"
+)]
+async fn wait_until_says_when_the_run_has_already_returned() {
+    let (control, _outputs) = TestComponentDriver::options()
+        .with_wait_timeout(Duration::from_millis(10))
+        .transform(FailingTransformBuilder {
+            failure: Failure::ReturnsError,
+        })
+        .await
+        .expect("transform should build");
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !control.is_finished() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the transform's run should fail straight away");
+
+    control.wait_until(|| false, || "the condition holds".to_string()).await;
+}
+
+#[tokio::test]
+async fn prebuilt_source_runs_with_the_driver_options() {
+    let source = PrebuiltSource::new(Box::new(TwoOutputSource), TwoOutputSourceBuilder::new().outputs);
+    let (control, mut outputs) = TestComponentDriver::options()
+        .with_component_id("prebuilt")
+        .source(source)
+        .await
+        .expect("source should build");
+    control.wait_until_ready().await;
+    assert_eq!(
+        control.component_context().to_string(),
+        "topology.test.sources.prebuilt"
+    );
+
+    let alt = outputs
+        .named_output("alt")
+        .next()
+        .await
+        .expect("alt output should receive a buffer");
+    assert_eq!(metric_names(alt), ["to_alt"]);
+
+    control
+        .shutdown()
+        .await
+        .expect("source should stop cleanly on shutdown");
+}
+
+#[tokio::test]
+async fn prebuilt_source_refuses_a_second_build() {
+    let builder = PrebuiltSource::new(Box::new(StuckSource), Vec::new());
+    builder
+        .build(BuildContext::test_source("prebuilt"))
+        .await
+        .map(drop)
+        .expect("the first build should hand the source over");
+
+    let Err(error) = builder.build(BuildContext::test_source("prebuilt")).await else {
+        panic!("a second build should be refused");
+    };
+    assert!(
+        error.to_string().contains("can only be built once"),
+        "unexpected error: {error:#}"
+    );
+}
+
+#[tokio::test]
+async fn synchronous_transform_dispatches_each_transformed_buffer_until_its_input_closes() {
+    let (control, mut output) = TestComponentDriver::synchronous_transform(DropNamedBuilder)
+        .await
+        .expect("synchronous transform should build");
+    control.wait_until_ready().await;
+
+    control
+        .send_events(["kept", "drop", "also_kept"].map(|name| Event::Metric(Metric::counter(name, 1.0))))
+        .await;
+    control
+        .shutdown()
+        .await
+        .expect("the synchronous transform should stop once its input closes");
+
+    let names = output
+        .collect()
+        .await
+        .into_iter()
+        .flat_map(metric_names)
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["kept", "also_kept"]);
+}
+
+#[tokio::test]
+async fn synchronous_transform_stops_with_the_dispatch_error_once_its_output_is_dropped() {
+    let (control, output) = TestComponentDriver::synchronous_transform(DropNamedBuilder)
+        .await
+        .expect("synchronous transform should build");
+    drop(output);
+
+    control.send_event(Event::Metric(Metric::counter("kept", 1.0))).await;
+    let error = control
+        .wait()
+        .await
+        .expect_err("dispatching to a dropped output should fail the run");
+    assert_eq!(format!("{error:#}"), "Failed to send to output.");
+}
+
+#[tokio::test]
+async fn withheld_shutdown_leaves_the_source_running_until_its_timeout_halts_it() {
+    let (source, mut shutdown_seen) = shutdown_reporting_source();
+    let (control, _outputs) = TestComponentDriver::options()
+        .with_shutdown_timeout(Duration::from_millis(100))
+        .with_shutdown_withheld()
+        .source(source)
+        .await
+        .expect("source should build");
+    control.wait_until_ready().await;
+
+    let error = control
+        .shutdown()
+        .await
+        .expect_err("the source never sees shutdown, so the supervisor should halt it");
+    let supervisor_error = error
+        .downcast_ref::<SupervisorError>()
+        .expect("the error should come from the supervisor");
+    assert!(
+        matches!(supervisor_error, SupervisorError::ShutdownTimedOut { aborted: 1 }),
+        "expected only the source to be halted, got {supervisor_error:?}"
+    );
+
+    // Halting the source dropped its sender before its shutdown handle fired.
+    assert!(matches!(
+        shutdown_seen.try_recv(),
+        Err(oneshot::error::TryRecvError::Closed)
+    ));
+}
+
+#[tokio::test]
+async fn withheld_shutdown_fires_once_the_control_is_dropped() {
+    let (source, shutdown_seen) = shutdown_reporting_source();
+    let (control, _outputs) = TestComponentDriver::options()
+        .with_shutdown_withheld()
+        .source(source)
+        .await
+        .expect("source should build");
+    control.wait_until_ready().await;
+
+    drop(control);
+    tokio::time::timeout(Duration::from_secs(5), shutdown_seen)
+        .await
+        .expect("the source should stop once the control is dropped")
+        .expect("the source should see its shutdown handle fire");
+}
+
+#[tokio::test]
+async fn source_context_dispatches_to_its_outputs_and_fires_shutdown_on_signal() {
+    let mut parts = TestComponentDriver::options()
+        .with_component_id("parts")
+        .source_context(&TwoOutputSourceBuilder::new().outputs)
+        .expect("the outputs should be valid");
+    assert_eq!(
+        parts.context.component_context().to_string(),
+        "topology.test.sources.parts"
+    );
+
+    parts
+        .context
+        .dispatcher()
+        .dispatch_one_named("alt", Event::Metric(Metric::counter("to_alt", 1.0)))
+        .await
+        .expect("the alt output should accept the event");
+    let alt = parts
+        .outputs
+        .named_output("alt")
+        .next()
+        .await
+        .expect("alt output should receive a buffer");
+    assert_eq!(metric_names(alt), ["to_alt"]);
+
+    let shutdown = parts.context.take_shutdown_handle();
+    assert!(!shutdown.is_triggered());
+    parts.signal_shutdown();
+    assert!(shutdown.is_triggered());
+}
+
+#[tokio::test]
+async fn relay_context_fires_shutdown_on_signal() {
+    let mut parts = TestComponentDriver::options()
+        .relay_context(&[OutputDefinition::default_output(PayloadType::Raw)])
+        .expect("the outputs should be valid");
+
+    let shutdown = parts.context.take_shutdown_handle();
+    assert!(!shutdown.is_triggered());
+    parts.signal_shutdown();
+    assert!(shutdown.is_triggered());
+}
+
+#[tokio::test]
+async fn transform_context_receives_what_is_sent_to_its_input_until_it_closes() {
+    let mut parts = TestComponentDriver::options()
+        .transform_context(&[OutputDefinition::default_output(EventType::Metric)])
+        .expect("the outputs should be valid");
+
+    let mut buffer = EventsBuffer::default();
+    assert!(buffer.try_push(Event::Metric(Metric::counter("sent", 1.0))).is_none());
+    parts.input.send(buffer).await.expect("the input should be open");
+    let received = parts
+        .context
+        .events()
+        .next()
+        .await
+        .expect("the input should hold the buffer");
+    assert_eq!(metric_names(received), ["sent"]);
+
+    drop(parts.input);
+    assert!(parts.context.events().next().await.is_none());
+}
+
+#[tokio::test]
+async fn context_parts_keep_the_health_registry_alive() {
+    let mut parts = TestComponentDriver::options().destination_context();
+    let mut health = parts.context.take_health_handle();
+    drop(parts.context);
+
+    // Once the registry is dropped, `live` resolves at once instead of waiting for a probe.
+    let live = tokio::time::timeout(Duration::from_millis(20), health.live()).await;
+    assert!(
+        live.is_err(),
+        "`live` should wait for a probe while the parts are alive"
+    );
+}
+
+#[tokio::test]
+async fn static_workers_share_the_supervisors_dataspace_and_stop_on_shutdown() {
+    let supervisor = TestComponentSupervisor::start_with("static", |supervisor| {
+        supervisor.add_worker(FnWorker::with_shutdown("asserter", |shutdown| async move {
+            DataspaceRegistry::try_current()
+                .expect("a static worker should run in the supervisor's dataspace")
+                .assert(SourceState("running"), "state");
+            shutdown.await;
+        }));
+        supervisor.add_worker(FnWorker::with_shutdown("idle", |shutdown| shutdown));
+    })
+    .await;
+
+    let mut states = supervisor
+        .dataspace()
+        .subscribe::<SourceState>(IdentifierFilter::exact("state"));
+    match tokio::time::timeout(Duration::from_secs(5), states.recv()).await {
+        Ok(Some(DataspaceUpdate::Asserted(_, state))) => assert_eq!(state, SourceState("running")),
+        other => panic!("expected the asserter's state, got {other:?}"),
+    }
+
+    supervisor.wait_for_running_descendants(2).await;
+    assert_eq!(
+        supervisor.active_children(),
+        0,
+        "static workers aren't dynamic children"
+    );
+
+    supervisor
+        .shutdown()
+        .await
+        .expect("both static workers should stop on shutdown");
 }

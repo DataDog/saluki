@@ -213,12 +213,16 @@ pub struct DatadogConfiguration {
     pub dogstatsd_port: i64,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub dogstatsd_require_listener: bool,
+
+    #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub dogstatsd_so_rcvbuf: i64,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    #[serde(deserialize_with = "crate::cast_de::deserialize_optional_string")]
-    pub dogstatsd_socket: Option<String>,
+    #[serde(default = "platform_defaults::dogstatsd_socket")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub dogstatsd_socket: String,
 
     #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
@@ -464,6 +468,9 @@ pub struct DatadogConfiguration {
     #[serde(default)]
     pub proxy: Proxy,
 
+    #[serde(default)]
+    pub remote_configuration: RemoteConfiguration,
+
     #[serde(default = "defaults::datadog_configuration_run_path")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub run_path: String,
@@ -634,8 +641,9 @@ impl Default for DatadogConfiguration {
             dogstatsd_origin_optout_enabled: defaults::default_bool::<true>(),
             dogstatsd_pipe_name: Default::default(),
             dogstatsd_port: defaults::default_u64::<i64, 8125>(),
+            dogstatsd_require_listener: Default::default(),
             dogstatsd_so_rcvbuf: Default::default(),
-            dogstatsd_socket: Default::default(),
+            dogstatsd_socket: platform_defaults::dogstatsd_socket(),
             dogstatsd_stream_log_too_big: Default::default(),
             dogstatsd_stream_socket: Default::default(),
             dogstatsd_string_interner_size: defaults::default_u64::<i64, 4096>(),
@@ -702,6 +710,7 @@ impl Default for DatadogConfiguration {
             otlp_config: Default::default(),
             provider_kind: Default::default(),
             proxy: Default::default(),
+            remote_configuration: Default::default(),
             run_path: defaults::datadog_configuration_run_path(),
             secret_backend_command: Default::default(),
             secret_refresh_on_api_key_failure_interval: Default::default(),
@@ -779,6 +788,10 @@ pub struct ApmConfig {
     pub enable_rare_sampler: bool,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub env: String,
+
+    #[serde(default)]
     pub error_tracking_standalone: ApmConfigErrorTrackingStandalone,
 
     #[serde(default = "defaults::datadog_configuration_apm_config_errors_per_second")]
@@ -841,6 +854,7 @@ impl Default for ApmConfig {
             analyzed_spans: Default::default(),
             compute_stats_by_span_kind: defaults::default_bool::<true>(),
             enable_rare_sampler: Default::default(),
+            env: Default::default(),
             error_tracking_standalone: Default::default(),
             errors_per_second: defaults::datadog_configuration_apm_config_errors_per_second(),
             extra_sample_rate: defaults::datadog_configuration_apm_config_extra_sample_rate(),
@@ -1992,6 +2006,59 @@ impl Default for Proxy {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct RemoteConfiguration {
+    #[serde(default)]
+    pub apm_sampling: RemoteConfigurationApmSampling,
+
+    #[serde(default)]
+    pub apm_semantics: RemoteConfigurationApmSemantics,
+
+    #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub enabled: bool,
+}
+
+impl Default for RemoteConfiguration {
+    fn default() -> Self {
+        Self {
+            apm_sampling: Default::default(),
+            apm_semantics: Default::default(),
+            enabled: defaults::default_bool::<true>(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct RemoteConfigurationApmSampling {
+    #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub enabled: bool,
+}
+
+impl Default for RemoteConfigurationApmSampling {
+    fn default() -> Self {
+        Self {
+            enabled: defaults::default_bool::<true>(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct RemoteConfigurationApmSemantics {
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub enabled: bool,
+}
+
+impl Default for RemoteConfigurationApmSemantics {
+    fn default() -> Self {
+        Self {
+            enabled: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct SerializerExperimentalUseV3Api {
     #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
@@ -2341,5 +2408,16 @@ mod duration_defaults {
     }
     pub(super) fn tls_handshake_timeout() -> std::time::Duration {
         std::time::Duration::from_nanos(10000000000)
+    }
+}
+
+mod platform_defaults {
+    pub(super) fn dogstatsd_socket() -> String {
+        match crate::platform_default::resolve(&["aix", "linux", "other"]) {
+            "aix" => "/var/run/datadog/dsd.socket".to_string(),
+            "linux" => "/var/run/datadog/dsd.socket".to_string(),
+            "other" => "".to_string(),
+            _ => Default::default(),
+        }
     }
 }

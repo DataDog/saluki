@@ -29,7 +29,8 @@ saluki-core = { workspace = true }
 saluki-error = { workspace = true }
 saluki-metrics = { workspace = true }
 serde = { workspace = true }
-serde_yaml = { workspace = true }
+serde-saphyr = { workspace = true }
+serde_json = { workspace = true }
 snafu = { workspace = true }
 socket2 = { workspace = true }
 stringtheory = { workspace = true }

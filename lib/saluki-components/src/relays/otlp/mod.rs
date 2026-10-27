@@ -12,8 +12,8 @@ use saluki_core::topology::OutputDefinition;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::{server::http::Http2Config, ListenAddress};
 use stringtheory::MetaString;
+use tokio::select;
 use tokio::sync::mpsc;
-use tokio::{pin, select};
 use tracing::{debug, error};
 
 use crate::common::otlp::{
@@ -171,15 +171,13 @@ impl Relay for OtlpRelay {
             metrics,
         } = *self;
 
-        let global_shutdown = context.take_shutdown_handle();
-        pin!(global_shutdown);
-
         let mut health = context.take_health_handle();
         let memory_limiter = context.topology_context().memory_limiter().clone();
 
         let (payload_tx, mut payload_rx) = mpsc::channel(1024);
 
-        // Build our gRPC and HTTP servers and spawn them.
+        // Build our gRPC and HTTP servers and spawn them. They stop when this relay is told to stop, and the channel
+        // closes once both exit. Thus, the loop below dispatches every payload that they accepted before it ends.
         let handler = RelayHandler::new(payload_tx);
         let mut server_config = OtlpServerConfiguration::new(
             http_endpoint.clone(),
@@ -211,11 +209,11 @@ impl Relay for OtlpRelay {
 
         loop {
             select! {
-                _ = &mut global_shutdown => {
-                    debug!("Received shutdown signal.");
-                    break
-                },
-                Some(otlp_payload) = payload_rx.recv() => {
+                maybe_payload = payload_rx.recv() => {
+                    let Some(otlp_payload) = maybe_payload else {
+                        break;
+                    };
+
                     let output_name = otlp_payload.signal_type.as_str();
                     let payload = Payload::Grpc(otlp_payload.into_grpc_payload());
                     if let Err(e) = context.dispatcher().dispatch_named(output_name, payload).await {
@@ -226,7 +224,6 @@ impl Relay for OtlpRelay {
             }
         }
 
-        debug!("Stopping OTLP relay...");
         debug!("OTLP relay stopped.");
 
         Ok(())
@@ -330,8 +327,18 @@ impl OtlpHandler for RelayHandler {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
+    use std::time::Duration;
+
     use agent_data_plane_config::domains;
     use agent_data_plane_config::domains::otlp::GrpcTransport;
+    use otlp_protos::opentelemetry::proto::collector::logs::v1::{
+        logs_service_client::LogsServiceClient, ExportLogsServiceRequest,
+    };
+    use otlp_protos::opentelemetry::proto::logs::v1::ResourceLogs;
+    use saluki_core::components::test_util::TestComponentDriver;
+    use saluki_core::runtime::state::{DataspaceUpdate, IdentifierFilter};
+    use saluki_io::net::BoundListenAddress;
 
     use super::OtlpRelayConfiguration;
 
@@ -372,5 +379,63 @@ mod tests {
         });
 
         assert_eq!(config.grpc_max_recv_msg_size_bytes(), 8 * 1024 * 1024);
+    }
+
+    #[tokio::test]
+    async fn accepted_payloads_are_dispatched_before_the_relay_stops() {
+        const EXPORTS: usize = 16;
+
+        let config = relay(domains::otlp::Receiver {
+            grpc: domains::otlp::GrpcReceiver {
+                endpoint: "127.0.0.1:0".to_string(),
+                max_recv_msg_size_mib: 4,
+                // The configuration translator resolves a zero keepalive to these defaults.
+                keepalive: domains::otlp::KeepaliveServerParameters {
+                    time: Duration::from_secs(2 * 60 * 60),
+                    timeout: Duration::from_secs(20),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            http: domains::otlp::HttpReceiver {
+                endpoint: "127.0.0.1:0".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+        // The output holds one payload, so the relay still has the others queued when it is told to stop.
+        let (mut control, mut outputs) = TestComponentDriver::options()
+            .with_interconnect_capacity(NonZeroUsize::MIN)
+            .relay(config)
+            .await
+            .expect("relay should build");
+        let mut logs = outputs.take_named_output("logs");
+
+        let mut bound = control
+            .supervisor()
+            .dataspace()
+            .subscribe::<BoundListenAddress>(IdentifierFilter::exact("http-server-otlp-grpc"));
+        let address = match bound.recv().await {
+            Some(DataspaceUpdate::Asserted(_, BoundListenAddress::Tcp(address))) => address,
+            update => panic!("expected the gRPC server to bind, got {update:?}"),
+        };
+        let channel = tonic::transport::Endpoint::from_shared(format!("http://{address}"))
+            .expect("endpoint should parse")
+            .connect()
+            .await
+            .expect("should connect to the gRPC server");
+        let mut client = LogsServiceClient::new(channel);
+        for _ in 0..EXPORTS {
+            let request = ExportLogsServiceRequest {
+                resource_logs: vec![ResourceLogs::default()],
+            };
+            client.export(request).await.expect("export should succeed");
+        }
+
+        control.signal_shutdown();
+        let (result, payloads) = tokio::join!(control.wait(), logs.collect());
+        result.expect("relay should stop cleanly");
+        assert_eq!(payloads.len(), EXPORTS, "every accepted export must be dispatched");
     }
 }

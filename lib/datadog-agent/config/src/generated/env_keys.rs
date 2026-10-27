@@ -53,6 +53,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
+        env_vars: &["DD_APM_ENV"],
+        path: &["apm_config", "env"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
         env_vars: &["DD_APM_ERROR_TRACKING_STANDALONE_ENABLED"],
         path: &["apm_config", "error_tracking_standalone", "enabled"],
         decode: EnvDecode::Bool,
@@ -514,6 +519,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_DOGSTATSD_PORT"],
         path: &["dogstatsd_port"],
         decode: EnvDecode::Integer,
+    },
+    EnvKey {
+        env_vars: &["DD_DOGSTATSD_REQUIRE_LISTENER"],
+        path: &["dogstatsd_require_listener"],
+        decode: EnvDecode::Bool,
     },
     EnvKey {
         env_vars: &["DD_DOGSTATSD_SO_RCVBUF"],
@@ -1107,6 +1117,21 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_PROXY_NO_PROXY"],
         path: &["proxy", "no_proxy"],
         decode: EnvDecode::StringList,
+    },
+    EnvKey {
+        env_vars: &["DD_REMOTE_CONFIGURATION_APM_SAMPLING_ENABLED"],
+        path: &["remote_configuration", "apm_sampling", "enabled"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_REMOTE_CONFIGURATION_APM_SEMANTICS_ENABLED"],
+        path: &["remote_configuration", "apm_semantics", "enabled"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_REMOTE_CONFIGURATION_ENABLED"],
+        path: &["remote_configuration", "enabled"],
+        decode: EnvDecode::Bool,
     },
     EnvKey {
         env_vars: &["DD_RUN_PATH"],

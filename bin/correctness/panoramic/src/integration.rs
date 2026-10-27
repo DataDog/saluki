@@ -209,43 +209,26 @@ procedure:
 
         use tokio_util::sync::CancellationToken;
 
-        use crate::assertions::{run_assertion_steps, AssertionContext, LogBuffer, TargetCommand};
+        use crate::assertions::test_support::{host_context, procedure};
+        use crate::assertions::{run_assertion_steps, LogBuffer};
+        use crate::deadline::{Budget, Deadline};
 
-        let config = serde_saphyr::from_str(
+        let mut case = procedure(
             r#"
-name: prepared
-timeout: 1s
-procedure:
   - assertion: log_contains
     pattern: "{{PANORAMIC_DYNAMIC_VALUE}}"
     timeout: 1s
 "#,
-        )
-        .unwrap();
-        let settings = IntegrationSettings::new(LINUX_RUNTIME, &ImageOverrides::new(&[]));
-        let mut case = IntegrationTestCase::new(config, &settings);
+        );
         case.resolve_dynamic_vars(&HashMap::from([("VALUE".to_string(), "resolved".to_string())]));
-        let ctx = AssertionContext {
-            log_buffer: Arc::new(RwLock::new(LogBuffer {
-                stdout: vec!["resolved".to_string()],
-                stderr: vec![],
-            })),
-            container_exit_token: CancellationToken::new(),
-            cancel_token: CancellationToken::new(),
-            port_mappings: HashMap::new(),
-            container_ip: None,
-            target_os: None,
-            container_name: String::new(),
-            is_host_process: true,
-            host_process_exit_code: None,
-            docker_container_exit_code: None,
-            intake_host_port: None,
-            core_agent_auth_token_path: None,
-            adp_cli_command: TargetCommand::new(Vec::new()),
-            core_agent_cli_command: TargetCommand::new(Vec::new()),
-        };
+        let mut ctx = host_context(CancellationToken::new());
+        ctx.log_buffer = Arc::new(RwLock::new(LogBuffer {
+            stdout: vec!["resolved".to_string()],
+            stderr: vec![],
+        }));
         ctx.container_exit_token.cancel();
-        let results = run_assertion_steps(&case, &ctx).await;
+        let case_deadline = Deadline::after(Budget::Case, Duration::from_secs(1));
+        let results = run_assertion_steps(&case, &ctx, case_deadline).await;
         assert_eq!(results.len(), 1);
         assert!(results[0].passed, "{}", results[0].message);
         assert_eq!(results[0].message, "Found pattern 'resolved' in logs.");

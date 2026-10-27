@@ -33,7 +33,9 @@ use agent_data_plane_config::domains::traces::{ApmFeature, ReplaceRule};
 use agent_data_plane_config::shared::{ForwarderHttpProtocol, V3SeriesMode};
 use agent_data_plane_config::{ConfigValue, Provenance, SalukiConfiguration};
 use bytesize::ByteSize;
-use datadog_agent_config::{drive, DatadogConfigWitness, DatadogConfiguration, TranslateError, TranslateErrors};
+use datadog_agent_config::{
+    drive, parse_size_in_bytes, DatadogConfigWitness, DatadogConfiguration, TranslateError, TranslateErrors,
+};
 use tracing::warn;
 
 use crate::source::SourceTree;
@@ -163,6 +165,23 @@ fn parse_v3_series_mode(key: &'static str, value: &str) -> V3SeriesMode {
         );
         V3SeriesMode::Disabled
     })
+}
+
+/// Parses a byte-size setting that the Agent reads with `GetSizeInBytes`.
+///
+/// A value the Agent can parse yields the Agent's byte count. The Agent reads any other value as `0`,
+/// which makes its log writer rotate on every write. ADP parses such a value with `bytesize` instead,
+/// which reads spellings such as `10MiB` and `1.5MB` in its own units and rejects the rest.
+// TODO: revisit the `bytesize` fallback once ADP decides how to treat values the Agent cannot cast
+// (https://github.com/DataDog/saluki/issues/2755).
+fn parse_byte_size(key: &str, value: &str) -> Result<u64> {
+    match parse_size_in_bytes(value) {
+        Some(size) => Ok(size),
+        None => value
+            .parse::<ByteSize>()
+            .map(|size| size.as_u64())
+            .map_err(|reason| TranslateError::new_with_message(key, reason)),
+    }
 }
 
 /// Returns `None` for an empty `s`; otherwise returns `Some(s)`.
@@ -360,6 +379,13 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_apm_config_enable_rare_sampler(&mut self, value: bool) {
         self.config.domains.traces.enable_rare_sampler = value;
+    }
+
+    fn consume_apm_config_env(&mut self, value: String) {
+        // The trace environment falls back to `env` only when this key is unset, so an explicit empty
+        // value must stay distinguishable from the schema default.
+        let configured = self.sources.provenance("apm_config.env") == Provenance::Explicit;
+        self.config.domains.traces.apm_env = configured.then_some(value);
     }
 
     fn consume_apm_config_error_tracking_standalone_enabled(&mut self, value: bool) {
@@ -797,9 +823,9 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dogstatsd_log_file_max_size(&mut self, value: String) {
-        match value.parse::<ByteSize>() {
-            Ok(size) => self.config.domains.dogstatsd.debug_log.log_file_max_size = size.as_u64(),
-            Err(reason) => self.record_error(TranslateError::new_with_message("dogstatsd_log_file_max_size", reason)),
+        match parse_byte_size("dogstatsd_log_file_max_size", &value) {
+            Ok(size) => self.config.domains.dogstatsd.debug_log.log_file_max_size = size,
+            Err(error) => self.record_error(error),
         }
     }
 
@@ -876,12 +902,16 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         }
     }
 
-    fn consume_dogstatsd_socket(&mut self, value: Option<String>) {
-        self.config.domains.dogstatsd.listeners.socket = value.and_then(non_empty);
+    fn consume_dogstatsd_socket(&mut self, value: String) {
+        self.config.domains.dogstatsd.listeners.socket = non_empty(value);
     }
 
     fn consume_dogstatsd_stream_log_too_big(&mut self, value: bool) {
         self.config.domains.dogstatsd.listeners.stream_log_too_big = value;
+    }
+
+    fn consume_dogstatsd_require_listener(&mut self, value: bool) {
+        self.config.domains.dogstatsd.listeners.require_listener = value;
     }
 
     fn consume_dogstatsd_stream_socket(&mut self, value: String) {
@@ -934,7 +964,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_env(&mut self, value: String) {
-        self.config.domains.traces.env = value;
+        // The trace environment falls back to the `env:` global tags only when this key is unset, so
+        // an explicit empty value must stay distinguishable from the schema default.
+        let configured = self.sources.provenance("env") == Provenance::Explicit;
+        self.config.domains.traces.env = configured.then_some(value);
     }
 
     fn consume_eks_fargate(&mut self, value: bool) {
@@ -1137,9 +1170,9 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_log_file_max_size(&mut self, value: String) {
         let provenance = self.sources.provenance("log_file_max_size");
-        match value.parse::<ByteSize>() {
-            Ok(size) => self.config.control.logging.file_max_size = ConfigValue::new(size.as_u64(), provenance),
-            Err(reason) => self.record_error(TranslateError::new_with_message("log_file_max_size", reason)),
+        match parse_byte_size("log_file_max_size", &value) {
+            Ok(size) => self.config.control.logging.file_max_size = ConfigValue::new(size, provenance),
+            Err(error) => self.record_error(error),
         }
     }
 
@@ -1499,6 +1532,18 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.endpoints.proxy.no_proxy = value;
     }
 
+    fn consume_remote_configuration_apm_sampling_enabled(&mut self, value: bool) {
+        self.config.domains.remote_configuration.apm_sampling_enabled = value;
+    }
+
+    fn consume_remote_configuration_apm_semantics_enabled(&mut self, value: bool) {
+        self.config.domains.remote_configuration.apm_semantics_enabled = value;
+    }
+
+    fn consume_remote_configuration_enabled(&mut self, value: bool) {
+        self.config.domains.remote_configuration.enabled = value;
+    }
+
     fn consume_run_path(&mut self, value: String) {
         // In the vendored schema, run_path is defaulted to the placeholder ${run_path}. Though it
         // seems highly unlikely this could slip through to ADP, we check for it, warn and treat
@@ -1819,6 +1864,38 @@ mod tests {
     }
 
     #[test]
+    fn remote_configuration_keys_translate() {
+        // Exercise non-default values and distinguish every pair of keys to catch swapped translations.
+        for (enabled, sampling, semantics) in [(false, false, true), (false, true, false)] {
+            let (config, errors) = translate_explicit(json!({
+                "remote_configuration": {
+                    "enabled": enabled,
+                    "apm_sampling": { "enabled": sampling },
+                    "apm_semantics": { "enabled": semantics }
+                }
+            }));
+            assert!(errors.is_none(), "translation should succeed: {errors:?}");
+
+            let rc = &config.domains.remote_configuration;
+            assert_eq!(
+                (rc.enabled, rc.apm_sampling_enabled, rc.apm_semantics_enabled),
+                (enabled, sampling, semantics)
+            );
+        }
+    }
+
+    #[test]
+    fn remote_configuration_keys_default_from_the_schema() {
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+
+        let rc = &config.domains.remote_configuration;
+        assert!(rc.enabled);
+        assert!(rc.apm_sampling_enabled);
+        assert!(!rc.apm_semantics_enabled);
+    }
+
+    #[test]
     fn apm_config_features_and_probabilistic_hash_seed_translate() {
         let (config, errors) = translate_explicit(json!({
             "apm_config": {
@@ -1866,6 +1943,30 @@ mod tests {
         }));
         assert!(errors.is_none());
         assert_eq!(config.domains.traces.extra_sample_rate, 2.5);
+    }
+
+    #[test]
+    fn otlp_receiver_and_apm_probabilistic_sampling_percentages_translate_independently() {
+        // Unset, the OTLP receiver keeps every trace while the APM probabilistic sampler stays disabled at 0%.
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert_eq!(
+            config.domains.otlp.traces.probabilistic_sampler_sampling_percentage,
+            100.0
+        );
+        assert!(!config.domains.traces.probabilistic_sampler.enabled);
+        assert_eq!(config.domains.traces.probabilistic_sampler.sampling_percentage, 0.0);
+
+        let (config, errors) = translate_explicit(json!({
+            "otlp_config": { "traces": { "probabilistic_sampler": { "sampling_percentage": 25.0 } } },
+            "apm_config": { "probabilistic_sampler": { "sampling_percentage": 40.0 } }
+        }));
+        assert!(errors.is_none());
+        assert_eq!(
+            config.domains.otlp.traces.probabilistic_sampler_sampling_percentage,
+            25.0
+        );
+        assert_eq!(config.domains.traces.probabilistic_sampler.sampling_percentage, 40.0);
     }
 
     #[test]
@@ -2109,6 +2210,17 @@ mod tests {
     }
 
     #[test]
+    fn dogstatsd_socket_defaults_to_the_platform_default() {
+        // The schema declares `dogstatsd_socket` per platform: a UDS path on Linux and AIX, unset elsewhere.
+        let (config, errors) = translate_explicit(json!({}));
+
+        assert!(errors.is_none());
+        let expected =
+            cfg!(any(target_os = "linux", target_os = "aix")).then(|| "/var/run/datadog/dsd.socket".to_string());
+        assert_eq!(config.domains.dogstatsd.listeners.socket, expected);
+    }
+
+    #[test]
     fn dogstatsd_debug_log_configuration_translates() {
         let (config, errors) = translate_explicit(json!({}));
         assert!(errors.is_none());
@@ -2116,7 +2228,7 @@ mod tests {
         assert!(debug_log.logging_enabled);
         assert!(debug_log.log_file.is_none());
         assert_eq!(debug_log.log_file_max_rolls, 3);
-        assert_eq!(debug_log.log_file_max_size, 10_000_000);
+        assert_eq!(debug_log.log_file_max_size, 10_485_760);
         assert!(!debug_log.metrics_stats_enable);
 
         let (config, errors) = translate_explicit(json!({
@@ -2130,7 +2242,7 @@ mod tests {
         let debug_log = &config.domains.dogstatsd.debug_log;
         assert_eq!(debug_log.log_file, Some(std::path::PathBuf::from("/tmp/dsd-debug.log")));
         assert_eq!(debug_log.log_file_max_rolls, 0);
-        assert_eq!(debug_log.log_file_max_size, 42_000_000);
+        assert_eq!(debug_log.log_file_max_size, 44_040_192);
         assert!(!debug_log.logging_enabled);
         assert!(debug_log.metrics_stats_enable);
     }
@@ -2366,6 +2478,56 @@ mod tests {
     }
 
     #[test]
+    fn trace_env_keys_record_configured_values() {
+        // The trace environment selects by whether a key was configured, not by whether it is empty,
+        // so each key records its value only when an input set it.
+        #[track_caller]
+        fn assert_trace_env(config: &SalukiConfiguration, apm_env: Option<&str>, env: Option<&str>) {
+            let traces = &config.domains.traces;
+            assert_eq!((traces.apm_env.as_deref(), traces.env.as_deref()), (apm_env, env));
+        }
+
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert_trace_env(&config, None, None);
+
+        let (config, errors) = translate_explicit(json!({ "apm_config": { "env": "Staging" } }));
+        assert!(errors.is_none());
+        assert_trace_env(&config, Some("Staging"), None);
+
+        let (config, errors) = translate_explicit(json!({ "env": "Prod" }));
+        assert!(errors.is_none());
+        assert_trace_env(&config, None, Some("Prod"));
+
+        // An explicit empty file value is configured.
+        let (config, errors) = translate_explicit(json!({ "apm_config": { "env": "" }, "env": "" }));
+        assert!(errors.is_none());
+        assert_trace_env(&config, Some(""), Some(""));
+
+        // A streamed default is not configured, even when it is nonempty.
+        let (config, errors) = translate_stream(&[
+            ("apm_config.env", json!("staging"), StreamProvenance::Default),
+            ("env", json!("prod"), StreamProvenance::Default),
+        ]);
+        assert!(errors.is_none());
+        assert_trace_env(&config, None, None);
+
+        let (config, errors) = translate_stream(&[
+            ("apm_config.env", json!(""), StreamProvenance::Default),
+            ("env", json!("prod"), StreamProvenance::Explicit),
+        ]);
+        assert!(errors.is_none());
+        assert_trace_env(&config, None, Some("prod"));
+
+        let (config, errors) = translate_stream(&[
+            ("apm_config.env", json!(""), StreamProvenance::Explicit),
+            ("env", json!("prod"), StreamProvenance::Explicit),
+        ]);
+        assert!(errors.is_none());
+        assert_trace_env(&config, Some(""), Some("prod"));
+    }
+
+    #[test]
     fn an_explicit_dd_url_is_an_override_even_at_the_default_intake() {
         // Comparing values cannot see this: the operator chose the default intake deliberately, and
         // that choice must still override `site`.
@@ -2550,7 +2712,7 @@ mod tests {
         assert!(errors.is_none());
         let logging = &config.control.logging;
         assert_defaulted(&logging.file, "/var/log/datadog/agent-data-plane.log".to_string());
-        assert_defaulted(&logging.file_max_size, 10_000_000);
+        assert_defaulted(&logging.file_max_size, 10_485_760);
 
         let (config, errors) = translate_explicit(json!({
             "data_plane": { "log_file": "/tmp/adp.log" },
@@ -2560,6 +2722,49 @@ mod tests {
         let logging = &config.control.logging;
         assert_explicit(&logging.file, "/tmp/adp.log".to_string());
         assert_explicit(&logging.file_max_size, 1024 * 1024);
+    }
+
+    /// Reads one translated byte count out of the model.
+    type ReadSize = fn(&SalukiConfiguration) -> u64;
+
+    /// Each `GetSizeInBytes` key with a reader for its translated byte count.
+    const SIZE_KEYS: [(&str, ReadSize); 2] = [
+        ("log_file_max_size", |config| config.control.logging.file_max_size.value),
+        ("dogstatsd_log_file_max_size", |config| {
+            config.domains.dogstatsd.debug_log.log_file_max_size
+        }),
+    ];
+
+    #[test]
+    fn size_settings_translate_the_agents_size_grammar() {
+        // Each value is an Agent-valid spelling; the exact parser matrix is in `size_in_bytes`.
+        for (key, size) in SIZE_KEYS {
+            for (raw, expected) in [("10MB", 10_485_760), ("5KB", 5_120), ("0x10KB", 16_384)] {
+                let (config, errors) = translate_explicit(json!({ key: raw }));
+                assert!(errors.is_none(), "{key}: {raw}");
+                assert_eq!(size(&config), expected, "{key}: {raw}");
+            }
+        }
+    }
+
+    #[test]
+    fn size_settings_the_agent_cannot_parse_keep_their_bytesize_reading() {
+        // The Agent reads each of these as 0. ADP reads them with `bytesize`, in its units, and rejects
+        // what `bytesize` cannot parse.
+        for (key, size) in SIZE_KEYS {
+            for (raw, expected) in [("10MiB", 10_485_760), ("1.5MB", 1_500_000), ("10K", 10_000), ("1B", 1)] {
+                let (config, errors) = translate_explicit(json!({ key: raw }));
+                assert!(errors.is_none(), "{key}: {raw}");
+                assert_eq!(size(&config), expected, "{key}: {raw}");
+            }
+
+            for raw in ["-1MB", "abc"] {
+                let (_, errors) = translate_explicit(json!({ key: raw }));
+                let error = errors.unwrap_or_else(|| panic!("`{raw}` for {key} should record an error"));
+                assert!(error.to_string().contains(key), "{error}");
+                assert!(error.to_string().contains(raw), "{error}");
+            }
+        }
     }
 
     #[test]

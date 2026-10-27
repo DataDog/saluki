@@ -316,6 +316,29 @@ impl ProductDecoder for PanicsWhenEmpty {
     }
 }
 
+/// Like [`Recorder`], but keeps the last accepted snapshot when assigned nothing.
+#[derive(Default)]
+struct KeepsLastWhenEmpty(Recorder<Beta>);
+
+impl ProductDecoder for KeepsLastWhenEmpty {
+    const PRODUCT: &'static str = Beta::NAME;
+
+    type Snapshot = Vec<(String, String)>;
+    type Error = String;
+
+    fn decode(&mut self, id: &ConfigId, payload: &[u8]) -> Result<(), Self::Error> {
+        self.0.decode(id, payload)
+    }
+
+    fn build(self) -> Result<Self::Snapshot, Self::Error> {
+        self.0.build()
+    }
+
+    fn keeps_previous(snapshot: &Self::Snapshot) -> bool {
+        snapshot.is_empty()
+    }
+}
+
 async fn next(subscription: &mut Subscription<Vec<(String, String)>>) -> Result<Vec<(String, String)>, String> {
     timeout(Duration::from_secs(1), subscription.changed())
         .await
@@ -1180,6 +1203,65 @@ async fn resubscribing_before_the_worker_notices_delivers_to_the_new_subscriptio
         .cached("employee/ALPHA/a/config", 1, b"one")
         .build()));
     assert_eq!(next(&mut alpha).await.unwrap(), snapshot(&[("a", "one")]));
+}
+
+// `APM_SAMPLING` keeps its last configuration when withdrawn, as the Datadog Agent's handler ignores an empty update:
+// https://github.com/DataDog/datadog-agent/blob/17ecddf4e3e83ccbb0e68aeb99461d1a1d902927/pkg/trace/remoteconfighandler/remote_config_handler.go#L234-L295
+// Both a removal and an expiry withdraw the configuration, while a product with the default decoder still reverts.
+#[tokio::test(start_paused = true)]
+async fn a_product_that_keeps_previous_retains_its_last_snapshot_when_withdrawn() {
+    let (client, worker, mut agent) = client();
+    let mut reverting = client.subscribe::<Recorder>().unwrap();
+    let mut keeping = client.subscribe::<KeepsLastWhenEmpty>().unwrap();
+    tokio::spawn(worker.run());
+
+    let assign = |version| {
+        Response::new(version)
+            .send("employee/ALPHA/a/config", 1, b"one")
+            .send("employee/BETA/b/config", 1, b"two")
+            .build()
+    };
+    agent.exchange(assign(10)).await;
+    next(&mut reverting).await.unwrap();
+    let mut kept = keeping.changed().await.unwrap();
+
+    for (version, expired) in [(11, false), (13, true)] {
+        let withdrawal = Response::new(version);
+        agent
+            .exchange(if expired { withdrawal.expired() } else { withdrawal }.build())
+            .await;
+        assert_eq!(next(&mut reverting).await.unwrap(), snapshot(&[]));
+        assert!(Arc::ptr_eq(&keeping.changed().await.unwrap(), &kept));
+        assert!(Arc::ptr_eq(&keeping.current().unwrap(), &kept));
+        agent.exchange(assign(version + 1)).await;
+        next(&mut reverting).await.unwrap();
+        kept = keeping.changed().await.unwrap();
+        assert_eq!(*kept, snapshot(&[("b", "two")]));
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_product_that_keeps_previous_retains_its_snapshot_across_a_restart() {
+    let (client, worker, mut agent) = client();
+    let mut keeping = client.subscribe::<KeepsLastWhenEmpty>().unwrap();
+
+    let (coordinator, shutdown) = ShutdownHandle::paired();
+    let first_run = tokio::spawn(worker.initialize(shutdown).await.unwrap());
+    agent
+        .exchange(Response::new(10).send("employee/BETA/b/config", 1, b"two").build())
+        .await;
+    let kept = keeping.changed().await.unwrap();
+    agent.poll().await;
+    coordinator.shutdown();
+    first_run.await.unwrap().unwrap();
+
+    // The restarted worker decodes the now-empty assignment again, and the snapshot from before the restart stays.
+    let (_coordinator, shutdown) = ShutdownHandle::paired();
+    tokio::spawn(worker.initialize(shutdown).await.unwrap());
+    agent.poll().await;
+    agent.respond(Ok(Response::new(11).build()));
+    assert!(Arc::ptr_eq(&keeping.changed().await.unwrap(), &kept));
+    assert!(Arc::ptr_eq(&keeping.current().unwrap(), &kept));
 }
 
 #[tokio::test(start_paused = true)]

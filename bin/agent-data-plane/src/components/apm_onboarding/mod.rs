@@ -164,7 +164,7 @@ mod tests {
     use std::collections::HashMap;
 
     use saluki_common::collections::FastHashMap;
-    use saluki_core::data_model::event::Event;
+    use saluki_core::data_model::event::{trace::TraceIngestInfo, Event};
 
     use super::*;
 
@@ -212,14 +212,14 @@ mod tests {
 
     #[test]
     fn root_span_lookup_returns_none_for_empty_trace() {
-        let mut trace = Trace::new(vec![]);
+        let mut trace = Trace::new(vec![], TraceIngestInfo::Datadog);
         assert!(get_root_span_from_trace_mut(&mut trace).is_none());
     }
 
     #[test]
     fn root_span_lookup_finds_parentless_span_reported_last() {
         // Common case: the root (parent_id 0) is reported last, so the reverse scan returns it immediately.
-        let mut trace = Trace::new(vec![span("web", 2, 1), span("web", 1, 0)]);
+        let mut trace = Trace::new(vec![span("web", 2, 1), span("web", 1, 0)], TraceIngestInfo::Datadog);
         let root = get_root_span_from_trace_mut(&mut trace).expect("a root span should be found");
         assert_eq!(root.span_id(), 1, "the parent_id==0 span is the root");
     }
@@ -228,7 +228,7 @@ mod tests {
     fn root_span_lookup_uses_dangling_parent_when_no_parentless_span() {
         // No span has parent_id 0; the root's parent points outside the trace (id 99). That single dangling
         // reference is what identifies the root.
-        let mut trace = Trace::new(vec![span("web", 1, 99), span("web", 2, 1)]);
+        let mut trace = Trace::new(vec![span("web", 1, 99), span("web", 2, 1)], TraceIngestInfo::Datadog);
         let root = get_root_span_from_trace_mut(&mut trace).expect("a root span should be found");
         assert_eq!(root.span_id(), 1);
     }
@@ -237,7 +237,7 @@ mod tests {
     fn root_span_lookup_falls_back_to_last_span_for_malformed_trace() {
         // A parent/child cycle has no parent_id==0 span and no dangling parent, so nothing identifies the
         // root: the function falls back to the last span in the trace.
-        let mut trace = Trace::new(vec![span("web", 1, 2), span("web", 2, 1)]);
+        let mut trace = Trace::new(vec![span("web", 1, 2), span("web", 2, 1)], TraceIngestInfo::Datadog);
         let root = get_root_span_from_trace_mut(&mut trace).expect("fallback should return the last span");
         assert_eq!(root.span_id(), 2, "a malformed trace falls back to the last span");
     }
@@ -246,7 +246,10 @@ mod tests {
     fn enriches_only_the_root_span_of_a_new_service() {
         let mut onboarding = ApmOnboarding::from_install_info(Some(test_install_info()));
         // Child reported first, root (parent_id 0) reported last.
-        let buffer = enrich(&mut onboarding, Trace::new(vec![span("web", 2, 1), span("web", 1, 0)]));
+        let buffer = enrich(
+            &mut onboarding,
+            Trace::new(vec![span("web", 2, 1), span("web", 1, 0)], TraceIngestInfo::Datadog),
+        );
 
         let root_attrs = span_attrs_by_id(&buffer, 1);
         assert_eq!(
@@ -269,18 +272,27 @@ mod tests {
     fn only_the_first_trace_per_service_is_enriched() {
         let mut onboarding = ApmOnboarding::from_install_info(Some(test_install_info()));
 
-        let first = enrich(&mut onboarding, Trace::new(vec![span("web", 1, 0)]));
+        let first = enrich(
+            &mut onboarding,
+            Trace::new(vec![span("web", 1, 0)], TraceIngestInfo::Datadog),
+        );
         assert!(span_attrs_by_id(&first, 1).contains_key("_dd.install.id"));
 
         // The same service again: its root is not enriched a second time.
-        let second = enrich(&mut onboarding, Trace::new(vec![span("web", 3, 0)]));
+        let second = enrich(
+            &mut onboarding,
+            Trace::new(vec![span("web", 3, 0)], TraceIngestInfo::Datadog),
+        );
         assert!(
             span_attrs_by_id(&second, 3).is_empty(),
             "a service already seen must not be enriched again"
         );
 
         // A different service is still enriched.
-        let third = enrich(&mut onboarding, Trace::new(vec![span("api", 4, 0)]));
+        let third = enrich(
+            &mut onboarding,
+            Trace::new(vec![span("api", 4, 0)], TraceIngestInfo::Datadog),
+        );
         assert!(span_attrs_by_id(&third, 4).contains_key("_dd.install.id"));
     }
 
@@ -297,7 +309,7 @@ mod tests {
         );
         let root = Span::new("web", "op", "res", "web", 1, 0, 0, 0, 0).with_attributes(attrs);
 
-        let buffer = enrich(&mut onboarding, Trace::new(vec![root]));
+        let buffer = enrich(&mut onboarding, Trace::new(vec![root], TraceIngestInfo::Datadog));
         let root_attrs = span_attrs_by_id(&buffer, 1);
         assert_eq!(
             root_attrs.get("_dd.install.id").map(String::as_str),
@@ -314,7 +326,10 @@ mod tests {
     #[test]
     fn missing_install_info_leaves_traces_untouched() {
         let mut onboarding = ApmOnboarding::from_install_info(None);
-        let buffer = enrich(&mut onboarding, Trace::new(vec![span("web", 1, 0)]));
+        let buffer = enrich(
+            &mut onboarding,
+            Trace::new(vec![span("web", 1, 0)], TraceIngestInfo::Datadog),
+        );
         assert!(
             span_attrs_by_id(&buffer, 1).is_empty(),
             "with no install info, transform_buffer must be a no-op"
@@ -327,9 +342,14 @@ mod tests {
         // `install_info`); the loop must continue and still enrich the following non-empty trace.
         let mut onboarding = ApmOnboarding::from_install_info(Some(test_install_info()));
         let mut buffer = EventsBuffer::default();
-        assert!(buffer.try_push(Event::Trace(Trace::new(vec![]))).is_none());
         assert!(buffer
-            .try_push(Event::Trace(Trace::new(vec![span("web", 1, 0)])))
+            .try_push(Event::Trace(Trace::new(vec![], TraceIngestInfo::Datadog)))
+            .is_none());
+        assert!(buffer
+            .try_push(Event::Trace(Trace::new(
+                vec![span("web", 1, 0)],
+                TraceIngestInfo::Datadog
+            )))
             .is_none());
         onboarding.transform_buffer(&mut buffer);
 

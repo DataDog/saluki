@@ -345,6 +345,31 @@ pub enum ActionConfig {
     },
 }
 
+impl ActionConfig {
+    /// Returns `timeout`, or the combined command and wait budget for `dogstatsd_replay`.
+    pub(crate) fn budget(&self) -> Duration {
+        match self {
+            // Capture and sender each get `timeout`, followed by the capture wait. The retry loop gets another
+            // `timeout`, but checks its deadline before sleeping. Its final iteration can add one sleep interval
+            // and one `timeout` for the concurrent stats and replay commands.
+            Self::DogstatsdReplay {
+                capture_duration,
+                timeout,
+                ..
+            } => timeout
+                .0
+                .saturating_mul(4)
+                .saturating_add(capture_duration.0)
+                .saturating_add(Duration::from_millis(50)),
+            Self::CoreAgentConfigSet { timeout, .. }
+            | Self::AdpCli { timeout, .. }
+            | Self::CoreAgentCli { timeout, .. }
+            | Self::DogstatsdSend { timeout, .. }
+            | Self::TargetExec { timeout, .. } => timeout.0,
+        }
+    }
+}
+
 fn default_action_timeout() -> HumanDuration {
     HumanDuration(Duration::from_secs(30))
 }
@@ -470,12 +495,43 @@ pub enum AssertionConfig {
         /// Optional numeric value the matching value must carry. Not applicable to sketches.
         #[serde(default)]
         value: Option<f64>,
-        /// Tags that must all be present on the matching metric. Extra tags are allowed.
+        /// Tags compared against the matching metric's tags, as `tags_match` directs.
         #[serde(default)]
         tags: Vec<String>,
+        /// How `tags` must relate to the matching metric's tags. Defaults to `subset`.
+        #[serde(default)]
+        tags_match: TagMatch,
         /// Timeout for waiting for the metric to arrive.
         timeout: HumanDuration,
     },
+}
+
+impl AssertionConfig {
+    /// Returns `duration` or `during` for windowed checks, otherwise `timeout`.
+    pub(crate) fn budget(&self) -> Duration {
+        match self {
+            Self::ProcessStableFor { duration } => duration.0,
+            Self::LogNotContains { during, .. } => during.0,
+            Self::AdpExitsWith { timeout, .. }
+            | Self::PortListening { timeout, .. }
+            | Self::LogContains { timeout, .. }
+            | Self::HttpCheck { timeout, .. }
+            | Self::FileContains { timeout, .. }
+            | Self::AdpConfigKeyEquals { timeout, .. }
+            | Self::IntakeHasMetric { timeout, .. } => timeout.0,
+        }
+    }
+}
+
+/// How an [`AssertionConfig::IntakeHasMetric`]'s `tags` must relate to an observed context's normalized tags.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TagMatch {
+    /// Every expected tag is present; extra tags are allowed.
+    #[default]
+    Subset,
+    /// The context's tag set equals the expected set after sorting and deduplication.
+    Exact,
 }
 
 /// Metric type accepted by an [`AssertionConfig::IntakeHasMetric`].
@@ -879,6 +935,44 @@ mod tests {
         assert_eq!(container, "/etc/config.yaml");
 
         assert!(parse_file_spec("nocolon").is_err());
+    }
+
+    #[test]
+    fn each_step_kind_declares_its_budget() {
+        let assertion_budget = |yaml: &str| {
+            serde_saphyr::from_str::<AssertionConfig>(yaml)
+                .expect("assertion should parse")
+                .budget()
+        };
+        let action_budget = |yaml: &str| {
+            serde_saphyr::from_str::<ActionConfig>(yaml)
+                .expect("action should parse")
+                .budget()
+        };
+
+        assert_eq!(
+            assertion_budget("assertion: process_stable_for\nduration: 10s\n"),
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            assertion_budget("assertion: log_not_contains\npattern: x\nduring: 5s\n"),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            assertion_budget("assertion: log_contains\npattern: x\ntimeout: 7s\n"),
+            Duration::from_secs(7)
+        );
+        assert_eq!(
+            action_budget("action: target_exec\ncommand: [echo]\n"),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            action_budget(
+                "action: dogstatsd_replay\nsender: [echo]\ncapture_duration: 3s\nstats_duration_secs: 1\n\
+                 expected_metrics: []\ntimeout: 30s\n"
+            ),
+            Duration::from_millis(123_050)
+        );
     }
 
     #[test]
@@ -1291,6 +1385,38 @@ procedure:
         assert_eq!(*metric_type, Some(MetricTypeMatcher::Count));
         assert_eq!(*value, Some(3.0));
         assert_eq!(tags, &["source:integration-test".to_string()]);
+    }
+
+    #[test]
+    fn intake_has_metric_tags_match_defaults_to_subset_and_rejects_unknown_modes() {
+        let parse = |tags_match: &str| {
+            let yaml = format!(
+                r#"
+type: integration
+name: tags-match-case
+timeout: 60s
+procedure:
+  - assertion: intake_has_metric
+    name: "example.gauge"
+    tags: []
+    {}
+    timeout: 30s
+"#,
+                tags_match
+            );
+            serde_saphyr::from_str::<IntegrationConfig>(&yaml).map(|config| match &config.procedure[0] {
+                AssertionStep::Single(AssertionConfig::IntakeHasMetric { tags_match, .. }) => *tags_match,
+                _ => panic!("step should parse as an intake_has_metric assertion"),
+            })
+        };
+
+        assert_eq!(parse("").expect("case should parse"), TagMatch::Subset);
+        assert_eq!(
+            parse("tags_match: subset").expect("case should parse"),
+            TagMatch::Subset
+        );
+        assert_eq!(parse("tags_match: exact").expect("case should parse"), TagMatch::Exact);
+        assert!(parse("tags_match: fuzzy").is_err());
     }
 
     #[test]

@@ -1,30 +1,26 @@
-//! Trace sampling transform.
+//! Decides which incoming traces to forward before they reach the backend.
 //!
-//! This transform implements agent-side head sampling for traces, supporting:
-//! - Probabilistic sampling based on trace ID
-//! - User-set priority preservation
-//! - Error-based sampling as a safety net
-//! - OTLP trace ingestion with proper sampling decision handling
+//! The transform honors user sampling decisions and can keep traces through probabilistic,
+//! priority, error, and rare sampling. It also handles OTLP sampling metadata. When given an
+//! `APM_SAMPLING` subscription, it updates priority and error sampler targets and the rare sampler
+//! switch before processing each buffer. Without a subscription, it uses local configuration.
 //!
-//! TODO:
-//!
-//! - add trace metrics: datadog-agent/pkg/trace/sampler/metrics.go
-//! - adding missing samplers (priority, nopriority)
-//! - add error tracking standalone mode
+//! TODO: Add trace metrics from `datadog-agent/pkg/trace/sampler/metrics.go`.
 
 use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use agent_data_plane_config::domains;
 use async_trait::async_trait;
+use datadog_agent_apm::sampling::{RemoteSampling, SamplerSettings, TraceSamplingSubscription};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{transforms::*, BuildContext},
     data_model::event::{
-        trace::{AttributeValue, Span, Trace},
+        trace::{AttributeValue, Span, Trace, TraceIngestInfo},
         Event, EventType,
     },
-    topology::OutputDefinition,
+    topology::{EventsBuffer, OutputDefinition},
 };
 use saluki_error::GenericError;
 use stringtheory::MetaString;
@@ -47,8 +43,9 @@ use self::probabilistic::PROB_RATE_KEY;
 use self::telemetry::{DecisionWindow, WINDOW};
 use crate::common::datadog::{
     compute_top_level, get_root_span_index, get_trace_env, sample_by_rate, DECISION_MAKER_MANUAL,
-    DECISION_MAKER_PROBABILISTIC, OTEL_TRACE_ID_META_KEY, SAMPLING_PRIORITY_METRIC_KEY, TAG_DECISION_MAKER, TAG_ORIGIN,
+    DECISION_MAKER_PROBABILISTIC, SAMPLING_PRIORITY_METRIC_KEY, TAG_DECISION_MAKER, TAG_ORIGIN,
 };
+use crate::config::AgentEnv;
 
 // Sampling priority constants (matching datadog-agent)
 const PRIORITY_AUTO_DROP: i32 = 0;
@@ -58,14 +55,6 @@ const PRIORITY_USER_KEEP: i32 = 2;
 // Single Span Sampling and Analytics Events keys
 const KEY_SPAN_SAMPLING_MECHANISM: &str = "_dd.span_sampling.mechanism";
 const KEY_ANALYZED_SPANS: &str = "_dd.analyzed";
-
-fn normalize_sampling_rate(rate: f64) -> f64 {
-    if rate <= 0.0 || rate >= 1.0 {
-        1.0
-    } else {
-        rate
-    }
-}
 
 /// Configuration for the trace sampler transform.
 #[derive(Debug)]
@@ -80,25 +69,30 @@ pub struct TraceSamplerConfiguration {
     target_traces_per_second: f64,
     extra_sample_rate: f64,
     max_catalog_entries: usize,
-    default_env: MetaString,
+    /// Environment the priority sampler uses for traces without one, and used to select a remote `by_env` entry.
+    agent_env: AgentEnv,
     rare_sampler_enabled: bool,
     rare_sampler_tps: f64,
     rare_sampler_cooldown_secs: f64,
     rare_sampler_cardinality: usize,
-    otlp_sampling_rate: f64,
     compute_top_level_by_span_kind: bool,
     analyzed_spans_by_service: HashMap<String, HashMap<String, f64>>,
     analyzed_rate_by_service: HashMap<String, f64>,
     max_events_per_second: f64,
+
+    /// Remote updates, or an inert subscription when remote sampling is not configured.
+    remote_sampling: TraceSamplingSubscription,
 }
 
 impl TraceSamplerConfiguration {
     /// Creates a new `TraceSamplerConfiguration` from the resolved traces domain.
     ///
     /// The OTLP trace settings live in their own domain, so they arrive as a separate slice rather
-    /// than through the traces domain.
-    pub fn from_configuration(traces: &domains::traces::Domain, otlp_traces: &domains::otlp::Traces) -> Self {
-        let otlp_sampling_rate = normalize_sampling_rate(otlp_traces.probabilistic_sampler_sampling_percentage / 100.0);
+    /// than through the traces domain. The priority sampler samples traces without an environment
+    /// under `agent_env`, and remote sampling selects its `by_env` entry with it.
+    pub fn from_configuration(
+        traces: &domains::traces::Domain, otlp_traces: &domains::otlp::Traces, agent_env: AgentEnv,
+    ) -> Self {
         if !traces.analyzed_rate_by_service.is_empty() {
             warn!("analyzed_rate_by_service is deprecated, please use analyzed_spans instead");
         }
@@ -115,16 +109,73 @@ impl TraceSamplerConfiguration {
             target_traces_per_second: traces.target_traces_per_second,
             extra_sample_rate: traces.extra_sample_rate,
             max_catalog_entries: traces.max_catalog_entries,
-            default_env: MetaString::from(traces.default_env.clone()),
+            agent_env,
             rare_sampler_enabled: traces.enable_rare_sampler,
             rare_sampler_tps: traces.rare_sampler.tps,
             rare_sampler_cooldown_secs: traces.rare_sampler.cooldown,
             rare_sampler_cardinality: traces.rare_sampler.cardinality,
-            otlp_sampling_rate,
             compute_top_level_by_span_kind: otlp_traces.enable_compute_top_level_by_span_kind,
             analyzed_spans_by_service: traces.analyzed_spans_by_service.clone(),
             analyzed_rate_by_service: traces.analyzed_rate_by_service.clone(),
             max_events_per_second: traces.max_events_per_second,
+            remote_sampling: TraceSamplingSubscription::default(),
+        }
+    }
+
+    /// Connects the trace sampler to `APM_SAMPLING` remote updates.
+    ///
+    /// Only priority and error sampling targets and rare sampling can change. For each field
+    /// left unset by the remote configuration, the sampler uses its local setting.
+    pub fn with_remote_sampling(mut self, remote_sampling: TraceSamplingSubscription) -> Self {
+        self.remote_sampling = remote_sampling;
+        self
+    }
+
+    fn build_sampler(&self) -> TraceSampler {
+        let telemetry = DecisionWindow::new();
+        let event_processor = EventProcessor::new(
+            &self.analyzed_spans_by_service,
+            &self.analyzed_rate_by_service,
+            self.max_events_per_second,
+        );
+        TraceSampler {
+            sampling_rate: self.sampling_percentage / 100.0,
+            error_sampling_enabled: self.error_sampling_enabled,
+            error_tracking_standalone: self.error_tracking_standalone,
+            probabilistic_sampler_enabled: self.probabilistic_sampler_enabled,
+            probabilistic: probabilistic::ProbabilisticSampler::new(
+                self.probabilistic_hash_seed,
+                self.probabilistic_full_trace_id,
+            ),
+            error_sampler: errors::ErrorsSampler::new(self.errors_per_second, self.extra_sample_rate),
+            priority_sampler: priority_sampler::PrioritySampler::new(
+                self.agent_env.clone().into(),
+                self.extra_sample_rate,
+                self.target_traces_per_second,
+                self.max_catalog_entries,
+            ),
+            no_priority_sampler: score_sampler::NoPrioritySampler::new(
+                self.target_traces_per_second,
+                self.extra_sample_rate,
+            ),
+            rare_sampler: rare_sampler::RareSampler::new(
+                self.rare_sampler_enabled,
+                self.rare_sampler_tps,
+                std::time::Duration::from_secs_f64(self.rare_sampler_cooldown_secs),
+                self.rare_sampler_cardinality,
+                telemetry.counters().clone(),
+            ),
+            event_processor,
+            telemetry,
+            compute_top_level_by_span_kind: self.compute_top_level_by_span_kind,
+            static_settings: SamplerSettings {
+                target_traces_per_second: self.target_traces_per_second,
+                errors_per_second: self.errors_per_second,
+                rare_sampler_enabled: self.rare_sampler_enabled,
+            },
+            agent_env: self.agent_env.clone().into(),
+            remote_sampling: self.remote_sampling.clone(),
+            applied_sampling: None,
         }
     }
 }
@@ -146,50 +197,7 @@ impl TransformBuilder for TraceSamplerConfiguration {
     }
 
     async fn build(&self, _context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
-        // TODO: Need to support remote configuration changing these at runtime
-        // See https://github.com/DataDog/saluki/issues/1326
-        let telemetry = DecisionWindow::new();
-
-        let event_processor = EventProcessor::new(
-            &self.analyzed_spans_by_service,
-            &self.analyzed_rate_by_service,
-            self.max_events_per_second,
-        );
-
-        let sampler = TraceSampler {
-            sampling_rate: self.sampling_percentage / 100.0,
-            error_sampling_enabled: self.error_sampling_enabled,
-            error_tracking_standalone: self.error_tracking_standalone,
-            probabilistic_sampler_enabled: self.probabilistic_sampler_enabled,
-            probabilistic: probabilistic::ProbabilisticSampler::new(
-                self.probabilistic_hash_seed,
-                self.probabilistic_full_trace_id,
-            ),
-            otlp_sampling_rate: self.otlp_sampling_rate,
-            error_sampler: errors::ErrorsSampler::new(self.errors_per_second, self.extra_sample_rate),
-            priority_sampler: priority_sampler::PrioritySampler::new(
-                self.default_env.clone(),
-                self.extra_sample_rate,
-                self.target_traces_per_second,
-                self.max_catalog_entries,
-            ),
-            no_priority_sampler: score_sampler::NoPrioritySampler::new(
-                self.target_traces_per_second,
-                self.extra_sample_rate,
-            ),
-            rare_sampler: rare_sampler::RareSampler::new(
-                self.rare_sampler_enabled,
-                self.rare_sampler_tps,
-                std::time::Duration::from_secs_f64(self.rare_sampler_cooldown_secs),
-                self.rare_sampler_cardinality,
-                telemetry.counters().clone(),
-            ),
-            event_processor,
-            telemetry,
-            compute_top_level_by_span_kind: self.compute_top_level_by_span_kind,
-        };
-
-        Ok(Box::new(sampler))
+        Ok(Box::new(self.build_sampler()))
     }
 }
 
@@ -240,7 +248,6 @@ pub struct TraceSampler {
     error_sampling_enabled: bool,
     probabilistic_sampler_enabled: bool,
     probabilistic: probabilistic::ProbabilisticSampler,
-    otlp_sampling_rate: f64,
     compute_top_level_by_span_kind: bool,
     error_sampler: errors::ErrorsSampler,
     priority_sampler: priority_sampler::PrioritySampler,
@@ -248,6 +255,13 @@ pub struct TraceSampler {
     rare_sampler: rare_sampler::RareSampler,
     event_processor: EventProcessor,
     telemetry: DecisionWindow,
+    /// Local settings used when a remote configuration leaves a field unset.
+    static_settings: SamplerSettings,
+    /// Agent environment, used to select a remote `by_env` entry.
+    agent_env: MetaString,
+    remote_sampling: TraceSamplingSubscription,
+    /// Last update handled, so each buffer does not reapply the same settings.
+    applied_sampling: Option<Arc<RemoteSampling>>,
 }
 
 /// The outcome of evaluating a trace against the configured samplers.
@@ -283,6 +297,44 @@ impl SamplerOutcome {
 }
 
 impl TraceSampler {
+    /// Applies the latest accepted remote sampling configuration, if it has changed.
+    ///
+    /// Unset fields use local settings, not previous remote values. When the assignment becomes
+    /// empty, the subscription keeps reporting the last configuration, as the Datadog Agent does. A newly published
+    /// configuration can have the same values after a worker restart; applying it again preserves
+    /// learned sampling rates and the rare sampler's record of seen span signatures.
+    fn apply_remote_sampling(&mut self) {
+        let Some(current) = self.remote_sampling.current() else {
+            return;
+        };
+        if self
+            .applied_sampling
+            .as_ref()
+            .is_some_and(|applied| Arc::ptr_eq(applied, &current))
+        {
+            return;
+        }
+        if let RemoteSampling::Remote { id, config } = &*current {
+            let settings = config.resolve(&self.agent_env, &self.static_settings);
+            debug!(config_id = %id, ?settings, "Applying remote sampling configuration.");
+            // The Datadog Agent does not update the no-priority sampler from this product.
+            self.priority_sampler
+                .update_target_tps(settings.target_traces_per_second);
+            self.error_sampler.update_target_tps(settings.errors_per_second);
+            self.rare_sampler.set_enabled(settings.rare_sampler_enabled);
+        }
+        self.applied_sampling = Some(current);
+    }
+
+    /// Applies pending sampling settings, then samples every trace in the buffer with those settings.
+    fn process_buffer(&mut self, events: &mut EventsBuffer) {
+        self.apply_remote_sampling();
+        events.remove_if(|event| match event {
+            Event::Trace(trace) => !self.process_trace(trace),
+            _ => false,
+        });
+    }
+
     /// Find the root span index of a trace.
     fn get_root_span_index(&self, trace: &Trace) -> Option<usize> {
         // The shared root finder, so every consumer anchors metadata to identical root spans.
@@ -326,17 +378,6 @@ impl TraceSampler {
             .sample(trace_id_high, trace_id_low, self.sampling_rate)
     }
 
-    fn is_otlp_trace(&self, trace: &Trace, root_span_idx: usize) -> bool {
-        trace
-            .spans()
-            .get(root_span_idx)
-            .map(|span| {
-                span.attributes
-                    .contains_key(&MetaString::from_static(OTEL_TRACE_ID_META_KEY))
-            })
-            .unwrap_or(false)
-    }
-
     /// Returns `true` if the trace contains a span with an error.
     fn trace_contains_error(&self, trace: &Trace, consider_exception_span_events: bool) -> bool {
         trace.spans().iter().any(|span| {
@@ -366,14 +407,17 @@ impl TraceSampler {
     ///
     /// See: https://github.com/DataDog/datadog-agent/blob/be33ac1490c4a34602cbc65a211406b73ad6d00b/pkg/trace/api/otlp.go#L561-L585
     fn otlp_pre_sample(&mut self, trace: &mut Trace, root_span_idx: usize) -> Option<(i32, &'static str)> {
-        if self.probabilistic_sampler_enabled || !self.is_otlp_trace(trace, root_span_idx) {
+        let TraceIngestInfo::Otlp { receiver_sampling_rate } = trace.ingest_info() else {
+            return None;
+        };
+        if self.probabilistic_sampler_enabled {
             return None;
         }
         let (priority, dm) = if let Some(user_priority) = self.get_user_priority(trace, root_span_idx) {
             (user_priority, DECISION_MAKER_MANUAL)
         } else {
             let root_trace_id = trace.trace_id_low;
-            if sample_by_rate(root_trace_id, self.otlp_sampling_rate) {
+            if sample_by_rate(root_trace_id, receiver_sampling_rate) {
                 (PRIORITY_AUTO_KEEP, DECISION_MAKER_PROBABILISTIC)
             } else {
                 (PRIORITY_AUTO_DROP, DECISION_MAKER_PROBABILISTIC)
@@ -406,7 +450,6 @@ impl TraceSampler {
         if retained > 0 {
             trace.dropped_trace = false;
             trace.priority = Some(PRIORITY_USER_KEEP);
-            trace.otlp_sampling_rate = Some(self.sampling_rate);
             true
         } else {
             false
@@ -549,7 +592,7 @@ impl TraceSampler {
             if self.priority_sampler.sample(now, trace, root_span_idx, priority, 0.0) {
                 return SamplerOutcome::new(true, priority, "", Some(root_span_idx), sampler_name, true);
             }
-        } else if self.is_otlp_trace(trace, root_span_idx) {
+        } else if let TraceIngestInfo::Otlp { receiver_sampling_rate } = trace.ingest_info() {
             // Rare check mirrors agent behavior: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L1129-L1140
             if rare {
                 sampler_name = telemetry::SamplerName::Rare;
@@ -561,7 +604,7 @@ impl TraceSampler {
             sampler_name = telemetry::SamplerName::Probabilistic;
             // some sampling happens upstream in the otlp receiver in the agent: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/api/otlp.go#L572
             let root_trace_id = trace.trace_id_low;
-            if sample_by_rate(root_trace_id, self.otlp_sampling_rate) {
+            if sample_by_rate(root_trace_id, receiver_sampling_rate) {
                 if let Some(root_span) = trace.spans_mut().get_mut(root_span_idx) {
                     root_span.attributes.remove(PROB_RATE_KEY);
                 }
@@ -653,7 +696,7 @@ impl TraceSampler {
     fn apply_sampling_metadata(
         &self, trace: &mut Trace, keep: bool, priority: i32, decision_maker: &'static str, root_span_idx: usize,
     ) {
-        let is_otlp = self.is_otlp_trace(trace, root_span_idx);
+        let is_otlp = matches!(trace.ingest_info(), TraceIngestInfo::Otlp { .. });
         // Chunk-level decision maker: the sampler's value when it decided, otherwise the first
         // carrier promoted during backfill (falling back to the root's own tag).
         let promoted_decision_maker = if decision_maker.is_empty() {
@@ -697,11 +740,6 @@ impl TraceSampler {
         trace.dropped_trace = !keep;
         trace.priority = Some(priority);
         trace.decision_maker = if priority > 0 { decision_maker_meta } else { None };
-        trace.otlp_sampling_rate = Some(if is_otlp {
-            self.otlp_sampling_rate
-        } else {
-            self.sampling_rate
-        });
     }
 
     fn process_trace(&mut self, trace: &mut Trace) -> bool {
@@ -797,11 +835,7 @@ impl Transform for TraceSampler {
                 }
                 maybe_events = context.events().next() => match maybe_events {
                     Some(mut events) => {
-                        events.remove_if(|event| match event {
-                            Event::Trace(trace) => !self.process_trace(trace),
-                            _ => false,
-                        });
-
+                        self.process_buffer(&mut events);
                         context.dispatcher().buffered()?.send_all(events).await?;
                     }
                     None => {
@@ -828,10 +862,21 @@ impl Transform for TraceSampler {
 mod tests {
     use std::collections::HashMap;
 
-    use saluki_core::data_model::event::trace::{AttributeValue, Span as DdSpan, Trace};
-    const PRIORITY_USER_DROP: i32 = -1;
+    use datadog_agent_apm::sampling::test_util::TestSamplingPublisher;
+    use saluki_core::components::test_util::TestComponentDriver;
+    use saluki_core::data_model::event::trace::{AttributeValue, Span as DdSpan, Trace, TraceIngestInfo};
 
     use super::*;
+    use crate::common::datadog::OTEL_TRACE_ID_META_KEY;
+
+    const PRIORITY_USER_DROP: i32 = -1;
+
+    // Deterministic receiver sampling decisions at a rate of 0.5, from the Go trace agent's `TestCreateChunks`:
+    // https://github.com/DataDog/datadog-agent/blob/c6f7e0bc2d5744601a10f231751948ac7a4ee781/pkg/trace/api/otlp_test.go#L740-L810
+    const OTLP_TEST_RECEIVER_SAMPLING_RATE: f64 = 0.5;
+    const OTLP_RECEIVER_KEPT_TRACE_ID: u64 = 123;
+    const OTLP_RECEIVER_DROPPED_TRACE_ID: u64 = 1237892138897;
+
     fn create_test_sampler() -> TraceSampler {
         TraceSampler {
             sampling_rate: 1.0,
@@ -839,7 +884,6 @@ mod tests {
             error_tracking_standalone: false,
             probabilistic_sampler_enabled: true,
             probabilistic: probabilistic::ProbabilisticSampler::new(0, false),
-            otlp_sampling_rate: 1.0,
             error_sampler: errors::ErrorsSampler::new(10.0, 1.0),
             priority_sampler: priority_sampler::PrioritySampler::new(MetaString::from("agent-env"), 1.0, 10.0, 5000),
             no_priority_sampler: score_sampler::NoPrioritySampler::new(10.0, 1.0),
@@ -853,6 +897,14 @@ mod tests {
             event_processor: EventProcessor::for_tests(&HashMap::new(), &HashMap::new(), f64::INFINITY),
             telemetry: telemetry::DecisionWindow::new(),
             compute_top_level_by_span_kind: false,
+            static_settings: SamplerSettings {
+                target_traces_per_second: 10.0,
+                errors_per_second: 10.0,
+                rare_sampler_enabled: false,
+            },
+            agent_env: MetaString::from("agent-env"),
+            remote_sampling: TraceSamplingSubscription::default(),
+            applied_sampling: None,
         }
     }
 
@@ -888,7 +940,13 @@ mod tests {
     }
 
     fn create_test_trace(spans: Vec<DdSpan>) -> Trace {
-        Trace::new(spans)
+        Trace::new(spans, TraceIngestInfo::Datadog)
+    }
+
+    fn create_otlp_test_trace(spans: Vec<DdSpan>, receiver_sampling_rate: f64, trace_id_low: u64) -> Trace {
+        let mut trace = Trace::new(spans, TraceIngestInfo::Otlp { receiver_sampling_rate });
+        trace.trace_id_low = trace_id_low;
+        trace
     }
 
     fn create_span_with_parent_and_service(
@@ -1378,7 +1436,8 @@ mod tests {
             features: vec![domains::traces::ApmFeature::ProbabilisticSamplerFullTraceId],
             ..Default::default()
         };
-        let config = TraceSamplerConfiguration::from_configuration(&traces, &domains::otlp::Traces::default());
+        let config =
+            TraceSamplerConfiguration::from_configuration(&traces, &domains::otlp::Traces::default(), prod_env());
         assert!(config.probabilistic_full_trace_id);
 
         // Unrecognized flags are carried, not rejected, and enable nothing.
@@ -1386,7 +1445,8 @@ mod tests {
             features: vec![domains::traces::ApmFeature::Other("table_names".to_owned())],
             ..Default::default()
         };
-        let config = TraceSamplerConfiguration::from_configuration(&traces, &domains::otlp::Traces::default());
+        let config =
+            TraceSamplerConfiguration::from_configuration(&traces, &domains::otlp::Traces::default(), prod_env());
         assert!(!config.probabilistic_full_trace_id);
     }
 
@@ -1921,14 +1981,12 @@ mod tests {
         let mut sampler = create_test_sampler();
         sampler.probabilistic_sampler_enabled = false;
         sampler.error_sampling_enabled = false;
-        sampler.otlp_sampling_rate = 0.0;
 
-        let mut span = create_top_level_span(1);
-        span.attributes.insert(
-            MetaString::from_static(OTEL_TRACE_ID_META_KEY),
-            AttributeValue::String(MetaString::from("00000000000000000000000000000001")),
+        let mut trace = create_otlp_test_trace(
+            vec![create_top_level_span(1)],
+            OTLP_TEST_RECEIVER_SAMPLING_RATE,
+            OTLP_RECEIVER_DROPPED_TRACE_ID,
         );
-        let mut trace = create_test_trace(vec![span]);
 
         let SamplerOutcome { keep, priority, .. } = sampler.run_samplers(&mut trace);
         assert!(!keep);
@@ -1946,14 +2004,12 @@ mod tests {
         let mut sampler = create_sampler_with_rare_enabled();
         sampler.probabilistic_sampler_enabled = false;
         sampler.error_sampling_enabled = false;
-        sampler.otlp_sampling_rate = 0.0;
 
-        let mut span = create_top_level_span(1);
-        span.attributes.insert(
-            MetaString::from_static(OTEL_TRACE_ID_META_KEY),
-            AttributeValue::String(MetaString::from("00000000000000000000000000000001")),
+        let mut trace = create_otlp_test_trace(
+            vec![create_top_level_span(1)],
+            OTLP_TEST_RECEIVER_SAMPLING_RATE,
+            OTLP_RECEIVER_DROPPED_TRACE_ID,
         );
-        let mut trace = create_test_trace(vec![span]);
 
         let SamplerOutcome {
             keep,
@@ -2151,20 +2207,14 @@ mod tests {
     // priority/dm before runSamplersV1, so ETS sees those values even when it
     // short-circuits. See: pkg/trace/api/otlp.go#L561-L585.
 
-    fn create_otlp_test_span(span_id: u64, error: i32) -> DdSpan {
-        let mut attrs = saluki_common::collections::FastHashMap::default();
-        attrs.insert(
-            MetaString::from_static(OTEL_TRACE_ID_META_KEY),
-            AttributeValue::String(MetaString::from("0000000000000000deadbeefcafebabe")),
-        );
-        create_test_span(span_id, error).with_attributes(attrs)
+    fn create_receiver_kept_otlp_test_trace(spans: Vec<DdSpan>) -> Trace {
+        create_otlp_test_trace(spans, OTLP_TEST_RECEIVER_SAMPLING_RATE, OTLP_RECEIVER_KEPT_TRACE_ID)
     }
 
     fn create_sampler_with_ets_legacy() -> TraceSampler {
         TraceSampler {
             error_tracking_standalone: true,
             probabilistic_sampler_enabled: false,
-            otlp_sampling_rate: 1.0,
             ..create_test_sampler()
         }
     }
@@ -2175,8 +2225,8 @@ mod tests {
     fn ets_otlp_non_error_gets_presample_priority_and_dm() {
         let mut sampler = create_sampler_with_ets_legacy();
 
-        let span = create_otlp_test_span(1, 0); // no error
-        let mut trace = create_test_trace(vec![span]);
+        let span = create_test_span(1, 0); // no error
+        let mut trace = create_receiver_kept_otlp_test_trace(vec![span]);
 
         let SamplerOutcome {
             keep,
@@ -2197,8 +2247,8 @@ mod tests {
     fn ets_otlp_error_gets_presample_priority_and_dm() {
         let mut sampler = create_sampler_with_ets_legacy();
 
-        let span = create_otlp_test_span(1, 1); // error=1
-        let mut trace = create_test_trace(vec![span]);
+        let span = create_test_span(1, 1); // error=1
+        let mut trace = create_receiver_kept_otlp_test_trace(vec![span]);
 
         let SamplerOutcome {
             keep,
@@ -2211,6 +2261,23 @@ mod tests {
         assert_eq!(dm, DECISION_MAKER_PROBABILISTIC, "OTLP pre-sampling sets dm=-9");
     }
 
+    /// ETS + OTLP trace dropped by the receiver rate (legacy sampler path): a drop is not stamped with a decision maker.
+    #[test]
+    fn ets_otlp_receiver_drop_gets_drop_priority_and_no_dm() {
+        let mut sampler = create_sampler_with_ets_legacy();
+
+        let mut trace = create_otlp_test_trace(
+            vec![create_test_span(1, 0)],
+            OTLP_TEST_RECEIVER_SAMPLING_RATE,
+            OTLP_RECEIVER_DROPPED_TRACE_ID,
+        );
+
+        assert!(sampler.process_trace(&mut trace), "ETS forwards non-error traces");
+        assert!(trace.dropped_trace);
+        assert_eq!(trace.priority, Some(PRIORITY_AUTO_DROP));
+        assert_eq!(trace.decision_maker, None);
+    }
+
     /// ETS + OTLP + probabilistic_sampler_enabled=true: `OTLPReceiver` defers, no pre-sampling.
     /// DDA's `OTLPReceiver` sets PriorityNone and skips when ProbabilisticSamplerEnabled.
     #[test]
@@ -2218,8 +2285,8 @@ mod tests {
         let mut sampler = create_sampler_with_ets_legacy();
         sampler.probabilistic_sampler_enabled = true; // override to prob path
 
-        let span = create_otlp_test_span(1, 0); // no error
-        let mut trace = create_test_trace(vec![span]);
+        let span = create_test_span(1, 0); // no error
+        let mut trace = create_receiver_kept_otlp_test_trace(vec![span]);
 
         let SamplerOutcome {
             keep,
@@ -2259,12 +2326,12 @@ mod tests {
     fn ets_otlp_user_priority_gets_manual_dm() {
         let mut sampler = create_sampler_with_ets_legacy();
 
-        let mut span = create_otlp_test_span(1, 0);
+        let mut span = create_test_span(1, 0);
         span.attributes.insert(
             MetaString::from(SAMPLING_PRIORITY_METRIC_KEY),
             AttributeValue::Float(2.0),
         ); // UserKeep
-        let mut trace = create_test_trace(vec![span]);
+        let mut trace = create_receiver_kept_otlp_test_trace(vec![span]);
 
         let SamplerOutcome {
             keep,
@@ -2275,6 +2342,104 @@ mod tests {
         assert!(!keep, "ETS drops non-error traces regardless of user priority");
         assert_eq!(priority, PRIORITY_USER_KEEP, "user priority is preserved");
         assert_eq!(dm, DECISION_MAKER_MANUAL, "user-set priority gets dm=-4");
+    }
+
+    // ── Ingest information tests ────────────────────────────────────────────────
+    // Regression tests: the sampler once classified a trace as OTLP by the `otel.trace_id` attribute on its root
+    // span. Removing that attribute, or filtering out the original root, sent OTLP traces down the native path, and
+    // a native trace carrying the attribute was sampled at the OTLP receiver rate. Classification now uses the
+    // ingest information fixed when the trace is constructed.
+
+    #[test]
+    fn otlp_receiver_sampling_does_not_depend_on_span_attributes_or_root() {
+        let mut sampler = create_test_sampler();
+        sampler.probabilistic_sampler_enabled = false;
+
+        let span_sets = [
+            ("rooted", vec![create_test_span(1, 0)]),
+            (
+                "original root removed",
+                vec![
+                    create_test_span(2, 0).with_parent_id(1),
+                    create_test_span(3, 0).with_parent_id(2),
+                ],
+            ),
+        ];
+        let cases = [
+            (
+                OTLP_RECEIVER_KEPT_TRACE_ID,
+                true,
+                PRIORITY_AUTO_KEEP,
+                DECISION_MAKER_PROBABILISTIC,
+            ),
+            (OTLP_RECEIVER_DROPPED_TRACE_ID, false, PRIORITY_AUTO_DROP, ""),
+        ];
+        for (name, spans) in &span_sets {
+            for (trace_id, want_keep, want_priority, want_dm) in cases {
+                let mut trace = create_otlp_test_trace(spans.clone(), OTLP_TEST_RECEIVER_SAMPLING_RATE, trace_id);
+
+                let SamplerOutcome {
+                    keep,
+                    priority,
+                    decision_maker,
+                    ..
+                } = sampler.run_samplers(&mut trace);
+                assert_eq!(keep, want_keep, "{name}, trace ID {trace_id}");
+                assert_eq!(priority, want_priority, "{name}, trace ID {trace_id}");
+                assert_eq!(decision_maker, want_dm, "{name}, trace ID {trace_id}");
+            }
+        }
+    }
+
+    #[test]
+    fn native_trace_with_otel_trace_id_attribute_is_not_sampled_as_otlp() {
+        let spoofed_trace = || {
+            let mut span = create_top_level_span(1);
+            span.attributes.insert(
+                MetaString::from_static(OTEL_TRACE_ID_META_KEY),
+                AttributeValue::String(MetaString::from("0000000000000000000000000000007b")),
+            );
+            let mut trace = create_test_trace(vec![span]);
+            trace.trace_id_low = OTLP_RECEIVER_KEPT_TRACE_ID;
+            trace
+        };
+
+        // Legacy path: the no-priority sampler decides, not the OTLP receiver rate.
+        let mut sampler = create_test_sampler();
+        sampler.probabilistic_sampler_enabled = false;
+        let SamplerOutcome { decision_maker, .. } = sampler.run_samplers(&mut spoofed_trace());
+        assert_eq!(decision_maker, "");
+        let decisions = sampler.telemetry.snapshot_decisions();
+        let (key, _) = decisions.iter().next().unwrap();
+        assert_eq!(key.sampler, telemetry::SamplerName::NoPriority);
+
+        // Error tracking standalone: no OTLP pre-sampling priority or decision maker.
+        let mut sampler = create_sampler_with_ets_legacy();
+        let SamplerOutcome {
+            keep,
+            priority,
+            decision_maker,
+            ..
+        } = sampler.run_samplers(&mut spoofed_trace());
+        assert!(!keep);
+        assert_eq!(priority, PRIORITY_AUTO_DROP);
+        assert_eq!(decision_maker, "");
+    }
+
+    #[test]
+    fn probabilistic_decision_maker_placement_follows_ingest_info() {
+        // The APM probabilistic sampler is enabled at a rate of 1.0, so both traces are kept by it. The OTLP trace
+        // carries no `otel.trace_id` attribute but still gets its decision maker on the chunk only.
+        let mut sampler = create_test_sampler();
+
+        let mut otlp = create_receiver_kept_otlp_test_trace(vec![create_test_span(1, 0)]);
+        assert!(sampler.process_trace(&mut otlp));
+        assert_eq!(otlp.decision_maker.as_deref(), Some(DECISION_MAKER_PROBABILISTIC));
+        assert!(!otlp.spans()[0].attributes.contains_key(TAG_DECISION_MAKER));
+
+        let mut native = create_test_trace(vec![create_test_span(1, 0)]);
+        assert!(sampler.process_trace(&mut native));
+        assert_eq!(native.decision_maker.as_deref(), Some(DECISION_MAKER_PROBABILISTIC));
     }
 
     #[test]
@@ -2368,5 +2533,572 @@ mod tests {
 
         assert!(!sampler.process_trace(&mut trace));
         assert!(!trace.spans()[0].attributes.contains_key(KEY_ANALYZED_SPANS));
+    }
+
+    // Remote sampling tests based on the Datadog Agent's remote configuration tests:
+    // https://github.com/DataDog/datadog-agent/blob/17ecddf4e3e/pkg/trace/remoteconfighandler/remote_config_handler_test.go
+
+    // With probabilistic sampling set to 0, only the rare sampler can keep test traces.
+    fn create_remote_sampler(errors_per_second: f64) -> (TestSamplingPublisher, TraceSampler) {
+        let (publisher, remote_sampling) = TestSamplingPublisher::new();
+        let sampler = TraceSampler {
+            sampling_rate: 0.0,
+            error_sampler: errors::ErrorsSampler::new(errors_per_second, 1.0),
+            rare_sampler: rare_sampler::RareSampler::new(
+                false,
+                1000.0,
+                std::time::Duration::from_secs(300),
+                200,
+                telemetry::SamplerCounters::new(),
+            ),
+            static_settings: SamplerSettings {
+                target_traces_per_second: 10.0,
+                errors_per_second,
+                rare_sampler_enabled: false,
+            },
+            remote_sampling,
+            ..create_test_sampler()
+        };
+        (publisher, sampler)
+    }
+
+    /// The agent environment resolved from `env: Prod`.
+    fn prod_env() -> AgentEnv {
+        AgentEnv::resolve(None, Some("Prod"), &[], &[])
+    }
+
+    /// Traces settings where probabilistic sampling drops every trace, so only the rare sampler keeps one.
+    fn rare_only_traces() -> domains::traces::Domain {
+        domains::traces::Domain {
+            target_traces_per_second: 7.0,
+            errors_per_second: 9.0,
+            enable_rare_sampler: true,
+            probabilistic_sampler: domains::traces::ProbabilisticSampler {
+                enabled: true,
+                sampling_percentage: 0.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn transform_empty_buffer(sampler: &mut TraceSampler) {
+        sampler.process_buffer(&mut EventsBuffer::default());
+    }
+
+    fn live_tps(sampler: &TraceSampler) -> (f64, f64) {
+        (
+            sampler.priority_sampler.get_target_tps(),
+            sampler.error_sampler.get_target_tps(),
+        )
+    }
+
+    fn rare_keeps_new_trace(sampler: &mut TraceSampler, span_id: u64) -> bool {
+        let mut trace = create_test_trace(vec![
+            create_top_level_span(span_id).with_service(MetaString::from(format!("rare-probe-{span_id}")))
+        ]);
+        sampler.run_samplers(&mut trace).keep
+    }
+
+    /// Covers the Datadog Agent's priority, error, and rare sampler update cases.
+    #[test]
+    fn remote_configuration_changes_live_sampler_settings() {
+        let (publisher, mut sampler) = create_remote_sampler(10.0);
+        publisher.assign([(
+            "sampling",
+            r#"{"all_envs":{"priority_sampler_target_TPS":41,"errors_sampler_target_TPS":42,
+                "rare_sampler_enabled":true}}"#,
+        )]);
+        assert_eq!(live_tps(&sampler), (10.0, 10.0), "nothing applies before a buffer");
+        assert!(!rare_keeps_new_trace(&mut sampler, 1));
+
+        transform_empty_buffer(&mut sampler);
+        assert_eq!(live_tps(&sampler), (41.0, 42.0));
+        assert!(rare_keeps_new_trace(&mut sampler, 2));
+        // Remote settings do not change the no-priority sampler.
+        assert_eq!(sampler.no_priority_sampler.test_target_tps(), 10.0);
+    }
+
+    #[test]
+    fn more_than_one_remote_configuration_changes_nothing() {
+        let (publisher, mut sampler) = create_remote_sampler(10.0);
+        publisher.assign([
+            (
+                "a",
+                r#"{"all_envs":{"priority_sampler_target_TPS":41,"rare_sampler_enabled":true}}"#,
+            ),
+            ("b", r#"{"all_envs":{"errors_sampler_target_TPS":42}}"#),
+        ]);
+        transform_empty_buffer(&mut sampler);
+        assert_eq!(live_tps(&sampler), (10.0, 10.0));
+        assert!(!rare_keeps_new_trace(&mut sampler, 1));
+    }
+
+    #[test]
+    fn more_than_one_remote_configuration_after_one_keeps_remote_settings() {
+        let (publisher, mut sampler) = create_remote_sampler(10.0);
+        publisher.assign([(
+            "a",
+            r#"{"all_envs":{"priority_sampler_target_TPS":41,"errors_sampler_target_TPS":42,
+                "rare_sampler_enabled":true}}"#,
+        )]);
+        transform_empty_buffer(&mut sampler);
+        assert_eq!(live_tps(&sampler), (41.0, 42.0));
+
+        publisher.assign([
+            ("a", r#"{"all_envs":{"priority_sampler_target_TPS":7}}"#),
+            ("b", r#"{"all_envs":{"errors_sampler_target_TPS":8}}"#),
+        ]);
+        transform_empty_buffer(&mut sampler);
+        assert_eq!(
+            live_tps(&sampler),
+            (41.0, 42.0),
+            "the rejected assignment changes nothing"
+        );
+        assert!(rare_keeps_new_trace(&mut sampler, 1));
+    }
+
+    /// Remote sampling uses the resolved agent environment to select a `by_env` entry.
+    #[test]
+    fn remote_sampling_subscription_reaches_the_built_sampler() {
+        let (publisher, subscription) = TestSamplingPublisher::new();
+        let config = TraceSamplerConfiguration::from_configuration(
+            &rare_only_traces(),
+            &domains::otlp::Traces::default(),
+            prod_env(),
+        )
+        .with_remote_sampling(subscription);
+        let mut sampler = config.build_sampler();
+        assert_eq!(live_tps(&sampler), (7.0, 9.0));
+        assert!(rare_keeps_new_trace(&mut sampler, 1));
+
+        // The Datadog Agent's tests send unset fields as `null`.
+        publisher.assign([(
+            "sampling",
+            r#"{"all_envs":{"priority_sampler_target_TPS":null,"errors_sampler_target_TPS":null,
+                "rare_sampler_enabled":null},
+                "by_env":[{"env":"prod","config":{"priority_sampler_target_TPS":41,"errors_sampler_target_TPS":42,
+                "rare_sampler_enabled":false}}]}"#,
+        )]);
+        transform_empty_buffer(&mut sampler);
+        assert_eq!(live_tps(&sampler), (41.0, 42.0), "the normalized env selects `prod`");
+        assert!(!rare_keeps_new_trace(&mut sampler, 2));
+
+        publisher.assign([(
+            "sampling",
+            r#"{"all_envs":{"priority_sampler_target_TPS":null,"errors_sampler_target_TPS":null,
+                "rare_sampler_enabled":null},"by_env":null}"#,
+        )]);
+        transform_empty_buffer(&mut sampler);
+        assert_eq!(
+            live_tps(&sampler),
+            (7.0, 9.0),
+            "each setting reverts to its static value"
+        );
+        assert!(rare_keeps_new_trace(&mut sampler, 3));
+    }
+
+    /// Remote selection matches the resolved agent environment exactly.
+    #[test]
+    fn remote_selection_matches_the_resolved_agent_env() {
+        let payload = r#"{"all_envs":{"errors_sampler_target_TPS":30},
+            "by_env":[{"env":"prod","config":{"priority_sampler_target_TPS":42}},
+                      {"env":"none","config":{"priority_sampler_target_TPS":41}}]}"#;
+        let cases = [
+            // Nothing configured resolves to `none`.
+            (AgentEnv::resolve(None, None, &[], &[]), (41.0, 30.0)),
+            (prod_env(), (42.0, 30.0)),
+            // `!!!` normalizes to empty, which matches no entry: `none` is not applied after normalization.
+            (AgentEnv::resolve(Some("!!!"), None, &[], &[]), (7.0, 30.0)),
+        ];
+        for (agent_env, expected) in cases {
+            let (publisher, subscription) = TestSamplingPublisher::new();
+            let env = agent_env.as_str().to_owned();
+            let mut sampler = TraceSamplerConfiguration::from_configuration(
+                &rare_only_traces(),
+                &domains::otlp::Traces::default(),
+                agent_env,
+            )
+            .with_remote_sampling(subscription)
+            .build_sampler();
+            publisher.assign([("sampling", payload)]);
+            transform_empty_buffer(&mut sampler);
+            assert_eq!(live_tps(&sampler), expected, "agent env {env:?}");
+        }
+    }
+
+    /// Remote selection and the priority sampler's fallback for traces without an env use the same agent environment.
+    ///
+    /// Regression: remote selection followed `env` while the priority sampler used a separate default, so the two
+    /// could disagree.
+    #[test]
+    fn remote_selection_and_priority_sampling_share_agent_env() {
+        let (publisher, subscription) = TestSamplingPublisher::new();
+        let agent_env = AgentEnv::resolve(Some("Staging"), Some("prod"), &[], &[]);
+        let mut sampler = TraceSamplerConfiguration::from_configuration(
+            &rare_only_traces(),
+            &domains::otlp::Traces::default(),
+            agent_env,
+        )
+        .with_remote_sampling(subscription)
+        .build_sampler();
+        publisher.assign([(
+            "sampling",
+            r#"{"by_env":[{"env":"staging","config":{"priority_sampler_target_TPS":43}},
+                          {"env":"prod","config":{"priority_sampler_target_TPS":42}}]}"#,
+        )]);
+        transform_empty_buffer(&mut sampler);
+        assert_eq!(live_tps(&sampler).0, 43.0, "remote selection uses the agent env");
+
+        // Traces without an env learn their rate under the agent env. Counts in one bucket become rates when the next
+        // begins.
+        let start = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        for now in [start, start + std::time::Duration::from_secs(10)] {
+            for trace_id in 0..100 {
+                let mut trace = create_test_trace(vec![create_test_span(trace_id, 0)]);
+                sampler
+                    .priority_sampler
+                    .sample(now, &mut trace, 0, PRIORITY_AUTO_KEEP, 0.0);
+            }
+        }
+        let learned: Vec<_> = sampler
+            .priority_sampler
+            .test_signature_sample_rates()
+            .0
+            .into_keys()
+            .collect();
+        assert_eq!(
+            learned,
+            vec![signature::ServiceSignature::new("test-service", "staging").hash()],
+            "priority sampling uses the agent env"
+        );
+    }
+
+    /// The run loop applies a published update before sampling the next buffer.
+    #[tokio::test]
+    async fn run_loop_samples_with_the_published_remote_settings() {
+        let (publisher, subscription) = TestSamplingPublisher::new();
+        let config = TraceSamplerConfiguration::from_configuration(
+            &rare_only_traces(),
+            &domains::otlp::Traces::default(),
+            prod_env(),
+        )
+        .with_remote_sampling(subscription);
+        let (control, mut outputs) = TestComponentDriver::transform(config)
+            .await
+            .expect("the sampler should start");
+        let new_service_trace = |span_id: u64| {
+            Event::Trace(create_test_trace(vec![
+                create_top_level_span(span_id).with_service(MetaString::from(format!("rare-probe-{span_id}")))
+            ]))
+        };
+
+        // The rare sampler keeps the first trace. Waiting for it makes sure the update is published after it.
+        control.send_event(new_service_trace(1)).await;
+        outputs
+            .default_output()
+            .next()
+            .await
+            .expect("the rare sampler should keep the first trace");
+
+        publisher.assign([("sampling", r#"{"all_envs":{"rare_sampler_enabled":false}}"#)]);
+        control.send_event(new_service_trace(2)).await;
+        control.shutdown().await.expect("the sampler should stop cleanly");
+
+        let kept = outputs.default_output().collect_events().await;
+        assert!(
+            kept.is_empty(),
+            "the second trace should be dropped now that remote settings disable the rare sampler: {kept:?}"
+        );
+    }
+
+    #[test]
+    fn remote_field_removed_later_falls_back_to_static() {
+        let (publisher, mut sampler) = create_remote_sampler(10.0);
+        publisher.assign([(
+            "sampling",
+            r#"{"all_envs":{"priority_sampler_target_TPS":41,"rare_sampler_enabled":true}}"#,
+        )]);
+        transform_empty_buffer(&mut sampler);
+        assert_eq!(live_tps(&sampler), (41.0, 10.0));
+
+        publisher.assign([("sampling", r#"{"all_envs":{"errors_sampler_target_TPS":42}}"#)]);
+        transform_empty_buffer(&mut sampler);
+        assert_eq!(
+            live_tps(&sampler),
+            (10.0, 42.0),
+            "the priority target reverts to static, not to 41"
+        );
+        assert!(
+            !rare_keeps_new_trace(&mut sampler, 1),
+            "the rare sampler reverts to static, not to enabled"
+        );
+    }
+
+    /// Starting with a zero target disables error sampling; a remote update cannot re-enable it.
+    #[test]
+    fn static_zero_errors_tps_stays_disabled_under_remote_configuration() {
+        let (publisher, mut sampler) = create_remote_sampler(0.0);
+        publisher.assign([("sampling", r#"{"all_envs":{"errors_sampler_target_TPS":5}}"#)]);
+        transform_empty_buffer(&mut sampler);
+        assert_eq!(sampler.error_sampler.get_target_tps(), 5.0);
+
+        let mut trace = create_test_trace(vec![create_test_span(1, 1)]);
+        assert!(!sampler
+            .error_sampler
+            .sample_error(std::time::SystemTime::now(), &mut trace, 0));
+    }
+
+    #[test]
+    fn inert_remote_sampling_changes_nothing() {
+        let mut sampler = TraceSampler {
+            remote_sampling: TraceSamplingSubscription::default(),
+            ..create_remote_sampler(10.0).1
+        };
+        // An inert subscription must not reset these overrides.
+        sampler.priority_sampler.update_target_tps(41.0);
+        sampler.error_sampler.update_target_tps(42.0);
+        sampler.rare_sampler.set_enabled(true);
+
+        transform_empty_buffer(&mut sampler);
+        assert_eq!(live_tps(&sampler), (41.0, 42.0));
+        assert!(rare_keeps_new_trace(&mut sampler, 1));
+    }
+
+    /// Removing the remote assignment does not undo previously applied settings.
+    #[test]
+    fn unassigned_after_remote_configuration_keeps_remote_settings() {
+        let (publisher, mut sampler) = create_remote_sampler(10.0);
+        publisher.assign([(
+            "sampling",
+            r#"{"all_envs":{"priority_sampler_target_TPS":41,"errors_sampler_target_TPS":42,
+                "rare_sampler_enabled":true}}"#,
+        )]);
+        transform_empty_buffer(&mut sampler);
+        let applied = sampler.remote_sampling.current().expect("a configuration is accepted");
+
+        publisher.assign(std::iter::empty::<(&str, &str)>());
+        assert!(Arc::ptr_eq(
+            &applied,
+            &sampler.remote_sampling.current().expect("the configuration is kept")
+        ));
+        transform_empty_buffer(&mut sampler);
+        assert_eq!(live_tps(&sampler), (41.0, 42.0));
+        assert!(rare_keeps_new_trace(&mut sampler, 1));
+    }
+
+    // The subscription keeps only the latest state, and the sampler reads it once per buffer. Publications the sampler
+    // has not yet read must not erase the newest accepted configuration, since the Datadog Agent applies each update
+    // as it arrives, ignores an empty one, and rejects arrays where its JSON decoder expects an object:
+    // https://github.com/DataDog/datadog-agent/blob/17ecddf4e3e83ccbb0e68aeb99461d1a1d902927/pkg/trace/remoteconfighandler/remote_config_handler.go#L234-L295
+    #[test]
+    fn unread_publications_keep_the_newest_accepted_configuration() {
+        const A: &str = r#"{"all_envs":{"priority_sampler_target_TPS":41,"errors_sampler_target_TPS":42,
+            "rare_sampler_enabled":true}}"#;
+        const B: &str = r#"{"all_envs":{"priority_sampler_target_TPS":43,"errors_sampler_target_TPS":44}}"#;
+        // Each case is a name, the payload applied before the publications under test, those publications (`None`
+        // for an empty assignment), and the expected targets and rare sampler state.
+        type Case<'a> = (&'a str, Option<&'a str>, &'a [Option<&'a str>], (f64, f64), bool);
+        let cases: [Case; 7] = [
+            ("initial empty assignment", None, &[None], (10.0, 10.0), false),
+            (
+                "A then empty before the first buffer",
+                None,
+                &[Some(A), None],
+                (41.0, 42.0),
+                true,
+            ),
+            (
+                "B then empty after A is applied",
+                Some(A),
+                &[Some(B), None],
+                (43.0, 44.0),
+                false,
+            ),
+            (
+                "malformed after A is applied",
+                Some(A),
+                &[Some("not json")],
+                (41.0, 42.0),
+                true,
+            ),
+            (
+                "array payload after A is applied",
+                Some(A),
+                &[Some("[]")],
+                (41.0, 42.0),
+                true,
+            ),
+            (
+                "array settings after A is applied",
+                Some(A),
+                &[Some(r#"{"all_envs":[0,0,false]}"#)],
+                (41.0, 42.0),
+                true,
+            ),
+            (
+                "accepted {} after A is applied",
+                Some(A),
+                &[Some("{}")],
+                (10.0, 10.0),
+                false,
+            ),
+        ];
+
+        for (name, applied, pending, tps, rare) in cases {
+            let (publisher, mut sampler) = create_remote_sampler(10.0);
+            let publish = |payload: &Option<&str>| match payload {
+                Some(payload) => publisher.assign([("sampling", *payload)]),
+                None => publisher.assign(std::iter::empty::<(&str, &str)>()),
+            };
+            if let Some(applied) = applied {
+                publish(&Some(applied));
+                transform_empty_buffer(&mut sampler);
+            }
+            pending.iter().for_each(publish);
+            transform_empty_buffer(&mut sampler);
+            assert_eq!(live_tps(&sampler), tps, "{name}");
+            assert_eq!(rare_keeps_new_trace(&mut sampler, 1), rare, "{name}");
+        }
+    }
+
+    /// The run loop applies a configuration whose withdrawal was published before the sampler's first buffer.
+    #[tokio::test]
+    async fn run_loop_applies_a_configuration_withdrawn_before_the_first_buffer() {
+        let (publisher, subscription) = TestSamplingPublisher::new();
+        let config = TraceSamplerConfiguration::from_configuration(
+            &rare_only_traces(),
+            &domains::otlp::Traces::default(),
+            prod_env(),
+        )
+        .with_remote_sampling(subscription);
+        publisher.assign([("sampling", r#"{"all_envs":{"rare_sampler_enabled":false}}"#)]);
+        publisher.assign(std::iter::empty::<(&str, &str)>());
+
+        let (control, mut outputs) = TestComponentDriver::transform(config)
+            .await
+            .expect("the sampler should start");
+        control
+            .send_event(Event::Trace(create_test_trace(vec![
+                create_top_level_span(1).with_service(MetaString::from("rare-probe-1"))
+            ])))
+            .await;
+        control.shutdown().await.expect("the sampler should stop cleanly");
+
+        let kept = outputs.default_output().collect_events().await;
+        assert!(
+            kept.is_empty(),
+            "the remote configuration disables the rare sampler, which would otherwise keep the trace: {kept:?}"
+        );
+    }
+
+    /// Changing the target scales rates already learned for trace signatures.
+    #[test]
+    fn remote_configuration_scales_learned_rates() {
+        let (publisher, mut sampler) = create_remote_sampler(10.0);
+
+        // 100 traces in one 5-second bucket are 20 traces per second, so a target of 10 learns a rate of 0.5 once the
+        // next bucket begins.
+        let start = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        for now in [start, start + std::time::Duration::from_secs(10)] {
+            for trace_id in 0..100 {
+                let mut trace = create_test_trace(vec![create_test_span(trace_id, 1)]);
+                sampler
+                    .priority_sampler
+                    .sample(now, &mut trace, 0, PRIORITY_AUTO_KEEP, 0.0);
+                sampler.error_sampler.sample_error(now, &mut trace, 0);
+            }
+        }
+        let learned_rates = |sampler: &TraceSampler| {
+            let priority: Vec<f64> = sampler
+                .priority_sampler
+                .test_signature_sample_rates()
+                .0
+                .into_values()
+                .collect();
+            let errors: Vec<f64> = sampler
+                .error_sampler
+                .test_signature_sample_rates()
+                .0
+                .into_values()
+                .collect();
+            (priority, errors)
+        };
+        assert_eq!(learned_rates(&sampler), (vec![0.5], vec![0.5]));
+
+        publisher.assign([(
+            "sampling",
+            r#"{"all_envs":{"priority_sampler_target_TPS":5,"errors_sampler_target_TPS":2}}"#,
+        )]);
+        transform_empty_buffer(&mut sampler);
+
+        assert_eq!(live_tps(&sampler), (5.0, 2.0));
+        assert_eq!(
+            learned_rates(&sampler),
+            (vec![0.5 * (5.0 / 10.0)], vec![0.5 * (2.0 / 10.0)]),
+            "each learned rate scales by the ratio of the new target to the old one"
+        );
+    }
+
+    /// Republishing the same settings must not clear learned rates or rare-trace history.
+    #[test]
+    fn reapplying_equal_remote_settings_keeps_sampler_state() {
+        let (publisher, mut sampler) = create_remote_sampler(10.0);
+        let payload = r#"{"all_envs":{"priority_sampler_target_TPS":5,"errors_sampler_target_TPS":4,
+            "rare_sampler_enabled":true}}"#;
+        publisher.assign([("sampling", payload)]);
+        transform_empty_buffer(&mut sampler);
+
+        // Learn a rate for one signature in each sampler: counts in one bucket become rates when the next begins.
+        let start = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        for now in [start, start + std::time::Duration::from_secs(10)] {
+            for trace_id in 0..100 {
+                let mut trace = create_test_trace(vec![create_test_span(trace_id, 1)]);
+                sampler
+                    .priority_sampler
+                    .sample(now, &mut trace, 0, PRIORITY_AUTO_KEEP, 0.0);
+                sampler.error_sampler.sample_error(now, &mut trace, 0);
+            }
+        }
+        assert!(rare_keeps_new_trace(&mut sampler, 1));
+
+        #[derive(Debug, PartialEq)]
+        struct LearnedState {
+            priority_rates: (saluki_common::collections::FastHashMap<signature::Signature, f64>, f64),
+            priority_size: i64,
+            errors_rates: (saluki_common::collections::FastHashMap<signature::Signature, f64>, f64),
+            errors_size: i64,
+            tps: (f64, f64),
+        }
+        let state = |sampler: &TraceSampler| LearnedState {
+            priority_rates: sampler.priority_sampler.test_signature_sample_rates(),
+            priority_size: sampler.priority_sampler.test_size(),
+            errors_rates: sampler.error_sampler.test_signature_sample_rates(),
+            errors_size: sampler.error_sampler.test_size(),
+            tps: live_tps(sampler),
+        };
+        let before = state(&sampler);
+        assert_eq!(
+            before.priority_rates.0.len(),
+            1,
+            "the priority sampler has learned a rate"
+        );
+        assert_eq!(before.errors_rates.0.len(), 1, "the errors sampler has learned a rate");
+
+        let applied = sampler.remote_sampling.current().expect("a configuration is accepted");
+        publisher.assign([("sampling", payload)]);
+        let republished = sampler.remote_sampling.current().expect("a configuration is accepted");
+        assert!(
+            !Arc::ptr_eq(&applied, &republished),
+            "the equal snapshot is a new allocation"
+        );
+        transform_empty_buffer(&mut sampler);
+
+        assert_eq!(state(&sampler), before);
+        let mut seen = create_test_trace(vec![
+            create_top_level_span(1).with_service(MetaString::from("rare-probe-1"))
+        ]);
+        let SamplerOutcome { keep, .. } = sampler.run_samplers(&mut seen);
+        assert!(!keep, "the rare sampler still remembers the signature it kept");
     }
 }

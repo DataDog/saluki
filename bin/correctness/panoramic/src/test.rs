@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
+use crate::deadline::Deadline;
 use crate::reporter::{PhaseTracker, TestResult};
 
 /// Signal used to notify kind-runtime tests when the cluster is ready.
@@ -54,6 +55,9 @@ pub(crate) struct TestContext {
     /// this fires to tear down resources.
     test_cancel_token: CancellationToken,
 
+    /// The case deadline; the runner cancels the test token when it passes.
+    pub(crate) deadline: Deadline,
+
     /// A directory, which has been created for them, into which tests may write their logs.
     log_dir: PathBuf,
 
@@ -69,9 +73,12 @@ pub(crate) struct TestContext {
 }
 
 impl TestContext {
-    pub(crate) fn new(cancel: CancellationToken, log_dir: PathBuf, settings: RunnerSettings) -> Self {
+    pub(crate) fn new(
+        cancel: CancellationToken, deadline: Deadline, log_dir: PathBuf, settings: RunnerSettings,
+    ) -> Self {
         Self {
             test_cancel_token: cancel,
+            deadline,
             log_dir,
             settings,
             kind_ready: None,

@@ -35,7 +35,7 @@ serde-saphyr = { workspace = true }
 serde_json = { workspace = true }
 stele = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "rt-multi-thread", "signal", "sync", "time"] }
-tokio-util = { workspace = true, features = ["compat"] }
+tokio-util = { workspace = true, features = ["compat", "rt"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = [
   "ansi",
@@ -56,3 +56,4 @@ rustls-cng-crypto = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }

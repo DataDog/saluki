@@ -46,17 +46,17 @@ Slightly complex:
 │    (source)     │      │  (transform)  │     │  (destination)  │
 └─────┬──────┬────┘      └───────────────┘     └─────────────────┘
       │      │           ▲                                       ▲
-	    │      │           └────────────── metrics ────────────────┘
+      │      │           └────────────── metrics ────────────────┘
       │      │                                                     
       │      │          ┌───────────────┐      ┌─────────────────┐
       │      └─────────▶│    Redact     ├─────▶│     DD Logs     │
       │                 │  (transform)  │      │  (destination)  │
       │                 └───────────────┘      └─────────────────┘
       │                 ▲                                        ▲
-	    │                 └───────────────── logs ─────────────────┘
-      │                                                            
-	    |                 ┌──────────────── traces ────────────────┐
-	    |                 ▼                                        ▼
+      │                 └───────────────── logs ─────────────────┘
+      │
+      │                 ┌──────────────── traces ────────────────┐
+      │                 ▼                                        ▼
       │                                        ┌─────────────────┐
       └────────────────────────────────────────▶    DD Traces    │
                                                │  (destination)  │
@@ -195,24 +195,49 @@ only a default output, and the other has multiple named outputs:
 
 ### Shutdown
 
-Topologies provide ordered shutdown through two mechanisms: the used of a shutdown coordinator, and
-the implicit behavior of the channels used to connect components together.
+A topology stops in dependency order. Two things set that order: the channels that connect the
+components, and the ownership of the tasks that each component starts. No component has to know the
+order.
 
-Shutdown starts at the top level, controlled by the topology itself. A signal is sent to all sources
-indicating that shutdown should proceed. Sources will then begin to shutdown, stopping new
-data/connections/etc from coming in, as well as waiting for existing work to complete. Once a source
-shuts down, it signals back to the topology that it's done. Once all sources have signaled that
-they have shut down, the topology waits for all remaining components to complete as well.
+Each component runs as a worker of the topology supervisor. The tasks that a component spawns are its
+children, and they belong to the _scope_ of the component. A component does not finish until all of
+its children finish.
 
-However, transforms and destinations aren't signaled directly to shutdown. Instead, they depend on
-the implicit behavior of the channels that are used for receiving events. Once these channels have
-been drained of any remaining events, and all of the senders have shutdown, the channel will be
-marked as closed. This lets transforms and destination focus on simply receiving from the channel
-until it's closed, at which point they will naturally complete and shutdown.
+When shutdown starts, the topology supervisor sends the shutdown signal to all components at the same
+time. The components then stop as follows:
 
-By triggering shutdown at the source level, and then having each subsequent component process any
-remaining events, we ensure that all remaining events are processed before the topology is
-completely shutdown.
+- **Sources and relays** use the shutdown signal. A source stops accepting new data and new
+  connections, and completes the work that it already accepted. When the source returns, its scope
+  tells its children to stop. For example, a listener stops accepting connections, and then each
+  connection handler completes its current work. The source finishes when all of its children finish.
+  Some sources and relays consume the requests of their own servers, such as the OTLP servers. Those
+  servers are told to stop together with the component instead. The component drains what the servers
+  accepted until they exit, and then returns.
+- **All other components** do not use the shutdown signal. For example, a transform or a destination
+  reads from its input channel until the channel closes. A channel closes when all the components that send to it
+  have stopped and the channel is empty. The component then processes its last events and stops.
+
+Thus, shutdown moves through the topology in the same direction as the events. Each component
+processes its remaining events before it stops, so the topology processes all the events that it
+accepted before it stops.
+
+A task that has no end of its own, such as a periodic background loop, uses the _brutal_ shutdown
+strategy. The runtime halts it immediately when its owner stops, and does not count this halt.
+
+#### Shutdown timeout
+
+Each component has a shutdown timeout, which is the shutdown timeout of the topology. The timeout
+applies to the component and to all of its children. If the timeout expires before the component
+finishes, the topology supervisor halts the component. A halt stops the work of the component
+immediately, and also halts each child that still runs, at any depth in the scope.
+
+Each child also keeps its own shutdown strategy. For a task built from a closure, that strategy is a
+timeout of five seconds. If a child doesn't stop within its own timeout, its owner halts it, even if
+the timeout of the component hasn't expired.
+
+The runtime logs each process that it halts and counts it, and the topology reports an unclean
+shutdown. The runtime never tells a component how much time it has. A component only receives the
+shutdown signal.
 
 ### Runtime
 

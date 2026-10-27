@@ -224,6 +224,15 @@ inventory:
     test_support:
       used_by: [NO_SMOKE]
 
+  apm_config.env:
+    support: full
+    pipelines: [traces]
+    description: "Trace environment"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: encoders.rs
+
   apm_config.error_tracking_standalone.enabled:
     support: full
     pipelines: [traces]
@@ -1413,13 +1422,13 @@ inventory:
     documentation: "ADP bounds datagram queues with `dogstatsd_buffer_count_max`."
 
   dogstatsd_require_listener:
-    support: none
-    severity: medium
-    planned: true
-    issue: "#2556"
+    support: full
     pipelines: [dogstatsd]
     description: "Require an active DogStatsD listener"
-    documentation: "ADP does not honor this setting. DogStatsD startup fails if no listeners are configured or a configured listener cannot be created."
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   dogstatsd_so_rcvbuf:
     support: full
@@ -1648,8 +1657,11 @@ inventory:
       The core Agent defaults `env` to an empty string and attaches the configured environment to
       every metric, event, log, trace, and service check it emits.
 
-      ADP uses `env` for traces and APM stats only, and substitutes `none` when the setting is empty.
-      It does not apply this setting directly to the DogStatsD metrics path.
+      ADP uses `env` for traces and APM stats only. When `apm_config.env` is not set, a configured
+      `env` sets the trace environment. An empty `env` in the configuration file still takes
+      precedence over the `env:` global tags, and the trace environment becomes `none`. An empty
+      `DD_ENV` counts as unset. ADP does not apply this setting directly to the DogStatsD metrics
+      path.
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:
@@ -1666,8 +1678,11 @@ inventory:
 
   extra_tags:
     support: full
-    pipelines: [otlp]
+    pipelines: [otlp, traces]
     description: "Additional EKS Fargate OTLP metric tags"
+    documentation: |-
+      When neither `apm_config.env` nor `env` is set, the first `env:` entry in `tags`, then in
+      `extra_tags`, supplies the trace environment.
     test_support:
       used_by: [TypedConfigSystem]
       env_var_override: [DD_EXTRA_TAGS]
@@ -3356,6 +3371,33 @@ inventory:
       additional_attributes:
         config_registry_filename: proxy.rs
 
+  remote_configuration.apm_sampling.enabled:
+    support: full
+    pipelines: [traces]
+    description: "Apply APM_SAMPLING remote configurations"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: remote_config.rs
+
+  remote_configuration.apm_semantics.enabled:
+    support: full
+    pipelines: [traces]
+    description: "Apply APM_SEMANTIC_CORE_DD remote configurations"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: remote_config.rs
+
+  remote_configuration.enabled:
+    support: full
+    pipelines: [traces]
+    description: "Enable Remote Configuration"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: remote_config.rs
+
   run_path:
     support: full
     pipelines: [cross_cutting]
@@ -3654,8 +3696,11 @@ inventory:
 
   tags:
     support: full
-    pipelines: [otlp]
+    pipelines: [otlp, traces]
     description: "Global tags for EKS Fargate OTLP metrics"
+    documentation: |-
+      When neither `apm_config.env` nor `env` is set, the first `env:` entry in `tags`, then in
+      `extra_tags`, supplies the trace environment.
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:
@@ -4045,7 +4090,6 @@ excluded:
   apm_config.disable_rare_sampler: "ignored in initial audit 2026-04-23"
   apm_config.enable_container_tags_buffer: "ignored in initial audit 2026-04-23"
   apm_config.enabled: "ignored in initial audit 2026-04-23"
-  apm_config.env: "ignored in initial audit 2026-04-23"
   apm_config.filter_tags.reject: "ignored in initial audit 2026-04-23"
   apm_config.filter_tags.require: "ignored in initial audit 2026-04-23"
   apm_config.filter_tags_regex.reject: "ignored in initial audit 2026-04-23"
@@ -5341,8 +5385,6 @@ excluded:
   remote_configuration.agent_integrations.block_list: "ignored in initial audit 2026-04-23"
   remote_configuration.agent_integrations.enabled: "ignored in initial audit 2026-04-23"
   remote_configuration.api_key: "ignored in initial audit 2026-04-23"
-  remote_configuration.apm_sampling.enabled: "ignored in initial audit 2026-04-23"
-  remote_configuration.apm_semantics.enabled: "2026-06-10 Trace-agent APM_SEMANTIC_CORE_DD RC subscription; APM/trace concern outside ADP scope."
   remote_configuration.clients.cache_bypass_limit: "ignored in initial audit 2026-04-23"
   remote_configuration.clients.ttl_seconds: "ignored in initial audit 2026-04-23"
   remote_configuration.config_root: "ignored in initial audit 2026-04-23"
@@ -5351,7 +5393,6 @@ excluded:
   remote_configuration.delegated_auth.provider: "ignored in initial audit 2026-04-23"
   remote_configuration.delegated_auth.refresh_interval_mins: "ignored in initial audit 2026-04-23"
   remote_configuration.director_root: "ignored in initial audit 2026-04-23"
-  remote_configuration.enabled: "ignored in initial audit 2026-04-23"
   remote_configuration.key: "ignored in initial audit 2026-04-23"
   remote_configuration.max_backoff_interval: "ignored in initial audit 2026-04-23"
   remote_configuration.no_tls: "ignored in initial audit 2026-04-23"

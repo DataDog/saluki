@@ -4,7 +4,7 @@ use saluki_error::{generic_error, GenericError};
 use stele::Event;
 use tracing::{error, info};
 
-use crate::correctness::analysis::collected::CollectedData;
+use crate::intake::CollectedData;
 
 /// Analyzes events for correctness.
 pub struct EventsAnalyzer {

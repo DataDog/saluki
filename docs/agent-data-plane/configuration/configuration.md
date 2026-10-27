@@ -30,7 +30,6 @@ tracking.
 | `dogstatsd_experimental_http.max_concurrent_requests`            | DogStatsD HTTP concurrent request limit   | [#1682] |
 | `dogstatsd_experimental_http.max_payload_size`                   | DogStatsD HTTP request body size limit    | [#1682] |
 | `dogstatsd_experimental_http.read_timeout`                       | DogStatsD HTTP request read timeout       | [#1682] |
-| `dogstatsd_require_listener`                                     | Require an active DogStatsD listener      | [#2556] |
 | `forwarder_stop_wait_for_inflight`                               | Wait for in-flight forwarder requests     | [#2560] |
 | `metric_lookback.capacity`                                       | Metric lookback ring capacity             | [#2558] |
 | `metric_lookback.dogstatsd.metric_names`                         | DogStatsD metric lookback selection       | [#2558] |
@@ -521,8 +520,11 @@ workers. Connection-oriented listeners continue to use one decoder per connectio
 The core Agent defaults `env` to an empty string and attaches the configured environment to
 every metric, event, log, trace, and service check it emits.
 
-ADP uses `env` for traces and APM stats only, and substitutes `none` when the setting is empty.
-It does not apply this setting directly to the DogStatsD metrics path.
+ADP uses `env` for traces and APM stats only. When `apm_config.env` is not set, a configured
+`env` sets the trace environment. An empty `env` in the configuration file still takes
+precedence over the `env:` global tags, and the trace environment becomes `none`. An empty
+`DD_ENV` counts as unset. ADP does not apply this setting directly to the DogStatsD metrics
+path.
 
 ### `forwarder_apikey_validation_interval`
 
@@ -912,6 +914,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `apm_config.analyzed_spans`                                                                | Per service|operation APM event extraction rates   |
 | `apm_config.compute_stats_by_span_kind`                                                    | Compute APM stats per span kind                    |
 | `apm_config.enable_rare_sampler`                                                           | Enable the APM rare-span sampler                   |
+| `apm_config.env`                                                                           | Trace environment                                  |
 | `apm_config.error_tracking_standalone.enabled`                                             | Enable Error Tracking standalone                   |
 | `apm_config.errors_per_second`                                                             | APM error-span sampling rate (per sec)             |
 | `apm_config.extra_sample_rate`                                                             | Extra sample rate multiplier                       |
@@ -999,6 +1002,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `dogstatsd_origin_optout_enabled`                                                          | Allow clients to opt out origin                    |
 | `dogstatsd_pipe_name`                                                                      | Windows named pipe path                            |
 | `dogstatsd_port`                                                                           | UDP listen port                                    |
+| `dogstatsd_require_listener`                                                               | Require an active DogStatsD listener               |
 | `dogstatsd_so_rcvbuf`                                                                      | Socket receive buffer size                         |
 | `dogstatsd_socket`                                                                         | UDS datagram socket path                           |
 | `dogstatsd_stream_log_too_big`                                                             | Log oversized UDS stream frames                    |
@@ -1098,6 +1102,9 @@ The following settings work in ADP with the same behavior as the core agent.
 | `proxy.http`                                                                               | HTTP proxy URL                                     |
 | `proxy.https`                                                                              | HTTPS proxy URL                                    |
 | `proxy.no_proxy`                                                                           | Hosts bypassing proxy                              |
+| `remote_configuration.apm_sampling.enabled`                                                | Apply APM_SAMPLING remote configurations           |
+| `remote_configuration.apm_semantics.enabled`                                               | Apply APM_SEMANTIC_CORE_DD remote configurations   |
+| `remote_configuration.enabled`                                                             | Enable Remote Configuration                        |
 | `run_path`                                                                                 | Runtime state directory                            |
 | `serializer_compressor_kind`                                                               | Payload compression algorithm                      |
 | `serializer_experimental_use_v3_api.compression_level`                                     | V3 API zstd compression level                      |
@@ -1257,6 +1264,11 @@ metadata can still populate `ContainerPid` aliases in the tag store on Unix plat
 covers steady-state tagging when another source provides a PID, but macOS UDS origin detection
 cannot obtain that PID from the socket.
 
+### `extra_tags`
+
+When neither `apm_config.env` nor `env` is set, the first `env:` entry in `tags`, then in
+`extra_tags`, supplies the trace environment.
+
 ### `hostname`
 
 ADP uses this only in standalone mode, where the fixed host provider requires a configured
@@ -1384,6 +1396,11 @@ set `DD_SSLKEYLOGFILE`. The file is opened once per path with owner read/write p
 on Unix. If the file cannot be opened, ADP logs a single warning and continues without TLS
 key logging. Protect the generated file as sensitive data.
 
+### `tags`
+
+When neither `apm_config.env` nor `env` is set, the first `env:` entry in `tags`, then in
+`extra_tags`, supplies the trace environment.
+
 ### `tls_handshake_timeout`
 
 ADP applies `tls_handshake_timeout` to the TLS handshake step of outbound Datadog intake connections,
@@ -1423,7 +1440,6 @@ Both commands scrub recognized secret values before writing JSON to standard out
 [#2079]: https://github.com/DataDog/saluki/issues/2079
 [#2338]: https://github.com/DataDog/saluki/issues/2338
 [#2555]: https://github.com/DataDog/saluki/issues/2555
-[#2556]: https://github.com/DataDog/saluki/issues/2556
 [#2557]: https://github.com/DataDog/saluki/issues/2557
 [#2558]: https://github.com/DataDog/saluki/issues/2558
 [#2559]: https://github.com/DataDog/saluki/issues/2559

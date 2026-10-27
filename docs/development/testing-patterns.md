@@ -81,7 +81,8 @@ a reviewer into thinking the behavior is covered. Watch for these shapes when yo
 
 - **Zero assertions.** In some cases, we write tests to easily introspect something about the codebase, such as printing
   the size of a particular data structure. These tests **MUST** be marked as ignored (`#[ignore]`) so they don't interfere
-  with the test suite's normal execution.
+  with the test suite's normal execution. This exception covers introspection only: timing code this way is a benchmark,
+  so see [Ignore and perf-test policy](#ignore-and-perf-test-policy).
 - **Tautologies.** A test that calls a pure function twice with the same input and asserts the two results are equal
   proves only that the function is deterministic, not that it's correct. These are OK if determinism is the intended
   property to test, but the test function should be named to reflect this intent.
@@ -139,7 +140,7 @@ pub fn some_helper_function(...) {}
 
 > [!IMPORTANT]
 > Before you write `#[cfg(test)] pub fn make_foo(...)`, ask whether another crate might need the same fixture. If the
-> answer is "maybe," gate it behind a non-default Cargo feature instead (conventionally named `test`) and expose it
+> answer is "maybe," gate it behind the non-default `test-util` Cargo feature instead and expose it
 > as a plain `pub` item, so downstream crates can pull it in as a `dev-dependency` with that feature enabled.
 
 ## Prefer small named helpers over repeated inline setup
@@ -174,10 +175,21 @@ control.shutdown().await?;
 let dispatched = outputs.default_output().collect_events().await;
 ```
 
-There is one method for each component type. Every wait has a deadline and panics with a description of what it was
-waiting for, so a stuck component fails the test instead of hanging it. The module's rustdoc covers draining outputs
-that can fill up, and what the driver can't reach. The driver is behind the `test-util` feature of `saluki-core`, so
-enable that feature in the testing crate's `dev-dependencies`.
+There is one method for each component type, and one for synchronous transforms. Every wait has a deadline and panics
+with a description of what it was waiting for, so a stuck component fails the test instead of hanging it.
+
+- To wait for a change that doesn't arrive on the component's input, such as a live configuration update, poll for its
+  effect with `control.wait_until(..)` instead of sleeping.
+- To drive a piece of a component with a real context, build only the context, with
+  `TestComponentDriver::options().source_context(..)` or the method for the component's type.
+
+For code that isn't a whole component, such as a server that runs as a supervised worker, use
+`TestComponentSupervisor` instead of a bare `Supervisor`. `TestComponentSupervisor::start_with` adds static workers
+and returns once the supervisor is running, and its `dataspace()` reads what the workers assert, such as the address a
+server bound to.
+
+The module's rustdoc covers draining outputs that can fill up, and what the driver can't reach. These helpers are
+behind the `test-util` feature of `saluki-core`, so enable that feature in the testing crate's `dev-dependencies`.
 
 ## Mocking philosophy
 

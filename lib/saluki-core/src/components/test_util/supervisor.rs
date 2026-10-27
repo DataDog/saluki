@@ -5,11 +5,11 @@
 //! fixture -- `Supervisor::new("test").handle()` -- which looks right but silently drops every child the component
 //! under test spawns, or panics outright if the component spawns on the ambient supervisor.
 //!
-//! [`TestComponentSupervisor`] runs a supervisor with a shutdown budget, like the supervisor that the topology
-//! components run under. Pass its [`handle`][TestComponentSupervisor::handle] where a component wants one, and drive code that spawns
-//! on the ambient supervisor inside [`scope`][TestComponentSupervisor::scope]. A component that spawns its own children
-//! into its scope must run as a supervised worker instead. To run it this way, use
-//! [`spawn_component`][TestComponentSupervisor::spawn_component].
+//! [`TestComponentSupervisor`] runs a supervisor like the one topology components run under. Pass its
+//! [`handle`][TestComponentSupervisor::handle] where a component wants one, and drive code that spawns on the ambient
+//! supervisor inside [`scope`][TestComponentSupervisor::scope]. A component that spawns its own children into its scope
+//! must run as a supervised worker instead, through [`spawn_component`][TestComponentSupervisor::spawn_component],
+//! which also gives it a shutdown timeout the way the topology does.
 
 use std::future::Future;
 use std::time::Duration;
@@ -19,16 +19,16 @@ use tokio::task::futures::TaskLocalFuture;
 use tokio::task::JoinHandle;
 
 use crate::runtime::{
-    state::DataspaceRegistry, ChildId, ChildSpecification, IntoWorkerResult, NodeSnapshot, NodeState,
-    SupervisionTreeHandle, Supervisor, SupervisorError, SupervisorHandle,
+    halt::HaltWatch, state::DataspaceRegistry, ChildId, ChildSpecification, IntoWorkerResult, NodeSnapshot, NodeState,
+    ShutdownStrategy, SupervisionTreeHandle, Supervisor, SupervisorError, SupervisorHandle,
 };
 
-/// Shutdown budget for the test supervisor.
+/// The default shutdown timeout for a component run with [`TestComponentSupervisor::spawn_component`] or with
+/// [`TestComponentDriver`][super::TestComponentDriver].
 ///
-/// Mirrors production, where a component supervisor -- not its children -- owns the deadline. Short enough that a test
-/// asserting on forced-abort behavior doesn't stall, long enough that well-behaved children have ample time to drain
-/// on a loaded CI machine.
-pub(super) const TEST_SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
+/// Short enough that a test asserting on a halt doesn't stall, long enough that well-behaved children have ample time
+/// to drain on a loaded CI machine.
+pub(super) const TEST_COMPONENT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Interval between readiness polls.
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
@@ -38,13 +38,15 @@ const POLL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A started supervisor for components under test.
 ///
-/// The supervisor has a shutdown budget, as the topology supervisor does. Unlike the topology supervisor, it keeps the
-/// default restart limit, so it restarts a child that it must restart once in each period before it stops. The
-/// topology supervisor stops at the first restart instead. Started on its own, it does not include a component worker. The test drives the component directly, or runs it with
-/// [`spawn_component`][Self::spawn_component]. [`TestComponentDriver`][super::TestComponentDriver] starts one with the
-/// worker of the component as its needed child, the way the topology does.
+/// The supervisor runs components as the topology supervisor does. Unlike the topology supervisor, it keeps the default
+/// restart limit, so it restarts a child that it must restart once in each period before it stops. The topology
+/// supervisor stops at the first restart instead. Started on its own, it does not include a component worker. The test
+/// drives the component directly, or runs it with [`spawn_component`][Self::spawn_component].
+/// [`TestComponentDriver`][super::TestComponentDriver] starts one with the worker of the component as its needed child,
+/// the way the topology does.
 pub struct TestComponentSupervisor {
     handle: SupervisorHandle,
+    component_timeout: Duration,
     tree: SupervisionTreeHandle,
     dataspace: DataspaceRegistry,
     shutdown_coordinator: Option<ShutdownCoordinator>,
@@ -58,45 +60,60 @@ impl TestComponentSupervisor {
     ///
     /// Panics if `id` isn't a valid supervisor name, or if the supervisor doesn't start within a few seconds.
     pub async fn start(id: &str) -> Self {
-        Self::start_with_budget(id, TEST_SHUTDOWN_BUDGET).await
+        Self::start_with_component_timeout(id, TEST_COMPONENT_TIMEOUT).await
     }
 
-    /// Starts a supervisor named `id` with a specific shutdown budget.
+    /// Starts a supervisor named `id`, and gives a specific shutdown timeout to each component that
+    /// [`spawn_component`][Self::spawn_component] runs.
     ///
-    /// Use this to assert that a child is bounded by the budget rather than by a deadline of its own: pick a budget
-    /// shorter than the [`Supervisable`][crate::runtime::Supervisable] default of five seconds, and a child that had
-    /// silently acquired its own deadline will miss it.
+    /// To assert that a component's timeout bounds its children, pick one shorter than the
+    /// [`Supervisable`][crate::runtime::Supervisable] default of five seconds.
     ///
     /// # Panics
     ///
     /// Panics if `id` isn't a valid supervisor name, or if the supervisor doesn't start within a few seconds.
-    pub async fn start_with_budget(id: &str, budget: Duration) -> Self {
-        Self::start_inner(id, budget, DataspaceRegistry::default(), None).await
+    pub async fn start_with_component_timeout(id: &str, component_timeout: Duration) -> Self {
+        Self::start_inner(id, component_timeout, DataspaceRegistry::default(), |_| {}).await
+    }
+
+    /// Starts a supervisor named `id` with the static workers that `configure` adds, returning once it is running.
+    ///
+    /// `configure` gets the supervisor before it runs, to add workers with
+    /// [`add_worker`][Supervisor::add_worker], the way an application adds its own. The workers share
+    /// [`dataspace`][Self::dataspace] with the supervisor, so the test can read what they assert, such as the address a
+    /// server bound to. Static workers aren't counted by [`active_children`][Self::active_children], and keep their own
+    /// shutdown timeouts.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` isn't a valid supervisor name, or if the supervisor doesn't start within a few seconds.
+    pub async fn start_with(id: &str, configure: impl FnOnce(&mut Supervisor)) -> Self {
+        Self::start_inner(id, TEST_COMPONENT_TIMEOUT, DataspaceRegistry::default(), configure).await
     }
 
     /// Starts a supervisor named `id` with `worker` as its one static child, sharing `dataspace` with it.
     ///
     /// The worker is added before the supervisor runs, the way the topology adds a component's worker, so it isn't
-    /// counted by [`active_children`][Self::active_children].
+    /// counted by [`active_children`][Self::active_children]. The worker keeps its own shutdown timeout:
+    /// `component_timeout` applies only to [`spawn_component`][Self::spawn_component].
     ///
     /// # Panics
     ///
     /// Panics if `id` isn't a valid supervisor name, or if the supervisor doesn't start within a few seconds.
     pub(super) async fn start_with_worker(
-        id: &str, budget: Duration, dataspace: DataspaceRegistry, worker: ChildSpecification,
+        id: &str, component_timeout: Duration, dataspace: DataspaceRegistry, worker: ChildSpecification,
     ) -> Self {
-        Self::start_inner(id, budget, dataspace, Some(worker)).await
+        Self::start_inner(id, component_timeout, dataspace, |supervisor| {
+            supervisor.add_worker(worker)
+        })
+        .await
     }
 
     async fn start_inner(
-        id: &str, budget: Duration, dataspace: DataspaceRegistry, worker: Option<ChildSpecification>,
+        id: &str, component_timeout: Duration, dataspace: DataspaceRegistry, configure: impl FnOnce(&mut Supervisor),
     ) -> Self {
-        let mut supervisor = Supervisor::new(id)
-            .expect("test supervisor name should be valid")
-            .with_shutdown_budget(budget);
-        if let Some(worker) = worker {
-            supervisor.add_worker(worker);
-        }
+        let mut supervisor = Supervisor::new(id).expect("test supervisor name should be valid");
+        configure(&mut supervisor);
 
         // Take the handle before moving the supervisor into its task; the handle is usable before the run starts, and
         // is how we observe that it has.
@@ -107,12 +124,13 @@ impl TestComponentSupervisor {
         let (shutdown_coordinator, process_shutdown) = ShutdownHandle::paired();
         let task = tokio::spawn(async move {
             supervisor
-                .run_with_shutdown_inner(process_shutdown, Some(task_dataspace))
+                .run_with_shutdown_inner(process_shutdown, HaltWatch::never(), Some(task_dataspace))
                 .await
         });
 
         let supervisor = Self {
             handle,
+            component_timeout,
             tree,
             dataspace,
             shutdown_coordinator: Some(shutdown_coordinator),
@@ -151,7 +169,8 @@ impl TestComponentSupervisor {
     /// `f` receives the shutdown handle of the worker. In production, this handle is the shutdown handle of the
     /// component. Install it into the context of the component before you run the component. To make the component
     /// ignore its supervisor, install a handle that the test owns instead. The worker is needed, as a component is.
-    /// Thus, if the worker terminates, the supervisor stops.
+    /// Thus, if the worker terminates, the supervisor stops. Also like a component, it has a shutdown timeout covering
+    /// everything it spawns.
     ///
     /// Unlike [`scope`][Self::scope], this function gives the component a scope of its own. A component that spawns
     /// its own children needs that scope.
@@ -161,7 +180,11 @@ impl TestComponentSupervisor {
         Fut: Future + Send + 'static,
         Fut::Output: IntoWorkerResult,
     {
-        self.handle.worker_with_shutdown(name.to_string(), f).needed().spawn()
+        self.handle
+            .worker_with_shutdown(name.to_string(), f)
+            .with_shutdown_strategy(ShutdownStrategy::Graceful(self.component_timeout))
+            .needed()
+            .spawn()
     }
 
     /// Returns a read-only handle to this supervisor's supervision tree.
@@ -265,8 +288,8 @@ impl TestComponentSupervisor {
 
     /// Waits for the supervisor to finish draining its children.
     ///
-    /// The result is the supervisor's own: `Err(SupervisorError::ShutdownTimedOut { .. })` means a child ignored
-    /// shutdown and had to be aborted, which is usually what a test wants to assert did *not* happen.
+    /// The result is the supervisor's own: `Err(SupervisorError::ShutdownTimedOut { .. })` means a child didn't stop in
+    /// time and was halted, which is usually what a test wants to assert did *not* happen.
     ///
     /// # Panics
     ///

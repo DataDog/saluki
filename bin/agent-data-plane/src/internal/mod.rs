@@ -1,20 +1,3 @@
-use std::sync::Arc;
-
-use agent_data_plane_config::SalukiConfiguration;
-use agent_data_plane_config_system::ConfigurationSystem;
-use arc_swap::ArcSwap;
-use datadog_agent_runtime::remote_agent::RemoteAgentBootstrap;
-use saluki_app::logging::LoggingOverrideController;
-use saluki_core::accounting::ComponentRegistry;
-use saluki_core::health::HealthRegistry;
-use saluki_core::runtime::{SupervisionTreeHandle, Supervisor};
-use saluki_error::GenericError;
-
-mod config_runtime;
-
-mod config_updates;
-pub use self::config_updates::ConfigUpdatesWorker;
-
 mod control_plane;
 pub use self::control_plane::create_control_plane_supervisor;
 
@@ -23,48 +6,8 @@ pub use self::control_surfaces::{DogStatsDControlSurface, TopologyControlSurface
 
 pub mod logging;
 
+mod remote_agent;
+pub use self::remote_agent::{AdpLocalConfig, AgentDataPlane};
+
 mod status;
 pub use self::status::DogStatsDStatusSection;
-
-mod telemetry;
-
-/// Creates the root internal supervisor containing control plane and environment subsystems.
-///
-/// The internal supervisor manages:
-/// - **Control plane**: Health registry, unprivileged and privileged APIs (including the
-///   `/metrics` and `/compat/metrics` telemetry routes), remote agent registration, and the rest
-///   of ADP's internal HTTP/gRPC surface.
-///
-/// Each subsystem runs on its own dedicated single-threaded runtime for isolation.
-///
-/// # Errors
-///
-/// If the supervisor can't be created, an error is returned.
-pub async fn create_internal_supervisor(
-    config: &ConfigurationSystem, component_registry: &ComponentRegistry, health_registry: HealthRegistry,
-    control_surfaces: TopologyControlSurfaces, ra_bootstrap: Option<RemoteAgentBootstrap>,
-    logging_controller: LoggingOverrideController, current_config: Arc<ArcSwap<SalukiConfiguration>>,
-    root_tree: SupervisionTreeHandle,
-) -> Result<Supervisor, GenericError> {
-    // The root supervisor runs in ambient mode (caller's runtime) since its children each have their own
-    // dedicated runtimes. The default restart strategy (one-for-one, 1 restart per 5s) applies to the child
-    // supervisors as units.
-    let mut root = Supervisor::new("internal-sup")?;
-
-    // Add control plane supervisor (dedicated single-threaded runtime)
-    root.add_worker(
-        create_control_plane_supervisor(
-            config,
-            component_registry,
-            health_registry.clone(),
-            control_surfaces,
-            ra_bootstrap,
-            logging_controller,
-            current_config,
-            root_tree,
-        )
-        .await?,
-    );
-
-    Ok(root)
-}

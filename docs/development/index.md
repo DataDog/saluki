@@ -8,3 +8,6 @@
 In this section, we cover a number of topics relevant to those working on and developing Saluki itself: style guide,
 writing documentation, testing, and more. Some of this is only relevant to developers working on Saluki itself, while
 other parts will be useful to those looking to contribute to Saluki.
+
+If you're working with an LLM agent, start at the [Agent guide](./agents.md): it covers our policy on agent use and
+points to the guidance for each part of the development process.

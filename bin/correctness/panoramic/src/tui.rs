@@ -1,11 +1,10 @@
-//! Terminal UI for interactive test execution.
+//! Terminal UI with a bottom status bar and persistent log output above it.
 //!
-//! Provides a `cargo build`-style interface with a status bar at the bottom
-//! and log output above that persists after the program exits.
+//! The consume loop forwards events, polls interrupt keys, and renders the run report.
 
 use std::{
     io::{self, Write},
-    path::PathBuf,
+    path::Path,
     time::{Duration, Instant},
 };
 
@@ -13,28 +12,18 @@ use chrono::Local;
 use colored::Colorize as _;
 use crossterm::{
     cursor,
-    event::{self, Event, KeyCode},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     terminal, ExecutableCommand as _, QueueableCommand as _,
 };
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 
 use crate::events::TestEvent;
+use crate::machine_output::RunReport;
+use crate::reporter::{run_counts, run_status_label, run_unfinished_lines, TestResult, RUN_PASSED_LABEL};
 
 /// Terminal UI state and rendering.
 pub struct Tui {
-    /// Names of currently running tests.
-    active_tests: Vec<String>,
     /// Number of log lines printed (for tracking).
     lines_printed: usize,
-    /// Total number of tests to run.
-    total_tests: usize,
-    /// Number of tests completed so far.
-    completed_tests: usize,
-    /// Number of passed tests.
-    passed_tests: usize,
-    /// Number of failed tests.
-    failed_tests: usize,
     /// When the test run started.
     started: Instant,
     /// Whether the TUI has been shut down.
@@ -54,156 +43,89 @@ struct FormattedLine {
     text: String,
 }
 
-#[derive(Clone, Copy)]
+impl FormattedLine {
+    fn new(text: impl Into<String>) -> Self {
+        Self {
+            timestamp: Local::now().format("%H:%M:%S").to_string(),
+            prefix: None,
+            text: text.into(),
+        }
+    }
+
+    fn with_prefix(prefix: impl Into<String>, color: LineColor, text: impl Into<String>) -> Self {
+        Self {
+            prefix: Some((prefix.into(), color)),
+            ..Self::new(text)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LineColor {
     Green,
     Red,
 }
 
 impl Tui {
-    /// Create a new TUI.
-    fn new() -> io::Result<Self> {
+    /// Enables raw mode, hides the cursor, and queues startup messages.
+    pub fn new(log_dir: &Path) -> io::Result<Self> {
         // Enable raw mode for input handling, but don't use alternate screen.
         terminal::enable_raw_mode()?;
 
-        // Hide cursor during operation.
-        let mut stdout = io::stdout();
-        stdout.execute(cursor::Hide)?;
-
         let mut tui = Self {
-            active_tests: Vec::new(),
             lines_printed: 0,
-            total_tests: 0,
-            completed_tests: 0,
-            passed_tests: 0,
-            failed_tests: 0,
             started: Instant::now(),
             shutdown: false,
             pending_lines: Vec::new(),
         };
 
-        // Add initial startup message.
+        // Construct `tui` before fallible output so its destructor restores the terminal on error.
+        io::stdout().execute(cursor::Hide)?;
+
         tui.add_line("Panoramic starting...");
+        tui.add_line(format!("Container logs will be written to '{}'.", log_dir.display()));
 
         Ok(tui)
     }
 
     /// Add a log line to be printed.
     fn add_line(&mut self, text: impl Into<String>) {
-        self.pending_lines.push(FormattedLine {
-            timestamp: Local::now().format("%H:%M:%S").to_string(),
-            prefix: None,
-            text: text.into(),
-        });
+        self.pending_lines.push(FormattedLine::new(text));
     }
 
-    /// Add a log line with a colored prefix.
-    fn add_line_with_prefix(&mut self, prefix: impl Into<String>, color: LineColor, text: impl Into<String>) {
-        self.pending_lines.push(FormattedLine {
-            timestamp: Local::now().format("%H:%M:%S").to_string(),
-            prefix: Some((prefix.into(), color)),
-            text: text.into(),
-        });
-    }
-
-    /// Process a test event.
-    fn handle_event(&mut self, event: TestEvent) {
+    /// Queues the lines for one runner event.
+    pub fn show_event(&mut self, event: &TestEvent) {
         match event {
-            TestEvent::RunStarted { total_tests } => {
-                self.total_tests = total_tests;
-                self.add_line(format!("Running {} test(s)...", total_tests));
-            }
-            TestEvent::TestStarted { name } => {
-                self.add_line(format!("Starting test '{}'...", name));
-                self.active_tests.push(name);
-            }
+            TestEvent::RunStarted { total_tests } => self.add_line(format!("Running {} test(s)...", total_tests)),
+            TestEvent::TestStarted { name } => self.add_line(format!("Starting test '{}'...", name)),
             TestEvent::TestCompleted { result, log_dir } => {
-                // Remove from active tests.
-                self.active_tests.retain(|n| n != &result.name);
-                self.completed_tests += 1;
-
-                let total_assertions = result.assertion_results.len();
-                let passed_assertions = result.assertion_results.iter().filter(|a| a.passed).count();
-
-                if result.outcome.is_passed() {
-                    self.passed_tests += 1;
-                    self.add_line_with_prefix(
-                        "PASS",
-                        LineColor::Green,
-                        format!(
-                            "{} ({} assertions, {:.2?})",
-                            result.name, total_assertions, result.duration
-                        ),
-                    );
-                } else {
-                    self.failed_tests += 1;
-                    self.add_line_with_prefix(
-                        "FAIL",
-                        LineColor::Red,
-                        format!(
-                            "{} ({}/{} assertions passed, {:.2?})",
-                            result.name, passed_assertions, total_assertions, result.duration
-                        ),
-                    );
-
-                    // Add error details if present.
-                    if let Some(ref error) = result.error {
-                        let mut lines = error.message.lines();
-                        if let Some(first) = lines.next() {
-                            self.add_line(format!("  Error: {}", first));
-                            for line in lines {
-                                self.add_line(format!("  {}", line));
-                            }
-                        }
-                    }
-
-                    // Add failed assertion details.
-                    for assertion in &result.assertion_results {
-                        if !assertion.passed {
-                            self.add_line(format!("  - {} ({:.2?})", assertion.name, assertion.duration));
-                            for line in assertion.message.lines() {
-                                self.add_line(format!("    {}", line));
-                            }
-                        }
-                    }
-
-                    // Add phase timings for diagnostics.
-                    if !result.phase_timings.is_empty() {
-                        self.add_line("  Phase timings:");
-                        for phase in &result.phase_timings {
-                            self.add_line(format!("    {} ({:.2?})", phase.phase, phase.duration));
-                        }
-                    }
-
-                    self.add_line(format!("  Logs: {}", log_dir.display()));
-                }
+                self.pending_lines.extend(completed_test_lines(result, log_dir));
             }
-            TestEvent::StatusLine { message } => {
-                self.add_line(message);
-            }
-            TestEvent::AllDone => {
-                // Add summary line.
-                let elapsed = self.started.elapsed();
-                let (status, color) = if self.failed_tests == 0 {
-                    ("PASSED", LineColor::Green)
-                } else {
-                    ("FAILED", LineColor::Red)
-                };
-                self.add_line(String::new());
-                self.add_line_with_prefix(
-                    status,
-                    color,
-                    format!(
-                        "{} passed, {} failed, {} total ({:.2?})",
-                        self.passed_tests, self.failed_tests, self.total_tests, elapsed
-                    ),
-                );
-            }
+            TestEvent::StatusLine { message } => self.add_line(message.clone()),
         }
     }
 
-    /// Render the current state to the terminal.
-    fn render(&mut self) -> io::Result<()> {
+    /// Queues a line from Panoramic itself, such as an interrupt notice.
+    pub fn show_notice(&mut self, notice: &str) {
+        self.add_line(notice);
+    }
+
+    /// Reads the pending key presses without blocking, returning the first interrupt key's name.
+    ///
+    /// Keys after an interrupt key stay pending for the next call.
+    pub fn poll_interrupt_key(&mut self) -> io::Result<Option<&'static str>> {
+        while event::poll(Duration::ZERO)? {
+            if let Event::Key(key) = event::read()? {
+                if let Some(source) = interrupt_key(&key) {
+                    return Ok(Some(source));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Prints the pending lines and redraws the status bar from `report`.
+    pub fn render(&mut self, report: &RunReport) -> io::Result<()> {
         let mut stdout = io::stdout();
 
         // Always move to column 0 and clear the current line first.
@@ -229,27 +151,29 @@ impl Tui {
         }
 
         // Draw the status bar.
-        self.draw_status_bar(&mut stdout)?;
+        self.draw_status_bar(&mut stdout, report)?;
 
         stdout.flush()?;
         Ok(())
     }
 
     /// Draw the status bar.
-    fn draw_status_bar(&self, stdout: &mut io::Stdout) -> io::Result<()> {
+    fn draw_status_bar(&self, stdout: &mut io::Stdout, report: &RunReport) -> io::Result<()> {
         let elapsed = self.started.elapsed();
 
-        let progress = format!("[{}/{}]", self.completed_tests, self.total_tests);
+        let selected = report.tests.len() + report.running.len() + report.not_run.len();
+        let progress = format!("[{}/{}]", report.tests.len(), selected);
 
-        let active = if self.active_tests.is_empty() {
+        let running = &report.running;
+        let active = if running.is_empty() {
             String::new()
-        } else if self.active_tests.len() <= 3 {
-            format!(" Running: {}", self.active_tests.join(", "))
+        } else if running.len() <= 3 {
+            format!(" Running: {}", running.join(", "))
         } else {
             format!(
                 " Running: {}, ... (+{} more)",
-                self.active_tests[..3].join(", "),
-                self.active_tests.len() - 3
+                running[..3].join(", "),
+                running.len() - 3
             )
         };
 
@@ -267,20 +191,23 @@ impl Tui {
         Ok(())
     }
 
-    /// Check for user input (non-blocking).
-    fn poll_input(&self) -> io::Result<bool> {
-        if event::poll(Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
-                // Allow Ctrl+C or 'q' to quit.
-                if key.code == KeyCode::Char('c') && key.modifiers.contains(event::KeyModifiers::CONTROL) {
-                    return Ok(true);
-                }
-                if key.code == KeyCode::Char('q') {
-                    return Ok(true);
-                }
-            }
+    /// Prints the run summary and restores the terminal.
+    pub fn finish(mut self, report: &RunReport) -> io::Result<()> {
+        let status = run_status_label(report);
+        let color = if status == RUN_PASSED_LABEL {
+            LineColor::Green
+        } else {
+            LineColor::Red
+        };
+        self.add_line(String::new());
+        self.pending_lines
+            .push(FormattedLine::with_prefix(status, color, run_counts(report)));
+        for line in run_unfinished_lines(report) {
+            self.add_line(line);
         }
-        Ok(false)
+
+        self.render(report)?;
+        self.shutdown()
     }
 
     /// Shut down the TUI and restore the terminal.
@@ -292,19 +219,16 @@ impl Tui {
         self.shutdown = true;
 
         let mut stdout = io::stdout();
+        let redrawn = stdout
+            .queue(cursor::MoveToColumn(0))
+            .and_then(|stdout| stdout.queue(terminal::Clear(terminal::ClearType::CurrentLine)))
+            .and_then(|stdout| stdout.execute(cursor::Show))
+            .and_then(|stdout| stdout.flush());
 
-        // Clear the status bar line.
-        stdout.queue(cursor::MoveToColumn(0))?;
-        stdout.queue(terminal::Clear(terminal::ClearType::CurrentLine))?;
+        // Attempt to restore terminal input even if stdout fails.
+        let restored = terminal::disable_raw_mode();
 
-        // Show cursor again.
-        stdout.execute(cursor::Show)?;
-
-        // Disable raw mode.
-        terminal::disable_raw_mode()?;
-
-        stdout.flush()?;
-        Ok(())
+        redrawn.and(restored)
     }
 }
 
@@ -312,6 +236,79 @@ impl Drop for Tui {
     fn drop(&mut self) {
         let _ = self.shutdown();
     }
+}
+
+/// Recognizes Ctrl-C and `q` key presses as interrupts.
+///
+/// Raw mode delivers Ctrl-C as a key event. Ignoring releases and repeats avoids counting one press twice.
+fn interrupt_key(key: &KeyEvent) -> Option<&'static str> {
+    if key.kind != KeyEventKind::Press {
+        return None;
+    }
+
+    match key.code {
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Some("Ctrl-C key"),
+        KeyCode::Char('q') => Some("q key"),
+        _ => None,
+    }
+}
+
+/// The lines the TUI prints for a completed test.
+fn completed_test_lines(result: &TestResult, log_dir: &Path) -> Vec<FormattedLine> {
+    let total_assertions = result.assertion_results.len();
+
+    if result.outcome.is_passed() {
+        return vec![FormattedLine::with_prefix(
+            result.label(),
+            LineColor::Green,
+            format!(
+                "{} ({} assertions, {:.2?})",
+                result.name, total_assertions, result.duration
+            ),
+        )];
+    }
+
+    let passed_assertions = result.assertion_results.iter().filter(|a| a.passed).count();
+    let mut lines = vec![FormattedLine::with_prefix(
+        result.label(),
+        LineColor::Red,
+        format!(
+            "{} ({}/{} assertions passed, {:.2?})",
+            result.name, passed_assertions, total_assertions, result.duration
+        ),
+    )];
+
+    lines.extend(
+        result
+            .cause_lines()
+            .into_iter()
+            .map(|line| FormattedLine::new(format!("  {}", line))),
+    );
+
+    for assertion in &result.assertion_results {
+        if !assertion.passed {
+            lines.push(FormattedLine::new(format!(
+                "  - {} ({:.2?})",
+                assertion.name, assertion.duration
+            )));
+            for line in assertion.message.lines() {
+                lines.push(FormattedLine::new(format!("    {}", line)));
+            }
+        }
+    }
+
+    if !result.phase_timings.is_empty() {
+        lines.push(FormattedLine::new("  Phase timings:"));
+        for phase in &result.phase_timings {
+            lines.push(FormattedLine::new(format!(
+                "    {} ({:.2?})",
+                phase.phase, phase.duration
+            )));
+        }
+    }
+
+    lines.push(FormattedLine::new(format!("  Logs: {}", log_dir.display())));
+    lines
 }
 
 struct StatusBar {
@@ -363,43 +360,66 @@ fn truncate_to_width(value: &str, max_width: usize) -> String {
     truncated
 }
 
-/// Run the TUI event consumer.
-///
-/// This function consumes test events from the channel and renders them to the terminal.
-/// It returns when `AllDone` is received or the user cancels via Ctrl+C or 'q'.
-pub async fn run_tui_consumer(
-    mut rx: mpsc::UnboundedReceiver<TestEvent>, cancel_all: CancellationToken, log_dir: Option<PathBuf>,
-) -> io::Result<()> {
-    let mut tui = Tui::new()?;
+#[cfg(test)]
+mod tests {
+    use crossterm::event::KeyEventState;
 
-    // Log the log directory location if enabled.
-    if let Some(ref dir) = log_dir {
-        tui.add_line(format!("Container logs will be written to '{}'.", dir.display()));
-    }
+    use super::*;
+    use crate::reporter::test_support::{each_outcome, TIMEOUT_CAUSE};
 
-    let mut done = false;
-    let mut cancelled = false;
-
-    while !done {
-        if tui.poll_input()? && !cancelled {
-            cancelled = true;
-            cancel_all.cancel();
-            tui.add_line("Cancelling...");
-        }
-
-        while let Ok(event) = rx.try_recv() {
-            if matches!(event, TestEvent::AllDone) {
-                done = true;
+    #[test]
+    fn tui_labels_every_outcome_and_prints_a_timeout_cause() {
+        for (result, label) in each_outcome() {
+            let lines = completed_test_lines(&result, Path::new("/logs"));
+            let color = if label == "PASS" {
+                LineColor::Green
+            } else {
+                LineColor::Red
+            };
+            assert_eq!(lines[0].prefix, Some((label.to_string(), color)));
+            if label == "TIMEOUT" {
+                assert_eq!(lines[1].text, format!("  {}", TIMEOUT_CAUSE));
             }
-            tui.handle_event(event);
         }
-
-        tui.render()?;
-
-        tokio::time::sleep(Duration::from_millis(16)).await;
     }
 
-    tui.shutdown()?;
+    #[test]
+    fn only_a_press_of_ctrl_c_or_q_is_an_interrupt_key() {
+        let key = |code, modifiers, kind| KeyEvent {
+            code,
+            modifiers,
+            kind,
+            state: KeyEventState::NONE,
+        };
+        let cases = [
+            (
+                KeyCode::Char('c'),
+                KeyModifiers::CONTROL,
+                KeyEventKind::Press,
+                Some("Ctrl-C key"),
+            ),
+            (
+                KeyCode::Char('q'),
+                KeyModifiers::NONE,
+                KeyEventKind::Press,
+                Some("q key"),
+            ),
+            (KeyCode::Char('c'), KeyModifiers::CONTROL, KeyEventKind::Release, None),
+            (KeyCode::Char('c'), KeyModifiers::CONTROL, KeyEventKind::Repeat, None),
+            (KeyCode::Char('q'), KeyModifiers::NONE, KeyEventKind::Release, None),
+            (KeyCode::Char('c'), KeyModifiers::NONE, KeyEventKind::Press, None),
+            (KeyCode::Enter, KeyModifiers::NONE, KeyEventKind::Press, None),
+        ];
 
-    Ok(())
+        for (code, modifiers, kind, expected) in cases {
+            assert_eq!(
+                interrupt_key(&key(code, modifiers, kind)),
+                expected,
+                "{:?} {:?} {:?}",
+                code,
+                modifiers,
+                kind
+            );
+        }
+    }
 }

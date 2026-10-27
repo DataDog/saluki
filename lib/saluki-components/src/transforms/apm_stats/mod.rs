@@ -33,6 +33,7 @@ use tokio::{select, time::interval};
 use tracing::{debug, error};
 
 use crate::common::otlp::util::extract_container_tags_from_attributes_map;
+use crate::config::AgentEnv;
 
 mod aggregation;
 pub(crate) use self::aggregation::{process_tags_hash, PayloadAggregationKey};
@@ -66,7 +67,7 @@ pub struct ApmStatsTransformConfiguration {
     compute_stats_by_span_kind: bool,
     peer_tags_aggregation: bool,
     peer_tags: Vec<MetaString>,
-    default_env: MetaString,
+    agent_env: AgentEnv,
     default_hostname: Option<String>,
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
     semantic_registry: SemanticRegistryProvider,
@@ -74,12 +75,14 @@ pub struct ApmStatsTransformConfiguration {
 
 impl ApmStatsTransformConfiguration {
     /// Creates a new `ApmStatsTransformConfiguration` from the resolved traces configuration.
-    pub fn from_configuration(config: &domains::traces::Domain) -> Self {
+    ///
+    /// Traces whose spans and payload carry no environment are aggregated under `agent_env`.
+    pub fn from_configuration(config: &domains::traces::Domain, agent_env: AgentEnv) -> Self {
         Self {
             compute_stats_by_span_kind: config.compute_stats_by_span_kind,
             peer_tags_aggregation: config.peer_tags_aggregation,
             peer_tags: config.peer_tags.iter().cloned().map(MetaString::from).collect(),
-            default_env: MetaString::from(config.default_env.clone()),
+            agent_env,
             default_hostname: None,
             workload_provider: None,
             semantic_registry: SemanticRegistryProvider::default(),
@@ -135,7 +138,7 @@ impl TransformBuilder for ApmStatsTransformConfiguration {
         Ok(Box::new(ApmStats {
             concentrator,
             flush_interval: DEFAULT_FLUSH_INTERVAL,
-            agent_env: self.default_env.clone(),
+            agent_env: self.agent_env.clone().into(),
             agent_hostname,
             workload_provider: self.workload_provider.clone(),
         }))
@@ -533,7 +536,8 @@ mod tests {
     use datadog_agent_apm::semantics::{test_util::registry_json, Registry};
     use proptest::prelude::*;
     use saluki_common::collections::FastHashMap;
-    use saluki_core::data_model::event::trace::{AttributeValue, Span};
+    use saluki_core::components::test_util::TestComponentDriver;
+    use saluki_core::data_model::event::trace::{AttributeValue, Span, TraceIngestInfo};
     use saluki_core::data_model::event::trace_stats::ClientGroupedStats;
     use saluki_core::data_model::event::trace_stats::ClientStatsBucket;
 
@@ -615,11 +619,12 @@ mod tests {
             ..Default::default()
         };
         let component_context = ComponentContext::test_transform("apm_stats");
-        let transform = ApmStatsTransformConfiguration::from_configuration(&config)
-            .with_semantic_registry(provider)
-            .build(BuildContext::new(component_context.clone(), ResourceRegistry::new()))
-            .await
-            .expect("build should succeed");
+        let transform =
+            ApmStatsTransformConfiguration::from_configuration(&config, AgentEnv::resolve(None, None, &[], &[]))
+                .with_semantic_registry(provider)
+                .build(BuildContext::new(component_context.clone(), ResourceRegistry::new()))
+                .await
+                .expect("build should succeed");
 
         // The buffer refresh must see a registry published after construction.
         let remapped = registry_json(
@@ -645,7 +650,9 @@ mod tests {
             Some(meta),
         );
         let mut input = EventsBuffer::default();
-        assert!(input.try_push(Event::Trace(Trace::new(vec![span]))).is_none());
+        assert!(input
+            .try_push(Event::Trace(Trace::new(vec![span], TraceIngestInfo::Datadog)))
+            .is_none());
 
         let mut dispatcher = Dispatcher::new(component_context.clone());
         dispatcher.add_output(OutputName::Default).expect("add default output");
@@ -694,6 +701,40 @@ mod tests {
         assert_eq!(peer_tags, ["custom.remote.service:billing"]);
     }
 
+    #[tokio::test]
+    async fn traces_without_an_env_aggregate_under_the_agent_env() {
+        let agent_env = AgentEnv::resolve(None, Some("Prod"), &[], &[]);
+        let config = ApmStatsTransformConfiguration::from_configuration(&domains::traces::Domain::default(), agent_env);
+        let (control, mut outputs) = TestComponentDriver::transform(config)
+            .await
+            .expect("the transform should start");
+
+        let span = make_top_level_span(
+            align_ts(now_nanos(), BUCKET_DURATION_NS),
+            1,
+            100,
+            0,
+            "svc",
+            "resource",
+            0,
+            None,
+        );
+        control
+            .send_event(Event::Trace(Trace::new(vec![span], TraceIngestInfo::Datadog)))
+            .await;
+        // Shutting down flushes every bucket.
+        control.shutdown().await.expect("the transform should stop cleanly");
+
+        let mut envs = Vec::new();
+        for event in outputs.default_output().collect_events().await {
+            let Event::TraceStats(stats) = event else {
+                panic!("unexpected event: {event:?}");
+            };
+            envs.extend(stats.stats().iter().map(|payload| payload.env().to_string()));
+        }
+        assert_eq!(envs, ["prod"]);
+    }
+
     #[test]
     fn test_process_trace_creates_stats() {
         let now = now_nanos();
@@ -708,7 +749,7 @@ mod tests {
         };
 
         let span = make_test_span("test-service", "test-operation", "test-resource");
-        let trace = Trace::new(vec![span]);
+        let trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
 
         transform.process_trace(&trace);
 
@@ -748,7 +789,7 @@ mod tests {
         )
         .with_attributes(attrs);
 
-        let trace = Trace::new(vec![span]);
+        let trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
         transform.process_trace(&trace);
 
         let stats = transform.concentrator.flush(now + BUCKET_DURATION_NS * 2, true);
@@ -770,7 +811,7 @@ mod tests {
 
         // Add a span
         let span = make_top_level_span(aligned_now, 1, 50, 5, "A1", "resource1", 0, None);
-        let trace = Trace::new(vec![span]);
+        let trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
 
         let payload_key = PayloadAggregationKey {
             env: MetaString::from("test"),
@@ -811,7 +852,7 @@ mod tests {
         metrics.insert(MetaString::from(METRIC_PARTIAL_VERSION), 830604.0);
 
         let span = test_span(aligned_now, 1, 0, 50, 5, "A1", "resource1", 0, None, Some(metrics));
-        let trace = Trace::new(vec![span]);
+        let trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
 
         let payload_key = PayloadAggregationKey {
             env: MetaString::from("test"),
@@ -1284,7 +1325,7 @@ mod tests {
         // Test with no process tags
         {
             let span = Span::default();
-            let trace = Trace::new(vec![span]);
+            let trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
             let process_tags = extract_process_tags(&trace);
             assert!(process_tags.is_empty(), "Should be empty when no _dd.tags.process");
         }
@@ -1297,7 +1338,7 @@ mod tests {
                 AttributeValue::String(MetaString::from("a:1,b:2,c:3")),
             );
             let span = Span::default().with_attributes(attrs);
-            let trace = Trace::new(vec![span]);
+            let trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
             let process_tags = extract_process_tags(&trace);
             assert_eq!(process_tags, "a:1,b:2,c:3");
         }
@@ -1310,7 +1351,7 @@ mod tests {
                 AttributeValue::String(MetaString::from("")),
             );
             let span = Span::default().with_attributes(attrs);
-            let trace = Trace::new(vec![span]);
+            let trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
             let process_tags = extract_process_tags(&trace);
             assert!(
                 process_tags.is_empty(),
@@ -1320,7 +1361,7 @@ mod tests {
 
         // Test with empty trace
         {
-            let trace = Trace::new(vec![]);
+            let trace = Trace::new(vec![], TraceIngestInfo::Datadog);
             let process_tags = extract_process_tags(&trace);
             assert!(process_tags.is_empty(), "Should be empty when trace has no spans");
         }
@@ -1593,7 +1634,7 @@ mod tests {
         );
         let root_span = Span::new("svc", "op", "res", "web", 1, 0, now, 1_000_000, 0).with_attributes(attrs);
 
-        let mut trace = Trace::new(vec![root_span]);
+        let mut trace = Trace::new(vec![root_span], TraceIngestInfo::Datadog);
         // Simulate OTLP resource extraction: payload.app_version comes from resource attrs only.
         trace.payload.app_version = MetaString::from("resource-v1");
 

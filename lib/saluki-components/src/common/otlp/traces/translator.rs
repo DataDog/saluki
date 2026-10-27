@@ -8,7 +8,7 @@ use otlp_protos::opentelemetry::proto::resource::v1::Resource as OtlpResource;
 use otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans;
 use saluki_common::collections::FastHashMap;
 use saluki_common::strings::StringBuilder;
-use saluki_core::data_model::event::trace::{AttributeValue, Span as DdSpan, Trace};
+use saluki_core::data_model::event::trace::{AttributeValue, Span as DdSpan, Trace, TraceIngestInfo};
 use saluki_core::data_model::event::Event;
 use stringtheory::interning::GenericMapInterner;
 use stringtheory::MetaString;
@@ -171,6 +171,8 @@ struct TraceEntry {
 
 pub struct OtlpTracesTranslator {
     config: domains::otlp::Traces,
+    /// Receiver sampling rate stamped on every translated trace.
+    receiver_sampling_rate: f64,
     /// Maximum length of a span's resource name, in bytes.
     max_resource_len: usize,
     interner: GenericMapInterner,
@@ -183,11 +185,18 @@ impl OtlpTracesTranslator {
     /// Creates a translator using `registry` for embedded or remotely updated attribute mappings.
     ///
     /// Reads the current registry at the start of each [`Self::translate_spans`] call, not at construction.
+    ///
+    /// The configured sampling percentage becomes the receiver sampling rate stamped on every trace. Rates outside
+    /// `(0, 1)` and NaN normalize to `1.0`. This matches `OTLPReceiver.samplingRate` in the Go trace agent, except
+    /// that the Go trace agent propagates NaN.
     pub fn new(config: domains::otlp::Traces, max_resource_len: usize, registry: SemanticRegistryProvider) -> Self {
         let interner = GenericMapInterner::new(config.string_interner_size);
         let string_builder = StringBuilder::new().with_interner(interner.clone());
+        let rate = config.probabilistic_sampler_sampling_percentage / 100.0;
+        let receiver_sampling_rate = if rate > 0.0 && rate < 1.0 { rate } else { 1.0 };
         Self {
             config,
+            receiver_sampling_rate,
             max_resource_len,
             interner,
             string_builder,
@@ -309,6 +318,9 @@ impl OtlpTracesTranslator {
         }
 
         OtlpTraceEventsIter {
+            ingest_info: TraceIngestInfo::Otlp {
+                receiver_sampling_rate: self.receiver_sampling_rate,
+            },
             resource_meta,
             entries: traces_by_id.into_iter(),
             metrics: metrics.clone(),
@@ -317,6 +329,7 @@ impl OtlpTracesTranslator {
 }
 
 struct OtlpTraceEventsIter {
+    ingest_info: TraceIngestInfo,
     resource_meta: OtlpResourceMeta,
     entries: IntoIter<u64, TraceEntry>,
     metrics: Metrics,
@@ -343,7 +356,7 @@ impl Iterator for OtlpTraceEventsIter {
                 continue;
             }
 
-            let mut trace = Trace::new(entry.spans);
+            let mut trace = Trace::new(entry.spans, self.ingest_info);
 
             // Populate unified Trace fields here — after grouping spans by trace ID — because
             // this is the first point where a complete (spans + resource metadata + priority)
@@ -619,6 +632,54 @@ mod tests {
             Some("checkouts"),
             "the next batch must normalize `peer.service` with the published registry"
         );
+    }
+
+    /// Ported from `OTLPReceiver.samplingRate` in the Go trace agent, except that NaN normalizes to `1.0` rather
+    /// than propagating:
+    /// https://github.com/DataDog/datadog-agent/blob/c6f7e0bc2d5744601a10f231751948ac7a4ee781/pkg/trace/api/otlp.go#L249-L258
+    #[test]
+    fn translate_spans_stamps_normalized_receiver_sampling_rate_on_every_trace() {
+        let cases = [
+            (50.0, 0.5),
+            (12.5, 0.125),
+            (100.0, 1.0),
+            (150.0, 1.0),
+            (0.0, 1.0),
+            (-10.0, 1.0),
+            (f64::NAN, 1.0),
+            (f64::INFINITY, 1.0),
+            (f64::NEG_INFINITY, 1.0),
+        ];
+        for (percentage, expected) in cases {
+            let mut translator = OtlpTracesTranslator::new(
+                domains::otlp::Traces {
+                    probabilistic_sampler_sampling_percentage: percentage,
+                    string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
+                    ..Default::default()
+                },
+                agent_data_plane_config::defaults::DEFAULT_MAX_RESOURCE_LEN,
+                SemanticRegistryProvider::default(),
+            );
+            let rs = build_resource_spans(
+                vec![],
+                vec![span([0xAA; 16], [1u8; 8], vec![]), span([0xBB; 16], [2u8; 8], vec![])],
+            );
+            let traces: Vec<Trace> = translator
+                .translate_spans(rs, &Metrics::for_tests())
+                .filter_map(Event::try_into_trace)
+                .collect();
+
+            assert_eq!(traces.len(), 2);
+            for trace in &traces {
+                assert_eq!(
+                    trace.ingest_info(),
+                    TraceIngestInfo::Otlp {
+                        receiver_sampling_rate: expected
+                    },
+                    "sampling percentage {percentage}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -53,8 +53,8 @@
 //! cannot use the specification to make a combination of settings that the builder does not offer.
 //!
 //! A child that is itself a [`Supervisor`] can be handed to any of the above directly, which is all most callers need.
-//! [`nested_supervisor`] and [`SupervisorHandle::nested_supervisor`] give access to the one setting that is not
-//! available that way: whether the subtree is needed or hosted.
+//! [`nested_supervisor`] and [`SupervisorHandle::nested_supervisor`] give access to the settings that are not available
+//! that way: whether the subtree is needed or hosted, and whether it stops as soon as its owner is told to stop.
 //!
 //! All three ways to spawn are synchronous and cannot fail. As with [`tokio::spawn`], an accepted child does not always
 //! run. If its owner stops before it reaches the child, the owner never starts the child.
@@ -111,9 +111,8 @@
 //!   [`scope::current`], and spawn the child with [`ChildBuilder::spawn_in`].
 //! - The child must continue to run after restarts of the process that spawns it. Make both of them children of a
 //!   [`Supervisor`], and spawn the child through its [`SupervisorHandle`].
-//! - Children need their own restart strategy, shutdown budget, resource group, or runtime. A scope restarts its
-//!   children at most once in each five-second period, for all of its children together. Put these children under a
-//!   [`Supervisor`].
+//! - Children need their own restart strategy, resource group, or runtime. A scope restarts its children at most once
+//!   in each five-second period, for all of its children together. Put these children under a [`Supervisor`].
 //!
 //! If a worker body only waits for a stop request while its children do the work, use a [`Supervisor`] instead.
 //!
@@ -154,6 +153,8 @@ pub mod state;
 
 mod dedicated;
 pub use self::dedicated::{RuntimeConfiguration, RuntimeMode};
+
+pub(crate) mod halt;
 
 mod restart;
 pub use self::restart::{RestartMode, RestartStrategy, RestartType};

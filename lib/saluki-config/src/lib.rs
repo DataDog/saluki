@@ -21,6 +21,7 @@ pub mod duration_string;
 pub mod dynamic;
 mod provider;
 pub mod space_separated;
+pub mod yaml;
 
 pub use self::duration_string::{parse_duration, DurationString, ParseDurationError};
 pub use self::dynamic::FieldUpdateWatcher;

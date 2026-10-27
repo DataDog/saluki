@@ -15,20 +15,20 @@ use rand::{distr::SampleString as _, rng};
 use rand_distr::Alphanumeric;
 use saluki_error::{generic_error, GenericError};
 use tokio::{select, task::JoinHandle, time::sleep};
-use tokio_util::sync::CancellationToken;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tracing::{debug, error, info, info_span, warn, Instrument as _, Span};
 
 use crate::correctness::{
-    analysis::{AnalysisMode, AnalysisRunner, CollectedData, TracesAnalysisOptions},
+    analysis::{AnalysisMode, AnalysisRunner, TracesAnalysisOptions},
     case::CorrectnessTestCase,
     config::Runtime,
-    sync::Coordinator,
-    traffic::{self, Side},
 };
 use crate::{
     assertions::AssertionResult,
+    intake::{CollectedData, IntakeClient},
     reporter::{ErrorKind, PhaseTiming, TestResult},
     test::TestContext,
+    traffic::{self, Side},
 };
 
 /// Path where the original millstone config is mounted inside the shared millstone container.
@@ -90,9 +90,7 @@ async fn run_docker_correctness_test(case: CorrectnessTestCase, tctx: TestContex
     // Persist what each side decoded before the analysis consumes it.
     let traffic_dir = traffic::traffic_dir(&log_dir);
     for (side, data) in [(Side::Baseline, &baseline_data), (Side::Comparison, &comparison_data)] {
-        if let Err(e) = traffic::write_decoded(&traffic_dir, side, data) {
-            warn!(side = side.name(), error = %e, "Failed to write decoded telemetry capture.");
-        }
+        traffic::write_decoded(&traffic_dir, side, data);
     }
 
     // Phase 3: analysis
@@ -147,11 +145,10 @@ async fn run_docker_correctness_test(case: CorrectnessTestCase, tctx: TestContex
     }
 }
 
-/// Cleans up Docker volumes and networks for all three isolation groups.
+/// Cleans up remaining Docker resources for all three isolation groups.
 ///
-/// Containers are already removed by the coordinator waits on every exit path; this handles the
-/// volumes and networks that `Driver::cleanup` doesn't remove. Safe to call even if a group was
-/// never fully started: Docker returns 404 for unknown resources and we log and continue.
+/// Call after `DriverTasks::stop_and_wait` has waited for container cleanup. Partially started groups are safe to
+/// clean up; errors, including Docker 404 responses for missing resources, are logged and cleanup continues.
 async fn cleanup_groups(baseline_id: &str, comparison_id: &str, millstone_id: &str) {
     for id in [baseline_id, comparison_id, millstone_id] {
         if let Err(e) = Driver::clean_related_resources(id.to_string()).await {
@@ -185,9 +182,7 @@ pub struct CorrectnessRunner {
     baseline_target_driver_config: DriverConfig,
     comparison_target_driver_config: DriverConfig,
     tctx: TestContext,
-    baseline_coordinator: Coordinator,
-    comparison_coordinator: Coordinator,
-    millstone_coordinator: Coordinator,
+    driver_tasks: DriverTasks,
 }
 
 impl CorrectnessRunner {
@@ -200,15 +195,14 @@ impl CorrectnessRunner {
             case.target_driver_config(&case.config.comparison).await?,
             tctx.mounts_dir(),
         )?;
+        let driver_tasks = DriverTasks::new(&tctx.test_cancel_token());
         Ok(Self {
             datadog_intake_config: case.datadog_intake_config(),
             millstone_config: case.millstone_config(),
             baseline_target_driver_config: baseline,
             comparison_target_driver_config: comparison,
             tctx,
-            baseline_coordinator: Coordinator::new(),
-            comparison_coordinator: Coordinator::new(),
-            millstone_coordinator: Coordinator::new(),
+            driver_tasks,
         })
     }
 
@@ -220,9 +214,7 @@ impl CorrectnessRunner {
             isolation_group_id,
             "baseline",
             self.tctx.log_dir().to_path_buf(),
-            self.baseline_coordinator.clone(),
-            // Pass a child from the test context so that a cancellation from above will affect the group runners.
-            self.tctx.test_cancel_token().child_token(),
+            &self.driver_tasks,
             self.tctx.settings.alpine_image.clone(),
         );
         group_runner
@@ -246,9 +238,7 @@ impl CorrectnessRunner {
             isolation_group_id,
             "comparison",
             self.tctx.log_dir().to_path_buf(),
-            self.comparison_coordinator.clone(),
-            // Pass a child from the test context so that a cancellation from above will affect the group runners.
-            self.tctx.test_cancel_token().child_token(),
+            &self.driver_tasks,
             self.tctx.settings.alpine_image.clone(),
         );
 
@@ -360,8 +350,7 @@ impl CorrectnessRunner {
             isolation_group_id,
             "millstone",
             self.tctx.log_dir().to_path_buf(),
-            self.millstone_coordinator.clone(),
-            self.tctx.test_cancel_token().child_token(),
+            &self.driver_tasks,
             self.tctx.settings.alpine_image.clone(),
         );
         group_runner.with_driver(driver_config)?;
@@ -370,7 +359,7 @@ impl CorrectnessRunner {
     }
 
     async fn unwrap_or_shutdown<T>(
-        &mut self, step_id: &'static str, baseline_result: Result<T, GenericError>,
+        &self, step_id: &'static str, baseline_result: Result<T, GenericError>,
         comparison_result: Result<T, GenericError>,
     ) -> Result<(T, T), GenericError> {
         match (baseline_result, comparison_result) {
@@ -379,10 +368,7 @@ impl CorrectnessRunner {
             // If either side failed, we need to shutdown everything before returning the error.
             (maybe_baseline_error, maybe_comparison_error) => {
                 // Trigger any spawned drivers to shutdown and cleanup, and wait for that to happen.
-                self.tctx.test_cancel_token().cancel();
-                self.baseline_coordinator.wait().await;
-                self.comparison_coordinator.wait().await;
-                self.millstone_coordinator.wait().await;
+                self.driver_tasks.stop_and_wait().await;
 
                 // Figure out which side failed to initially spawn successfully, and return the appropriate
                 // error. If both failed, then we log both errors and return a generic error instead.
@@ -406,7 +392,7 @@ impl CorrectnessRunner {
         }
     }
 
-    pub async fn run(mut self) -> Result<(CollectedData, CollectedData), GenericError> {
+    pub async fn run(self) -> Result<(CollectedData, CollectedData), GenericError> {
         let baseline_isolation_group_id = generate_isolation_group_id();
         let comparison_isolation_group_id = generate_isolation_group_id();
         let millstone_isolation_group_id = generate_isolation_group_id();
@@ -478,10 +464,7 @@ impl CorrectnessRunner {
             match run_in_background(&millstone_runner_span, millstone_group_runner.spawn_millstone()).await {
                 Ok(guard) => guard,
                 Err(e) => {
-                    self.tctx.test_cancel_token().cancel();
-                    self.baseline_coordinator.wait().await;
-                    self.comparison_coordinator.wait().await;
-                    self.millstone_coordinator.wait().await;
+                    self.driver_tasks.stop_and_wait().await;
                     cleanup_groups(
                         &baseline_isolation_group_id,
                         &comparison_isolation_group_id,
@@ -506,10 +489,7 @@ impl CorrectnessRunner {
         select! {
             _ = sleep(FLUSH_WAIT) => {}
             status = &mut millstone_exit => {
-                self.tctx.test_cancel_token().cancel();
-                self.baseline_coordinator.wait().await;
-                self.comparison_coordinator.wait().await;
-                self.millstone_coordinator.wait().await;
+                self.driver_tasks.stop_and_wait().await;
                 cleanup_groups(
                     &baseline_isolation_group_id,
                     &comparison_isolation_group_id,
@@ -532,14 +512,16 @@ impl CorrectnessRunner {
 
         // Phase 6: Collect data from both datadog-intake containers, then shut everything down.
         info!("Collecting data from baseline and comparison intake containers...");
-        let maybe_baseline_data = run_in_background(
-            &baseline_runner_span,
-            CollectedData::for_port(baseline_collector.datadog_intake_port),
-        );
-        let maybe_comparison_data = run_in_background(
-            &comparison_runner_span,
-            CollectedData::for_port(comparison_collector.datadog_intake_port),
-        );
+        let baseline_intake_port = baseline_collector.datadog_intake_port;
+        let maybe_baseline_data = run_in_background(&baseline_runner_span, async move {
+            let client = IntakeClient::new(baseline_intake_port);
+            CollectedData::collect(&client).await
+        });
+        let comparison_intake_port = comparison_collector.datadog_intake_port;
+        let maybe_comparison_data = run_in_background(&comparison_runner_span, async move {
+            let client = IntakeClient::new(comparison_intake_port);
+            CollectedData::collect(&client).await
+        });
 
         let (baseline_data, comparison_data) = match self
             .unwrap_or_shutdown("collect_data", maybe_baseline_data.await, maybe_comparison_data.await)
@@ -559,11 +541,7 @@ impl CorrectnessRunner {
 
         // Signal all remaining containers to shut down and wait for them.
         info!("Cleaning up remaining containers and resources...");
-        // TODO: is it correct to be using tctx.test_cancel_token for this? Or is this cancel() call necessary?
-        self.tctx.test_cancel_token().cancel();
-        self.baseline_coordinator.wait().await;
-        self.comparison_coordinator.wait().await;
-        self.millstone_coordinator.wait().await;
+        self.driver_tasks.stop_and_wait().await;
         let _ = millstone_exit.await;
 
         cleanup_groups(
@@ -614,15 +592,15 @@ struct GroupRunner {
     isolation_group_id: String,
     runner_log_dir: PathBuf,
     drivers: Vec<Driver>,
-    coordinator: Coordinator,
+    tracker: TaskTracker,
     cancel_token: CancellationToken,
     alpine_image: String,
 }
 
 impl GroupRunner {
     fn new(
-        isolation_group_id: String, group_name: &'static str, log_dir: PathBuf, coordinator: Coordinator,
-        cancel_token: CancellationToken, alpine_image: String,
+        isolation_group_id: String, group_name: &'static str, log_dir: PathBuf, tasks: &DriverTasks,
+        alpine_image: String,
     ) -> Self {
         // Create a subdirectory for the isolation group's container logs.
         let group_log_dir = log_dir.join(group_name);
@@ -637,8 +615,8 @@ impl GroupRunner {
             isolation_group_id,
             runner_log_dir: group_log_dir,
             drivers: Vec::new(),
-            coordinator,
-            cancel_token,
+            tracker: tasks.tracker.clone(),
+            cancel_token: tasks.cancel_token.child_token(),
             alpine_image,
         }
     }
@@ -660,7 +638,7 @@ impl GroupRunner {
     /// If any driver fails to start, any already-started drivers are cleaned up and the error is
     /// returned. This is the shared core of [`spawn`][Self::spawn] and
     /// [`spawn_millstone`][Self::spawn_millstone].
-    async fn spawn_into(mut self) -> Result<SpawnedDrivers, GenericError> {
+    async fn spawn_into(self) -> Result<SpawnedDrivers, GenericError> {
         let mut driver_handles = Vec::new();
 
         // Spawn all of our drivers, short-circuiting if any of them fail to start.
@@ -670,7 +648,7 @@ impl GroupRunner {
         let mut maybe_spawn_error = None;
         for driver in self.drivers {
             let driver_token = self.cancel_token.child_token();
-            match spawn_driver_with_details(driver, &mut self.coordinator, driver_token).await {
+            match spawn_driver_with_details(driver, &self.tracker, driver_token).await {
                 Ok(handle) => {
                     driver_handles.push(handle);
                 }
@@ -681,7 +659,7 @@ impl GroupRunner {
             }
         }
 
-        let mut spawned_drivers = SpawnedDrivers::new(self.coordinator, self.cancel_token);
+        let mut spawned_drivers = SpawnedDrivers::new(self.cancel_token);
         for driver_handle in driver_handles {
             spawned_drivers.add_driver_handle(driver_handle);
         }
@@ -771,16 +749,42 @@ impl GroupRunner {
     }
 }
 
+/// Tracks a correctness case's driver tasks and coordinates their shutdown.
+///
+/// The driver token is a child of the case token: case cancellation stops the drivers, while driver shutdown
+/// preserves the case's cancellation state.
+struct DriverTasks {
+    tracker: TaskTracker,
+    cancel_token: CancellationToken,
+}
+
+impl DriverTasks {
+    fn new(case_token: &CancellationToken) -> Self {
+        Self {
+            tracker: TaskTracker::new(),
+            cancel_token: case_token.child_token(),
+        }
+    }
+
+    /// Signals driver shutdown and waits for all tracked tasks to finish.
+    ///
+    /// Driver tasks attempt container cleanup before returning. [`TaskTracker::wait`] completes when the tracker is
+    /// closed and empty. Repeated calls are safe.
+    async fn stop_and_wait(&self) {
+        self.cancel_token.cancel();
+        self.tracker.close();
+        self.tracker.wait().await;
+    }
+}
+
 struct SpawnedDrivers {
-    coordinator: Coordinator,
     cancel_token: CancellationToken,
     handles: Vec<DriverHandle>,
 }
 
 impl SpawnedDrivers {
-    fn new(coordinator: Coordinator, cancel_token: CancellationToken) -> Self {
+    fn new(cancel_token: CancellationToken) -> Self {
         Self {
-            coordinator,
             cancel_token,
             handles: Vec::new(),
         }
@@ -803,14 +807,12 @@ impl SpawnedDrivers {
         Some(self.handles.remove(handle_idx))
     }
 
-    async fn stop_and_wait(mut self) -> DriverResults {
+    async fn stop_and_wait(self) -> DriverResults {
         // Trigger all drivers to stop and wait for them to complete.
         self.cancel_token.cancel();
         debug!("Triggered shutdown signal. Waiting for drivers to stop...");
 
-        self.coordinator.wait().await;
-
-        // Go through and collect the return value of each driver's management task to see if they exited cleanly or not.
+        // Wait for each driver's cleanup and collect its exit status.
         let mut driver_results = DriverResults::default();
 
         for handle in self.handles {
@@ -846,7 +848,7 @@ impl DriverHandle {
 }
 
 async fn spawn_driver_with_details(
-    mut driver: Driver, coordinator: &mut Coordinator, cancel_token: CancellationToken,
+    mut driver: Driver, tracker: &TaskTracker, cancel_token: CancellationToken,
 ) -> Result<DriverHandle, GenericError> {
     let driver_id = driver.driver_id();
     debug!(driver_id, "Starting container...");
@@ -860,11 +862,7 @@ async fn spawn_driver_with_details(
 
     // Spawn a management task that will ensure the container runs until the shutdown signal is received, or the
     // container stops, whichever comes first.
-    let task_token = coordinator.register();
-    let handle = tokio::spawn(async move {
-        // Re-bind our task handle here to ensure it moves and thus drops when the task completes.
-        let _token = task_token;
-
+    let handle = tracker.spawn(async move {
         select! {
             result = driver.wait_for_container_exit() => {
                 debug!(driver_id, "Container exited.");
@@ -902,4 +900,100 @@ async fn spawn_driver_with_details(
 /// Generates a random 8-character alphanumeric string suitable for use as an isolation group ID.
 fn generate_isolation_group_id() -> String {
     Alphanumeric.sample_string(&mut rng(), 8)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+
+    use tokio::{sync::oneshot, time::timeout};
+
+    use super::*;
+
+    const BOUND: Duration = Duration::from_secs(5);
+
+    /// Simulates a driver task: waits for group cancellation, runs `cleanup`, then sets the returned flag.
+    fn spawn_driver_task<F>(tasks: &DriverTasks, cleanup: F) -> Arc<AtomicBool>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let group_token = tasks.cancel_token.child_token();
+        let finished = Arc::new(AtomicBool::new(false));
+        let task_finished = Arc::clone(&finished);
+        tasks.tracker.spawn(async move {
+            group_token.cancelled().await;
+            cleanup.await;
+            task_finished.store(true, Ordering::SeqCst);
+        });
+        finished
+    }
+
+    #[tokio::test]
+    async fn stop_and_wait_returns_when_no_driver_task_was_spawned() {
+        let tasks = DriverTasks::new(&CancellationToken::new());
+
+        timeout(BOUND, tasks.stop_and_wait())
+            .await
+            .expect("stop_and_wait should return");
+    }
+
+    // Regression coverage for `Coordinator` losing the last task's wakeup between its count check and notification
+    // registration. This checks teardown completion under normal scheduling.
+    #[tokio::test]
+    async fn stop_and_wait_returns_after_driver_tasks_finish() {
+        let case_token = CancellationToken::new();
+        let tasks = DriverTasks::new(&case_token);
+        let first = spawn_driver_task(&tasks, async {});
+        let second = spawn_driver_task(&tasks, async {});
+
+        timeout(BOUND, tasks.stop_and_wait())
+            .await
+            .expect("stop_and_wait should return");
+
+        assert!(first.load(Ordering::SeqCst), "first driver task should have finished");
+        assert!(second.load(Ordering::SeqCst), "second driver task should have finished");
+        assert!(
+            !case_token.is_cancelled(),
+            "stopping drivers should not cancel the case token"
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_and_wait_waits_for_a_driver_task_still_cleaning_up() {
+        let tasks = DriverTasks::new(&CancellationToken::new());
+        let (cleanup_done, cleanup_gate) = oneshot::channel::<()>();
+        let finished = spawn_driver_task(&tasks, async move {
+            let _ = cleanup_gate.await;
+        });
+
+        let mut stop = Box::pin(tasks.stop_and_wait());
+        assert!(
+            timeout(Duration::from_millis(100), &mut stop).await.is_err(),
+            "stop_and_wait should wait while a driver task is cleaning up"
+        );
+        assert!(!finished.load(Ordering::SeqCst));
+
+        cleanup_done.send(()).expect("driver task should still be waiting");
+        timeout(BOUND, stop)
+            .await
+            .expect("stop_and_wait should return after cleanup");
+        assert!(finished.load(Ordering::SeqCst), "driver task should have finished");
+    }
+
+    #[test]
+    fn case_cancellation_reaches_driver_tasks() {
+        let case_token = CancellationToken::new();
+        let tasks = DriverTasks::new(&case_token);
+        let group_token = tasks.cancel_token.child_token();
+
+        case_token.cancel();
+
+        assert!(
+            group_token.is_cancelled(),
+            "cancelling the case token should reach driver tasks"
+        );
+    }
 }

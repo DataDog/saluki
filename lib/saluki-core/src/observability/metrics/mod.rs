@@ -52,6 +52,9 @@ pub use self::aggregated::{
     AggregatedMetricsState, SharedMetricsWorker,
 };
 
+mod api;
+pub use self::api::InternalTelemetryAPIWorker;
+
 mod histogram;
 pub use self::histogram::AggregatedHistogram;
 

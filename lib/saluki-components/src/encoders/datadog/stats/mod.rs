@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use agent_data_plane_config::{defaults::DEFAULT_TRACE_ENV, domains, shared::SharedConfiguration};
+use agent_data_plane_config::shared::SharedConfiguration;
 use async_trait::async_trait;
 use datadog_protos::traces::{
     ClientGroupedStats as ProtoClientGroupedStats, ClientStatsBucket as ProtoClientStatsBucket,
@@ -41,6 +41,7 @@ use crate::common::datadog::{
     telemetry::ComponentTelemetry,
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
 };
+use crate::config::AgentEnv;
 
 const MAX_STATS_PER_PAYLOAD: usize = 4000;
 static CONTENT_TYPE_MSGPACK: HeaderValue = HeaderValue::from_static("application/msgpack");
@@ -50,22 +51,20 @@ pub struct DatadogApmStatsEncoderConfiguration {
     flush_timeout: Duration,
     agent_hostname: Option<String>,
     agent_version: String,
-    env: String,
+    agent_env: AgentEnv,
 }
 
 impl DatadogApmStatsEncoderConfiguration {
     /// Creates a new `DatadogApmStatsEncoderConfiguration` from the resolved configuration.
-    pub fn from_configuration(traces: &domains::traces::Domain, shared: &SharedConfiguration) -> Self {
+    ///
+    /// Each payload carries `agent_env` as its agent environment.
+    pub fn from_configuration(shared: &SharedConfiguration, agent_env: AgentEnv) -> Self {
         let app_details = saluki_metadata::get_app_details();
         Self {
             flush_timeout: shared.metrics_encoding.flush_timeout,
             agent_hostname: None,
             agent_version: format!("agent-data-plane/{}", app_details.version().raw()),
-            env: if traces.env.is_empty() {
-                DEFAULT_TRACE_ENV.to_owned()
-            } else {
-                traces.env.clone()
-            },
+            agent_env,
         }
     }
 
@@ -78,6 +77,14 @@ impl DatadogApmStatsEncoderConfiguration {
         let hostname = host_provider.get_hostname().await?;
         self.agent_hostname = Some(hostname);
         Ok(self)
+    }
+
+    fn endpoint_encoder(&self) -> StatsEndpointEncoder {
+        StatsEndpointEncoder::new(
+            MetaString::from(self.agent_hostname.clone().unwrap_or_default()),
+            MetaString::from(self.agent_version.clone()),
+            self.agent_env.clone().into(),
+        )
     }
 }
 
@@ -96,16 +103,8 @@ impl EncoderBuilder for DatadogApmStatsEncoderConfiguration {
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let compression_scheme = CompressionScheme::gzip_default();
 
-        let agent_hostname = MetaString::from(self.agent_hostname.clone().unwrap_or_default());
-        let agent_version = MetaString::from(self.agent_version.clone());
-        let agent_env = MetaString::from(self.env.clone());
-
-        let mut stats_rb = RequestBuilder::new(
-            StatsEndpointEncoder::new(agent_hostname, agent_version, agent_env),
-            compression_scheme,
-            RB_BUFFER_CHUNK_SIZE,
-        )
-        .await?;
+        let mut stats_rb =
+            RequestBuilder::new(self.endpoint_encoder(), compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
         stats_rb.with_max_inputs_per_payload(MAX_STATS_PER_PAYLOAD);
 
         let flush_timeout = if self.flush_timeout.is_zero() {
@@ -444,5 +443,32 @@ impl EndpointEncoder for StatsEndpointEncoder {
 
     fn content_type(&self) -> HeaderValue {
         CONTENT_TYPE_MSGPACK.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stats_payload_agent_env_is_the_agent_env() {
+        // The encoder sends the resolved agent environment unchanged: one that normalizes to empty does not become
+        // `none`.
+        let cases = [
+            (AgentEnv::resolve(None, Some("Prod"), &[], &[]), "prod"),
+            (AgentEnv::resolve(Some("!!!"), None, &[], &[]), ""),
+        ];
+        for (agent_env, expected) in cases {
+            let config =
+                DatadogApmStatsEncoderConfiguration::from_configuration(&SharedConfiguration::default(), agent_env);
+            let mut buf = Vec::new();
+            config
+                .endpoint_encoder()
+                .encode(&TraceStats::new(Vec::new()), &mut buf)
+                .expect("encode should succeed");
+
+            let payload: ProtoStatsPayload = rmp_serde::from_slice(&buf).expect("StatsPayload should decode");
+            assert_eq!(payload.agentEnv(), expected);
+        }
     }
 }

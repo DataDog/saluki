@@ -82,15 +82,15 @@ impl LocalAutodiscoveryProvider {
 #[derive(Debug, Deserialize)]
 struct LocalCheckConfig {
     #[serde(default)]
-    init_config: BTreeMap<String, serde_yaml::Value>,
-    instances: Vec<BTreeMap<String, serde_yaml::Value>>,
+    init_config: BTreeMap<String, serde_json::Value>,
+    instances: Vec<BTreeMap<String, serde_json::Value>>,
 }
 
 /// Parse a YAML file into a Config object.
 async fn parse_config_file(path: &PathBuf, check_name: &str) -> Result<(String, CheckConfig), GenericError> {
     let content = fs::read_to_string(path).await?;
 
-    let check_config: LocalCheckConfig = match serde_yaml::from_str(&content) {
+    let check_config: LocalCheckConfig = match crate::autodiscovery::yaml_from_str(&content) {
         Ok(read) => read,
         Err(e) => {
             return Err(GenericError::from(e).context("Failed to decode yaml as check configuration."));
@@ -374,7 +374,7 @@ mod tests {
         assert_eq!(config.name, "test-config");
         assert_eq!(
             config.init_config.value.get("service"),
-            Some(&serde_yaml::Value::String("test-service".to_string()))
+            Some(&serde_json::Value::String("test-service".to_string()))
         );
         assert_eq!(config.source, "local");
     }
@@ -418,17 +418,17 @@ mod tests {
             assert_eq!(config.instances.len(), 1);
             assert_eq!(
                 config.instances[0].value.get("server"),
-                Some(&serde_yaml::Value::String("localhost".to_string()))
+                Some(&serde_json::Value::String("localhost".to_string()))
             );
             assert_eq!(
                 config.instances[0].value.get("port"),
-                Some(&serde_yaml::Value::Number(8080.into()))
+                Some(&serde_json::Value::Number(8080.into()))
             );
             assert_eq!(
                 config.instances[0].value.get("tags"),
-                Some(&serde_yaml::Value::Sequence(vec![
-                    serde_yaml::Value::String("test:true".to_string()),
-                    serde_yaml::Value::String("env:test".to_string())
+                Some(&serde_json::Value::Array(vec![
+                    serde_json::Value::String("test:true".to_string()),
+                    serde_json::Value::String("env:test".to_string())
                 ]))
             );
         }

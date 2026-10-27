@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use saluki_common::collections::FastHashMap;
-use saluki_core::data_model::event::trace::{AttributeValue, Span, Trace};
+use saluki_core::data_model::event::trace::{AttributeValue, Span, Trace, TraceIngestInfo};
 use stringtheory::MetaString;
 
 /// Builds a span whose attributes come from `meta` as string values.
@@ -26,7 +26,7 @@ pub(crate) fn make_span(_trace_id: u64, span_id: u64, meta: HashMap<String, Stri
 
 /// Builds a trace from `spans`, optionally seeding resource attributes from `key:value` strings.
 pub(crate) fn make_trace(spans: Vec<Span>, resource_tags: Option<Vec<&'static str>>) -> Trace {
-    let mut trace = Trace::new(spans);
+    let mut trace = Trace::new(spans, TraceIngestInfo::Datadog);
     if let Some(tags) = resource_tags {
         let mut attrs = FastHashMap::default();
         for t in tags {

@@ -435,7 +435,13 @@ pub struct Traces {
     /// Internal port the OTLP trace receiver forwards to.
     pub internal_port: u16,
 
-    /// Percentage of OTLP traces the probabilistic sampler keeps.
+    /// Percentage of OTLP traces the OTLP receiver keeps when the APM probabilistic sampler is disabled.
+    ///
+    /// The receiver turns this into a sampling rate and reports that rate on every OTLP trace as `_dd.otlp_sr`, even
+    /// when the APM probabilistic sampler makes the sampling decision. Values outside `(0, 100)`, and NaN, normalize to a
+    /// receiver rate of `1.0`. Explicit sampling priorities and other samplers still apply.
+    ///
+    /// Defaults to `100`. Lower it to reduce OTLP trace volume when the APM probabilistic sampler is disabled.
     pub probabilistic_sampler_sampling_percentage: f64,
 
     /// Non-zero byte budget for the OTLP trace context interner. (not in Datadog Agent config schema)
@@ -457,6 +463,7 @@ impl Default for Traces {
         Self {
             enabled: false,
             internal_port: 0,
+            // Witnessed; overwritten during drive.
             probabilistic_sampler_sampling_percentage: 0.0,
             string_interner_size: DEFAULT_STRING_INTERNER_SIZE_BYTES,
             enable_compute_top_level_by_span_kind: true,

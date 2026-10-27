@@ -15,10 +15,12 @@ default = []
 taskdump = ["dep:tokio"]
 
 [dependencies]
+arc-swap = { workspace = true }
 async-trait = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true }
 datadog-agent-commons = { workspace = true }
+datadog-agent-remote-config = { workspace = true }
 datadog-protos = { workspace = true }
 futures = { workspace = true }
 process-memory = { workspace = true }
@@ -37,7 +39,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 stringtheory = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
-tonic = { workspace = true }
+tonic = { workspace = true, features = ["router"] }
 tracing = { workspace = true }
 
 # The targets where Tokio supports task dumps. This must match the `cfg` guarding the task dump code.
@@ -45,8 +47,9 @@ tracing = { workspace = true }
 tokio = { workspace = true, features = ["taskdump"], optional = true }
 
 [dev-dependencies]
-# `start_paused` in tests, for deterministic clock control in the InvalidApiKey report throttle tests.
-tokio = { workspace = true, features = ["test-util"] }
+# `start_paused` in tests, for deterministic clock control in the InvalidApiKey report throttle tests, and the
+# multi-threaded runtime for the `minimal_remote_agent` example.
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 
 [lints]
 workspace = true

@@ -263,7 +263,7 @@ systemd
 rollout(s?)
 subprocess(es)?
 (non-?)?interruptible
-PR
+PR(s?)
 uninterrupible
 keepalive
 SDK(s?)
@@ -291,3 +291,15 @@ subresource(s?)
 multiset
 target_traces_per_second
 [Mm]atcher('s|s)?
+PING(s?)
+GAT(s?)
+declarative(ly)?
+LLM(s?)
+README(s?)
+rebas(e|ed|es|ing)
+restack(s|ed|ing)?
+cutover(s?)
+composable
+unmodeled
+vendoring
+agentic
