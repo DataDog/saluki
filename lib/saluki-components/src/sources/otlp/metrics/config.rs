@@ -174,20 +174,8 @@ impl OtlpMetricsTranslatorConfig {
         self
     }
 
-    pub fn with_initial_cumulative_monotonic_value(
-        mut self, initial_cumulative_monotonic_value: InitialCumulativeMonotonicValue,
-    ) -> Self {
-        self.initial_cumulative_monotonic_value = initial_cumulative_monotonic_value;
-        self
-    }
-
     pub fn with_histogram_mode(mut self, hist_mode: HistogramMode) -> Self {
         self.hist_mode = hist_mode;
-        self
-    }
-
-    pub fn with_cumulative_monotonic_mode(mut self, cumulative_monotonic_mode: CumulativeMonotonicMode) -> Self {
-        self.cumulative_monotonic_mode = cumulative_monotonic_mode;
         self
     }
 
@@ -196,19 +184,8 @@ impl OtlpMetricsTranslatorConfig {
         self
     }
 
-    /// Sets how OTLP summary quantiles are reported.
-    pub fn with_summary_mode(mut self, summary_mode: SummaryMode) -> Self {
-        self.quantiles = matches!(summary_mode, SummaryMode::Gauges);
-        self
-    }
-
     pub fn with_infer_delta_interval(mut self, infer_delta_interval: bool) -> Self {
         self.infer_delta_interval = infer_delta_interval;
-        self
-    }
-
-    pub fn with_instrumentation_scope_metadata_as_tags(mut self, instrumentation_scope_metadata_as_tags: bool) -> Self {
-        self.instrumentation_scope_metadata_as_tags = instrumentation_scope_metadata_as_tags;
         self
     }
 
@@ -216,16 +193,6 @@ impl OtlpMetricsTranslatorConfig {
         mut self, instrumentation_library_metadata_as_tags: bool,
     ) -> Self {
         self.instrumentation_library_metadata_as_tags = instrumentation_library_metadata_as_tags;
-        self
-    }
-
-    pub fn with_resource_attributes_as_tags(mut self, resource_attributes_as_tags: bool) -> Self {
-        self.resource_attributes_as_tags = resource_attributes_as_tags;
-        self
-    }
-
-    pub fn with_delta_ttl(mut self, ttl: Duration) -> Self {
-        self.delta_ttl = ttl;
         self
     }
 }
