@@ -554,6 +554,8 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn binds_and_serves_over_unix_domain_socket() {
+        const BOUND_ADDRESS_ID: &str = "apm-relay-uds-test-bound-address";
+
         let supervisor = TestComponentSupervisor::start("apm-relay-uds-test").await;
 
         let dir = tempdir().expect("temp dir should be created");
@@ -564,7 +566,13 @@ mod tests {
         let router = test_router();
         let server = HttpServer::from_listen_address(uds_endpoint)
             .with_routes(router)
+            .with_server_id(BOUND_ADDRESS_ID)
             .with_worker_pool(tokio::runtime::Handle::current());
+
+        // The bound address is published once the listener accepts connections.
+        let mut bound_address_subscription = supervisor
+            .dataspace()
+            .subscribe::<BoundListenAddress>(IdentifierFilter::exact(format!("http-server-{BOUND_ADDRESS_ID}")));
 
         supervisor
             .scope(async {
@@ -572,7 +580,11 @@ mod tests {
             })
             .await;
 
-        wait_for_socket(&socket_path).await;
+        let bound_path = match tokio::time::timeout(Duration::from_secs(5), bound_address_subscription.recv()).await {
+            Ok(Some(DataspaceUpdate::Asserted(_, BoundListenAddress::Unix(path)))) => path,
+            update => panic!("expected a bound address assertion for `{BOUND_ADDRESS_ID}`, got {update:?}"),
+        };
+        assert_eq!(bound_path, socket_path);
 
         let mut stream = UnixStream::connect(&socket_path)
             .await
@@ -600,17 +612,6 @@ mod tests {
             "expected a 502 Bad Gateway response, got: {}",
             String::from_utf8_lossy(&response)
         );
-    }
-
-    #[cfg(unix)]
-    async fn wait_for_socket(path: &std::path::Path) {
-        for _ in 0..100 {
-            if path.exists() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        panic!("Unix domain socket at {} did not appear within 500ms", path.display());
     }
 
     fn test_config(bind_host: Option<&str>, non_local_traffic: bool, receiver_port: u16) -> ApmRelayConfiguration {
