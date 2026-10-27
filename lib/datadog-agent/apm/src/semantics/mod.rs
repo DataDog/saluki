@@ -337,16 +337,16 @@ impl Concept {
 
     /// Parse a concept identifier from its canonical string form.
     ///
-    /// Used by the registry loader to tell the `mappings.json` entries this binary models from those it ignores.
+    /// Registry loaders use this to skip concepts without a variant in both embedded and Remote Configuration mappings.
     fn from_name(s: &str) -> Option<Concept> {
         Concept::ALL.iter().copied().find(|c| c.as_str() == s)
     }
 }
 
-// Tests that read the embedded `mappings.json` MUST keep passing when it gains concepts or fallbacks. The weekly update
-// PR changes only that file and is expected to pass CI. Do not pin counts, hashes, or full lists derived from the
-// embedded registry; assert that required entries are present. A test may fail on an update only when the update removes
-// something this binary depends on or adds something it cannot represent.
+// Tests that read embedded mappings must tolerate new concepts and supported fallbacks: automated updates change
+// only the snapshot and its source revision, not Rust code. Assert that required entries remain present rather than
+// pinning counts, hashes, or full derived lists. Removed required entries and unsupported mappings for known concepts
+// should still fail.
 #[cfg(test)]
 mod tests {
     use super::*;

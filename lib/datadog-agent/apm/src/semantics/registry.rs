@@ -133,18 +133,17 @@ impl Registry {
         Self::from_slice(json.as_bytes())
     }
 
-    /// Parses registry JSON, ignoring unknown concepts but rejecting anything else unsupported.
+    /// Parses registry JSON, ignoring unknown concepts but validating mappings for known ones.
     ///
-    /// Use this for embedded mappings, where a mapping for a known concept that this binary cannot represent indicates
-    /// a build defect. Concepts without a [`Concept`] variant are ignored, because nothing can look them up. That lets
-    /// the embedded snapshot gain concepts before this binary models them. Remote Configuration decoding skips
-    /// every unsupported entry instead.
+    /// Use this for embedded mappings: invalid mappings for known concepts indicate a build defect. Concepts without a
+    /// [`Concept`] variant are skipped without validation because nothing can look them up. This allows upstream to add
+    /// concepts without a code change. Remote Configuration decoding also skips invalid mappings and fallbacks.
     ///
     /// # Errors
     ///
     /// Returns an error for invalid JSON, a missing or empty `concepts` object, or a missing or empty
-    /// `metadata.content_hash` string. Also rejects malformed mappings, and fallbacks with invalid fields (including
-    /// unknown providers or value types) for known concepts. Errors may quote payload keys; do not send them to the
+    /// `metadata.content_hash` string. For known concepts, also rejects malformed mappings and fallbacks with invalid
+    /// fields, including unknown providers or value types. Errors may quote payload keys; do not send them to the
     /// remote endpoint.
     pub fn from_slice(json: &[u8]) -> Result<Self, GenericError> {
         let (registry, mut skipped) = Self::from_slice_permissive(json)?;
@@ -482,7 +481,7 @@ mod tests {
         );
     }
 
-    // The weekly update PR changes only `mappings.json`, so the embedded mappings must load whatever upstream adds.
+    // Additive upstream updates need no Rust changes: unknown concepts are skipped, and supported fallbacks are kept.
     #[test]
     fn from_slice_loads_the_embedded_mappings_extended_with_additions() {
         let mut document: Value = serde_json::from_str(MAPPINGS_JSON).expect("embedded mappings should be JSON");

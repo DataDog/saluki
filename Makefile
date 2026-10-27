@@ -960,10 +960,6 @@ PYTHON = $(if $(wildcard $(VENV_PYTHON)),$(VENV_PYTHON),python3)
 test-release-notes: ## Runs unit tests for release-note tooling
 	@$(PYTHON) -m unittest ci/tooling/test_release_notes.py -v
 
-.PHONY: test-update-apm-semantics
-test-update-apm-semantics: ## Runs tests for the APM semantic mappings update tooling
-	@$(PYTHON) -m unittest ci/tooling/test_update_apm_semantics.py -v
-
 .PHONY: check-release-notes
 check-release-notes: ## Validates committed Reno release-note files
 	@$(PYTHON) ci/tooling/release_notes.py check $$(find releasenotes/notes -type f -name '*.yaml' 2>/dev/null)

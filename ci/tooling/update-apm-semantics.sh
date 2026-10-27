@@ -37,7 +37,7 @@ if [ -z "${REF}" ]; then
     REF="main"
 fi
 
-# REF ends up in a URL and on a command line, so only accept characters that need no quoting or encoding.
+# Reject option-like refs and URL query delimiters before inserting REF into the API URL.
 case "${REF}" in
     -* | *[!A-Za-z0-9._/-]*) fail "REF '${REF}' must only contain letters, digits, '.', '_', '/' and '-', and must not start with '-'." ;;
 esac
@@ -81,8 +81,8 @@ esac
 echo "[*] Downloading ${UPSTREAM_PATH} at ${COMMIT}..."
 curl -fsSL --retry 3 -o "${JSON_TMP}" "https://raw.githubusercontent.com/${UPSTREAM_REPO}/${COMMIT}/${UPSTREAM_PATH}"
 
-# Concept names are deliberately not checked against the Rust side. The embedded registry ignores concepts it does not
-# model, so an update that adds one still reaches a pull request that passes CI.
+# Only check the document's shape here. Rust's embedded-registry loader skips unknown concepts and validates mappings
+# for known ones; PR CI catches incompatibilities.
 if ! jq -e '(.concepts | type == "object" and length > 0) and (.metadata.content_hash | type == "string" and length > 0)' \
     "${JSON_TMP}" >/dev/null; then
     fail "The downloaded file is not a semantic mappings document."
