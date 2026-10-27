@@ -20,8 +20,8 @@ use saluki_core::data_model::payload::PayloadType;
 use saluki_core::runtime;
 use saluki_core::topology::OutputDefinition;
 use saluki_env::workload::{CaptureEntityResolver, EntityId};
-use saluki_error::{generic_error, GenericError};
-use saluki_io::net::resolve::resolve_bind_host;
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_io::net::dns::resolve_host;
 use saluki_io::net::server::http::HttpServer;
 use saluki_io::net::{ConnectionAddress, ListenAddress};
 use saluki_metrics::static_metrics;
@@ -117,7 +117,9 @@ impl ApmRelayConfiguration {
         let listen_address = if self.non_local_traffic {
             [0, 0, 0, 0].into()
         } else if let Some(bind_host) = &self.bind_host {
-            resolve_bind_host(bind_host).await?
+            resolve_host(bind_host)
+                .await
+                .error_context("Could not resolve bind_host for the APM relay.")?
         } else {
             [127, 0, 0, 1].into()
         };
