@@ -499,8 +499,6 @@ pub fn filter_metric_tags(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use saluki_core::{
         components::test_util::{ComponentControl, Output, TestComponentDriver},
         data_model::{
@@ -1295,13 +1293,9 @@ mod tests {
             ))
         };
 
-        let cell = Arc::new(arc_swap::ArcSwap::from_pointee(
-            agent_data_plane_config::SalukiConfiguration::default(),
-        ));
-        let (tick_tx, tick_rx) = tokio::sync::watch::channel(());
-        let entries = Live::new_dynamic(Arc::clone(&cell), tick_rx, |config| {
-            &config.domains.dogstatsd.tag_filterlist
-        });
+        let (mut publisher, source) =
+            saluki_common::sync::live::channel(agent_data_plane_config::SalukiConfiguration::default());
+        let entries = source.live(|config| &config.domains.dogstatsd.tag_filterlist);
         let value_allowlists = [value_allowlist(
             "my.",
             "customer_id",
@@ -1321,14 +1315,13 @@ mod tests {
         // This caches the probe's context, so later probes only change if an update rebuilds the cache.
         assert_eq!(filter_probe(&control, output).await, ["host:h1", "service:web"]);
 
-        let mut updated = (*cell.load_full()).clone();
+        let mut updated = (*source.load()).clone();
         updated.domains.dogstatsd.tag_filterlist = vec![MetricTagFilterEntry {
             metric_name: "my.metric".to_string(),
             action: FilterAction::Exclude,
             tags: vec!["host".to_string()],
         }];
-        cell.store(Arc::new(updated));
-        tick_tx.send_replace(());
+        publisher.publish(updated);
         control
             .wait_until(
                 || updates() == Some(1),
@@ -1337,10 +1330,9 @@ mod tests {
             .await;
         assert_eq!(filter_probe(&control, output).await, ["service:web"]);
 
-        let mut updated = (*cell.load_full()).clone();
+        let mut updated = (*source.load()).clone();
         updated.domains.dogstatsd.tag_filterlist.clear();
-        cell.store(Arc::new(updated));
-        tick_tx.send_replace(());
+        publisher.publish(updated);
         control
             .wait_until(
                 || updates() == Some(2),

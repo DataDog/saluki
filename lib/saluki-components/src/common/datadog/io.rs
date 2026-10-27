@@ -2828,7 +2828,7 @@ mod tests {
     async fn a_rotated_api_key_reaches_the_requests_a_spawned_forwarder_sends() {
         let (server_url, _counter, mut requests) =
             start_recording_http_server_with_requests(vec![StatusCode::OK]).await;
-        let live = LiveConfiguration::new(config_with_api_key(TEST_API_KEY));
+        let mut live = LiveConfiguration::new(config_with_api_key(TEST_API_KEY));
         let following = LiveForwarderConfiguration {
             api_keys: live.api_keys(),
             ..Default::default()
@@ -2848,7 +2848,7 @@ mod tests {
             .expect("the server should be running");
         assert_eq!(Some(TEST_API_KEY), recorded_api_key(&request));
 
-        live.store(config_with_api_key("rotated-api-key"));
+        live.publish(config_with_api_key("rotated-api-key"));
 
         // A key is installed by a task of its own, so keep sending until a request carries the new one.
         let rotated = timeout(Duration::from_secs(3), async {

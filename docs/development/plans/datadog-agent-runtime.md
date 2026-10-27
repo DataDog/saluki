@@ -163,7 +163,7 @@ its item when it merges.
 
 - **Runtime log level changes arrive as a `Stream`.** `DynamicLogLevelWorker` takes a stream of translated `LogLevel`s,
   so it doesn't depend on any configuration system. Each binary turns its own change notifications into that stream:
-  ADP uses `Live::into_stream` and `LoggingTranslator::translate_log_levels`.
+  ADP uses `Live::into_changes` and `LoggingTranslator::translate_log_levels`.
 - **Names derived from the app identifier are byte-identical for ADP.** For example, `{identifier}-root` is
   still `adp-root`.
 - **`StatusSectionProvider` is synchronous.** That's enough for the health section of ACR.

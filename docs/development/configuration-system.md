@@ -36,7 +36,7 @@ A generated witness trait creates a compile-time obligation to translate every s
 | Responsibility | Canonical location |
 |---|---|
 | Source-agnostic typed model | `lib/agent-data-plane-config/` |
-| `Live<T>`, a live view of a shared value | `lib/saluki-common/src/sync/live.rs` |
+| `Live<T>`, a live view of a shared value, and the channel that publishes it | `lib/saluki-common/src/sync/live.rs` |
 | Loading, translation, authority, updates, compatibility | `lib/agent-data-plane-config-system/` |
 | Datadog source model, witness, classifier, environment decoding | `lib/datadog-agent/config/` |
 | Hand-edited ADP support inventory for Datadog schema keys | `lib/datadog-agent/config/schema/schema_overlay.yaml` |
@@ -168,9 +168,13 @@ that the typed model doesn't carry, so they read the sources rather than the mod
 
 ### Runtime updates
 
-Startup translation is strict. Live updates are translated against tentative state: success atomically replaces both
-the typed model and the retained sources, while failure keeps the last-known-good model and leaves the sources as they
-were.
+Startup translation is strict. Live updates are translated against tentative state. On success, the update task
+replaces the retained sources and publishes the typed model while holding the sources lock, so a reader never sees
+sources newer than the model. On failure, it keeps the last-known-good model and leaves the sources as they were.
+Separate reads of the model and the sources can still observe different versions.
+
+`ConfigurationSystem` holds the read-only `LiveSource` of a `live::channel`, and the update task owns its only
+`LivePublisher`. Tests that need a changing value create their own channel and publish replacements through it.
 
 ## Workflows
 
@@ -215,7 +219,8 @@ An inventory key marked `none` or `unknown`, or a key under `excluded`, is absen
    - Runtime wiring the caller can't read out of configuration: have the caller create it and assign what the
      component needs to a `pub` field. See `aggregate_context_snapshot_channel` and
      `AggregateConfiguration::context_snapshot_receiver`.
-   - Values that change at runtime: pass a narrow `Live<T>`, and rebuild the reactive state after `changed()`.
+   - Values that change at runtime: pass a narrow `Live<T>`, and rebuild the reactive state after `changed()`. Values
+     that must change together belong in one `Live<T>`: separate views advance independently.
 7. Remove source serde, Datadog key names, raw-map access, key watches, parsing, configuration defaults, and code made
    unused by the cutover. `#[allow(dead_code)]` isn't an acceptable way to keep migration residue.
 8. Update topology call sites and tests. Preserve behavior tests by using typed inputs, and remove tests only when they

@@ -319,7 +319,7 @@ mod tests {
         let mut live_config = SalukiConfiguration::default();
         live_config.shared.endpoints.api_key = "primary-api-key".to_string();
         live_config.domains.multi_region_failover.api_key = Some("mrf-api-key".to_string());
-        let live = LiveConfiguration::new(live_config.clone());
+        let mut live = LiveConfiguration::new(live_config.clone());
 
         let config = DatadogForwarderConfiguration::for_endpoint_override(
             &shared_configuration(),
@@ -346,10 +346,10 @@ mod tests {
 
         // Rotate the primary key first: the override does not follow it.
         live_config.shared.endpoints.api_key = "rotated-primary-api-key".to_string();
-        live.store(live_config.clone());
+        live.publish(live_config.clone());
 
         live_config.domains.multi_region_failover.api_key = Some("rotated-mrf-api-key".to_string());
-        live.store(live_config);
+        live.publish(live_config);
 
         let endpoint = endpoints[0].endpoint();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {

@@ -24,7 +24,6 @@ dependencies = [
  "agent-data-plane-config",
  "agent-data-plane-config-system",
  "antithesis-instrumentation",
- "arc-swap",
  "argh",
  "async-trait",
  "bytesize",
@@ -85,7 +84,6 @@ name = "agent-data-plane-config-system"
 version = "0.1.0"
 dependencies = [
  "agent-data-plane-config",
- "arc-swap",
  "bytesize",
  "datadog-agent-config",
  "datadog-agent-config-overlay-model",
