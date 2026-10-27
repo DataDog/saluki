@@ -359,7 +359,7 @@
 <a href=#359 id=359 data-nosnippet>359</a>    <span class="kw">use </span>std::time::Duration;
 <a href=#360 id=360 data-nosnippet>360</a>
 <a href=#361 id=361 data-nosnippet>361</a>    <span class="kw">use </span>agent_data_plane_config::SalukiConfiguration;
-<a href=#362 id=362 data-nosnippet>362</a>    <span class="kw">use </span>saluki_core::components::test_util::TestComponentSupervisor;
+<a href=#362 id=362 data-nosnippet>362</a>    <span class="kw">use </span>saluki_core::runtime::test_util::TestSupervisor;
 <a href=#363 id=363 data-nosnippet>363</a>
 <a href=#364 id=364 data-nosnippet>364</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
 <a href=#365 id=365 data-nosnippet>365</a>    <span class="kw">use </span><span class="kw">crate</span>::common::datadog::{
@@ -395,8 +395,8 @@
 <a href=#395 id=395 data-nosnippet>395</a>    /// it would panic for want of an ambient supervisor. The returned supervisor is what keeps the refresher running,
 <a href=#396 id=396 data-nosnippet>396</a>    /// so a caller has to hold it for as long as the rotation under test needs to land.
 <a href=#397 id=397 data-nosnippet>397</a>    </span><span class="attr">#[must_use]
-<a href=#398 id=398 data-nosnippet>398</a>    </span><span class="kw">async fn </span>spawn_refresher(refresher: ApiKeyRefresher) -&gt; TestComponentSupervisor {
-<a href=#399 id=399 data-nosnippet>399</a>        <span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"test_forwarder"</span>).<span class="kw">await</span>;
+<a href=#398 id=398 data-nosnippet>398</a>    </span><span class="kw">async fn </span>spawn_refresher(refresher: ApiKeyRefresher) -&gt; TestSupervisor {
+<a href=#399 id=399 data-nosnippet>399</a>        <span class="kw">let </span>supervisor = TestSupervisor::start(<span class="string">"test_forwarder"</span>).<span class="kw">await</span>;
 <a href=#400 id=400 data-nosnippet>400</a>        supervisor.scope(<span class="kw">async move </span>{ refresher.spawn() }).<span class="kw">await</span>;
 <a href=#401 id=401 data-nosnippet>401</a>
 <a href=#402 id=402 data-nosnippet>402</a>        supervisor
@@ -407,7 +407,7 @@
 <a href=#407 id=407 data-nosnippet>407</a>    </span><span class="attr">#[must_use]
 <a href=#408 id=408 data-nosnippet>408</a>    </span><span class="kw">async fn </span>spawn_datadog_endpoints(
 <a href=#409 id=409 data-nosnippet>409</a>        live: <span class="kw-2">&amp;</span>LiveConfiguration, additional: <span class="kw-2">&amp;</span>[(<span class="kw-2">&amp;</span>str, <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>str])],
-<a href=#410 id=410 data-nosnippet>410</a>    ) -&gt; (TestComponentSupervisor, Vec&lt;RoutableEndpoint&gt;) {
+<a href=#410 id=410 data-nosnippet>410</a>    ) -&gt; (TestSupervisor, Vec&lt;RoutableEndpoint&gt;) {
 <a href=#411 id=411 data-nosnippet>411</a>        <span class="kw">let </span>endpoints = datadog_endpoints(additional);
 <a href=#412 id=412 data-nosnippet>412</a>
 <a href=#413 id=413 data-nosnippet>413</a>        <span class="kw">let </span>refresher =

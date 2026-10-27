@@ -304,7 +304,7 @@
 <a href=#304 id=304 data-nosnippet>304</a>    <span class="kw">use </span>agent_data_plane_config::{ConfigValue, SalukiConfiguration};
 <a href=#305 id=305 data-nosnippet>305</a>    <span class="kw">use </span>http::{Request, Response};
 <a href=#306 id=306 data-nosnippet>306</a>    <span class="kw">use </span>metrics::{Key, Label};
-<a href=#307 id=307 data-nosnippet>307</a>    <span class="kw">use </span>saluki_core::components::test_util::TestComponentSupervisor;
+<a href=#307 id=307 data-nosnippet>307</a>    <span class="kw">use </span>saluki_core::runtime::test_util::TestSupervisor;
 <a href=#308 id=308 data-nosnippet>308</a>    <span class="kw">use </span>saluki_metrics::{test::TestRecorder, MetricsBuilder};
 <a href=#309 id=309 data-nosnippet>309</a>    <span class="kw">use </span>tower::retry::Policy;
 <a href=#310 id=310 data-nosnippet>310</a>
@@ -495,7 +495,7 @@
 <a href=#495 id=495 data-nosnippet>495</a>
 <a href=#496 id=496 data-nosnippet>496</a>        <span class="comment">// The refresher spawns on the ambient supervisor, and the supervisor is what keeps it running for the rest of
 <a href=#497 id=497 data-nosnippet>497</a>        // the test.
-<a href=#498 id=498 data-nosnippet>498</a>        </span><span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"test_forwarder"</span>).<span class="kw">await</span>;
+<a href=#498 id=498 data-nosnippet>498</a>        </span><span class="kw">let </span>supervisor = TestSupervisor::start(<span class="string">"test_forwarder"</span>).<span class="kw">await</span>;
 <a href=#499 id=499 data-nosnippet>499</a>        supervisor.scope(<span class="kw">async move </span>{ refresher.spawn() }).<span class="kw">await</span>;
 <a href=#500 id=500 data-nosnippet>500</a>
 <a href=#501 id=501 data-nosnippet>501</a>        <span class="kw">let </span>retry_config = test_retry_config();

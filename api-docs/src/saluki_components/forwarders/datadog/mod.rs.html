@@ -243,7 +243,7 @@
 <a href=#243 id=243 data-nosnippet>243</a><span class="attr">#[cfg(test)]
 <a href=#244 id=244 data-nosnippet>244</a></span><span class="kw">mod </span>tests {
 <a href=#245 id=245 data-nosnippet>245</a>    <span class="kw">use </span>agent_data_plane_config::SalukiConfiguration;
-<a href=#246 id=246 data-nosnippet>246</a>    <span class="kw">use </span>saluki_core::components::test_util::TestComponentSupervisor;
+<a href=#246 id=246 data-nosnippet>246</a>    <span class="kw">use </span>saluki_core::runtime::test_util::TestSupervisor;
 <a href=#247 id=247 data-nosnippet>247</a>
 <a href=#248 id=248 data-nosnippet>248</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
 <a href=#249 id=249 data-nosnippet>249</a>    <span class="kw">use </span><span class="kw">crate</span>::common::datadog::{
@@ -341,7 +341,7 @@
 <a href=#341 id=341 data-nosnippet>341</a>
 <a href=#342 id=342 data-nosnippet>342</a>        <span class="comment">// The refresher spawns on the ambient supervisor, and the supervisor is what keeps it running for the rest of
 <a href=#343 id=343 data-nosnippet>343</a>        // the test.
-<a href=#344 id=344 data-nosnippet>344</a>        </span><span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"test_forwarder"</span>).<span class="kw">await</span>;
+<a href=#344 id=344 data-nosnippet>344</a>        </span><span class="kw">let </span>supervisor = TestSupervisor::start(<span class="string">"test_forwarder"</span>).<span class="kw">await</span>;
 <a href=#345 id=345 data-nosnippet>345</a>        supervisor.scope(<span class="kw">async move </span>{ refresher.spawn() }).<span class="kw">await</span>;
 <a href=#346 id=346 data-nosnippet>346</a>
 <a href=#347 id=347 data-nosnippet>347</a>        <span class="comment">// Rotate the primary key first: the override does not follow it.

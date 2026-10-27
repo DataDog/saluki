@@ -353,7 +353,7 @@
 <a href=#353 id=353 data-nosnippet>353</a>        ConfigValue, SalukiConfiguration,
 <a href=#354 id=354 data-nosnippet>354</a>    };
 <a href=#355 id=355 data-nosnippet>355</a>    <span class="kw">use </span>axum::{extract::RawQuery, routing::get, Router};
-<a href=#356 id=356 data-nosnippet>356</a>    <span class="kw">use </span>saluki_core::components::test_util::TestComponentSupervisor;
+<a href=#356 id=356 data-nosnippet>356</a>    <span class="kw">use </span>saluki_core::runtime::test_util::TestSupervisor;
 <a href=#357 id=357 data-nosnippet>357</a>    <span class="kw">use </span>saluki_tls::initialize_default_crypto_provider;
 <a href=#358 id=358 data-nosnippet>358</a>    <span class="kw">use </span>tokio::net::TcpListener;
 <a href=#359 id=359 data-nosnippet>359</a>
@@ -433,7 +433,7 @@
 <a href=#433 id=433 data-nosnippet>433</a>
 <a href=#434 id=434 data-nosnippet>434</a>        <span class="comment">// Both the refresher and validation spawn on the ambient supervisor, and it is what keeps them running for the
 <a href=#435 id=435 data-nosnippet>435</a>        // rest of the test.
-<a href=#436 id=436 data-nosnippet>436</a>        </span><span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"test_forwarder"</span>).<span class="kw">await</span>;
+<a href=#436 id=436 data-nosnippet>436</a>        </span><span class="kw">let </span>supervisor = TestSupervisor::start(<span class="string">"test_forwarder"</span>).<span class="kw">await</span>;
 <a href=#437 id=437 data-nosnippet>437</a>        supervisor
 <a href=#438 id=438 data-nosnippet>438</a>            .scope(<span class="kw">async move </span>{
 <a href=#439 id=439 data-nosnippet>439</a>                refresher.spawn();
@@ -563,7 +563,7 @@
 <a href=#563 id=563 data-nosnippet>563</a>            .expect(<span class="string">"endpoints should resolve"</span>);
 <a href=#564 id=564 data-nosnippet>564</a>        <span class="kw">let </span>refresher =
 <a href=#565 id=565 data-nosnippet>565</a>            ApiKeyRefresher::new(<span class="kw-2">&amp;</span>endpoints, <span class="kw-2">&amp;</span>live.api_keys()).expect(<span class="string">"the endpoints should follow the live views"</span>);
-<a href=#566 id=566 data-nosnippet>566</a>        <span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"test_forwarder"</span>).<span class="kw">await</span>;
+<a href=#566 id=566 data-nosnippet>566</a>        <span class="kw">let </span>supervisor = TestSupervisor::start(<span class="string">"test_forwarder"</span>).<span class="kw">await</span>;
 <a href=#567 id=567 data-nosnippet>567</a>        supervisor.scope(<span class="kw">async move </span>{ refresher.spawn() }).<span class="kw">await</span>;
 <a href=#568 id=568 data-nosnippet>568</a>
 <a href=#569 id=569 data-nosnippet>569</a>        <span class="comment">// Rotate the key at the configured position, and add a URL no endpoint was built for.
