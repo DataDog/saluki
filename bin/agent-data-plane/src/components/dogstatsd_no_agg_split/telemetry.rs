@@ -26,16 +26,6 @@ impl Telemetry {
         }
     }
 
-    #[cfg(test)]
-    pub(super) fn noop() -> Self {
-        Self {
-            events_dropped: Counter::noop(),
-            passthrough_metrics: Counter::noop(),
-            passthrough_flushes: Counter::noop(),
-            passthrough_batch_duration: Histogram::noop(),
-        }
-    }
-
     /// Records a passthrough metric discarded because the active buffer was full immediately after being flushed
     /// and replaced.
     ///

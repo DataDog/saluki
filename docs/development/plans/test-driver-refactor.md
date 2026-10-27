@@ -73,9 +73,17 @@ Each pull request checks off its own item.
     `SourceContext` and `RelayContext`.
   - The decoder sub-piece tests no longer drain the `metrics` output in the background: the output holds 128 buffers,
     more than any of them dispatches.
-- [ ] **9. Transforms conversions.** Needs F1.
+- [x] **9. Transforms conversions.** Needs F1.
   - Converts the tests listed under [Transforms](#transforms), and deletes the duplicated fake source and destination
     builders.
+  - `preaggregated_counters_to_rate` becomes `idle_timestamped_counters_flush_to_passthrough_as_rates`, a paused-clock
+    driver test beside the shutdown flush test rather than part of it, since that test needs an idle timeout longer
+    than the test. It also asserts that timestamped metrics never reach the default output, which
+    `no_agg_split_excludes_timestamped_metrics_from_tag_filterlist` covered before it was deleted.
+  - `Telemetry::noop` in `dogstatsd_no_agg_split` lost its last user and is removed. The agent-data-plane
+    dev-dependency on `tokio` gains the `test-util` feature, for `start_paused`.
+  - `prefix_matching_blocklist_applies_after_prefixing` now blocks `foo.` rather than `fo`, so it fails without the
+    trailing period.
 - [ ] **10. Encoders conversions.**
   - Converts the test listed under [Encoders](#encoders).
 - [ ] **11. Misc conversions and cleanup.** Needs F5 and F8.
