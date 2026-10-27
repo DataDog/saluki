@@ -76,7 +76,7 @@ pub fn get_translated_logging_config(adp_log_config: &Logging) -> Result<Logging
 pub fn get_translated_log_level_stream(
     config_sys: &ConfigurationSystem,
 ) -> impl Stream<Item = LogLevel> + Send + 'static {
-    let log_levels = config_sys.live(|config| &config.control.logging.level).into_changes();
+    let log_levels = config_sys.live(|config| &config.control.logging.level).into_stream();
     get_logging_translator().translate_log_levels(log_levels)
 }
 
