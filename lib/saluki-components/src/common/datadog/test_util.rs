@@ -6,16 +6,13 @@
 //! component a zero payload limit and an empty compressor. These fixtures state the defaults a
 //! translated Agent configuration carries, so a test only has to state what it is actually varying.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use agent_data_plane_config::{
     shared::{Compression, Endpoints, Forwarder, MetricsEncoding, SharedConfiguration, Tls},
     ConfigValue, SalukiConfiguration,
 };
-use arc_swap::ArcSwap;
-use saluki_common::sync::live::Live;
-use tokio::sync::watch;
+use saluki_common::sync::live::{self, Live, LivePublisher, LiveSource};
 
 use super::api_key::{ApiKeyView, LiveApiKeys};
 
@@ -75,32 +72,26 @@ pub(crate) fn shared_configuration() -> SharedConfiguration {
     }
 }
 
-/// A configuration cell a test can replace, and the live views projected out of it.
+/// A configuration a test can replace, and the live views projected out of it.
 ///
-/// This stands in for the configuration system: `store` is what the system does once it has
-/// translated an update. A view captures the latest stored value when created and updates its
-/// snapshot when `changed` processes a notification from `store`.
+/// This stands in for the configuration system: `publish` is what the system does once it has
+/// translated an update. Keeping the publisher keeps the views' channel open.
 pub(crate) struct LiveConfiguration {
-    cell: Arc<ArcSwap<SalukiConfiguration>>,
-
-    // The views hold receivers, so keeping the sender alive keeps the channel open.
-    tick: watch::Sender<()>,
+    publisher: LivePublisher<SalukiConfiguration>,
+    source: LiveSource<SalukiConfiguration>,
 }
 
 impl LiveConfiguration {
-    /// Creates a cell holding `config`.
+    /// Creates a channel holding `config`.
     pub(crate) fn new(config: SalukiConfiguration) -> Self {
-        Self {
-            cell: Arc::new(ArcSwap::from_pointee(config)),
-            tick: watch::channel(()).0,
-        }
+        let (publisher, source) = live::channel(config);
+        Self { publisher, source }
     }
 
-    /// Replaces the stored configuration and notifies the views, as the system does after a
-    /// successful translation.
-    pub(crate) fn store(&self, config: SalukiConfiguration) {
-        self.cell.store(Arc::new(config));
-        self.tick.send_replace(());
+    /// Replaces the configuration and notifies the views, as the system does after a successful
+    /// translation.
+    pub(crate) fn publish(&mut self, config: SalukiConfiguration) {
+        self.publisher.publish(config);
     }
 
     /// Returns the live views a Datadog forwarder's endpoints take their API keys from.
@@ -113,13 +104,13 @@ impl LiveConfiguration {
         }
     }
 
-    /// Returns a live view of one projection of the stored configuration.
+    /// Returns a live view of one projection of the current configuration.
     pub(crate) fn live<T>(
         &self, project: impl for<'a> Fn(&'a SalukiConfiguration) -> &'a T + Send + Sync + 'static,
     ) -> Live<T>
     where
         T: Clone + PartialEq + 'static,
     {
-        Live::new_dynamic(Arc::clone(&self.cell), self.tick.subscribe(), project)
+        self.source.live(project)
     }
 }

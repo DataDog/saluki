@@ -210,7 +210,8 @@ impl Config {
     }
 
     fn runtime_config(&self) -> RuntimeConfigSnapshot {
-        RuntimeConfigSnapshot::from_shared(Arc::clone(&self.current))
+        let current = Arc::clone(&self.current);
+        RuntimeConfigSnapshot::from_loader(move || current.load_full())
     }
 }
 
