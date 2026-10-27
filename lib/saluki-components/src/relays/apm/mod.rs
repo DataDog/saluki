@@ -43,11 +43,8 @@ const ENTITY_ID_HEADER: HeaderName = HeaderName::from_static("datadog-entity-id"
 /// Holds plain values, populated by the binary that assembles the topology, plus an optional resolver for the
 /// container of a tracer connected over the Unix domain socket.
 ///
-/// Fields are plain, public `String`s rather than `Option<String>` for two reasons: it collapses the redundant
-/// `None` vs. `Some("")` "disabled" encoding down to a single empty-string representation, and, because
-/// `receiver_endpoint` and `receiver_socket` are otherwise identically typed, it makes constructing this struct with
-/// the two swapped a matter of getting a field name wrong (a compiler-obvious mistake) rather than transposing two
-/// positional constructor arguments (a silent one).
+/// `receiver_socket` is an empty `String` rather than an `Option<String>`, so that "disabled" has a single
+/// representation.
 #[derive(Clone)]
 pub struct ApmRelayConfiguration {
     /// Unix domain socket path the relay listens on.
@@ -169,7 +166,7 @@ impl RelayBuilder for ApmRelayConfiguration {
 
         if tcp_endpoint.is_none() && uds_endpoint.is_none() {
             return Err(generic_error!(
-                "APM relay requires at least one of `receiver_endpoint` or `receiver_socket` to be configured."
+                "APM relay requires at least one of `apm_config.receiver_port` or `apm_config.receiver_socket` to be configured."
             ));
         }
 
