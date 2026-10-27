@@ -246,12 +246,12 @@ fn i64_get_int(adp: i64, agent: i64) -> Verdict {
     verdict(adp == agent, || adp.to_string(), || agent.to_string())
 }
 
-/// `None` matches `0`: the getter's `int` cannot say "unset", so Agent code sees `0` for it.
+/// `None` matches `0`: the getter's `int` cannot distinguish an unset value from `0`.
 fn option_i64_get_int(adp: Option<i64>, agent: i64) -> Verdict {
     verdict(adp.unwrap_or(0) == agent, || format!("{adp:?}"), || agent.to_string())
 }
 
-/// `None` matches `""`: the getter's `string` cannot say "unset", so Agent code sees `""` for it.
+/// `None` matches `""`: the getter's `string` cannot distinguish an unset value from `""`.
 fn option_str_get_string(adp: Option<&str>, agent: &str) -> Verdict {
     verdict(
         adp.unwrap_or("") == agent,
