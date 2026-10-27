@@ -841,6 +841,8 @@ With `data_plane.experimental.apm.enabled` set, ADP takes over the trace-agent's
 
 `data_plane.experimental.apm.proxy_destination` accepts either an HTTP endpoint (`http://host:port`, such as the default `http://127.0.0.1:8127`) or a Unix domain socket (`unix:///path/to/socket`, such as `unix:///var/run/datadog/trace-agent.socket`).
 
+Prefer an `http://` destination. Over a `unix://` destination, the trace-agent attributes requests that carry no container headers, and whose container ADP couldn't resolve, to ADP's own container.
+
 > [!WARNING]
 > Settings under `experimental` are unstable and may change, move, or be removed. Do not rely on backward compatibility.
 

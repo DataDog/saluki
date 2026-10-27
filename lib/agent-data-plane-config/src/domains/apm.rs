@@ -39,6 +39,11 @@ pub struct Domain {
     ///
     /// Either `http://host:port` or `unix:///path/to/socket`. Every request is forwarded
     /// here. Defaults to `http://127.0.0.1:8127`. (not in Datadog Agent config schema)
+    ///
+    /// Over a Unix domain socket, the trace-agent attributes a request that carries no container headers to the peer
+    /// of the connection, which is ADP. That covers requests from TCP clients that send no container headers, and from
+    /// Unix domain socket clients whose container ADP couldn't resolve. An `http://` destination leaves their origin
+    /// unknown instead.
     pub proxy_destination: String,
 }
 
