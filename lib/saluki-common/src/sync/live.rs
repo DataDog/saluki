@@ -7,17 +7,23 @@
 //! ```
 //! use saluki_common::sync::live;
 //!
+//! # #[tokio::main(flavor = "current_thread")]
+//! # async fn main() {
 //! struct Root {
 //!     enabled: bool,
 //! }
 //!
 //! let (mut publisher, source) = live::channel(Root { enabled: false });
-//! let enabled = source.live(|root| &root.enabled);
+//! let mut enabled = source.live(|root| &root.enabled);
 //! publisher.publish(Root { enabled: true });
 //!
 //! // An existing view keeps its snapshot until `changed` processes the update; a new view reads the latest root.
 //! assert!(!*enabled);
 //! assert!(*source.live(|root| &root.enabled));
+//!
+//! assert!(enabled.changed().await);
+//! assert!(*enabled);
+//! # }
 //! ```
 
 use std::fmt;
@@ -71,8 +77,8 @@ pub struct LivePublisher<S> {
 impl<S> LivePublisher<S> {
     /// Replaces the root value with `next` and notifies the views.
     ///
-    /// Validate `next` before publishing it. Views created after this call start from `next`; existing views see it
-    /// once [`Live::changed`] processes the notification.
+    /// This method does not validate `next`. New views read the current root; existing views refresh through
+    /// [`Live::changed`]. A later publication can replace `next` before a view reads it.
     ///
     /// # Panics
     ///
@@ -98,7 +104,9 @@ pub struct LiveSource<S> {
 }
 
 impl<S> LiveSource<S> {
-    /// Returns the current root value.
+    /// Returns an `Arc` holding the current root value.
+    ///
+    /// It keeps this version alive across later publications, even after the channel's handles are dropped.
     pub fn load(&self) -> Arc<S> {
         self.cell.load_full()
     }
@@ -108,7 +116,10 @@ impl<S> LiveSource<S>
 where
     S: Send + Sync + 'static,
 {
-    /// Creates a view of one projection of the root value, starting from the current root.
+    /// Creates a view of the value selected by `project`, starting from the current root.
+    ///
+    /// `project` borrows part of the root; the view clones that selected value into its snapshot. The view retains access
+    /// to the source and can outlive this handle.
     pub fn live<T>(&self, project: impl for<'a> Fn(&'a S) -> &'a T + Send + Sync + 'static) -> Live<T>
     where
         T: Clone + PartialEq + 'static,
@@ -141,7 +152,8 @@ impl<S> Clone for LiveSource<S> {
 /// this view's cached snapshot, not a fresh source read. Only [`changed`](Self::changed) refreshes the snapshot; source
 /// updates alone do not.
 ///
-/// Cloning copies the snapshot and notification cursor. Each view then processes updates independently.
+/// Cloning copies the snapshot and the record of which notifications this view has processed. Each view then
+/// processes updates independently.
 pub struct Live<T> {
     inner: Inner<T>,
 }
@@ -175,10 +187,10 @@ impl<T: Clone + PartialEq + 'static> Live<T> {
         }
     }
 
-    /// Waits until the projected value differs from this view's snapshot, then updates the snapshot and returns it.
+    /// Waits until the selected value differs from this view's snapshot, then updates the snapshot and returns it.
     ///
-    /// Notifications trigger a source read; equal projected values leave the call pending. The returned value matches
-    /// the snapshot exposed by `Deref`. Updates may coalesce, so this is not an event history.
+    /// Notifications trigger a source read; equal values leave the call pending. The returned value matches the snapshot
+    /// exposed by `Deref`. Several publications can produce one observed change, skipping intermediate values.
     ///
     /// Fixed views stay pending forever. When the publisher drops, dynamic views process any unseen notification, then
     /// stay pending forever. Callers can therefore use `select!` without handling closure.
@@ -206,8 +218,8 @@ impl<T: Clone + PartialEq + 'static> Live<T> {
     /// Converts this view into a stream of its changes.
     ///
     /// Each item comes from [`changed`](Self::changed): the stream skips the current snapshot but can yield a change
-    /// pending before conversion. Updates may coalesce. The stream never ends, even for fixed views or after the
-    /// publisher drops.
+    /// pending before conversion. Intermediate values may be skipped. The stream never ends, even for fixed views or
+    /// after the publisher drops.
     pub fn into_changes(self) -> impl Stream<Item = T> + Send + 'static
     where
         T: Send,
@@ -218,11 +230,11 @@ impl<T: Clone + PartialEq + 'static> Live<T> {
         })
     }
 
-    /// Creates a child view by composing this view's projection with `f`.
+    /// Creates a child view by selecting part of this view's value with `f`.
     ///
-    /// A dynamic child shares the source and copies this view's notification cursor, but processes updates
-    /// independently. Its initial snapshot reads the source, not this view's snapshot, so it may be newer.
-    /// A fixed child is projected once and remains fixed.
+    /// A dynamic child shares the source, but has its own snapshot and processes notifications independently.
+    /// Its initial snapshot reads the source, not this view's snapshot, so it may be newer. The child can outlive its
+    /// parent. A fixed child is projected once and remains fixed.
     pub fn project<U>(&self, f: impl for<'a> Fn(&'a T) -> &'a U + Send + Sync + 'static) -> Live<U>
     where
         U: Clone + PartialEq + 'static,
