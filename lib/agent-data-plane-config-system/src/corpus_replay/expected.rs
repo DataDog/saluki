@@ -1,14 +1,15 @@
 //! The hand-edited expectations for the corpus replay. Edit this table directly.
 //!
 //! An entry pins ADP's exact result for one check where ADP does not match the recorded Agent;
-//! see `expectations.rs` for the rules. A fix in ADP makes its entry fail with "remove this
-//! check's expectation". Entries are written as [`Entry`] data and sorted by check identity:
+//! see `expectations.rs` for the rules. A fix in ADP makes its entry fail with
+//! `remove this check's expectation`. Entries are written as [`Entry`] data and sorted by check identity:
 //! origin, tier, checkpoint, getter, key. Entries whose [`Cause`] is `agent-load-write`,
-//! `translator-rejects-value`, `wire-number-loss`, `raw-json-representation`, `nil-map-element`
-//! or `numeric-map-representation` are `intentional`: the Agent writes the value only while
-//! starting up, ADP rejects an invalid enum or size string, the wire format loses the number,
-//! ADP decodes structure from a raw string, ADP cannot hold nil maps, or ADP reads numeric map
-//! values as floats where the getter keeps integers. Every other entry is a `known_bug`. Causes link
+//! `translator-rejects-value`, `wire-number-loss`, `raw-json-representation`, `nil-map-element`,
+//! `numeric-map-representation` or `recorded-platform-default` are `intentional`: the Agent writes
+//! the value only while starting up, ADP rejects an invalid enum or size string, the wire format
+//! loses the number, ADP decodes structure from a raw string, ADP cannot hold nil maps, ADP reads
+//! numeric map values as floats where the getter keeps integers, or platform defaults differ
+//! from the recording. Every other entry is a `known_bug`. Causes link
 //! tracking issues without changing which individual checks they explain.
 
 use super::expectations::Tier::{Bootstrap, Derived, Deserialize, Leaf, Translate};
@@ -62,14 +63,19 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             adp: Adp::value("\"${log_path}/dogstatsd_info/dogstatsd-stats.log\""),
             cause: UNRESOLVED_AGENT_DEFAULT,
         }),
-        known_bug(Entry {
+        #[cfg(not(any(target_os = "linux", target_os = "aix")))]
+        intentional(Entry {
             origin: "baseline-default",
             tier: Bootstrap,
             at: "snapshot",
             getter: "GetString",
             key: "dogstatsd_socket",
-            adp: Adp::value("None"),
-            cause: UNRESOLVED_AGENT_DEFAULT,
+            adp: Adp::value("\"\""),
+            cause: Cause {
+                name: "recorded-platform-default",
+                why: "the corpus records Linux defaults; ADP uses the schema's empty default outside Linux and AIX",
+                issue: None,
+            },
         }),
         known_bug(Entry {
             origin: "baseline-default",
@@ -2399,7 +2405,7 @@ const UNPARSEABLE_SCALAR_STRING: Cause = Cause {
 
 const UNRESOLVED_AGENT_DEFAULT: Cause = Cause {
     name: "unresolved-agent-default",
-    why: "ADP's defaults differ from the Agent's resolved defaults (unexpanded ${log_path} and ${run_path}, container paths, no DogStatsD socket)",
+    why: "ADP's defaults differ from the Agent's resolved defaults (unexpanded ${log_path} and ${run_path}, container paths)",
     issue: Some(1802),
 };
 
