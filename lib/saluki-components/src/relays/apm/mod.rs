@@ -221,19 +221,27 @@ impl Relay for ApmRelay {
             .generate_routes()
             .with_state(api_handler.generate_initial_state());
 
+        // The listeners are needed: one that fails to bind, for example because the trace-agent still owns its address,
+        // fails the relay rather than leaving it ready without serving that endpoint.
         if let Some(endpoint) = tcp_endpoint {
             debug!(%endpoint, "Binding APM relay TCP listener.");
             let server = HttpServer::from_listen_address(endpoint)
                 .with_routes(router.clone())
                 .with_worker_pool(worker_pool.clone());
-            runtime::nested_supervisor(server.into_supervisor()).spawn();
+            runtime::nested_supervisor(server.into_supervisor())
+                .needed()
+                .stops_with_owner()
+                .spawn();
         }
         if let Some(endpoint) = uds_endpoint {
             debug!(%endpoint, "Binding APM relay Unix domain socket listener.");
             let server = HttpServer::from_listen_address(endpoint)
                 .with_routes(router.clone())
                 .with_worker_pool(worker_pool);
-            runtime::nested_supervisor(server.into_supervisor()).spawn();
+            runtime::nested_supervisor(server.into_supervisor())
+                .needed()
+                .stops_with_owner()
+                .spawn();
         }
 
         health.mark_ready();
@@ -339,7 +347,7 @@ mod tests {
     use std::time::Duration;
 
     use http::{Request, StatusCode};
-    use saluki_core::components::test_util::TestComponentSupervisor;
+    use saluki_core::components::test_util::{TestComponentDriver, TestComponentSupervisor};
     use saluki_core::runtime::state::{DataspaceUpdate, IdentifierFilter};
     use saluki_io::net::{BoundListenAddress, ProcessCredentials};
     #[cfg(unix)]
@@ -579,6 +587,20 @@ mod tests {
             non_local_traffic,
             receiver_port,
         }
+    }
+
+    #[tokio::test]
+    async fn a_listener_that_fails_to_bind_fails_the_relay() {
+        // Like a trace-agent that still owns the receiver port.
+        let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("should bind an ephemeral port");
+        let port = occupied.local_addr().expect("should have a local address").port();
+
+        let (control, _outputs) = TestComponentDriver::relay(test_config(None, false, port))
+            .await
+            .expect("the relay should build");
+
+        let result = control.wait().await;
+        assert!(result.is_err(), "the relay should fail when its listener can't bind");
     }
 
     #[tokio::test]
