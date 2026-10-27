@@ -858,11 +858,11 @@ mod tests {
     #[tokio::test]
     async fn yaml_1_1_scalars_in_datadog_keys_reach_the_model_as_the_agent_reads_them() {
         let loaded = load_from_file("agent_scalars", "env: yes\ndogstatsd_buffer_size: 010\n").await;
-        assert_eq!(loaded.local().domains.traces.env, "true");
+        assert_eq!(loaded.local().domains.traces.env.as_deref(), Some("true"));
         assert_eq!(loaded.local().domains.dogstatsd.listeners.buffer_size, 8);
 
         let loaded = load_from_file("agent_octal_env", "env: 0755\n").await;
-        assert_eq!(loaded.local().domains.traces.env, "493");
+        assert_eq!(loaded.local().domains.traces.env.as_deref(), Some("493"));
     }
 
     #[tokio::test]
