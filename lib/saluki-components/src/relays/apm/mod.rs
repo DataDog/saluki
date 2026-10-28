@@ -433,8 +433,9 @@ mod tests {
     use std::time::Duration;
 
     use http::{Request, StatusCode};
-    use saluki_core::components::test_util::{TestComponentDriver, TestComponentSupervisor};
+    use saluki_core::components::test_util::TestComponentDriver;
     use saluki_core::runtime::state::{DataspaceUpdate, IdentifierFilter};
+    use saluki_core::runtime::test_util::TestSupervisor;
     use saluki_io::net::{BoundListenAddress, ProcessCredentials};
     #[cfg(unix)]
     use tempfile::tempdir;
@@ -580,7 +581,7 @@ mod tests {
     async fn binds_and_serves_over_tcp() {
         const BOUND_ADDRESS_ID: &str = "apm-relay-tcp-test-bound-address";
 
-        let supervisor = TestComponentSupervisor::start("apm-relay-tcp-test").await;
+        let supervisor = TestSupervisor::start("apm-relay-tcp-test").await;
 
         // Bind to an OS-assigned ephemeral port, and discover it via the published `BoundListenAddress`.
         let tcp_endpoint = ListenAddress::try_from("tcp://127.0.0.1:0").expect("TCP APM endpoint should parse");
@@ -639,7 +640,7 @@ mod tests {
     async fn answers_a_request_proxied_back_to_itself_with_loop_detected() {
         const BOUND_ADDRESS_ID: &str = "apm-relay-loop-test-bound-address";
 
-        let supervisor = TestComponentSupervisor::start("apm-relay-loop-test").await;
+        let supervisor = TestSupervisor::start("apm-relay-loop-test").await;
 
         // Find a free port, then point both the listener and the destination at it. The relay is served directly
         // rather than built, as building rejects this configuration.
@@ -701,7 +702,7 @@ mod tests {
     async fn binds_and_serves_over_unix_domain_socket() {
         const BOUND_ADDRESS_ID: &str = "apm-relay-uds-test-bound-address";
 
-        let supervisor = TestComponentSupervisor::start("apm-relay-uds-test").await;
+        let supervisor = TestSupervisor::start("apm-relay-uds-test").await;
 
         let dir = tempdir().expect("temp dir should be created");
         let socket_path = dir.path().join("apm.sock");
