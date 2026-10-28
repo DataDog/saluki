@@ -572,7 +572,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_bind_host(&mut self, value: String) {
-        self.config.domains.dogstatsd.listeners.bind_host = non_empty(value);
+        self.config.shared.bind_host = non_empty(value);
     }
 
     fn consume_cluster_agent_auth_token(&mut self, value: String) {
@@ -2174,8 +2174,8 @@ mod tests {
         }));
 
         assert!(errors.is_none());
+        assert_eq!(config.shared.bind_host, None);
         let listeners = &config.domains.dogstatsd.listeners;
-        assert_eq!(listeners.bind_host, None);
         assert_eq!(listeners.pipe_name, None);
         assert_eq!(listeners.socket, None);
         assert_eq!(listeners.stream_socket, None);

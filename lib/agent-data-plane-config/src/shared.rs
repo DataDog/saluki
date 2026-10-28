@@ -58,6 +58,14 @@ pub struct SharedConfiguration {
     /// DogStatsD context dumps. Defaults to unset when configuration does not provide a concrete
     /// `run_path`.
     pub run_path: Option<PathBuf>,
+
+    /// Host that network listeners bind to (`bind_host`).
+    ///
+    /// Defaults to unset, which leaves each listener at its own default host (`127.0.0.1` for DogStatsD). A blank value
+    /// is normalized to unset. Read by the DogStatsD UDP and TCP listeners; the Unix socket and named pipe listeners
+    /// ignore it. `dogstatsd_non_local_traffic` takes precedence and makes DogStatsD bind to `0.0.0.0` regardless of
+    /// this value.
+    pub bind_host: Option<String>,
 }
 
 /// Host identity and container runtime discovery inputs.
