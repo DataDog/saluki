@@ -289,13 +289,34 @@ async fn get_status_in_container(container_name: &str, cmd: Vec<String>) -> Answ
 mod tests {
     use std::time::Duration;
 
-    use super::curl_status_command;
+    use airlock::driver::ContainerOs;
+    use tokio_util::sync::CancellationToken;
+
+    use super::{curl_status_command, HttpCheckAssertion};
+    use crate::actions::test_docker::{curl_max_time, Exec, FakeDocker};
+    use crate::assertions::test_support::host_context;
+    use crate::assertions::{Assertion as _, AssertionResult, AssertionStatus};
+    use crate::config::HttpStatusMatcher;
     use crate::probe::AttemptLimits;
+
+    /// Checks a Windows target for `timeout`, with its execs served by `docker`.
+    async fn check_windows_target(docker: &FakeDocker, timeout: Duration) -> AssertionResult {
+        let mut ctx = host_context(CancellationToken::new());
+        ctx.is_host_process = false;
+        ctx.target_os = Some(ContainerOs::Windows);
+        ctx.container_name = "windows-target".to_string();
+        let assertion = HttpCheckAssertion::new(
+            "https://localhost:5001/health".to_string(),
+            HttpStatusMatcher::Equal(200),
+            true,
+            timeout,
+        );
+
+        docker.scope(assertion.check(&ctx)).await
+    }
 
     #[test]
     fn curl_gets_the_request_limit_of_the_attempt() {
-        // An in-container curl that shared the attempt's limit lost the race against it, so a target that never
-        // answered was reported as a stalled Docker exec.
         for remaining in [Duration::from_secs(60), Duration::from_secs(3)] {
             let limits = AttemptLimits::new(remaining);
 
@@ -309,5 +330,54 @@ mod tests {
             assert_eq!(*max_time, limits.curl_max_time(), "{remaining:?}");
             assert_eq!(cmd.last().map(String::as_str), Some("https://127.0.0.1:5001/health"));
         }
+    }
+
+    #[tokio::test]
+    async fn a_target_that_never_answers_curl_fails_the_check() {
+        // When curl shared the attempt's limit, Docker overhead let the attempt time out first, so a target that never
+        // answered left only harness errors and the step errored instead of failing.
+        //
+        // The first exec is curl waiting out its `--max-time` for a target that accepted the connection but never
+        // answered. Later execs never finish, so they add no observation of the target: the step fails only if the
+        // first attempt observed curl's own timeout. A 3 s step gets a short attempt; a 10.5 s step gets a full one.
+        let check = |timeout| async move {
+            let docker = FakeDocker::start(Duration::from_millis(50), |index, command| match index {
+                0 => Exec::Exits {
+                    duration: curl_max_time(command),
+                    stdout: "000".to_string(),
+                    exit_code: 28,
+                },
+                _ => Exec::Stalled,
+            })
+            .await;
+            let result = check_windows_target(&docker, timeout).await;
+            (result, docker.launched())
+        };
+
+        let ((short, short_launched), (full, full_launched)) =
+            tokio::join!(check(Duration::from_secs(3)), check(Duration::from_millis(10_500)));
+
+        assert_eq!(
+            [short.status, full.status],
+            [AssertionStatus::Failed; 2],
+            "3s: {}\n10.5s: {}",
+            short.message,
+            full.message
+        );
+        for launched in [short_launched, full_launched] {
+            assert_eq!(launched.len(), 2, "{launched:?}");
+            assert_eq!(launched[0][0], "curl.exe");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_docker_exec_that_never_finishes_errors_the_check() {
+        let docker = FakeDocker::start(Duration::ZERO, |_, _| Exec::Stalled).await;
+
+        let result = check_windows_target(&docker, Duration::from_secs(1)).await;
+
+        assert_eq!(result.status, AssertionStatus::Errored, "{}", result.message);
+        assert!(result.message.contains("Timed out"), "{}", result.message);
+        assert_eq!(docker.launched().len(), 1);
     }
 }

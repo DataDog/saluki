@@ -319,13 +319,28 @@ impl ExecOutput {
     }
 }
 
+#[cfg(test)]
+tokio::task_local! {
+    /// Docker client that replaces the default connection, so tests can serve execs from a fake Docker API.
+    pub(super) static TEST_DOCKER: bollard::Docker;
+}
+
+/// Connects to Docker, honoring a test's task-local client override.
+fn connect() -> Result<bollard::Docker, GenericError> {
+    #[cfg(test)]
+    if let Ok(docker) = TEST_DOCKER.try_with(bollard::Docker::clone) {
+        return Ok(docker);
+    }
+    docker::connect().error_context("Failed to connect to Docker.")
+}
+
 /// Runs `cmd` in `container_name` and collects its output.
 ///
 /// # Errors
 ///
 /// Returns an error only when the Docker API fails. A command that runs and exits nonzero is `Ok`.
 pub(crate) async fn docker_exec(container_name: &str, cmd: Vec<String>) -> Result<ExecOutput, GenericError> {
-    let docker = docker::connect().error_context("Failed to connect to Docker.")?;
+    let docker = connect()?;
     let exec = docker
         .create_exec(
             container_name,

@@ -346,14 +346,31 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::{CoreAgentConfigSetAction, Setter};
+    use crate::actions::test_docker::{curl_max_time, Exec, FakeDocker};
+    use crate::actions::Action as _;
     use crate::assertions::test_support::host_context;
+    use crate::assertions::{AssertionResult, AssertionStatus};
     use crate::probe::AttemptLimits;
 
+    /// Sets `log_level` in a `target_os` container within `timeout`, with its execs served by `docker`.
+    async fn set_in_container(docker: &FakeDocker, target_os: ContainerOs, timeout: Duration) -> AssertionResult {
+        let mut ctx = host_context(CancellationToken::new());
+        ctx.is_host_process = false;
+        ctx.target_os = Some(target_os);
+        ctx.container_name = "target".to_string();
+        let action = CoreAgentConfigSetAction::new(
+            "log_level".to_string(),
+            Value::String("debug".to_string()),
+            "https://localhost:5001/config/{key}".to_string(),
+            timeout,
+        );
+
+        docker.scope(action.execute(&ctx)).await
+    }
+
     #[tokio::test]
-    async fn in_container_requests_end_before_their_attempt() {
-        // An abandoned `docker exec` keeps running, so curl must bound itself. A curl limit equal to the attempt's
-        // limit lost the race against Docker overhead, so a Core Agent that never answered was reported as a stalled
-        // Docker exec instead of a failed request.
+    async fn in_container_requests_get_the_request_limit_of_their_attempt() {
+        // An abandoned `docker exec` keeps running, so curl must bound itself.
         let action = CoreAgentConfigSetAction::new(
             "log_level".to_string(),
             Value::String("debug".to_string()),
@@ -380,6 +397,75 @@ mod tests {
                 let max_time = format!(" --max-time {} ", limits.curl_max_time());
                 assert!(script.contains(&max_time), "{target_os:?}, {remaining:?}: {script}");
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_core_agent_that_never_answers_fails_the_action() {
+        // When curl shared the attempt's limit, Docker overhead let the attempt time out first, so a Core Agent that
+        // never answered left only harness errors and the action errored instead of failing.
+        //
+        // The first exec is curl waiting out its `--max-time` for a Core Agent that accepted the connection but never
+        // answered. Later execs never finish, so they add no observation of the target: the action fails only if the
+        // first attempt observed curl's own timeout. A 3 s step gets a short attempt; a 10.5 s step gets a full one.
+        let set = |target_os, timeout| async move {
+            let docker = FakeDocker::start(Duration::from_millis(50), |index, command| match index {
+                0 => Exec::Exits {
+                    duration: curl_max_time(command),
+                    stdout: "000".to_string(),
+                    exit_code: 28,
+                },
+                _ => Exec::Stalled,
+            })
+            .await;
+            let result = set_in_container(&docker, target_os, timeout).await;
+            (target_os, timeout, result, docker.launched())
+        };
+
+        let outcomes = futures::future::join_all([
+            set(ContainerOs::Linux, Duration::from_secs(3)),
+            set(ContainerOs::Linux, Duration::from_millis(10_500)),
+            set(ContainerOs::Windows, Duration::from_secs(3)),
+            set(ContainerOs::Windows, Duration::from_millis(10_500)),
+        ])
+        .await;
+
+        let statuses = outcomes
+            .iter()
+            .map(|(target_os, timeout, result, _)| (*target_os, *timeout, result.status))
+            .collect::<Vec<_>>();
+        let messages = outcomes
+            .iter()
+            .map(|(_, _, result, _)| &result.message)
+            .collect::<Vec<_>>();
+        assert!(
+            statuses.iter().all(|(_, _, status)| *status == AssertionStatus::Failed),
+            "{statuses:?}: {messages:#?}"
+        );
+        for (target_os, timeout, _, launched) in outcomes {
+            assert_eq!(launched.len(), 2, "{target_os:?}, {timeout:?}: {launched:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_docker_exec_that_never_finishes_errors_the_action() {
+        for target_os in [ContainerOs::Linux, ContainerOs::Windows] {
+            let docker = FakeDocker::start(Duration::ZERO, |_, _| Exec::Stalled).await;
+
+            let result = set_in_container(&docker, target_os, Duration::from_secs(1)).await;
+
+            assert_eq!(
+                result.status,
+                AssertionStatus::Errored,
+                "{target_os:?}: {}",
+                result.message
+            );
+            assert!(
+                result.message.contains("Timed out"),
+                "{target_os:?}: {}",
+                result.message
+            );
+            assert_eq!(docker.launched().len(), 1, "{target_os:?}");
         }
     }
 }

@@ -20,8 +20,9 @@ const MIN_REQUEST: Duration = Duration::from_millis(1);
 /// Limits for one polling attempt.
 ///
 /// A timed-out attempt abandons its Docker exec without stopping it, so a request sent from inside the target container
-/// bounds itself with `request`. The request gets half of the attempt and Docker the rest, so a target that accepts the
-/// connection but never answers fails the request before the attempt times out.
+/// bounds itself with `request`. The request gets half of the attempt, reserving the rest for Docker, so a target that
+/// accepts the connection but never answers normally fails the request before the attempt times out. This is not
+/// guaranteed: Docker overhead can exceed the reserve, and the 1 ms floor can exceed an attempt that is nearly spent.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct AttemptLimits {
     /// Limit for the whole attempt.
@@ -120,7 +121,7 @@ mod tests {
     use super::{probe, AttemptLimits, ProbeError, PROBE_TIMEOUT};
 
     #[test]
-    fn an_in_container_request_ends_before_its_attempt() {
+    fn an_in_container_request_gets_half_of_its_attempt() {
         let full = AttemptLimits::new(Duration::from_secs(60));
         assert_eq!(full.attempt, PROBE_TIMEOUT);
         assert_eq!(full.request, PROBE_TIMEOUT / 2);
