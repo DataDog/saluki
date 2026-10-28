@@ -779,6 +779,10 @@ pub struct ApmConfig {
     #[serde(deserialize_with = "crate::cast_de::deserialize_map_or_json_string")]
     pub analyzed_spans: ::serde_json::Map<String, ::serde_json::Value>,
 
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub apm_non_local_traffic: bool,
+
     #[serde(default = "defaults::default_bool::<true>")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub compute_stats_by_span_kind: bool,
@@ -836,6 +840,14 @@ pub struct ApmConfig {
     #[serde(default)]
     pub probabilistic_sampler: ApmConfigProbabilisticSampler,
 
+    #[serde(default = "defaults::default_u64::<i64, 8126>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub receiver_port: i64,
+
+    #[serde(default = "platform_defaults::apm_config_receiver_socket")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub receiver_socket: String,
+
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
     #[serde(deserialize_with = "crate::list_de::deserialize_json_array_or_string")]
     pub replace_tags: Vec<HashMap<String, String>>,
@@ -852,6 +864,7 @@ impl Default for ApmConfig {
         Self {
             analyzed_rate_by_service: Default::default(),
             analyzed_spans: Default::default(),
+            apm_non_local_traffic: Default::default(),
             compute_stats_by_span_kind: defaults::default_bool::<true>(),
             enable_rare_sampler: Default::default(),
             env: Default::default(),
@@ -866,6 +879,8 @@ impl Default for ApmConfig {
             peer_tags: Default::default(),
             peer_tags_aggregation: defaults::default_bool::<true>(),
             probabilistic_sampler: Default::default(),
+            receiver_port: defaults::default_u64::<i64, 8126>(),
+            receiver_socket: platform_defaults::apm_config_receiver_socket(),
             replace_tags: Default::default(),
             target_traces_per_second: defaults::datadog_configuration_apm_config_target_traces_per_second(),
         }
@@ -2412,6 +2427,14 @@ mod duration_defaults {
 }
 
 mod platform_defaults {
+    pub(super) fn apm_config_receiver_socket() -> String {
+        match crate::platform_default::resolve(&["aix", "linux", "other"]) {
+            "aix" => "/var/run/datadog/apm.socket".to_string(),
+            "linux" => "/var/run/datadog/apm.socket".to_string(),
+            "other" => "".to_string(),
+            _ => Default::default(),
+        }
+    }
     pub(super) fn dogstatsd_socket() -> String {
         match crate::platform_default::resolve(&["aix", "linux", "other"]) {
             "aix" => "/var/run/datadog/dsd.socket".to_string(),
