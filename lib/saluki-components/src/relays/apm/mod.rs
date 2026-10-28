@@ -635,6 +635,67 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn answers_a_request_proxied_back_to_itself_with_loop_detected() {
+        const BOUND_ADDRESS_ID: &str = "apm-relay-loop-test-bound-address";
+
+        let supervisor = TestComponentSupervisor::start("apm-relay-loop-test").await;
+
+        // Find a free port, then point both the listener and the destination at it. The relay is served directly
+        // rather than built, as building rejects this configuration.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|listener| listener.local_addr())
+            .expect("should find a free port")
+            .port();
+        let tcp_endpoint =
+            ListenAddress::try_from(format!("tcp://127.0.0.1:{port}")).expect("TCP APM endpoint should parse");
+        let router = build_router(RelayState {
+            proxy: TraceAgentProxy::from_destination(&format!("http://127.0.0.1:{port}"))
+                .expect("destination should parse"),
+            capture_entity_resolver: None,
+            metrics: Metrics::new("dd_traces_relay", "relays"),
+        });
+        let server = HttpServer::from_listen_address(tcp_endpoint)
+            .with_routes(router)
+            .with_server_id(BOUND_ADDRESS_ID)
+            .with_worker_pool(tokio::runtime::Handle::current());
+
+        let mut bound_address_subscription = supervisor
+            .dataspace()
+            .subscribe::<BoundListenAddress>(IdentifierFilter::exact(format!("http-server-{BOUND_ADDRESS_ID}")));
+
+        supervisor
+            .scope(async {
+                runtime::nested_supervisor(server.into_supervisor()).spawn();
+            })
+            .await;
+
+        let bound_addr = match tokio::time::timeout(Duration::from_secs(5), bound_address_subscription.recv()).await {
+            Ok(Some(DataspaceUpdate::Asserted(_, BoundListenAddress::Tcp(address)))) => address,
+            update => panic!("expected a bound address assertion for `{BOUND_ADDRESS_ID}`, got {update:?}"),
+        };
+
+        let mut stream = TcpStream::connect(bound_addr)
+            .await
+            .expect("should connect to TCP listener");
+        stream
+            .write_all(b"GET /info HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("should write request");
+
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut response))
+            .await
+            .expect("the relay should answer rather than proxy the request to itself forever")
+            .expect("should read response");
+
+        assert!(
+            response.starts_with(b"HTTP/1.1 508"),
+            "expected a 508 Loop Detected response, got: {}",
+            String::from_utf8_lossy(&response)
+        );
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn binds_and_serves_over_unix_domain_socket() {

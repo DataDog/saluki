@@ -17,7 +17,7 @@ use axum::extract::Request as AxumRequest;
 use axum::response::{IntoResponse, Response};
 use http::header::{self, HeaderMap, HeaderName};
 use http::uri::{PathAndQuery, Uri};
-use http::{StatusCode, Version};
+use http::{HeaderValue, StatusCode, Version};
 use http_body::{Body as HttpBody, Frame, SizeHint};
 use rustls::RootCertStore;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -38,6 +38,13 @@ const HOP_BY_HOP_HEADERS: [HeaderName; 8] = [
     header::UPGRADE,
 ];
 
+/// Name the relay adds itself to the `Via` header under, so that a request proxied back to the relay is recognized.
+/// See RFC 9110, section 7.6.3.
+const VIA_PSEUDONYM: &str = "agent-data-plane";
+
+/// `Via` entry the relay adds to every request it forwards.
+const VIA_ENTRY: HeaderValue = HeaderValue::from_static("1.1 agent-data-plane");
+
 /// Forwards requests to the trace-agent.
 #[derive(Clone)]
 pub(super) struct TraceAgentProxy {
@@ -57,6 +64,11 @@ pub(super) struct TraceAgentProxy {
     /// Only the first failure after a success is logged as a warning, so a trace-agent that is down logs once rather
     /// than once per request.
     unreachable: Arc<AtomicBool>,
+
+    /// Whether a request proxied back to the relay was seen.
+    ///
+    /// Only the first one is logged as a warning, as every request loops the same way.
+    loop_detected: Arc<AtomicBool>,
 }
 
 /// Where the proxy forwards requests to.
@@ -78,6 +90,9 @@ pub(super) enum ForwardError {
 
     /// The trace-agent couldn't be reached, or didn't answer.
     Unreachable,
+
+    /// The request was already forwarded by the relay, so the destination leads back to the relay.
+    Loop,
 }
 
 impl IntoResponse for ForwardError {
@@ -85,6 +100,7 @@ impl IntoResponse for ForwardError {
         match self {
             Self::InvalidUri => StatusCode::BAD_REQUEST.into_response(),
             Self::Unreachable => StatusCode::BAD_GATEWAY.into_response(),
+            Self::Loop => StatusCode::LOOP_DETECTED.into_response(),
         }
     }
 }
@@ -170,6 +186,7 @@ impl TraceAgentProxy {
             base_uri,
             destination,
             unreachable: Arc::new(AtomicBool::new(false)),
+            loop_detected: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -181,14 +198,26 @@ impl TraceAgentProxy {
     /// Forwards `request` to the trace-agent and returns its response.
     ///
     /// Any response from the trace-agent is returned as is, including an error status. Converted into a response, a
-    /// [`ForwardError`] is answered with `400 Bad Request` if the request couldn't be carried over, or
-    /// `502 Bad Gateway` if the trace-agent couldn't be reached.
+    /// [`ForwardError`] is answered with `400 Bad Request` if the request couldn't be carried over, `502 Bad Gateway`
+    /// if the trace-agent couldn't be reached, or `508 Loop Detected` if the request was already forwarded by the relay.
     ///
     /// # Errors
     ///
-    /// If the request's path can't be carried over, or the trace-agent can't be reached, an error is returned.
+    /// If the request was already forwarded by the relay, its path can't be carried over, or the trace-agent can't be
+    /// reached, an error is returned.
     pub(super) async fn forward(&self, request: AxumRequest) -> Result<Response, ForwardError> {
         let (mut parts, body) = request.into_parts();
+
+        // Forwarding a request the relay already forwarded would only send it around again, each time holding another
+        // connection and request open until the process runs out of either.
+        if was_forwarded_by_relay(&parts.headers) {
+            if self.loop_detected.swap(true, Ordering::Relaxed) {
+                debug!("Rejected an APM request proxied back to the relay.");
+            } else {
+                warn!("Rejected an APM request proxied back to the relay. The APM proxy destination leads back to the relay rather than to the trace-agent.");
+            }
+            return Err(ForwardError::Loop);
+        }
 
         parts.uri = match self.upstream_uri(parts.uri.path_and_query()) {
             Ok(uri) => uri,
@@ -203,6 +232,7 @@ impl TraceAgentProxy {
         // The relay's server also accepts HTTP/2, but the upstream client speaks only HTTP/1.1 and refuses a request
         // still marked as HTTP/2.
         parts.version = Version::HTTP_11;
+        parts.headers.append(header::VIA, VIA_ENTRY);
 
         let upstream_request = http::Request::from_parts(parts, SyncBody::new(body));
 
@@ -240,6 +270,17 @@ impl TraceAgentProxy {
         );
         Ok(Uri::from_parts(parts)?)
     }
+}
+
+/// Returns whether the relay is listed in the `Via` header of a request.
+fn was_forwarded_by_relay(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(header::VIA)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        // An entry is the protocol, then the pseudonym, then an optional comment.
+        .any(|entry| entry.split_whitespace().nth(1) == Some(VIA_PSEUDONYM))
 }
 
 /// Removes hop-by-hop headers, including any the `Connection` header names.
@@ -430,6 +471,44 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::CREATED);
         assert_eq!(seen.lock().await.uri, "/info");
+    }
+
+    #[tokio::test]
+    async fn adds_the_relay_to_the_via_header() {
+        let (destination, seen) = spawn_tcp_trace_agent().await;
+        let proxy = TraceAgentProxy::from_destination(&destination).expect("destination should parse");
+
+        let response = proxy
+            .forward(request("GET", "/info", &[("via", "1.1 some-proxy")], ""))
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let seen = seen.lock().await;
+        let via: Vec<_> = seen.headers.get_all("via").iter().collect();
+        assert_eq!(via, ["1.1 some-proxy", "1.1 agent-data-plane"]);
+    }
+
+    #[tokio::test]
+    async fn rejects_a_request_the_relay_already_forwarded() {
+        let (destination, seen) = spawn_tcp_trace_agent().await;
+        let proxy = TraceAgentProxy::from_destination(&destination).expect("destination should parse");
+
+        for via in [
+            "1.1 agent-data-plane",
+            "1.0 some-proxy, HTTP/1.1 agent-data-plane (comment)",
+        ] {
+            let response = proxy
+                .forward(request("GET", "/info", &[("via", via)], ""))
+                .await
+                .into_response();
+            assert_eq!(response.status(), StatusCode::LOOP_DETECTED, "for `Via: {via}`");
+        }
+
+        assert!(
+            seen.lock().await.uri.is_empty(),
+            "the trace-agent should not receive the request"
+        );
     }
 
     #[test]
