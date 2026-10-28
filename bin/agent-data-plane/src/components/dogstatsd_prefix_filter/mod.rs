@@ -277,10 +277,15 @@ impl Transform for DogStatsDPrefixFilter {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Duration};
+    use std::sync::Arc;
 
     use metrics::set_default_local_recorder;
     use saluki_common::resource_tracking::{ResourceGroupRegistry, ResourceStatsSnapshot};
+    use saluki_core::{
+        components::test_util::{ComponentControl, Output, TestComponentDriver},
+        data_model::event::Event,
+        topology::EventsBuffer,
+    };
     use saluki_metrics::{test::TestRecorder, MetricsBuilder};
 
     use super::*;
@@ -331,8 +336,14 @@ mod tests {
         }
 
         fn build(self) -> DogStatsDPrefixFilter {
+            // `DogStatsDPrefixFilterConfiguration::build` adds the same trailing period.
+            let mut metric_prefix = self.metric_prefix;
+            if !metric_prefix.is_empty() && !metric_prefix.ends_with('.') {
+                metric_prefix.push('.');
+            }
+
             DogStatsDPrefixFilter {
-                metric_prefix: self.metric_prefix,
+                metric_prefix,
                 metric_prefix_blocklist: self.metric_prefix_blocklist,
                 matcher: self.matcher,
                 metric_filter: self.metric_filter,
@@ -464,10 +475,10 @@ mod tests {
     fn prefix_matching_blocklist_applies_after_prefixing() {
         let filter = FilterBuilder::new()
             .prefix("foo")
-            .matcher(Blocklist::new(["fo", "test"], true))
+            .matcher(Blocklist::new(["foo.", "test"], true))
             .build();
 
-        // The computed name is `foo.bar`; with match-prefix mode enabled, it matches prefix `fo`.
+        // The computed name is `foo.bar`; with match-prefix mode enabled, it matches prefix `foo.`.
         let mut metric = Metric::gauge("bar", 1.0);
         assert!(!filter.process_metric(&mut metric));
     }
@@ -567,6 +578,35 @@ mod tests {
 
     #[tokio::test]
     async fn typed_live_updates_rebuild_the_matcher() {
+        /// Sends a gauge for each of `names` through the transform, and returns the names of those it keeps, sorted.
+        async fn kept(
+            control: &ComponentControl<EventsBuffer>, output: &mut Output<EventsBuffer>, names: &[&'static str],
+        ) -> Vec<String> {
+            control
+                .send_events(names.iter().map(|name| Event::Metric(Metric::gauge(*name, 1.0))))
+                .await;
+            let buffer = output
+                .next()
+                .await
+                .expect("the transform should dispatch what it keeps");
+            let mut kept = buffer
+                .into_iter()
+                .filter_map(Event::try_into_metric)
+                .map(|metric| metric.context().name().to_string())
+                .collect::<Vec<_>>();
+            kept.sort();
+            kept
+        }
+
+        let recorder = TestRecorder::default();
+        let _local = set_default_local_recorder(&recorder);
+        let updates = || {
+            recorder.counter((
+                METRIC_FILTERLIST_UPDATES_METRIC,
+                &[("component_id", "prefix_filter"), ("component_type", "transform")],
+            ))
+        };
+
         let mut initial = agent_data_plane_config::SalukiConfiguration::default();
         initial.domains.dogstatsd.metric_filter = MetricFilter {
             values: vec!["foobar".to_string(), "test".to_string()],
@@ -578,14 +618,15 @@ mod tests {
         let metric_filter = Live::new_dynamic(Arc::clone(&cell), tick_rx, |config| {
             &config.domains.dogstatsd.metric_filter
         });
-        let mut filter = FilterBuilder::new().metric_filter(metric_filter).build();
-        filter.sync_matcher(false);
+        let builder = DogStatsDPrefixFilterConfiguration::new(String::new(), Vec::new(), metric_filter);
+        let (control, mut outputs) = TestComponentDriver::options()
+            .with_component_id("prefix_filter")
+            .transform(builder)
+            .await
+            .expect("prefix filter should build");
+        let output = outputs.default_output();
 
-        let mut metric = Metric::gauge("foobar", 1.0);
-        assert!(!filter.process_metric(&mut metric));
-
-        let mut metric = Metric::gauge("foo", 1.0);
-        assert!(filter.process_metric(&mut metric));
+        assert_eq!(kept(&control, output, &["foobar", "foo", "bar"]).await, ["bar", "foo"]);
 
         let mut updated = (*cell.load_full()).clone();
         updated.domains.dogstatsd.metric_filter = MetricFilter {
@@ -595,15 +636,16 @@ mod tests {
         };
         cell.store(Arc::new(updated));
         tick_tx.send_replace(());
+        control
+            .wait_until(
+                || updates() == Some(1),
+                || "the typed metric filter update is applied".to_string(),
+            )
+            .await;
 
-        tokio::time::timeout(Duration::from_secs(2), filter.metric_filter.changed())
-            .await
-            .expect("timed out waiting for typed metric filter update");
-        filter.sync_matcher(true);
+        assert_eq!(kept(&control, output, &["foobar", "foo", "bar"]).await, ["bar"]);
 
-        let mut metric = Metric::gauge("foobar", 1.0);
-        assert!(!filter.process_metric(&mut metric));
-        assert_eq!(filter.matcher, Blocklist::new(["foo"], true));
+        control.shutdown().await.expect("prefix filter run should succeed");
     }
 
     #[test]

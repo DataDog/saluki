@@ -210,6 +210,7 @@ mod tests {
 
     use metrics::set_default_local_recorder;
     use saluki_core::{
+        components::test_util::{ComponentControl, Output, TestComponentDriver},
         data_model::event::{
             metric::{context::Context, Metric},
             Event,
@@ -462,6 +463,29 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/12213fe95538f47d98d73bd945a87b3e24189285/pkg/aggregator/demultiplexer_agent_test.go#L390
     #[tokio::test]
     async fn typed_live_updates_rebuild_the_effective_matcher() {
+        /// Sends one gauge for each histogram aggregate the test filters, and returns the names of those kept, sorted.
+        async fn kept_probes(
+            control: &ComponentControl<EventsBuffer>, output: &mut Output<EventsBuffer>,
+        ) -> Vec<String> {
+            control
+                .send_events(
+                    ["request.duration.max", "request.duration.avg"]
+                        .map(|name| Event::Metric(Metric::gauge(name, 1.0))),
+                )
+                .await;
+            let buffer = output
+                .next()
+                .await
+                .expect("the transform should dispatch what it keeps");
+            let mut kept = buffer
+                .into_iter()
+                .filter_map(Event::try_into_metric)
+                .map(|metric| metric.context().name().to_string())
+                .collect::<Vec<_>>();
+            kept.sort();
+            kept
+        }
+
         let mut initial = agent_data_plane_config::SalukiConfiguration::default();
         initial.domains.dogstatsd.metric_filter.values = vec!["request.duration.max".to_string()];
         let cell = Arc::new(arc_swap::ArcSwap::from_pointee(initial));
@@ -469,25 +493,38 @@ mod tests {
         let metric_filter = Live::new_dynamic(Arc::clone(&cell), tick_rx, |config| {
             &config.domains.dogstatsd.metric_filter
         });
-        let mut filter = noop_filter(vec![], false);
-        filter.metric_filter = metric_filter;
-        filter.sync_matcher();
+        let aggregates = ["max", "median", "avg", "count"].map(String::from);
+        let builder = DogStatsDPostAggregateFilterConfiguration::new(metric_filter, &aggregates, &["0.95".to_string()])
+            .expect("filter configuration should be valid");
+        let (control, mut outputs) = TestComponentDriver::transform(builder)
+            .await
+            .expect("post-aggregate filter should build");
+        let output = outputs.default_output();
 
-        assert!(filter.should_filter_metric(&Metric::gauge("request.duration.max", 1.0)));
-        assert!(!filter.should_filter_metric(&Metric::gauge("request.duration.avg", 1.0)));
+        assert_eq!(kept_probes(&control, output).await, ["request.duration.avg"]);
 
         let mut updated = (*cell.load_full()).clone();
         updated.domains.dogstatsd.metric_filter.values = vec!["request.duration.avg".to_string()];
         cell.store(Arc::new(updated));
         tick_tx.send_replace(());
 
-        tokio::time::timeout(Duration::from_secs(2), filter.metric_filter.changed())
-            .await
-            .expect("timed out waiting for typed metric filter update");
-        filter.sync_matcher();
+        // Nothing counts updates, so keep probing until the transform has applied this one.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match kept_probes(&control, output).await.as_slice() {
+                    [kept] if kept == "request.duration.max" => break,
+                    [kept] if kept == "request.duration.avg" => tokio::time::sleep(Duration::from_millis(5)).await,
+                    other => panic!("exactly one of the probes should be filtered, got {other:?}"),
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for the typed metric filter update to apply");
 
-        assert!(!filter.should_filter_metric(&Metric::gauge("request.duration.max", 1.0)));
-        assert!(filter.should_filter_metric(&Metric::gauge("request.duration.avg", 1.0)));
+        control
+            .shutdown()
+            .await
+            .expect("post-aggregate filter run should succeed");
     }
 
     // Mirrors Datadog Agent filtered-metrics telemetry increment in the time sampler:

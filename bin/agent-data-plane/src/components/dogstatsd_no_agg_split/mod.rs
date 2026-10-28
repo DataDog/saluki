@@ -313,67 +313,11 @@ mod tests {
     use http_body_util::BodyExt as _;
     use saluki_components::encoders::DatadogMetricsConfiguration;
     use saluki_core::{
-        components::{test_util::TestComponentDriver, ComponentContext},
+        components::test_util::TestComponentDriver,
         data_model::event::metric::{context::Context, ScalarPoints},
-        topology::{interconnect::Dispatcher, OutputName},
     };
-    use tokio::sync::mpsc;
 
     use super::*;
-
-    struct DispatcherReceiver {
-        receiver: mpsc::Receiver<EventsBuffer>,
-    }
-
-    impl DispatcherReceiver {
-        fn collect_next(&mut self) -> Vec<Metric> {
-            match self.receiver.try_recv() {
-                Ok(event_buffer) => event_buffer
-                    .into_iter()
-                    .filter_map(|event| event.try_into_metric())
-                    .collect(),
-                Err(_) => Vec::new(),
-            }
-        }
-    }
-
-    /// Constructs a `Dispatcher` with a fixed-size event buffer attached to the named `"passthrough"` output.
-    fn build_passthrough_dispatcher() -> (EventsDispatcher, DispatcherReceiver) {
-        let context = ComponentContext::test_transform("test");
-        let mut dispatcher = Dispatcher::new(context);
-
-        let (buffer_tx, buffer_rx) = mpsc::channel(1);
-        let output_name = OutputName::Given(PASSTHROUGH_OUTPUT.into());
-        dispatcher.add_output(output_name.clone()).unwrap();
-        dispatcher.attach_sender_to_output(&output_name, buffer_tx).unwrap();
-
-        (dispatcher, DispatcherReceiver { receiver: buffer_rx })
-    }
-
-    #[tokio::test]
-    async fn preaggregated_counters_to_rate() {
-        let counter_value = 42.0;
-        let timestamp = 123456;
-
-        // Create a basic passthrough batcher and forwarder.
-        let mut batcher = PassthroughBatcher::new(Duration::from_nanos(1), Telemetry::noop());
-        let (dispatcher, mut dispatcher_receiver) = build_passthrough_dispatcher();
-
-        // Create a simple pre-aggregated counter, and batch it.
-        let input_metric = Metric::counter("metric1", (timestamp, counter_value));
-        batcher.push_metric(input_metric.clone(), &dispatcher).await;
-
-        // Flush the batcher, and observe that we've emitted the expected counter and that it has the right
-        // value, with the fixed 10-second compatibility interval rather than an aggregation window:
-        batcher.try_flush(&dispatcher).await;
-
-        let mut flushed_metrics = dispatcher_receiver.collect_next();
-        assert_eq!(flushed_metrics.len(), 1);
-        assert_eq!(
-            Metric::rate("metric1", (timestamp, counter_value), Duration::from_secs(10)),
-            flushed_metrics.remove(0)
-        );
-    }
 
     /// Returns a metrics encoder configuration that writes uncompressed-size-limited V1 JSON series payloads.
     ///
@@ -439,6 +383,51 @@ mod tests {
         assert_eq!(series[0]["type"], "rate");
         assert_eq!(series[0]["interval"], 10);
         assert_eq!(series[0]["points"], serde_json::json!([[1_700_000_000, 6.0]]));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_timestamped_counters_flush_to_passthrough_as_rates() {
+        // The idle timeout has always elapsed by the next periodic check, so that check, rather than the shutdown,
+        // forwards the counter.
+        let config = DogStatsDNoAggSplitConfiguration::new(Duration::from_nanos(1));
+        let (split, mut outputs) = TestComponentDriver::transform(config)
+            .await
+            .expect("split transform should build");
+        split
+            .send_events([
+                Event::Metric(Metric::counter("metric1", (123456, 42.0))),
+                Event::Metric(Metric::counter("metric2", 1.0)),
+            ])
+            .await;
+
+        // Counters become rates with the fixed 10-second compatibility interval, rather than an aggregation window.
+        let flushed = outputs
+            .named_output(PASSTHROUGH_OUTPUT)
+            .next()
+            .await
+            .expect("the periodic check should forward the counter");
+        let flushed = flushed
+            .into_iter()
+            .filter_map(Event::try_into_metric)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            flushed,
+            [Metric::rate("metric1", (123456, 42.0), Duration::from_secs(10))]
+        );
+
+        // Timestamped metrics never reach the default output, which leads to aggregation and the tag filterlist.
+        split.shutdown().await.expect("split transform should stop cleanly");
+        let aggregated = outputs.default_output().collect_events().await;
+        let aggregated = aggregated
+            .into_iter()
+            .filter_map(Event::try_into_metric)
+            .collect::<Vec<_>>();
+        assert_eq!(aggregated, [Metric::counter("metric2", 1.0)]);
+        assert!(outputs
+            .named_output(PASSTHROUGH_OUTPUT)
+            .collect_events()
+            .await
+            .is_empty());
     }
 
     /// Regression test: the final flush at shutdown used to dispatch only once the idle flush timeout had elapsed since

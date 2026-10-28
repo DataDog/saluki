@@ -980,17 +980,11 @@ mod tests {
 
     use float_cmp::ApproxEqRatio as _;
     use saluki_core::{
-        accounting::{ComponentRegistry, MemoryLimiter},
-        components::{
-            destinations::{Destination, DestinationBuilder, DestinationContext},
-            sources::{Source, SourceBuilder, SourceContext},
-            ComponentContext,
-        },
+        accounting::ComponentRegistry,
+        components::{test_util::TestComponentDriver, ComponentContext},
         data_model::tags::{Tag, TagSet},
-        health::HealthRegistry,
-        runtime::{state::ResourceRegistry, Supervisor},
         support::SubsystemIdentifier,
-        topology::{interconnect::Dispatcher, EventsDispatcher, OutputDefinition, OutputName, TopologyBlueprint},
+        topology::{interconnect::Dispatcher, EventsDispatcher, OutputName},
     };
     use saluki_metrics::test::TestRecorder;
     use stringtheory::MetaString;
@@ -1017,83 +1011,6 @@ mod tests {
     /// Gets the flush timestamp for the given step.
     const fn flush_ts(step: u64) -> u64 {
         BUCKET_WIDTH_SECS.get() * (step + 1)
-    }
-
-    struct ControlledMetricSource {
-        events: mpsc::Receiver<Event>,
-    }
-
-    #[async_trait]
-    impl Source for ControlledMetricSource {
-        async fn run(mut self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
-            let shutdown = context.take_shutdown_handle();
-            tokio::pin!(shutdown);
-            let mut events_open = true;
-
-            loop {
-                select! {
-                    _ = &mut shutdown => break,
-                    maybe_event = self.events.recv(), if events_open => match maybe_event {
-                        Some(event) => context.dispatcher().dispatch_one(event).await?,
-                        None => events_open = false,
-                    }
-                }
-            }
-            Ok(())
-        }
-    }
-
-    struct ControlledMetricSourceBuilder {
-        events: Mutex<Option<mpsc::Receiver<Event>>>,
-        outputs: Vec<OutputDefinition<EventType>>,
-    }
-
-    #[async_trait]
-    impl SourceBuilder for ControlledMetricSourceBuilder {
-        fn outputs(&self) -> &[OutputDefinition<EventType>] {
-            &self.outputs
-        }
-
-        async fn build(&self, _context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
-            let events = self
-                .events
-                .lock()
-                .map_err(|_| generic_error!("controlled metric source receiver lock is poisoned"))?
-                .take()
-                .ok_or_else(|| generic_error!("controlled metric source receiver has already been taken"))?;
-            Ok(Box::new(ControlledMetricSource { events }))
-        }
-    }
-
-    impl MemoryBounds for ControlledMetricSourceBuilder {
-        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
-    }
-
-    struct DrainingMetricDestination;
-
-    #[async_trait]
-    impl Destination for DrainingMetricDestination {
-        async fn run(self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
-            while context.events().next().await.is_some() {}
-            Ok(())
-        }
-    }
-
-    struct DrainingMetricDestinationBuilder;
-
-    #[async_trait]
-    impl DestinationBuilder for DrainingMetricDestinationBuilder {
-        fn input_event_type(&self) -> EventType {
-            EventType::Metric
-        }
-
-        async fn build(&self, _context: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
-            Ok(Box::new(DrainingMetricDestination))
-        }
-    }
-
-    impl MemoryBounds for DrainingMetricDestinationBuilder {
-        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
     }
 
     struct DispatcherReceiver {
@@ -1495,41 +1412,16 @@ mod tests {
                 .expect_err("snapshot requester should be canceled")
                 .is_cancelled());
 
-            let (events_tx, events_rx) = mpsc::channel(1);
-            let source = ControlledMetricSourceBuilder {
-                events: Mutex::new(Some(events_rx)),
-                outputs: vec![OutputDefinition::default_output(EventType::Metric)],
-            };
-            let component_registry = ComponentRegistry::default();
-            let mut blueprint = TopologyBlueprint::new("aggregate_snapshot_owner", &component_registry);
-            blueprint
-                .add_source("source", source)
-                .expect("controlled source should be accepted")
-                .add_transform("aggregate", config)
-                .expect("aggregate transform should be accepted")
-                .add_destination("destination", DrainingMetricDestinationBuilder)
-                .expect("draining destination should be accepted");
-            blueprint
-                .connect_components_in_order(["source", "aggregate", "destination"])
-                .expect("test topology should connect");
-            blueprint
-                .with_health_registry(HealthRegistry::new())
-                .with_memory_limiter(MemoryLimiter::noop())
-                .with_resource_registry(ResourceRegistry::new())
-                .with_ambient_worker_pool();
-
-            let mut supervisor =
-                Supervisor::new("aggregate-snapshot-owner").expect("test supervisor should be created");
-            supervisor.add_worker(blueprint);
-            let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-            let topology_task = tokio::spawn(async move { supervisor.run_with_shutdown(shutdown_rx).await });
+            // The default output has to stay open, since the aggregate dispatches what it doesn't retain.
+            let (control, _outputs) = TestComponentDriver::transform(config)
+                .await
+                .expect("aggregate transform should build");
 
             let retained_context = Context::from_static_name("owner.loop.mixed.counter");
             let mixed_values = ScalarPoints::from_iter([(None, 2.0), (NonZeroU64::new(insert_ts(1)), 3.0)]);
-            events_tx
-                .send(Event::Metric(Metric::counter(retained_context.clone(), mixed_values)))
-                .await
-                .expect("controlled source should accept a mixed event");
+            control
+                .send_event(Event::Metric(Metric::counter(retained_context.clone(), mixed_values)))
+                .await;
 
             let snapshot = loop {
                 let snapshot = snapshot_handle
@@ -1551,14 +1443,8 @@ mod tests {
             assert_eq!(entry.metric_type(), AggregateMetricType::Counter);
             assert_eq!(entry.unit(), None);
 
-            drop(events_tx);
             drop(snapshot_handle);
-            shutdown_tx.send(()).expect("test topology should still be running");
-            let topology_result = topology_task.await.expect("topology task should not panic");
-            assert!(
-                topology_result.is_ok(),
-                "topology should stop cleanly: {topology_result:?}"
-            );
+            control.shutdown().await.expect("aggregate should stop cleanly");
         })
         .await
         .expect("production aggregate owner loop should complete without spinning or hanging");

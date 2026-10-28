@@ -983,6 +983,10 @@ update-protos: ## Updates all vendored Protocol Buffers definitions from their s
 	SKETCHES_GO_GIT_TAG=$(PROTOBUF_SRC_REPO_SKETCHES_GO) \
 	./ci/tooling/update-protos.sh
 
+.PHONY: update-apm-semantics
+update-apm-semantics: ## Refreshes the vendored APM semantic mappings from the Agent and commits them (REF=<ref>, default main)
+	@./ci/tooling/update-apm-semantics.sh "$(REF)"
+
 .PHONY: clean
 clean: check-rust-build-tools clean-test-logs
 clean: ## Clean all build artifacts (debug/release)

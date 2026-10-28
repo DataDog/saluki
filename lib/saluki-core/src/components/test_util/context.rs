@@ -75,7 +75,7 @@ impl Harness {
 /// Each method builds the context for its component type the way the matching run method does, from the same
 /// options, but takes the output definitions rather than a builder. Nothing is spawned, so a component's children have
 /// no supervisor to run under: run the code that spawns them inside
-/// [`TestComponentSupervisor::scope`][super::TestComponentSupervisor::scope].
+/// [`TestSupervisor::scope`][crate::runtime::test_util::TestSupervisor::scope].
 ///
 /// Every method panics if called outside a Tokio runtime.
 impl DriverOptions {
