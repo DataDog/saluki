@@ -82,7 +82,8 @@ pub(crate) struct TestContext {
 
     /// Host-process logs retained for the runner to save after reclaim drains the log pumps.
     pub(crate) host_logs: Arc<OnceLock<Arc<RwLock<LogBuffer>>>>,
-    /// Background tasks, which the runner stops before it removes the test's resources.
+
+    /// Explicitly tracked background work, given a bounded stop period before resource cleanup.
     pub(crate) tasks: CaseTasks,
 }
 
@@ -152,11 +153,10 @@ pub(crate) trait Test: Send + Sync {
         "docker".to_string()
     }
 
-    /// Run the test and return the `TestResult`. Note that we don't return an error here. It's expected that you
-    /// should handle errors and turn them into a failed `TestResult` and try not to panic.
+    /// Runs the test, reporting errors in its `TestResult`.
     ///
-    /// Watch the context's cancellation token and return when it fires. Register resources in the context's ledger
-    /// for the runner to remove after the test ends, and spawn background tasks through the context's `tasks`.
+    /// Watch the context's cancellation token and return when it fires. Register resources in its ledger for cleanup
+    /// after the test ends. Use its `tasks` for runner-managed background work.
     async fn run(&self, tctx: TestContext) -> TestResult;
 }
 

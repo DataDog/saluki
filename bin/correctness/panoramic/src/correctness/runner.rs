@@ -323,8 +323,7 @@ impl CorrectnessRunner {
     }
 
     pub async fn run(self) -> Result<(CollectedData, CollectedData), GenericError> {
-        // Millstone joins both agent networks and mounts both volumes, so it registers last and reclaim removes it
-        // first.
+        // Register Millstone last so reclaim attempts its removal before the networks and volumes it uses.
         let baseline_isolation_group_id = self.tctx.ledger.isolation_group();
         let comparison_isolation_group_id = self.tctx.ledger.isolation_group();
         let millstone_isolation_group_id = self.tctx.ledger.isolation_group();
@@ -438,7 +437,7 @@ async fn wait_for_flush(
     }
 }
 
-/// Runs `f` inside `span` as one of the case's tasks, which starts at once, and returns its result.
+/// Spawns `f` in `span` through the case's task owner and returns a future for its result.
 fn run_in_background<F, T>(tasks: &CaseTasks, span: &Span, f: F) -> impl Future<Output = Result<T, GenericError>>
 where
     F: Future<Output = Result<T, GenericError>> + Send + 'static,
@@ -454,14 +453,14 @@ where
     }
 }
 
-/// Manages the lifecycle of a group of containers related to a specific SUT.
+/// Starts a group of containers; the runner reclaims their registered isolation group.
 struct GroupRunner {
     isolation_group_id: String,
     runner_log_dir: PathBuf,
     drivers: Vec<Driver>,
     alpine_image: String,
     ledger: ResourceLedger,
-    /// The case's task stop, which cuts container creation short.
+    /// Shared with the task wrapper so interrupted creation marks the ledger before task shutdown.
     stop: CancellationToken,
 }
 
@@ -509,8 +508,7 @@ impl GroupRunner {
 
     /// Starts each driver in this group in turn and waits for it to become healthy, stopping at the first failure.
     ///
-    /// The ledger removes whatever was started. This is the shared core of [`spawn`][Self::spawn] and
-    /// [`spawn_millstone`][Self::spawn_millstone].
+    /// The runner reclaims the registered group, including resources from partial starts.
     async fn spawn_into(self) -> Result<Vec<SpawnedDriver>, GenericError> {
         let mut spawned = Vec::with_capacity(self.drivers.len());
         for mut driver in self.drivers {
@@ -576,7 +574,6 @@ mod tests {
         (flushed, started.elapsed())
     }
 
-    /// Exits with `status` after `after`.
     async fn exits_after(after: Duration, status: ExitStatus) -> ExitStatus {
         sleep(after).await;
         status
