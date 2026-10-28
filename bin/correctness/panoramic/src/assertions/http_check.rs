@@ -8,7 +8,7 @@ use tracing::trace;
 use crate::actions::docker_exec;
 use crate::assertions::{Assertion, AssertionContext, AssertionResult, AssertionStatus, Attempts};
 use crate::config::HttpStatusMatcher;
-use crate::probe::{probe, ProbeError, POLL_INTERVAL, PROBE_TIMEOUT};
+use crate::probe::{probe, AttemptLimits, ProbeError, POLL_INTERVAL};
 
 /// Assertion that probes an HTTP/HTTPS endpoint and checks the response status code.
 ///
@@ -146,8 +146,15 @@ impl Assertion for HttpCheckAssertion {
                 );
             }
 
-            let limit = deadline.saturating_duration_since(Instant::now()).min(PROBE_TIMEOUT);
-            match probe(&what, limit, &ctx.cancel_token, http_probe.get_status(&endpoint)).await {
+            let limits = AttemptLimits::new(deadline.saturating_duration_since(Instant::now()));
+            match probe(
+                &what,
+                limits.attempt,
+                &ctx.cancel_token,
+                http_probe.get_status(&endpoint, &limits),
+            )
+            .await
+            {
                 Ok(Answer::Status(actual)) if self.status_matches(actual) => {
                     let message = format!("HTTP endpoint '{}' returned status {}.", endpoint, actual);
                     return AssertionResult::new(self.name(), started, AssertionStatus::Passed, message);
@@ -226,7 +233,7 @@ impl HttpProbe {
     }
 
     /// Sends one request to `endpoint`.
-    async fn get_status(&self, endpoint: &str) -> Answer {
+    async fn get_status(&self, endpoint: &str, limits: &AttemptLimits) -> Answer {
         match self {
             Self::HostClient { client } => match client.get(endpoint).send().await {
                 Ok(resp) => Answer::Status(resp.status().as_u16()),
@@ -236,21 +243,24 @@ impl HttpProbe {
             Self::InContainerCurl {
                 container_name,
                 insecure_skip_verify,
-            } => get_status_in_container(container_name, endpoint, *insecure_skip_verify).await,
+            } => {
+                let cmd = curl_status_command(endpoint, *insecure_skip_verify, limits);
+                get_status_in_container(container_name, cmd).await
+            }
         }
     }
 }
 
-async fn get_status_in_container(container_name: &str, endpoint: &str, insecure_skip_verify: bool) -> Answer {
+/// Returns a `curl.exe` command that prints the status of a GET to `endpoint`.
+fn curl_status_command(endpoint: &str, insecure_skip_verify: bool, limits: &AttemptLimits) -> Vec<String> {
     let endpoint = endpoint.replace("localhost", "127.0.0.1");
     let mut cmd = vec!["curl.exe".to_string()];
     if insecure_skip_verify {
         cmd.push("-k".to_string());
     }
     cmd.extend([
-        // Abandoning a probe doesn't stop its exec, so curl bounds itself to keep retries from piling up.
         "--max-time".to_string(),
-        PROBE_TIMEOUT.as_secs().to_string(),
+        limits.curl_max_time(),
         "-s".to_string(),
         "-o".to_string(),
         "NUL".to_string(),
@@ -258,7 +268,10 @@ async fn get_status_in_container(container_name: &str, endpoint: &str, insecure_
         "%{http_code}".to_string(),
         endpoint,
     ]);
+    cmd
+}
 
+async fn get_status_in_container(container_name: &str, cmd: Vec<String>) -> Answer {
     let output = match docker_exec(container_name, cmd).await {
         Ok(output) => output,
         Err(e) => return Answer::HarnessError(format!("{e:#}")),
@@ -269,5 +282,32 @@ async fn get_status_in_container(container_name: &str, endpoint: &str, insecure_
     match output.stdout.trim().parse::<u16>() {
         Ok(status) if status != 0 => Answer::Status(status),
         _ => Answer::TargetError(format!("curl.exe reported no status: '{}'.", output.stdout.trim())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::curl_status_command;
+    use crate::probe::AttemptLimits;
+
+    #[test]
+    fn curl_gets_the_request_limit_of_the_attempt() {
+        // An in-container curl that shared the attempt's limit lost the race against it, so a target that never
+        // answered was reported as a stalled Docker exec.
+        for remaining in [Duration::from_secs(60), Duration::from_secs(3)] {
+            let limits = AttemptLimits::new(remaining);
+
+            let cmd = curl_status_command("https://localhost:5001/health", true, &limits);
+
+            let max_time = cmd
+                .iter()
+                .position(|arg| arg == "--max-time")
+                .and_then(|index| cmd.get(index + 1))
+                .unwrap_or_else(|| panic!("curl should bound itself: {cmd:?}"));
+            assert_eq!(*max_time, limits.curl_max_time(), "{remaining:?}");
+            assert_eq!(cmd.last().map(String::as_str), Some("https://127.0.0.1:5001/health"));
+        }
     }
 }

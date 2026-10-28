@@ -14,6 +14,38 @@ pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Pause between polling attempts.
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
+/// Shortest request limit, so curl never gets `--max-time 0`, which disables its limit.
+const MIN_REQUEST: Duration = Duration::from_millis(1);
+
+/// Limits for one polling attempt.
+///
+/// A timed-out attempt abandons its Docker exec without stopping it, so a request sent from inside the target container
+/// bounds itself with `request`. The request gets half of the attempt and Docker the rest, so a target that accepts the
+/// connection but never answers fails the request before the attempt times out.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct AttemptLimits {
+    /// Limit for the whole attempt.
+    pub(crate) attempt: Duration,
+    /// Limit for a request sent from inside the target container.
+    pub(crate) request: Duration,
+}
+
+impl AttemptLimits {
+    /// Returns the limits for an attempt with `remaining` left in its step budget.
+    pub(crate) fn new(remaining: Duration) -> Self {
+        let attempt = remaining.min(PROBE_TIMEOUT);
+        Self {
+            attempt,
+            request: (attempt / 2).max(MIN_REQUEST),
+        }
+    }
+
+    /// Returns `request` as a curl `--max-time` value.
+    pub(crate) fn curl_max_time(&self) -> String {
+        format!("{:.3}", self.request.as_secs_f64())
+    }
+}
+
 /// Why [`probe`] returned without its operation's output.
 #[derive(Debug)]
 pub(crate) enum ProbeError {
@@ -85,7 +117,23 @@ mod tests {
     use tokio::time::Instant;
     use tokio_util::sync::CancellationToken;
 
-    use super::{probe, ProbeError};
+    use super::{probe, AttemptLimits, ProbeError, PROBE_TIMEOUT};
+
+    #[test]
+    fn an_in_container_request_ends_before_its_attempt() {
+        let full = AttemptLimits::new(Duration::from_secs(60));
+        assert_eq!(full.attempt, PROBE_TIMEOUT);
+        assert_eq!(full.request, PROBE_TIMEOUT / 2);
+
+        let short = AttemptLimits::new(Duration::from_secs(3));
+        assert_eq!(short.attempt, Duration::from_secs(3));
+        assert_eq!(short.request, Duration::from_millis(1500));
+        assert_eq!(short.curl_max_time(), "1.500");
+
+        let spent = AttemptLimits::new(Duration::ZERO);
+        assert_eq!(spent.attempt, Duration::ZERO);
+        assert_eq!(spent.curl_max_time(), "0.001", "curl treats a zero limit as no limit");
+    }
 
     #[tokio::test]
     async fn a_completed_operation_returns_its_output_unchanged() {
