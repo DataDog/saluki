@@ -956,7 +956,7 @@ async fn add_apm_pipeline_to_blueprint(
 ) -> Result<(), GenericError> {
     let config = config_system.config();
     // In standalone mode there is no workload provider, so the resolver finds nothing and the relay forwards requests
-    // without a container ID, as it did before.
+    // without a container ID
     let dd_traces_relay = ApmRelayConfiguration::from_configuration(&config, datadog_agent_config::is_containerized())
         .with_capture_entity_resolver(Arc::new(env_provider.workload().clone()));
     blueprint
