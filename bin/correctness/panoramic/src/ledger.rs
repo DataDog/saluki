@@ -650,37 +650,50 @@ mod tests {
 
     #[tokio::test]
     async fn a_creation_cut_short_by_the_task_stop_is_unsettled() {
-        let api = FakeApi::start(|_, path, _| not_found(path)).await;
-        let ledger = api.ledger(&[NAMESPACE]);
-        let tasks = CaseTasks::new(&CancellationToken::new());
-        let entered = Arc::new(Notify::new());
-        let (task_ledger, task_entered, stop) = (ledger.clone(), entered.clone(), tasks.stop.clone());
-        tasks.spawn(async move {
-            let request = async {
-                task_entered.notify_one();
-                std::future::pending::<()>().await
-            };
-            task_ledger.create(NAMESPACE, &stop, request).await
-        });
-        tokio::time::timeout(BOUND, entered.notified())
-            .await
-            .expect("the creation should start within the bound");
+        // The namespace was never created, or was created and is deleted once reclaim asks.
+        let never_created: Respond = |_, path, _| not_found(path);
+        let deleted: Respond = |method, path, _| match method {
+            "DELETE" => (200, namespace_json(path, "Terminating")),
+            _ => not_found(path),
+        };
+        for respond in [never_created, deleted] {
+            let api = FakeApi::start(respond).await;
+            let ledger = api.ledger(&[NAMESPACE]);
+            let tasks = CaseTasks::new(&CancellationToken::new());
+            let entered = Arc::new(Notify::new());
+            let (task_ledger, task_entered, stop) = (ledger.clone(), entered.clone(), tasks.stop.clone());
+            tasks.spawn(async move {
+                let request = async {
+                    task_entered.notify_one();
+                    std::future::pending::<()>().await
+                };
+                task_ledger.create(NAMESPACE, &stop, request).await
+            });
+            tokio::time::timeout(BOUND, entered.notified())
+                .await
+                .expect("the creation should start within the bound");
 
-        let running = tasks.stop_all(Instant::now() + TASK_STOP_TIME).await;
-        let (reclaim, issues) = reclaim(&ledger, BUDGET).await;
+            let running = tasks.stop_all(Instant::now() + TASK_STOP_TIME).await;
+            let (reclaim, issues) = reclaim(&ledger, BUDGET).await;
 
-        assert_eq!(running, 0);
-        let resource = format!("namespace:{}", NAMESPACE);
-        assert_eq!(reclaim, [entry(&resource, ReclaimResult::Unsettled)]);
-        assert_eq!(
-            issues,
-            [Issue {
-                kind: IssueKind::ResourceUnsettled,
-                message: format!(
-                    "{}: a creation request was cut short, so something created after removal may remain",
-                    resource
-                ),
-            }]
-        );
+            assert_eq!(running, 0);
+            let resource = format!("namespace:{}", NAMESPACE);
+            assert_eq!(
+                reclaim,
+                [entry(&resource, ReclaimResult::Unsettled)],
+                "{:?}",
+                api.requests()
+            );
+            assert_eq!(
+                issues,
+                [Issue {
+                    kind: IssueKind::ResourceUnsettled,
+                    message: format!(
+                        "{}: a creation request was cut short, so something created after removal may remain",
+                        resource
+                    ),
+                }]
+            );
+        }
     }
 }
