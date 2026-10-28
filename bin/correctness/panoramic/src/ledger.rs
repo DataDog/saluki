@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::reporter::{Issue, IssueKind, ReclaimEntry, ReclaimResult};
 
-/// How long the runner spends stopping one case's tasks and removing its resources.
+/// Shared budget for stopping a case's tracked tasks and removing its resources.
 pub(crate) const RECLAIM_TIME: Duration = Duration::from_secs(30);
 
 /// How often reclaim checks whether a deleted namespace is gone.
@@ -36,9 +36,9 @@ pub(crate) fn random_id() -> String {
 
 /// Shares a case's registered resources between its test body and the runner.
 ///
-/// The body registers resources before it creates them; the runner calls [`ResourceLedger::reclaim`] to remove them in
-/// reverse registration order. Dropping the last ledger handle sends SIGKILL to registered process groups but leaves
-/// directories, Docker resources, and namespaces behind.
+/// Register isolation groups and namespaces before creation requests. The runner calls [`Self::reclaim`] to attempt
+/// removal in reverse registration order. Dropping the last ledger handle sends SIGKILL to registered process groups;
+/// directories, Docker resources, and namespaces require explicit reclaim.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ResourceLedger {
     entries: Arc<Mutex<Vec<Entry>>>,
@@ -59,17 +59,17 @@ enum Resource {
     Process(UnixProcess),
     /// A Kubernetes namespace, removed through the client that created it.
     Namespace { name: String, client: Client },
-    /// A host directory, removed only if every resource registered after it was reclaimed.
+    /// A host directory whose removal depends on earlier results in the reclaim walk.
     Directory(PathBuf),
 }
 
-/// A namespace whose deletion the API server accepted. It is reclaimed once it is gone.
+/// A namespace awaiting confirmation that deletion finished.
 struct Terminating {
     api: Api<Namespace>,
     name: String,
 }
 
-/// A removal's result, and the detail behind anything short of reclaimed.
+/// A cleanup result with an optional explanation for failed or unconfirmed removal.
 type Settled = (ReclaimResult, Option<String>);
 
 /// How far one resource's removal got during the reclaim walk.
@@ -117,7 +117,7 @@ impl fmt::Debug for Resource {
 }
 
 impl fmt::Display for Resource {
-    /// Writes `isolation_group:<id>`, `process:<name>`, `namespace:<name>`, or `directory:<path>`.
+    /// Resource label used in cleanup reports.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::IsolationGroup(id) => write!(f, "isolation_group:{}", id),
@@ -147,7 +147,7 @@ impl Terminating {
     }
 }
 
-/// Settles a removal that finished, which a cut-short creation leaves unsettled.
+/// Keeps a completed removal unsettled when creation may still finish afterward.
 fn removed(unsettled: bool) -> Settled {
     if unsettled {
         (
@@ -208,9 +208,9 @@ impl ResourceLedger {
         }
     }
 
-    /// Runs `request`, which creates part of the resource registered as `name`, unless `cancel` fires first.
+    /// Runs a creation request for the registered isolation group or namespace `name`.
     ///
-    /// Returns `None` on cancellation and marks the resource unsettled.
+    /// If cancellation drops the request, returns `None` and marks the resource unsettled.
     pub(crate) async fn create<F>(&self, name: &str, cancel: &CancellationToken, request: F) -> Option<F::Output>
     where
         F: Future,
@@ -224,8 +224,8 @@ impl ResourceLedger {
 
     /// Creates and starts `driver`'s container in `isolation_group`, returning early when `cancel` fires.
     ///
-    /// Cancellation during creation marks the group unsettled; starting creates nothing, so cancellation after creation
-    /// leaves it settled.
+    /// An interrupted creation marks the group unsettled. Starting uses the existing container, so an interrupted start
+    /// preserves the group's current mark.
     pub(crate) async fn start_container(
         &self, driver: &Driver, isolation_group: &str, cancel: &CancellationToken,
     ) -> Result<DriverDetails, GenericError> {
@@ -248,17 +248,16 @@ impl ResourceLedger {
             })
     }
 
-    /// Attempts cleanup in reverse registration order, finishing by `deadline`.
+    /// Attempts cleanup in reverse registration order under one deadline.
     ///
-    /// Namespaces are deleted during the walk, then awaited together until they are gone, so each deletion starts
-    /// without waiting for an earlier namespace's pods to stop. Returns a result per resource, in reverse registration
-    /// order, and an issue for each failed or unconfirmed removal. At the deadline, drops pending removal futures;
-    /// dropping a process sends SIGKILL if cleanup hasn't sent it yet.
+    /// Namespace deletions start during the walk; confirmation polls run concurrently afterward. Returns results in
+    /// reverse registration order and an issue for each failed or unconfirmed removal. Expiry drops pending removal
+    /// futures; dropping a process sends SIGKILL if needed.
     pub(crate) async fn reclaim(&self, deadline: Instant) -> (Vec<ReclaimEntry>, Vec<Issue>) {
         let entries = std::mem::take(&mut *self.lock());
         let mut removals = Vec::with_capacity(entries.len());
-        // Preserve earlier directories that an unreclaimed resource may still need. A terminating namespace holds no
-        // host directory, so it keeps none.
+        // Preserve directories that a failed or unconfirmed removal may still need. Pending namespace deletions use
+        // kind-node paths and can finish independently of these host directories.
         let mut kept_by: Option<String> = None;
 
         for Entry { resource, unsettled } in entries.into_iter().rev() {
@@ -345,10 +344,10 @@ mod tests {
     /// Bounds every reclaim in these tests.
     const BOUND: Duration = Duration::from_secs(10);
 
-    /// A reclaim deadline that allows several namespace polls.
+    /// Reclaim budget allowing several namespace polls.
     const BUDGET: Duration = Duration::from_secs(5);
 
-    /// A reclaim deadline for namespaces that never disappear.
+    /// Short reclaim budget for namespaces that never disappear.
     const SHORT_BUDGET: Duration = Duration::from_secs(1);
 
     const NAMESPACE: &str = "airlock-ab12cd34-baseline";
@@ -361,8 +360,7 @@ mod tests {
         server: JoinHandle<()>,
     }
 
-    /// Maps a request's method, path, and how many earlier requests had the same method and path, to an HTTP status
-    /// and JSON body.
+    /// Maps the method, path, and prior matching request count to an HTTP status and JSON body.
     type Respond = fn(&str, &str, usize) -> (u16, String);
 
     impl FakeApi {
@@ -391,8 +389,7 @@ mod tests {
                         request.extend_from_slice(&buf[..read]);
                     };
                     let head = String::from_utf8_lossy(&request[..head_end]).into_owned();
-                    // Read the body too, so closing the connection doesn't reset it before the client reads the
-                    // response.
+                    // Drain the body so connection closure preserves the response for the client.
                     let body_len = head
                         .lines()
                         .find_map(|line| {
@@ -470,7 +467,6 @@ mod tests {
         )
     }
 
-    /// A failure `Status` with `code`, `reason`, and `message`.
     fn status_json(code: u16, reason: &str, message: &str) -> String {
         format!(
             r#"{{"apiVersion":"v1","kind":"Status","metadata":{{}},"status":"Failure","message":"{}","reason":"{}","code":{}}}"#,
@@ -677,7 +673,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_creation_cut_short_by_the_task_stop_is_unsettled() {
-        // The namespace was never created, or was created and is deleted once reclaim asks.
+        // Even confirmed deletion cannot rule out an interrupted creation finishing later.
         let never_created: Respond = |_, path, _| not_found(path);
         let deleted: Respond = |method, path, _| match method {
             "DELETE" => (200, namespace_json(path, "Terminating")),

@@ -437,11 +437,11 @@ impl Runner {
                     stop.settle(returned, &name, timeout, started.elapsed(), &phases, &record)
                 }
             }
-            // Drop the body before cleanup to release its resources and end its resource registration.
+            // Drop the body before cleanup; its tracked background tasks are handled below.
         };
 
-        // Cleanup needs its own deadline because the test token may already be cancelled. Tasks stop first, so a
-        // creation they cut short marks its resource before reclaim reads the marks.
+        // Cleanup has its own budget because the test token may already be cancelled. Give tracked tasks time to stop
+        // and mark interrupted creations before reclaim reads the ledger.
         let reclaim_started = Instant::now();
         let deadline = tokio::time::Instant::now() + RECLAIM_TIME;
         let running = tasks.stop_all(tokio::time::Instant::now() + TASK_STOP_TIME).await;
@@ -1226,18 +1226,18 @@ pub(crate) mod test_support {
         pub(crate) intake: Option<u16>,
         /// A directory the test creates and registers before its behavior runs.
         pub(crate) registers: Option<PathBuf>,
-        /// Records when the pending task the test spawns, after registering its directory, is dropped.
+        /// Spawns a pending task and records its drop.
         pub(crate) spawns: Option<TaskProbe>,
     }
 
-    /// When a [`ScriptedTest`]'s task was dropped.
+    /// Observes task shutdown for a [`ScriptedTest`].
     #[derive(Debug, Default, Clone)]
     pub(crate) struct TaskProbe(Arc<std::sync::Mutex<Option<Dropped>>>);
 
     /// What a [`TaskProbe`] saw when its task was dropped.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub(crate) struct Dropped {
-        /// Time since the test started.
+        /// Elapsed time since the task's drop guard was created.
         pub(crate) elapsed: Duration,
         /// Whether the test's registered directory still existed.
         pub(crate) directory_existed: bool,
@@ -1249,7 +1249,6 @@ pub(crate) mod test_support {
         }
     }
 
-    /// Fills its probe when dropped.
     struct ProbeGuard {
         probe: TaskProbe,
         started: tokio::time::Instant,

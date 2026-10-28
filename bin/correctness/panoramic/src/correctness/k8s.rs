@@ -142,7 +142,7 @@ pub async fn run_k8s_correctness_test(case: CorrectnessTestCase, tctx: TestConte
 
     let use_socket_wait = is_socket_target(&millstone_template);
 
-    // Every wait from namespace creation through collection stops when the test is cancelled.
+    // Apply cancellation to the region from namespace creation through collection.
     let (baseline_data, comparison_data) = {
         let mut pods = pin!(async {
             // Phase 1a: Create the namespaces, then start both agent pods in parallel.
@@ -176,11 +176,7 @@ pub async fn run_k8s_correctness_test(case: CorrectnessTestCase, tctx: TestConte
             phase.finish();
             prepared?;
 
-            // Phase 1b: For TCP/gRPC/UDP targets, fetch the agent pod IPs now that both pods are Running
-            // so the millstone pod can include a port-readiness check in its startup wait condition.
-            // For socket targets, the -S check already gates readiness, so we start millstone immediately
-            // in parallel with the agent pods (which is fine, as the socket won't appear until the agent is
-            // ready regardless).
+            // Phase 1b: Millstone checks network readiness at each agent pod's IP. Socket targets use a file check.
             let tcp_readiness_checks = match extract_target_port(&millstone_template) {
                 Some(port) if !use_socket_wait => {
                     let phase = phases.enter("get_pod_ips");
@@ -318,7 +314,7 @@ pub async fn run_k8s_correctness_test(case: CorrectnessTestCase, tctx: TestConte
                 (Err(e), _) | (_, Err(e)) => Err(e),
             }
         });
-        // The pods future stays alive after cancellation, so the phase it was in is still marked.
+        // Borrow the pinned future so its active phase remains available for the cancellation error.
         match cancel.run_until_cancelled(pods.as_mut()).await {
             Some(Ok(data)) => data,
             Some(Err(e)) => return make_error_result(name, started, phases.completed(), e),
@@ -456,12 +452,7 @@ async fn prepare_agent_group(
     Ok(())
 }
 
-/// Creates the shared millstone pod in its namespace, waits for it to reach Running, and starts
-/// background log streaming.
-///
-/// The millstone pod mounts both agent socket directories and waits for both config files and
-/// both sockets before launching two parallel millstone processes each targeting one agent.
-/// Arguments for [`prepare_millstone_group`], bundled to stay within the argument-count lint.
+/// Configuration for [`prepare_millstone_group`].
 struct MillstoneGroupConfig<'a> {
     millstone_image: &'a str,
     millstone_binary: &'a str,
@@ -471,6 +462,7 @@ struct MillstoneGroupConfig<'a> {
     tcp_readiness_checks: Vec<(String, u16)>,
 }
 
+/// Creates the shared Millstone pod in its namespace, waits for Running, and starts background log streaming.
 async fn prepare_millstone_group(
     client: Client, namespace: String, log_dir: PathBuf, tasks: &CaseTasks, cfg: MillstoneGroupConfig<'_>,
 ) -> Result<(), GenericError> {
@@ -920,7 +912,7 @@ async fn build_agent_config_volumes(
 // Kubernetes API helpers
 // ---------------------------------------------------------------------------
 
-/// Creates the namespace registered as `name`, stopping early when `cancel` fires.
+/// Creates a registered namespace, marking it unsettled if cancellation interrupts the request.
 async fn create_namespace(
     ledger: &ResourceLedger, client: Client, name: &str, cancel: &CancellationToken,
 ) -> Result<(), GenericError> {
@@ -995,7 +987,7 @@ async fn wait_for_pod_running(pods: &Api<Pod>, pod_name: &str, timeout: Duration
     }
 }
 
-/// Returns the cluster IP of the baseline and of the comparison agent pod.
+/// Returns the baseline and comparison agent pod IP addresses.
 async fn get_pod_ips(
     client: &Client, baseline_ns: &str, comparison_ns: &str,
 ) -> Result<(String, String), GenericError> {
@@ -1076,8 +1068,7 @@ async fn wait_for_millstone_exit(pods: &Api<Pod>, pod_name: &str, timeout: Durat
 // Container log streaming
 // ---------------------------------------------------------------------------
 
-/// Streams logs from a single container to a file. Runs as a background task; errors are logged
-/// and the task exits cleanly when the pod is deleted.
+/// Streams container logs to a file as a case-owned task. Stops on stream closure, errors, or task cancellation.
 async fn stream_container_logs(pods: Api<Pod>, pod_name: &'static str, container: String, path: PathBuf) {
     let params = LogParams {
         container: Some(container.clone()),
@@ -1131,7 +1122,7 @@ use crate::utils::strip_ansi_codes;
 // ---------------------------------------------------------------------------
 
 /// Binds a local TCP listener and forwards each accepted connection to the given pod port.
-/// Returns the local ephemeral port number. The forward runs until the case's tasks stop.
+/// Returns the local ephemeral port. The case's task owner tracks the listener and each forwarding task.
 async fn start_port_forward(
     client: Client, namespace: String, pod_name: String, pod_port: u16, tasks: &CaseTasks,
 ) -> Result<u16, GenericError> {
@@ -1305,7 +1296,7 @@ mod tests {
 
     #[tokio::test]
     async fn port_forwards_stop_with_their_case() {
-        // The API accepts the forward's upgrade request and never answers, so the connection's task stays pending.
+        // Keep the upgrade request pending so only task cancellation closes the forwarded connection.
         let api = MockIntake::unresponsive().await;
         let config = kube::Config::new(
             format!("http://127.0.0.1:{}", api.port())

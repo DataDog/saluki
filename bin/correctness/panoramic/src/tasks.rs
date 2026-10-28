@@ -1,4 +1,4 @@
-//! Background tasks a test case spawns, which the runner stops before reclaiming the case's resources.
+//! Tracks explicitly registered background tasks for bounded shutdown before resource cleanup.
 
 use std::future::Future;
 use std::time::Duration;
@@ -11,16 +11,15 @@ use tokio_util::task::TaskTracker;
 /// How long the runner waits for a case's tasks to stop. Taken out of [`RECLAIM_TIME`](crate::ledger::RECLAIM_TIME).
 pub(crate) const TASK_STOP_TIME: Duration = Duration::from_secs(5);
 
-/// A case's background tasks, shared by its test body and the runner.
+/// Tracks tasks spawned through [`Self::spawn`], shared by the test body and runner.
 ///
-/// Each task is dropped at its next await once `stop` is cancelled. That happens when the test is cancelled, or when
-/// the runner calls [`CaseTasks::stop_all`]. Tasks therefore own nothing that needs cleanup; the ledger owns resources.
+/// Cancellation is cooperative: synchronous work can outlive [`Self::stop_all`]'s deadline. Register resources that
+/// need asynchronous cleanup in the ledger.
 #[derive(Clone, Debug)]
 pub(crate) struct CaseTasks {
     tracker: TaskTracker,
 
-    /// Child of the test token. A task's own creation requests watch it, so they see the stop before their task is
-    /// dropped.
+    /// Child of the test token. Creation requests also watch it to mark interrupted resources before task shutdown.
     pub(crate) stop: CancellationToken,
 }
 
@@ -32,10 +31,11 @@ impl CaseTasks {
         }
     }
 
-    /// Spawns `task`. The handle yields `None` if the task was stopped first.
+    /// Spawns and tracks `task`; the handle yields `None` if cancellation drops it.
     ///
-    /// A task spawned after the stop is never polled. Otherwise the task is polled before the stop, so a request inside
-    /// it that watches `stop` returns first.
+    /// If `stop` is already cancelled at the first poll, the wrapper drops `task` unpolled. Otherwise, each poll tries
+    /// `task` first; cancellation drops it only on `Pending`. Creation requests can therefore observe `stop` before
+    /// their task is dropped.
     pub(crate) fn spawn<F>(&self, task: F) -> JoinHandle<Option<F::Output>>
     where
         F: Future + Send + 'static,
@@ -44,9 +44,9 @@ impl CaseTasks {
         self.tracker.spawn(self.stop.clone().run_until_cancelled_owned(task))
     }
 
-    /// Stops every task and waits for them until `deadline`.
+    /// Requests cancellation and waits for tracked tasks to finish until `deadline`.
     ///
-    /// Returns how many are still running, which are all stuck in synchronous code. Leaves the test token alone.
+    /// Returns the number still tracked. Cancels only the child token, preserving the test token's state.
     pub(crate) async fn stop_all(&self, deadline: Instant) -> usize {
         self.stop.cancel();
         self.tracker.close();
@@ -66,7 +66,6 @@ mod tests {
 
     const BOUND: Duration = Duration::from_secs(5);
 
-    /// Sets its flag when dropped.
     struct DropFlag(Arc<AtomicBool>);
 
     impl Drop for DropFlag {
