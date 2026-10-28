@@ -201,11 +201,7 @@ impl TraceAgentProxy {
                 if self.unreachable.swap(true, Ordering::Relaxed) {
                     debug!(error = %e, "Failed to forward APM request to the trace-agent.");
                 } else {
-                    warn!(
-                        error = %e,
-                        "Failed to forward APM request to the trace-agent. Requests are dropped until it is reachable \
-                         again; further failures are logged at debug level."
-                    );
+                    warn!(error = %e, "Failed to forward APM request to the trace-agent. Requests are dropped until it is reachable again");
                 }
                 Err(ForwardError::Unreachable)
             }
