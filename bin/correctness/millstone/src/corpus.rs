@@ -3,12 +3,21 @@ use std::num::NonZeroUsize;
 use base64::Engine as _;
 use bytes::{BufMut as _, Bytes, BytesMut};
 use bytesize::ByteSize;
-use lading_payload::{opentelemetry::metric::OpentelemetryMetrics, DogStatsD, OpentelemetryTraces};
+use lading_payload::{
+    opentelemetry::metric::OpentelemetryMetrics, trace_agent::v04::V04, trace_agent::v1::V1, DogStatsD,
+    OpentelemetryTraces,
+};
 use rand::{rngs::StdRng, SeedableRng as _};
 use saluki_error::{generic_error, GenericError};
 use tracing::info;
 
 use crate::config::{Config, CorpusBlueprint, Payload, TargetAddress};
+
+/// Maximum size of a single Datadog traces payload.
+///
+/// Tracing libraries flush batches of whole traces, which are routinely larger than a datagram-sized payload, so we
+/// allow several traces of a few dozen spans each per payload. This is still far below the trace-agent's intake limit.
+const DATADOG_TRACES_MAX_PAYLOAD_BYTES: usize = 64 * 1024;
 
 /// A generated test corpus.
 pub struct Corpus {
@@ -51,17 +60,18 @@ fn get_finalized_corpus_blueprint(config: &Config) -> Result<CorpusBlueprint, Ge
     let mut blueprint = config.corpus.clone();
 
     // When generating DogStatsD payloads, we need to set the length-delimited framing mode when UDS is being used in
-    // SOCK_STREAM mode.
+    // SOCK_STREAM mode. HTTP over UDS carries each payload as a request body, which needs no framing.
     match &mut blueprint.payload {
         Payload::DogStatsD(dsd_config) => {
-            if let TargetAddress::Unix(_) = config.target {
+            if matches!(config.target, TargetAddress::Unix(_)) && config.http_path.is_none() {
                 dsd_config.length_prefix_framed = true;
             }
         }
         Payload::Static(_)
         | Payload::StaticBase64(_)
         | Payload::OpenTelemetryMetrics(_)
-        | Payload::OpenTelemetryTraces(_) => {}
+        | Payload::OpenTelemetryTraces(_)
+        | Payload::DatadogTraces(_) => {}
     }
 
     // Validate that the blueprint is valid from a payload generation standpoint.
@@ -90,6 +100,26 @@ fn generate_payloads(mut rng: StdRng, blueprint: CorpusBlueprint) -> Result<(Vec
         Payload::OpenTelemetryTraces(config) => {
             let mut generator = OpentelemetryTraces::with_config(&config, &mut rng)?;
             generate_payloads_inner(&mut generator, rng, &mut payloads, blueprint.size, 8192)?
+        }
+        Payload::DatadogTraces(lading_payload::trace_agent::Config::V04(config)) => {
+            let mut generator = V04::with_config(config, &mut rng)?;
+            generate_payloads_inner(
+                &mut generator,
+                rng,
+                &mut payloads,
+                blueprint.size,
+                DATADOG_TRACES_MAX_PAYLOAD_BYTES,
+            )?
+        }
+        Payload::DatadogTraces(lading_payload::trace_agent::Config::V1(config)) => {
+            let mut generator = V1::with_config(config, &mut rng)?;
+            generate_payloads_inner(
+                &mut generator,
+                rng,
+                &mut payloads,
+                blueprint.size,
+                DATADOG_TRACES_MAX_PAYLOAD_BYTES,
+            )?
         }
     }
 
@@ -137,4 +167,50 @@ where
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dogstatsd_config(target: &str, http_path: Option<&str>) -> Config {
+        let http_path = http_path
+            .map(|path| format!("http_path: \"{path}\"\n"))
+            .unwrap_or_default();
+        serde_saphyr::from_str(&format!(
+            r#"
+seed: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+target: "{target}"
+{http_path}volume: 10
+corpus:
+  size: 10
+  payload:
+    dogstatsd: {{}}
+"#
+        ))
+        .unwrap()
+    }
+
+    fn is_length_prefix_framed(config: &Config) -> bool {
+        match get_finalized_corpus_blueprint(config).unwrap().payload {
+            Payload::DogStatsD(dsd_config) => dsd_config.length_prefix_framed,
+            _ => panic!("expected a DogStatsD payload"),
+        }
+    }
+
+    #[test]
+    fn dogstatsd_over_a_unix_stream_is_length_prefix_framed() {
+        assert!(is_length_prefix_framed(&dogstatsd_config(
+            "unix:///tmp/dsd.socket",
+            None
+        )));
+    }
+
+    #[test]
+    fn dogstatsd_over_http_over_unix_is_not_framed() {
+        assert!(!is_length_prefix_framed(&dogstatsd_config(
+            "unix:///tmp/dsd.socket",
+            Some("/v1/dogstatsd")
+        )));
+    }
 }

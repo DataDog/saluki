@@ -30,6 +30,12 @@ pub enum TargetAddress {
 
     /// gRPC endpoint with service/method path.
     Grpc(String),
+
+    /// HTTP endpoint that each payload is `POST`ed to.
+    ///
+    /// Stored as the full URL (for example, `http://baseline:8126/v0.4/traces`) so that Docker network aliases are
+    /// resolved at connection time rather than at config-parse time.
+    Http(String),
 }
 
 impl TargetAddress {
@@ -41,6 +47,7 @@ impl TargetAddress {
             Self::UnixDatagram(_) => "unixgram",
             Self::Unix(_) => "unix",
             Self::Grpc(_) => "grpc",
+            Self::Http(_) => "http",
         }
     }
 }
@@ -73,6 +80,20 @@ impl TryFrom<String> for TargetAddress {
                 "unixgram" => Ok(Self::UnixDatagram(PathBuf::from(addr_data))),
                 "unix" => Ok(Self::Unix(PathBuf::from(addr_data))),
                 "grpc" => Ok(Self::Grpc(addr_data.to_string())),
+                "http" => {
+                    // Validate the URL shape only; the host is resolved when sending, for the same reason as TCP.
+                    let uri = value
+                        .parse::<hyper::Uri>()
+                        .map_err(|e| format!("invalid HTTP address '{}': {}", value, e))?;
+                    if uri.authority().is_some() {
+                        Ok(Self::Http(value))
+                    } else {
+                        Err(format!(
+                            "invalid HTTP address '{}': expected http://host:port/path",
+                            value
+                        ))
+                    }
+                }
                 _ => Err(format!("invalid scheme '{}' for target address '{}'", scheme, value)),
             }
         } else {
@@ -102,6 +123,10 @@ pub enum Payload {
     /// OpenTelemetry-encoded traces.
     #[serde(rename = "opentelemetry_traces")]
     OpenTelemetryTraces(lading_payload::opentelemetry::trace::Config),
+
+    /// Datadog trace-agent traces (for example, v0.4 MessagePack), as sent by Datadog tracing libraries.
+    #[serde(rename = "datadog_traces")]
+    DatadogTraces(lading_payload::trace_agent::Config),
 }
 
 impl Payload {
@@ -113,6 +138,22 @@ impl Payload {
             Self::StaticBase64(_) => "Static Base64",
             Self::OpenTelemetryMetrics(_) => "OpenTelemetry Metrics",
             Self::OpenTelemetryTraces(_) => "OpenTelemetry Traces",
+            Self::DatadogTraces(_) => "Datadog Traces",
+        }
+    }
+
+    /// Returns the headers to send along with each payload when the target is HTTP.
+    ///
+    /// The first header is always `Content-Type`.
+    pub fn http_headers(&self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            // Mimic a tracing library: the trace-agent reads the tracer's language and version from these headers.
+            Self::DatadogTraces(_) => &[
+                ("content-type", "application/msgpack"),
+                ("datadog-meta-lang", "millstone"),
+                ("datadog-meta-tracer-version", "0.1.0"),
+            ],
+            _ => &[("content-type", "application/octet-stream")],
         }
     }
 }
@@ -156,6 +197,9 @@ impl CorpusBlueprint {
                 .valid()
                 .map_err(|e| generic_error!("Invalid OpenTelemetry Metrics payload configuration: {}", e)),
             Payload::OpenTelemetryTraces(_) => Ok(()),
+            Payload::DatadogTraces(config) => config
+                .valid()
+                .map_err(|e| generic_error!("Invalid Datadog Traces payload configuration: {}", e)),
         }
     }
 }
@@ -180,8 +224,27 @@ pub struct Config {
     /// Millstone would wait 6 seconds, until the current time was 20 (20 % 10 == 0) before starting to send.
     pub aggregation_bucket_width_secs: Option<u64>,
 
+    /// Delay before sending the first payload, in seconds, counted from when the target is ready.
+    ///
+    /// An HTTP target is ready once it answers with anything other than a server error, so a proxy only is once its
+    /// upstream is up. The delay is useful when the target accepts payloads before it has finished starting up: for
+    /// example, the trace-agent's tagger connects to the Core Agent after the trace-agent starts listening, and the
+    /// trace-agent sends payloads that arrive before then without container tags. Applied before aligning to an aggregation bucket, so that
+    /// alignment still holds.
+    ///
+    /// Defaults to `0` (no delay).
+    #[serde(default)]
+    pub start_delay_secs: u64,
+
     /// The target to send payloads to.
     pub target: TargetAddress,
+
+    /// HTTP request path to `POST` each payload to over a `unix://` target.
+    ///
+    /// When set, the socket is spoken to as an HTTP/1.1 server (for example, the trace-agent's `apm.socket`) instead of
+    /// written to as a raw stream. Only valid with a `unix://` target, and must start with `/`.
+    #[serde(default)]
+    pub http_path: Option<String>,
 
     /// Output volume.
     ///
@@ -227,8 +290,40 @@ impl Config {
             std::fs::read_to_string(config_path).error_context("Failed to read configuration file.")?;
         let config: Self =
             serde_saphyr::from_str(&config_file_raw).error_context("Failed to parse configuration file.")?;
+        config.validate()?;
 
         Ok(config)
+    }
+
+    /// Validates settings that depend on each other.
+    ///
+    /// # Errors
+    ///
+    /// If `http_path` is set without a `unix://` target, or doesn't start with `/`, an error is returned.
+    pub fn validate(&self) -> Result<(), GenericError> {
+        let Some(http_path) = &self.http_path else {
+            return Ok(());
+        };
+
+        if !matches!(self.target, TargetAddress::Unix(_)) {
+            return Err(generic_error!(
+                "`http_path` is only supported with a `unix://` target, not a `{}://` target.",
+                self.target.kind()
+            ));
+        }
+        if !http_path.starts_with('/') {
+            return Err(generic_error!("`http_path` must start with '/', got '{}'.", http_path));
+        }
+
+        Ok(())
+    }
+
+    /// Returns the name of the transport payloads are sent over.
+    pub fn target_kind(&self) -> &'static str {
+        match (&self.target, &self.http_path) {
+            (TargetAddress::Unix(_), Some(_)) => "http+unix",
+            (target, _) => target.kind(),
+        }
     }
 }
 
@@ -271,5 +366,101 @@ mod tests {
                 .validate()
                 .unwrap_or_else(|e| panic!("{}: {e:?}", path.display()));
         }
+    }
+
+    #[test]
+    fn parses_an_http_target() {
+        let target = TargetAddress::try_from("http://baseline:8126/v0.4/traces".to_string()).unwrap();
+
+        assert!(matches!(&target, TargetAddress::Http(url) if url == "http://baseline:8126/v0.4/traces"));
+        assert_eq!(target.kind(), "http");
+    }
+
+    #[test]
+    fn rejects_an_http_target_without_a_host() {
+        assert!(TargetAddress::try_from("http:///v0.4/traces".to_string()).is_err());
+    }
+
+    #[test]
+    fn parses_a_datadog_traces_corpus() {
+        let config: Config = serde_saphyr::from_str(
+            r#"
+seed: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+target: "http://baseline:8126/v0.4/traces"
+volume: 10
+corpus:
+  size: 10
+  payload:
+    datadog_traces:
+      v0.4:
+        contexts:
+          inclusive: { min: 1, max: 2 }
+"#,
+        )
+        .unwrap();
+
+        assert!(matches!(config.corpus.payload, Payload::DatadogTraces(_)));
+        assert_eq!(
+            config.corpus.payload.http_headers()[0],
+            ("content-type", "application/msgpack")
+        );
+        config.corpus.validate().unwrap();
+    }
+
+    fn config_with_target(target: &str, http_path: Option<&str>) -> Config {
+        let http_path = http_path
+            .map(|path| format!("http_path: \"{path}\"\n"))
+            .unwrap_or_default();
+        serde_saphyr::from_str(&format!(
+            r#"
+seed: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+target: "{target}"
+{http_path}volume: 10
+corpus:
+  size: 10
+  payload:
+    static: "payload"
+"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn parses_an_http_over_unix_target() {
+        let config = config_with_target("unix:///tmp/apm.socket", Some("/v0.4/traces"));
+
+        config.validate().unwrap();
+        assert_eq!(config.http_path.as_deref(), Some("/v0.4/traces"));
+        assert_eq!(config.target_kind(), "http+unix");
+    }
+
+    #[test]
+    fn unix_target_without_http_path_stays_a_raw_stream() {
+        let config = config_with_target("unix:///tmp/metrics.sock", None);
+
+        config.validate().unwrap();
+        assert_eq!(config.target_kind(), "unix");
+    }
+
+    #[test]
+    fn rejects_http_path_without_a_unix_target() {
+        for target in [
+            "tcp://baseline:8126",
+            "http://baseline:8126/v0.4/traces",
+            "unixgram:///tmp/dsd.sock",
+        ] {
+            let config = config_with_target(target, Some("/v0.4/traces"));
+            assert!(
+                config.validate().is_err(),
+                "`http_path` should be rejected for '{target}'"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_a_relative_http_path() {
+        let config = config_with_target("unix:///tmp/apm.socket", Some("v0.4/traces"));
+
+        assert!(config.validate().is_err());
     }
 }
