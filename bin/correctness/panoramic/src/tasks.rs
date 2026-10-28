@@ -75,7 +75,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn stopping_drops_each_task_at_its_next_await() {
+    async fn stopping_drops_a_pending_task() {
         let test_token = CancellationToken::new();
         let tasks = CaseTasks::new(&test_token);
         let dropped = Arc::new(AtomicBool::new(false));

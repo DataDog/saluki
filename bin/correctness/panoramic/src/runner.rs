@@ -449,7 +449,7 @@ impl Runner {
             warn!(
                 test = %name,
                 running,
-                "Background tasks were still running in synchronous code after {:?}.",
+                "Background tasks were still tracked after the {:?} stop budget expired.",
                 TASK_STOP_TIME
             );
         }
