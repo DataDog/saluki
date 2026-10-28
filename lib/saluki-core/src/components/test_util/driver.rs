@@ -12,7 +12,6 @@ use saluki_error::{generic_error, GenericError};
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
 
-use super::supervisor::{TestComponentSupervisor, TEST_COMPONENT_TIMEOUT};
 use super::{ComponentControl, NoInput, Output, Outputs};
 use crate::accounting::{ComponentRegistry, MemoryBoundsBuilder, MemoryLimiter};
 use crate::components::{
@@ -27,6 +26,7 @@ use crate::components::{
 };
 use crate::health::{Health, HealthRegistry};
 use crate::runtime::state::{DataspaceRegistry, ResourceRegistry, CURRENT_DATASPACE};
+use crate::runtime::test_util::{TestSupervisor, TEST_WORKER_TIMEOUT};
 use crate::runtime::{self, ExitObserver, SupervisorFuture};
 use crate::support::SubsystemIdentifier;
 use crate::topology::component_worker::{
@@ -54,7 +54,7 @@ const DEFAULT_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 ///
 /// Each method takes a component builder and builds the component the way a topology would. It then connects a channel
 /// to the component's input and to each of its outputs, and runs the component as the needed child of a
-/// [`TestComponentSupervisor`], which is also how a topology runs it. What comes back is a [`ComponentControl`] for the
+/// [`TestSupervisor`], which is also how a topology runs it. What comes back is a [`ComponentControl`] for the
 /// input and the shutdown, along with the component's outputs.
 ///
 /// These methods use the default [`DriverOptions`]. Start from [`options`][Self::options] to change them.
@@ -207,7 +207,7 @@ impl Default for DriverOptions {
             component_id: ComponentId::try_from(DEFAULT_COMPONENT_ID).expect("default component ID should be valid"),
             interconnect_capacity: DEFAULT_INTERCONNECT_CAPACITY,
             wait_timeout: DEFAULT_WAIT_TIMEOUT,
-            shutdown_timeout: TEST_COMPONENT_TIMEOUT,
+            shutdown_timeout: TEST_WORKER_TIMEOUT,
             resource_registry: ResourceRegistry::new(),
             withhold_shutdown: false,
         }
@@ -727,7 +727,7 @@ impl Harness {
             .needed()
             .observing_exit(ExitObserver::new(exit_tx))
             .build();
-        let supervisor = TestComponentSupervisor::start_with_worker(
+        let supervisor = TestSupervisor::start_with_worker(
             &self.identity.to_string(),
             self.options.shutdown_timeout,
             self.dataspace,

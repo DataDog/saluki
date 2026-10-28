@@ -18,6 +18,7 @@ use crossterm::{
 
 use crate::events::TestEvent;
 use crate::machine_output::RunReport;
+use crate::record::StepStatus;
 use crate::reporter::{run_counts, run_status_label, run_unfinished_lines, TestResult, RUN_PASSED_LABEL};
 
 /// Terminal UI state and rendering.
@@ -258,7 +259,7 @@ fn completed_test_lines(result: &TestResult, log_dir: &Path) -> Vec<FormattedLin
     let total_assertions = result.assertion_results.len();
 
     if result.outcome.is_passed() {
-        return vec![FormattedLine::with_prefix(
+        let mut lines = vec![FormattedLine::with_prefix(
             result.label(),
             LineColor::Green,
             format!(
@@ -266,9 +267,20 @@ fn completed_test_lines(result: &TestResult, log_dir: &Path) -> Vec<FormattedLin
                 result.name, total_assertions, result.duration
             ),
         )];
+        lines.extend(
+            result
+                .cause_lines()
+                .into_iter()
+                .map(|line| FormattedLine::new(format!("  {}", line))),
+        );
+        return lines;
     }
 
-    let passed_assertions = result.assertion_results.iter().filter(|a| a.passed).count();
+    let passed_assertions = result
+        .assertion_results
+        .iter()
+        .filter(|a| a.status == StepStatus::Passed)
+        .count();
     let mut lines = vec![FormattedLine::with_prefix(
         result.label(),
         LineColor::Red,
@@ -286,7 +298,7 @@ fn completed_test_lines(result: &TestResult, log_dir: &Path) -> Vec<FormattedLin
     );
 
     for assertion in &result.assertion_results {
-        if !assertion.passed {
+        if !matches!(assertion.status, StepStatus::Passed | StepStatus::NotRun) {
             lines.push(FormattedLine::new(format!(
                 "  - {} ({:.2?})",
                 assertion.name, assertion.duration
@@ -365,7 +377,7 @@ mod tests {
     use crossterm::event::KeyEventState;
 
     use super::*;
-    use crate::reporter::test_support::{each_outcome, TIMEOUT_CAUSE};
+    use crate::reporter::test_support::{each_outcome, NOT_RUN_KIND, PASS_ISSUE, TIMEOUT_CAUSE};
 
     #[test]
     fn tui_labels_every_outcome_and_prints_a_timeout_cause() {
@@ -377,8 +389,15 @@ mod tests {
                 LineColor::Red
             };
             assert_eq!(lines[0].prefix, Some((label.to_string(), color)));
-            if label == "TIMEOUT" {
-                assert_eq!(lines[1].text, format!("  {}", TIMEOUT_CAUSE));
+            let texts: Vec<&str> = lines.iter().map(|line| line.text.as_str()).collect();
+            match label {
+                "PASS" => assert_eq!(texts[1..], [format!("  {}", PASS_ISSUE)]),
+                "FAIL" => assert!(
+                    texts.iter().all(|text| !text.contains(NOT_RUN_KIND)),
+                    "a step that never ran should not be listed: {texts:?}"
+                ),
+                "TIMEOUT" => assert_eq!(texts[1], format!("  {}", TIMEOUT_CAUSE)),
+                _ => {}
             }
         }
     }

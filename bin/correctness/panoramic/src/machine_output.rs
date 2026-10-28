@@ -8,7 +8,10 @@ use chrono::Local;
 use serde::Serialize;
 use tracing::warn;
 
-use crate::reporter::{DurationMs, PhaseTiming, TestError, TestOutcome, TestResult, TimeoutAttribution};
+use crate::record::StepStatus;
+use crate::reporter::{
+    DurationMs, Issue, PhaseTiming, StopCause, TestError, TestOutcome, TestResult, TimeoutAttribution,
+};
 
 /// Reported when the build could not read a repository to get a revision from.
 const UNKNOWN_REVISION: &str = "unknown";
@@ -51,15 +54,15 @@ const SEVERITY_MARKERS: &[&str] = &[
     "\"level\":\"error\"",
 ];
 
-/// Schema version of `run.json`. An absent version field denotes version 1.
-pub const RUN_REPORT_SCHEMA_VERSION: u32 = 2;
+/// Schema version of `run.json` and `result.json`. An absent version field denotes version 1.
+pub const REPORT_SCHEMA_VERSION: u32 = 2;
 
 /// A whole run, as consumed by a program.
 ///
 /// The run collector rewrites `run.json` throughout the run, so a reader may see any [`RunState`].
 #[derive(Debug, Serialize)]
 pub struct RunReport {
-    /// Report schema version, set to [`RUN_REPORT_SCHEMA_VERSION`].
+    /// Report schema version, set to [`REPORT_SCHEMA_VERSION`].
     pub schema_version: u32,
     /// Current run status.
     pub state: RunState,
@@ -166,12 +169,25 @@ pub struct TestReport {
     pub error: Option<TestError>,
     /// Which deadline fired and what the test was doing, when `outcome` is `timed_out`.
     pub timeout: Option<TimeoutAttribution>,
+    /// Cause and running steps for a test interrupted before its verdict.
+    pub cause: Option<StopCause>,
+    /// Problems after the verdict or during cleanup. They never change `outcome`.
+    pub issues: Vec<Issue>,
     /// Captured output lines worth reading first. Empty for a passing test.
     pub diagnostic_lines: Vec<DiagnosticLine>,
     /// Whether `diagnostic_lines` was capped.
     pub diagnostic_lines_truncated: bool,
-    /// One entry per assertion the test ran.
+    /// All planned steps and parallel members in procedure order, including those that never ran.
     pub assertions: Vec<AssertionReport>,
+}
+
+/// The contents of `result.json`: a [`TestReport`] with the schema version.
+#[derive(Serialize)]
+struct TestReportFile<'a> {
+    /// Report schema version, set to [`REPORT_SCHEMA_VERSION`].
+    schema_version: u32,
+    #[serde(flatten)]
+    report: &'a TestReport,
 }
 
 /// A captured output line the harness offers as a starting point for diagnosis.
@@ -254,14 +270,20 @@ pub struct PhaseTimingReport {
     pub duration_ms: u64,
 }
 
-/// One assertion within a test.
+/// One procedure step, or one member of a parallel block, within a test.
 #[derive(Debug, Serialize)]
 pub struct AssertionReport {
-    /// Position of the assertion within the test, starting at zero.
+    /// Zero-based position in this test's entries, counting parallel members separately.
     pub index: usize,
-    /// Kind of assertion, as named by the harness.
+    /// Position of the procedure step, starting at zero.
+    pub step: usize,
+    /// Position within a parallel block, starting at zero, or `null` for a step that runs alone.
+    pub member: Option<usize>,
+    /// Kind of assertion or action, as named by the harness.
     pub kind: String,
-    /// Whether the assertion passed.
+    /// How the step ended, or `not_run`.
+    pub status: StepStatus,
+    /// Whether `status` is `passed`.
     pub passed: bool,
     /// Human-readable summary.
     pub message: String,
@@ -281,7 +303,7 @@ impl RunReport {
         suite_dirs: Vec<PathBuf>, runtime: String, parallelism: usize, log_dir: PathBuf, selected: Vec<String>,
     ) -> Self {
         Self {
-            schema_version: RUN_REPORT_SCHEMA_VERSION,
+            schema_version: REPORT_SCHEMA_VERSION,
             state: RunState::Running,
             interrupted_reason: None,
             build_revision: build_revision(),
@@ -333,8 +355,11 @@ impl TestReport {
 
                 AssertionReport {
                     index,
+                    step: assertion.step,
+                    member: assertion.member,
                     kind: assertion.name.clone(),
-                    passed: assertion.passed,
+                    status: assertion.status,
+                    passed: assertion.status == StepStatus::Passed,
                     message: assertion.message.clone(),
                     duration_ms: DurationMs(assertion.duration).as_millis(),
                     details_truncated: details.len() > DETAIL_LINE_CAP,
@@ -364,6 +389,8 @@ impl TestReport {
             phase_timings: result.phase_timings.iter().map(PhaseTimingReport::new).collect(),
             error: result.error.clone(),
             timeout: result.timeout.clone(),
+            cause: result.cause.clone(),
+            issues: result.issues.clone(),
             diagnostic_lines,
             diagnostic_lines_truncated,
             assertions,
@@ -460,7 +487,11 @@ pub fn write_test_report(result: &TestResult, log_dir: &Path) {
     write_detail_files(result, log_dir);
 
     let report = TestReport::new(result);
-    write_json(&log_dir.join(TEST_REPORT_FILE_NAME), &report);
+    let file = TestReportFile {
+        schema_version: REPORT_SCHEMA_VERSION,
+        report: &report,
+    };
+    write_json(&log_dir.join(TEST_REPORT_FILE_NAME), &file);
 }
 
 /// Writes the run-level `run.json`.
@@ -604,7 +635,11 @@ mod tests {
         assert_eq!(json["phase_timings"][0]["phase"], "analysis");
         assert_eq!(json["phase_timings"][0]["duration_ms"], 20);
         assert_eq!(json["assertions"][0]["index"], 0);
+        assert_eq!(json["assertions"][0]["step"], 0);
+        assert!(json["assertions"][0]["member"].is_null());
         assert_eq!(json["assertions"][0]["kind"], "telemetry matches");
+        assert_eq!(json["assertions"][0]["status"], "failed");
+        assert_eq!(json["assertions"][0]["passed"], false);
         assert_eq!(json["assertions"][0]["details"][1], "two");
         assert_eq!(json["assertions"][0]["details_truncated"], false);
         let expected_details_path = PathBuf::from("/logs/correctness/dsd-plain")
@@ -615,6 +650,8 @@ mod tests {
             serde_json::to_value(expected_details_path).expect("details path should serialize")
         );
         assert!(json["error"].is_null());
+        assert!(json["cause"].is_null());
+        assert_eq!(json["issues"], serde_json::json!([]));
     }
 
     #[test]
@@ -700,6 +737,7 @@ mod tests {
             Duration::from_secs(30),
             Duration::from_secs(60),
             Some("assertions".to_string()),
+            Some("cleanup".to_string()),
         ));
 
         let deadline = serde_json::to_value(TestReport::new(&deadline)).expect("test report should serialize");
@@ -708,10 +746,12 @@ mod tests {
         assert_eq!(deadline["timeout"]["active_phase"], "container_start");
         assert_eq!(deadline["timeout"]["configured_ms"], 60_000);
         assert_eq!(deadline["timeout"]["test_deadline_ms"], 60_000);
+        assert!(deadline["timeout"]["grace_phase"].is_null());
 
         let grace = serde_json::to_value(TestReport::new(&grace)).expect("test report should serialize");
         assert_eq!(grace["timeout"]["deadline"], "cleanup_grace");
         assert_eq!(grace["timeout"]["active_phase"], "assertions");
+        assert_eq!(grace["timeout"]["grace_phase"], "cleanup");
         assert_eq!(grace["timeout"]["configured_ms"], 30_000);
         assert_eq!(grace["timeout"]["test_deadline_ms"], 60_000);
     }
@@ -986,6 +1026,10 @@ mod tests {
         assert_eq!(json["totals"]["errored"], 1);
         assert_eq!(json["totals"]["not_run"], 1);
         assert_eq!(json["tests"][0]["outcome"], "timed_out");
+        assert!(
+            json["tests"][0].get("schema_version").is_none(),
+            "only the report as a whole carries the version"
+        );
     }
 
     #[test]

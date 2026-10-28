@@ -22,14 +22,18 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::deadline::{Budget, Deadline};
+use crate::record::{ActiveStep, CaseRecord, StepStatus, Verdict};
 use crate::test::{RunnerSettings, Test, TestContext};
 use crate::{
-    assertions::{AssertionContext, AssertionResult, LogBuffer, TargetCommand},
+    assertions::{AssertionContext, LogBuffer, TargetCommand},
     config::{parse_file_spec, parse_port_spec},
     events::TestEvent,
     intake::IntakeClient,
     integration::IntegrationTestCase,
-    reporter::{ErrorKind, PhaseTiming, TestResult, TimeoutAttribution},
+    reporter::{
+        ErrorKind, Issue, IssueKind, PhaseTiming, PhaseTracker, StopCause, StoppedBy, TestResult, TimeoutAttribution,
+        UNKNOWN_PHASE,
+    },
 };
 
 /// A sender that the `Runner` can use to send `TestEvent`s.
@@ -399,39 +403,29 @@ impl Runner {
         let _ = event_sender.send(TestEvent::TestStarted { name: name.clone() });
 
         let phases = tctx.phases.clone();
+        let record = tctx.record.clone();
 
         let run_fut = test.run(tctx);
         pin!(run_fut);
 
-        // Run the test for the duration of 'timeout', then send a cancel request if it times out and wait GRACE_TIME
-        // for teardown.
+        // On timeout or run cancellation, cancel the test and allow GRACE_TIME for teardown.
         //
-        // The case timer wins ties with the test body, ensuring an expired case reports a timeout. The body
-        // precedes `cancel_all` to preserve a result ready when external cancellation arrives.
+        // The case timer wins ties with the body so an expired deadline is reported, even after a verdict.
+        // The body precedes `cancel_all` to preserve a result ready when external cancellation arrives.
         let mut result = tokio::select! {
             biased;
             _ = tokio::time::sleep_until(case.at) => {
-                // Read the active phase before cancelling, since teardown moves the test on from the
-                // phase the deadline interrupted.
-                let active_phase = phases.active();
+                let stop = Stop::snapshot(StoppedBy::CaseDeadline, &phases, &record);
                 test_cancel.cancel();
-                match tokio::time::timeout(GRACE_TIME, run_fut).await {
-                    // The test tore down in time, so it brings back its own phase timings and
-                    // whatever assertions it finished.
-                    Ok(r) => r
-                        .with_harness_error(ErrorKind::Timeout, format!("Test timed out after {:?}.", timeout))
-                        .with_timeout_attribution(TimeoutAttribution::test_deadline(timeout, active_phase)),
-                    Err(_) => TestResult::hard_timeout(name, timeout, started.elapsed(), active_phase, phases.completed())
-                }
+                let returned = tokio::time::timeout(GRACE_TIME, &mut run_fut).await.ok();
+                stop.settle(returned, &name, timeout, started.elapsed(), &phases, &record)
             }
             r = &mut run_fut => r,
-            // We received a request from above to kill all tests, so send the cancellation and wait GRACE_TIME.
             _ = cancel_all.cancelled() => {
+                let stop = Stop::snapshot(StoppedBy::Signal, &phases, &record);
                 test_cancel.cancel();
-                match tokio::time::timeout(GRACE_TIME, run_fut).await {
-                    Ok(r) => r.with_harness_error(ErrorKind::Internal, "Test was cancelled."),
-                    Err(_) => TestResult::cancellation_failure(name, GRACE_TIME, started.elapsed())
-                }
+                let returned = tokio::time::timeout(GRACE_TIME, &mut run_fut).await.ok();
+                stop.settle(returned, &name, timeout, started.elapsed(), &phases, &record)
             }
         };
 
@@ -451,6 +445,89 @@ impl Runner {
         });
 
         result
+    }
+}
+
+/// Test state captured before cancellation can change step statuses or advance the phase to teardown.
+struct Stop {
+    by: StoppedBy,
+    /// The phase the test was in.
+    active_phase: Option<String>,
+    /// Whether the test had reached its verdict.
+    decided: bool,
+    /// The procedure steps that were running.
+    active: Vec<ActiveStep>,
+}
+
+impl Stop {
+    fn snapshot(by: StoppedBy, phases: &PhaseTracker, record: &CaseRecord) -> Self {
+        Self {
+            by,
+            active_phase: phases.active(),
+            decided: record.decided(),
+            active: record.running(),
+        }
+    }
+
+    /// Uses the result returned during cleanup grace, falling back to the case record when grace expires.
+    ///
+    /// Preserves a verdict reached before cancellation, recording any expired deadline or cleanup grace as an issue.
+    /// Otherwise, the stop determines the outcome: a timeout for the case deadline, an internal error for a signal.
+    fn settle(
+        self, returned: Option<TestResult>, name: &str, timeout: Duration, elapsed: Duration, phases: &PhaseTracker,
+        record: &CaseRecord,
+    ) -> TestResult {
+        let grace_phase = returned
+            .is_none()
+            .then(|| phases.active().unwrap_or_else(|| UNKNOWN_PHASE.to_string()));
+        let mut result = returned.unwrap_or_else(|| record.result(name, elapsed, phases.completed()));
+        let grace_expired = grace_phase.as_ref().map(|phase| Issue {
+            kind: IssueKind::CleanupGraceExpired,
+            message: format!("cleanup grace {:?} expired in {}", GRACE_TIME, phase),
+        });
+
+        if self.decided {
+            if self.by == StoppedBy::CaseDeadline {
+                result.issues.push(Issue {
+                    kind: IssueKind::PostVerdictDeadline,
+                    message: format!(
+                        "case budget {:?} expired in {} after the verdict",
+                        timeout,
+                        self.active_phase.as_deref().unwrap_or(UNKNOWN_PHASE)
+                    ),
+                });
+            }
+            result.issues.extend(grace_expired);
+            return result;
+        }
+
+        result.cause = Some(StopCause {
+            by: self.by,
+            active: self.active,
+        });
+        match (self.by, grace_phase) {
+            (StoppedBy::CaseDeadline, None) => result
+                .with_harness_error(ErrorKind::Timeout, format!("Test timed out after {:?}.", timeout))
+                .with_timeout_attribution(TimeoutAttribution::test_deadline(timeout, self.active_phase)),
+            (StoppedBy::CaseDeadline, Some(grace_phase)) => result
+                .with_harness_error(
+                    ErrorKind::Timeout,
+                    format!(
+                        "Test timed out after {:?} and did not clean up its resources within {:?}.",
+                        timeout, GRACE_TIME
+                    ),
+                )
+                .with_timeout_attribution(TimeoutAttribution::cleanup_grace(
+                    GRACE_TIME,
+                    timeout,
+                    self.active_phase,
+                    Some(grace_phase),
+                )),
+            (StoppedBy::Signal, _) => {
+                result.issues.extend(grace_expired);
+                result.with_harness_error(ErrorKind::Internal, "Test was cancelled.")
+            }
+        }
     }
 }
 
@@ -557,14 +634,9 @@ impl IntegrationRunner {
                 }
                 Err(e) => {
                     error!(test = %test_name, error = %e, "Failed to start intake sidecar.");
-                    let _ = self.cleanup().await;
-                    return TestResult::errored(
-                        test_name,
-                        ErrorKind::Setup,
-                        format!("Failed to start intake sidecar: {}", e),
-                        started.elapsed(),
-                        phase_timings,
-                    );
+                    return self
+                        .fail_setup(format!("Failed to start intake sidecar: {}", e), started, phase_timings)
+                        .await;
                 }
             }
         }
@@ -579,14 +651,9 @@ impl IntegrationRunner {
                 phase_timings.push(phase.finish());
                 // An intake sidecar started above already owns a container and the isolation group's
                 // network, so tear the group down before giving up on the test.
-                let _ = self.cleanup().await;
-                return TestResult::errored(
-                    test_name,
-                    ErrorKind::Setup,
-                    format!("Failed to create driver: {}", e),
-                    started.elapsed(),
-                    phase_timings,
-                );
+                return self
+                    .fail_setup(format!("Failed to create driver: {}", e), started, phase_timings)
+                    .await;
             }
         };
 
@@ -596,14 +663,9 @@ impl IntegrationRunner {
             Err(e) => {
                 error!(test = %test_name, error = %e, "Failed to start container.");
                 phase_timings.push(phase.finish());
-                let _ = self.cleanup().await;
-                return TestResult::errored(
-                    test_name,
-                    ErrorKind::Setup,
-                    format!("Failed to start container: {}", e),
-                    started.elapsed(),
-                    phase_timings,
-                );
+                return self
+                    .fail_setup(format!("Failed to start container: {}", e), started, phase_timings)
+                    .await;
             }
         };
         phase_timings.push(phase.finish());
@@ -672,18 +734,12 @@ impl IntegrationRunner {
                         if value.is_empty() {
                             error!(test = %test_name, key = key, "Dynamic variable resolved to empty string.");
                             phase_timings.push(phase.finish());
-                            let _ = self.cleanup().await;
-                            return TestResult::errored(
-                                test_name,
-                                ErrorKind::Setup,
-                                format!(
-                                    "Dynamic variable PANORAMIC_DYNAMIC_{} resolved to an empty string. \
-                                     The shell command in the test config likely failed.",
-                                    key
-                                ),
-                                started.elapsed(),
-                                phase_timings,
+                            let message = format!(
+                                "Dynamic variable PANORAMIC_DYNAMIC_{} resolved to an empty string. \
+                                 The shell command in the test config likely failed.",
+                                key
                             );
+                            return self.fail_setup(message, started, phase_timings).await;
                         }
                     }
 
@@ -699,31 +755,24 @@ impl IntegrationRunner {
                     if !unresolved.is_empty() {
                         error!(test = %test_name, unresolved = ?unresolved, "Unresolved dynamic variable placeholders.");
                         phase_timings.push(phase.finish());
-                        let _ = self.cleanup().await;
-                        return TestResult::errored(
-                            test_name,
-                            ErrorKind::Setup,
-                            format!(
-                                "Unresolved dynamic variable placeholders in assertions: {}. \
-                                 Check that matching PANORAMIC_DYNAMIC_* env vars are defined.",
-                                unresolved.join(", ")
-                            ),
-                            started.elapsed(),
-                            phase_timings,
+                        let message = format!(
+                            "Unresolved dynamic variable placeholders in assertions: {}. \
+                             Check that matching PANORAMIC_DYNAMIC_* env vars are defined.",
+                            unresolved.join(", ")
                         );
+                        return self.fail_setup(message, started, phase_timings).await;
                     }
                 }
                 Err(e) => {
                     error!(test = %test_name, error = %e, "Failed to resolve dynamic variables.");
                     phase_timings.push(phase.finish());
-                    let _ = self.cleanup().await;
-                    return TestResult::errored(
-                        test_name,
-                        ErrorKind::Setup,
-                        format!("Failed to resolve dynamic variables: {}", e),
-                        started.elapsed(),
-                        phase_timings,
-                    );
+                    return self
+                        .fail_setup(
+                            format!("Failed to resolve dynamic variables: {}", e),
+                            started,
+                            phase_timings,
+                        )
+                        .await;
                 }
             }
 
@@ -740,40 +789,19 @@ impl IntegrationRunner {
         let phase = self.tctx.phases.enter("assertions");
         let test_cancel = self.tctx.test_cancel_token();
 
-        let assertion_results = self
-            .run_assertions(
-                &port_mappings,
-                details.container_ip(),
-                &container_name,
-                &exit_token,
-                docker_exit_code,
-                intake_host_port,
-            )
-            .await;
+        self.run_assertions(
+            &port_mappings,
+            details.container_ip(),
+            &container_name,
+            &exit_token,
+            docker_exit_code,
+            intake_host_port,
+        )
+        .await;
         phase_timings.push(phase.finish());
 
         // Cancel the exit monitor.
         exit_handle.abort();
-
-        // Determine if the test passed.
-        let passed = assertion_results.iter().all(|r| r.passed);
-        let passed_count = assertion_results.iter().filter(|r| r.passed).count();
-        let failed_count = assertion_results.len() - passed_count;
-
-        if passed {
-            info!(
-                test = %test_name,
-                assertions_passed = passed_count,
-                "All assertions passed."
-            );
-        } else {
-            error!(
-                test = %test_name,
-                assertions_passed = passed_count,
-                assertions_failed = failed_count,
-                "Some assertions failed."
-            );
-        }
 
         // Keep what the intake holds now as diagnostic evidence; retention is decided once the verdict is final.
         if let Some(intake_host_port) = intake_host_port {
@@ -805,14 +833,31 @@ impl IntegrationRunner {
         debug!(test = %test_name, "Cleanup complete.");
         phase_timings.push(phase.finish());
 
+        let result = self.tctx.record.result(&test_name, started.elapsed(), phase_timings);
         info!(
             test = %test_name,
-            passed = passed,
+            outcome = %result.outcome,
             duration = ?started.elapsed(),
             "Test case completed."
         );
+        result
+    }
 
-        TestResult::from_assertions(test_name, started.elapsed(), assertion_results, phase_timings)
+    /// Records a setup failure before tearing down the isolation group, preserving the failure if teardown times out.
+    async fn fail_setup(&self, message: String, started: Instant, phase_timings: Vec<PhaseTiming>) -> TestResult {
+        let mut result = TestResult::errored(
+            self.test_case.config.name.clone(),
+            ErrorKind::Setup,
+            message,
+            started.elapsed(),
+            phase_timings,
+        );
+        self.tctx.record.decide(Verdict::SetupFailed(Box::new(result.clone())));
+        let phase = self.tctx.phases.enter("cleanup");
+        let _ = self.cleanup().await;
+        result.phase_timings.push(phase.finish());
+        result.duration = started.elapsed();
+        result
     }
 
     async fn build_driver_config(&self) -> Result<DriverConfig, GenericError> {
@@ -1005,7 +1050,7 @@ impl IntegrationRunner {
         &self, port_mappings: &HashMap<String, u16>, container_ip: Option<&str>, container_name: &str,
         exit_token: &CancellationToken, docker_exit_code: crate::assertions::DockerExitCodeCell,
         intake_host_port: Option<u16>,
-    ) -> Vec<AssertionResult> {
+    ) {
         let target_os = if self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME {
             ContainerOs::Windows
         } else {
@@ -1027,16 +1072,10 @@ impl IntegrationRunner {
             adp_cli_command: container_adp_cli_command(target_os),
             core_agent_cli_command: container_core_agent_cli_command(target_os),
         };
-        crate::assertions::run_assertion_steps(&self.test_case, &ctx, self.tctx.deadline).await
+        crate::assertions::run_assertion_steps(&self.test_case, &ctx, self.tctx.deadline, &self.tctx.record).await
     }
 
     async fn cleanup(&self) -> Result<(), GenericError> {
-        // Cancel any running operations holding children of cancel token.
-        self.tctx.test_cancel_token().cancel();
-
-        // Give background tasks a moment to notice cancellation.
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
         // Clean up all resources in the isolation group.
         Driver::clean_related_resources(self.isolation_group_id.clone())
             .await
@@ -1094,11 +1133,21 @@ fn write_result_log(result: &TestResult, dir: impl AsRef<Path>) {
         let _ = writeln!(f, "{}", line);
     }
 
-    if !result.assertion_results.is_empty() {
+    let ran: Vec<_> = result
+        .assertion_results
+        .iter()
+        .enumerate()
+        .filter(|(_, step)| step.status != StepStatus::NotRun)
+        .collect();
+    if !ran.is_empty() {
         let _ = writeln!(f);
         let _ = writeln!(f, "Assertions:");
-        for (i, assertion) in result.assertion_results.iter().enumerate() {
-            let indicator = if assertion.passed { "+" } else { "-" };
+        for (i, assertion) in ran {
+            let indicator = if assertion.status == StepStatus::Passed {
+                "+"
+            } else {
+                "-"
+            };
             let _ = writeln!(f, "  {} {} ({:.2?})", indicator, assertion.name, assertion.duration);
             let full_details = result.assertion_details.get(i).map(|d| d.as_slice()).unwrap_or(&[]);
             if !full_details.is_empty() {
@@ -1124,36 +1173,6 @@ fn write_result_log(result: &TestResult, dir: impl AsRef<Path>) {
 
 // These TestResult constructors just declutter the execution code a little bit.
 impl TestResult {
-    fn hard_timeout(
-        name: impl Into<String>, timeout: Duration, total_duration: Duration, active_phase: Option<String>,
-        phase_timings: Vec<PhaseTiming>,
-    ) -> Self {
-        Self::errored(
-            name,
-            ErrorKind::Timeout,
-            format!(
-                "Test timed out after {:?} and did not clean up its resources within {:?}.",
-                timeout, GRACE_TIME
-            ),
-            total_duration,
-            phase_timings,
-        )
-        .with_timeout_attribution(TimeoutAttribution::cleanup_grace(GRACE_TIME, timeout, active_phase))
-    }
-
-    fn cancellation_failure(name: impl Into<String>, grace: Duration, total_duration: Duration) -> Self {
-        Self::errored(
-            name,
-            ErrorKind::Internal,
-            format!(
-                "Test was cancelled and failed to clean up its resources with a grace period of {:?}.",
-                grace
-            ),
-            total_duration,
-            vec![],
-        )
-    }
-
     fn setup_error(name: impl Into<String>, total_duration: Duration, e: impl AsRef<str>) -> Self {
         Self::errored(
             name,
@@ -1173,8 +1192,8 @@ pub(crate) mod test_support {
     use tokio::sync::Notify;
 
     use super::*;
-    use crate::assertions::run_assertion_steps;
     use crate::assertions::test_support::{host_context, procedure};
+    use crate::assertions::{run_assertion_steps, AssertionResult};
     use crate::test::TestSuite;
 
     /// What a [`ScriptedTest`] does once it has entered its phase.
@@ -1192,6 +1211,17 @@ pub(crate) mod test_support {
         ReturnAtDeadline,
         /// Runs `procedure:` entries on the host against a `ready` log line and reports the step results.
         Procedure(&'static str),
+        /// Runs [`Behavior::Procedure`], finishes its phase, then waits for cancellation in `then_phase`.
+        ///
+        /// Returns the recorded result if `returns_on_cancel` is set; otherwise stays pending.
+        ProcedureThenWait {
+            steps: &'static str,
+            then_phase: &'static str,
+            returns_on_cancel: bool,
+        },
+        /// Returns a setup error on cancellation. With `recorded`, records the verdict before waiting;
+        /// otherwise simulates a setup wait that fails due to cancellation.
+        SetupError { recorded: bool },
     }
 
     /// A test that enters a phase and then behaves as scripted.
@@ -1244,9 +1274,8 @@ pub(crate) mod test_support {
         }
 
         async fn run(&self, tctx: TestContext) -> TestResult {
-            // The phase is deliberately left active: a test that overruns its deadline does not get
-            // to finish the phase it was in.
-            let _phase = tctx.phases.enter(self.phase);
+            // Keep the phase active to model an interrupted phase; `ProcedureThenWait` finishes it before switching.
+            let phase = tctx.phases.enter(self.phase);
             if let Some(entered) = &self.entered {
                 entered.notify_one();
             }
@@ -1281,12 +1310,51 @@ pub(crate) mod test_support {
                 }
                 Behavior::Procedure(steps) => {
                     let started = Instant::now();
-                    let ctx = host_context(tctx.test_cancel_token());
-                    ctx.log_buffer.write().unwrap().stdout.push("ready".to_string());
-                    let results = run_assertion_steps(&procedure(steps), &ctx, tctx.deadline).await;
-                    TestResult::from_assertions(&self.name, started.elapsed(), results, Vec::new())
+                    self.run_procedure(steps, &tctx).await;
+                    tctx.record.result(&self.name, started.elapsed(), Vec::new())
+                }
+                Behavior::ProcedureThenWait {
+                    steps,
+                    then_phase,
+                    returns_on_cancel,
+                } => {
+                    let started = Instant::now();
+                    self.run_procedure(steps, &tctx).await;
+                    phase.finish();
+                    let _then = tctx.phases.enter(then_phase);
+                    tctx.test_cancel_token().cancelled().await;
+                    if !returns_on_cancel {
+                        std::future::pending::<()>().await;
+                    }
+                    tctx.record
+                        .result(&self.name, started.elapsed(), tctx.phases.completed())
+                }
+                Behavior::SetupError { recorded } => {
+                    let failed = |message| {
+                        TestResult::errored(
+                            &self.name,
+                            ErrorKind::Setup,
+                            message,
+                            Duration::from_millis(1),
+                            Vec::new(),
+                        )
+                    };
+                    if recorded {
+                        tctx.record.decide(Verdict::SetupFailed(Box::new(failed("boom"))));
+                    }
+                    tctx.test_cancel_token().cancelled().await;
+                    failed(if recorded { "boom" } else { "Canceled while waiting." })
                 }
             }
+        }
+    }
+
+    impl ScriptedTest {
+        /// Runs `steps` against a host context containing a `ready` log line and records their results.
+        async fn run_procedure(&self, steps: &str, tctx: &TestContext) {
+            let ctx = host_context(tctx.test_cancel_token());
+            ctx.log_buffer.write().unwrap().stdout.push("ready".to_string());
+            run_assertion_steps(&procedure(steps), &ctx, tctx.deadline, &tctx.record).await;
         }
     }
 
@@ -1304,19 +1372,32 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::{test_runner_settings, Behavior, ScriptedTest};
     use super::*;
-    use crate::reporter::{DurationMs, PhaseTracker, TestOutcome, TimeoutDeadline};
+    use crate::record::StepStatus;
+    use crate::reporter::test_support::{each_outcome, NOT_RUN_KIND};
+    use crate::reporter::{TestOutcome, TimeoutDeadline};
 
-    /// Runs one test to completion in `log_base_dir`, discarding its events.
-    async fn run_scripted_test(test: ScriptedTest, log_base_dir: &Path) -> TestResult {
+    /// A bound for real-time tests.
+    const BOUND: Duration = Duration::from_secs(5);
+
+    /// Bounds paused-time tests while allowing the runner's [`GRACE_TIME`] to expire.
+    const PAUSED_BOUND: Duration = Duration::from_secs(120);
+
+    /// An assertion that matches the log line [`Behavior::Procedure`] provides.
+    const LOG_MATCHES: &str = "- assertion: log_contains\n  pattern: ready\n  timeout: 5s\n";
+
+    /// Runs a test within `bound`, using `log_base_dir` and run cancellation `cancel_all`. Discards events.
+    async fn run_scripted_test(
+        test: ScriptedTest, log_base_dir: &Path, cancel_all: &CancellationToken, bound: Duration,
+    ) -> TestResult {
         let mounts_dir = tempfile::tempdir().expect("temp dir should be creatable");
         let (tx, _rx) = mpsc::unbounded_channel();
 
         tokio::time::timeout(
-            Duration::from_secs(5),
+            bound,
             Runner::run_one(
                 &test,
                 &tx,
-                &CancellationToken::new(),
+                cancel_all,
                 log_base_dir.to_path_buf(),
                 test_runner_settings(mounts_dir.path()),
                 None,
@@ -1324,6 +1405,37 @@ mod tests {
         )
         .await
         .expect("the runner should finish the test within the bound")
+    }
+
+    /// Returns a token that cancels the run after `after`.
+    fn cancel_all_after(after: Duration) -> CancellationToken {
+        let cancel_all = CancellationToken::new();
+        let cancel = cancel_all.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(after).await;
+            cancel.cancel();
+        });
+        cancel_all
+    }
+
+    /// Each recorded step's kind, parallel member, and status.
+    fn statuses(result: &TestResult) -> Vec<(&str, Option<usize>, StepStatus)> {
+        result
+            .assertion_results
+            .iter()
+            .map(|step| (step.name.as_str(), step.member, step.status))
+            .collect()
+    }
+
+    fn phase_names(result: &TestResult) -> Vec<&str> {
+        result.phase_timings.iter().map(|t| t.phase.as_str()).collect()
+    }
+
+    fn issue(kind: IssueKind, message: &str) -> Issue {
+        Issue {
+            kind,
+            message: message.to_string(),
+        }
     }
 
     /// Creates a test that times out in `phase` and returns on cancellation.
@@ -1374,7 +1486,13 @@ mod tests {
     #[tokio::test]
     async fn test_deadline_timeout_names_the_phase_that_was_active() {
         let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
-        let result = run_scripted_test(timing_out_in("container_start"), log_base_dir.path()).await;
+        let result = run_scripted_test(
+            timing_out_in("container_start"),
+            log_base_dir.path(),
+            &CancellationToken::new(),
+            BOUND,
+        )
+        .await;
 
         let timeout = result.timeout.expect("a timed-out test should carry timeout detail");
         assert_eq!(result.outcome, TestOutcome::TimedOut);
@@ -1386,7 +1504,13 @@ mod tests {
     #[tokio::test]
     async fn result_log_labels_a_timeout_and_gives_its_cause() {
         let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
-        let result = run_scripted_test(timing_out_in("container_start"), log_base_dir.path()).await;
+        let result = run_scripted_test(
+            timing_out_in("container_start"),
+            log_base_dir.path(),
+            &CancellationToken::new(),
+            BOUND,
+        )
+        .await;
 
         let log_dir = result.log_dir.expect("the runner should record the log directory");
         let result_log = std::fs::read_to_string(log_dir.join("result.log")).expect("result.log should exist");
@@ -1394,6 +1518,26 @@ mod tests {
         let first = lines.next().expect("result.log should not be empty");
         assert!(first.starts_with("TIMEOUT stuck "), "first line was: {}", first);
         assert_eq!(lines.next(), Some("case budget 50ms expired in container_start"));
+    }
+
+    #[test]
+    fn result_log_counts_the_steps_that_never_ran_instead_of_listing_them() {
+        let log_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let [_, (failed, _), ..] = each_outcome();
+
+        write_result_log(&failed, log_dir.path());
+
+        let result_log = std::fs::read_to_string(log_dir.path().join("result.log")).expect("result.log should exist");
+        let assertions: Vec<&str> = result_log
+            .lines()
+            .skip_while(|line| *line != "Assertions:")
+            .skip(1)
+            .take_while(|line| !line.is_empty())
+            .filter(|line| !line.starts_with("    "))
+            .collect();
+        assert_eq!(assertions, ["  - log_contains (1.00ms)"], "{result_log}");
+        assert!(!result_log.contains(NOT_RUN_KIND), "{result_log}");
+        assert!(result_log.contains("\n1 step not run\n"), "{result_log}");
     }
 
     #[tokio::test]
@@ -1410,27 +1554,36 @@ mod tests {
             )
         };
 
-        let result = run_scripted_test(test, log_base_dir.path()).await;
+        let result = run_scripted_test(test, log_base_dir.path(), &CancellationToken::new(), BOUND).await;
 
         assert_eq!(result.outcome, TestOutcome::TimedOut);
-        let timeout = result.timeout.expect("a timed-out test should carry timeout detail");
+        let timeout = result
+            .timeout
+            .as_ref()
+            .expect("a timed-out test should carry timeout detail");
         assert_eq!(timeout.deadline, TimeoutDeadline::TestDeadline);
         assert_eq!(timeout.active_phase, "assertions");
-        assert_eq!(result.assertion_results.len(), 2, "{:?}", result.assertion_results);
-        assert!(result.assertion_results[0].passed);
-        let interrupted = &result.assertion_results[1];
-        assert_eq!(interrupted.name, "process_stable_for");
-        assert!(!interrupted.passed);
-        assert!(
-            interrupted.message.contains("the case budget of 300ms expired."),
-            "{}",
-            interrupted.message
+        assert_eq!(
+            statuses(&result),
+            [
+                ("log_contains", None, StepStatus::Passed),
+                ("process_stable_for", None, StepStatus::Interrupted),
+            ]
         );
+        let interrupted = &result.assertion_results[1];
         assert!(
             interrupted.message.contains("of its 30s step budget"),
             "{}",
             interrupted.message
         );
+        let cause = result.cause.as_ref().expect("a stopped test should carry its cause");
+        assert_eq!(cause.by, StoppedBy::CaseDeadline);
+        let active: Vec<_> = cause
+            .active
+            .iter()
+            .map(|step| (step.step, step.member, step.kind.as_str(), step.budget_ms))
+            .collect();
+        assert_eq!(active, [(1, None, "process_stable_for", 30_000)]);
     }
 
     #[tokio::test]
@@ -1446,7 +1599,7 @@ mod tests {
             ),
         );
 
-        let result = run_scripted_test(test, log_base_dir.path()).await;
+        let result = run_scripted_test(test, log_base_dir.path(), &CancellationToken::new(), BOUND).await;
 
         assert_eq!(result.outcome, TestOutcome::Failed);
         assert!(result.timeout.is_none());
@@ -1467,7 +1620,7 @@ mod tests {
                 ..ScriptedTest::new("tie", Behavior::ReturnAtDeadline)
             };
 
-            let result = run_scripted_test(test, log_base_dir.path()).await;
+            let result = run_scripted_test(test, log_base_dir.path(), &CancellationToken::new(), BOUND).await;
 
             assert_eq!(
                 result.outcome,
@@ -1477,34 +1630,219 @@ mod tests {
         }
     }
 
-    #[test]
-    fn cleanup_grace_timeout_keeps_the_phase_and_the_timings_the_test_left_behind() {
-        // Stands in for a test whose future never came back: the runner has only what the shared
-        // tracker holds.
-        let phases = PhaseTracker::default();
-        phases.enter("container_start").finish();
-        let _stuck_in = phases.enter("assertions");
+    #[tokio::test(start_paused = true)]
+    async fn a_body_dropped_after_its_procedure_keeps_its_steps_and_where_grace_ran_out() {
+        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let steps = "- assertion: log_contains\n  pattern: ready\n  timeout: 5s\n\
+                     - assertion: log_contains\n  pattern: ready\n  timeout: 5s\n\
+                     - parallel:\n  - assertion: process_stable_for\n    duration: 600s\n  \
+                     - assertion: process_stable_for\n    duration: 600s\n\
+                     - assertion: log_contains\n  pattern: ready\n  timeout: 5s\n";
+        let test = ScriptedTest {
+            timeout: Duration::from_secs(1),
+            ..ScriptedTest::new(
+                "dropped",
+                Behavior::ProcedureThenWait {
+                    steps,
+                    then_phase: "cleanup",
+                    returns_on_cancel: false,
+                },
+            )
+        };
 
-        let result = TestResult::hard_timeout(
-            "stuck",
-            Duration::from_secs(60),
-            Duration::from_secs(90),
-            phases.active(),
-            phases.completed(),
-        );
+        let result = run_scripted_test(test, log_base_dir.path(), &CancellationToken::new(), PAUSED_BOUND).await;
 
-        let timeout = result.timeout.expect("a timed-out test should carry timeout detail");
+        assert_eq!(result.outcome, TestOutcome::TimedOut);
+        let timeout = result
+            .timeout
+            .as_ref()
+            .expect("a timed-out test should carry timeout detail");
         assert_eq!(timeout.deadline, TimeoutDeadline::CleanupGrace);
         assert_eq!(timeout.active_phase, "assertions");
-        assert_eq!(timeout.configured_ms, DurationMs(GRACE_TIME).as_millis());
-        assert_eq!(timeout.test_deadline_ms, 60_000);
+        assert_eq!(timeout.grace_phase.as_deref(), Some("cleanup"));
+        let cause = result.cause.as_ref().expect("a stopped test should carry its cause");
+        assert_eq!(cause.by, StoppedBy::CaseDeadline);
+        let member = |member| ActiveStep {
+            step: 2,
+            member: Some(member),
+            kind: "process_stable_for".to_string(),
+            elapsed_ms: 1_000,
+            budget_ms: 600_000,
+        };
+        assert_eq!(cause.active, [member(0), member(1)]);
+        let expected_statuses = [
+            ("log_contains", None, StepStatus::Passed),
+            ("log_contains", None, StepStatus::Passed),
+            ("process_stable_for", Some(0), StepStatus::Interrupted),
+            ("process_stable_for", Some(1), StepStatus::Interrupted),
+            ("log_contains", None, StepStatus::NotRun),
+        ];
+        assert_eq!(statuses(&result), expected_statuses);
+        assert_eq!(phase_names(&result), ["assertions"]);
+
+        let log_dir = result
+            .log_dir
+            .as_ref()
+            .expect("the runner should record the log directory");
+        let written = std::fs::read_to_string(log_dir.join("result.json")).expect("result.json should exist");
+        let json: serde_json::Value = serde_json::from_str(&written).expect("result.json should parse");
+        assert_eq!(json["schema_version"], 2);
+        let written_statuses: Vec<&str> = json["assertions"]
+            .as_array()
+            .expect("assertions is an array")
+            .iter()
+            .map(|step| step["status"].as_str().expect("status is a string"))
+            .collect();
         assert_eq!(
-            result
-                .phase_timings
-                .iter()
-                .map(|t| t.phase.as_str())
-                .collect::<Vec<_>>(),
-            vec!["container_start"]
+            written_statuses,
+            ["passed", "passed", "interrupted", "interrupted", "not_run"]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_verdict_reached_before_the_runner_stops_the_test_is_kept() {
+        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let passes_then_waits = |timeout, returns_on_cancel| ScriptedTest {
+            timeout,
+            ..ScriptedTest::new(
+                "decided",
+                Behavior::ProcedureThenWait {
+                    steps: LOG_MATCHES,
+                    then_phase: "intake_capture",
+                    returns_on_cancel,
+                },
+            )
+        };
+        let deadline_issue = issue(
+            IssueKind::PostVerdictDeadline,
+            "case budget 1s expired in intake_capture after the verdict",
+        );
+        let grace_issue = issue(
+            IssueKind::CleanupGraceExpired,
+            "cleanup grace 30s expired in intake_capture",
+        );
+        let cases = [
+            (
+                "timer, returns",
+                passes_then_waits(Duration::from_secs(1), true),
+                CancellationToken::new(),
+                vec![deadline_issue.clone()],
+            ),
+            (
+                "timer, never returns",
+                passes_then_waits(Duration::from_secs(1), false),
+                CancellationToken::new(),
+                vec![deadline_issue, grace_issue],
+            ),
+            (
+                "signal, returns",
+                passes_then_waits(Duration::from_secs(60), true),
+                cancel_all_after(Duration::from_secs(1)),
+                vec![],
+            ),
+        ];
+
+        for (case, test, cancel_all, issues) in cases {
+            let result = run_scripted_test(test, log_base_dir.path(), &cancel_all, PAUSED_BOUND).await;
+
+            assert_eq!(result.outcome, TestOutcome::Passed, "{case}: {:?}", result.error);
+            assert!(result.cause.is_none(), "{case}: {:?}", result.cause);
+            assert!(result.timeout.is_none(), "{case}: {:?}", result.timeout);
+            assert_eq!(result.issues, issues, "{case}");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_setup_error_is_kept_only_if_it_was_reached_before_the_deadline() {
+        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let setup_error = |phase, recorded| ScriptedTest {
+            timeout: Duration::from_secs(1),
+            phase,
+            ..ScriptedTest::new("setup", Behavior::SetupError { recorded })
+        };
+
+        let recorded = run_scripted_test(
+            setup_error("cleanup", true),
+            log_base_dir.path(),
+            &CancellationToken::new(),
+            PAUSED_BOUND,
+        )
+        .await;
+
+        assert_eq!(recorded.outcome, TestOutcome::Errored);
+        let error = recorded.error.as_ref().expect("a setup failure should carry its error");
+        assert_eq!((error.kind, error.message.as_str()), (ErrorKind::Setup, "boom"));
+        assert_eq!(
+            recorded.issues,
+            [issue(
+                IssueKind::PostVerdictDeadline,
+                "case budget 1s expired in cleanup after the verdict"
+            )]
+        );
+
+        let unrecorded = run_scripted_test(
+            setup_error("intake_start", false),
+            log_base_dir.path(),
+            &CancellationToken::new(),
+            PAUSED_BOUND,
+        )
+        .await;
+
+        assert_eq!(unrecorded.outcome, TestOutcome::TimedOut, "{:?}", unrecorded.error);
+        let timeout = unrecorded
+            .timeout
+            .as_ref()
+            .expect("a timed-out test should carry timeout detail");
+        assert_eq!(timeout.deadline, TimeoutDeadline::TestDeadline);
+        assert_eq!(timeout.active_phase, "intake_start");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_signal_whose_grace_expires_stays_interrupted() {
+        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let test = ScriptedTest {
+            timeout: Duration::from_secs(60),
+            ..ScriptedTest::new(
+                "interrupted",
+                Behavior::ProcedureThenWait {
+                    steps: "- assertion: process_stable_for\n  duration: 600s\n",
+                    then_phase: "cleanup",
+                    returns_on_cancel: false,
+                },
+            )
+        };
+
+        let result = run_scripted_test(
+            test,
+            log_base_dir.path(),
+            &cancel_all_after(Duration::from_secs(1)),
+            PAUSED_BOUND,
+        )
+        .await;
+
+        assert_eq!(result.outcome, TestOutcome::Errored);
+        assert_eq!(result.error.as_ref().map(|e| e.kind), Some(ErrorKind::Internal));
+        assert_eq!(result.label(), "INTERRUPTED");
+        let cause = result.cause.as_ref().expect("a stopped test should carry its cause");
+        assert_eq!(cause.by, StoppedBy::Signal);
+        let active: Vec<_> = cause
+            .active
+            .iter()
+            .map(|step| (step.step, step.kind.as_str()))
+            .collect();
+        assert_eq!(active, [(0, "process_stable_for")]);
+        assert_eq!(
+            result.issues,
+            [issue(
+                IssueKind::CleanupGraceExpired,
+                "cleanup grace 30s expired in cleanup"
+            )]
+        );
+        assert!(result.timeout.is_none(), "{:?}", result.timeout);
+        assert_eq!(phase_names(&result), ["assertions"]);
+        assert_eq!(
+            statuses(&result),
+            [("process_stable_for", None, StepStatus::Interrupted)]
         );
     }
 

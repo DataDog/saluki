@@ -603,13 +603,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_refreshes_peer_tag_keys_before_each_buffer() {
-        use saluki_core::accounting::{ComponentRegistry, MemoryLimiter};
-        use saluki_core::components::ComponentContext;
-        use saluki_core::health::HealthRegistry;
-        use saluki_core::runtime::state::{DataspaceRegistry, ResourceRegistry};
-        use saluki_core::topology::interconnect::{Consumer, Dispatcher};
-        use saluki_core::topology::{EventsBuffer, OutputName, TopologyContext};
-        use tokio::{runtime::Handle, sync::mpsc};
+        use saluki_core::components::test_util::TestComponentDriver;
 
         let now = now_nanos();
         let (publisher, provider) = TestRegistryPublisher::new();
@@ -618,13 +612,12 @@ mod tests {
             peer_tags_aggregation: true,
             ..Default::default()
         };
-        let component_context = ComponentContext::test_transform("apm_stats");
-        let transform =
+        let builder =
             ApmStatsTransformConfiguration::from_configuration(&config, AgentEnv::resolve(None, None, &[], &[]))
-                .with_semantic_registry(provider)
-                .build(BuildContext::new(component_context.clone(), ResourceRegistry::new()))
-                .await
-                .expect("build should succeed");
+                .with_semantic_registry(provider);
+        let (control, mut outputs) = TestComponentDriver::transform(builder)
+            .await
+            .expect("transform should build");
 
         // The buffer refresh must see a registry published after construction.
         let remapped = registry_json(
@@ -649,51 +642,20 @@ mod tests {
             0,
             Some(meta),
         );
-        let mut input = EventsBuffer::default();
-        assert!(input
-            .try_push(Event::Trace(Trace::new(vec![span], TraceIngestInfo::Datadog)))
-            .is_none());
+        control
+            .send_event(Event::Trace(Trace::new(vec![span], TraceIngestInfo::Datadog)))
+            .await;
 
-        let mut dispatcher = Dispatcher::new(component_context.clone());
-        dispatcher.add_output(OutputName::Default).expect("add default output");
-        let (out_tx, mut out_rx) = mpsc::channel(4);
-        dispatcher
-            .attach_sender_to_output(&OutputName::Default, out_tx)
-            .expect("attach default sender");
-        let (in_tx, in_rx) = mpsc::channel(1);
-        in_tx.send(input).await.expect("send input buffer");
         // Closing the input makes the run loop flush and stop.
-        drop(in_tx);
-
-        let topology_context = TopologyContext::new(
-            Arc::from("test"),
-            MemoryLimiter::noop(),
-            HealthRegistry::new(),
-            Handle::current(),
-            DataspaceRegistry::new(),
-        );
-        let health = HealthRegistry::new()
-            .register_component(&saluki_core::support::SubsystemIdentifier::from_dotted("test"))
-            .expect("component was not previously registered");
-        let context = TransformContext::new(
-            &topology_context,
-            &component_context,
-            ComponentRegistry::default(),
-            health,
-            dispatcher,
-            Consumer::new(component_context.clone(), in_rx),
-        );
-        transform.run(context).await.expect("run should succeed");
+        control.shutdown().await.expect("run should succeed");
 
         let mut peer_tags = Vec::new();
-        while let Ok(buffer) = out_rx.try_recv() {
-            for event in buffer {
-                let Event::TraceStats(stats) = event else { continue };
-                for payload in stats.stats() {
-                    for bucket in payload.stats() {
-                        for grouped in bucket.stats() {
-                            peer_tags.extend(grouped.peer_tags().iter().map(|tag| tag.to_string()));
-                        }
+        for event in outputs.default_output().collect_events().await {
+            let Event::TraceStats(stats) = event else { continue };
+            for payload in stats.stats() {
+                for bucket in payload.stats() {
+                    for grouped in bucket.stats() {
+                        peer_tags.extend(grouped.peer_tags().iter().map(|tag| tag.to_string()));
                     }
                 }
             }

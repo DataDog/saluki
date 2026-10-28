@@ -353,7 +353,7 @@ mod tests {
         ConfigValue, SalukiConfiguration,
     };
     use axum::{extract::RawQuery, routing::get, Router};
-    use saluki_core::components::test_util::TestComponentSupervisor;
+    use saluki_core::runtime::test_util::TestSupervisor;
     use saluki_tls::initialize_default_crypto_provider;
     use tokio::net::TcpListener;
 
@@ -433,7 +433,7 @@ mod tests {
 
         // Both the refresher and validation spawn on the ambient supervisor, and it is what keeps them running for the
         // rest of the test.
-        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        let supervisor = TestSupervisor::start("test_forwarder").await;
         supervisor
             .scope(async move {
                 refresher.spawn();
@@ -563,7 +563,7 @@ mod tests {
             .expect("endpoints should resolve");
         let refresher =
             ApiKeyRefresher::new(&endpoints, &live.api_keys()).expect("the endpoints should follow the live views");
-        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        let supervisor = TestSupervisor::start("test_forwarder").await;
         supervisor.scope(async move { refresher.spawn() }).await;
 
         // Rotate the key at the configured position, and add a URL no endpoint was built for.

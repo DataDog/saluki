@@ -1303,9 +1303,11 @@ mod tests {
     use rustls::{version::TLS12, RootCertStore, ServerConfig};
     use saluki_common::buf::FrozenChunkedBytesBuffer;
     use saluki_core::{
-        components::test_util::TestComponentSupervisor,
         observability::ComponentMetricsExt as _,
-        runtime::state::{DataspaceRegistry, DataspaceUpdate, IdentifierFilter},
+        runtime::{
+            state::{DataspaceRegistry, DataspaceUpdate, IdentifierFilter},
+            test_util::TestSupervisor,
+        },
     };
     use saluki_io::net::client::http::TlsMinimumVersion;
     use saluki_metrics::test::TestRecorder;
@@ -2449,7 +2451,7 @@ mod tests {
     /// The forwarder spawns on the ambient supervisor, so it has to be started inside the supervisor's scope; outside
     /// one it would panic for want of an ambient supervisor.
     async fn spawn_test_forwarder(
-        supervisor: &TestComponentSupervisor, forwarder: TransactionForwarder<FrozenChunkedBytesBuffer>,
+        supervisor: &TestSupervisor, forwarder: TransactionForwarder<FrozenChunkedBytesBuffer>,
     ) -> Handle<FrozenChunkedBytesBuffer> {
         supervisor.scope(async move { forwarder.spawn() }).await
     }
@@ -2458,7 +2460,7 @@ mod tests {
     ///
     /// `ShutdownTimedOut` would mean a task ignored shutdown and had to be aborted, which for the endpoint loops would
     /// mean the retry queue never finished flushing.
-    async fn drain_test_forwarder(supervisor: TestComponentSupervisor, handle: Handle<FrozenChunkedBytesBuffer>) {
+    async fn drain_test_forwarder(supervisor: TestSupervisor, handle: Handle<FrozenChunkedBytesBuffer>) {
         handle.shutdown();
 
         let result = supervisor.shutdown().await;
@@ -2564,7 +2566,7 @@ mod tests {
         let (server_url, _counter) = start_recording_http_server(vec![StatusCode::OK]).await;
         let (_, forwarder) = build_test_forwarder(&server_url, Live::new_fixed(Secrets::default())).await;
 
-        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        let supervisor = TestSupervisor::start("test_forwarder").await;
         let handle = spawn_test_forwarder(&supervisor, forwarder).await;
 
         // The running descendants are one main I/O loop, one endpoint I/O loop for the single configured endpoint, and
@@ -2602,9 +2604,8 @@ mod tests {
         })
         .await;
 
-        let supervisor =
-            TestComponentSupervisor::start_with_component_timeout("test_forwarder", Duration::from_secs(30)).await;
-        supervisor.spawn_component("forwarder", move |shutdown| async move {
+        let supervisor = TestSupervisor::start_with_worker_timeout("test_forwarder", Duration::from_secs(30)).await;
+        supervisor.spawn_worker("forwarder", move |shutdown| async move {
             let handle = forwarder.spawn();
             handle
                 .send_transaction(build_test_transaction())
@@ -2768,7 +2769,7 @@ mod tests {
         .await;
         let (_, forwarder) = build_test_forwarder(&server_url, Live::new_fixed(Secrets::default())).await;
 
-        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        let supervisor = TestSupervisor::start("test_forwarder").await;
         let handle = spawn_test_forwarder(&supervisor, forwarder).await;
         handle
             .send_transaction(build_test_transaction())
@@ -2837,7 +2838,7 @@ mod tests {
         let (_, forwarder) = build_test_forwarder_following(&server_url, following).await;
 
         // Spawning the forwarder is what starts key refreshing in production.
-        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        let supervisor = TestSupervisor::start("test_forwarder").await;
         let handle = spawn_test_forwarder(&supervisor, forwarder).await;
         handle
             .send_transaction(build_test_transaction())
@@ -2877,7 +2878,7 @@ mod tests {
         let (server_url, counter) = start_recording_http_server(vec![StatusCode::FORBIDDEN, StatusCode::OK]).await;
         let (_, forwarder) = build_test_forwarder(&server_url, secrets_in_use()).await;
 
-        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        let supervisor = TestSupervisor::start("test_forwarder").await;
         let handle = spawn_test_forwarder(&supervisor, forwarder).await;
         handle
             .send_transaction(build_test_transaction())
@@ -2904,7 +2905,7 @@ mod tests {
         let (dataspace, forwarder) = build_test_forwarder(&server_url, Live::new_fixed(Secrets::default())).await;
         let mut events = dataspace.subscribe::<DiagnosticEvent>(IdentifierFilter::all());
 
-        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        let supervisor = TestSupervisor::start("test_forwarder").await;
         let handle = spawn_test_forwarder(&supervisor, forwarder).await;
         handle
             .send_transaction(build_test_transaction())
@@ -2935,7 +2936,7 @@ mod tests {
         let (dataspace, forwarder) = build_test_forwarder(&server_url, secrets).await;
         let mut events = dataspace.subscribe::<DiagnosticEvent>(IdentifierFilter::all());
 
-        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        let supervisor = TestSupervisor::start("test_forwarder").await;
         let handle = spawn_test_forwarder(&supervisor, forwarder).await;
         handle
             .send_transaction(build_test_transaction())

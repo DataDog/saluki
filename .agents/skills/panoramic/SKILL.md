@@ -15,7 +15,6 @@ disable-model-invocation: false
 
 Check the current `Makefile` recipes and `panoramic --help` before choosing a command. Use
 `panoramic run --help` for runner options and `panoramic list --help` to discover selection options.
-This keeps commands aligned with the working tree as the harness changes.
 
 Background:
 

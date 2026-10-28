@@ -166,7 +166,7 @@ inline is clearer than introducing a helper or a table for its own sake.
 
 To test a component's `run` loop, use `TestComponentDriver` from `saluki_core::components::test_util` instead of
 building the component's context by hand. It builds the component from its builder, connects its input and outputs,
-runs it under a component supervisor, and returns a control handle together with the outputs:
+runs it under a test supervisor, and returns a control handle together with the outputs:
 
 ```rust
 let (control, mut outputs) = TestComponentDriver::transform(builder).await?;
@@ -183,8 +183,13 @@ with a description of what it was waiting for, so a stuck component fails the te
 - To drive a piece of a component with a real context, build only the context, with
   `TestComponentDriver::options().source_context(..)` or the method for the component's type.
 
-The module's rustdoc covers draining outputs that can fill up, and what the driver can't reach. The driver is behind
-the `test-util` feature of `saluki-core`, so enable that feature in the testing crate's `dev-dependencies`.
+For code that isn't a whole component, such as a server that runs as a supervised worker, use `TestSupervisor` from
+`saluki_core::runtime::test_util` instead of a bare `Supervisor`. `TestSupervisor::start_with` adds static workers and
+returns once the supervisor is running, and its `dataspace()` reads what the workers assert, such as the address a
+server bound to.
+
+The module's rustdoc covers draining outputs that can fill up, and what the driver can't reach. These helpers are
+behind the `test-util` feature of `saluki-core`, so enable that feature in the testing crate's `dev-dependencies`.
 
 ## Mocking philosophy
 

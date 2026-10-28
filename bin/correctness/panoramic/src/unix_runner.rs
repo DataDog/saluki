@@ -45,9 +45,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
 use crate::{
-    assertions::{AssertionContext, AssertionResult, LogBuffer, TargetCommand},
+    assertions::{AssertionContext, LogBuffer, TargetCommand},
     config::parse_port_spec,
     integration::IntegrationTestCase,
+    record::Verdict,
     reporter::{ErrorKind, PhaseTiming, TestResult},
     test::{Test, TestContext},
 };
@@ -228,13 +229,12 @@ impl UnixIntegrationRunner {
 
         let phase = self.tctx.phases.enter("core_agent_ipc_ready");
         if let Err(e) = wait_for_agent_ipc_ready(&state_dir, CORE_AGENT_IPC_READY_TIMEOUT).await {
-            agent.cleanup().await;
             phase_timings.push(phase.finish());
-            return make_error_result(test_name, started, "core_agent_ipc_ready", e, phase_timings);
+            let result = make_error_result(test_name, started, "core_agent_ipc_ready", e, phase_timings);
+            return self.fail_setup(result, agent, started).await;
         }
         phase_timings.push(phase.finish());
         debug!(test = %test_name, "Core Agent IPC credentials present.");
-        let mut core_agent = Some(agent);
 
         // Phase: spawn ADP.
         let phase = self.tctx.phases.enter("spawn");
@@ -250,11 +250,9 @@ impl UnixIntegrationRunner {
         let process = match UnixProcess::spawn(process_config, log_sink, adp_exit_token.clone()).await {
             Ok(p) => p,
             Err(e) => {
-                if let Some(agent) = core_agent.take() {
-                    agent.cleanup().await;
-                }
                 phase_timings.push(phase.finish());
-                return make_error_result(test_name, started, "spawn", e, phase_timings);
+                let result = make_error_result(test_name, started, "spawn", e, phase_timings);
+                return self.fail_setup(result, agent, started).await;
             }
         };
         phase_timings.push(phase.finish());
@@ -263,25 +261,22 @@ impl UnixIntegrationRunner {
 
         // Phase: run assertions.
         let phase = self.tctx.phases.enter("assertions");
-        let assertion_results = self
-            .run_assertions(
-                process.name().to_string(),
-                adp_exit_token.clone(),
-                process.exit_code_cell(),
-                Some(core_agent_auth_token_path),
-                adp_cli_command,
-                core_agent_cli_command,
-            )
-            .await;
+        self.run_assertions(
+            process.name().to_string(),
+            adp_exit_token.clone(),
+            process.exit_code_cell(),
+            Some(core_agent_auth_token_path),
+            adp_cli_command,
+            core_agent_cli_command,
+        )
+        .await;
         phase_timings.push(phase.finish());
 
         // Phase: cleanup. ADP first, Core Agent second — in case the Agent's shutdown depends on
         // ADP releasing connections gracefully.
         let phase = self.tctx.phases.enter("cleanup");
         process.cleanup().await;
-        if let Some(agent) = core_agent.take() {
-            agent.cleanup().await;
-        }
+        agent.cleanup().await;
         phase_timings.push(phase.finish());
 
         // Phase: write captured logs to disk so the artifact upload picks them up. Matches the
@@ -293,7 +288,17 @@ impl UnixIntegrationRunner {
         }
         phase_timings.push(phase.finish());
 
-        TestResult::from_assertions(test_name, started.elapsed(), assertion_results, phase_timings)
+        self.tctx.record.result(&test_name, started.elapsed(), phase_timings)
+    }
+
+    /// Records a setup failure before stopping the Core Agent, preserving the failure if cleanup times out.
+    async fn fail_setup(&self, mut result: TestResult, agent: UnixProcess, started: Instant) -> TestResult {
+        self.tctx.record.decide(Verdict::SetupFailed(Box::new(result.clone())));
+        let phase = self.tctx.phases.enter("cleanup");
+        agent.cleanup().await;
+        result.phase_timings.push(phase.finish());
+        result.duration = started.elapsed();
+        result
     }
 
     /// Builds the port mappings for assertions. In the Docker runner this maps container ports
@@ -338,7 +343,7 @@ impl UnixIntegrationRunner {
         &self, process_display_name: String, exit_token: CancellationToken,
         exit_code_cell: airlock::unix::ExitCodeCell, core_agent_auth_token_path: Option<PathBuf>,
         adp_cli_command: TargetCommand, core_agent_cli_command: TargetCommand,
-    ) -> Vec<AssertionResult> {
+    ) {
         let ctx = AssertionContext {
             log_buffer: self.log_buffer.clone(),
             container_exit_token: exit_token,
@@ -355,7 +360,7 @@ impl UnixIntegrationRunner {
             adp_cli_command,
             core_agent_cli_command,
         };
-        crate::assertions::run_assertion_steps(&self.test_case, &ctx, self.tctx.deadline).await
+        crate::assertions::run_assertion_steps(&self.test_case, &ctx, self.tctx.deadline, &self.tctx.record).await
     }
 }
 
