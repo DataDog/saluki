@@ -2711,9 +2711,8 @@ mod tests {
         };
         let queue_id = generate_retry_queue_id(forwarder.context.clone(), endpoint.endpoint());
 
-        let supervisor =
-            TestComponentSupervisor::start_with_component_timeout("test_forwarder", Duration::from_secs(30)).await;
-        supervisor.spawn_component("forwarder", move |shutdown| async move {
+        let supervisor = TestSupervisor::start_with_worker_timeout("test_forwarder", Duration::from_secs(30)).await;
+        supervisor.spawn_worker("forwarder", move |shutdown| async move {
             let handle = forwarder.spawn();
             handle
                 .send_transaction(build_test_transaction())
