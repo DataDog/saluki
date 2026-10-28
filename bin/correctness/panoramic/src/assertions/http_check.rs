@@ -372,12 +372,16 @@ mod tests {
 
     #[tokio::test]
     async fn a_docker_exec_that_never_finishes_errors_the_check() {
-        let docker = FakeDocker::start(Duration::ZERO, |_, _| Exec::Stalled).await;
+        // Neither a stalled start nor unfinished output establishes a product observation. Cover both on Windows too;
+        // Running was previously used only by Unix-gated config tests, breaking Windows builds under deny(warnings).
+        for (phase, execution) in [("start", Exec::Stalled), ("output", Exec::Running)] {
+            let docker = FakeDocker::start(Duration::ZERO, move |_, _| execution.clone()).await;
 
-        let result = check_windows_target(&docker, Duration::from_secs(1)).await;
+            let result = check_windows_target(&docker, Duration::from_secs(1)).await;
 
-        assert_eq!(result.status, AssertionStatus::Errored, "{}", result.message);
-        assert!(result.message.contains("Timed out"), "{}", result.message);
-        assert_eq!(docker.launched().len(), 1);
+            assert_eq!(result.status, AssertionStatus::Errored, "{phase}: {}", result.message);
+            assert!(result.message.contains("Timed out"), "{phase}: {}", result.message);
+            assert_eq!(docker.launched().len(), 1, "{phase}");
+        }
     }
 }
