@@ -54,6 +54,7 @@ mod reporter;
 use self::reporter::{OutputFormat, Reporter};
 
 mod runner;
+mod tasks;
 mod test;
 mod test_env;
 mod traffic;
