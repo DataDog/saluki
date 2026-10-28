@@ -325,6 +325,9 @@ pub enum ProcessCredentialsError {
 
     /// UDS process credential detection isn't supported on this platform.
     UnsupportedPlatform,
+
+    /// The peer process credentials of a connected socket couldn't be looked up.
+    PeerLookupFailed,
 }
 
 impl ProcessCredentialsError {
@@ -334,6 +337,7 @@ impl ProcessCredentialsError {
             Self::InvalidCredentials => "invalid-credentials",
             Self::ZeroPid => "zero-pid",
             Self::UnsupportedPlatform => "unsupported-platform",
+            Self::PeerLookupFailed => "peer-lookup-failed",
         }
     }
 }
@@ -344,6 +348,7 @@ impl fmt::Display for ProcessCredentialsError {
             Self::InvalidCredentials => write!(f, "invalid process credentials"),
             Self::ZeroPid => write!(f, "process credential PID is zero"),
             Self::UnsupportedPlatform => write!(f, "process credentials are unsupported on this platform"),
+            Self::PeerLookupFailed => write!(f, "failed to look up peer process credentials"),
         }
     }
 }
@@ -362,6 +367,16 @@ pub enum ProcessIdentity {
 }
 
 impl ProcessIdentity {
+    /// Builds the identity of a peer process from its credentials, rejecting a zero PID.
+    #[cfg(unix)]
+    pub(crate) fn new(pid: i32, uid: u32, gid: u32) -> Self {
+        if pid == 0 {
+            Self::Error(ProcessCredentialsError::ZeroPid)
+        } else {
+            Self::Credentials(ProcessCredentials { pid, uid, gid })
+        }
+    }
+
     /// Returns process credentials, if they were detected.
     pub fn credentials(&self) -> Option<&ProcessCredentials> {
         match self {
