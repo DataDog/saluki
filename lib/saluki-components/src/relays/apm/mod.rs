@@ -3,6 +3,7 @@
 //! Listens on TCP and/or a Unix domain socket where the trace-agent normally listens and forwards every request
 //! to the relocated trace-agent.
 
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, LazyLock};
 
 use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
@@ -29,7 +30,7 @@ use tokio::{pin, select};
 use tracing::debug;
 
 mod proxy;
-use self::proxy::TraceAgentProxy;
+use self::proxy::{Destination, TraceAgentProxy};
 
 /// Header a tracer sends its container ID in.
 const CONTAINER_ID_HEADER: HeaderName = HeaderName::from_static("datadog-container-id");
@@ -131,7 +132,7 @@ impl ApmRelayConfiguration {
             [127, 0, 0, 1].into()
         };
 
-        Ok(Some(ListenAddress::Tcp(std::net::SocketAddr::new(
+        Ok(Some(ListenAddress::Tcp(SocketAddr::new(
             listen_address,
             self.receiver_port,
         ))))
@@ -173,6 +174,52 @@ fn resolve_listen_host(
     }
 }
 
+/// Returns the relay listener that `destination` reaches, if any.
+///
+/// This catches the obvious misconfigurations, such as the trace-agent's default port used for both, not every route
+/// back to the relay: a listener on every interface is also reached through the host's other addresses, for example.
+async fn listener_reached_by<'a>(
+    destination: &Destination, tcp_endpoint: Option<&'a ListenAddress>, uds_endpoint: Option<&'a ListenAddress>,
+) -> Option<&'a ListenAddress> {
+    // Only Unix domain socket destinations can reach the Unix domain socket listener.
+    #[cfg(not(unix))]
+    let _ = uds_endpoint;
+
+    match destination {
+        Destination::Tcp { host, port } => {
+            let endpoint = tcp_endpoint?;
+            let ListenAddress::Tcp(listener) = endpoint else {
+                return None;
+            };
+            // A destination that doesn't resolve yet can't be told apart from the listener, so it is let through.
+            let mut destinations = tokio::net::lookup_host((host.as_str(), *port)).await.ok()?;
+            destinations
+                .any(|destination| tcp_reaches(destination, *listener))
+                .then_some(endpoint)
+        }
+        #[cfg(unix)]
+        Destination::Unix(path) => {
+            uds_endpoint.filter(|endpoint| matches!(endpoint, ListenAddress::Unix(listener) if listener == path))
+        }
+    }
+}
+
+/// Returns whether connecting to `destination` reaches a TCP listener bound to `listener`.
+///
+/// A listener on the unspecified address accepts connections to any local address, and connecting to the unspecified
+/// address connects to the local host, so either side being unspecified matches a loopback address of the same family.
+fn tcp_reaches(destination: SocketAddr, listener: SocketAddr) -> bool {
+    let is_local = |ip: IpAddr| ip.is_loopback() || ip.is_unspecified();
+    let (destination_ip, listener_ip) = (destination.ip(), listener.ip());
+
+    destination.port() == listener.port()
+        && (destination_ip == listener_ip
+            || ((destination_ip.is_unspecified() || listener_ip.is_unspecified())
+                && destination_ip.is_ipv4() == listener_ip.is_ipv4()
+                && is_local(destination_ip)
+                && is_local(listener_ip)))
+}
+
 impl MemoryBounds for ApmRelayConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         builder
@@ -201,6 +248,14 @@ impl RelayBuilder for ApmRelayConfiguration {
         }
 
         let proxy = TraceAgentProxy::from_destination(&self.proxy_destination)?;
+        if let Some(listener) =
+            listener_reached_by(proxy.destination(), tcp_endpoint.as_ref(), uds_endpoint.as_ref()).await
+        {
+            return Err(generic_error!(
+                "APM proxy destination `{}` is the relay's own listener `{listener}`, so every request would be proxied back to the relay. Set `data_plane.experimental.apm.proxy_destination` to the trace-agent's address.",
+                self.proxy_destination
+            ));
+        }
 
         Ok(Box::new(ApmRelay {
             tcp_endpoint,
@@ -668,6 +723,53 @@ mod tests {
         assert!(result.is_err(), "the relay should fail when its listener can't bind");
     }
 
+    async fn build_error(config: ApmRelayConfiguration) -> GenericError {
+        match config.build(BuildContext::test_relay("apm_relay_build_error")).await {
+            Ok(_) => panic!("build should fail"),
+            Err(error) => error,
+        }
+    }
+
+    #[tokio::test]
+    async fn build_fails_when_the_destination_is_the_tcp_listener() {
+        // The trace-agent's default port used for both the relay and its destination.
+        let config = test_config(None, false, 8127);
+        assert!(build_error(config).await.to_string().contains("relay's own listener"));
+
+        // A listener on every interface is also reached through the loopback address.
+        let config = test_config(None, true, 8127);
+        assert!(build_error(config).await.to_string().contains("relay's own listener"));
+
+        let mut config = test_config(None, false, 8127);
+        config.proxy_destination = "http://localhost:8127".to_string();
+        assert!(build_error(config).await.to_string().contains("relay's own listener"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn build_fails_when_the_destination_is_the_unix_domain_socket_listener() {
+        let mut config = test_config(None, false, 0);
+        config.receiver_socket = "/var/run/datadog/apm.socket".to_string();
+        config.proxy_destination = "unix:///var/run/datadog/apm.socket".to_string();
+
+        assert!(build_error(config).await.to_string().contains("relay's own listener"));
+    }
+
+    #[test]
+    fn tcp_reaches_only_a_listener_on_the_same_port_and_address() {
+        let addr = |s: &str| s.parse::<SocketAddr>().unwrap();
+
+        assert!(tcp_reaches(addr("127.0.0.1:8126"), addr("127.0.0.1:8126")));
+        assert!(tcp_reaches(addr("127.0.0.1:8126"), addr("0.0.0.0:8126")));
+        assert!(tcp_reaches(addr("0.0.0.0:8126"), addr("127.0.0.1:8126")));
+        assert!(tcp_reaches(addr("[::1]:8126"), addr("[::]:8126")));
+
+        assert!(!tcp_reaches(addr("127.0.0.1:8127"), addr("127.0.0.1:8126")));
+        assert!(!tcp_reaches(addr("10.0.0.2:8126"), addr("10.0.0.1:8126")));
+        assert!(!tcp_reaches(addr("[::1]:8126"), addr("0.0.0.0:8126")));
+        assert!(!tcp_reaches(addr("127.0.0.1:8126"), addr("10.0.0.1:8126")));
+    }
+
     #[test]
     fn listen_host_follows_explicit_settings() {
         let host = Some("10.0.0.1".to_string());
@@ -734,7 +836,7 @@ mod tests {
 
     #[tokio::test]
     async fn build_succeeds_with_only_tcp_endpoint_configured() {
-        let config = test_config(None, true, 8127);
+        let config = test_config(None, true, 8126);
 
         assert!(config
             .build(BuildContext::test_relay("apm_relay_tcp_only"))

@@ -49,11 +49,25 @@ pub(super) struct TraceAgentProxy {
     /// authority and connects to the socket, but a request URI still needs one.
     base_uri: Uri,
 
+    /// Where requests are forwarded to.
+    destination: Destination,
+
     /// Whether the last attempt to reach the trace-agent failed.
     ///
     /// Only the first failure after a success is logged as a warning, so a trace-agent that is down logs once rather
     /// than once per request.
     unreachable: Arc<AtomicBool>,
+}
+
+/// Where the proxy forwards requests to.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum Destination {
+    /// A TCP host and port.
+    Tcp { host: String, port: u16 },
+
+    /// A Unix domain socket path.
+    #[cfg(unix)]
+    Unix(PathBuf),
 }
 
 /// Error from forwarding a request to the trace-agent.
@@ -101,7 +115,7 @@ impl TraceAgentProxy {
             // proxy must not impose a shorter one of its own.
             .without_request_timeout();
 
-        let (builder, base_uri) = match url.scheme() {
+        let (builder, base_uri, destination) = match url.scheme() {
             "http" => {
                 if url.path() != "/" {
                     return Err(generic_error!(
@@ -122,7 +136,9 @@ impl TraceAgentProxy {
                     .path_and_query("/")
                     .build()
                     .with_error_context(|| format!("Invalid APM proxy destination `{destination}`."))?;
-                (builder, base_uri)
+                // The URL keeps an IPv6 host bracketed, which address lookups don't accept.
+                let host = host.trim_start_matches('[').trim_end_matches(']').to_string();
+                (builder, base_uri, Destination::Tcp { host, port })
             }
             #[cfg(unix)]
             "unix" => {
@@ -137,8 +153,9 @@ impl TraceAgentProxy {
                     ));
                 }
                 (
-                    builder.with_unix_socket_path(path),
+                    builder.with_unix_socket_path(path.clone()),
                     Uri::from_static("http://localhost/"),
+                    Destination::Unix(path),
                 )
             }
             scheme => {
@@ -151,8 +168,14 @@ impl TraceAgentProxy {
         Ok(Self {
             client: Arc::new(Mutex::new(builder.build()?)),
             base_uri,
+            destination,
             unreachable: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    /// Returns where the proxy forwards requests to.
+    pub(super) fn destination(&self) -> &Destination {
+        &self.destination
     }
 
     /// Forwards `request` to the trace-agent and returns its response.
