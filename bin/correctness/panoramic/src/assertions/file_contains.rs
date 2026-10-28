@@ -5,13 +5,16 @@ use tracing::trace;
 
 use crate::actions::docker_exec;
 use crate::assertions::{Assertion, AssertionContext, AssertionResult, AssertionStatus, Attempts};
-use crate::probe::{probe, ProbeError, POLL_INTERVAL, PROBE_TIMEOUT};
+use crate::probe::{probe, ProbeError, POLL_INTERVAL};
 
 /// Assertion that checks a file exists in the container, and optionally that its contents match a pattern.
 ///
 /// The assertion polls the file via `docker exec cat <path>` until the deadline. If `pattern` is `None`, the
 /// assertion passes as soon as the file is readable. If `pattern` is `Some`, the assertion waits until the file
 /// is readable AND its contents match the pattern.
+///
+/// Dropping a read doesn't stop it: a Docker exec keeps running, and a host read keeps its blocking thread. A read that
+/// never finishes, such as one of a FIFO, therefore gets the rest of the step and is never retried.
 pub struct FileContainsAssertion {
     path: String,
     pattern: Option<String>,
@@ -27,6 +30,22 @@ impl FileContainsAssertion {
             is_regex,
             timeout,
         }
+    }
+
+    fn timed_out_result(&self, started: Instant, attempts: &Attempts) -> AssertionResult {
+        let summary = match &self.pattern {
+            None => format!("File '{}' did not exist after {:?}.", self.path, self.timeout),
+            Some(p) => format!(
+                "Pattern '{}' not found in file '{}' after {:?}.",
+                p, self.path, self.timeout
+            ),
+        };
+        AssertionResult::new(
+            self.name(),
+            started,
+            attempts.status(),
+            attempts.explain_expired(&summary),
+        )
     }
 }
 
@@ -86,6 +105,11 @@ impl Assertion for FileContainsAssertion {
                 return AssertionResult::new(self.name(), started, AssertionStatus::Failed, message);
             }
 
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return self.timed_out_result(started, &attempts);
+            }
+
             let read = async {
                 if ctx.is_host_process {
                     read_file_local(&self.path).await
@@ -93,24 +117,7 @@ impl Assertion for FileContainsAssertion {
                     read_file_in_container(&ctx.container_name, &self.path, ctx.target_is_windows()).await
                 }
             };
-            if Instant::now() > deadline {
-                let summary = match &self.pattern {
-                    None => format!("File '{}' did not exist after {:?}.", self.path, self.timeout),
-                    Some(p) => format!(
-                        "Pattern '{}' not found in file '{}' after {:?}.",
-                        p, self.path, self.timeout
-                    ),
-                };
-                return AssertionResult::new(
-                    self.name(),
-                    started,
-                    attempts.status(),
-                    attempts.explain_expired(&summary),
-                );
-            }
-
-            let limit = deadline.saturating_duration_since(Instant::now()).min(PROBE_TIMEOUT);
-            match probe(&what, limit, &ctx.cancel_token, read).await {
+            match probe(&what, remaining, &ctx.cancel_token, read).await {
                 Ok(Ok(Some(content))) => {
                     let matches = match (&self.pattern, &regex) {
                         (None, _) => true,
@@ -145,7 +152,10 @@ impl Assertion for FileContainsAssertion {
                         attempts.explain_cancelled(error),
                     );
                 }
-                Err(error @ ProbeError::TimedOut { .. }) => attempts.errored(error),
+                Err(error @ ProbeError::TimedOut { .. }) => {
+                    attempts.errored(error);
+                    return self.timed_out_result(started, &attempts);
+                }
             }
 
             // The next iteration reports cancellation.
@@ -198,4 +208,193 @@ async fn read_file_in_container(container_name: &str, path: &str, is_windows: bo
 
     let output = docker_exec(container_name, cmd).await.map_err(|e| format!("{e:#}"))?;
     Ok(output.succeeded().then_some(output.stdout))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::Future;
+    use std::io::Write as _;
+    use std::time::Duration;
+
+    use airlock::driver::ContainerOs;
+    use tokio::time::Instant;
+    use tokio_util::sync::CancellationToken;
+
+    use super::FileContainsAssertion;
+    use crate::actions::test_docker::{Exec, FakeDocker};
+    use crate::assertions::test_support::host_context;
+    use crate::assertions::{Assertion as _, AssertionContext, AssertionResult, AssertionStatus};
+    use crate::probe::PROBE_TIMEOUT;
+
+    /// Long enough that a read capped at [`PROBE_TIMEOUT`] would be retried within the step.
+    const STEP: Duration = PROBE_TIMEOUT.saturating_add(Duration::from_secs(2));
+
+    /// Checks for a file in a container target running `os`, with its execs served by `docker`.
+    async fn check_container(docker: &FakeDocker, os: ContainerOs) -> AssertionResult {
+        let mut ctx = host_context(CancellationToken::new());
+        ctx.is_host_process = false;
+        ctx.target_os = Some(os);
+        ctx.container_name = "target".to_string();
+        let assertion = FileContainsAssertion::new("/var/log/adp.log".to_string(), None, false, STEP);
+
+        docker.scope(assertion.check(&ctx)).await
+    }
+
+    /// Runs `test` on a paused runtime whose only blocking thread stays busy until `test` ends.
+    ///
+    /// A host read queues behind the busy thread, so it never finishes within the step. Unlike a read of a FIFO, it
+    /// can't outlive the test: the busy thread is released when `test` ends, even on panic, and dropping the runtime
+    /// cancels the queued read or lets it finish.
+    ///
+    /// The busy thread keeps the paused clock from advancing on its own, so `test` must advance it.
+    fn with_host_reads_stalled<F: Future<Output = ()>>(test: impl FnOnce() -> F) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .max_blocking_threads(1)
+            .build()
+            .expect("should build a runtime");
+        // Declared after `runtime` so it's dropped first, because dropping the runtime waits for the busy thread.
+        let (_release, released) = std::sync::mpsc::channel::<()>();
+        runtime.spawn_blocking(move || {
+            let _ = released.recv();
+        });
+
+        runtime.block_on(test());
+    }
+
+    /// Returns a readable file, so a host read of it that finished would pass the check.
+    fn readable_file() -> (tempfile::NamedTempFile, String) {
+        let mut file = tempfile::NamedTempFile::new().expect("should create a temporary file");
+        file.write_all(b"ready").expect("should write the temporary file");
+        let path = file.path().display().to_string();
+        (file, path)
+    }
+
+    /// Runs `assertion` while advancing the paused clock, which doesn't advance on its own while a host read is
+    /// pending.
+    async fn check_advancing_time(assertion: &FileContainsAssertion, ctx: &AssertionContext) -> AssertionResult {
+        let started = Instant::now();
+        let check = assertion.check(ctx);
+        tokio::pin!(check);
+        loop {
+            tokio::select! {
+                biased;
+                result = &mut check => return result,
+                () = tokio::time::advance(Duration::from_millis(100)) => {
+                    assert!(started.elapsed() <= STEP * 2, "the check should end with its step");
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_container_read_that_never_finishes_is_not_retried() {
+        // Read attempts were capped at 10 s and retried, but a timed-out exec keeps running, so a FIFO or a stalled
+        // filesystem left one more blocked command in the container for each retry.
+        let check = |os| async move {
+            let docker = FakeDocker::start(Duration::ZERO, |_, _| Exec::Running).await;
+            let started = Instant::now();
+            let result = check_container(&docker, os).await;
+            (result, started.elapsed(), docker.launched())
+        };
+
+        let (linux, windows) = tokio::join!(check(ContainerOs::Linux), check(ContainerOs::Windows));
+
+        for ((result, elapsed, launched), program) in [(linux, "cat"), (windows, "pwsh")] {
+            assert_eq!(result.status, AssertionStatus::Errored, "{program}: {}", result.message);
+            assert!(
+                result.message.starts_with("Timed out after"),
+                "{program}: {}",
+                result.message
+            );
+            assert!(
+                elapsed >= STEP,
+                "{program}: the read should get the whole step, not {elapsed:?}"
+            );
+            assert_eq!(launched.len(), 1, "{program}: {launched:?}");
+            assert_eq!(launched[0][0], program);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_read_that_never_finishes_after_a_missing_file_fails_the_check() {
+        let docker = FakeDocker::start(Duration::ZERO, |index, _| match index {
+            0 => Exec::Exits {
+                duration: Duration::ZERO,
+                stdout: String::new(),
+                exit_code: 1,
+            },
+            _ => Exec::Running,
+        })
+        .await;
+
+        let result = check_container(&docker, ContainerOs::Linux).await;
+
+        assert_eq!(result.status, AssertionStatus::Failed, "{}", result.message);
+        assert!(
+            result.message.contains("\nLast attempt: Timed out after"),
+            "{}",
+            result.message
+        );
+        assert_eq!(docker.launched().len(), 2, "the missing file should be read again");
+    }
+
+    #[tokio::test]
+    async fn a_step_with_no_time_left_does_not_read_the_file() {
+        let docker = FakeDocker::start(Duration::ZERO, |_, _| Exec::Running).await;
+        let mut ctx = host_context(CancellationToken::new());
+        ctx.is_host_process = false;
+        ctx.container_name = "target".to_string();
+        let assertion = FileContainsAssertion::new("/var/log/adp.log".to_string(), None, false, Duration::ZERO);
+
+        let result = docker.scope(assertion.check(&ctx)).await;
+
+        assert_eq!(result.status, AssertionStatus::Errored, "{}", result.message);
+        assert_eq!(result.message, "File '/var/log/adp.log' did not exist after 0ns.");
+        assert_eq!(docker.launched(), Vec::<Vec<String>>::new());
+    }
+
+    #[test]
+    fn a_host_read_that_never_finishes_gets_the_rest_of_the_step() {
+        with_host_reads_stalled(|| async {
+            let (_file, path) = readable_file();
+            let assertion = FileContainsAssertion::new(path.clone(), None, false, STEP);
+
+            let result = check_advancing_time(&assertion, &host_context(CancellationToken::new())).await;
+
+            assert_eq!(result.status, AssertionStatus::Errored, "{}", result.message);
+            let timed_out = format!("Timed out after {STEP:?} waiting for a read of '{path}'.");
+            assert_eq!(
+                result.message.lines().next(),
+                Some(timed_out.as_str()),
+                "{}",
+                result.message
+            );
+        });
+    }
+
+    #[test]
+    fn cancellation_ends_a_host_read_that_never_finishes() {
+        with_host_reads_stalled(|| async {
+            let (_file, path) = readable_file();
+            let assertion = FileContainsAssertion::new(path.clone(), None, false, STEP);
+            let cancel = CancellationToken::new();
+            let canceller = cancel.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                canceller.cancel();
+            });
+
+            let result = check_advancing_time(&assertion, &host_context(cancel)).await;
+
+            assert_eq!(result.status, AssertionStatus::Errored, "{}", result.message);
+            assert!(result.message.starts_with("Cancelled after 1."), "{}", result.message);
+            assert!(
+                result.message.ends_with(&format!("waiting for a read of '{path}'.")),
+                "{}",
+                result.message
+            );
+        });
+    }
 }
