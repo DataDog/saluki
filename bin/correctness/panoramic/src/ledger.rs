@@ -615,6 +615,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_namespace_that_cannot_be_checked_is_leaked() {
+        let api = FakeApi::start(|method, path, _| match method {
+            "DELETE" => (200, namespace_json(path, "Terminating")),
+            _ => (500, status_json(500, "InternalError", "boom")),
+        })
+        .await;
+        let ledger = api.ledger(&[NAMESPACE]);
+
+        let (reclaim, issues) = reclaim(&ledger, BUDGET).await;
+
+        assert_eq!(
+            reclaim,
+            [entry(&format!("namespace:{}", NAMESPACE), ReclaimResult::Leaked)]
+        );
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].kind, IssueKind::ResourceLeaked);
+        assert!(
+            issues[0].message.starts_with(&format!(
+                "namespace:{}: Failed to check whether namespace '{}' is gone: ",
+                NAMESPACE, NAMESPACE
+            )) && issues[0].message.contains("boom"),
+            "{}",
+            issues[0].message
+        );
+    }
+
+    #[tokio::test]
     async fn every_namespace_is_deleted_before_any_wait() {
         let api = FakeApi::start(always_terminating).await;
         let names = [
