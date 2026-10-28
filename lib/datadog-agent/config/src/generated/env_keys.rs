@@ -696,6 +696,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Integer,
     },
     EnvKey {
+        env_vars: &["DD_FORWARDER_STOP_WAIT_FOR_INFLIGHT"],
+        path: &["forwarder_stop_wait_for_inflight"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
         env_vars: &["DD_FORWARDER_STORAGE_MAX_DISK_RATIO"],
         path: &["forwarder_storage_max_disk_ratio"],
         decode: EnvDecode::Float,

@@ -379,6 +379,14 @@ pub struct Forwarder {
     /// Grace period the forwarder is given to drain before shutdown.
     pub stop_timeout: Duration,
 
+    /// Whether the forwarder waits for in-flight requests to finish when it shuts down.
+    ///
+    /// When `false`, in-flight requests are aborted as soon as shutdown begins and their transactions are requeued
+    /// with the other pending transactions, which are then persisted to disk if disk storage is enabled. When `true`,
+    /// in-flight requests are allowed to finish first, bounded by the topology-wide shutdown timeout; if that timeout
+    /// elapses first, nothing pending is persisted. The Datadog schema supplies `false` when nothing sets this key.
+    pub stop_wait_for_inflight: bool,
+
     /// Fraction of available disk the on-disk retry store may use.
     pub storage_max_disk_ratio: f64,
 

@@ -346,6 +346,10 @@ pub struct DatadogConfiguration {
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub forwarder_stop_timeout: i64,
 
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub forwarder_stop_wait_for_inflight: bool,
+
     #[serde(
         default = "defaults::datadog_configuration_forwarder_storage_max_disk_ratio"
     )]
@@ -675,6 +679,7 @@ impl Default for DatadogConfiguration {
                 15728640,
             >(),
             forwarder_stop_timeout: defaults::default_u64::<i64, 2>(),
+            forwarder_stop_wait_for_inflight: Default::default(),
             forwarder_storage_max_disk_ratio: defaults::datadog_configuration_forwarder_storage_max_disk_ratio(),
             forwarder_storage_max_size_in_bytes: Default::default(),
             forwarder_storage_path: defaults::datadog_configuration_forwarder_storage_path(),

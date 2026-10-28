@@ -1087,6 +1087,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         }
     }
 
+    fn consume_forwarder_stop_wait_for_inflight(&mut self, value: bool) {
+        self.config.shared.endpoints.forwarder.stop_wait_for_inflight = value;
+    }
+
     fn consume_forwarder_storage_max_disk_ratio(&mut self, value: f64) {
         self.config.shared.endpoints.forwarder.storage_max_disk_ratio = value;
     }
