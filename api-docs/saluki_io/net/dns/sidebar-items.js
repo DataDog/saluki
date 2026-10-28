@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["DnsError","SystemResolver"],"type":["SystemHttpConnector"]};
+window.SIDEBAR_ITEMS = {"enum":["ResolveHostError"],"fn":["resolve_host"],"struct":["DnsError","SystemResolver"],"type":["SystemHttpConnector"]};
