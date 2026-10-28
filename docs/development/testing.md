@@ -156,12 +156,14 @@ Follow report types in `bin/correctness/panoramic/src/machine_output.rs` for sem
 
 On Unix, send SIGINT or SIGTERM to stop a run with cleanup. A second signal may leave containers behind.
 
-### Integration resource cleanup
+### Resource cleanup
 
-After every integration test, the runner attempts cleanup and records each resource as `reclaimed`, `leaked`, or
-`unsettled` under `reclaim` in `result.json`. Docker containers, their shared volume, and network share one
-isolation-group entry; host processes and the state directory have separate entries. Failed or skipped removal adds a
-`resource_leaked` issue; unconfirmed removal adds `resource_unsettled`. These issues leave the test outcome unchanged.
+After every test, the runner attempts cleanup and records each resource as `reclaimed`, `leaked`, or `unsettled` under
+`reclaim` in `result.json`. Docker containers, their shared volume, and network share one isolation-group entry; host
+processes and the state directory have separate entries. Correctness tests have one isolation-group entry per container
+group, or one `namespace:` entry per kind namespace, and the runner stops their background tasks first. Failed or
+skipped removal adds a `resource_leaked` issue; unconfirmed removal adds `resource_unsettled`. These issues leave the
+test outcome unchanged.
 
 ### Reading traffic artifacts
 

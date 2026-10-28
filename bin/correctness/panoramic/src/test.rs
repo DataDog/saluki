@@ -11,6 +11,7 @@ use crate::deadline::Deadline;
 use crate::ledger::ResourceLedger;
 use crate::record::CaseRecord;
 use crate::reporter::{PhaseTracker, TestResult};
+use crate::tasks::CaseTasks;
 
 /// Signal used to notify kind-runtime tests when the cluster is ready.
 ///
@@ -76,6 +77,9 @@ pub(crate) struct TestContext {
 
     /// Test resources registered for cleanup by the runner.
     pub(crate) ledger: ResourceLedger,
+
+    /// Background tasks, which the runner stops before it removes the test's resources.
+    pub(crate) tasks: CaseTasks,
 }
 
 impl TestContext {
@@ -83,6 +87,7 @@ impl TestContext {
         cancel: CancellationToken, deadline: Deadline, log_dir: PathBuf, settings: RunnerSettings,
     ) -> Self {
         Self {
+            tasks: CaseTasks::new(&cancel),
             test_cancel_token: cancel,
             deadline,
             log_dir,
@@ -146,7 +151,7 @@ pub(crate) trait Test: Send + Sync {
     /// should handle errors and turn them into a failed `TestResult` and try not to panic.
     ///
     /// Watch the context's cancellation token and return when it fires. Register resources in the context's ledger
-    /// for the runner to remove after the test ends.
+    /// for the runner to remove after the test ends, and spawn background tasks through the context's `tasks`.
     async fn run(&self, tctx: TestContext) -> TestResult;
 }
 
