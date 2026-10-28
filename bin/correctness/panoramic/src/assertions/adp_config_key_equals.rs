@@ -8,7 +8,7 @@ use tracing::trace;
 use crate::{
     actions::{execute_target_command, CommandDiagnostics, CommandError},
     assertions::{Assertion, AssertionContext, AssertionResult, AssertionStatus, Attempts},
-    probe::{POLL_INTERVAL, PROBE_TIMEOUT},
+    probe::POLL_INTERVAL,
 };
 
 const DEFAULT_ADP_CONFIG_ENDPOINT: &str = "https://localhost:55101/config";
@@ -136,7 +136,7 @@ impl Assertion for AdpConfigKeyEqualsAssertion {
                 return self.cancelled_result(started, &attempts, ctx);
             }
 
-            let fetched = self.fetch_config(ctx, remaining.min(PROBE_TIMEOUT)).await;
+            let fetched = self.fetch_config(ctx, ctx.command_attempt_limit(remaining)).await;
             // Treat interruption as cancellation, not as evidence about the configuration.
             if ctx.cancel_token.is_cancelled() || ctx.container_exit_token.is_cancelled() {
                 return self.cancelled_result(started, &attempts, ctx);

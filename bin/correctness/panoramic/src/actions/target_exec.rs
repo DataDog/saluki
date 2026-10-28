@@ -155,6 +155,8 @@ impl fmt::Display for CommandError {
 
 /// Runs `command` in the target environment within `timeout`, returning its combined stdout and stderr.
 ///
+/// A host command is killed when it times out or is interrupted. A Docker exec is abandoned and keeps running.
+///
 /// # Errors
 ///
 /// Returns [`CommandError::Harness`] for an empty command, host process I/O errors, or Docker API failures.

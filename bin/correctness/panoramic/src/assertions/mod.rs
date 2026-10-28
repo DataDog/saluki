@@ -21,6 +21,7 @@ use crate::actions::Action;
 use crate::config::{AssertionConfig, AssertionStep, LogStream};
 use crate::deadline::{Budget, Deadline};
 use crate::integration::IntegrationTestCase;
+use crate::probe::PROBE_TIMEOUT;
 use crate::record::{step_label, ActiveStep, CaseRecord, StepResult, StepStatus, Verdict};
 use crate::reporter::{DurationMs, ErrorKind, TestResult};
 
@@ -286,6 +287,18 @@ impl AssertionContext {
     /// Returns `true` when the target is a Windows container.
     pub fn target_is_windows(&self) -> bool {
         matches!(self.target_os, Some(airlock::driver::ContainerOs::Windows))
+    }
+
+    /// Returns the limit for one attempt of a target command that is retried until `remaining` runs out.
+    ///
+    /// A timed-out host command is killed, so its attempts are capped at [`PROBE_TIMEOUT`] to leave time for retries. A
+    /// timed-out Docker exec keeps running, so a container attempt gets all of `remaining` and is never retried.
+    pub(crate) fn command_attempt_limit(&self, remaining: Duration) -> Duration {
+        if self.is_host_process {
+            remaining.min(PROBE_TIMEOUT)
+        } else {
+            remaining
+        }
     }
 }
 
@@ -1281,6 +1294,28 @@ mod tests {
             result.outcome,
             TestOutcome::Passed,
             "an unfinished procedure must not pass"
+        );
+    }
+
+    #[test]
+    fn only_killable_commands_get_attempts_short_enough_to_retry() {
+        // Capping a container attempt let a timed-out ADP config CLI keep running while the next attempt started
+        // another, so slow commands piled up in the container.
+        let mut ctx = host_context(CancellationToken::new());
+        assert_eq!(ctx.command_attempt_limit(Duration::from_secs(60)), PROBE_TIMEOUT);
+        assert_eq!(
+            ctx.command_attempt_limit(Duration::from_secs(3)),
+            Duration::from_secs(3)
+        );
+
+        ctx.is_host_process = false;
+        assert_eq!(
+            ctx.command_attempt_limit(Duration::from_secs(60)),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            ctx.command_attempt_limit(Duration::from_secs(3)),
+            Duration::from_secs(3)
         );
     }
 }
