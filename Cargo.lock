@@ -4495,6 +4495,7 @@ dependencies = [
  "serde",
  "serde-saphyr 1.3.0",
  "serde_json",
+ "snafu",
  "stele",
  "tempfile",
  "tokio",

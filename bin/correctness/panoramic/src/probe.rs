@@ -1,11 +1,10 @@
 //! Bounded, cancellable waits for harness operations.
 
-use std::error::Error;
-use std::fmt;
 use std::future::Future;
 use std::time::Duration;
 
-use tokio::time::Instant;
+use snafu::{ResultExt as _, Snafu};
+use tokio::time::{error::Elapsed, Instant};
 use tokio_util::sync::CancellationToken;
 
 /// Maximum duration of one polling attempt.
@@ -48,34 +47,18 @@ impl AttemptLimits {
 }
 
 /// Why [`probe`] returned without its operation's output.
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
 pub(crate) enum ProbeError {
     /// The cancellation token fired.
+    #[snafu(display("Cancelled after {waited:.1?} waiting for {what}."))]
     Cancelled { what: String, waited: Duration },
     /// The operation didn't finish within its limit.
+    #[snafu(display("Timed out after {limit:?} waiting for {what}."))]
     TimedOut {
         what: String,
         limit: Duration,
-        source: Box<dyn Error + Send + Sync>,
+        source: Elapsed,
     },
-}
-
-impl fmt::Display for ProbeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Cancelled { what, waited } => write!(f, "Cancelled after {waited:.1?} waiting for {what}."),
-            Self::TimedOut { what, limit, .. } => write!(f, "Timed out after {limit:?} waiting for {what}."),
-        }
-    }
-}
-
-impl Error for ProbeError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Cancelled { .. } => None,
-            Self::TimedOut { source, .. } => Some(source.as_ref()),
-        }
-    }
 }
 
 /// Awaits `operation` for at most `limit`, returning early if `cancel` fires.
@@ -95,16 +78,12 @@ where
 {
     let started = Instant::now();
     match cancel.run_until_cancelled(tokio::time::timeout(limit, operation)).await {
-        Some(Ok(output)) => Ok(output),
-        Some(Err(e)) => Err(ProbeError::TimedOut {
-            what: what.to_string(),
-            limit,
-            source: Box::new(e),
-        }),
-        None => Err(ProbeError::Cancelled {
-            what: what.to_string(),
+        Some(result) => result.context(TimedOutSnafu { what, limit }),
+        None => CancelledSnafu {
+            what,
             waited: started.elapsed(),
-        }),
+        }
+        .fail(),
     }
 }
 
@@ -115,7 +94,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
-    use tokio::time::Instant;
+    use tokio::time::{error::Elapsed, Instant};
     use tokio_util::sync::CancellationToken;
 
     use super::{probe, AttemptLimits, ProbeError, PROBE_TIMEOUT};
@@ -213,9 +192,8 @@ mod tests {
             "{error:?}"
         );
         assert_eq!(error.to_string(), "Timed out after 2s waiting for an operation.");
-        assert_eq!(
-            error.source().map(ToString::to_string).as_deref(),
-            Some("deadline has elapsed")
-        );
+        let source = error.source().expect("a timeout should keep its cause");
+        assert!(source.is::<Elapsed>(), "{source:?}");
+        assert_eq!(source.to_string(), "deadline has elapsed");
     }
 }
