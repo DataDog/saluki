@@ -1296,16 +1296,19 @@ async fn exec_write_file(
 
 #[cfg(test)]
 mod tests {
+    use tokio::io::AsyncReadExt as _;
+
     use super::*;
-    use crate::intake::test_server::{closed_port, install_crypto_provider};
+    use crate::intake::test_server::MockIntake;
 
     const BOUND: Duration = Duration::from_secs(5);
 
     #[tokio::test]
     async fn port_forwards_stop_with_their_case() {
-        install_crypto_provider();
+        // The API accepts the forward's upgrade request and never answers, so the connection's task stays pending.
+        let api = MockIntake::unresponsive().await;
         let config = kube::Config::new(
-            format!("http://127.0.0.1:{}", closed_port())
+            format!("http://127.0.0.1:{}", api.port())
                 .parse()
                 .expect("the address should be a URI"),
         );
@@ -1314,17 +1317,31 @@ mod tests {
         let port = start_port_forward(client, "default".to_string(), POD_NAME.to_string(), 2049, &tasks)
             .await
             .expect("the port-forward should bind");
-        let first = tokio::time::timeout(BOUND, tokio::net::TcpStream::connect(("127.0.0.1", port)))
+        let mut forwarded = tokio::time::timeout(BOUND, tokio::net::TcpStream::connect(("127.0.0.1", port)))
             .await
             .expect("the first connection should finish within the bound")
             .expect("the port-forward should accept a connection");
+        tokio::time::timeout(BOUND, async {
+            while api.connections() == 0 {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the forwarded connection should reach the API within the bound");
 
         let running = tokio::time::timeout(BOUND, tasks.stop_all(tokio::time::Instant::now() + BOUND))
             .await
             .expect("stop_all should return within the bound");
 
         assert_eq!(running, 0);
-        drop(first);
+        let mut buf = [0u8; 1];
+        let read = tokio::time::timeout(BOUND, forwarded.read(&mut buf))
+            .await
+            .expect("stopping the forwarded connection's task should close it within the bound");
+        assert!(
+            matches!(read, Ok(0) | Err(_)),
+            "the forwarded connection should be closed: {read:?}"
+        );
         let reconnected = tokio::time::timeout(BOUND, tokio::net::TcpStream::connect(("127.0.0.1", port)))
             .await
             .expect("the second connection should finish within the bound");
