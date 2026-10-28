@@ -1,8 +1,0 @@
----
-features:
-  - |
-    Add an experimental APM relay. With ``data_plane.experimental.apm.enabled`` set, ADP listens on the
-    trace-agent's receiver addresses (``apm_config.receiver_port`` and ``apm_config.receiver_socket``) and forwards
-    every request to the trace-agent at ``data_plane.experimental.apm.proxy_destination``, which defaults to
-    ``http://127.0.0.1:8127``. The trace-agent must be moved to that address. In connected mode, requests over the
-    Unix domain socket keep the tracer's container ID.
