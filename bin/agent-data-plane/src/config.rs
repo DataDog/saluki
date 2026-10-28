@@ -201,28 +201,12 @@ impl<'a> DataPlaneConfiguration<'a> {
     /// Returns `true` if the traces pipeline is required.
     ///
     /// This indicates that the "baseline" traces pipeline (encoding, forwarding) is required by higher-level data
-    /// pipelines, such as OTLP.
+    /// pipelines, such as OTLP or APM.
     pub const fn traces_pipeline_required(&self) -> bool {
         // We consider the traces pipeline to be enabled if:
         // - OTLP is enabled and not in proxy mode or proxy mode is enabled and proxy traces are disabled
-        self.otlp_enabled() && (!self.otlp_proxy_enabled() || !self.otlp_proxy_traces_enabled())
-    }
-
-    /// Returns `true` if the Datadog forwarder is required, because at least one baseline pipeline is.
-    pub const fn datadog_forwarder_required(&self) -> bool {
-        self.metrics_pipeline_required()
-            || self.logs_pipeline_required()
-            || self.events_pipeline_required()
-            || self.service_checks_pipeline_required()
-            || self.traces_pipeline_required()
-    }
-
-    /// Returns `true` if the APM relay is enabled without the Datadog forwarder it currently connects to.
-    ///
-    /// The relay has no output path of its own, but a topology can't hold a component with no connections, so it is
-    /// connected to the Datadog forwarder. In standalone mode with no other data pipeline, there is no forwarder.
-    pub const fn apm_relay_lacks_forwarder(&self) -> bool {
-        self.apm_enabled() && !self.datadog_forwarder_required()
+        // - APM is enabled
+        (self.otlp_enabled() && (!self.otlp_proxy_enabled() || !self.otlp_proxy_traces_enabled())) || self.apm_enabled()
     }
 
     /// Returns the set of [`Pipeline`] variants that are active based on our configuration.
@@ -455,9 +439,9 @@ mod tests {
     }
 
     #[test]
-    fn connected_apm_only_requires_liveness_baseline_pipelines() {
-        // The APM relay forwards every request to the trace-agent, so it needs no baseline pipeline of its own, but
-        // connected mode still forwards the liveness metric and service check.
+    fn apm_requires_traces_pipeline() {
+        // The APM relay forwards every request to the trace-agent, but it connects to the traces pipeline's forwarder
+        // because a topology can't hold a component with no connections.
         let mut config = pipeline_configuration(false, false, false, false, false);
         config.control.apm = true;
         let dp = DataPlaneConfiguration::from_configuration(&config);
@@ -467,24 +451,22 @@ mod tests {
         assert!(!dp.logs_pipeline_required());
         assert!(!dp.events_pipeline_required());
         assert!(dp.service_checks_pipeline_required());
-        assert!(!dp.traces_pipeline_required());
+        assert!(dp.traces_pipeline_required());
     }
 
     #[test]
-    fn standalone_apm_only_lacks_the_forwarder_its_relay_connects_to() {
+    fn standalone_apm_requires_traces_pipeline() {
         let mut config = pipeline_configuration(false, false, false, false, false);
         config.control.apm = true;
         config.control.standalone_mode = true;
-        assert!(DataPlaneConfiguration::from_configuration(&config).apm_relay_lacks_forwarder());
+        let dp = DataPlaneConfiguration::from_configuration(&config);
 
-        // Connected mode always provisions the liveness pipelines, and with them the forwarder.
-        config.control.standalone_mode = false;
-        assert!(!DataPlaneConfiguration::from_configuration(&config).apm_relay_lacks_forwarder());
-
-        // As does another data pipeline in standalone mode.
-        config.control.standalone_mode = true;
-        config.control.dogstatsd = true;
-        assert!(!DataPlaneConfiguration::from_configuration(&config).apm_relay_lacks_forwarder());
+        assert!(dp.data_pipelines_enabled());
+        assert!(dp.metrics_pipeline_required());
+        assert!(!dp.logs_pipeline_required());
+        assert!(!dp.events_pipeline_required());
+        assert!(!dp.service_checks_pipeline_required());
+        assert!(dp.traces_pipeline_required());
     }
 
     #[test]

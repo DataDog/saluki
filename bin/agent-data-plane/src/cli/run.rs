@@ -143,13 +143,6 @@ async fn create_topology(
     blueprint.with_shutdown_timeout(dp.stop_timeout());
     let shared = config.shared.clone();
 
-    if dp.apm_relay_lacks_forwarder() {
-        return Err(generic_error!(
-            "The experimental APM relay (`data_plane.experimental.apm.enabled`) can't be the only data pipeline in \
-             standalone mode. Enable another data pipeline, such as DogStatsD, or run in connected mode."
-        ));
-    }
-
     let mut control_surfaces = TopologyControlSurfaces::default();
     let RemoteConfigSubscriptions {
         trace_sampling,
@@ -175,7 +168,12 @@ async fn create_topology(
     // is the only reason we're differentiating here. Connected mode is the exception: liveness deliberately
     // provisions metric and service-check output paths even for proxy-only topologies.
     let mut routing_targets = None;
-    if dp.datadog_forwarder_required() {
+    if dp.metrics_pipeline_required()
+        || dp.logs_pipeline_required()
+        || dp.events_pipeline_required()
+        || dp.service_checks_pipeline_required()
+        || dp.traces_pipeline_required()
+    {
         // The forwarder and every metrics encoder that addresses its payloads to specific endpoints share one catalog,
         // so that both sides agree on what each routing target identifier means.
         let catalog = Arc::new(RoutingTargetCatalog::new(
@@ -961,8 +959,8 @@ async fn add_apm_pipeline_to_blueprint(
         .with_capture_entity_resolver(Arc::new(env_provider.workload().clone()));
     blueprint
         .add_relay("dd_traces_relay", dd_traces_relay)?
-        // The relay has no output path of its own, but a topology can't hold a component with no connections. See
-        // `DataPlaneConfiguration::apm_relay_lacks_forwarder`.
+        // The relay has no output path of its own, but a topology can't hold a component with no connections, so it
+        // connects to the forwarder that `DataPlaneConfiguration::traces_pipeline_required` guarantees.
         .connect_components("dd_traces_relay.traces", "dd_out")?;
     Ok(())
 }
