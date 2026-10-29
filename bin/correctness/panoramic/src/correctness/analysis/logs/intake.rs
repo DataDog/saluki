@@ -73,6 +73,9 @@ pub struct IntakeLog {
 
     /// Properties consumed to fill the stored fields above.
     consumed: BTreeMap<String, &'static str>,
+
+    /// Whether the log was parsed with `DD-PROTOCOL: agent-json`.
+    agent_json: bool,
 }
 
 impl IntakeLog {
@@ -86,6 +89,7 @@ impl IntakeLog {
         let content = log.content_properties().cloned();
         let mut intake = Self {
             ddtags: log.ddtags().clone(),
+            agent_json,
             ..Self::default()
         };
         let envelope_status;
@@ -175,25 +179,75 @@ impl IntakeLog {
 
     /// Returns the stored value that the field at `path` ends up in, as a comparable JSON value.
     ///
-    /// `path` is a location-qualified diff path. Envelope fields map to the stored field they feed. A property maps to
-    /// the stored field it was consumed into, if any, and otherwise to the attribute at the same path.
+    /// `path` is a location-qualified diff path. With agent-json, envelope fields map to the stored field they feed.
+    /// Otherwise they're ordinary attributes, except `message`, `ddtags`, and `ddsource`. A property maps to the stored
+    /// field it was consumed into, if any, and otherwise to the attribute at the same path. Paths below a field, such
+    /// as `content.message.k`, are resolved inside the value that field ends up in.
     pub fn value_for_path(&self, path: &str) -> Value {
         if let Some(field) = path.strip_prefix("envelope.") {
-            return self.stored_field(field);
+            let (name, rest) = split_first_segment(field);
+            if self.agent_json || matches!(name, "message" | "ddtags" | "ddsource") {
+                return walk(&self.stored_field(name), rest);
+            }
+            return self.property_value(field);
         }
 
         let key = path
             .strip_prefix("content.")
             .or_else(|| path.strip_prefix("envelope_properties."))
             .unwrap_or(path);
-        if key == "message" {
-            return self.stored_field("message");
-        }
-        match self.consumed.get(key) {
-            Some(field) => self.stored_field(field),
+        self.property_value(key)
+    }
+
+    fn property_value(&self, key: &str) -> Value {
+        // The property key may itself contain dots, so find the longest consumed property the path starts with.
+        let owner = std::iter::once(("message", "message"))
+            .chain(self.consumed.iter().map(|(name, field)| (name.as_str(), *field)))
+            .filter_map(|(name, field)| path_below(key, name).map(|rest| (name.len(), field, rest)))
+            .max_by_key(|(len, _, _)| *len);
+        match owner {
+            Some((_, field, rest)) => walk(&self.stored_field(field), rest),
             None => lookup(&self.attributes, key),
         }
     }
+}
+
+/// Returns the rest of `path` below `name`, if `path` is `name` itself or a path inside it.
+fn path_below<'a>(path: &'a str, name: &str) -> Option<&'a str> {
+    let rest = path.strip_prefix(name)?;
+    (rest.is_empty() || rest.starts_with('.') || rest.starts_with('[')).then_some(rest)
+}
+
+/// Splits a path into its first `.`-separated segment, without array indexes, and the rest.
+fn split_first_segment(path: &str) -> (&str, &str) {
+    let end = path.find(['.', '[']).unwrap_or(path.len());
+    (&path[..end], &path[end..])
+}
+
+/// Returns the value at `rest` inside `value`, where `rest` is empty, or starts with `.key` or `[index]`.
+fn walk(value: &Value, rest: &str) -> Value {
+    let mut current = Some(value);
+    let mut rest = rest;
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix('[') {
+            let end = after.find(']').unwrap_or(after.len());
+            let index = after[..end].parse::<usize>().ok();
+            current = current
+                .and_then(Value::as_array)
+                .zip(index)
+                .and_then(|(array, index)| array.get(index));
+            rest = after.get(end + 1..).unwrap_or("");
+        } else {
+            let after = rest.strip_prefix('.').unwrap_or(rest);
+            let (name, remaining) = split_first_segment(after);
+            current = current.and_then(Value::as_object).and_then(|object| object.get(name));
+            rest = remaining;
+        }
+        if current.is_none() {
+            return Value::Null;
+        }
+    }
+    current.cloned().unwrap_or(Value::Null)
 }
 
 /// Classifies a difference at `path` by comparing what the intake would store for each side.
@@ -472,6 +526,40 @@ mod tests {
         assert_eq!(classify("content.host", &baseline, &comparison), Visibility::WireOnly);
         assert_eq!(
             classify("content.hostname", &baseline, &comparison),
+            Visibility::IntakeVisible
+        );
+
+        // Without agent-json, an envelope field is an ordinary attribute, so a differing envelope `hostname` stays
+        // visible when the content's `host` fills the stored host instead.
+        let baseline = log(json!({"message": "{\"message\":\"a\",\"host\":\"h\"}", "hostname": "x"}));
+        let comparison = log(json!({"message": "{\"message\":\"a\",\"host\":\"h\"}", "hostname": "y"}));
+        let (default_baseline, default_comparison) = (
+            IntakeLog::from_log(&baseline, false),
+            IntakeLog::from_log(&comparison, false),
+        );
+        assert_eq!(
+            classify("envelope.hostname", &default_baseline, &default_comparison),
+            Visibility::IntakeVisible
+        );
+        // With agent-json, the envelope hostname is overridden by the content's `host`.
+        let (baseline, comparison) = (
+            IntakeLog::from_log(&baseline, true),
+            IntakeLog::from_log(&comparison, true),
+        );
+        assert_eq!(
+            classify("envelope.hostname", &baseline, &comparison),
+            Visibility::WireOnly
+        );
+
+        // A difference inside a structured message is visible through the stored message.
+        let baseline = log(json!({"message": "{\"message\":{\"k\":1}}"}));
+        let comparison = log(json!({"message": "{\"message\":{\"k\":2}}"}));
+        let (baseline, comparison) = (
+            IntakeLog::from_log(&baseline, true),
+            IntakeLog::from_log(&comparison, true),
+        );
+        assert_eq!(
+            classify("content.message.k", &baseline, &comparison),
             Visibility::IntakeVisible
         );
 
