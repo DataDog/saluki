@@ -51,11 +51,14 @@ impl MockIntake {
 
     /// Answers the first connection like [`MockIntake::serving`], then accepts and closes subsequent connections.
     pub(crate) async fn serving_once(metrics: serde_json::Value) -> Self {
-        let metrics = metrics.to_string();
+        let dumps = Arc::new(Dumps {
+            metrics: metrics.to_string(),
+            logs: "[]".to_string(),
+        });
         Self::spawn(move |listener, connections| async move {
             while let Ok((stream, _)) = listener.accept().await {
                 if connections.fetch_add(1, Ordering::SeqCst) == 0 {
-                    tokio::spawn(respond(stream, metrics.clone()));
+                    tokio::spawn(respond(stream, dumps.clone()));
                 }
             }
         })
