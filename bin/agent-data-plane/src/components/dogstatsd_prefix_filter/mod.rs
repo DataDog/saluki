@@ -280,7 +280,6 @@ mod tests {
     use std::sync::Arc;
 
     use metrics::set_default_local_recorder;
-    use saluki_common::resource_tracking::{ResourceGroupRegistry, ResourceStatsSnapshot};
     use saluki_core::{
         components::test_util::{ComponentControl, Output, TestComponentDriver},
         data_model::event::Event,
@@ -388,12 +387,21 @@ mod tests {
     }
 
     /// Metrics that keep their submitted name must pass through without their context being rebuilt.
-    ///
-    /// Rebuilding a context clones the host, tags, and origin tags, and recalculates the context key. Paying that per
-    /// metric is not free: doing it unconditionally raised this component's live allocations from ~7 KB to ~5 MB in
-    /// the DogStatsD memory quality gates, which configure no filterlist and no namespace prefix at all.
     #[test]
     fn passthrough_metric_does_not_rebuild_its_context() {
+        let filter = FilterBuilder::new().matcher(Blocklist::new(["blocked"], false)).build();
+        let mut metric = Metric::gauge("passes.through", 1.0);
+        let original_context = metric.context().clone();
+
+        assert!(filter.process_metric(&mut metric));
+        assert!(original_context.ptr_eq(metric.context()));
+        assert_eq!(metric.context().name(), "passes.through");
+    }
+
+    #[test]
+    fn passthrough_metric_does_not_allocate() {
+        use saluki_common::resource_tracking::{ResourceGroupRegistry, ResourceStatsSnapshot};
+
         const GROUP: &str = "dsd_prefix_filter_passthrough_test";
 
         // Without the tracking allocator installed every group reports zero allocations regardless of what
@@ -434,7 +442,6 @@ mod tests {
             "pass-through metrics must not allocate, but {} allocation(s) were made",
             after - before
         );
-        assert_eq!(metric.context().name(), "passes.through");
     }
 
     #[test]
