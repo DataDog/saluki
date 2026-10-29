@@ -309,8 +309,21 @@ fn pair_bucket<L: Borrow<Log>>(
         }
         candidates.sort_unstable();
 
+        // Greedy pairing can strand a log when equality isn't transitive, as with the encode-time timestamp
+        // tolerance, so first pair as many logs as possible using only candidates without unexpected differences.
         let mut taken_baseline = BTreeSet::new();
         let mut taken_comparison = BTreeSet::new();
+        let clean = candidates
+            .iter()
+            .filter(|(unknown, _, _, _)| *unknown == 0)
+            .map(|(_, _, b, c)| (*b, *c))
+            .collect::<Vec<_>>();
+        for (b, c) in maximum_matching(&clean) {
+            taken_baseline.insert(b);
+            taken_comparison.insert(c);
+            selected.push((b, c));
+        }
+
         for (_, _, b, c) in candidates {
             if !taken_baseline.contains(&b) && !taken_comparison.contains(&c) {
                 taken_baseline.insert(b);
@@ -336,6 +349,44 @@ fn pair_bucket<L: Borrow<Log>>(
             .into_iter()
             .filter(|c| !paired_comparison.contains(c)),
     );
+}
+
+/// Returns a maximum matching in the bipartite graph of candidate `(baseline, comparison)` pairs.
+///
+/// Candidates are tried in the given order, so the result is deterministic and prefers earlier candidates.
+fn maximum_matching(candidates: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let mut edges = BTreeMap::<usize, Vec<usize>>::new();
+    for &(b, c) in candidates {
+        edges.entry(b).or_default().push(c);
+    }
+
+    fn augment(
+        b: usize, edges: &BTreeMap<usize, Vec<usize>>, matched: &mut BTreeMap<usize, usize>,
+        visited: &mut BTreeSet<usize>,
+    ) -> bool {
+        for &c in &edges[&b] {
+            if visited.insert(c) {
+                let free = match matched.get(&c) {
+                    None => true,
+                    Some(&other) => augment(other, edges, matched, visited),
+                };
+                if free {
+                    matched.insert(c, b);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    // Matched baseline index for each comparison index.
+    let mut matched = BTreeMap::new();
+    for &b in edges.keys() {
+        augment(b, &edges, &mut matched, &mut BTreeSet::new());
+    }
+    let mut pairs = matched.into_iter().map(|(c, b)| (b, c)).collect::<Vec<_>>();
+    pairs.sort_unstable();
+    pairs
 }
 
 /// Diffs two logs field by field.
@@ -1117,6 +1168,33 @@ mod tests {
         assert!(error.to_string().contains("1 known differences are stale"), "{}", error);
         assert_eq!(details.len(), 1);
         assert!(details[0].contains("gap/event-name"), "{}", details[0]);
+    }
+
+    #[test]
+    fn timestamp_tolerance_finds_a_complete_pairing() {
+        // Every pair but (1, 1) is within the tolerance. Pairing (0, 0) first, as plain greedy pairing would, leaves
+        // (1, 1) 70 seconds apart; pairing (0, 1) and (1, 0) matches both.
+        let base = 1_793_268_000_000u64;
+        let with_timestamp = |offset: u64| log(json!({"message": "a", "timestamp": base + offset}));
+        let baseline = [with_timestamp(40_000), with_timestamp(80_000)];
+        let comparison = [with_timestamp(60_000), with_timestamp(10_000)];
+
+        let result = compare_logs(&baseline, &comparison, &defaults(), &[]);
+
+        let pairs = result
+            .pairs
+            .iter()
+            .map(|pair| (pair.baseline, pair.comparison, pair.diffs.len()))
+            .collect::<Vec<_>>();
+        assert_eq!(pairs, vec![(0, 1, 0), (1, 0, 0)]);
+    }
+
+    #[test]
+    fn maximum_matching_is_complete_and_deterministic() {
+        assert_eq!(maximum_matching(&[(0, 0), (0, 1), (1, 0)]), vec![(0, 1), (1, 0)]);
+        assert_eq!(maximum_matching(&[(0, 0), (1, 1)]), vec![(0, 0), (1, 1)]);
+        assert_eq!(maximum_matching(&[(0, 0), (1, 0)]), vec![(0, 0)]);
+        assert!(maximum_matching(&[]).is_empty());
     }
 
     #[test]
