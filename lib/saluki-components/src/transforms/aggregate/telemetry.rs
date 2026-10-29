@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    fmt::Write as _,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -128,6 +129,10 @@ impl<'a> OriginTagSetRef<'a> {
         let mut canonical = SmallVec::new();
         let mut bytes = 0usize;
         for tag in tags {
+            // An empty tag has no label representation, so it must not distinguish origins either.
+            if tag.as_str().is_empty() {
+                continue;
+            }
             bytes = bytes.checked_add(tag.as_str().len())?;
             if canonical.len() == MAX_ORIGIN_TAGS || bytes > MAX_ORIGIN_TAG_BYTES {
                 return None;
@@ -154,71 +159,78 @@ pub(super) const ORIGIN_TELEMETRY_BYTES: usize = MAX_ORIGIN_SERIES
     * (MAX_ORIGIN_TAG_BYTES + 8 * (2 * MAX_ORIGIN_TAG_BYTES + MAX_ORIGIN_TAGS * 256))
     + size_of::<OriginContexts>();
 
-const ORIGIN_LABEL_KEY_PREFIX: &str = "origin_tag_";
-const HEX_DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+const BARE_TAGS_LABEL: &str = "origin_bare_tags";
+const ESCAPED_LABEL_PREFIX: &str = "U__";
 
+// Each key becomes one label whose value is its sorted values joined by commas. Bare and empty-valued tags have no
+// usable label value, so they are listed together under a reserved label instead.
 fn encode_origin_tags<'a, I>(tags: I) -> SmallVec<[String; 8]>
 where
     I: IntoIterator<Item = &'a str>,
 {
     let mut values_by_key: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    let mut encoded_tags = SmallVec::new();
+    let mut bare_tags = Vec::new();
     for tag in tags {
-        if let Some((key, value)) = tag.split_once(':') {
-            values_by_key.entry(key).or_default().push(value);
-        } else {
-            // Bare tags and key/value tags with an empty value are distinct identities.
-            encoded_tags.push(format!("{}_bare:1", encode_origin_label_key(tag, true)));
+        match tag.split_once(':') {
+            Some((key, value)) if !value.is_empty() => values_by_key.entry(key).or_default().push(value),
+            _ => bare_tags.push(tag),
         }
     }
 
-    for (key, mut values) in values_by_key {
-        values.sort_unstable();
-        values.dedup();
-
-        // Prometheus treats an empty label value as an absent label. Preserve the empty tag with
-        // a nonempty marker, distinct from both a bare tag and the absence of either tag.
-        if values.first() == Some(&"") {
-            encoded_tags.push(format!("{}_empty:1", encode_origin_label_key(key, true)));
-            values.remove(0);
-        }
-        if values.len() == 1 {
-            let encoded_key = encode_origin_label_key(key, false);
-            encoded_tags.push(format!("{encoded_key}:{}", values[0]));
-        } else {
-            let encoded_key = encode_origin_label_key(key, false);
-            for (index, value) in values.into_iter().enumerate() {
-                encoded_tags.push(format!("{encoded_key}_{index}:{value}"));
-            }
-        }
+    let mut encoded_tags = SmallVec::new();
+    if !bare_tags.is_empty() {
+        encoded_tags.push(format!("{BARE_TAGS_LABEL}:{}", join_label_values(bare_tags)));
     }
-
+    for (key, values) in values_by_key {
+        encoded_tags.push(format!("{}:{}", encode_origin_label_key(key), join_label_values(values)));
+    }
     encoded_tags
 }
 
-fn encode_origin_label_key(key: &str, force_encoding: bool) -> String {
+fn join_label_values(mut values: Vec<&str>) -> String {
+    values.sort_unstable();
+    values.dedup();
+    let mut joined = String::new();
+    for (index, value) in values.into_iter().enumerate() {
+        if index > 0 {
+            joined.push(',');
+        }
+        for c in value.chars() {
+            if matches!(c, ',' | '\\') {
+                joined.push('\\');
+            }
+            joined.push(c);
+        }
+    }
+    joined
+}
+
+// Keys that aren't plain label names, or that clash with labels we add, use Prometheus's reversible `U__` escaping.
+fn encode_origin_label_key(key: &str) -> String {
     let mut chars = key.chars();
-    let valid_start = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
-    let valid_rest = chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
-    if !force_encoding
-        && valid_start
-        && valid_rest
+    let plain = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
         && !key.starts_with("__")
-        && !key.starts_with(ORIGIN_LABEL_KEY_PREFIX)
-        && !matches!(key, "component_id" | "component_type" | "emitter" | OVERFLOW_LABEL)
-        && !key
-            .rsplit_once('_')
-            .is_some_and(|(_, suffix)| !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit()))
-    {
+        && !key.starts_with(ESCAPED_LABEL_PREFIX)
+        && !matches!(
+            key,
+            "component_id" | "component_type" | "emitter" | OVERFLOW_LABEL | BARE_TAGS_LABEL
+        );
+    if plain {
         return key.to_owned();
     }
 
-    let mut encoded = String::from(ORIGIN_LABEL_KEY_PREFIX);
-    for byte in key.as_bytes() {
-        encoded.push(HEX_DIGITS[(byte >> 4) as usize] as char);
-        encoded.push(HEX_DIGITS[(byte & 0x0f) as usize] as char);
+    let mut escaped = String::from(ESCAPED_LABEL_PREFIX);
+    for c in key.chars() {
+        match c {
+            '_' => escaped.push_str("__"),
+            c if c.is_ascii_alphanumeric() => escaped.push(c),
+            c => {
+                let _ = write!(escaped, "_{:x}_", u32::from(c));
+            }
+        }
     }
-    encoded
+    escaped
 }
 
 impl OriginContexts {
@@ -226,6 +238,9 @@ impl OriginContexts {
         let Some(key) = OriginTagSetRef::new(tags) else {
             return self.increment_overflow(builder);
         };
+        if key.0.is_empty() {
+            return OriginContextId::default();
+        }
         if let Some(&index) = self.indices.get(&key) {
             let entry = self.slots[index].as_mut().expect("occupied origin slot");
             entry.count += 1;
@@ -391,30 +406,99 @@ mod tests {
         result
     }
 
+    fn unescape_label_key(name: &str) -> String {
+        let Some(escaped) = name.strip_prefix(ESCAPED_LABEL_PREFIX) else {
+            return name.to_owned();
+        };
+        let mut key = String::new();
+        let mut chars = escaped.chars();
+        while let Some(c) = chars.next() {
+            if c != '_' {
+                key.push(c);
+                continue;
+            }
+            let code: String = chars.by_ref().take_while(|c| *c != '_').collect();
+            if code.is_empty() {
+                key.push('_');
+            } else {
+                key.push(char::from_u32(u32::from_str_radix(&code, 16).unwrap()).unwrap());
+            }
+        }
+        key
+    }
+
+    fn split_label_values(joined: &str) -> Vec<String> {
+        let mut values = vec![String::new()];
+        let mut chars = joined.chars();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => values.last_mut().unwrap().push(chars.next().unwrap()),
+                ',' => values.push(String::new()),
+                c => values.last_mut().unwrap().push(c),
+            }
+        }
+        values
+    }
+
+    // Inverts `encode_origin_tags`, returning the sorted canonical tags.
+    fn decode_origin_labels(encoded: &[String]) -> Vec<String> {
+        let mut tags = Vec::new();
+        for label in encoded {
+            let (name, value) = label.split_once(':').unwrap();
+            let values = split_label_values(value);
+            if name == BARE_TAGS_LABEL {
+                tags.extend(values);
+            } else {
+                let key = unescape_label_key(name);
+                tags.extend(values.into_iter().map(|value| format!("{key}:{value}")));
+            }
+        }
+        tags.sort_unstable();
+        tags
+    }
+
+    fn canonical_labels(tags: &TagSet) -> (Vec<String>, SmallVec<[String; 8]>) {
+        let key = OriginTagSetRef::new(tags).expect("within origin limits");
+        let canonical = key.0.iter().map(|tag| tag.to_string()).collect();
+        (canonical, encode_origin_tags(key.0.iter().copied()))
+    }
+
     #[test]
     fn bare_empty_reserved_and_multivalued_tags_have_distinct_labels() {
-        let tags = [
+        let tags = tag_set(&[
+            "",
             "bare",
             "bare:",
             "kube_service:a",
             "kube_service:b",
             "kube_service_0:literal",
             "origin_overflow:true",
+            "origin_bare_tags:user",
             "component_id:user",
             "component_type:user",
             "emitter:user",
+            "U__escaped:user",
             "team.name:value",
-        ];
-        let encoded = encode_origin_tags(tags);
-        let names: std::collections::HashSet<_> = encoded.iter().map(|tag| tag.split_once(':').unwrap().0).collect();
-        assert_eq!(names.len(), tags.len());
-        assert!(encoded.iter().any(|tag| tag == "kube_service_0:a"));
-        assert!(!names.contains("component_id"));
-        assert!(!names.contains("component_type"));
-        assert!(!names.contains("emitter"));
-        assert!(!names.contains(OVERFLOW_LABEL));
-        assert!(encoded.iter().any(|tag| tag == "origin_tag_62617265_bare:1"));
-        assert!(encoded.iter().any(|tag| tag == "origin_tag_62617265_empty:1"));
+            "availability-zone:us-east-1a",
+        ]);
+        let (canonical, encoded) = canonical_labels(&tags);
+        assert_eq!(decode_origin_labels(&encoded), canonical);
+        assert_eq!(
+            encoded.as_slice(),
+            [
+                "origin_bare_tags:bare,bare:",
+                "U__U____escaped:user",
+                "U__availability_2d_zone:us-east-1a",
+                "U__component__id:user",
+                "U__component__type:user",
+                "U__emitter:user",
+                "kube_service:a,b",
+                "kube_service_0:literal",
+                "U__origin__bare__tags:user",
+                "U__origin__overflow:true",
+                "U__team_2e_name:value",
+            ]
+        );
     }
 
     #[test]
@@ -472,6 +556,8 @@ mod tests {
         assert_eq!(first.0, second.0);
         assert_eq!(contexts.indices.len(), 1);
         assert_eq!(contexts.slots[0].as_ref().unwrap().count, 2);
+        // Empty tags are dropped, leaving no origin to count.
+        assert_eq!(contexts.increment(&builder, &tag_set(&[""])).0, 0);
     }
 
     #[test]
@@ -489,17 +575,16 @@ mod tests {
 
     proptest::proptest! {
         #[test]
-        fn property_test_origin_encoding_preserves_identity(tags in proptest::collection::vec("[a-zA-Z0-9_: .%\\n]{0,32}", 0..32)) {
-            let mut canonical = tags;
-            canonical.sort_unstable();
-            canonical.dedup();
-            let encoded = encode_origin_tags(canonical.iter().map(String::as_str));
+        fn property_test_origin_encoding_preserves_identity(tags in proptest::collection::vec("[a-zA-Z0-9_: .,%\\\\\\n\\x00é€\u{10FFFF}-]{0,32}", 0..32)) {
+            let tags = tag_set(&tags.iter().map(String::as_str).collect::<Vec<_>>());
+            let (canonical, encoded) = canonical_labels(&tags);
+            proptest::prop_assert_eq!(decode_origin_labels(&encoded), canonical);
             let names: std::collections::HashSet<_> = encoded.iter().map(|tag| tag.split_once(':').unwrap().0).collect();
-            proptest::prop_assert_eq!(encoded.len(), canonical.len());
-            proptest::prop_assert!(encoded.iter().all(|tag| !tag.split_once(':').unwrap().1.is_empty()));
-            proptest::prop_assert_eq!(names.len(), canonical.len());
-            for name in names {
-                proptest::prop_assert!(!name.is_empty());
+            proptest::prop_assert_eq!(names.len(), encoded.len());
+            for tag in &encoded {
+                let (name, value) = tag.split_once(':').unwrap();
+                proptest::prop_assert!(!value.is_empty());
+                proptest::prop_assert!(!name.is_empty() && !name.starts_with("__"));
                 proptest::prop_assert!(name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'));
                 proptest::prop_assert!(!name.as_bytes()[0].is_ascii_digit());
             }
@@ -507,7 +592,7 @@ mod tests {
     }
 
     #[test]
-    fn multivalued_origin_tags_have_sorted_unique_label_names() {
+    fn multivalued_origin_tags_share_one_label_in_sorted_order() {
         let mut tags = TagSet::default();
         tags.insert_tag("team.name:platform\"ops\nline");
         tags.insert_tag("team_name:owner");
@@ -519,9 +604,8 @@ mod tests {
         assert_eq!(
             encoded,
             vec![
-                "kube_service_0:api",
-                "kube_service_1:worker",
-                "origin_tag_7465616D2E6E616D65:platform\"ops\nline",
+                "kube_service:api,worker",
+                "U__team_2e_name:platform\"ops\nline",
                 "team_name:owner",
             ]
         );

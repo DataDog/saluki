@@ -661,9 +661,8 @@ mod tests {
             &[
                 "component_id:dsd_agg",
                 "component_type:transform",
-                "kube_service_0:api",
-                "kube_service_1:worker",
-                "origin_tag_7465616D2E6E616D65:platform\"ops\nline",
+                "kube_service:api,worker",
+                "U__team_2e_name:platform\"ops\nline",
             ],
         );
         let output = render_with(
@@ -672,7 +671,7 @@ mod tests {
         );
 
         assert!(output.contains(
-            "aggregator__dogstatsd_contexts_by_origin{kube_service_0=\"api\",kube_service_1=\"worker\",origin_tag_7465616D2E6E616D65=\"platform\\\"ops\\nline\"} 1"
+            "aggregator__dogstatsd_contexts_by_origin{U__team_2e_name=\"platform\\\"ops\\nline\",kube_service=\"api,worker\"} 1"
         ));
         assert!(!output.contains("component_type"));
     }
