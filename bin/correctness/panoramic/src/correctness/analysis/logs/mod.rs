@@ -1012,7 +1012,7 @@ mod tests {
             .map(|i| log(json!({"message": format!("{{ \"n\": {}, \"message\": \"m\" }}", i)})))
             .collect::<Vec<_>>();
 
-        let result = compare_logs(&compact, &reformatted, &defaults());
+        let result = compare_logs(&compact, &reformatted, &defaults(), &[]);
 
         assert_eq!(result.pairs.len(), 101);
         assert!(result.missing.is_empty() && result.extra.is_empty());
