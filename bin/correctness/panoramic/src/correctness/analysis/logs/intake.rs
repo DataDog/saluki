@@ -270,28 +270,43 @@ fn split_first_segment(path: &str) -> (&str, &str) {
 
 /// Returns the value at `rest` inside `value`, where `rest` is empty, or starts with `.key` or `[index]`.
 fn walk(value: &Value, rest: &str) -> Value {
-    let mut current = Some(value);
+    walk_ref(value, rest).cloned().unwrap_or(Value::Null)
+}
+
+fn walk_ref<'a>(value: &'a Value, rest: &str) -> Option<&'a Value> {
+    let mut current = value;
     let mut rest = rest;
     while !rest.is_empty() {
         if let Some(after) = rest.strip_prefix('[') {
-            let end = after.find(']').unwrap_or(after.len());
-            let index = after[..end].parse::<usize>().ok();
-            current = current
-                .and_then(Value::as_array)
-                .zip(index)
-                .and_then(|(array, index)| array.get(index));
-            rest = after.get(end + 1..).unwrap_or("");
+            // An object key may start with a bracket too, so try it as a key first.
+            if let Some((value, remaining)) = current.as_object().and_then(|object| resolve_key(object, rest)) {
+                current = value;
+                rest = remaining;
+                continue;
+            }
+            let end = after.find(']')?;
+            let index = after[..end].parse::<usize>().ok()?;
+            current = current.as_array()?.get(index)?;
+            rest = &after[end + 1..];
         } else {
             let after = rest.strip_prefix('.').unwrap_or(rest);
-            let (name, remaining) = split_first_segment(after);
-            current = current.and_then(Value::as_object).and_then(|object| object.get(name));
+            let (value, remaining) = resolve_key(current.as_object()?, after)?;
+            current = value;
             rest = remaining;
         }
-        if current.is_none() {
-            return Value::Null;
-        }
     }
-    current.cloned().unwrap_or(Value::Null)
+    Some(current)
+}
+
+/// Resolves the longest key of `object` that `path` starts with, followed by the end of the path, a `.`, or a `[`.
+///
+/// Keys may contain dots and brackets themselves, so the path can't be split on them up front.
+fn resolve_key<'a, 'p>(object: &'a Map<String, Value>, path: &'p str) -> Option<(&'a Value, &'p str)> {
+    object
+        .iter()
+        .filter_map(|(key, value)| path_below(path, key).map(|rest| (key.len(), value, rest)))
+        .max_by_key(|(len, _, _)| *len)
+        .map(|(_, value, rest)| (value, rest))
 }
 
 /// Classifies a difference at `path` by comparing what the intake would store for each side.
@@ -358,34 +373,10 @@ fn expand_nested(value: Value) -> Value {
 
 /// Returns the value at a diff path inside expanded attributes, such as `attr.list[1].k`.
 fn lookup(attributes: &Map<String, Value>, path: &str) -> Value {
-    let mut current = None::<&Value>;
-    for segment in path.split('.') {
-        let object = match current {
-            None => Some(attributes),
-            Some(value) => value.as_object(),
-        };
-        // An attribute name may contain brackets itself, so try the literal name before reading array indexes.
-        if let Some(value) = object.and_then(|object| object.get(segment)) {
-            current = Some(value);
-            continue;
-        }
-        let (name, indexes) = match segment.find('[') {
-            Some(start) => (&segment[..start], &segment[start..]),
-            None => (segment, ""),
-        };
-        current = object.and_then(|object| object.get(name));
-        for index in indexes.split('[').filter(|index| !index.is_empty()) {
-            let index = index.trim_end_matches(']').parse::<usize>().ok();
-            current = current
-                .and_then(Value::as_array)
-                .zip(index)
-                .and_then(|(array, index)| array.get(index));
-        }
-        if current.is_none() {
-            return Value::Null;
-        }
-    }
-    current.cloned().unwrap_or(Value::Null)
+    resolve_key(attributes, path)
+        .and_then(|(value, rest)| walk_ref(value, rest))
+        .cloned()
+        .unwrap_or(Value::Null)
 }
 
 /// Normalizes an attribute status like the intake's status remapper: on its first character for strings, and by
@@ -687,6 +678,24 @@ mod tests {
             classify("content.attr.x.y", &baseline, &comparison),
             Visibility::IntakeVisible
         );
+
+        // Keys with dots or brackets inside a structured message keep their boundaries.
+        for (a, b, path) in [
+            (r#"{"x.y":1}"#, r#"{"x.y":2}"#, "content.message.x.y"),
+            (r#"{"x[0]":1}"#, r#"{"x[0]":2}"#, "content.message.x[0]"),
+        ] {
+            let structured = |inner: &str| log(json!({"message": format!(r#"{{"message":{}}}"#, inner)}));
+            let (baseline, comparison) = (
+                IntakeLog::from_log(&structured(a), true),
+                IntakeLog::from_log(&structured(b), true),
+            );
+            assert_eq!(
+                classify(path, &baseline, &comparison),
+                Visibility::IntakeVisible,
+                "{}",
+                path
+            );
+        }
 
         // Tags are a set, so their order and whitespace aren't visible.
         let baseline = IntakeLog::from_log(&log(json!({"message": "a", "ddtags": "a:1,b:2"})), true);
