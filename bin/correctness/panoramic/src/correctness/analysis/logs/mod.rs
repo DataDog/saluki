@@ -7,6 +7,7 @@
 //! content parsed from the envelope `message`.
 
 use std::{
+    borrow::Borrow,
     collections::{BTreeMap, BTreeSet},
     fmt,
 };
@@ -15,7 +16,7 @@ use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 use serde_json::Value;
 use stele::Log;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::intake::CollectedData;
 
@@ -24,6 +25,9 @@ const RAW_ENVELOPE_FIELDS: &[&str] = &["message", "status", "hostname", "service
 
 /// Maximum number of differing pairs, missing logs, and extra logs to include in the error details for each category.
 const SAMPLE_MISMATCH_LIMIT: usize = 20;
+
+/// Maximum number of candidate pairs to evaluate when pairing non-identical logs that share an identity key.
+const MAX_NEAR_MATCH_CANDIDATES: usize = 1_000_000;
 
 fn default_identity_fields() -> Vec<String> {
     ["message", "otel.timestamp", "otel.trace_id", "otel.span_id"]
@@ -170,16 +174,16 @@ pub struct LogsComparison {
 ///
 /// Within a group of logs sharing an identity key, identical logs are paired first. The remaining logs are paired
 /// greedily by the smallest number of differences, with ties broken by index, so the result is deterministic.
-pub fn compare_logs(baseline: &[Log], comparison: &[Log], identity_fields: &[String]) -> LogsComparison {
+pub fn compare_logs<L: Borrow<Log>>(baseline: &[L], comparison: &[L], identity_fields: &[String]) -> LogsComparison {
     let mut buckets = BTreeMap::<String, (Vec<usize>, Vec<usize>)>::new();
-    for (idx, log) in baseline.iter().enumerate() {
+    for (idx, log) in baseline.iter().map(Borrow::borrow).enumerate() {
         buckets
             .entry(identity_key(log, identity_fields))
             .or_default()
             .0
             .push(idx);
     }
-    for (idx, log) in comparison.iter().enumerate() {
+    for (idx, log) in comparison.iter().map(Borrow::borrow).enumerate() {
         buckets
             .entry(identity_key(log, identity_fields))
             .or_default()
@@ -211,8 +215,8 @@ fn identity_key(log: &Log, identity_fields: &[String]) -> String {
     Value::Array(key).to_string()
 }
 
-fn pair_bucket(
-    baseline: &[Log], comparison: &[Log], baseline_idxs: Vec<usize>, comparison_idxs: Vec<usize>,
+fn pair_bucket<L: Borrow<Log>>(
+    baseline: &[L], comparison: &[L], baseline_idxs: Vec<usize>, comparison_idxs: Vec<usize>,
     result: &mut LogsComparison,
 ) {
     // Pair identical logs first. This keeps large groups of duplicates cheap, since they never reach the quadratic
@@ -220,12 +224,15 @@ fn pair_bucket(
     let canonical = |log: &Log| serde_json::to_string(log).unwrap_or_default();
     let mut identical = BTreeMap::<String, Vec<usize>>::new();
     for &idx in comparison_idxs.iter().rev() {
-        identical.entry(canonical(&comparison[idx])).or_default().push(idx);
+        identical
+            .entry(canonical(comparison[idx].borrow()))
+            .or_default()
+            .push(idx);
     }
 
     let mut remaining_baseline = Vec::new();
     for &idx in &baseline_idxs {
-        match identical.get_mut(&canonical(&baseline[idx])).and_then(Vec::pop) {
+        match identical.get_mut(&canonical(baseline[idx].borrow())).and_then(Vec::pop) {
             Some(comparison_idx) => result.pairs.push(LogPair {
                 baseline: idx,
                 comparison: comparison_idx,
@@ -237,30 +244,53 @@ fn pair_bucket(
     let mut remaining_comparison = identical.into_values().flatten().collect::<Vec<_>>();
     remaining_comparison.sort_unstable();
 
-    // Pair the rest greedily by the smallest number of differences.
-    let mut candidates = Vec::with_capacity(remaining_baseline.len() * remaining_comparison.len());
-    for &b in &remaining_baseline {
-        for &c in &remaining_comparison {
-            let diffs = diff_logs(&baseline[b], &comparison[c]);
-            candidates.push((diffs.len(), b, c, diffs));
+    let mut selected = Vec::new();
+    let candidate_count = remaining_baseline.len().saturating_mul(remaining_comparison.len());
+    if candidate_count > MAX_NEAR_MATCH_CANDIDATES {
+        // Pairing by fewest differences is quadratic in the size of the group, so very large groups are paired in
+        // index order instead. Increasing the number of identity fields keeps groups small.
+        warn!(
+            baseline = remaining_baseline.len(),
+            comparison = remaining_comparison.len(),
+            "Too many non-identical logs share an identity key to pair them by fewest differences. Pairing them in \
+             order instead."
+        );
+        selected.extend(
+            remaining_baseline
+                .iter()
+                .copied()
+                .zip(remaining_comparison.iter().copied()),
+        );
+    } else {
+        // Pair greedily by the smallest number of differences. Only the counts are kept for each candidate, and the
+        // diffs are recomputed for the selected pairs.
+        let mut candidates = Vec::with_capacity(candidate_count);
+        for &b in &remaining_baseline {
+            for &c in &remaining_comparison {
+                let count = diff_logs(baseline[b].borrow(), comparison[c].borrow()).len();
+                candidates.push((count, b, c));
+            }
         }
-    }
-    candidates.sort_by_key(|(count, b, c, _)| (*count, *b, *c));
+        candidates.sort_unstable();
 
-    let mut paired_baseline = BTreeSet::new();
-    let mut paired_comparison = BTreeSet::new();
-    for (_, b, c, diffs) in candidates {
-        if paired_baseline.contains(&b) || paired_comparison.contains(&c) {
-            continue;
+        let mut taken_baseline = BTreeSet::new();
+        let mut taken_comparison = BTreeSet::new();
+        for (_, b, c) in candidates {
+            if !taken_baseline.contains(&b) && !taken_comparison.contains(&c) {
+                taken_baseline.insert(b);
+                taken_comparison.insert(c);
+                selected.push((b, c));
+            }
         }
-        paired_baseline.insert(b);
-        paired_comparison.insert(c);
-        result.pairs.push(LogPair {
-            baseline: b,
-            comparison: c,
-            diffs,
-        });
     }
+
+    let paired_baseline = selected.iter().map(|(b, _)| *b).collect::<BTreeSet<_>>();
+    let paired_comparison = selected.iter().map(|(_, c)| *c).collect::<BTreeSet<_>>();
+    result.pairs.extend(selected.into_iter().map(|(b, c)| LogPair {
+        baseline: b,
+        comparison: c,
+        diffs: diff_logs(baseline[b].borrow(), comparison[c].borrow()),
+    }));
 
     result
         .missing
@@ -430,18 +460,20 @@ fn diff_values(path: String, baseline: &Value, comparison: &Value, diffs: &mut V
 }
 
 /// Analyzes logs for correctness.
-pub struct LogsAnalyzer {
-    baseline_logs: Vec<Log>,
-    comparison_logs: Vec<Log>,
+pub struct LogsAnalyzer<'a> {
+    baseline_logs: Vec<&'a Log>,
+    comparison_logs: Vec<&'a Log>,
     options: LogsAnalysisOptions,
 }
 
-impl LogsAnalyzer {
+impl<'a> LogsAnalyzer<'a> {
     /// Creates a new `LogsAnalyzer` from the collected data of both sides.
-    pub fn new(baseline_data: &CollectedData, comparison_data: &CollectedData, options: LogsAnalysisOptions) -> Self {
+    pub fn new(
+        baseline_data: &'a CollectedData, comparison_data: &'a CollectedData, options: LogsAnalysisOptions,
+    ) -> Self {
         Self {
-            baseline_logs: baseline_data.logs().cloned().collect(),
-            comparison_logs: comparison_data.logs().cloned().collect(),
+            baseline_logs: baseline_data.logs().collect(),
+            comparison_logs: comparison_data.logs().collect(),
             options,
         }
     }
@@ -515,7 +547,7 @@ impl LogsAnalyzer {
                 "Log mismatch (baseline #{}, comparison #{}, message {}):",
                 pair.baseline,
                 pair.comparison,
-                describe_message(&self.baseline_logs[pair.baseline])
+                describe_message(self.baseline_logs[pair.baseline])
             );
             for diff in &pair.diffs {
                 detail.push_str("\n    ");
@@ -590,11 +622,9 @@ mod tests {
         assert_eq!((result.pairs[1].baseline, result.pairs[1].comparison), (1, 0));
         assert!(result.pairs.iter().all(|pair| pair.diffs.is_empty()));
 
-        let analysis = LogsAnalyzer::new(
-            &data(vec![agent_log(json!({"message": "a"}))]),
-            &data(vec![agent_log(json!({"message": "a"}))]),
-            LogsAnalysisOptions::default(),
-        );
+        let baseline = data(vec![agent_log(json!({"message": "a"}))]);
+        let comparison = data(vec![agent_log(json!({"message": "a"}))]);
+        let analysis = LogsAnalyzer::new(&baseline, &comparison, LogsAnalysisOptions::default());
         assert!(analysis.run_analysis().is_ok());
     }
 
@@ -745,6 +775,23 @@ mod tests {
             .map(|pair| (pair.baseline, pair.comparison, paths(&pair.diffs)))
             .collect::<Vec<_>>();
         assert_eq!(pairs, vec![(0, 1, vec!["content.y"]), (1, 0, vec!["content.y"])]);
+    }
+
+    #[test]
+    fn very_large_groups_of_near_matches_pair_in_order() {
+        // 1001 × 1001 candidates is over the limit, so the logs are paired in index order without evaluating them.
+        let side = |label: &str| {
+            (0..1001)
+                .map(|i| agent_log(json!({"message": "m", "n": i, "side": label})))
+                .collect::<Vec<_>>()
+        };
+
+        let result = compare_logs(&side("baseline"), &side("comparison"), &defaults());
+
+        assert_eq!(result.pairs.len(), 1001);
+        assert!(result.missing.is_empty() && result.extra.is_empty());
+        assert!(result.pairs.iter().all(|pair| pair.baseline == pair.comparison));
+        assert_eq!(paths(&result.pairs[0].diffs), vec!["content.side"]);
     }
 
     #[test]
