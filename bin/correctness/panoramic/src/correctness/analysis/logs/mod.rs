@@ -216,13 +216,17 @@ fn exact_match_key(log: &Log) -> String {
     } else {
         log.message()
     };
+    // Only present fields are keyed, so an absent field and an explicit `null` stay apart.
     let envelope = RAW_ENVELOPE_FIELDS
         .iter()
-        .map(|field| match *field {
-            "message" => message,
-            field => log.envelope_field(field),
+        .filter_map(|field| {
+            let value = match *field {
+                "message" => message,
+                field => log.envelope_field(field),
+            };
+            value.map(|value| (*field, value))
         })
-        .collect::<Vec<_>>();
+        .collect::<BTreeMap<_, _>>();
     serde_json::to_string(&(
         envelope,
         log.ddtags(),
@@ -837,6 +841,18 @@ mod tests {
         assert_eq!(result.pairs.len(), 101);
         assert!(result.missing.is_empty() && result.extra.is_empty());
         assert!(result.pairs.iter().all(|pair| pair.diffs.is_empty()));
+    }
+
+    #[test]
+    fn an_explicit_null_envelope_field_is_not_identical_to_an_absent_one() {
+        let absent = log(json!({"message": "a"}));
+        let null = log(json!({"message": "a", "status": null}));
+
+        let result = compare_logs(&[absent], &[null], &defaults());
+
+        assert_eq!(result.pairs.len(), 1);
+        assert_eq!(paths(&result.pairs[0].diffs), vec!["envelope.status"]);
+        assert_eq!(result.pairs[0].diffs[0].kind, DiffKind::Extra);
     }
 
     #[test]
