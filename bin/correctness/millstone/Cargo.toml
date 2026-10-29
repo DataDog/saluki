@@ -40,4 +40,5 @@ tracing-subscriber = { workspace = true, features = [
 zstd = { workspace = true }
 
 [dev-dependencies]
+otlp-protos = { workspace = true }
 tempfile = { workspace = true }
