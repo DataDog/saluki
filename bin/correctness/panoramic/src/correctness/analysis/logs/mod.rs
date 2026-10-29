@@ -650,6 +650,14 @@ impl<'a> LogsAnalyzer<'a> {
     /// would split the logs into missing and extra ones instead of being ignored.
     fn identity_field_conflict(&self) -> Option<String> {
         for field in &self.options.identity_fields {
+            // Each side sets the encode-time timestamp itself, so it never matches exactly.
+            if field == "timestamp" {
+                return Some(
+                    "`timestamp` is set by each side at encode time and can't be used in `logs.identity_fields`."
+                        .to_string(),
+                );
+            }
+
             for prefix in ["envelope", "envelope_properties", "content"] {
                 let path = format!("{}.{}", prefix, field);
                 for entry in &self.options.known_differences {
@@ -657,7 +665,13 @@ impl<'a> LogsAnalyzer<'a> {
                     if !entry.kinds.is_empty() && entry.kinds.iter().all(|kind| *kind == KnownDiffKind::Location) {
                         continue;
                     }
-                    if let Some(pattern) = entry.paths.iter().find(|pattern| path_matches(pattern, &path)) {
+                    // Patterns for fields nested under the identity field change its value too.
+                    let covers = |pattern: &&String| {
+                        path_matches(pattern, &path)
+                            || pattern.starts_with(&format!("{}.", path))
+                            || pattern.starts_with(&format!("{}[", path))
+                    };
+                    if let Some(pattern) = entry.paths.iter().find(covers) {
                         return Some(format!(
                             "Known difference `{}` for {} covers identity field `{}`, which would stop logs from \
                              pairing. Remove `{}` from `logs.identity_fields` for this case.",
@@ -1075,6 +1089,28 @@ mod tests {
         .expect_err("a known difference in an identity field should be rejected");
         assert!(
             error.to_string().contains("covers identity field `otel.timestamp`"),
+            "{}",
+            error
+        );
+
+        let nested = LogsAnalysisOptions {
+            identity_fields: vec!["attr".to_string()],
+            ..with(json!({"gap": "gap/as-string-coercion", "paths": ["content.attr.k"], "reason": "test"}))
+        };
+        let (error, _) = LogsAnalyzer::new(&a, &a, nested)
+            .run_analysis()
+            .expect_err("a known difference nested under an identity field should be rejected");
+        assert!(error.to_string().contains("covers identity field `attr`"), "{}", error);
+
+        let encode_time = LogsAnalysisOptions {
+            identity_fields: vec!["timestamp".to_string()],
+            ..LogsAnalysisOptions::default()
+        };
+        let (error, _) = LogsAnalyzer::new(&a, &a, encode_time)
+            .run_analysis()
+            .expect_err("the encode-time timestamp should be rejected as an identity field");
+        assert!(
+            error.to_string().contains("`timestamp` is set by each side"),
             "{}",
             error
         );
