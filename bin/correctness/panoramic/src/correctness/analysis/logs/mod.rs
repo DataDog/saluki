@@ -292,11 +292,18 @@ fn pair_bucket<L: Borrow<Log>>(
     } else {
         // Pair greedily by the smallest number of unexpected differences, then of all differences. Only the counts are
         // kept for each candidate, and the diffs are recomputed for the selected pairs.
+        let baseline_views = remaining_baseline
+            .iter()
+            .map(|&b| (b, baseline[b].borrow().semantic_view()))
+            .collect::<BTreeMap<_, _>>();
         let mut candidates = Vec::with_capacity(candidate_count);
         for &b in &remaining_baseline {
             for &c in &remaining_comparison {
                 let diffs = diff_logs(baseline[b].borrow(), comparison[c].borrow());
-                let unknown = diffs.iter().filter(|diff| !is_known(known_differences, diff)).count();
+                let unknown = diffs
+                    .iter()
+                    .filter(|diff| !is_known(known_differences, diff, &baseline_views[&b]))
+                    .count();
                 candidates.push((unknown, diffs.len(), b, c));
             }
         }
@@ -565,10 +572,11 @@ impl<'a> LogsAnalyzer<'a> {
             .pairs
             .iter()
             .map(|pair| {
+                let view = self.baseline_logs[pair.baseline].semantic_view();
                 let unknown = pair
                     .diffs
                     .iter()
-                    .filter(|diff| match ratchet.classify(diff) {
+                    .filter(|diff| match ratchet.classify(diff, &view) {
                         Some(gap) => {
                             *known_by_gap.entry(gap).or_default() += 1;
                             false
