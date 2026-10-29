@@ -201,12 +201,11 @@ impl<'a> DataPlaneConfiguration<'a> {
     /// Returns `true` if the traces pipeline is required.
     ///
     /// This indicates that the "baseline" traces pipeline (encoding, forwarding) is required by higher-level data
-    /// pipelines, such as OTLP or APM.
+    /// pipelines, such as OTLP.
     pub const fn traces_pipeline_required(&self) -> bool {
         // We consider the traces pipeline to be enabled if:
         // - OTLP is enabled and not in proxy mode or proxy mode is enabled and proxy traces are disabled
-        // - APM is enabled
-        (self.otlp_enabled() && (!self.otlp_proxy_enabled() || !self.otlp_proxy_traces_enabled())) || self.apm_enabled()
+        self.otlp_enabled() && (!self.otlp_proxy_enabled() || !self.otlp_proxy_traces_enabled())
     }
 
     /// Returns the set of [`Pipeline`] variants that are active based on our configuration.
@@ -439,9 +438,9 @@ mod tests {
     }
 
     #[test]
-    fn apm_requires_traces_pipeline() {
-        // The APM relay forwards every request to the trace-agent, but it connects to the traces pipeline's forwarder
-        // because a topology can't hold a component with no connections.
+    fn connected_apm_only_requires_liveness_baseline_pipelines() {
+        // The APM relay forwards every request to the trace-agent, so it needs no baseline pipeline of its own, but
+        // connected mode still forwards the liveness metric and service check.
         let mut config = pipeline_configuration(false, false, false, false, false);
         config.control.apm = true;
         let dp = DataPlaneConfiguration::from_configuration(&config);
@@ -451,22 +450,23 @@ mod tests {
         assert!(!dp.logs_pipeline_required());
         assert!(!dp.events_pipeline_required());
         assert!(dp.service_checks_pipeline_required());
-        assert!(dp.traces_pipeline_required());
+        assert!(!dp.traces_pipeline_required());
     }
 
     #[test]
-    fn standalone_apm_requires_traces_pipeline() {
+    fn standalone_apm_only_requires_no_baseline_pipelines() {
+        // The traces pipeline would have no events source to feed it, so the relay connects to the forwarder alone.
         let mut config = pipeline_configuration(false, false, false, false, false);
         config.control.apm = true;
         config.control.standalone_mode = true;
         let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert!(dp.data_pipelines_enabled());
-        assert!(dp.metrics_pipeline_required());
+        assert!(!dp.metrics_pipeline_required());
         assert!(!dp.logs_pipeline_required());
         assert!(!dp.events_pipeline_required());
         assert!(!dp.service_checks_pipeline_required());
-        assert!(dp.traces_pipeline_required());
+        assert!(!dp.traces_pipeline_required());
     }
 
     #[test]

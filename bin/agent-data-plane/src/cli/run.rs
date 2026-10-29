@@ -166,13 +166,15 @@ async fn create_topology(
     //
     // Notably, we _don't_ need either of these if all we're doing is running the OTLP pipeline in proxy mode, which
     // is the only reason we're differentiating here. Connected mode is the exception: liveness deliberately
-    // provisions metric and service-check output paths even for proxy-only topologies.
+    // provisions metric and service-check output paths even for proxy-only topologies. The APM relay needs the
+    // forwarder alone, as it has nothing to feed the traces pipeline.
     let mut routing_targets = None;
     if dp.metrics_pipeline_required()
         || dp.logs_pipeline_required()
         || dp.events_pipeline_required()
         || dp.service_checks_pipeline_required()
         || dp.traces_pipeline_required()
+        || dp.apm_enabled()
     {
         // The forwarder and every metrics encoder that addresses its payloads to specific endpoints share one catalog,
         // so that both sides agree on what each routing target identifier means.
@@ -960,7 +962,7 @@ async fn add_apm_pipeline_to_blueprint(
     blueprint
         .add_relay("dd_traces_relay", dd_traces_relay)?
         // The relay has no output path of its own, but a topology can't hold a component with no connections, so it
-        // connects to the forwarder that `DataPlaneConfiguration::traces_pipeline_required` guarantees.
+        // connects to the forwarder, which is always created when APM is enabled.
         .connect_components("dd_traces_relay.traces", "dd_out")?;
     Ok(())
 }
