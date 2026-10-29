@@ -2229,6 +2229,30 @@ inventory:
       additional_attributes:
         config_registry_filename: dogstatsd_prefix_filter.rs
 
+  metric_filterlist_prefix:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Per-entry metric prefix blocklist rules"
+    documentation: |-
+      ### DogStatsD metric prefix blocklist rules
+
+      `metric_filterlist_prefix` adds per-entry prefixes to the blocklist. Each entry has a
+      required `prefix` and optional `except_exact` and `except_prefix` lists. Prefixes and
+      prefix exceptions are normalized as prefixes, preserving trailing boundaries such as
+      `service_` so they do not widen to `service`.
+
+      Exceptions apply across this whole key: a metric excepted by one rule is kept even when it
+      matches another prefix rule. Exact or prefix matches from `metric_filterlist` still drop the
+      metric.
+
+      The empty `prefix` matches every stored metric name. The empty `except_prefix` keeps every
+      stored metric name, making the rule a no-op.
+    test_support:
+      used_by: [TypedConfigSystem]
+      test_json: '[{"prefix":"svc.","except_exact":["svc.keep"],"except_prefix":["svc.keep."]}]'
+      additional_attributes:
+        config_registry_filename: dogstatsd_prefix_filter.rs
+
   metric_lookback.capacity:
     support: none
     severity: medium

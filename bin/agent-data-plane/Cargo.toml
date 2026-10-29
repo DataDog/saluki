@@ -50,6 +50,7 @@ saluki-metadata = { workspace = true }
 saluki-metrics = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+simdutf8 = { workspace = true }
 stringtheory = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = [

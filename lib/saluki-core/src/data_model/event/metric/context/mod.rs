@@ -177,8 +177,8 @@ impl Context {
         Self { inner: Arc::new(inner) }
     }
 
-    #[cfg(test)]
-    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+    /// Returns whether `self` and `other` share the same backing allocation.
+    pub fn ptr_eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 
