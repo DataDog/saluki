@@ -130,6 +130,9 @@ impl RemapperRule {
     /// to this catch-all copy, not to explicit mappings. Output order is explicit mappings in rule order,
     /// remaining source tags in source order, then `with_additional_tags`.
     ///
+    /// To keep output tag names unique, source tags that share a name with a renamed or additional tag are not
+    /// copied, and only the first value of a repeated source tag name is copied.
+    ///
     /// Calling this method again replaces the previous exclusion list.
     pub fn with_all_original_tags_except<I>(mut self, excluded_tags: I) -> Self
     where
@@ -224,12 +227,23 @@ impl RemapperRule {
         }
 
         if let Some(excluded_tags) = &self.all_original_tags_except {
+            let mut copied_names = Vec::new();
             for tag in metric_tags {
-                if excluded_tags.contains(&tag.name())
-                    || self.remapped_tags.iter().any(|(source, _)| *source == tag.name())
+                let name = tag.name();
+                if excluded_tags.contains(&name)
+                    || copied_names.contains(&name)
+                    || self
+                        .remapped_tags
+                        .iter()
+                        .any(|(source, destination)| *source == name || *destination == name)
+                    || self
+                        .additional_tags
+                        .iter()
+                        .any(|additional| additional.split_once(':').map_or(&**additional, |(n, _)| n) == name)
                 {
                     continue;
                 }
+                copied_names.push(name);
                 new_tags.push(tag.clone().into_inner());
             }
         }
@@ -353,6 +367,25 @@ mod tests {
         assert_eq!(tags.len(), 2);
         assert!(tags.contains(&"pod_name:pod-1".to_string()));
         assert!(tags.contains(&"kube_namespace:default".to_string()));
+    }
+
+    #[test]
+    fn copied_dynamic_tags_never_duplicate_output_tag_names() {
+        let rule = RemapperRule::by_name("src.metric", "dst.metric")
+            .with_remapped_tags([("source", "renamed")])
+            .with_additional_tags(["fixed:value"])
+            .with_all_original_tags_except(["component_id"]);
+        let context = Context::from_static_parts(
+            "src.metric",
+            &["source:a", "renamed:b", "fixed:c", "multi:x", "multi:y", "kept:z"],
+        );
+
+        let tags = remapped_tags(&rule, &context);
+        let mut names: Vec<_> = tags.iter().map(|tag| tag.split_once(':').unwrap().0).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["fixed", "kept", "multi", "renamed"]);
+        assert!(tags.contains(&"renamed:a".to_string()));
+        assert!(tags.contains(&"fixed:value".to_string()));
     }
 
     #[test]
