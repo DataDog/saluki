@@ -1872,12 +1872,12 @@ fn core_config_uses_default_dictionary_caps() {
     assert_eq!(config.sender.max_inflight_payloads, MAX_INFLIGHT_BATCHES);
     assert_eq!(
         config.metrics_dictionary_eviction,
-        Some(MetricDictionaryEvictionConfig {
+        MetricDictionaryEvictionConfig {
             max_item_count: 60_000,
             max_memory_bytes: 256 * 1024 * 1024,
             stale_after: Duration::from_secs(30 * 60),
             ..MetricDictionaryEvictionConfig::default()
-        })
+        }
     );
 }
 
@@ -1888,13 +1888,13 @@ fn core_config_applies_configured_dictionary_caps_to_each_worker_unchanged() {
     configuration.workers = NonZeroUsize::new(3).unwrap();
     configuration.dictionary_max_entries = NonZeroUsize::new(100_000).unwrap();
     configuration.dictionary_max_bytes = NonZeroU64::new(128 * 1024 * 1024).unwrap();
-    let eviction = configuration.core_config().metrics_dictionary_eviction.unwrap();
+    let eviction = configuration.core_config().metrics_dictionary_eviction;
     assert_eq!(eviction.max_item_count, 100_000);
     assert_eq!(eviction.max_memory_bytes, 128 * 1024 * 1024);
     assert_eq!(eviction.stale_after, DICTIONARY_STALE_AFTER);
 
     configuration.dictionary_max_bytes = NonZeroU64::MAX;
-    let eviction = configuration.core_config().metrics_dictionary_eviction.unwrap();
+    let eviction = configuration.core_config().metrics_dictionary_eviction;
     assert_eq!(eviction.max_memory_bytes, i64::MAX);
 }
 

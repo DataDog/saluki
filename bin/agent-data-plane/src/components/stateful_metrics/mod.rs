@@ -123,12 +123,12 @@ impl StatefulMetricsConfiguration {
                 max_inflight_payloads: MAX_INFLIGHT_BATCHES,
                 ..SenderConfig::default()
             },
-            metrics_dictionary_eviction: Some(MetricDictionaryEvictionConfig {
+            metrics_dictionary_eviction: MetricDictionaryEvictionConfig {
                 max_item_count: self.dictionary_max_entries.get(),
                 max_memory_bytes: i64::try_from(self.dictionary_max_bytes.get()).unwrap_or(i64::MAX),
                 stale_after: DICTIONARY_STALE_AFTER,
                 ..MetricDictionaryEvictionConfig::default()
-            }),
+            },
             metrics_endpoints: self.endpoints.len(),
             // Foldspace hands back every copy it cannot send at once, so the worker's retry queue owns retries.
             metrics_retry: MetricRetryConfig {

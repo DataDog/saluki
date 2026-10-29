@@ -1,7 +1,7 @@
 # Testing stateful metrics delivery
 
 ADP embeds `foldspace-core` through a pinned Cargo dependency from the
-[Foldspace metrics stack](https://github.com/DataDog/foldspace/pull/120). You do not copy Foldspace
+[Foldspace metrics stack](https://github.com/DataDog/foldspace/pull/129). You do not copy Foldspace
 source into Saluki or run a separate client binary.
 
 Configuration selects delivery for count, rate, and gauge series. When the stateful endpoint is
@@ -49,9 +49,9 @@ Build ADP from this branch:
 cargo build --bin agent-data-plane
 ```
 
-Building requires `protoc`, access to the private Foldspace Git repository, and access to the
-Datadog Rust testing registry used by Foldspace's tokenizer dependency. The pinned Foldspace
-revision is recorded in the workspace manifest and `Cargo.lock`.
+Building requires `protoc` and access to the private Foldspace Git repository. Foldspace includes
+its tokenizer source. The pinned Foldspace revision is recorded in the workspace manifest and
+`Cargo.lock`.
 
 For local testing, add this setting to your ADP configuration:
 
@@ -78,9 +78,8 @@ data_plane:
 the primary endpoint's rules, must be distinct, and uses the primary API key. The setting requires
 `stateful_metrics_endpoint` and is startup-only.
 
-From a Foldspace checkout at revision `eb1ce3cfbf6f95ff6ae02d7a7dc25bf849b841b0`, build and run
-its separate metrics intake binary, once per endpoint. This is the tested revision of
-[Foldspace PR #120](https://github.com/DataDog/foldspace/pull/120):
+From a Foldspace checkout at the revision pinned in `Cargo.toml`, build and run its separate
+metrics intake binary, once per endpoint:
 
 ```sh
 cargo build -p foldspace-grpc-server --bin foldspace-intake
