@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 use stele::{Log, LOG_ENVELOPE_FIELDS};
 
 /// Attributes read by the default date remapper, in precedence order.
@@ -68,8 +68,8 @@ pub struct IntakeLog {
     /// The tags.
     pub ddtags: BTreeSet<String>,
 
-    /// Every other attribute.
-    pub attributes: BTreeMap<String, Value>,
+    /// Every other attribute, with dotted keys expanded into nested objects.
+    pub attributes: Map<String, Value>,
 }
 
 impl IntakeLog {
@@ -120,17 +120,17 @@ impl IntakeLog {
             None => log.message().cloned(),
         };
 
-        // The default remappers overwrite envelope values with the first matching attribute.
-        if let Some(date) = first_attribute(&attributes, DATE_SOURCES) {
+        // The default remappers overwrite envelope values with the first matching attribute, which they consume.
+        if let Some(date) = take_attribute(&mut attributes, DATE_SOURCES) {
             intake.date = Some(date);
         }
-        if let Some(host) = first_attribute(&attributes, HOST_SOURCES) {
+        if let Some(host) = take_attribute(&mut attributes, HOST_SOURCES) {
             intake.host = Some(host);
         }
-        if let Some(service) = first_attribute(&attributes, SERVICE_SOURCES) {
+        if let Some(service) = take_attribute(&mut attributes, SERVICE_SOURCES) {
             intake.service = Some(service);
         }
-        intake.status = match first_attribute(&attributes, STATUS_SOURCES) {
+        intake.status = match take_attribute(&mut attributes, STATUS_SOURCES) {
             Some(status) => normalize_status(&status).to_string(),
             // The envelope status is stored as it is.
             None => match envelope_status {
@@ -140,14 +140,14 @@ impl IntakeLog {
         };
 
         attributes.retain(|_, value| !value.is_null());
-        intake.attributes = attributes;
+        intake.attributes = expand_dotted_keys(attributes);
         intake
     }
 
     /// Returns the stored value that the field at `path` ends up in, as a comparable JSON value.
     ///
     /// `path` is a location-qualified diff path. Envelope fields map to the stored field they feed, and properties map
-    /// to the attribute of the same name, or to the stored field a remapper fills from it.
+    /// to the attribute at the same path, or to the stored field a remapper fills from them.
     pub fn value_for_path(&self, path: &str) -> Value {
         let reserved = |name: &str| -> Option<Value> {
             match name {
@@ -171,20 +171,8 @@ impl IntakeLog {
             .or_else(|| path.strip_prefix("envelope_properties."))
             .unwrap_or(path);
 
-        // The property key may itself contain dots, so find the longest attribute key the path starts with.
-        let attribute = self
-            .attributes
-            .iter()
-            .filter(|(name, _)| {
-                key == name.as_str() || key.starts_with(&format!("{}.", name)) || key.starts_with(&format!("{}[", name))
-            })
-            .max_by_key(|(name, _)| name.len());
-        let attribute = attribute.map_or(Value::Null, |(name, value)| serde_json::json!({ name.as_str(): value }));
-
-        match reserved(key) {
-            Some(stored) => serde_json::json!([stored, attribute]),
-            None => attribute,
-        }
+        // A property a remapper reads only matters through the stored field.
+        reserved(key).unwrap_or_else(|| lookup(&self.attributes, key))
     }
 }
 
@@ -197,10 +185,63 @@ pub fn classify(path: &str, baseline: &IntakeLog, comparison: &IntakeLog) -> Vis
     }
 }
 
-fn first_attribute(attributes: &BTreeMap<String, Value>, sources: &[&str]) -> Option<Value> {
-    sources
+fn take_attribute(attributes: &mut BTreeMap<String, Value>, sources: &[&str]) -> Option<Value> {
+    let source = sources
         .iter()
-        .find_map(|source| attributes.get(*source).filter(|value| !value.is_null()).cloned())
+        .find(|source| attributes.get(**source).is_some_and(|value| !value.is_null()))?;
+    attributes.remove(*source)
+}
+
+/// Expands dotted attribute keys into nested objects, as the intake does.
+///
+/// Keys are applied in sorted order, so when a scalar and an object land on the same key, the later one wins.
+fn expand_dotted_keys(attributes: BTreeMap<String, Value>) -> Map<String, Value> {
+    let mut expanded = Map::new();
+    for (key, value) in attributes {
+        let mut segments = key.split('.').peekable();
+        let mut target = &mut expanded;
+        while let Some(segment) = segments.next() {
+            if segments.peek().is_none() {
+                target.insert(segment.to_string(), value);
+                break;
+            }
+            let entry = target
+                .entry(segment.to_string())
+                .or_insert_with(|| Value::Object(Map::new()));
+            if !entry.is_object() {
+                *entry = Value::Object(Map::new());
+            }
+            target = entry.as_object_mut().expect("entry was just made an object");
+        }
+    }
+    expanded
+}
+
+/// Returns the value at a diff path inside expanded attributes, such as `attr.list[1].k`.
+fn lookup(attributes: &Map<String, Value>, path: &str) -> Value {
+    let mut current = None::<&Value>;
+    for segment in path.split('.') {
+        let (name, indexes) = match segment.find('[') {
+            Some(start) => (&segment[..start], &segment[start..]),
+            None => (segment, ""),
+        };
+        let object = match current {
+            None => Some(attributes),
+            Some(value) => value.as_object(),
+        };
+        current = object.and_then(|object| object.get(name));
+        for index in indexes.split('[').filter(|index| !index.is_empty()) {
+            let index = index.trim_end_matches(']').parse::<usize>().ok();
+            current = current
+                .and_then(Value::as_array)
+                .zip(index)
+                .and_then(|(array, index)| array.get(index));
+        }
+        if current.is_none() {
+            return Value::Null;
+        }
+    }
+    current.cloned().unwrap_or(Value::Null)
 }
 
 /// Normalizes an attribute status like the intake's status remapper: on its first character for strings, and by
@@ -270,7 +311,7 @@ mod tests {
 
         let intake = IntakeLog::from_log(&log, true);
         assert_eq!(intake.message, Some(json!("hello")));
-        assert_eq!(intake.attributes, BTreeMap::from([("attr".to_string(), json!(1))]));
+        assert_eq!(Value::Object(intake.attributes), json!({"attr": 1}));
         // No status attribute, so the envelope status is stored as it is.
         assert_eq!(intake.status, "warn");
 
@@ -300,6 +341,8 @@ mod tests {
         // With agent-json, inner `ddtags` stay a plain attribute.
         assert_eq!(agent_json.ddtags, BTreeSet::from(["outer:1".to_string()]));
         assert_eq!(agent_json.attributes.get("ddtags"), Some(&json!("inner:1")));
+        // The remapped sources are consumed.
+        assert_eq!(agent_json.attributes.get("hostname"), None);
 
         let default = IntakeLog::from_log(&log, false);
         assert_eq!(default.host, Some(json!("inner-host")));
@@ -365,6 +408,15 @@ mod tests {
             Visibility::WireOnly
         );
 
+        // So are content statuses that normalize to the same value.
+        let baseline = log(json!({"message": "{\"message\":\"a\",\"status\":\"warn\"}"}));
+        let comparison = log(json!({"message": "{\"message\":\"a\",\"status\":\"Warning\"}"}));
+        let (baseline, comparison) = (
+            IntakeLog::from_log(&baseline, true),
+            IntakeLog::from_log(&comparison, true),
+        );
+        assert_eq!(classify("content.status", &baseline, &comparison), Visibility::WireOnly);
+
         // A differing content value is visible.
         let baseline = log(json!({"message": "{\"message\":\"a\",\"attr\":{\"k\":1}}"}));
         let comparison = log(json!({"message": "{\"message\":\"a\",\"attr\":{\"k\":2}}"}));
@@ -374,6 +426,20 @@ mod tests {
         );
         assert_eq!(
             classify("content.attr.k", &baseline, &comparison),
+            Visibility::IntakeVisible
+        );
+
+        // Dotted keys are expanded, so they're equivalent to nested objects.
+        let baseline = log(json!({"message": "{\"message\":\"a\",\"attr.k\":1,\"list\":[{\"x\":1}]}"}));
+        let comparison = log(json!({"message": "{\"message\":\"a\",\"attr\":{\"k\":1},\"list\":[{\"x\":2}]}"}));
+        let (baseline, comparison) = (
+            IntakeLog::from_log(&baseline, true),
+            IntakeLog::from_log(&comparison, true),
+        );
+        assert_eq!(classify("content.attr.k", &baseline, &comparison), Visibility::WireOnly);
+        assert_eq!(classify("content.attr", &baseline, &comparison), Visibility::WireOnly);
+        assert_eq!(
+            classify("content.list[0].x", &baseline, &comparison),
             Visibility::IntakeVisible
         );
 
