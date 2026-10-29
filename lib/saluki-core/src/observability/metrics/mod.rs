@@ -444,46 +444,6 @@ fn delete_counter_from_state(state: &State, prefixed_key: &Key) -> Option<Metric
     Some(snapshot)
 }
 
-/// A recorder-bound key for explicitly evicting a gauge without allocating on the eviction path.
-///
-/// Prepare this handle when registering the gauge. The owner must stop writing to that gauge before
-/// calling [`evict`](Self::evict), and must not retain this handle across a later registration of the same key.
-pub struct GaugeEvictionHandle {
-    state: Arc<State>,
-    key: Key,
-}
-
-impl GaugeEvictionHandle {
-    /// Prepares an eviction handle from a key without the recorder's prefix, including the builder's default tags.
-    /// Returns `None` if the internal recorder is not installed.
-    pub fn new(key: Key) -> Option<Self> {
-        RECEIVER_STATE.get().map(|state| Self::for_state(state, key))
-    }
-
-    fn for_state(state: &Arc<State>, key: Key) -> Self {
-        let key = Key::from_parts(format!("{}.{}", state.metrics_prefix, key.name()), key.labels());
-        Self {
-            state: Arc::clone(state),
-            key,
-        }
-    }
-
-    /// Evicts the registered gauge, returning whether it existed.
-    ///
-    /// The next periodic snapshot removes its cached context and reconciles downstream gauge state.
-    /// Deferring notification to that snapshot batches churn instead of queueing a tombstone per deletion.
-    pub fn evict(self) -> bool {
-        self.state
-            .registry
-            .maps
-            .lock()
-            .unwrap()
-            .gauges
-            .remove(&self.key)
-            .is_some()
-    }
-}
-
 fn context_from_key(key: &Key) -> Context {
     let tags = key
         .labels()
@@ -1053,27 +1013,6 @@ mod tests {
             processor.process(snapshot, &aggregated);
         }
         assert_eq!(metric_count(&aggregated, "origins"), 0);
-    }
-
-    #[test]
-    fn gauge_eviction_handle_uses_registration_prefix_and_all_builder_tags() {
-        let recorder = MetricsRecorder::new("test".to_string(), Level::INFO);
-        let _local = metrics::set_default_local_recorder(&recorder);
-        let builder = saluki_metrics::MetricsBuilder::default().add_default_tag("component_id:test");
-        let (gauge, key) = builder.register_gauge_with_tags_and_key("origins", ["container:one"]);
-        let eviction = GaugeEvictionHandle::for_state(&recorder.state, key);
-        assert!(recorder
-            .state
-            .registry
-            .maps
-            .lock()
-            .unwrap()
-            .gauges
-            .contains_key(&eviction.key));
-        gauge.set(0.0);
-        drop(gauge);
-        assert!(eviction.evict());
-        assert!(recorder.state.registry.maps.lock().unwrap().gauges.is_empty());
     }
 
     #[tokio::test]

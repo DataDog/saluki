@@ -10,7 +10,6 @@ use saluki_core::data_model::{
     event::metric::{context::Context, MetricValues},
     tags::TagSet,
 };
-use saluki_core::observability::metrics::GaugeEvictionHandle;
 use saluki_metrics::MetricsBuilder;
 use smallvec::SmallVec;
 
@@ -88,7 +87,7 @@ struct OriginContextTelemetry {
     contexts: Arc<Mutex<OriginContexts>>,
 }
 
-// Reserve one series for overflow. Slots are not evicted while they have live contexts.
+// Reserve one series for overflow. Slots are not reused while they have live contexts.
 const MAX_ORIGIN_SERIES: usize = 200;
 const MAX_ORIGIN_TAGS: usize = 32;
 const MAX_ORIGIN_TAG_BYTES: usize = 4096;
@@ -103,12 +102,11 @@ pub(super) struct OriginContextId(u16);
 struct OriginContexts {
     indices: HashMap<Arc<OriginTagSetKey>, usize, foldhash::quality::RandomState>,
     slots: Vec<Option<OriginContextGauge>>,
-    overflow: Option<(Gauge, Option<GaugeEvictionHandle>, usize)>,
+    overflow: Option<(Gauge, usize)>,
 }
 
 struct OriginContextGauge {
     key: Arc<OriginTagSetKey>,
-    eviction: Option<GaugeEvictionHandle>,
     gauge: Gauge,
     count: usize,
 }
@@ -243,24 +241,18 @@ impl OriginContexts {
             None => return self.increment_overflow(builder),
         };
         let labels = encode_origin_tags(key.0.iter().copied());
-        let (gauge, registry_key) = builder.register_gauge_with_tags_and_key(ORIGIN_METRIC, labels);
+        let gauge = builder.register_gauge_with_tags(ORIGIN_METRIC, labels);
         gauge.set(1.0);
         let key = key.to_owned();
         self.indices.insert(Arc::clone(&key), index);
-        self.slots[index] = Some(OriginContextGauge {
-            key,
-            eviction: GaugeEvictionHandle::new(registry_key),
-            gauge,
-            count: 1,
-        });
+        self.slots[index] = Some(OriginContextGauge { key, gauge, count: 1 });
         OriginContextId(index as u16 + 2)
     }
 
     fn increment_overflow(&mut self, builder: &MetricsBuilder) -> OriginContextId {
-        let (gauge, _, count) = self.overflow.get_or_insert_with(|| {
-            let (gauge, key) = builder.register_gauge_with_tags_and_key(ORIGIN_METRIC, ["origin_overflow:true"]);
-            (gauge, GaugeEvictionHandle::new(key), 0)
-        });
+        let (gauge, count) = self
+            .overflow
+            .get_or_insert_with(|| (builder.register_gauge_with_tags(ORIGIN_METRIC, ["origin_overflow:true"]), 0));
         *count += 1;
         gauge.set(*count as f64);
         OriginContextId(1)
@@ -270,9 +262,12 @@ impl OriginContexts {
         match id.0 {
             0 => {}
             1 => {
-                let (gauge, _, count) = self.overflow.as_mut().expect("overflow was admitted");
+                let (gauge, count) = self.overflow.as_mut().expect("overflow was admitted");
                 *count -= 1;
                 gauge.set(*count as f64);
+                if *count == 0 {
+                    self.overflow = None;
+                }
             }
             slot => {
                 let index = usize::from(slot - 2);
@@ -280,26 +275,11 @@ impl OriginContexts {
                 entry.count -= 1;
                 entry.gauge.set(entry.count as f64);
                 if entry.count == 0 {
+                    // Dropping the last handle lets idle eviction retire the series once its final zero is flushed.
                     let entry = self.slots[index].take().expect("occupied origin slot");
                     self.indices.remove(&entry.key);
-                    if let Some(eviction) = entry.eviction {
-                        eviction.evict();
-                    }
                 }
             }
-        }
-    }
-}
-
-impl Drop for OriginContexts {
-    fn drop(&mut self) {
-        for entry in self.slots.iter_mut().flatten() {
-            if let Some(eviction) = entry.eviction.take() {
-                eviction.evict();
-            }
-        }
-        if let Some((_, Some(eviction), _)) = self.overflow.take() {
-            eviction.evict();
         }
     }
 }
@@ -453,7 +433,7 @@ mod tests {
         let admitted = contexts.increment(&builder, &tag_set(&["container:new"]));
         assert_eq!(admitted.0, ids[0].0);
         contexts.decrement(overflow);
-        assert_eq!(contexts.overflow.as_ref().unwrap().2, 0);
+        assert!(contexts.overflow.is_none());
         assert_eq!(contexts.slots[0].as_ref().unwrap().count, 1);
         assert_eq!(recorder.gauge((ORIGIN_METRIC, &[("container", "new")])), Some(1.0));
         contexts.decrement(admitted);
