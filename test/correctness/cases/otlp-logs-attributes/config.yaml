@@ -1,0 +1,89 @@
+type: correctness
+runtime: docker
+analysis_mode: logs
+logs:
+  # Every record carries a unique `fixture_id`, so records pair even when a gap changes their message or timestamp.
+  identity_fields: ["fixture_id"]
+  min_count: 54
+  # Every difference ADP shows today, tagged with its gap from the OTLP logs parity plan (DataDog/saluki#2966). Remove
+  # an entry in the change that fixes its gap.
+  known_differences:
+    - gap: gap/content-in-message
+      paths: ["content.**"]
+      kinds: [location]
+      reason: ADP puts properties at the top level instead of in the `message` content.
+    - gap: gap/content-in-message
+      paths: ["content.status", "content.hostname"]
+      kinds: [missing]
+      reason: ADP's content holds only `message` and `service`.
+    - gap: gap/status-strings
+      paths: ["envelope.status"]
+      kinds: [value]
+      reason: ADP capitalizes the envelope status instead of sending the Agent's raw status.
+    - gap: gap/envelope-timestamp
+      paths: ["envelope.timestamp"]
+      kinds: [missing]
+      reason: ADP has no encode-time envelope `timestamp`.
+    - gap: gap/as-string-coercion
+      paths: ["content.attr_empty"]
+      kinds: [value]
+      reason: ADP renders an empty value as "null" instead of "".
+    - gap: gap/array-attributes
+      paths:
+        - "content.attr_array"
+        - "content.attr_array_of_maps"
+        - "content.attr_empty_array"
+        - "content.attr_depth_9.level1"
+        - "content.attr_depth_11.level1"
+      kinds: [value]
+      reason: ADP stringifies arrays instead of keeping them as JSON arrays.
+    - gap: gap/bytes-encoding
+      paths: ["content.attr_bytes_utf8", "content.attr_bytes_binary"]
+      kinds: [value]
+      reason: ADP renders bytes as UTF-8 text or "<n bytes>" instead of base64.
+    - gap: gap/non-string-message
+      paths: ["content.message"]
+      kinds: [value]
+      reason: ADP only honors string `message`/`log` attributes, and uses the body instead.
+    - gap: gap/event-name
+      paths: ["content.otel.event_name"]
+      kinds: [missing]
+      reason: ADP doesn't set `otel.event_name`.
+    - gap: gap/scope-metadata
+      paths: ["content.otel.scope.name", "content.otel.scope.version"]
+      kinds: [missing]
+      reason: ADP doesn't set the scope name and version.
+    - gap: gap/scope-metadata
+      paths: ["envelope_properties.otel.library.name", "envelope_properties.otel.library.version"]
+      kinds: [extra]
+      reason: ADP keeps the `otel.library.*` aliases instead of mapping them to scope keys.
+    - gap: gap/attribute-key-case
+      paths: ["content.RequestID", "content.nested_Map.InnerKey"]
+      kinds: [missing]
+      reason: ADP lowercases log attribute keys, so mixed-case keys are missing under their original spelling.
+    - gap: gap/attribute-key-case
+      paths: ["envelope_properties.requestid", "envelope_properties.nested_map.InnerKey"]
+      kinds: [extra]
+      reason: ADP lowercases log attribute keys, so mixed-case keys appear under their lowercased spelling.
+baseline:
+  image: saluki-images/datadog-agent:testing-release
+  files:
+    - datadog.yaml:/etc/datadog-agent/datadog.yaml
+  env:
+    DD_API_KEY: correctness-test
+comparison:
+  image: saluki-images/datadog-agent:testing-release
+  files:
+    - datadog.yaml:/etc/datadog-agent/datadog.yaml
+  env:
+    DD_API_KEY: correctness-test
+    DD_DATA_PLANE_ENABLED: "true"
+    DD_DATA_PLANE_STANDALONE_MODE: "false"
+    DD_DATA_PLANE_OTLP_ENABLED: "true"
+    # Handle OTLP logs natively in ADP rather than relaying them to the core Agent. Per-signal proxy flags aren't
+    # honored yet, so this turns off the proxy for every signal.
+    DD_DATA_PLANE_OTLP_PROXY_ENABLED: "false"
+    # TODO(#2177): Replace these ADP-only overrides with canonical schema-provided endpoint keys
+    # once endpoint ownership prevents both processes from attempting to bind the same ports.
+    ADP_DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY: "0.0.0.0:54317"
+    ADP_DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY: "0.0.0.0:54318"
