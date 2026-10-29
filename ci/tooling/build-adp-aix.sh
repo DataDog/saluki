@@ -25,6 +25,21 @@ export CC="${ADP_AIX_CC}"
 export CXX="${ADP_AIX_CXX}"
 export AR="${ADP_AIX_AR}"
 export RANLIB="${ADP_AIX_RANLIB}"
+
+# jemalloc's build needs some workarounds on AIX:
+#
+# - Its configure adds `-g3`, whose DWARF macro sections trigger an AIX linker bug (IBM APAR IJ51412) that leaves
+#   executables unloadable. A later plain `-g` doesn't lower the level, so we append an explicit `-g2`.
+# - It includes `<sys/syscall.h>`, which AIX doesn't have, so we put an empty stand-in on the include path. jemalloc's
+#   `EXTRA_CFLAGS` only applies to its own compilation, not to its configure checks or other C dependencies.
+# - It lists symbols with `${NM} -a`, which AIX's `nm` rejects, so we point it at a wrapper. If this breaks, the build
+#   still succeeds, but without jemalloc's internal symbols namespaced.
+# - Its generated awk scripts need gawk; AIX's `nawk` rejects them. Configure picks gawk up from `PATH`.
+jemalloc_compat_dir="${repo_root}/ci/tooling/aix-jemalloc"
+export CFLAGS_powerpc64_ibm_aix="${CFLAGS_powerpc64_ibm_aix:+${CFLAGS_powerpc64_ibm_aix} }-g2"
+export EXTRA_CFLAGS="-I${jemalloc_compat_dir}/include${EXTRA_CFLAGS:+ ${EXTRA_CFLAGS}}"
+export NM="${jemalloc_compat_dir}/nm"
+
 export CARGO_HOME
 export CARGO_TARGET_DIR
 
@@ -86,6 +101,9 @@ print_environment() {
     echo "CXX=${CXX}"
     echo "AR=${AR}"
     echo "RANLIB=${RANLIB}"
+    echo "CFLAGS_powerpc64_ibm_aix=${CFLAGS_powerpc64_ibm_aix}"
+    echo "EXTRA_CFLAGS=${EXTRA_CFLAGS}"
+    echo "NM=${NM}"
     echo "CARGO_HOME=${CARGO_HOME}"
     echo "CARGO_TARGET_DIR=${CARGO_TARGET_DIR}"
     echo "ADP_AIX_EXPECTED_CARGO_PREFIX=${ADP_AIX_EXPECTED_CARGO_PREFIX}"
@@ -117,6 +135,7 @@ require_executable "${CXX}" "AIX Toolbox GCC C++ compiler"
 require_executable "${AR}" "AIX system ar"
 require_executable "${RANLIB}" "AIX system ranlib"
 require_command protoc
+require_command gawk
 
 check_version_prefix "${AIX_RUST_SDK_DIR}/bin/cargo" "cargo" "${ADP_AIX_EXPECTED_CARGO_PREFIX}"
 check_version_prefix "${AIX_RUST_SDK_DIR}/bin/rustc" "rustc" "${ADP_AIX_EXPECTED_RUSTC_PREFIX}"

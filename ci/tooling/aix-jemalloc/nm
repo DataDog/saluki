@@ -1,0 +1,11 @@
+#!/bin/sh
+#
+# jemalloc's build lists symbols with `${NM} -a`, which AIX's `nm` rejects. Drop `-a`, and ask for the BSD-style output
+# that jemalloc parses, for 64-bit objects.
+
+for arg do
+    shift
+    [ "$arg" = "-a" ] || set -- "$@" "$arg"
+done
+
+exec /usr/bin/nm -X64 -B "$@"
