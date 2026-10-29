@@ -18,7 +18,7 @@ use serde_json::Value;
 use stele::Log;
 use tracing::{error, info, warn};
 
-use self::ratchet::{is_known, path_matches, Ratchet};
+use self::ratchet::{is_known, Ratchet};
 pub use self::ratchet::{KnownDiffKind, KnownDifference};
 use crate::intake::CollectedData;
 
@@ -644,10 +644,12 @@ impl<'a> LogsAnalyzer<'a> {
         ))
     }
 
-    /// Returns an error message if a known difference covers an identity field.
+    /// Returns an error message if a known difference names an identity field.
     ///
     /// Logs are paired by identity key before known differences are applied, so a known difference in an identity field
-    /// would split the logs into missing and extra ones instead of being ignored.
+    /// would split the logs into missing and extra ones instead of being ignored. Only patterns that name the field
+    /// without wildcards are rejected: a broad pattern such as `content.*` may cover an identity field incidentally,
+    /// and if that field ever differs, the unpaired logs still fail the case.
     fn identity_field_conflict(&self) -> Option<String> {
         for field in &self.options.identity_fields {
             // Each side sets the encode-time timestamp itself, so it never matches exactly.
@@ -667,9 +669,10 @@ impl<'a> LogsAnalyzer<'a> {
                     }
                     // Patterns for fields nested under the identity field change its value too.
                     let covers = |pattern: &&String| {
-                        path_matches(pattern, &path)
-                            || pattern.starts_with(&format!("{}.", path))
-                            || pattern.starts_with(&format!("{}[", path))
+                        !pattern.contains('*')
+                            && (*pattern == &path
+                                || pattern.starts_with(&format!("{}.", path))
+                                || pattern.starts_with(&format!("{}[", path)))
                     };
                     if let Some(pattern) = entry.paths.iter().find(covers) {
                         return Some(format!(
@@ -1114,6 +1117,15 @@ mod tests {
             "{}",
             error
         );
+
+        // Broad patterns that cover an identity field incidentally are allowed.
+        let broad = with(
+            json!({"gap": "gap/attribute-key-case", "paths": ["content.*"], "kinds": ["missing"], "reason": "test"}),
+        );
+        let (error, _) = LogsAnalyzer::new(&a, &a, broad)
+            .run_analysis()
+            .expect_err("the unused entry should be stale");
+        assert!(error.to_string().contains("1 known differences are stale"), "{}", error);
 
         // Location differences don't change the identity key, so they're allowed.
         let location_only = with(
