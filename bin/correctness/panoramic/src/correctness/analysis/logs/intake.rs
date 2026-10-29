@@ -70,6 +70,9 @@ pub struct IntakeLog {
 
     /// Every other attribute, with dotted keys expanded into nested objects.
     pub attributes: Map<String, Value>,
+
+    /// Properties consumed to fill the stored fields above.
+    consumed: BTreeMap<String, &'static str>,
 }
 
 impl IntakeLog {
@@ -111,6 +114,8 @@ impl IntakeLog {
                 intake.ddtags = split_ddtags(&raw);
             }
             intake.ddsource = merged.remove("ddsource");
+            intake.consumed.insert("ddtags".to_string(), "ddtags");
+            intake.consumed.insert("ddsource".to_string(), "ddsource");
             envelope_status = None;
             merged
         };
@@ -121,16 +126,16 @@ impl IntakeLog {
         };
 
         // The default remappers overwrite envelope values with the first matching attribute, which they consume.
-        if let Some(date) = take_attribute(&mut attributes, DATE_SOURCES) {
+        if let Some(date) = intake.take_attribute(&mut attributes, DATE_SOURCES, "date") {
             intake.date = Some(date);
         }
-        if let Some(host) = take_attribute(&mut attributes, HOST_SOURCES) {
+        if let Some(host) = intake.take_attribute(&mut attributes, HOST_SOURCES, "host") {
             intake.host = Some(host);
         }
-        if let Some(service) = take_attribute(&mut attributes, SERVICE_SOURCES) {
+        if let Some(service) = intake.take_attribute(&mut attributes, SERVICE_SOURCES, "service") {
             intake.service = Some(service);
         }
-        intake.status = match take_attribute(&mut attributes, STATUS_SOURCES) {
+        intake.status = match intake.take_attribute(&mut attributes, STATUS_SOURCES, "status") {
             Some(status) => normalize_status(&status).to_string(),
             // The envelope status is stored as it is.
             None => match envelope_status {
@@ -144,35 +149,50 @@ impl IntakeLog {
         intake
     }
 
+    /// Removes and returns the first non-null attribute among `sources`, recording that it fills `field`.
+    fn take_attribute(
+        &mut self, attributes: &mut BTreeMap<String, Value>, sources: &[&str], field: &'static str,
+    ) -> Option<Value> {
+        let source = sources
+            .iter()
+            .find(|source| attributes.get(**source).is_some_and(|value| !value.is_null()))?;
+        self.consumed.insert(source.to_string(), field);
+        attributes.remove(*source)
+    }
+
+    fn stored_field(&self, field: &str) -> Value {
+        match field {
+            "message" => self.message.clone().unwrap_or(Value::Null),
+            "date" | "timestamp" => self.date.clone().unwrap_or(Value::Null),
+            "host" | "hostname" => self.host.clone().unwrap_or(Value::Null),
+            "service" => self.service.clone().unwrap_or(Value::Null),
+            "status" => Value::String(self.status.clone()),
+            "ddsource" => self.ddsource.clone().unwrap_or(Value::Null),
+            "ddtags" => Value::Array(self.ddtags.iter().cloned().map(Value::String).collect()),
+            _ => Value::Null,
+        }
+    }
+
     /// Returns the stored value that the field at `path` ends up in, as a comparable JSON value.
     ///
-    /// `path` is a location-qualified diff path. Envelope fields map to the stored field they feed, and properties map
-    /// to the attribute at the same path, or to the stored field a remapper fills from them.
+    /// `path` is a location-qualified diff path. Envelope fields map to the stored field they feed. A property maps to
+    /// the stored field it was consumed into, if any, and otherwise to the attribute at the same path.
     pub fn value_for_path(&self, path: &str) -> Value {
-        let reserved = |name: &str| -> Option<Value> {
-            match name {
-                "message" => Some(self.message.clone().unwrap_or(Value::Null)),
-                "timestamp" | "@timestamp" | "date" => Some(self.date.clone().unwrap_or(Value::Null)),
-                "hostname" | "host" => Some(self.host.clone().unwrap_or(Value::Null)),
-                "service" | "dd.service" => Some(self.service.clone().unwrap_or(Value::Null)),
-                "status" | "severity" | "level" => Some(Value::String(self.status.clone())),
-                "ddsource" => Some(self.ddsource.clone().unwrap_or(Value::Null)),
-                "ddtags" => Some(Value::Array(self.ddtags.iter().cloned().map(Value::String).collect())),
-                _ => None,
-            }
-        };
-
         if let Some(field) = path.strip_prefix("envelope.") {
-            return reserved(field).unwrap_or(Value::Null);
+            return self.stored_field(field);
         }
 
         let key = path
             .strip_prefix("content.")
             .or_else(|| path.strip_prefix("envelope_properties."))
             .unwrap_or(path);
-
-        // A property a remapper reads only matters through the stored field.
-        reserved(key).unwrap_or_else(|| lookup(&self.attributes, key))
+        if key == "message" {
+            return self.stored_field("message");
+        }
+        match self.consumed.get(key) {
+            Some(field) => self.stored_field(field),
+            None => lookup(&self.attributes, key),
+        }
     }
 }
 
@@ -185,16 +205,10 @@ pub fn classify(path: &str, baseline: &IntakeLog, comparison: &IntakeLog) -> Vis
     }
 }
 
-fn take_attribute(attributes: &mut BTreeMap<String, Value>, sources: &[&str]) -> Option<Value> {
-    let source = sources
-        .iter()
-        .find(|source| attributes.get(**source).is_some_and(|value| !value.is_null()))?;
-    attributes.remove(*source)
-}
-
 /// Expands dotted attribute keys into nested objects, as the intake does.
 ///
-/// Keys are applied in sorted order, so when a scalar and an object land on the same key, the later one wins.
+/// Keys are applied in sorted order, so when a scalar and an object land on the same key, the later one wins. The intake
+/// applies them in wire order, which `stele::Log` doesn't keep, so such collisions are only approximated.
 fn expand_dotted_keys(attributes: BTreeMap<String, Value>) -> Map<String, Value> {
     let mut expanded = Map::new();
     for (key, value) in attributes {
@@ -219,6 +233,11 @@ fn expand_dotted_keys(attributes: BTreeMap<String, Value>) -> Map<String, Value>
 
 /// Returns the value at a diff path inside expanded attributes, such as `attr.list[1].k`.
 fn lookup(attributes: &Map<String, Value>, path: &str) -> Value {
+    // An attribute name may contain brackets itself.
+    if let Some(value) = attributes.get(path) {
+        return value.clone();
+    }
+
     let mut current = None::<&Value>;
     for segment in path.split('.') {
         let (name, indexes) = match segment.find('[') {
@@ -440,6 +459,19 @@ mod tests {
         assert_eq!(classify("content.attr", &baseline, &comparison), Visibility::WireOnly);
         assert_eq!(
             classify("content.list[0].x", &baseline, &comparison),
+            Visibility::IntakeVisible
+        );
+
+        // A lower-precedence remapper source isn't consumed, so it stays a visible attribute.
+        let baseline = log(json!({"message": "{\"message\":\"a\",\"host\":\"h\",\"hostname\":\"x\"}"}));
+        let comparison = log(json!({"message": "{\"message\":\"a\",\"host\":\"h\",\"hostname\":\"y\"}"}));
+        let (baseline, comparison) = (
+            IntakeLog::from_log(&baseline, true),
+            IntakeLog::from_log(&comparison, true),
+        );
+        assert_eq!(classify("content.host", &baseline, &comparison), Visibility::WireOnly);
+        assert_eq!(
+            classify("content.hostname", &baseline, &comparison),
             Visibility::IntakeVisible
         );
 
