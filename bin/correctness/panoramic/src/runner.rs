@@ -22,6 +22,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::deadline::{Budget, Deadline};
+use crate::probe::probe;
 use crate::record::{ActiveStep, CaseRecord, StepStatus, Verdict};
 use crate::test::{RunnerSettings, Test, TestContext};
 use crate::{
@@ -44,6 +45,9 @@ const GRACE_TIME: Duration = Duration::from_secs(30);
 
 /// The amount of time the intake sidecar has to report healthy before the test fails.
 const INTAKE_HEALTH_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Time allowed to resolve the target's dynamic variables and read them back.
+const DYNAMIC_VARS_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The amount of time the post-assertion intake capture has to collect from the intake sidecar.
 const INTAKE_CAPTURE_BUDGET: Duration = Duration::from_secs(10);
@@ -724,7 +728,8 @@ impl IntegrationRunner {
             let resolved_vars = if self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME {
                 crate::dynamic_vars::resolve_windows_vars(&self.test_case.config, details.container_ip()).await
             } else {
-                crate::dynamic_vars::read_resolved_vars(&driver).await
+                crate::dynamic_vars::read_resolved_vars(&driver, DYNAMIC_VARS_TIMEOUT, &self.tctx.test_cancel_token())
+                    .await
             };
 
             match resolved_vars {
@@ -969,19 +974,14 @@ impl IntegrationRunner {
 
         // The health wait polls until it gets an answer, so bound it and watch for cancellation. A sidecar that never
         // reports healthy would otherwise hold the test past its teardown grace period, leaking the isolation group.
-        let test_cancel = self.tctx.test_cancel_token();
-        tokio::select! {
-            result = driver.wait_for_container_healthy() => {
-                result.error_context("Intake sidecar failed its health check.")?
-            }
-            _ = tokio::time::sleep(INTAKE_HEALTH_TIMEOUT) => return Err(generic_error!(
-                "Intake sidecar did not report healthy within {:?}.",
-                INTAKE_HEALTH_TIMEOUT
-            )),
-            _ = test_cancel.cancelled() => return Err(generic_error!(
-                "Canceled while waiting for the intake sidecar to report healthy."
-            )),
-        }
+        probe(
+            "the intake sidecar to report healthy",
+            INTAKE_HEALTH_TIMEOUT,
+            &self.tctx.test_cancel_token(),
+            driver.wait_for_container_healthy(),
+        )
+        .await?
+        .error_context("Intake sidecar failed its health check.")?;
 
         let host_port = details
             .try_get_exposed_port("tcp", crate::config::INTAKE_HTTP_PORT)
@@ -1193,7 +1193,7 @@ pub(crate) mod test_support {
 
     use super::*;
     use crate::assertions::test_support::{host_context, procedure};
-    use crate::assertions::{run_assertion_steps, AssertionResult};
+    use crate::assertions::{run_assertion_steps, AssertionResult, AssertionStatus};
     use crate::test::TestSuite;
 
     /// What a [`ScriptedTest`] does once it has entered its phase.
@@ -1232,6 +1232,8 @@ pub(crate) mod test_support {
         pub(crate) behavior: Behavior,
         /// Notified once the test has entered its phase.
         pub(crate) entered: Option<Arc<Notify>>,
+        /// Published port of the intake sidecar that procedure steps poll.
+        pub(crate) intake: Option<u16>,
     }
 
     impl ScriptedTest {
@@ -1243,6 +1245,7 @@ pub(crate) mod test_support {
                 phase: "assertions",
                 behavior,
                 entered: None,
+                intake: None,
             }
         }
     }
@@ -1280,20 +1283,23 @@ pub(crate) mod test_support {
                 entered.notify_one();
             }
 
-            let assertion = |passed| AssertionResult {
+            let assertion = |status| AssertionResult {
                 name: "scripted".to_string(),
-                passed,
+                status,
                 message: String::new(),
                 duration: Duration::from_millis(1),
             };
             match self.behavior {
-                Behavior::Pass => {
-                    TestResult::from_assertions(&self.name, Duration::from_millis(1), vec![assertion(true)], Vec::new())
-                }
+                Behavior::Pass => TestResult::from_assertions(
+                    &self.name,
+                    Duration::from_millis(1),
+                    vec![assertion(AssertionStatus::Passed)],
+                    Vec::new(),
+                ),
                 Behavior::Fail => TestResult::from_assertions(
                     &self.name,
                     Duration::from_millis(1),
-                    vec![assertion(false)],
+                    vec![assertion(AssertionStatus::Failed)],
                     Vec::new(),
                 ),
                 Behavior::Panic => panic!("scripted test '{}' panicked", self.name),
@@ -1306,7 +1312,12 @@ pub(crate) mod test_support {
                 }
                 Behavior::ReturnAtDeadline => {
                     tokio::time::sleep_until(tctx.deadline.at).await;
-                    TestResult::from_assertions(&self.name, Duration::from_millis(1), vec![assertion(true)], Vec::new())
+                    TestResult::from_assertions(
+                        &self.name,
+                        Duration::from_millis(1),
+                        vec![assertion(AssertionStatus::Passed)],
+                        Vec::new(),
+                    )
                 }
                 Behavior::Procedure(steps) => {
                     let started = Instant::now();
@@ -1352,8 +1363,9 @@ pub(crate) mod test_support {
     impl ScriptedTest {
         /// Runs `steps` against a host context containing a `ready` log line and records their results.
         async fn run_procedure(&self, steps: &str, tctx: &TestContext) {
-            let ctx = host_context(tctx.test_cancel_token());
+            let mut ctx = host_context(tctx.test_cancel_token());
             ctx.log_buffer.write().unwrap().stdout.push("ready".to_string());
+            ctx.intake_host_port = self.intake;
             run_assertion_steps(&procedure(steps), &ctx, tctx.deadline, &tctx.record).await;
         }
     }
@@ -1387,21 +1399,22 @@ mod tests {
 
     /// Runs a test within `bound`, using `log_base_dir` and run cancellation `cancel_all`. Discards events.
     async fn run_scripted_test(
-        test: ScriptedTest, log_base_dir: &Path, cancel_all: &CancellationToken, bound: Duration,
+        test: &dyn Test, log_base_dir: &Path, cancel_all: &CancellationToken, bound: Duration,
     ) -> TestResult {
         let mounts_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let settings = test_runner_settings(mounts_dir.path());
+        run_with_settings(test, settings, log_base_dir, cancel_all, bound).await
+    }
+
+    /// Runs a test with explicit settings and a timeout to catch hangs.
+    async fn run_with_settings(
+        test: &dyn Test, settings: RunnerSettings, log_base_dir: &Path, cancel_all: &CancellationToken, bound: Duration,
+    ) -> TestResult {
         let (tx, _rx) = mpsc::unbounded_channel();
 
         tokio::time::timeout(
             bound,
-            Runner::run_one(
-                &test,
-                &tx,
-                cancel_all,
-                log_base_dir.to_path_buf(),
-                test_runner_settings(mounts_dir.path()),
-                None,
-            ),
+            Runner::run_one(test, &tx, cancel_all, log_base_dir.to_path_buf(), settings, None),
         )
         .await
         .expect("the runner should finish the test within the bound")
@@ -1487,7 +1500,7 @@ mod tests {
     async fn test_deadline_timeout_names_the_phase_that_was_active() {
         let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
         let result = run_scripted_test(
-            timing_out_in("container_start"),
+            &timing_out_in("container_start"),
             log_base_dir.path(),
             &CancellationToken::new(),
             BOUND,
@@ -1505,7 +1518,7 @@ mod tests {
     async fn result_log_labels_a_timeout_and_gives_its_cause() {
         let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
         let result = run_scripted_test(
-            timing_out_in("container_start"),
+            &timing_out_in("container_start"),
             log_base_dir.path(),
             &CancellationToken::new(),
             BOUND,
@@ -1554,7 +1567,7 @@ mod tests {
             )
         };
 
-        let result = run_scripted_test(test, log_base_dir.path(), &CancellationToken::new(), BOUND).await;
+        let result = run_scripted_test(&test, log_base_dir.path(), &CancellationToken::new(), BOUND).await;
 
         assert_eq!(result.outcome, TestOutcome::TimedOut);
         let timeout = result
@@ -1588,8 +1601,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_step_that_exhausts_its_own_budget_fails_the_test() {
-        // Port 0 fails immediately. The retry sleep outlasts the step budget, proving the slack preserves
-        // the assertion's own timeout message.
+        // The retry sleep outlasts the step budget, proving the slack preserves the assertion's own timeout message.
+        // The last attempt is a request error or a probe timeout, depending on how busy the machine is.
         crate::intake::test_server::install_crypto_provider();
         let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
         let test = ScriptedTest::new(
@@ -1599,15 +1612,109 @@ mod tests {
             ),
         );
 
-        let result = run_scripted_test(test, log_base_dir.path(), &CancellationToken::new(), BOUND).await;
+        let result = run_scripted_test(&test, log_base_dir.path(), &CancellationToken::new(), BOUND).await;
 
         assert_eq!(result.outcome, TestOutcome::Failed);
         assert!(result.timeout.is_none());
         assert_eq!(result.assertion_results.len(), 1);
-        assert_eq!(
-            result.assertion_results[0].message,
-            "HTTP endpoint 'http://127.0.0.1:0/' returns status 200. did not happen within 200ms."
+        let message = &result.assertion_results[0].message;
+        assert!(
+            message.starts_with(
+                "HTTP endpoint 'http://127.0.0.1:0/' returns status 200. did not happen within 200ms.\nLast attempt: "
+            ),
+            "{message}"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_request_cut_short_by_the_case_deadline_is_interrupted() {
+        let intake = crate::intake::test_server::MockIntake::unresponsive().await;
+        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let test = ScriptedTest {
+            timeout: Duration::from_secs(1),
+            intake: Some(intake.port()),
+            ..ScriptedTest::new(
+                "stalled",
+                Behavior::Procedure("- assertion: intake_has_metric\n  name: some.metric\n  timeout: 30s\n"),
+            )
+        };
+
+        let result = run_scripted_test(&test, log_base_dir.path(), &CancellationToken::new(), PAUSED_BOUND).await;
+
+        assert_eq!(result.outcome, TestOutcome::TimedOut, "{:?}", result.error);
+        let timeout = result
+            .timeout
+            .as_ref()
+            .expect("a timed-out test should carry timeout detail");
+        assert_eq!(timeout.deadline, TimeoutDeadline::TestDeadline);
+        let cause = result.cause.as_ref().expect("a stopped test should carry its cause");
+        let active: Vec<_> = cause
+            .active
+            .iter()
+            .map(|step| (step.step, step.member, step.kind.as_str()))
+            .collect();
+        assert_eq!(active, [(0, None, "intake_has_metric")]);
+        assert_eq!(
+            statuses(&result),
+            [("intake_has_metric", None, StepStatus::Interrupted)]
+        );
+        let message = &result.assertion_results[0].message;
+        assert!(
+            message.starts_with(
+                "Interrupted after 1.0s. The case left this step 1.0s of its 30s step budget.\n\
+                 Cancelled after 1.0s waiting for the intake sidecar's metrics dump.\n\
+                 No metric matching name=some.metric, tags_match=subset had arrived at the intake.\n"
+            ),
+            "{message}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelling_the_core_agent_ipc_wait_returns_at_once() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        use crate::config::MAC_RUNTIME;
+        use crate::image_override::ImageOverrides;
+        use crate::integration::IntegrationSettings;
+
+        // Both binaries exit at once, so the Core Agent never writes its IPC credentials. The case timeout leaves
+        // room to start both processes on a busy machine before the wait begins.
+        let binaries = tempfile::tempdir().expect("temp dir should be creatable");
+        let exits = binaries.path().join("exits");
+        std::fs::write(&exits, "#!/bin/sh\nexit 0\n").expect("the script should be writable");
+        std::fs::set_permissions(&exits, std::fs::Permissions::from_mode(0o755))
+            .expect("the script should be made executable");
+        let config = serde_saphyr::from_str(&format!("name: ipc-wait\ntimeout: 3s\nprocedure:\n{LOG_MATCHES}"))
+            .expect("the case should parse");
+        let test = IntegrationTestCase::new(
+            config,
+            &IntegrationSettings::new(MAC_RUNTIME, &ImageOverrides::new(&[])),
+        );
+        let mounts_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let settings = RunnerSettings {
+            adp_binary_path: exits.clone(),
+            core_agent_binary_path: exits,
+            ..test_runner_settings(mounts_dir.path())
+        };
+        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
+
+        let result = run_with_settings(
+            &test,
+            settings,
+            log_base_dir.path(),
+            &CancellationToken::new(),
+            3 * BOUND,
+        )
+        .await;
+
+        assert_eq!(result.outcome, TestOutcome::TimedOut, "{:?}", result.error);
+        let timeout = result
+            .timeout
+            .as_ref()
+            .expect("a timed-out test should carry timeout detail");
+        assert_eq!(timeout.deadline, TimeoutDeadline::TestDeadline);
+        assert_eq!(timeout.active_phase, "core_agent_ipc_ready");
     }
 
     #[tokio::test]
@@ -1620,7 +1727,7 @@ mod tests {
                 ..ScriptedTest::new("tie", Behavior::ReturnAtDeadline)
             };
 
-            let result = run_scripted_test(test, log_base_dir.path(), &CancellationToken::new(), BOUND).await;
+            let result = run_scripted_test(&test, log_base_dir.path(), &CancellationToken::new(), BOUND).await;
 
             assert_eq!(
                 result.outcome,
@@ -1650,7 +1757,7 @@ mod tests {
             )
         };
 
-        let result = run_scripted_test(test, log_base_dir.path(), &CancellationToken::new(), PAUSED_BOUND).await;
+        let result = run_scripted_test(&test, log_base_dir.path(), &CancellationToken::new(), PAUSED_BOUND).await;
 
         assert_eq!(result.outcome, TestOutcome::TimedOut);
         let timeout = result
@@ -1743,7 +1850,7 @@ mod tests {
         ];
 
         for (case, test, cancel_all, issues) in cases {
-            let result = run_scripted_test(test, log_base_dir.path(), &cancel_all, PAUSED_BOUND).await;
+            let result = run_scripted_test(&test, log_base_dir.path(), &cancel_all, PAUSED_BOUND).await;
 
             assert_eq!(result.outcome, TestOutcome::Passed, "{case}: {:?}", result.error);
             assert!(result.cause.is_none(), "{case}: {:?}", result.cause);
@@ -1762,7 +1869,7 @@ mod tests {
         };
 
         let recorded = run_scripted_test(
-            setup_error("cleanup", true),
+            &setup_error("cleanup", true),
             log_base_dir.path(),
             &CancellationToken::new(),
             PAUSED_BOUND,
@@ -1781,7 +1888,7 @@ mod tests {
         );
 
         let unrecorded = run_scripted_test(
-            setup_error("intake_start", false),
+            &setup_error("intake_start", false),
             log_base_dir.path(),
             &CancellationToken::new(),
             PAUSED_BOUND,
@@ -1813,7 +1920,7 @@ mod tests {
         };
 
         let result = run_scripted_test(
-            test,
+            &test,
             log_base_dir.path(),
             &cancel_all_after(Duration::from_secs(1)),
             PAUSED_BOUND,

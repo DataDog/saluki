@@ -1,12 +1,13 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use saluki_error::generic_error;
+use tokio::time::Instant;
 
 use super::{
-    target_exec::{execute_target_command, CommandDiagnostics},
+    target_exec::{execute_target_command, CommandDiagnostics, CommandError},
     Action,
 };
-use crate::assertions::{AssertionContext, AssertionResult};
+use crate::assertions::{AssertionContext, AssertionResult, AssertionStatus};
 
 /// Runs a complete DogStatsD capture and replay flow against the tested ADP process.
 pub(super) struct DogstatsdReplayAction {
@@ -32,13 +33,25 @@ impl DogstatsdReplayAction {
         }
     }
 
-    fn failure(&self, started: Instant, message: impl Into<String>) -> AssertionResult {
-        AssertionResult {
-            name: self.name().to_string(),
-            passed: false,
-            message: message.into(),
-            duration: started.elapsed(),
+    /// Reports a statistics run that failed.
+    ///
+    /// An earlier replay that reached ADP keeps the step `failed`, even when this error is the harness's.
+    fn stats_failed(
+        &self, started: Instant, error: CommandError, replay_ran: bool, last_missing_metrics: &[String],
+    ) -> AssertionResult {
+        let status = if replay_ran {
+            AssertionStatus::Failed
+        } else {
+            error.status()
+        };
+        let mut message = format!("Failed to collect DogStatsD replay statistics: {error}");
+        if !last_missing_metrics.is_empty() {
+            message.push_str(&format!(
+                "\nAn earlier replay's statistics did not contain expected metric(s): {}",
+                last_missing_metrics.join(", ")
+            ));
         }
+        AssertionResult::new(self.name(), started, status, message)
     }
 }
 
@@ -75,11 +88,20 @@ impl Action for DogstatsdReplayAction {
         .await
         {
             Ok(output) => output,
-            Err(error) => return self.failure(started, format!("Failed to start DogStatsD capture: {error}")),
+            Err(error) => {
+                return AssertionResult::new(
+                    self.name(),
+                    started,
+                    error.status(),
+                    format!("Failed to start DogStatsD capture: {error}"),
+                )
+            }
         };
         let capture_path = match capture_path_from_output(&capture_output) {
             Ok(path) => path,
-            Err(error) => return self.failure(started, error.to_string()),
+            Err(error) => {
+                return AssertionResult::new(self.name(), started, AssertionStatus::Failed, error.to_string())
+            }
         };
 
         if let Err(error) = execute_target_command(
@@ -91,8 +113,10 @@ impl Action for DogstatsdReplayAction {
         )
         .await
         {
-            return self.failure(
+            return AssertionResult::new(
+                self.name(),
                 started,
+                error.status(),
                 format!("Failed to send DogStatsD traffic for capture: {error}"),
             );
         }
@@ -113,8 +137,10 @@ impl Action for DogstatsdReplayAction {
             capture_path,
         ]);
         let deadline = Instant::now() + self.command_timeout;
-        let mut last_replay_error = None;
+        let mut last_replay_error: Option<CommandError> = None;
         let mut last_missing_metrics = Vec::new();
+        // At the replay deadline, any product observation makes the result `failed` rather than `errored`.
+        let mut replay_ran = false;
 
         loop {
             let stats = execute_target_command(
@@ -136,6 +162,7 @@ impl Action for DogstatsdReplayAction {
             match replay_result {
                 Ok(_) => match stats_result {
                     Ok(stats_output) => {
+                        replay_ran = true;
                         let missing_metrics: Vec<&str> = self
                             .expected_metrics
                             .iter()
@@ -147,22 +174,32 @@ impl Action for DogstatsdReplayAction {
                         }
                         last_missing_metrics = missing_metrics.into_iter().map(str::to_string).collect();
                     }
-                    Err(error) => {
-                        return self.failure(
-                            started,
-                            format!("Failed to collect DogStatsD replay statistics: {error}"),
-                        )
-                    }
+                    Err(error) => return self.stats_failed(started, error, replay_ran, &last_missing_metrics),
                 },
-                Err(error) => last_replay_error = Some(error.to_string()),
+                Err(error) => {
+                    replay_ran |= matches!(error, CommandError::Failed(_));
+                    last_replay_error = Some(error);
+                }
             }
 
             if Instant::now() >= deadline {
+                let status = if replay_ran {
+                    AssertionStatus::Failed
+                } else {
+                    AssertionStatus::Errored
+                };
                 if let Some(error) = last_replay_error {
-                    return self.failure(started, format!("Failed to replay DogStatsD capture: {error}"));
+                    return AssertionResult::new(
+                        self.name(),
+                        started,
+                        status,
+                        format!("Failed to replay DogStatsD capture: {error}"),
+                    );
                 }
-                return self.failure(
+                return AssertionResult::new(
+                    self.name(),
                     started,
+                    status,
                     format!(
                         "DogStatsD replay statistics did not contain expected metric(s): {}",
                         last_missing_metrics.join(", ")
@@ -174,7 +211,7 @@ impl Action for DogstatsdReplayAction {
 
         AssertionResult {
             name: self.name().to_string(),
-            passed: true,
+            status: AssertionStatus::Passed,
             message: self.description(),
             duration: started.elapsed(),
         }
@@ -212,6 +249,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{capture_path_from_output, duration_as_go_duration, stats_output_contains_metric};
+    use super::{CommandError, DogstatsdReplayAction};
+    use crate::assertions::AssertionStatus;
 
     #[cfg(unix)]
     #[tokio::test]
@@ -271,6 +310,44 @@ mod tests {
             results[0].message.starts_with("Interrupted after "),
             "{}",
             results[0].message
+        );
+    }
+
+    #[test]
+    fn a_statistics_harness_error_after_a_replay_keeps_the_step_failed() {
+        // A harness error used to override an earlier replay's missing metrics and turn the step `errored`.
+        let action = DogstatsdReplayAction::new(
+            Vec::new(),
+            Duration::from_secs(1),
+            1,
+            vec!["replay.requests".to_string()],
+            Duration::from_secs(5),
+        );
+        let harness_error = || CommandError::Harness(saluki_error::generic_error!("Docker API failed."));
+
+        let after_replay = action.stats_failed(
+            tokio::time::Instant::now(),
+            harness_error(),
+            true,
+            &["replay.requests".to_string()],
+        );
+        assert_eq!(after_replay.status, AssertionStatus::Failed, "{}", after_replay.message);
+        assert_eq!(
+            after_replay.message,
+            "Failed to collect DogStatsD replay statistics: Docker API failed.\n\
+             An earlier replay's statistics did not contain expected metric(s): replay.requests"
+        );
+
+        let before_replay = action.stats_failed(tokio::time::Instant::now(), harness_error(), false, &[]);
+        assert_eq!(
+            before_replay.status,
+            AssertionStatus::Errored,
+            "{}",
+            before_replay.message
+        );
+        assert_eq!(
+            before_replay.message,
+            "Failed to collect DogStatsD replay statistics: Docker API failed."
         );
     }
 

@@ -1,19 +1,14 @@
-use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::path::Path;
+use std::time::Duration;
 
-use airlock::docker;
-use bollard::{
-    container::LogOutput,
-    exec::{CreateExecOptions, StartExecResults},
-};
-use futures::TryStreamExt as _;
 use reqwest::ClientBuilder;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde_json::Value;
-use tokio_util::sync::CancellationToken;
+use tokio::time::Instant;
 
-use super::Action;
-use crate::assertions::{AssertionContext, AssertionResult};
+use super::{docker_exec, Action};
+use crate::assertions::{AssertionContext, AssertionResult, AssertionStatus, Attempts};
+use crate::probe::{probe, AttemptLimits, ProbeError, POLL_INTERVAL};
 
 pub(super) struct CoreAgentConfigSetAction {
     pub(super) key: String,
@@ -35,6 +30,27 @@ impl CoreAgentConfigSetAction {
     fn endpoint(&self) -> String {
         self.endpoint.replace("{key}", &self.key)
     }
+
+    /// Prepares an HTTP request on the host or a script to send it inside the container.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the host auth token is unavailable or HTTP client construction fails.
+    async fn setter(&self, ctx: &AssertionContext, value: &str) -> Result<Setter, GenericError> {
+        if ctx.is_host_process {
+            let auth_token_path = ctx.core_agent_auth_token_path.as_deref().ok_or_else(|| {
+                generic_error!("Core Agent auth token path is unavailable for host-process runtime config mutation.")
+            })?;
+            return Setter::host(&self.endpoint(), value, auth_token_path).await;
+        }
+
+        Ok(Setter::Container(ContainerRequest {
+            container_name: ctx.container_name.clone(),
+            endpoint: self.endpoint().replace("localhost", "127.0.0.1"),
+            value: value.to_string(),
+            windows: ctx.target_is_windows(),
+        }))
+    }
 }
 
 #[async_trait::async_trait]
@@ -49,224 +65,219 @@ impl Action for CoreAgentConfigSetAction {
 
     async fn execute(&self, ctx: &AssertionContext) -> AssertionResult {
         let started = Instant::now();
-        let value = runtime_value_to_string(&self.value);
 
         if let Err(e) = validate_runtime_key(&self.key) {
-            return AssertionResult {
-                name: self.name().to_string(),
-                passed: false,
-                message: e.to_string(),
-                duration: started.elapsed(),
-            };
+            return AssertionResult::new(self.name(), started, AssertionStatus::Errored, e.to_string());
         }
-
-        let result = if ctx.is_host_process {
-            set_config_from_host(
-                &self.endpoint(),
-                &self.key,
-                &value,
-                ctx.core_agent_auth_token_path.as_ref(),
-                self.timeout,
-                &ctx.cancel_token,
-                &ctx.container_exit_token,
-            )
-            .await
-        } else if ctx.target_is_windows() {
-            set_config_in_windows_container(
-                &ctx.container_name,
-                &self.endpoint(),
-                &self.key,
-                &value,
-                self.timeout,
-                &ctx.cancel_token,
-                &ctx.container_exit_token,
-            )
-            .await
-        } else {
-            set_config_in_linux_container(
-                &ctx.container_name,
-                &self.endpoint(),
-                &self.key,
-                &value,
-                self.timeout,
-                &ctx.cancel_token,
-                &ctx.container_exit_token,
-            )
-            .await
+        let setter = match self.setter(ctx, &runtime_value_to_string(&self.value)).await {
+            Ok(setter) => setter,
+            Err(e) => return AssertionResult::new(self.name(), started, AssertionStatus::Errored, format!("{e:#}")),
         };
 
-        match result {
-            Ok(()) => AssertionResult {
-                name: self.name().to_string(),
-                passed: true,
-                message: self.description(),
-                duration: started.elapsed(),
-            },
-            Err(e) => AssertionResult {
-                name: self.name().to_string(),
-                passed: false,
-                message: e.to_string(),
-                duration: started.elapsed(),
-            },
-        }
-    }
-}
-
-async fn set_config_from_host(
-    endpoint: &str, key: &str, value: &str, auth_token_path: Option<&PathBuf>, timeout: Duration,
-    cancel_token: &CancellationToken, exit_token: &CancellationToken,
-) -> Result<(), GenericError> {
-    let auth_token_path = auth_token_path.ok_or_else(|| {
-        generic_error!("Core Agent auth token path is unavailable for host-process runtime config mutation.")
-    })?;
-    let auth_token = tokio::fs::read_to_string(auth_token_path)
-        .await
-        .with_error_context(|| {
-            format!(
-                "Failed to read Core Agent auth token at '{}'.",
-                auth_token_path.display()
-            )
-        })?;
-    let client = ClientBuilder::new()
-        .danger_accept_invalid_certs(true)
-        .build()
-        .error_context("Failed to build HTTP client.")?;
-    let deadline = Instant::now() + timeout;
-
-    loop {
-        if cancel_token.is_cancelled() || exit_token.is_cancelled() {
-            return Err(generic_error!("Action cancelled because the target exited."));
-        }
-        if Instant::now() > deadline {
-            return Err(generic_error!("Timed out setting Core Agent runtime config '{}'.", key));
-        }
-
-        match client
-            .post(endpoint)
-            .bearer_auth(auth_token.trim())
-            .header("content-type", "application/x-www-form-urlencoded")
-            .body(format!("value={}", form_encode(value)))
-            .send()
-            .await
-        {
-            Ok(resp) if resp.status().is_success() => return Ok(()),
-            Ok(resp) => {
-                let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
-                return Err(generic_error!(
-                    "Core Agent runtime config set for '{}' returned status {}: {}.",
-                    key,
-                    status,
-                    body
-                ));
+        // Preparing the setter can be slow on a busy machine, so the budget starts after it.
+        let deadline = Instant::now() + self.timeout;
+        let mut attempts = Attempts::default();
+        loop {
+            if ctx.cancel_token.is_cancelled() {
+                return AssertionResult::new(
+                    self.name(),
+                    started,
+                    attempts.status(),
+                    attempts.explain_cancelled("Action cancelled."),
+                );
             }
-            Err(_) => tokio::time::sleep(Duration::from_millis(500)).await,
+            if ctx.container_exit_token.is_cancelled() {
+                let message = attempts.explain_cancelled("Action cancelled because the target exited.");
+                return AssertionResult::new(self.name(), started, AssertionStatus::Failed, message);
+            }
+            if Instant::now() > deadline {
+                let summary = format!("Timed out setting Core Agent runtime config '{}'.", self.key);
+                return AssertionResult::new(
+                    self.name(),
+                    started,
+                    attempts.status(),
+                    attempts.explain_expired(&summary),
+                );
+            }
+
+            let limits = AttemptLimits::new(deadline.saturating_duration_since(Instant::now()));
+            match probe(
+                &setter.what(),
+                limits.attempt,
+                &ctx.cancel_token,
+                setter.set(&self.key, &limits),
+            )
+            .await
+            {
+                Ok(SetOutcome::Set) => {
+                    return AssertionResult::new(self.name(), started, AssertionStatus::Passed, self.description());
+                }
+                Ok(SetOutcome::Rejected(message)) => {
+                    return AssertionResult::new(self.name(), started, AssertionStatus::Failed, message)
+                }
+                Ok(SetOutcome::Unanswered(observation)) => attempts.observed(observation),
+                Ok(SetOutcome::Harness(error)) => attempts.errored(error),
+                Err(error @ ProbeError::Cancelled { .. }) => {
+                    return AssertionResult::new(
+                        self.name(),
+                        started,
+                        attempts.status(),
+                        attempts.explain_cancelled(error),
+                    );
+                }
+                // Direct requests test the target; a stalled Docker exec prevents evaluation.
+                Err(error @ ProbeError::TimedOut { .. }) => match setter {
+                    Setter::Host { .. } => attempts.observed(error),
+                    Setter::Container(_) => attempts.errored(error),
+                },
+            }
+
+            // The next iteration reports cancellation.
+            ctx.cancel_token
+                .run_until_cancelled(tokio::time::sleep(POLL_INTERVAL))
+                .await;
         }
     }
 }
 
-async fn set_config_in_linux_container(
-    container_name: &str, endpoint: &str, key: &str, value: &str, timeout: Duration, cancel_token: &CancellationToken,
-    exit_token: &CancellationToken,
-) -> Result<(), GenericError> {
-    let endpoint = endpoint.replace("localhost", "127.0.0.1");
-    let script = format!(
-        "tok=$(cat /etc/datadog-agent/auth_token) && curl -ks -X POST -H \"Authorization: Bearer $tok\" --data-urlencode value={} {} -o /tmp/panoramic-core-agent-config-set -w '%{{http_code}}'",
-        shell_quote(value),
-        shell_quote(&endpoint)
-    );
-    let deadline = Instant::now() + timeout;
-    loop {
-        if cancel_token.is_cancelled() || exit_token.is_cancelled() {
-            return Err(generic_error!("Action cancelled because the target exited."));
+/// Where and how [`CoreAgentConfigSetAction`] sends its request.
+enum Setter {
+    /// An HTTP client on the host that contacts the Core Agent directly.
+    Host {
+        client: reqwest::Client,
+        endpoint: String,
+        auth_token: String,
+        body: String,
+    },
+    /// A script that sends the request inside the target container via `docker exec`.
+    Container(ContainerRequest),
+}
+
+/// A request sent by a script inside the target container.
+struct ContainerRequest {
+    container_name: String,
+    endpoint: String,
+    value: String,
+    windows: bool,
+}
+
+/// The outcome of one configuration request.
+enum SetOutcome {
+    /// The Core Agent accepted the value.
+    Set,
+    /// The request returned an unsuccessful status or unexpected output.
+    Rejected(String),
+    /// The connection or in-container command failed.
+    Unanswered(String),
+    /// The harness couldn't send the request.
+    Harness(String),
+}
+
+impl Setter {
+    /// Prepares a host request, reading the auth token once.
+    async fn host(endpoint: &str, value: &str, auth_token_path: &Path) -> Result<Self, GenericError> {
+        let auth_token = tokio::fs::read_to_string(auth_token_path)
+            .await
+            .with_error_context(|| {
+                format!(
+                    "Failed to read Core Agent auth token at '{}'.",
+                    auth_token_path.display()
+                )
+            })?;
+        let client = ClientBuilder::new()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .error_context("Failed to build HTTP client.")?;
+        Ok(Self::Host {
+            client,
+            endpoint: endpoint.to_string(),
+            auth_token: auth_token.trim().to_string(),
+            body: format!("value={}", form_encode(value)),
+        })
+    }
+
+    /// Names the request for probe messages.
+    fn what(&self) -> String {
+        match self {
+            Self::Host { endpoint, .. } => format!("POST {endpoint}"),
+            Self::Container(request) => {
+                format!("POST {} from container '{}'", request.endpoint, request.container_name)
+            }
         }
-        if Instant::now() > deadline {
-            return Err(generic_error!("Timed out setting Core Agent runtime config '{}'.", key));
-        }
-        match exec_collect(container_name, vec!["sh".to_string(), "-c".to_string(), script.clone()]).await {
-            Ok(output) => return check_status_output(key, &output),
-            Err(_) => tokio::time::sleep(Duration::from_millis(500)).await,
+    }
+
+    /// Sends one request to set `key`, bounding a container request by `limits`.
+    async fn set(&self, key: &str, limits: &AttemptLimits) -> SetOutcome {
+        match self {
+            Self::Host {
+                client,
+                endpoint,
+                auth_token,
+                body,
+            } => {
+                let response = client
+                    .post(endpoint)
+                    .bearer_auth(auth_token)
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(body.clone())
+                    .send()
+                    .await;
+                match response {
+                    Ok(response) if response.status().is_success() => SetOutcome::Set,
+                    Ok(response) => {
+                        let status = response.status();
+                        let body = response.text().await.unwrap_or_default();
+                        SetOutcome::Rejected(format!(
+                            "Core Agent runtime config set for '{}' returned status {}: {}.",
+                            key, status, body
+                        ))
+                    }
+                    Err(error) => SetOutcome::Unanswered(format!("{:#}", GenericError::from(error))),
+                }
+            }
+            Self::Container(request) => match docker_exec(&request.container_name, request.command(limits)).await {
+                Ok(output) if output.succeeded() => match check_status_output(key, &output.stdout) {
+                    Ok(()) => SetOutcome::Set,
+                    Err(error) => SetOutcome::Rejected(error.to_string()),
+                },
+                Ok(output) => SetOutcome::Unanswered(format!(
+                    "The in-container request exited {:?}: {}{}",
+                    output.exit_code, output.stdout, output.stderr
+                )),
+                Err(error) => SetOutcome::Harness(format!("{error:#}")),
+            },
         }
     }
 }
 
-async fn set_config_in_windows_container(
-    container_name: &str, endpoint: &str, key: &str, value: &str, timeout: Duration, cancel_token: &CancellationToken,
-    exit_token: &CancellationToken,
-) -> Result<(), GenericError> {
-    let endpoint = endpoint.replace("localhost", "127.0.0.1");
-    let command = format!(
-        "$tok = Get-Content -Raw 'C:\\ProgramData\\Datadog\\auth_token'; curl.exe -ks -X POST -H \"Authorization: Bearer $tok\" --data-urlencode \"value={}\" \"{}\" -o NUL -w \"%{{http_code}}\"",
-        powershell_quote(value),
-        powershell_quote(&endpoint)
-    );
-    let deadline = Instant::now() + timeout;
-    loop {
-        if cancel_token.is_cancelled() || exit_token.is_cancelled() {
-            return Err(generic_error!("Action cancelled because the target exited."));
-        }
-        if Instant::now() > deadline {
-            return Err(generic_error!("Timed out setting Core Agent runtime config '{}'.", key));
-        }
-        match exec_collect(
-            container_name,
+impl ContainerRequest {
+    /// Returns the script that sends the request, bounded by `limits`.
+    fn command(&self, limits: &AttemptLimits) -> Vec<String> {
+        let max_time = limits.curl_max_time();
+        if self.windows {
+            let script = format!(
+                "$tok = Get-Content -Raw 'C:\\ProgramData\\Datadog\\auth_token'; curl.exe -ks --max-time {} -X POST -H \"Authorization: Bearer $tok\" --data-urlencode \"value={}\" \"{}\" -o NUL -w \"%{{http_code}}\"",
+                max_time,
+                powershell_quote(&self.value),
+                powershell_quote(&self.endpoint)
+            );
             vec![
                 "pwsh".to_string(),
                 "-NoProfile".to_string(),
                 "-NonInteractive".to_string(),
                 "-Command".to_string(),
-                command.clone(),
-            ],
-        )
-        .await
-        {
-            Ok(output) => return check_status_output(key, &output),
-            Err(_) => tokio::time::sleep(Duration::from_millis(500)).await,
+                script,
+            ]
+        } else {
+            let script = format!(
+                "tok=$(cat /etc/datadog-agent/auth_token) && curl -ks --max-time {} -X POST -H \"Authorization: Bearer $tok\" --data-urlencode value={} {} -o /tmp/panoramic-core-agent-config-set -w '%{{http_code}}'",
+                max_time,
+                shell_quote(&self.value),
+                shell_quote(&self.endpoint)
+            );
+            vec!["sh".to_string(), "-c".to_string(), script]
         }
     }
-}
-
-async fn exec_collect(container_name: &str, cmd: Vec<String>) -> Result<String, GenericError> {
-    let docker = docker::connect().error_context("Failed to connect to Docker.")?;
-    let exec = docker
-        .create_exec(
-            container_name,
-            CreateExecOptions::<String> {
-                cmd: Some(cmd),
-                attach_stdout: Some(true),
-                attach_stderr: Some(true),
-                ..Default::default()
-            },
-        )
-        .await
-        .error_context("Failed to create exec.")?;
-    let exec_id = exec.id.clone();
-    let result = docker
-        .start_exec(&exec_id, None)
-        .await
-        .error_context("Failed to start exec.")?;
-
-    let mut output_text = String::new();
-    if let StartExecResults::Attached { mut output, .. } = result {
-        while let Some(chunk) = output.try_next().await.error_context("Failed to read exec output.")? {
-            match chunk {
-                LogOutput::StdOut { message } | LogOutput::StdErr { message } => {
-                    output_text.push_str(&String::from_utf8_lossy(&message));
-                }
-                _ => {}
-            }
-        }
-    }
-
-    let inspect = docker
-        .inspect_exec(&exec_id)
-        .await
-        .error_context("Failed to inspect exec.")?;
-    if inspect.exit_code != Some(0) {
-        return Err(generic_error!("exec exited {:?}: {}", inspect.exit_code, output_text));
-    }
-
-    Ok(output_text)
 }
 
 fn check_status_output(key: &str, output: &str) -> Result<(), GenericError> {
@@ -324,4 +335,137 @@ fn form_encode(value: &str) -> String {
         }
     }
     encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use airlock::driver::ContainerOs;
+    use serde_json::Value;
+    use tokio_util::sync::CancellationToken;
+
+    use super::{CoreAgentConfigSetAction, Setter};
+    use crate::actions::test_docker::{curl_max_time, Exec, FakeDocker};
+    use crate::actions::Action as _;
+    use crate::assertions::test_support::host_context;
+    use crate::assertions::{AssertionResult, AssertionStatus};
+    use crate::probe::AttemptLimits;
+
+    /// Sets `log_level` in a `target_os` container within `timeout`, with its execs served by `docker`.
+    async fn set_in_container(docker: &FakeDocker, target_os: ContainerOs, timeout: Duration) -> AssertionResult {
+        let mut ctx = host_context(CancellationToken::new());
+        ctx.is_host_process = false;
+        ctx.target_os = Some(target_os);
+        ctx.container_name = "target".to_string();
+        let action = CoreAgentConfigSetAction::new(
+            "log_level".to_string(),
+            Value::String("debug".to_string()),
+            "https://localhost:5001/config/{key}".to_string(),
+            timeout,
+        );
+
+        docker.scope(action.execute(&ctx)).await
+    }
+
+    #[tokio::test]
+    async fn in_container_requests_get_the_request_limit_of_their_attempt() {
+        // An abandoned `docker exec` keeps running, so curl must bound itself.
+        let action = CoreAgentConfigSetAction::new(
+            "log_level".to_string(),
+            Value::String("debug".to_string()),
+            "https://localhost:5001/config/{key}".to_string(),
+            Duration::from_secs(30),
+        );
+
+        for target_os in [ContainerOs::Linux, ContainerOs::Windows] {
+            let mut ctx = host_context(CancellationToken::new());
+            ctx.is_host_process = false;
+            ctx.target_os = Some(target_os);
+            let setter = action
+                .setter(&ctx, "debug")
+                .await
+                .expect("a container setter should build");
+            let Setter::Container(request) = setter else {
+                panic!("a container target should get a container setter");
+            };
+
+            for remaining in [Duration::from_secs(60), Duration::from_secs(3)] {
+                let limits = AttemptLimits::new(remaining);
+                let command = request.command(&limits);
+                let script = command.last().expect("the command should end with its script");
+                let max_time = format!(" --max-time {} ", limits.curl_max_time());
+                assert!(script.contains(&max_time), "{target_os:?}, {remaining:?}: {script}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_core_agent_that_never_answers_fails_the_action() {
+        // When curl shared the attempt's limit, Docker overhead let the attempt time out first, so a Core Agent that
+        // never answered left only harness errors and the action errored instead of failing.
+        //
+        // The first exec is curl waiting out its `--max-time` for a Core Agent that accepted the connection but never
+        // answered. Later execs never finish, so they add no observation of the target: the action fails only if the
+        // first attempt observed curl's own timeout. A 3 s step gets a short attempt; a 10.5 s step gets a full one.
+        let set = |target_os, timeout| async move {
+            let docker = FakeDocker::start(Duration::from_millis(50), |index, command| match index {
+                0 => Exec::Exits {
+                    duration: curl_max_time(command),
+                    stdout: "000".to_string(),
+                    exit_code: 28,
+                },
+                _ => Exec::Stalled,
+            })
+            .await;
+            let result = set_in_container(&docker, target_os, timeout).await;
+            (target_os, timeout, result, docker.launched())
+        };
+
+        let outcomes = futures::future::join_all([
+            set(ContainerOs::Linux, Duration::from_secs(3)),
+            set(ContainerOs::Linux, Duration::from_millis(10_500)),
+            set(ContainerOs::Windows, Duration::from_secs(3)),
+            set(ContainerOs::Windows, Duration::from_millis(10_500)),
+        ])
+        .await;
+
+        let statuses = outcomes
+            .iter()
+            .map(|(target_os, timeout, result, _)| (*target_os, *timeout, result.status))
+            .collect::<Vec<_>>();
+        let messages = outcomes
+            .iter()
+            .map(|(_, _, result, _)| &result.message)
+            .collect::<Vec<_>>();
+        assert!(
+            statuses.iter().all(|(_, _, status)| *status == AssertionStatus::Failed),
+            "{statuses:?}: {messages:#?}"
+        );
+        for (target_os, timeout, _, launched) in outcomes {
+            assert_eq!(launched.len(), 2, "{target_os:?}, {timeout:?}: {launched:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_docker_exec_that_never_finishes_errors_the_action() {
+        for target_os in [ContainerOs::Linux, ContainerOs::Windows] {
+            let docker = FakeDocker::start(Duration::ZERO, |_, _| Exec::Stalled).await;
+
+            let result = set_in_container(&docker, target_os, Duration::from_secs(1)).await;
+
+            assert_eq!(
+                result.status,
+                AssertionStatus::Errored,
+                "{target_os:?}: {}",
+                result.message
+            );
+            assert!(
+                result.message.contains("Timed out"),
+                "{target_os:?}: {}",
+                result.message
+            );
+            assert_eq!(docker.launched().len(), 1, "{target_os:?}");
+        }
+    }
 }

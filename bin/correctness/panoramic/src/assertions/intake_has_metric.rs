@@ -1,20 +1,23 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use saluki_error::{generic_error, GenericError};
 use stele::{Metric, MetricValue};
+use tokio::time::Instant;
 use tracing::trace;
 
-use crate::assertions::{Assertion, AssertionContext, AssertionResult};
+use crate::assertions::{Assertion, AssertionContext, AssertionResult, AssertionStatus};
 use crate::config::{MetricTypeMatcher, TagMatch};
 use crate::intake::metrics::{
     get_formatted_metric_value, MetricType, NormalizationFailure, NormalizedMetric, NormalizedMetricContext,
     NormalizedMetrics,
 };
 use crate::intake::IntakeClient;
+use crate::probe::{probe, ProbeError, POLL_INTERVAL, PROBE_TIMEOUT};
 
-const POLL_INTERVAL: Duration = Duration::from_millis(500);
+/// Names the intake request in probe messages.
+const METRICS_DUMP: &str = "the intake sidecar's metrics dump";
 
 /// Most metric contexts with the expected name that a failure message lists.
 const MAX_CANDIDATES: usize = 10;
@@ -173,15 +176,47 @@ impl IntakeHasMetricAssertion {
         }
     }
 
-    /// Builds the failure result for a run that ended without a matching metric.
+    /// Reports an unmatched metric as `failed` if the target exited or a poll returned a snapshot, otherwise `errored`.
     fn unmatched_result(
-        &self, started: Instant, summary: String, snapshot: Option<&Snapshot>, last_error: Option<&LastError>,
+        &self, started: Instant, summary: String, target_exited: bool, snapshot: Option<&Snapshot>,
+        last_error: Option<&LastError>,
     ) -> AssertionResult {
-        AssertionResult {
-            name: self.name().to_string(),
-            passed: false,
-            message: self.failure_message(summary, snapshot, last_error),
-            duration: started.elapsed(),
+        let status = if target_exited || snapshot.is_some() {
+            AssertionStatus::Failed
+        } else {
+            AssertionStatus::Errored
+        };
+        AssertionResult::new(
+            self.name(),
+            started,
+            status,
+            self.failure_message(summary, snapshot, last_error),
+        )
+    }
+
+    /// Reports a step timeout, leading with the last collection error if every poll failed.
+    fn expired_result(
+        &self, started: Instant, snapshot: Option<&Snapshot>, last_error: Option<&LastError>,
+    ) -> AssertionResult {
+        let summary = format!(
+            "No metric matching {} arrived at the intake within {:?}.",
+            self.criteria(),
+            self.timeout
+        );
+        match (snapshot, last_error) {
+            (None, Some(last_error)) => {
+                let message = format!(
+                    "{:#}\n{}\nNo successful snapshot of the intake's metrics.",
+                    last_error.error, summary
+                );
+                AssertionResult::new(
+                    self.name(),
+                    started,
+                    AssertionStatus::Errored,
+                    truncate_message(message),
+                )
+            }
+            _ => self.unmatched_result(started, summary, false, snapshot, last_error),
         }
     }
 
@@ -356,18 +391,20 @@ impl Assertion for IntakeHasMetricAssertion {
     async fn check(&self, ctx: &AssertionContext) -> AssertionResult {
         let started = Instant::now();
         let Some(intake_port) = ctx.intake_host_port else {
-            return AssertionResult {
-                name: self.name().to_string(),
-                passed: false,
-                message: "No intake sidecar for this test; set `intake.enabled: true`.".to_string(),
-                duration: started.elapsed(),
-            };
+            return AssertionResult::new(
+                self.name(),
+                started,
+                AssertionStatus::Errored,
+                "No intake sidecar for this test; set `intake.enabled: true`.".to_string(),
+            );
         };
 
         let client = IntakeClient::new(intake_port);
-        let deadline = started + self.timeout;
+        // Building the client can be slow on a busy machine, so the budget starts after it.
+        let deadline = Instant::now() + self.timeout;
         let mut snapshot = None;
         let mut last_error: Option<LastError> = None;
+        let mut polled = false;
 
         loop {
             // Read the exit state before polling so a metric that reached the intake just before
@@ -379,31 +416,44 @@ impl Assertion for IntakeHasMetricAssertion {
                     "Assertion cancelled. No metric matching {} had arrived at the intake.",
                     self.criteria()
                 );
-                return self.unmatched_result(started, summary, snapshot.as_ref(), last_error.as_ref());
+                return self.unmatched_result(started, summary, false, snapshot.as_ref(), last_error.as_ref());
             }
 
-            match client.metrics().await {
-                Ok(metrics) => {
+            // Always poll once. Like every poll, it gets only the step's remaining time.
+            if polled && Instant::now() >= deadline {
+                return self.expired_result(started, snapshot.as_ref(), last_error.as_ref());
+            }
+            polled = true;
+
+            let limit = deadline.saturating_duration_since(Instant::now()).min(PROBE_TIMEOUT);
+            let error = match probe(METRICS_DUMP, limit, &ctx.cancel_token, client.metrics()).await {
+                Ok(Ok(metrics)) => {
                     let current = Snapshot::from_stele_metrics(&metrics);
                     if self.is_met_by(&current.metrics) {
-                        return AssertionResult {
-                            name: self.name().to_string(),
-                            passed: true,
-                            message: self.description(),
-                            duration: started.elapsed(),
-                        };
+                        return AssertionResult::new(self.name(), started, AssertionStatus::Passed, self.description());
                     }
                     snapshot = Some(current);
                     if let Some(last_error) = last_error.as_mut() {
                         last_error.before_snapshot = true;
                     }
+                    None
                 }
-                Err(error) => {
-                    last_error = Some(LastError {
+                Ok(Err(error)) => Some(error),
+                Err(error @ ProbeError::TimedOut { .. }) => Some(error.into()),
+                Err(error @ ProbeError::Cancelled { .. }) => {
+                    let summary = format!(
+                        "{}\nNo metric matching {} had arrived at the intake.",
                         error,
-                        before_snapshot: false,
-                    })
+                        self.criteria()
+                    );
+                    return self.unmatched_result(started, summary, false, snapshot.as_ref(), last_error.as_ref());
                 }
+            };
+            if let Some(error) = error {
+                last_error = Some(LastError {
+                    error,
+                    before_snapshot: false,
+                });
             }
 
             trace!(metric = self.expected.name(), "Intake metric not present yet.");
@@ -415,20 +465,12 @@ impl Assertion for IntakeHasMetricAssertion {
                     "No metric matching {} arrived at the intake before the target exited.",
                     self.criteria()
                 );
-                return self.unmatched_result(started, summary, snapshot.as_ref(), last_error.as_ref());
+                return self.unmatched_result(started, summary, true, snapshot.as_ref(), last_error.as_ref());
             }
 
-            if Instant::now() >= deadline {
-                let summary = format!(
-                    "No metric matching {} arrived at the intake within {:?}.",
-                    self.criteria(),
-                    self.timeout
-                );
-                return self.unmatched_result(started, summary, snapshot.as_ref(), last_error.as_ref());
-            }
-
+            let remaining = deadline.saturating_duration_since(Instant::now());
             tokio::select! {
-                _ = tokio::time::sleep(POLL_INTERVAL) => {}
+                _ = tokio::time::sleep(POLL_INTERVAL.min(remaining)) => {}
                 _ = ctx.cancel_token.cancelled() => {}
                 _ = ctx.container_exit_token.cancelled() => {}
             }
@@ -450,9 +492,12 @@ mod tests {
     use super::{
         truncate_message, IntakeHasMetricAssertion, LastError, Snapshot, MAX_MESSAGE_BYTES, TRUNCATION_NOTICE,
     };
-    use crate::assertions::{create_assertion, Assertion as _, AssertionContext, LogBuffer, TargetCommand};
+    use crate::assertions::{
+        create_assertion, Assertion as _, AssertionContext, AssertionResult, AssertionStatus, LogBuffer, TargetCommand,
+    };
     use crate::config::{AssertionConfig, AssertionStep, IntegrationConfig, MetricTypeMatcher, TagMatch};
     use crate::intake::test_server::{closed_port, install_crypto_provider, MockIntake};
+    use crate::intake::IntakeClient;
 
     fn count(value: f64) -> Value {
         json!({"mtype": "Count", "value": value})
@@ -541,6 +586,15 @@ mod tests {
         }
     }
 
+    /// Returns an exit token that has already fired, so a check reports after its first poll.
+    ///
+    /// The poll gets the full probe limit instead of racing a short step budget.
+    fn exited() -> CancellationToken {
+        let token = CancellationToken::new();
+        token.cancel();
+        token
+    }
+
     /// Returns a context pointing at a port with no listener, so every intake poll fails.
     fn context(cancel_token: CancellationToken, container_exit_token: CancellationToken) -> AssertionContext {
         context_for(cancel_token, container_exit_token, None)
@@ -558,23 +612,43 @@ mod tests {
         .expect("assertion should build")
     }
 
+    /// Runs the assertion with a timeout to catch hangs.
+    async fn check(assertion: &IntakeHasMetricAssertion, ctx: &AssertionContext) -> AssertionResult {
+        tokio::time::timeout(Duration::from_secs(10), assertion.check(ctx))
+            .await
+            .expect("the assertion should return within ten seconds")
+    }
+
     #[tokio::test]
     async fn target_exit_fails_without_waiting_out_the_timeout() {
         let container_exit_token = CancellationToken::new();
         container_exit_token.cancel();
         let ctx = context(CancellationToken::new(), container_exit_token);
 
-        let result = tokio::time::timeout(
-            Duration::from_secs(10),
-            polling_assertion(Duration::from_secs(600)).check(&ctx),
-        )
-        .await
-        .expect("assertion should return once the target has exited");
+        let result = check(&polling_assertion(Duration::from_secs(600)), &ctx).await;
 
-        assert!(!result.passed, "unexpected assertion pass: {}", result.message);
+        assert_eq!(result.status, AssertionStatus::Failed, "{}", result.message);
         assert!(
             result.message.contains("before the target exited"),
             "unexpected message: {}",
+            result.message
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_step_shorter_than_the_probe_limit_ends_at_its_own_deadline() {
+        // Giving the first poll a full probe limit would hold a short step up to 10s past its own budget.
+        let intake = MockIntake::unresponsive().await;
+        let ctx = context_for(CancellationToken::new(), CancellationToken::new(), Some(intake.port()));
+
+        let result = check(&polling_assertion(Duration::from_millis(200)), &ctx).await;
+
+        assert_eq!(result.status, AssertionStatus::Errored, "{}", result.message);
+        assert_eq!(result.duration, Duration::from_millis(200));
+        assert_eq!(
+            result.message.lines().next(),
+            Some("Timed out after 200ms waiting for the intake sidecar's metrics dump.: deadline has elapsed"),
+            "{}",
             result.message
         );
     }
@@ -584,14 +658,9 @@ mod tests {
         let mut ctx = context(CancellationToken::new(), CancellationToken::new());
         ctx.intake_host_port = None;
 
-        let result = tokio::time::timeout(
-            Duration::from_secs(10),
-            polling_assertion(Duration::from_secs(600)).check(&ctx),
-        )
-        .await
-        .expect("assertion should return without polling when the test has no intake sidecar");
+        let result = check(&polling_assertion(Duration::from_secs(600)), &ctx).await;
 
-        assert!(!result.passed, "unexpected assertion pass: {}", result.message);
+        assert_eq!(result.status, AssertionStatus::Errored, "{}", result.message);
         assert!(
             result.message.contains("intake.enabled"),
             "unexpected message: {}",
@@ -603,11 +672,13 @@ mod tests {
     async fn cancellation_and_timeout_are_reported_distinctly() {
         let cancel_token = CancellationToken::new();
         cancel_token.cancel();
-        let cancelled = polling_assertion(Duration::from_secs(600))
-            .check(&context(cancel_token, CancellationToken::new()))
-            .await;
+        let cancelled = check(
+            &polling_assertion(Duration::from_secs(600)),
+            &context(cancel_token, CancellationToken::new()),
+        )
+        .await;
 
-        assert!(!cancelled.passed, "unexpected assertion pass: {}", cancelled.message);
+        assert_eq!(cancelled.status, AssertionStatus::Errored, "{}", cancelled.message);
         assert!(
             cancelled.message.starts_with("Assertion cancelled."),
             "unexpected message: {}",
@@ -619,11 +690,13 @@ mod tests {
             cancelled.message
         );
 
-        let timed_out = polling_assertion(Duration::ZERO)
-            .check(&context(CancellationToken::new(), CancellationToken::new()))
-            .await;
+        let timed_out = check(
+            &polling_assertion(Duration::from_millis(300)),
+            &context(CancellationToken::new(), CancellationToken::new()),
+        )
+        .await;
 
-        assert!(!timed_out.passed, "unexpected assertion pass: {}", timed_out.message);
+        assert_eq!(timed_out.status, AssertionStatus::Errored, "{}", timed_out.message);
         assert!(
             timed_out.message.contains("arrived at the intake within"),
             "unexpected message: {}",
@@ -633,11 +706,24 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_poll_reports_its_full_error_chain() {
-        let result = polling_assertion(Duration::ZERO)
-            .check(&context(CancellationToken::new(), CancellationToken::new()))
-            .await;
+        // Formats a real poll error directly, so a slow machine can't turn it into a probe timeout.
+        let intake = MockIntake::hanging_up().await;
+        install_crypto_provider();
+        let error = IntakeClient::new(intake.port())
+            .metrics()
+            .await
+            .expect_err("a server that hangs up should fail the poll");
+        let last_error = LastError {
+            error,
+            before_snapshot: false,
+        };
+        let result = polling_assertion(Duration::from_millis(300)).expired_result(
+            tokio::time::Instant::now(),
+            None,
+            Some(&last_error),
+        );
 
-        assert!(!result.passed, "unexpected assertion pass: {}", result.message);
+        assert_eq!(result.status, AssertionStatus::Errored, "{}", result.message);
         assert!(
             result
                 .message
@@ -646,13 +732,18 @@ mod tests {
             result.message
         );
         // The outer context alone would hide the cause, so the chain continues past it.
+        let (first_line, _) = result
+            .message
+            .split_once('\n')
+            .expect("the message should have several lines");
         assert!(
-            result
-                .message
-                .contains("\nLast collection error: Failed to call metrics dump endpoint on datadog-intake server.: "),
+            first_line
+                .strip_prefix("Failed to call metrics dump endpoint on datadog-intake server.: ")
+                .is_some_and(|cause| !cause.is_empty()),
             "unexpected message: {}",
             result.message
         );
+        assert!(!result.message.contains("Last collection error"), "{}", result.message);
     }
 
     #[tokio::test]
@@ -662,17 +753,17 @@ mod tests {
             metric_json("split.counter", &["source:test"], &[rate(0.3)]),
         ]))
         .await;
-        let ctx = context_for(CancellationToken::new(), CancellationToken::new(), Some(intake.port()));
+        let ctx = context_for(CancellationToken::new(), exited(), Some(intake.port()));
 
-        let total = subset(
+        let mut total = subset(
             "split.counter",
             Some(MetricTypeMatcher::Rate),
             Some(0.6),
             &["source:test"],
-        )
-        .check(&ctx)
-        .await;
-        assert!(total.passed, "unexpected assertion failure: {}", total.message);
+        );
+        total.timeout = Duration::from_secs(30);
+        let total = check(&total, &ctx).await;
+        assert_eq!(total.status, AssertionStatus::Passed, "{}", total.message);
 
         let mut partial = subset(
             "split.counter",
@@ -680,9 +771,9 @@ mod tests {
             Some(0.3),
             &["source:test"],
         );
-        partial.timeout = Duration::ZERO;
-        let partial = partial.check(&ctx).await;
-        assert!(!partial.passed, "unexpected assertion pass: {}", partial.message);
+        partial.timeout = Duration::from_secs(30);
+        let partial = check(&partial, &ctx).await;
+        assert_eq!(partial.status, AssertionStatus::Failed, "{}", partial.message);
         assert!(
             partial.message.contains(
                 "split.counter[source:test] (rate): rate(0.6 over 10s) from 2 point(s); fails value: expected 0.3"
@@ -818,9 +909,9 @@ mod tests {
             &[gauge(4.0)]
         )]))
         .await;
-        let ctx = context_for(CancellationToken::new(), CancellationToken::new(), Some(intake.port()));
+        let ctx = context_for(CancellationToken::new(), exited(), Some(intake.port()));
 
-        let check = |tags_match: &str| {
+        let build = |tags_match: &str| {
             let yaml = format!(
                 r#"
 type: integration
@@ -833,7 +924,7 @@ procedure:
     value: 4
     tags: ["host:custom"]
     {}
-    timeout: 1ms
+    timeout: 30s
 "#,
                 tags_match
             );
@@ -845,16 +936,20 @@ procedure:
             create_assertion(assertion_config).expect("assertion should build")
         };
 
-        let exact = check("tags_match: exact").check(&ctx).await;
-        assert!(!exact.passed, "unexpected assertion pass: {}", exact.message);
+        let exact = tokio::time::timeout(Duration::from_secs(10), build("tags_match: exact").check(&ctx))
+            .await
+            .expect("the assertion should return within ten seconds");
+        assert_eq!(exact.status, AssertionStatus::Failed, "{}", exact.message);
         assert!(
             exact.message.contains("fails tags: unexpected [extra:tag]"),
             "unexpected message: {}",
             exact.message
         );
 
-        let default = check("").check(&ctx).await;
-        assert!(default.passed, "unexpected assertion failure: {}", default.message);
+        let default = tokio::time::timeout(Duration::from_secs(10), build("").check(&ctx))
+            .await
+            .expect("the assertion should return within ten seconds");
+        assert_eq!(default.status, AssertionStatus::Passed, "{}", default.message);
     }
 
     #[test]

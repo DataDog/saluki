@@ -7,7 +7,9 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 use super::{AdpConfigEndpoint, AdpConfigKeyEqualsAssertion, ADP_CONFIG_CLI_DIAGNOSTIC_LABEL};
-use crate::assertions::{Assertion as _, AssertionContext, LogBuffer, TargetCommand};
+use crate::actions::test_docker::{Exec, FakeDocker};
+use crate::assertions::{Assertion as _, AssertionContext, AssertionStatus, LogBuffer, TargetCommand};
+use crate::probe::PROBE_TIMEOUT;
 
 fn host_context(adp_cli_command: TargetCommand) -> AssertionContext {
     AssertionContext {
@@ -26,6 +28,13 @@ fn host_context(adp_cli_command: TargetCommand) -> AssertionContext {
         adp_cli_command,
         core_agent_cli_command: TargetCommand::new(vec!["panoramic-wrong-cli-program".to_string()]),
     }
+}
+
+/// Returns a context for a container target whose ADP CLI is `agent-data-plane`.
+fn container_context() -> AssertionContext {
+    let mut ctx = host_context(TargetCommand::new(vec!["agent-data-plane".to_string()]));
+    ctx.is_host_process = false;
+    ctx
 }
 
 fn source_assertion(key: &str, timeout: Duration) -> AdpConfigKeyEqualsAssertion {
@@ -112,7 +121,7 @@ printf '%s' '{"feature":{"nested":{"enabled":true}}}'"#
 
     let result = assertion.check(&ctx).await;
 
-    assert!(result.passed, "unexpected assertion failure: {}", result.message);
+    assert_eq!(result.status, AssertionStatus::Passed, "{}", result.message);
 }
 
 #[tokio::test]
@@ -138,7 +147,7 @@ printf x >> "$0""#
     let _ = std::fs::remove_file(counter);
     let result = result.expect("assertion should finish within 30 seconds");
 
-    assert!(result.passed, "unexpected assertion failure: {}", result.message);
+    assert_eq!(result.status, AssertionStatus::Passed, "{}", result.message);
     assert!(calls >= 2, "expected at least two CLI calls, observed {calls}");
 }
 
@@ -162,4 +171,76 @@ async fn fetch_config_redacts_nonzero_child_output() {
     assert!(message.contains(ADP_CONFIG_CLI_DIAGNOSTIC_LABEL));
     assert!(!message.contains(stdout_secret), "error exposed stdout: {message}");
     assert!(!message.contains(stderr_secret), "error exposed stderr: {message}");
+}
+
+#[tokio::test]
+async fn a_stalled_container_read_gets_the_whole_step_without_a_second_launch() {
+    // A timed-out Docker exec keeps running, so retrying a container read after a capped attempt piled up CLI runs.
+    let docker = FakeDocker::start(Duration::ZERO, |_, _| Exec::Running).await;
+    let timeout = PROBE_TIMEOUT + Duration::from_secs(1);
+
+    let result = docker
+        .scope(source_assertion("feature", timeout).check(&container_context()))
+        .await;
+
+    assert_eq!(result.status, AssertionStatus::Failed, "{}", result.message);
+    assert!(result.duration >= timeout, "{:?}", result.duration);
+    assert_eq!(
+        docker.launched(),
+        [vec![
+            "agent-data-plane".to_string(),
+            "config".to_string(),
+            "--json".to_string()
+        ]]
+    );
+}
+
+#[tokio::test]
+async fn a_failed_container_read_is_retried_until_the_value_matches() {
+    let docker = FakeDocker::start(Duration::ZERO, |index, _| match index {
+        0 => Exec::Exits {
+            duration: Duration::ZERO,
+            stdout: String::new(),
+            exit_code: 1,
+        },
+        _ => Exec::Exits {
+            duration: Duration::ZERO,
+            stdout: r#"{"feature":true}"#.to_string(),
+            exit_code: 0,
+        },
+    })
+    .await;
+
+    let result = docker
+        .scope(source_assertion("feature", Duration::from_secs(5)).check(&container_context()))
+        .await;
+
+    assert_eq!(result.status, AssertionStatus::Passed, "{}", result.message);
+    assert_eq!(docker.launched().len(), 2);
+}
+
+#[tokio::test]
+async fn cancellation_interrupts_a_stalled_container_read() {
+    let started = Arc::new(tokio::sync::Notify::new());
+    let notify_started = started.clone();
+    let docker = FakeDocker::start(Duration::ZERO, move |_, _| {
+        notify_started.notify_one();
+        Exec::Running
+    })
+    .await;
+    let ctx = container_context();
+    let assertion = source_assertion("feature", Duration::from_secs(30));
+
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(docker.scope(assertion.check(&ctx)), async {
+            started.notified().await;
+            ctx.cancel_token.cancel();
+        })
+    })
+    .await
+    .expect("cancellation should interrupt the container read");
+
+    assert_eq!(result.status, AssertionStatus::Errored, "{}", result.message);
+    assert!(result.message.contains("cancelled"), "{}", result.message);
+    assert_eq!(docker.launched().len(), 1);
 }

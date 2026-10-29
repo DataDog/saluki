@@ -1,6 +1,11 @@
+use std::time::Duration;
+
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stele::{ClientStatisticsAggregator, Event, Metric, ServiceCheck, Span};
 use tracing::{debug, error};
+
+/// Maximum wait for response headers or between body reads.
+const INTAKE_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Client for the dump endpoints of one `datadog-intake` server.
 ///
@@ -12,10 +17,21 @@ pub struct IntakeClient {
 
 impl IntakeClient {
     /// Creates a client for the `datadog-intake` server published on the given local port.
+    ///
+    /// Requests fail after [`INTAKE_READ_TIMEOUT`] without data. Each read resets the timeout, allowing large responses
+    /// that keep making progress.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the TLS backend can't be initialized, as [`reqwest::Client::new`] does.
     pub fn new(port: u16) -> Self {
         Self {
-            client: reqwest::Client::new(),
-            base_url: format!("http://localhost:{}", port),
+            client: reqwest::Client::builder()
+                .read_timeout(INTAKE_READ_TIMEOUT)
+                .build()
+                .expect("the intake HTTP client should build"),
+            // `localhost` can try IPv6 first, which delays each connection on Windows.
+            base_url: format!("http://127.0.0.1:{}", port),
         }
     }
 

@@ -68,5 +68,6 @@ Panoramic directory under the shared test-output root; `make clean` includes tha
 ## Interpret the result
 
 Read "Reading panoramic results" and "Reading traffic artifacts" in `docs/development/testing.md`
-for exit codes, the `run.json` and `result.json` layout, and how to inspect traffic captures. Treat
-exit code 2 as an environment or harness problem before investigating assertion differences.
+for exit codes, the `run.json` and `result.json` layout, and how to inspect traffic captures. For
+exit code 2, inspect the reported error, timeout, and interruption details before investigating
+assertion differences.

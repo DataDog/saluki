@@ -73,3 +73,41 @@ impl CollectedData {
         &self.dogstatsd_forwarded_packets
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tokio::time::Instant;
+
+    use super::*;
+    use crate::intake::test_server::MockIntake;
+
+    #[tokio::test(start_paused = true)]
+    async fn collection_from_a_stalled_intake_fails_within_the_read_timeout() {
+        let intake = MockIntake::unresponsive().await;
+        let started = Instant::now();
+
+        let collected = tokio::time::timeout(
+            Duration::from_secs(120),
+            CollectedData::collect(&IntakeClient::new(intake.port())),
+        )
+        .await
+        .expect("collection should give up on a stalled intake within the bound");
+
+        let Err(error) = collected else {
+            panic!("collection from a stalled intake should fail");
+        };
+        assert_eq!(started.elapsed(), Duration::from_secs(30));
+        assert!(
+            format!("{error:#}").starts_with("Failed to call events dump endpoint on datadog-intake server.: "),
+            "{error:#}"
+        );
+        assert!(
+            error.chain().any(|cause| cause
+                .downcast_ref::<reqwest::Error>()
+                .is_some_and(reqwest::Error::is_timeout)),
+            "{error:#}"
+        );
+    }
+}

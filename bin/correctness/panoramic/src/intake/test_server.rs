@@ -14,6 +14,8 @@ pub(crate) fn install_crypto_provider() {
 }
 
 /// Returns a local port with no listener, so every request to it fails to connect.
+///
+/// Windows retries a refused connection for about two seconds before failing.
 pub(crate) fn closed_port() -> u16 {
     let listener = StdTcpListener::bind("127.0.0.1:0").expect("should bind an ephemeral port");
     listener.local_addr().expect("should have a local address").port()
@@ -34,6 +36,32 @@ impl MockIntake {
             while let Ok((stream, _)) = listener.accept().await {
                 connections.fetch_add(1, Ordering::SeqCst);
                 tokio::spawn(respond(stream, metrics.clone()));
+            }
+        })
+        .await
+    }
+
+    /// Answers the first connection like [`MockIntake::serving`], then accepts and closes subsequent connections.
+    pub(crate) async fn serving_once(metrics: serde_json::Value) -> Self {
+        let metrics = metrics.to_string();
+        Self::spawn(move |listener, connections| async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                if connections.fetch_add(1, Ordering::SeqCst) == 0 {
+                    tokio::spawn(respond(stream, metrics.clone()));
+                }
+            }
+        })
+        .await
+    }
+
+    /// Accepts connections and closes them without answering.
+    ///
+    /// Requests fail at once on every platform, unlike a closed port, which Windows retries for seconds.
+    pub(crate) async fn hanging_up() -> Self {
+        Self::spawn(|listener, connections| async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                connections.fetch_add(1, Ordering::SeqCst);
+                drop(stream);
             }
         })
         .await
