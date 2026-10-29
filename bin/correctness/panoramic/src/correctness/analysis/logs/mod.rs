@@ -236,6 +236,32 @@ pub fn compare_logs<L: Borrow<Log>>(
     result
 }
 
+/// Returns a key that is equal for two logs exactly when `diff_logs` finds no difference between them.
+///
+/// Like `diff_logs`, it ignores the raw `message` string of a log whose content parsed, since that string is only the
+/// serialization of the content, so whitespace and key order in it don't matter.
+fn exact_match_key(log: &Log) -> String {
+    let message = if log.content_properties().is_some() {
+        None
+    } else {
+        log.message()
+    };
+    let envelope = RAW_ENVELOPE_FIELDS
+        .iter()
+        .map(|field| match *field {
+            "message" => message,
+            field => log.envelope_field(field),
+        })
+        .collect::<Vec<_>>();
+    serde_json::to_string(&(
+        envelope,
+        log.ddtags(),
+        log.envelope_properties(),
+        log.content_properties(),
+    ))
+    .unwrap_or_default()
+}
+
 fn identity_key(log: &Log, identity_fields: &[String]) -> String {
     let view = log.semantic_view();
     let key = identity_fields
@@ -251,7 +277,7 @@ fn pair_bucket<L: Borrow<Log>>(
 ) {
     // Pair identical logs first. This keeps large groups of duplicates cheap, since they never reach the quadratic
     // pairing below.
-    let canonical = |log: &Log| serde_json::to_string(log).unwrap_or_default();
+    let canonical = exact_match_key;
     let mut identical = BTreeMap::<String, Vec<usize>>::new();
     for &idx in comparison_idxs.iter().rev() {
         identical
@@ -311,8 +337,21 @@ fn pair_bucket<L: Borrow<Log>>(
         }
         candidates.sort_unstable();
 
+        // Greedy pairing can strand a log when equality isn't transitive, as with the encode-time timestamp
+        // tolerance, so first pair as many logs as possible using only candidates without unexpected differences.
         let mut taken_baseline = BTreeSet::new();
         let mut taken_comparison = BTreeSet::new();
+        let clean = candidates
+            .iter()
+            .filter(|(unknown, _, _, _)| *unknown == 0)
+            .map(|(_, _, b, c)| (*b, *c))
+            .collect::<Vec<_>>();
+        for (b, c) in maximum_matching(&clean) {
+            taken_baseline.insert(b);
+            taken_comparison.insert(c);
+            selected.push((b, c));
+        }
+
         for (_, _, b, c) in candidates {
             if !taken_baseline.contains(&b) && !taken_comparison.contains(&c) {
                 taken_baseline.insert(b);
@@ -338,6 +377,44 @@ fn pair_bucket<L: Borrow<Log>>(
             .into_iter()
             .filter(|c| !paired_comparison.contains(c)),
     );
+}
+
+/// Returns a maximum matching in the bipartite graph of candidate `(baseline, comparison)` pairs.
+///
+/// Candidates are tried in the given order, so the result is deterministic and prefers earlier candidates.
+fn maximum_matching(candidates: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let mut edges = BTreeMap::<usize, Vec<usize>>::new();
+    for &(b, c) in candidates {
+        edges.entry(b).or_default().push(c);
+    }
+
+    fn augment(
+        b: usize, edges: &BTreeMap<usize, Vec<usize>>, matched: &mut BTreeMap<usize, usize>,
+        visited: &mut BTreeSet<usize>,
+    ) -> bool {
+        for &c in &edges[&b] {
+            if visited.insert(c) {
+                let free = match matched.get(&c) {
+                    None => true,
+                    Some(&other) => augment(other, edges, matched, visited),
+                };
+                if free {
+                    matched.insert(c, b);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    // Matched baseline index for each comparison index.
+    let mut matched = BTreeMap::new();
+    for &b in edges.keys() {
+        augment(b, &edges, &mut matched, &mut BTreeSet::new());
+    }
+    let mut pairs = matched.into_iter().map(|(c, b)| (b, c)).collect::<Vec<_>>();
+    pairs.sort_unstable();
+    pairs
 }
 
 /// Diffs two logs field by field.
@@ -954,6 +1031,25 @@ mod tests {
     }
 
     #[test]
+    fn reformatted_content_still_pairs_as_identical() {
+        // More logs share an identity key than near-match pairing evaluates, so they must pair as identical, even
+        // though one side serializes the same content with whitespace and in a different key order.
+        let compact = (0..101)
+            .map(|i| log(json!({"message": json!({"message": "m", "n": i}).to_string()})))
+            .collect::<Vec<_>>();
+        let reformatted = (0..101)
+            .rev()
+            .map(|i| log(json!({"message": format!("{{ \"n\": {}, \"message\": \"m\" }}", i)})))
+            .collect::<Vec<_>>();
+
+        let result = compare_logs(&compact, &reformatted, &defaults());
+
+        assert_eq!(result.pairs.len(), 101);
+        assert!(result.missing.is_empty() && result.extra.is_empty());
+        assert!(result.pairs.iter().all(|pair| pair.diffs.is_empty()));
+    }
+
+    #[test]
     fn identity_fields_are_configurable() {
         let baseline = agent_log(json!({"message": "a", "otel.timestamp": "1"}));
         let comparison = agent_log(json!({"message": "a", "otel.timestamp": "2"}));
@@ -1151,6 +1247,33 @@ mod tests {
         assert!(error.to_string().contains("1 known differences are stale"), "{}", error);
         assert_eq!(details.len(), 1);
         assert!(details[0].contains("gap/event-name"), "{}", details[0]);
+    }
+
+    #[test]
+    fn timestamp_tolerance_finds_a_complete_pairing() {
+        // Every pair but (1, 1) is within the tolerance. Pairing (0, 0) first, as plain greedy pairing would, leaves
+        // (1, 1) 70 seconds apart; pairing (0, 1) and (1, 0) matches both.
+        let base = 1_793_268_000_000u64;
+        let with_timestamp = |offset: u64| log(json!({"message": "a", "timestamp": base + offset}));
+        let baseline = [with_timestamp(40_000), with_timestamp(80_000)];
+        let comparison = [with_timestamp(60_000), with_timestamp(10_000)];
+
+        let result = compare_logs(&baseline, &comparison, &defaults(), &[]);
+
+        let pairs = result
+            .pairs
+            .iter()
+            .map(|pair| (pair.baseline, pair.comparison, pair.diffs.len()))
+            .collect::<Vec<_>>();
+        assert_eq!(pairs, vec![(0, 1, 0), (1, 0, 0)]);
+    }
+
+    #[test]
+    fn maximum_matching_is_complete_and_deterministic() {
+        assert_eq!(maximum_matching(&[(0, 0), (0, 1), (1, 0)]), vec![(0, 1), (1, 0)]);
+        assert_eq!(maximum_matching(&[(0, 0), (1, 1)]), vec![(0, 0), (1, 1)]);
+        assert_eq!(maximum_matching(&[(0, 0), (1, 0)]), vec![(0, 0)]);
+        assert!(maximum_matching(&[]).is_empty());
     }
 
     #[test]
