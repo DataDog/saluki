@@ -416,27 +416,28 @@ setting has no effect in ADP.
 The following settings are recognized by both ADP and the core agent, but with different behavior or
 default values.
 
-| Config Key                                   | Description                                  |
-| -------------------------------------------- | -------------------------------------------- |
-| `aggregator_stop_timeout`                    | Timeout (s) for aggregator flush on stop     |
-| `apm_config.features`                        | Beta APM feature flags                       |
-| `cri_socket_path`                            | containerd/CRI socket path                   |
-| `dogstatsd_mapper_cache_size`                | Mapper result LRU cache size                 |
-| `dogstatsd_metrics_stats_enable`             | Enable per-metric debug stats                |
-| `dogstatsd_workers_count`                    | Number of DSD processing workers             |
-| `env`                                        | Agent environment name                       |
-| `forwarder_apikey_validation_interval`       | API key check interval (minutes)             |
-| `forwarder_high_prio_buffer_size`            | High-priority request queue size             |
-| `forwarder_num_workers`                      | Concurrent forwarder workers                 |
-| `forwarder_stop_timeout`                     | Timeout (s) for forwarder graceful stop      |
-| `log_level`                                  | Log verbosity directives                     |
-| `min_tls_version`                            | Minimum TLS version for HTTPS connections    |
-| `multi_region_failover.enabled`              | Enable multi-region failover mode            |
-| `secret_backend_command`                     | Path to the Agent secret-fetch executable    |
-| `secret_refresh_on_api_key_failure_interval` | Minutes between secret refreshes after a 403 |
-| `serializer_zstd_compressor_level`           | Zstd compression level (Agent)               |
-| `skip_ssl_validation`                        | Skip TLS cert validation                     |
-| `statsd_forward_host`                        | UDP packet forwarding destination host       |
+| Config Key                                   | Description                                     |
+| -------------------------------------------- | ----------------------------------------------- |
+| `aggregator_stop_timeout`                    | Timeout (s) for aggregator flush on stop        |
+| `apm_config.features`                        | Beta APM feature flags                          |
+| `cri_socket_path`                            | containerd/CRI socket path                      |
+| `dogstatsd_mapper_cache_size`                | Mapper result LRU cache size                    |
+| `dogstatsd_metrics_stats_enable`             | Enable per-metric debug stats                   |
+| `dogstatsd_workers_count`                    | Number of DSD processing workers                |
+| `env`                                        | Agent environment name                          |
+| `forwarder_apikey_validation_interval`       | API key check interval (minutes)                |
+| `forwarder_high_prio_buffer_size`            | High-priority request queue size                |
+| `forwarder_num_workers`                      | Concurrent forwarder workers                    |
+| `forwarder_stop_timeout`                     | Timeout (s) for forwarder graceful stop         |
+| `log_level`                                  | Log verbosity directives                        |
+| `min_tls_version`                            | Minimum TLS version for HTTPS connections       |
+| `multi_region_failover.enabled`              | Enable multi-region failover mode               |
+| `secret_backend_command`                     | Path to the Agent secret-fetch executable       |
+| `secret_refresh_on_api_key_failure_interval` | Minutes between secret refreshes after a 403    |
+| `serializer_zstd_compressor_level`           | Zstd compression level (Agent)                  |
+| `skip_ssl_validation`                        | Skip TLS cert validation                        |
+| `statsd_forward_host`                        | UDP packet forwarding destination host          |
+| `telemetry.dogstatsd_origin`                 | Per-origin processed metrics and context counts |
 
 ### `aggregator_stop_timeout`
 
@@ -673,6 +674,25 @@ configured destination before parsing, filtering, mapping, or aggregation. Forwa
 does not preserve the core Agent's packet-buffer grouping, so forwarded UDP datagrams may
 be split differently while carrying the same DogStatsD messages. ADP logs setup failures
 and tracks send failures through telemetry.
+
+### `telemetry.dogstatsd_origin`
+
+The core Agent uses `telemetry.dogstatsd_origin`, together with `telemetry.enabled`, to break down its
+DogStatsD telemetry by origin. This includes the `datadog.agent.aggregator.dogstatsd_contexts_by_origin`
+series it sends to Datadog, which also counts contexts without an origin.
+
+ADP breaks down its processed-metric telemetry and active aggregation contexts by origin whenever
+`telemetry.dogstatsd_origin` is enabled, regardless of `telemetry.enabled`. The context counts appear as
+`aggregator.dogstatsd_contexts_by_origin` only in the Agent's telemetry endpoint and flares, and aren't sent
+to Datadog. Contexts without resolved origin tags aren't counted, so the breakdown is empty unless
+`dogstatsd_origin_detection` is also enabled.
+
+The context breakdown has at most 199 origin groups and one `origin_overflow:true` series. Groups exceeding
+32 tags or 4096 bytes of encoded labels, and new groups when all slots are occupied, are counted in
+overflow. Each context keeps its original assignment until expiry, so an origin's own series is too low
+while any of its contexts are counted in overflow; the total across all series is exact. An emptied group
+reports 0 briefly before its series is removed. This limit is separate from the DogStatsD source's
+per-origin processed-counter limit.
 
 
 
@@ -1126,7 +1146,6 @@ The following settings work in ADP with the same behavior as the core agent.
 | `syslog_rfc`                                                                               | Use RFC-style syslog header                        |
 | `syslog_uri`                                                                               | Syslog destination URI                             |
 | `tags`                                                                                     | Global tags for EKS Fargate OTLP metrics           |
-| `telemetry.dogstatsd_origin`                                                               | Per-origin processed metrics and context counts    |
 | `tls_handshake_timeout`                                                                    | HTTP TLS handshake timeout                         |
 | `use_proxy_for_cloud_metadata`                                                             | Proxy cloud metadata endpoints                     |
 | `use_v2_api.series`                                                                        | Send series via V2 protobuf endpoint               |
@@ -1410,15 +1429,6 @@ key logging. Protect the generated file as sensitive data.
 
 When neither `apm_config.env` nor `env` is set, the first `env:` entry in `tags`, then in
 `extra_tags`, supplies the trace environment.
-
-### `telemetry.dogstatsd_origin`
-
-Disabled by default. When enabled, ADP reports active aggregation contexts grouped by resolved origin tags.
-This breakdown has at most 200 series: 199 origin groups and one `origin_overflow:true` series.
-Contexts without resolved origin tags are skipped. Groups exceeding 32 tags or 4096 bytes of encoded labels,
-and new groups when all slots are occupied, contribute to overflow instead of losing their counts.
-Each context retains its original assignment until expiry; freed slots can admit new contexts.
-This limit is separate from the DogStatsD source's per-origin processed-counter limit.
 
 ### `tls_handshake_timeout`
 

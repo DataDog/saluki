@@ -350,8 +350,9 @@ pub struct AggregateConfiguration {
     /// Defaults to `false` in runtime configuration. Enable this to diagnose origin-specific context usage.
     /// Contexts without origin tags are skipped. At most 199 origin groups and one `origin_overflow:true`
     /// series are registered. Groups exceeding 32 tags or 4096 bytes of encoded labels also contribute to overflow.
-    /// A context stays in its original group until expiry; vacant origin slots can admit new contexts.
-    /// Values remain exact, but overflow intentionally loses the per-origin breakdown.
+    /// A context stays in its original group until expiry; vacant origin slots can admit new contexts. The total
+    /// across all series is exact, but an origin's own series is too low while any of its contexts are counted in
+    /// overflow. An emptied group reports 0 until idle eviction removes its series.
     pub origin_telemetry_enabled: bool,
 
     /// Owner side of the channel used to serve retained-context snapshot requests.
