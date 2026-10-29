@@ -332,7 +332,7 @@ fn expand_dotted_keys(attributes: BTreeMap<String, Value>) -> Map<String, Value>
         let mut target = &mut expanded;
         while let Some(segment) = segments.next() {
             if segments.peek().is_none() {
-                target.insert(segment.to_string(), value);
+                target.insert(segment.to_string(), expand_nested(value));
                 break;
             }
             let entry = target
@@ -345,6 +345,15 @@ fn expand_dotted_keys(attributes: BTreeMap<String, Value>) -> Map<String, Value>
         }
     }
     expanded
+}
+
+/// Expands dotted keys in objects nested inside `value`, including inside arrays.
+fn expand_nested(value: Value) -> Value {
+    match value {
+        Value::Object(object) => Value::Object(expand_dotted_keys(object.into_iter().collect())),
+        Value::Array(values) => Value::Array(values.into_iter().map(expand_nested).collect()),
+        other => other,
+    }
 }
 
 /// Returns the value at a diff path inside expanded attributes, such as `attr.list[1].k`.
@@ -665,6 +674,18 @@ mod tests {
         assert_eq!(
             classify("content.message", &baseline, &comparison),
             Visibility::WireOnly
+        );
+
+        // Dotted keys inside nested objects are expanded too.
+        let baseline = log(json!({"message": "{\"message\":\"m\",\"attr\":{\"x.y\":1}}"}));
+        let comparison = log(json!({"message": "{\"message\":\"m\",\"attr\":{\"x.y\":2}}"}));
+        let (baseline, comparison) = (
+            IntakeLog::from_log(&baseline, true),
+            IntakeLog::from_log(&comparison, true),
+        );
+        assert_eq!(
+            classify("content.attr.x.y", &baseline, &comparison),
+            Visibility::IntakeVisible
         );
 
         // Tags are a set, so their order and whitespace aren't visible.
