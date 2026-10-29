@@ -1491,4 +1491,473 @@ mod tests {
         assert!(dispatched[3].values().is_sketch());
         assert_eq!(sorted_tags(&dispatched[3]), vec!["customer_id:other", "env:prod"]);
     }
+
+    mod pipeline_integration {
+        use std::{
+            num::{NonZeroU64, NonZeroUsize},
+            sync::Mutex,
+            time::Duration,
+        };
+
+        use agent_data_plane_config::{domains::dogstatsd::MetricFilter, Live};
+        use async_trait::async_trait;
+        use saluki_components::transforms::{
+            aggregate_context_snapshot_channel, AggregateConfiguration, AggregateMetricType, ChainedConfiguration,
+            DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping, HistogramConfiguration,
+        };
+        use saluki_core::{
+            accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder, MemoryLimiter},
+            components::{
+                destinations::{Destination, DestinationBuilder, DestinationContext},
+                sources::{Source, SourceBuilder, SourceContext},
+                BuildContext,
+            },
+            data_model::event::{EventType, metric::Metric},
+            health::HealthRegistry,
+            runtime::{state::ResourceRegistry, Supervisor},
+            topology::{OutputDefinition, TopologyBlueprint},
+        };
+        use saluki_error::{GenericError, generic_error};
+        use tokio::sync::{mpsc, oneshot};
+
+        use super::*;
+        use crate::components::{
+            dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
+            dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration,
+        };
+
+        #[tokio::test]
+        async fn retained_context_identity_follows_dogstatsd_post_processing() {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let mapper = DogStatsDMapperConfiguration::new(
+                    NonZeroUsize::new(64 * 1024).expect("not zero"),
+                    1_000,
+                    vec![DogStatsDMapperProfile {
+                        name: "retained-context-test".to_string(),
+                        prefix: "raw.requests.".to_string(),
+                        mappings: vec![DogStatsDMetricMapping {
+                            metric_match: "raw.requests.*".to_string(),
+                            match_type: String::new(),
+                            name: "mapped.requests".to_string(),
+                            tags: [("route".to_string(), "$1".to_string())].into(),
+                        }],
+                    }],
+                );
+                let mapper_chain = ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", mapper);
+                let prefix_filter = DogStatsDPrefixFilterConfiguration::new(
+                    "tenant".to_string(),
+                    Vec::new(),
+                    Live::new_fixed(MetricFilter {
+                        values: vec!["tenant.raw.blocked".to_string()],
+                        match_prefix: false,
+                        prefix_rules: Vec::new(),
+                    }),
+                );
+                let tag_filter = TagFilterlistConfiguration::new(
+                    Live::new_fixed(vec![MetricTagFilterEntry {
+                        metric_name: "tenant.mapped.requests".to_string(),
+                        action: FilterAction::Exclude,
+                        tags: vec!["remove".to_string()],
+                    }]),
+                    &[MetricTagValueAllowlistEntry {
+                        metric_prefix: "tenant.mapped.".to_string(),
+                        tag_name: "customer_id".to_string(),
+                        values: vec!["top-1".to_string()],
+                        on_miss: TagValueMismatchAction::Remove,
+                        replacement: "other".to_string(),
+                    }],
+                    0,
+                )
+                .expect("tag filter configuration should be valid");
+                let hist_config = HistogramConfiguration::try_new(
+                    &[
+                        "max".to_string(),
+                        "median".to_string(),
+                        "avg".to_string(),
+                        "count".to_string(),
+                    ],
+                    &["0.95".to_string()],
+                    false,
+                    String::new(),
+                )
+                .expect("histogram settings should be valid");
+                let (snapshot_handle, context_snapshot_receiver) = aggregate_context_snapshot_channel();
+                let aggregate = AggregateConfiguration {
+                    window_duration_seconds: NonZeroU64::new(10).expect("not zero"),
+                    primary_flush_interval: Duration::from_secs(60),
+                    context_limit: 1_000_000,
+                    flush_open_windows: false,
+                    counter_expiry_seconds: Some(300),
+                    hist_config,
+                    context_snapshot_receiver,
+                };
+
+                let (events_tx, events_rx) = mpsc::channel(2);
+                let source = ControlledMetricSourceBuilder {
+                    events: Mutex::new(Some(events_rx)),
+                    outputs: vec![OutputDefinition::default_output(EventType::Metric)],
+                };
+                let component_registry = ComponentRegistry::default();
+                let mut blueprint = TopologyBlueprint::new("dogstatsd_retained_identity", &component_registry);
+                blueprint
+                    .add_source("source", source)
+                    .expect("controlled source should be accepted")
+                    .add_transform("mapper", mapper_chain)
+                    .expect("mapper should be accepted")
+                    .add_transform("prefix_filter", prefix_filter)
+                    .expect("prefix filter should be accepted")
+                    .add_transform("tag_filter", tag_filter)
+                    .expect("tag filter should be accepted")
+                    .add_transform("aggregate", aggregate)
+                    .expect("aggregate should be accepted")
+                    .add_destination("destination", DrainingMetricDestinationBuilder)
+                    .expect("draining destination should be accepted");
+                blueprint
+                    .connect_components_in_order([
+                        "source",
+                        "mapper",
+                        "prefix_filter",
+                        "tag_filter",
+                        "aggregate",
+                        "destination",
+                    ])
+                    .expect("DogStatsD post-processing topology should connect");
+                blueprint
+                    .with_health_registry(HealthRegistry::new())
+                    .with_memory_limiter(MemoryLimiter::noop())
+                    .with_resource_registry(ResourceRegistry::new())
+                    .with_ambient_worker_pool();
+
+                let mut supervisor =
+                    Supervisor::new("dogstatsd-retained-identity").expect("test supervisor should be created");
+                supervisor.add_worker(blueprint);
+                let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+                let topology_task = tokio::spawn(async move { supervisor.run_with_shutdown(shutdown_rx).await });
+
+                events_tx
+                    .send(Event::Metric(Metric::counter("raw.blocked", 1.0)))
+                    .await
+                    .expect("controlled source should accept the blocked metric");
+                let input_context = Context::from_static_parts(
+                    "raw.requests.checkout",
+                    &[
+                        "customer_id:top-1",
+                        "customer_id:long-tail",
+                        "keep:client",
+                        "remove:secret",
+                    ],
+                );
+                events_tx
+                    .send(Event::Metric(Metric::counter(input_context.clone(), 1.0)))
+                    .await
+                    .expect("controlled source should accept the retained metric");
+
+                let expected_context = Context::from_static_parts(
+                    "tenant.mapped.requests",
+                    &["customer_id:top-1", "keep:client", "route:checkout"],
+                );
+                let snapshot = loop {
+                    let snapshot = snapshot_handle
+                        .snapshot()
+                        .await
+                        .expect("running aggregate should fulfill snapshots");
+                    if snapshot.iter().any(|entry| entry.context() == &expected_context) {
+                        break snapshot;
+                    }
+                    tokio::task::yield_now().await;
+                };
+
+                assert_eq!(snapshot.len(), 1);
+                assert_eq!(snapshot[0].context(), &expected_context);
+                assert_eq!(snapshot[0].metric_type(), AggregateMetricType::Counter);
+                assert_eq!(snapshot[0].context().tags().len(), 3);
+                assert_eq!(
+                    snapshot[0]
+                        .context()
+                        .tags()
+                        .get_single_tag("customer_id")
+                        .and_then(|tag| tag.value()),
+                    Some("top-1")
+                );
+                assert_eq!(
+                    snapshot[0]
+                        .context()
+                        .tags()
+                        .get_single_tag("keep")
+                        .and_then(|tag| tag.value()),
+                    Some("client")
+                );
+                assert_eq!(
+                    snapshot[0]
+                        .context()
+                        .tags()
+                        .get_single_tag("route")
+                        .and_then(|tag| tag.value()),
+                    Some("checkout")
+                );
+                assert!(snapshot[0].context().tags().get_single_tag("remove").is_none());
+                assert!(snapshot.iter().all(|entry| entry.context() != &input_context));
+                assert!(snapshot
+                    .iter()
+                    .all(|entry| !matches!(entry.context().name().as_ref(), "raw.blocked" | "tenant.raw.blocked")));
+
+                drop(events_tx);
+                drop(snapshot_handle);
+                shutdown_tx.send(()).expect("test topology should still be running");
+                let topology_result = topology_task.await.expect("topology task should not panic");
+                assert!(
+                    topology_result.is_ok(),
+                    "topology should stop cleanly: {topology_result:?}"
+                );
+            })
+            .await
+            .expect("DogStatsD retained identity test should complete without hanging");
+        }
+
+        #[tokio::test]
+        async fn no_agg_split_excludes_timestamped_metrics_from_tag_filterlist() {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let no_agg_split = DogStatsDNoAggSplitConfiguration::new(Duration::from_millis(50));
+                let tag_filter = TagFilterlistConfiguration::new(
+                    Live::new_fixed(vec![MetricTagFilterEntry {
+                        metric_name: "app.requests".to_string(),
+                        action: FilterAction::Exclude,
+                        tags: vec!["remove".to_string()],
+                    }]),
+                    &[],
+                    0,
+                )
+                .expect("tag filter configuration should be valid");
+                let hist_config = HistogramConfiguration::try_new(&[], &[], false, String::new())
+                    .expect("histogram settings should be valid");
+                let (snapshot_handle, context_snapshot_receiver) = aggregate_context_snapshot_channel();
+                let aggregate = AggregateConfiguration {
+                    window_duration_seconds: NonZeroU64::new(10).expect("not zero"),
+                    primary_flush_interval: Duration::from_secs(60),
+                    context_limit: 1_000_000,
+                    flush_open_windows: false,
+                    counter_expiry_seconds: Some(300),
+                    hist_config,
+                    context_snapshot_receiver,
+                };
+
+                let (events_tx, events_rx) = mpsc::channel(2);
+                let source = ControlledMetricSourceBuilder {
+                    events: Mutex::new(Some(events_rx)),
+                    outputs: vec![OutputDefinition::default_output(EventType::Metric)],
+                };
+                let (passthrough_tx, mut passthrough_rx) = mpsc::unbounded_channel();
+                let passthrough_destination = CollectingMetricDestinationBuilder { sender: passthrough_tx };
+
+                let component_registry = ComponentRegistry::default();
+                let mut blueprint = TopologyBlueprint::new("dogstatsd_no_agg_split_filterlist", &component_registry);
+                blueprint
+                    .add_source("source", source)
+                    .expect("controlled source should be accepted")
+                    .add_transform("no_agg_split", no_agg_split)
+                    .expect("no-agg split should be accepted")
+                    .add_transform("tag_filter", tag_filter)
+                    .expect("tag filter should be accepted")
+                    .add_transform("aggregate", aggregate)
+                    .expect("aggregate should be accepted")
+                    .add_destination("aggregate_out", DrainingMetricDestinationBuilder)
+                    .expect("draining destination should be accepted")
+                    .add_destination("passthrough_out", passthrough_destination)
+                    .expect("collecting destination should be accepted");
+                blueprint
+                    .connect_components_in_order(["source", "no_agg_split", "tag_filter", "aggregate", "aggregate_out"])
+                    .expect("no-agg split topology should connect")
+                    .connect_components("no_agg_split.passthrough", "passthrough_out")
+                    .expect("passthrough output should connect");
+                blueprint
+                    .with_health_registry(HealthRegistry::new())
+                    .with_memory_limiter(MemoryLimiter::noop())
+                    .with_resource_registry(ResourceRegistry::new())
+                    .with_ambient_worker_pool();
+
+                let mut supervisor =
+                    Supervisor::new("dogstatsd-no-agg-split-filterlist").expect("test supervisor should be created");
+                supervisor.add_worker(blueprint);
+                let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+                let topology_task = tokio::spawn(async move { supervisor.run_with_shutdown(shutdown_rx).await });
+
+                let timestamped_context =
+                    Context::from_static_parts("app.requests", &["keep:client", "remove:secret", "which:timestamped"]);
+                events_tx
+                    .send(Event::Metric(Metric::counter(
+                        timestamped_context.clone(),
+                        (1_700_000_000, 1.0),
+                    )))
+                    .await
+                    .expect("controlled source should accept the timestamped metric");
+
+                let non_timestamped_context = Context::from_static_parts(
+                    "app.requests",
+                    &["keep:client", "remove:secret", "which:non_timestamped"],
+                );
+                events_tx
+                    .send(Event::Metric(Metric::counter(non_timestamped_context.clone(), 1.0)))
+                    .await
+                    .expect("controlled source should accept the non-timestamped metric");
+
+                let passthrough_metric = passthrough_rx
+                    .recv()
+                    .await
+                    .expect("passthrough destination should receive the timestamped metric");
+                assert_eq!(
+                    passthrough_metric
+                        .context()
+                        .tags()
+                        .get_single_tag("remove")
+                        .and_then(|tag| tag.value()),
+                    Some("secret"),
+                    "timestamped metrics must not be filtered by the tag filterlist"
+                );
+
+                let expected_context =
+                    Context::from_static_parts("app.requests", &["keep:client", "which:non_timestamped"]);
+                let snapshot = loop {
+                    let snapshot = snapshot_handle
+                        .snapshot()
+                        .await
+                        .expect("running aggregate should fulfill snapshots");
+                    if snapshot.iter().any(|entry| entry.context() == &expected_context) {
+                        break snapshot;
+                    }
+                    tokio::task::yield_now().await;
+                };
+                assert!(snapshot.iter().all(|entry| entry.context() != &non_timestamped_context));
+                assert_eq!(snapshot.len(), 1);
+                assert!(snapshot[0].context().tags().get_single_tag("remove").is_none());
+
+                drop(events_tx);
+                drop(snapshot_handle);
+                shutdown_tx.send(()).expect("test topology should still be running");
+                let topology_result = topology_task.await.expect("topology task should not panic");
+                assert!(
+                    topology_result.is_ok(),
+                    "topology should stop cleanly: {topology_result:?}"
+                );
+            })
+            .await
+            .expect("no-agg split filterlist exclusion test should complete without hanging");
+        }
+
+        struct ControlledMetricSource {
+            events: mpsc::Receiver<Event>,
+        }
+
+        #[async_trait]
+        impl Source for ControlledMetricSource {
+            async fn run(mut self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
+                let shutdown = context.take_shutdown_handle();
+                tokio::pin!(shutdown);
+                let mut events_open = true;
+
+                loop {
+                    tokio::select! {
+                        _ = &mut shutdown => break,
+                        maybe_event = self.events.recv(), if events_open => match maybe_event {
+                            Some(event) => context.dispatcher().dispatch_one(event).await?,
+                            None => events_open = false,
+                        }
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        struct ControlledMetricSourceBuilder {
+            events: Mutex<Option<mpsc::Receiver<Event>>>,
+            outputs: Vec<OutputDefinition<EventType>>,
+        }
+
+        #[async_trait]
+        impl SourceBuilder for ControlledMetricSourceBuilder {
+            fn outputs(&self) -> &[OutputDefinition<EventType>] {
+                &self.outputs
+            }
+
+            async fn build(&self, _context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
+                let events = self
+                    .events
+                    .lock()
+                    .map_err(|_| generic_error!("controlled metric source receiver lock is poisoned"))?
+                    .take()
+                    .ok_or_else(|| generic_error!("controlled metric source receiver has already been taken"))?;
+                Ok(Box::new(ControlledMetricSource { events }))
+            }
+        }
+
+        impl MemoryBounds for ControlledMetricSourceBuilder {
+            fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+        }
+
+        struct DrainingMetricDestination;
+
+        #[async_trait]
+        impl Destination for DrainingMetricDestination {
+            async fn run(self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
+                while context.events().next().await.is_some() {}
+                Ok(())
+            }
+        }
+
+        struct DrainingMetricDestinationBuilder;
+
+        #[async_trait]
+        impl DestinationBuilder for DrainingMetricDestinationBuilder {
+            fn input_event_type(&self) -> EventType {
+                EventType::Metric
+            }
+
+            async fn build(&self, _context: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+                Ok(Box::new(DrainingMetricDestination))
+            }
+        }
+
+        impl MemoryBounds for DrainingMetricDestinationBuilder {
+            fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+        }
+
+        struct CollectingMetricDestination {
+            sender: mpsc::UnboundedSender<Metric>,
+        }
+
+        #[async_trait]
+        impl Destination for CollectingMetricDestination {
+            async fn run(self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
+                while let Some(events) = context.events().next().await {
+                    for event in events {
+                        if let Some(metric) = event.try_into_metric() {
+                            let _ = self.sender.send(metric);
+                        }
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        struct CollectingMetricDestinationBuilder {
+            sender: mpsc::UnboundedSender<Metric>,
+        }
+
+        #[async_trait]
+        impl DestinationBuilder for CollectingMetricDestinationBuilder {
+            fn input_event_type(&self) -> EventType {
+                EventType::Metric
+            }
+
+            async fn build(&self, _context: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+                Ok(Box::new(CollectingMetricDestination {
+                    sender: self.sender.clone(),
+                }))
+            }
+        }
+
+        impl MemoryBounds for CollectingMetricDestinationBuilder {
+            fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+        }
+    }
+
 }
