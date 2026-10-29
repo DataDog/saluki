@@ -206,6 +206,32 @@ pub fn compare_logs<L: Borrow<Log>>(baseline: &[L], comparison: &[L], identity_f
     result
 }
 
+/// Returns a key that is equal for two logs exactly when `diff_logs` finds no difference between them.
+///
+/// Like `diff_logs`, it ignores the raw `message` string of a log whose content parsed, since that string is only the
+/// serialization of the content, so whitespace and key order in it don't matter.
+fn exact_match_key(log: &Log) -> String {
+    let message = if log.content_properties().is_some() {
+        None
+    } else {
+        log.message()
+    };
+    let envelope = RAW_ENVELOPE_FIELDS
+        .iter()
+        .map(|field| match *field {
+            "message" => message,
+            field => log.envelope_field(field),
+        })
+        .collect::<Vec<_>>();
+    serde_json::to_string(&(
+        envelope,
+        log.ddtags(),
+        log.envelope_properties(),
+        log.content_properties(),
+    ))
+    .unwrap_or_default()
+}
+
 fn identity_key(log: &Log, identity_fields: &[String]) -> String {
     let view = log.semantic_view();
     let key = identity_fields
@@ -221,7 +247,7 @@ fn pair_bucket<L: Borrow<Log>>(
 ) {
     // Pair identical logs first. This keeps large groups of duplicates cheap, since they never reach the quadratic
     // pairing below.
-    let canonical = |log: &Log| serde_json::to_string(log).unwrap_or_default();
+    let canonical = exact_match_key;
     let mut identical = BTreeMap::<String, Vec<usize>>::new();
     for &idx in comparison_idxs.iter().rev() {
         identical
@@ -792,6 +818,25 @@ mod tests {
         assert!(result.missing.is_empty() && result.extra.is_empty());
         assert!(result.pairs.iter().all(|pair| pair.baseline == pair.comparison));
         assert_eq!(paths(&result.pairs[0].diffs), vec!["content.side"]);
+    }
+
+    #[test]
+    fn reformatted_content_still_pairs_as_identical() {
+        // More logs share an identity key than near-match pairing evaluates, so they must pair as identical, even
+        // though one side serializes the same content with whitespace and in a different key order.
+        let compact = (0..101)
+            .map(|i| log(json!({"message": json!({"message": "m", "n": i}).to_string()})))
+            .collect::<Vec<_>>();
+        let reformatted = (0..101)
+            .rev()
+            .map(|i| log(json!({"message": format!("{{ \"n\": {}, \"message\": \"m\" }}", i)})))
+            .collect::<Vec<_>>();
+
+        let result = compare_logs(&compact, &reformatted, &defaults());
+
+        assert_eq!(result.pairs.len(), 101);
+        assert!(result.missing.is_empty() && result.extra.is_empty());
+        assert!(result.pairs.iter().all(|pair| pair.diffs.is_empty()));
     }
 
     #[test]
