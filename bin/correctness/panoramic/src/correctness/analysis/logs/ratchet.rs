@@ -3,7 +3,10 @@
 //! A known difference lets a case pass while a gap is still open, and fails the case once the difference goes away
 //! (a stale entry), so that every fix has to remove its entries.
 
+use std::collections::BTreeMap;
+
 use serde::Deserialize;
+use serde_json::Value;
 
 use super::{DiffKind, FieldDiff};
 
@@ -53,21 +56,34 @@ pub struct KnownDifference {
     #[serde(default)]
     pub kinds: Vec<KnownDiffKind>,
 
+    /// Restricts the entry to logs whose baseline semantic view (see `stele::Log::semantic_view`) has, for every
+    /// listed field, one of the listed values. For example, `{fixture_id: [a, b]}` scopes the entry to two fixtures.
+    /// When empty, the entry applies to every log.
+    #[serde(default)]
+    pub when: BTreeMap<String, Vec<Value>>,
+
     /// Why the difference exists.
     pub reason: String,
 }
 
 impl KnownDifference {
-    /// Returns `true` if this entry covers `diff`.
-    pub fn covers(&self, diff: &FieldDiff) -> bool {
+    /// Returns `true` if this entry covers `diff`, found on a log whose baseline semantic view is `view`.
+    pub fn covers(&self, diff: &FieldDiff, view: &BTreeMap<String, Value>) -> bool {
+        self.applies(diff, view) && self.paths.iter().any(|pattern| path_matches(pattern, &diff.path))
+    }
+
+    fn applies(&self, diff: &FieldDiff, view: &BTreeMap<String, Value>) -> bool {
         (self.kinds.is_empty() || self.kinds.iter().any(|kind| kind.matches(&diff.kind)))
-            && self.paths.iter().any(|pattern| path_matches(pattern, &diff.path))
+            && self
+                .when
+                .iter()
+                .all(|(field, values)| view.get(field).is_some_and(|value| values.contains(value)))
     }
 }
 
-/// Returns `true` if any of `entries` covers `diff`.
-pub fn is_known(entries: &[KnownDifference], diff: &FieldDiff) -> bool {
-    entries.iter().any(|entry| entry.covers(diff))
+/// Returns `true` if any of `entries` covers `diff`, found on a log whose baseline semantic view is `view`.
+pub fn is_known(entries: &[KnownDifference], diff: &FieldDiff, view: &BTreeMap<String, Value>) -> bool {
+    entries.iter().any(|entry| entry.covers(diff, view))
 }
 
 /// Matches diffs against known differences, and tracks which entries were used.
@@ -85,13 +101,13 @@ impl<'a> Ratchet<'a> {
         }
     }
 
-    /// Returns the gap of the first entry matching `diff`, if any.
+    /// Returns the gap of the first entry matching `diff`, found on a log whose baseline semantic view is `view`.
     ///
     /// Every entry path matching `diff` is recorded as used, so overlapping entries aren't reported as stale.
-    pub fn classify(&mut self, diff: &FieldDiff) -> Option<&'a str> {
+    pub fn classify(&mut self, diff: &FieldDiff, view: &BTreeMap<String, Value>) -> Option<&'a str> {
         let mut gap = None;
         for (entry, used) in self.entries.iter().zip(&mut self.used) {
-            if !entry.kinds.is_empty() && !entry.kinds.iter().any(|kind| kind.matches(&diff.kind)) {
+            if !entry.applies(diff, view) {
                 continue;
             }
             for (pattern, count) in entry.paths.iter().zip(used.iter_mut()) {
@@ -111,10 +127,11 @@ impl<'a> Ratchet<'a> {
             for (path, count) in entry.paths.iter().zip(used) {
                 if *count == 0 {
                     stale.push(format!(
-                        "Known difference for {} no longer occurs: path `{}`{} ({}). Remove it from the case.",
+                        "Known difference for {} no longer occurs: path `{}`{}{} ({}). Remove it from the case.",
                         entry.gap,
                         path,
                         describe_kinds(&entry.kinds),
+                        describe_when(&entry.when),
                         entry.reason
                     ));
                 }
@@ -129,6 +146,14 @@ fn describe_kinds(kinds: &[KnownDiffKind]) -> String {
         String::new()
     } else {
         format!(", kinds {:?}", kinds)
+    }
+}
+
+fn describe_when(when: &BTreeMap<String, Vec<Value>>) -> String {
+    if when.is_empty() {
+        String::new()
+    } else {
+        format!(", when {}", serde_json::to_string(when).unwrap_or_default())
     }
 }
 
@@ -180,8 +205,44 @@ mod tests {
             gap: gap.to_string(),
             paths: paths.iter().map(|path| path.to_string()).collect(),
             kinds: kinds.to_vec(),
+            when: BTreeMap::new(),
             reason: "test".to_string(),
         }
+    }
+
+    fn no_view() -> BTreeMap<String, Value> {
+        BTreeMap::new()
+    }
+
+    #[test]
+    fn entries_can_be_scoped_to_logs() {
+        let mut scoped = entry(
+            "gap/zero-severity-status",
+            &["envelope.status"],
+            &[KnownDiffKind::Value],
+        );
+        scoped.when = BTreeMap::from([("fixture_id".to_string(), vec![json!("severity-0"), json!("severity-1")])]);
+        let entries = [scoped];
+        let mut ratchet = Ratchet::new(&entries);
+        let view = |id: &str| BTreeMap::from([("fixture_id".to_string(), json!(id))]);
+        let status = diff("envelope.status", DiffKind::Value);
+
+        assert_eq!(
+            ratchet.classify(&status, &view("severity-1")),
+            Some("gap/zero-severity-status")
+        );
+        assert_eq!(ratchet.classify(&status, &view("severity-2")), None);
+        assert_eq!(ratchet.classify(&status, &no_view()), None);
+        assert!(entries[0].covers(&status, &view("severity-0")));
+        assert!(!is_known(&entries, &status, &view("other")));
+        assert!(ratchet.stale_entries().is_empty());
+
+        let mut unused = entry("gap/raw-status-strings", &["envelope.status"], &[]);
+        unused.when = BTreeMap::from([("fixture_id".to_string(), vec![json!("never")])]);
+        let entries = [unused];
+        let ratchet = Ratchet::new(&entries);
+        let stale = ratchet.stale_entries();
+        assert!(stale[0].contains(r#"when {"fixture_id":["never"]}"#), "{}", stale[0]);
     }
 
     #[test]
@@ -220,21 +281,30 @@ mod tests {
         };
 
         assert_eq!(
-            ratchet.classify(&diff("content.attr", moved)),
+            ratchet.classify(&diff("content.attr", moved), &no_view()),
             Some("gap/content-in-message")
         );
         // The gap/content-in-message entry only covers location diffs.
-        assert_eq!(ratchet.classify(&diff("content.attr", DiffKind::Value)), None);
-        assert_eq!(ratchet.classify(&diff("content.attr.nested", DiffKind::Value)), None);
         assert_eq!(
-            ratchet.classify(&diff("envelope.status", DiffKind::Value)),
+            ratchet.classify(&diff("content.attr", DiffKind::Value), &no_view()),
+            None
+        );
+        assert_eq!(
+            ratchet.classify(&diff("content.attr.nested", DiffKind::Value), &no_view()),
+            None
+        );
+        assert_eq!(
+            ratchet.classify(&diff("envelope.status", DiffKind::Value), &no_view()),
             Some("gap/status-strings")
         );
         assert_eq!(
-            ratchet.classify(&diff("envelope.status", DiffKind::Missing)),
+            ratchet.classify(&diff("envelope.status", DiffKind::Missing), &no_view()),
             Some("gap/status-strings")
         );
-        assert_eq!(ratchet.classify(&diff("envelope.hostname", DiffKind::Value)), None);
+        assert_eq!(
+            ratchet.classify(&diff("envelope.hostname", DiffKind::Value), &no_view()),
+            None
+        );
         assert!(ratchet.stale_entries().is_empty());
     }
 
@@ -247,7 +317,7 @@ mod tests {
         let mut ratchet = Ratchet::new(&entries);
 
         assert_eq!(
-            ratchet.classify(&diff("content.attr.k", DiffKind::Value)),
+            ratchet.classify(&diff("content.attr.k", DiffKind::Value), &no_view()),
             Some("gap/content-in-message")
         );
         assert!(ratchet.stale_entries().is_empty(), "{:?}", ratchet.stale_entries());
@@ -263,7 +333,7 @@ mod tests {
         let mut ratchet = Ratchet::new(&entries);
 
         assert_eq!(
-            ratchet.classify(&diff("content.otel.timestamp", DiffKind::Value)),
+            ratchet.classify(&diff("content.otel.timestamp", DiffKind::Value), &no_view()),
             Some("gap/observed-timestamp")
         );
 
