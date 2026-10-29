@@ -1,5 +1,5 @@
 use saluki_error::GenericError;
-use stele::{ClientStatisticsAggregator, Event, Metric, ServiceCheck, Span};
+use stele::{ClientStatisticsAggregator, Event, LogsRequest, Metric, ServiceCheck, Span};
 
 use super::IntakeClient;
 
@@ -9,6 +9,7 @@ use super::IntakeClient;
 #[cfg_attr(test, derive(Default))]
 pub struct CollectedData {
     events: Vec<Event>,
+    log_requests: Vec<LogsRequest>,
     metrics: Vec<Metric>,
     service_checks: Vec<ServiceCheck>,
     spans: Vec<Span>,
@@ -27,6 +28,7 @@ impl CollectedData {
     /// If any endpoint's data can't be retrieved from the `datadog-intake` server, an error is returned.
     pub async fn collect(client: &IntakeClient) -> Result<Self, GenericError> {
         let events = client.events().await?;
+        let log_requests = client.logs().await?;
         let metrics = client.metrics().await?;
         let service_checks = client.service_checks().await?;
         let spans = client.spans().await?;
@@ -35,6 +37,7 @@ impl CollectedData {
 
         Ok(Self {
             events,
+            log_requests,
             metrics,
             service_checks,
             spans,
@@ -46,6 +49,11 @@ impl CollectedData {
     /// Returns a reference to the collected events.
     pub fn events(&self) -> &[Event] {
         &self.events
+    }
+
+    /// Returns a reference to the collected logs requests.
+    pub fn log_requests(&self) -> &[LogsRequest] {
+        &self.log_requests
     }
 
     /// Returns a reference to the collected metrics.
