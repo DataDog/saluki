@@ -108,8 +108,9 @@ impl IntakeLog {
                     merged.insert(field.to_string(), value.clone());
                 }
             }
+            // The message is stored separately, whether it's plain or parsed content.
+            merged.remove("message");
             if let Some(content) = content {
-                merged.remove("message");
                 merged.extend(content);
             }
             // Inner `ddtags` are merged as a raw string, and replace the envelope's. Every other envelope field is an
@@ -297,12 +298,17 @@ fn walk(value: &Value, rest: &str) -> Value {
 pub fn classify(path: &str, baseline: &IntakeLog, comparison: &IntakeLog) -> Visibility {
     // Both sides are compared at the same destination: if either side stores the field, compare that stored field on
     // both, and also the attribute, which only a side that didn't consume the property keeps.
-    let (stored, attribute) = match (baseline.destination(path), comparison.destination(path)) {
-        (Destination::Stored { field, rest, property }, _) | (_, Destination::Stored { field, rest, property }) => {
-            (Some((field, rest)), property)
-        }
-        (Destination::Attribute(key), _) => (None, Some(key)),
-    };
+    // The sides can resolve differently, for example when only one was parsed with agent-json, so keep the stored
+    // field and the attribute from whichever side has them.
+    let destinations = [baseline.destination(path), comparison.destination(path)];
+    let stored = destinations.iter().find_map(|destination| match destination {
+        Destination::Stored { field, rest, .. } => Some((*field, *rest)),
+        Destination::Attribute(_) => None,
+    });
+    let attribute = destinations.iter().find_map(|destination| match destination {
+        Destination::Stored { property, .. } => *property,
+        Destination::Attribute(key) => Some(*key),
+    });
 
     let stored_differs =
         stored.is_some_and(|(field, rest)| baseline.stored_value(field, rest) != comparison.stored_value(field, rest));
@@ -638,6 +644,27 @@ mod tests {
         assert_eq!(
             classify("content.http.header[x]", &baseline, &comparison),
             Visibility::IntakeVisible
+        );
+
+        // With mixed parser modes, the attribute kept by the default parser still counts.
+        let baseline = log(json!({"message": "{\"message\":\"a\",\"host\":\"h\"}", "hostname": "x"}));
+        let comparison = log(json!({"message": "{\"message\":\"a\",\"host\":\"h\"}", "hostname": "y"}));
+        let (baseline, comparison) = (
+            IntakeLog::from_log(&baseline, true),
+            IntakeLog::from_log(&comparison, false),
+        );
+        assert_eq!(
+            classify("envelope.hostname", &baseline, &comparison),
+            Visibility::IntakeVisible
+        );
+
+        // A plain message under the default parser is stored as the message, not kept as an attribute too.
+        let baseline = IntakeLog::from_log(&log(json!({"message": "{\"message\":\"m\"}"})), true);
+        let comparison = IntakeLog::from_log(&log(json!({"message": "m"})), false);
+        assert!(comparison.attributes.is_empty(), "{:?}", comparison.attributes);
+        assert_eq!(
+            classify("content.message", &baseline, &comparison),
+            Visibility::WireOnly
         );
 
         // Tags are a set, so their order and whitespace aren't visible.
