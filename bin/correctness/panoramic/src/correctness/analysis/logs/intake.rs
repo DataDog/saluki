@@ -177,38 +177,81 @@ impl IntakeLog {
         }
     }
 
-    /// Returns the stored value that the field at `path` ends up in, as a comparable JSON value.
+    /// Returns where the field at `path` ends up: a stored field, or an attribute.
     ///
     /// `path` is a location-qualified diff path. With agent-json, envelope fields map to the stored field they feed.
     /// Otherwise they're ordinary attributes, except `message`, `ddtags`, and `ddsource`. A property maps to the stored
     /// field it was consumed into, if any, and otherwise to the attribute at the same path. Paths below a field, such
     /// as `content.message.k`, are resolved inside the value that field ends up in.
-    pub fn value_for_path(&self, path: &str) -> Value {
+    fn destination<'p>(&self, path: &'p str) -> Destination<'p> {
         if let Some(field) = path.strip_prefix("envelope.") {
             let (name, rest) = split_first_segment(field);
             if self.agent_json || matches!(name, "message" | "ddtags" | "ddsource") {
-                return walk(&self.stored_field(name), rest);
+                return Destination::Stored {
+                    field: stored_field_name(name),
+                    rest,
+                    property: None,
+                };
             }
-            return self.property_value(field);
+            return self.property_destination(field);
         }
 
         let key = path
             .strip_prefix("content.")
             .or_else(|| path.strip_prefix("envelope_properties."))
             .unwrap_or(path);
-        self.property_value(key)
+        self.property_destination(key)
     }
 
-    fn property_value(&self, key: &str) -> Value {
+    fn property_destination<'p>(&self, key: &'p str) -> Destination<'p> {
         // The property key may itself contain dots, so find the longest consumed property the path starts with.
         let owner = std::iter::once(("message", "message"))
             .chain(self.consumed.iter().map(|(name, field)| (name.as_str(), *field)))
             .filter_map(|(name, field)| path_below(key, name).map(|rest| (name.len(), field, rest)))
             .max_by_key(|(len, _, _)| *len);
         match owner {
-            Some((_, field, rest)) => walk(&self.stored_field(field), rest),
-            None => lookup(&self.attributes, key),
+            Some((_, field, rest)) => Destination::Stored {
+                field,
+                rest,
+                property: Some(key),
+            },
+            None => Destination::Attribute(key),
         }
+    }
+
+    fn stored_value(&self, field: &str, rest: &str) -> Value {
+        walk(&self.stored_field(field), rest)
+    }
+
+    fn attribute_value(&self, key: &str) -> Value {
+        lookup(&self.attributes, key)
+    }
+}
+
+/// Where a field ends up in the stored log.
+enum Destination<'p> {
+    /// A stored field, such as the message or the status, and the path inside it. `property` is the property path
+    /// that fed it, if the field came from a property.
+    Stored {
+        field: &'static str,
+        rest: &'p str,
+        property: Option<&'p str>,
+    },
+
+    /// An attribute at the given path.
+    Attribute(&'p str),
+}
+
+fn stored_field_name(name: &str) -> &'static str {
+    match name {
+        "message" => "message",
+        "status" => "status",
+        "hostname" => "host",
+        "service" => "service",
+        "ddsource" => "ddsource",
+        "timestamp" => "date",
+        "ddtags" => "ddtags",
+        _ => "",
     }
 }
 
@@ -252,10 +295,23 @@ fn walk(value: &Value, rest: &str) -> Value {
 
 /// Classifies a difference at `path` by comparing what the intake would store for each side.
 pub fn classify(path: &str, baseline: &IntakeLog, comparison: &IntakeLog) -> Visibility {
-    if baseline.value_for_path(path) == comparison.value_for_path(path) {
-        Visibility::WireOnly
-    } else {
+    // Both sides are compared at the same destination: if either side stores the field, compare that stored field on
+    // both, and also the attribute, which only a side that didn't consume the property keeps.
+    let (stored, attribute) = match (baseline.destination(path), comparison.destination(path)) {
+        (Destination::Stored { field, rest, property }, _) | (_, Destination::Stored { field, rest, property }) => {
+            (Some((field, rest)), property)
+        }
+        (Destination::Attribute(key), _) => (None, Some(key)),
+    };
+
+    let stored_differs =
+        stored.is_some_and(|(field, rest)| baseline.stored_value(field, rest) != comparison.stored_value(field, rest));
+    let attribute_differs =
+        attribute.is_some_and(|key| baseline.attribute_value(key) != comparison.attribute_value(key));
+    if stored_differs || attribute_differs {
         Visibility::IntakeVisible
+    } else {
+        Visibility::WireOnly
     }
 }
 
@@ -287,20 +343,20 @@ fn expand_dotted_keys(attributes: BTreeMap<String, Value>) -> Map<String, Value>
 
 /// Returns the value at a diff path inside expanded attributes, such as `attr.list[1].k`.
 fn lookup(attributes: &Map<String, Value>, path: &str) -> Value {
-    // An attribute name may contain brackets itself.
-    if let Some(value) = attributes.get(path) {
-        return value.clone();
-    }
-
     let mut current = None::<&Value>;
     for segment in path.split('.') {
-        let (name, indexes) = match segment.find('[') {
-            Some(start) => (&segment[..start], &segment[start..]),
-            None => (segment, ""),
-        };
         let object = match current {
             None => Some(attributes),
             Some(value) => value.as_object(),
+        };
+        // An attribute name may contain brackets itself, so try the literal name before reading array indexes.
+        if let Some(value) = object.and_then(|object| object.get(segment)) {
+            current = Some(value);
+            continue;
+        }
+        let (name, indexes) = match segment.find('[') {
+            Some(start) => (&segment[..start], &segment[start..]),
+            None => (segment, ""),
         };
         current = object.and_then(|object| object.get(name));
         for index in indexes.split('[').filter(|index| !index.is_empty()) {
@@ -560,6 +616,27 @@ mod tests {
         );
         assert_eq!(
             classify("content.message.k", &baseline, &comparison),
+            Visibility::IntakeVisible
+        );
+
+        // Removing a redundant remapper source changes nothing stored.
+        let baseline = log(json!({"message": "{\"message\":\"m\",\"status\":\"warn\"}", "status": "warn"}));
+        let comparison = log(json!({"message": "{\"message\":\"m\"}", "status": "warn"}));
+        let (baseline, comparison) = (
+            IntakeLog::from_log(&baseline, true),
+            IntakeLog::from_log(&comparison, true),
+        );
+        assert_eq!(classify("content.status", &baseline, &comparison), Visibility::WireOnly);
+
+        // A dotted attribute name with brackets is a literal nested key, not an array index.
+        let baseline = log(json!({"message": "{\"message\":\"m\",\"http.header[x]\":1}"}));
+        let comparison = log(json!({"message": "{\"message\":\"m\",\"http.header[x]\":2}"}));
+        let (baseline, comparison) = (
+            IntakeLog::from_log(&baseline, true),
+            IntakeLog::from_log(&comparison, true),
+        );
+        assert_eq!(
+            classify("content.http.header[x]", &baseline, &comparison),
             Visibility::IntakeVisible
         );
 
