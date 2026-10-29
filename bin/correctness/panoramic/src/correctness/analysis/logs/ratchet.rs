@@ -57,6 +57,25 @@ pub struct KnownDifference {
     pub reason: String,
 }
 
+impl KnownDifference {
+    /// Returns `true` if this entry covers `diff`.
+    pub fn covers(&self, diff: &FieldDiff) -> bool {
+        self.matching_path(diff).is_some()
+    }
+
+    fn matching_path(&self, diff: &FieldDiff) -> Option<usize> {
+        if !self.kinds.is_empty() && !self.kinds.iter().any(|kind| kind.matches(&diff.kind)) {
+            return None;
+        }
+        self.paths.iter().position(|pattern| path_matches(pattern, &diff.path))
+    }
+}
+
+/// Returns `true` if any of `entries` covers `diff`.
+pub fn is_known(entries: &[KnownDifference], diff: &FieldDiff) -> bool {
+    entries.iter().any(|entry| entry.covers(diff))
+}
+
 /// Matches diffs against known differences, and tracks which entries were used.
 pub struct Ratchet<'a> {
     entries: &'a [KnownDifference],
@@ -75,10 +94,7 @@ impl<'a> Ratchet<'a> {
     /// Returns the gap of the first entry matching `diff`, if any, and records the match.
     pub fn classify(&mut self, diff: &FieldDiff) -> Option<&'a str> {
         for (entry_idx, entry) in self.entries.iter().enumerate() {
-            if !entry.kinds.is_empty() && !entry.kinds.iter().any(|kind| kind.matches(&diff.kind)) {
-                continue;
-            }
-            if let Some(path_idx) = entry.paths.iter().position(|pattern| path_matches(pattern, &diff.path)) {
+            if let Some(path_idx) = entry.matching_path(diff) {
                 self.used[entry_idx][path_idx] += 1;
                 return Some(&entry.gap);
             }
