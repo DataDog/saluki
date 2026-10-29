@@ -304,23 +304,33 @@ fn pair_bucket<L: Borrow<Log>>(
     let baseline_groups = group(baseline, &baseline_idxs);
     let mut comparison_groups = group(comparison, &comparison_idxs);
 
+    // A pair whose timestamps are outside the tolerance isn't committed here, so that both logs stay available to
+    // the matching below.
     let mut remaining_baseline = Vec::<usize>::new();
+    let mut unpaired_comparison = Vec::<usize>::new();
     for (key, baseline_members) in baseline_groups {
         let comparison_members = comparison_groups.remove(&key).unwrap_or_default();
         for (&b, &c) in baseline_members.iter().zip(&comparison_members) {
-            result.pairs.push(LogPair {
-                baseline: b,
-                comparison: c,
-                diffs: diff_logs(baseline[b].borrow(), comparison[c].borrow()),
-            });
+            if diff_logs(baseline[b].borrow(), comparison[c].borrow()).is_empty() {
+                result.pairs.push(LogPair {
+                    baseline: b,
+                    comparison: c,
+                    diffs: Vec::new(),
+                });
+            } else {
+                remaining_baseline.push(b);
+                unpaired_comparison.push(c);
+            }
         }
         remaining_baseline.extend(baseline_members.iter().skip(comparison_members.len()));
-        if comparison_members.len() > baseline_members.len() {
-            comparison_groups.insert(key, comparison_members[baseline_members.len()..].to_vec());
-        }
+        unpaired_comparison.extend(comparison_members.iter().skip(baseline_members.len()));
     }
     remaining_baseline.sort_unstable();
-    let mut remaining_comparison = comparison_groups.into_values().flatten().collect::<Vec<_>>();
+    let mut remaining_comparison = comparison_groups
+        .into_values()
+        .flatten()
+        .chain(unpaired_comparison)
+        .collect::<Vec<_>>();
     remaining_comparison.sort_unstable();
 
     let mut selected = Vec::new();
@@ -1320,6 +1330,32 @@ mod tests {
             .map(|pair| (pair.baseline, pair.comparison, pair.diffs.len()))
             .collect::<Vec<_>>();
         assert_eq!(pairs, vec![(0, 1, 0), (1, 0, 0)]);
+    }
+
+    #[test]
+    fn timestamps_outside_the_tolerance_dont_block_a_pairing_with_known_differences() {
+        // Pairing by `k` leaves both pairs two minutes apart. Cross-pairing keeps the timestamps equal and leaves only
+        // the known difference in `k`.
+        let base = 1_793_268_000_000u64;
+        let entry = |k: u64, offset: u64| log(json!({"message": "a", "k": k, "timestamp": base + offset}));
+        let baseline = [entry(1, 0), entry(2, 120_000)];
+        let comparison = [entry(1, 120_000), entry(2, 0)];
+        let known_differences = vec![known("gap/test", &["envelope_properties.k"])];
+
+        let result = compare_logs(&baseline, &comparison, &defaults(), &known_differences);
+
+        let pairs = result
+            .pairs
+            .iter()
+            .map(|pair| (pair.baseline, pair.comparison, paths(&pair.diffs)))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            pairs,
+            vec![
+                (0, 1, vec!["envelope_properties.k"]),
+                (1, 0, vec!["envelope_properties.k"])
+            ]
+        );
     }
 
     #[test]
