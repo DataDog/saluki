@@ -177,8 +177,8 @@
 <a href=#177 id=177 data-nosnippet>177</a>        <span class="self">Self </span>{ inner: Arc::new(inner) }
 <a href=#178 id=178 data-nosnippet>178</a>    }
 <a href=#179 id=179 data-nosnippet>179</a>
-<a href=#180 id=180 data-nosnippet>180</a>    <span class="attr">#[cfg(test)]
-<a href=#181 id=181 data-nosnippet>181</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>ptr_eq(<span class="kw-2">&amp;</span><span class="self">self</span>, other: <span class="kw-2">&amp;</span><span class="self">Self</span>) -&gt; bool {
+<a href=#180 id=180 data-nosnippet>180</a>    <span class="doccomment">/// Returns whether `self` and `other` share the same backing allocation.
+<a href=#181 id=181 data-nosnippet>181</a>    </span><span class="kw">pub fn </span>ptr_eq(<span class="kw-2">&amp;</span><span class="self">self</span>, other: <span class="kw-2">&amp;</span><span class="self">Self</span>) -&gt; bool {
 <a href=#182 id=182 data-nosnippet>182</a>        Arc::ptr_eq(<span class="kw-2">&amp;</span><span class="self">self</span>.inner, <span class="kw-2">&amp;</span>other.inner)
 <a href=#183 id=183 data-nosnippet>183</a>    }
 <a href=#184 id=184 data-nosnippet>184</a>
