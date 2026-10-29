@@ -5659,6 +5659,7 @@ dependencies = [
  "metrics",
  "opentelemetry-semantic-conventions",
  "otlp-protos",
+ "percent-encoding",
  "piecemeal",
  "pin-project",
  "prometheus-exposition",

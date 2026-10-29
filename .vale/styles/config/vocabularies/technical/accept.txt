@@ -99,7 +99,7 @@ callsite
 enqueue(s|d|ing)?
 hostname
 backpressure
-misconfiguration
+misconfiguration(s?)
 connectionless
 alphanumeric(s?)
 monomorphization

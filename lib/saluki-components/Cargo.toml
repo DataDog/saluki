@@ -48,6 +48,7 @@ opentelemetry-semantic-conventions = { workspace = true, features = [
   "semconv_experimental",
 ] }
 otlp-protos = { workspace = true }
+percent-encoding = { workspace = true, features = ["std"] }
 piecemeal = { workspace = true }
 pin-project = { workspace = true }
 prometheus-exposition = { workspace = true }

@@ -45,8 +45,11 @@ fn is_ecs_fargate() -> bool {
         || std::env::var_os("AWS_EXECUTION_ENV").is_some_and(|value| value == "AWS_ECS_FARGATE")
 }
 
-/// Mirrors the Agent's `env.IsContainerized`.
-fn is_containerized() -> bool {
+/// Returns `true` if this process runs in the Datadog Agent's container image.
+///
+/// Mirrors the Agent's `env.IsContainerized`, which checks for the `DOCKER_DD_AGENT` environment variable that the
+/// image sets.
+pub fn is_containerized() -> bool {
     std::env::var_os("DOCKER_DD_AGENT").is_some_and(|value| !value.is_empty())
 }
 

@@ -37,7 +37,7 @@ use saluki_components::{
         ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration, OtlpForwarderConfiguration,
         RoutingTargetCatalog,
     },
-    relays::otlp::OtlpRelayConfiguration,
+    relays::{apm::ApmRelayConfiguration, otlp::OtlpRelayConfiguration},
     sources::{
         ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDCaptureControl, DogStatsDConfiguration,
         DogStatsDReplayAPIHandler, DogStatsDReplayControl, EnablePayloadsConfiguration, ListenerRequirement,
@@ -166,13 +166,15 @@ async fn create_topology(
     //
     // Notably, we _don't_ need either of these if all we're doing is running the OTLP pipeline in proxy mode, which
     // is the only reason we're differentiating here. Connected mode is the exception: liveness deliberately
-    // provisions metric and service-check output paths even for proxy-only topologies.
+    // provisions metric and service-check output paths even for proxy-only topologies. The APM relay needs the
+    // forwarder alone, as it has nothing to feed the traces pipeline.
     let mut routing_targets = None;
     if dp.metrics_pipeline_required()
         || dp.logs_pipeline_required()
         || dp.events_pipeline_required()
         || dp.service_checks_pipeline_required()
         || dp.traces_pipeline_required()
+        || dp.apm_enabled()
     {
         // The forwarder and every metrics encoder that addresses its payloads to specific endpoints share one catalog,
         // so that both sides agree on what each routing target identifier means.
@@ -247,6 +249,10 @@ async fn create_topology(
 
     if dp.otlp_enabled() {
         add_otlp_pipeline_to_blueprint(&mut blueprint, config_system, env_provider, semantic_registry).await?;
+    }
+
+    if dp.apm_enabled() {
+        add_apm_pipeline_to_blueprint(&mut blueprint, config_system, env_provider).await?;
     }
 
     Ok((blueprint, control_surfaces))
@@ -682,7 +688,7 @@ fn dogstatsd_source_configuration(
         windows_pipe_security_descriptor: listeners.windows_pipe_security_descriptor.clone(),
         disable_verbose_logs: dogstatsd.debug_log.disable_verbose_logs,
         eol_required: listeners.eol_required.clone(),
-        bind_host: config.shared.bind_host.clone(),
+        bind_host: config.shared.bind_host.value.clone(),
         non_local_traffic: listeners.non_local_traffic,
         autoscale_udp_listeners: listeners.autoscale_udp_listeners,
         allow_context_heap_allocations: contexts.allow_context_heap_allocs,
@@ -942,6 +948,23 @@ async fn add_dsd_pipeline_to_blueprint(
         replay_api_handler,
         context_dump_api_handler,
     })
+}
+
+async fn add_apm_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
+    env_provider: &RemoteAgentEnvironmentProvider,
+) -> Result<(), GenericError> {
+    let config = config_system.config();
+    // In standalone mode there is no workload provider, so the resolver finds nothing and the relay forwards requests
+    // without a container ID
+    let dd_traces_relay = ApmRelayConfiguration::from_configuration(&config, datadog_agent_config::is_containerized())
+        .with_capture_entity_resolver(Arc::new(env_provider.workload().clone()));
+    blueprint
+        .add_relay("dd_traces_relay", dd_traces_relay)?
+        // The relay has no output path of its own, but a topology can't hold a component with no connections, so it
+        // connects to the forwarder, which is always created when APM is enabled.
+        .connect_components("dd_traces_relay.traces", "dd_out")?;
+    Ok(())
 }
 
 async fn add_otlp_pipeline_to_blueprint(

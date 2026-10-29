@@ -1,0 +1,46 @@
+type: correctness
+runtime: docker
+analysis_mode: traces
+# Same as `apm-trace`, but traces travel over Unix domain sockets: millstone sends to the trace-agent's socket on the
+# baseline side and to ADP's APM proxy socket on the comparison side, and the proxy forwards to the trace-agent's
+# socket. Both sides process traces with the same trace-agent, so any difference in the spans or APM stats that reach
+# the intake comes from the proxy.
+millstone:
+  image: saluki-images/correctness-tools:latest
+  config_path: millstone.yaml
+datadog_intake:
+  image: saluki-images/correctness-tools:latest
+baseline:
+  image: saluki-images/datadog-agent:testing-release
+  files:
+    - datadog.yaml:/etc/datadog-agent/datadog.yaml
+  env:
+    DD_API_KEY: correctness-test
+    # Listen on the shared airlock volume, where millstone can reach the socket.
+    DD_APM_RECEIVER_SOCKET: "/airlock/apm.socket"
+comparison:
+  image: saluki-images/datadog-agent:testing-release
+  files:
+    - datadog.yaml:/etc/datadog-agent/datadog.yaml
+  env:
+    DD_API_KEY: correctness-test
+    DD_DATA_PLANE_ENABLED: "true"
+    # Not standalone: ADP needs the Core Agent's workload data to find the container of a tracer from its socket peer
+    # credentials, as the trace-agent does on the baseline side. The same settings as `dsd-origin-detection`.
+    DD_DATA_PLANE_REMOTE_AGENT_ENABLED: "false"
+    DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "false"
+    DD_DATA_PLANE_EXPERIMENTAL_APM_ENABLED: "true"
+    DD_DATA_PLANE_EXPERIMENTAL_APM_PROXY_DESTINATION: "unix:///var/run/datadog/apm.socket"
+    # ADP takes over the trace-agent's receiver, so the two have to listen on different sockets. `ADP_DD_*` variables
+    # only reach ADP (see `docker/cont-init.d/99-agent-data-plane.sh`): the trace-agent keeps its default socket, which
+    # ADP proxies to, and ADP takes the shared airlock socket that millstone sends to.
+    #
+    # The trace-agent's socket is deliberately left unset rather than set with the plain variable: ADP reads the Core
+    # Agent's configuration, where an explicitly set `apm_config.receiver_socket` overrides ADP's own.
+    #
+    # ADP's TCP listener is disabled so it leaves the trace-agent's port alone. `0` is non-empty, so `s6-envdir` keeps
+    # it.
+    #
+    # TODO: Drop these once the Core Agent moves the trace-agent's receiver itself when the APM proxy is enabled.
+    ADP_DD_APM_RECEIVER_SOCKET: "/airlock/apm.socket"
+    ADP_DD_APM_RECEIVER_PORT: "0"

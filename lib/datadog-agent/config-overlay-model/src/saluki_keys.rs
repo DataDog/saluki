@@ -151,6 +151,10 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
              (`unix:///path/to/socket`, such as `unix:///var/run/datadog/trace-agent.socket`).
 
 \
+             Prefer an `http://` destination. Over a `unix://` destination, the trace-agent attributes requests \
+             that carry no container headers, and whose container ADP couldn't resolve, to ADP's own container.
+
+\
              > [!WARNING]
 \
              > Settings under `experimental` are unstable and may change, move, or be removed. Do not rely on \

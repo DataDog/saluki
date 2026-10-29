@@ -1,0 +1,34 @@
+# See test/integration/cases/dogstatsd-bind-custom-hostname/config.yaml for an explanation on what this test does.
+# This is the same test but for the APM proxy.
+
+type: integration
+name: "apm-bind-custom-hostname"
+description: "Verifies APM proxy resolves a custom hostname in bind_host via DNS"
+timeout: 120s
+runtimes: [linux, windows]
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-apm-bind-host-hostname"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  PANORAMIC_DYNAMIC_CONTAINER_IP: "hostname -i | awk '{print $1}'"
+  PANORAMIC_DYNAMIC_CUSTOM_HOSTNAME: "echo \"$(hostname -i | awk '{print $1}') foo.local\" >> /etc/hosts; echo foo.local"
+  DD_BIND_HOST: "{{PANORAMIC_DYNAMIC_CUSTOM_HOSTNAME}}"
+  DD_DATA_PLANE_EXPERIMENTAL_APM_ENABLED: "true"
+  DD_APM_NON_LOCAL_TRAFFIC: "false"
+  # Avoid port collision by disabling the go trace-agent
+  DD_APM_ENABLED: "false"
+
+
+procedure:
+  - assertion: log_contains
+    pattern: 'listen_addr:"tcp://{{PANORAMIC_DYNAMIC_CONTAINER_IP}}:58126"'
+    timeout: 60s
+  - parallel:
+      - assertion: process_stable_for
+        duration: 10s
+      - assertion: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s

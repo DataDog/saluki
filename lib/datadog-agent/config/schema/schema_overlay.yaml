@@ -211,19 +211,9 @@ inventory:
       used_by: [NO_SMOKE]
 
   apm_config.apm_non_local_traffic:
-    support: partial
+    support: full
     pipelines: [traces]
     description: "Accept non-local traffic on the APM receiver"
-    documentation: |-
-      With `data_plane.experimental.apm.enabled` set, ADP binds the trace receiver on every interface
-      when `apm_config.apm_non_local_traffic` is `true`, overriding `bind_host`, as the trace-agent
-      does.
-
-      When the Agent runs in a container and neither `bind_host` nor `apm_config.apm_non_local_traffic`
-      is set, the trace-agent also binds every interface, so that tracers in other containers can reach
-      it. ADP doesn't apply that fallback yet, and keeps binding `127.0.0.1`. In Kubernetes,
-      `apm_config.apm_non_local_traffic` already defaults to `true`, so this only affects other
-      container runtimes. Set `apm_config.apm_non_local_traffic: true` explicitly there.
     test_support:
       used_by: [NO_SMOKE]
 

@@ -11,6 +11,7 @@
 use serde::Serialize;
 
 use crate::defaults::DEFAULT_APM_PROXY_DESTINATION;
+use crate::ConfigValue;
 
 /// Resolved APM configuration.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -31,14 +32,19 @@ pub struct Domain {
     /// When `true`, the listener binds every interface, overriding `bind_host`, as the trace-agent does.
     ///
     /// The trace-agent also binds every interface when it runs in a container and neither `bind_host` nor
-    /// `apm_config.apm_non_local_traffic` is explicitly set. That fallback lives in the trace-agent rather than in the
-    /// configuration, so this field reads `false` in that case, and isn't enough on its own to match the trace-agent.
-    pub non_local_traffic: bool,
+    /// `apm_config.apm_non_local_traffic` was set explicitly. That fallback isn't part of the configuration, so the
+    /// provenance is kept for the APM relay to apply it.
+    pub non_local_traffic: ConfigValue<bool>,
 
     /// Where the relocated trace-agent listens, as a URL (`data_plane.experimental.apm.proxy_destination`).
     ///
     /// Either `http://host:port` or `unix:///path/to/socket`. Every request is forwarded
     /// here. Defaults to `http://127.0.0.1:8127`. (not in Datadog Agent config schema)
+    ///
+    /// Over a Unix domain socket, the trace-agent attributes a request that carries no container headers to the peer
+    /// of the connection, which is ADP. That covers requests from TCP clients that send no container headers, and from
+    /// Unix domain socket clients whose container ADP couldn't resolve. An `http://` destination leaves their origin
+    /// unknown instead.
     pub proxy_destination: String,
 }
 
@@ -50,7 +56,7 @@ impl Default for Domain {
             // Witnessed settings are overwritten during translation.
             receiver_port: 0,
             receiver_socket: None,
-            non_local_traffic: false,
+            non_local_traffic: ConfigValue::defaulted(false),
         }
     }
 }
