@@ -290,9 +290,12 @@ fn check_fixture(case: &str, payload: &[u8]) -> Result<(), String> {
     ))
 }
 
+/// Builds the encoded request for a fixture.
+type FixtureBuilder = fn() -> Vec<u8>;
+
 #[test]
 fn otlp_logs_fixtures_match_their_sources() {
-    let fixtures: &[(&str, fn() -> Vec<u8>)] = &[("otlp-logs-attributes", attributes_fixture)];
+    let fixtures: &[(&str, FixtureBuilder)] = &[("otlp-logs-attributes", attributes_fixture)];
 
     let errors = fixtures
         .iter()
