@@ -100,7 +100,7 @@ async fn run_docker_correctness_test(case: CorrectnessTestCase, tctx: TestContex
             otlp_direct_analysis_mode: case.config.otlp_direct_analysis_mode,
             additional_span_ignore_fields: case.config.additional_span_ignore_fields.clone(),
         }),
-        AnalysisMode::Events | AnalysisMode::Metrics | AnalysisMode::ServiceChecks => None,
+        AnalysisMode::Events | AnalysisMode::Logs | AnalysisMode::Metrics | AnalysisMode::ServiceChecks => None,
     };
     let analysis_runner = AnalysisRunner::new(
         case.config.analysis_mode,
@@ -108,6 +108,7 @@ async fn run_docker_correctness_test(case: CorrectnessTestCase, tctx: TestContex
         comparison_data,
         traces_options,
     )
+    .with_logs_options(case.config.logs.clone())
     .with_dogstatsd_forwarding_requirement(case.config.require_dogstatsd_forwarded_packets);
     let analysis_result = analysis_runner.run_analysis();
     let analysis_duration = phase.elapsed();
