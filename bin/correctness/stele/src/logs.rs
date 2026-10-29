@@ -79,11 +79,41 @@ impl LogsRequest {
 /// up as a difference, rather than being normalized away.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Log {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present"
+    )]
     message: Option<Value>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present"
+    )]
     status: Option<Value>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present"
+    )]
     hostname: Option<Value>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present"
+    )]
     service: Option<Value>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present"
+    )]
     ddsource: Option<Value>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present"
+    )]
     timestamp: Option<Value>,
     ddtags: BTreeSet<String>,
     envelope_properties: BTreeMap<String, Value>,
@@ -249,6 +279,18 @@ impl Log {
 
         view
     }
+}
+
+/// Deserializes a field that is present as `Some`, even when its value is `null`.
+///
+/// Serde reads a `null` into `None` for an `Option`, which would lose the difference between an envelope field that's
+/// absent and one that's explicitly `null`. Absent fields get `None` from `#[serde(default)]`, and `None` isn't
+/// serialized at all, so both states survive a round trip.
+fn deserialize_present<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Value::deserialize(deserializer).map(Some)
 }
 
 fn split_ddtags(raw: &str) -> BTreeSet<String> {
@@ -454,12 +496,18 @@ mod tests {
 
     #[test]
     fn logs_request_round_trips_through_json() {
-        let logs = Log::try_from_payload(br#"[{"message": "{\"a\":1}", "ddtags": "x", "extra": true}]"#)
-            .expect("payload should parse");
+        let logs =
+            Log::try_from_payload(br#"[{"message": "{\"a\":1}", "ddtags": "x", "extra": true}, {"message": null}]"#)
+                .expect("payload should parse");
+        // An explicit `null` is kept apart from an absent field.
+        assert_eq!(logs[1].message(), Some(&Value::Null));
+        assert_eq!(logs[1].status(), None);
         let request = LogsRequest::new("/v1/input", [("content-encoding", "zstd")], logs);
 
         let encoded = serde_json::to_string(&request).expect("request should serialize");
         let decoded: LogsRequest = serde_json::from_str(&encoded).expect("request should deserialize");
         assert_eq!(decoded, request);
+        assert_eq!(decoded.logs()[1].message(), Some(&Value::Null));
+        assert_eq!(decoded.logs()[1].status(), None);
     }
 }
