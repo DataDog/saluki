@@ -2698,7 +2698,7 @@ mod tests {
         let (server_url, counter, mut requests) =
             start_recording_http_server_with_delay(vec![StatusCode::OK], response_delay).await;
         let live = LiveForwarderConfiguration {
-            secrets: Live::new_fixed(Secrets::default()),
+            secrets_in_use: Live::new_fixed(false),
             ..Default::default()
         };
         let (_, forwarder) = build_test_forwarder_configured(&server_url, live, |config| {
