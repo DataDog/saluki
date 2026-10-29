@@ -1512,12 +1512,12 @@ mod tests {
                 sources::{Source, SourceBuilder, SourceContext},
                 BuildContext,
             },
-            data_model::event::{EventType, metric::Metric},
+            data_model::event::{metric::Metric, EventType},
             health::HealthRegistry,
             runtime::{state::ResourceRegistry, Supervisor},
             topology::{OutputDefinition, TopologyBlueprint},
         };
-        use saluki_error::{GenericError, generic_error};
+        use saluki_error::{generic_error, GenericError};
         use tokio::sync::{mpsc, oneshot};
 
         use super::*;
@@ -1959,5 +1959,4 @@ mod tests {
             fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
         }
     }
-
 }
