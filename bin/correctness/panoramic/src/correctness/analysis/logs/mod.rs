@@ -244,12 +244,15 @@ fn exact_match_key(log: &Log) -> String {
     } else {
         log.message()
     };
-    // Only present fields are keyed, so an absent field and an explicit `null` stay apart.
+    // Only present fields are keyed, so an absent field and an explicit `null` stay apart. An encode-time timestamp
+    // only counts as present, since `diff_logs` compares it with a tolerance.
+    let any_encode_timestamp = Value::Bool(true);
     let envelope = RAW_ENVELOPE_FIELDS
         .iter()
         .filter_map(|field| {
             let value = match *field {
                 "message" => message,
+                "timestamp" if encode_timestamp(log).is_some() => Some(&any_encode_timestamp),
                 field => log.envelope_field(field),
             };
             value.map(|value| (*field, value))
@@ -262,6 +265,11 @@ fn exact_match_key(log: &Log) -> String {
         log.content_properties(),
     ))
     .unwrap_or_default()
+}
+
+/// Returns the log's encode-time timestamp, if it's epoch milliseconds that `diff_logs` compares with a tolerance.
+fn encode_timestamp(log: &Log) -> Option<u64> {
+    log.timestamp().and_then(Value::as_u64)
 }
 
 fn identity_key(log: &Log, identity_fields: &[String]) -> String {
@@ -278,28 +286,39 @@ fn pair_bucket<L: Borrow<Log>>(
     known_differences: &[KnownDifference], result: &mut LogsComparison,
 ) {
     // Pair identical logs first. This keeps large groups of duplicates cheap, since they never reach the quadratic
-    // pairing below.
-    let canonical = exact_match_key;
-    let mut identical = BTreeMap::<String, Vec<usize>>::new();
-    for &idx in comparison_idxs.iter().rev() {
-        identical
-            .entry(canonical(comparison[idx].borrow()))
-            .or_default()
-            .push(idx);
-    }
+    // pairing below. Logs that differ only in their encode-time timestamp count as identical here, and within each
+    // such group they're paired in timestamp order, which keeps the largest timestamp difference as small as any
+    // pairing can, so the tolerance holds whenever some pairing satisfies it.
+    let group = |logs: &[L], idxs: &[usize]| {
+        let mut groups = BTreeMap::<String, Vec<usize>>::new();
+        for &idx in idxs {
+            groups.entry(exact_match_key(logs[idx].borrow())).or_default().push(idx);
+        }
+        for members in groups.values_mut() {
+            members.sort_by_key(|&idx| (encode_timestamp(logs[idx].borrow()), idx));
+        }
+        groups
+    };
+    let baseline_groups = group(baseline, &baseline_idxs);
+    let mut comparison_groups = group(comparison, &comparison_idxs);
 
-    let mut remaining_baseline = Vec::new();
-    for &idx in &baseline_idxs {
-        match identical.get_mut(&canonical(baseline[idx].borrow())).and_then(Vec::pop) {
-            Some(comparison_idx) => result.pairs.push(LogPair {
-                baseline: idx,
-                comparison: comparison_idx,
-                diffs: Vec::new(),
-            }),
-            None => remaining_baseline.push(idx),
+    let mut remaining_baseline = Vec::<usize>::new();
+    for (key, baseline_members) in baseline_groups {
+        let comparison_members = comparison_groups.remove(&key).unwrap_or_default();
+        for (&b, &c) in baseline_members.iter().zip(&comparison_members) {
+            result.pairs.push(LogPair {
+                baseline: b,
+                comparison: c,
+                diffs: diff_logs(baseline[b].borrow(), comparison[c].borrow()),
+            });
+        }
+        remaining_baseline.extend(baseline_members.iter().skip(comparison_members.len()));
+        if comparison_members.len() > baseline_members.len() {
+            comparison_groups.insert(key, comparison_members[baseline_members.len()..].to_vec());
         }
     }
-    let mut remaining_comparison = identical.into_values().flatten().collect::<Vec<_>>();
+    remaining_baseline.sort_unstable();
+    let mut remaining_comparison = comparison_groups.into_values().flatten().collect::<Vec<_>>();
     remaining_comparison.sort_unstable();
 
     let mut selected = Vec::new();
@@ -1028,7 +1047,7 @@ mod tests {
         let absent = log(json!({"message": "a"}));
         let null = log(json!({"message": "a", "status": null}));
 
-        let result = compare_logs(&[absent], &[null], &defaults());
+        let result = compare_logs(&[absent], &[null], &defaults(), &[]);
 
         assert_eq!(result.pairs.len(), 1);
         assert_eq!(paths(&result.pairs[0].diffs), vec!["envelope.status"]);
@@ -1239,6 +1258,25 @@ mod tests {
         let with_timestamp = |offset: u64| log(json!({"message": "a", "timestamp": base + offset}));
         let baseline = [with_timestamp(40_000), with_timestamp(80_000)];
         let comparison = [with_timestamp(60_000), with_timestamp(10_000)];
+
+        let result = compare_logs(&baseline, &comparison, &defaults(), &[]);
+
+        let pairs = result
+            .pairs
+            .iter()
+            .map(|pair| (pair.baseline, pair.comparison, pair.diffs.len()))
+            .collect::<Vec<_>>();
+        assert_eq!(pairs, vec![(0, 1, 0), (1, 0, 0)]);
+    }
+
+    #[test]
+    fn equal_timestamps_dont_block_a_pairing_within_the_tolerance() {
+        // Pairing the two logs with equal timestamps leaves the others 70 seconds apart; pairing in timestamp order
+        // keeps both pairs within the tolerance.
+        let base = 1_793_268_000_000u64;
+        let with_timestamp = |offset: u64| log(json!({"message": "a", "timestamp": base + offset}));
+        let baseline = [with_timestamp(40_000), with_timestamp(80_000)];
+        let comparison = [with_timestamp(40_000), with_timestamp(10_000)];
 
         let result = compare_logs(&baseline, &comparison, &defaults(), &[]);
 
