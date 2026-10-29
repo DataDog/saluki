@@ -91,7 +91,7 @@ struct OriginContextTelemetry {
 // Reserve one series for overflow. Slots are not reused while they have live contexts.
 const MAX_ORIGIN_SERIES: usize = 200;
 const MAX_ORIGIN_TAGS: usize = 32;
-const MAX_ORIGIN_TAG_BYTES: usize = 4096;
+const MAX_ORIGIN_LABEL_BYTES: usize = 4096;
 const ORIGIN_METRIC: &str = "aggregate_active_contexts_by_origin";
 const OVERFLOW_LABEL: &str = "origin_overflow";
 
@@ -128,13 +128,19 @@ impl<'a> OriginTagSetRef<'a> {
     fn new(tags: &'a TagSet) -> Option<Self> {
         let mut canonical = SmallVec::new();
         let mut bytes = 0usize;
+        let mut has_bare_tags = false;
         for tag in tags {
             // An empty tag has no label representation, so it must not distinguish origins either.
             if tag.as_str().is_empty() {
                 continue;
             }
-            bytes = bytes.checked_add(tag.as_str().len())?;
-            if canonical.len() == MAX_ORIGIN_TAGS || bytes > MAX_ORIGIN_TAG_BYTES {
+            let (tag_bytes, bare) = encoded_label_len(tag.as_str());
+            bytes = bytes.checked_add(tag_bytes)?;
+            if bare && !has_bare_tags {
+                has_bare_tags = true;
+                bytes += BARE_TAGS_LABEL.len();
+            }
+            if canonical.len() == MAX_ORIGIN_TAGS || bytes > MAX_ORIGIN_LABEL_BYTES {
                 return None;
             }
             canonical.push(tag.as_str());
@@ -151,13 +157,23 @@ impl<'a> OriginTagSetRef<'a> {
     }
 }
 
-// Budget canonical strings, encoded label strings (up to twice the source bytes plus reserved names),
-// and their retained registry/resolver/exposition copies. Allow eight copies and 256 bytes of metadata
-// per label for label arrays, string headers, hash-table slack, handles, and allocation headers.
-// The per-context admission ID is already included in AggregatedMetric's size.
-pub(super) const ORIGIN_TELEMETRY_BYTES: usize = MAX_ORIGIN_SERIES
-    * (MAX_ORIGIN_TAG_BYTES + 8 * (2 * MAX_ORIGIN_TAG_BYTES + MAX_ORIGIN_TAGS * 256))
-    + size_of::<OriginContexts>();
+const LABEL_OVERHEAD_BYTES: usize = 128;
+const ORIGIN_SERIES_BYTES: usize = MAX_ORIGIN_LABEL_BYTES + MAX_ORIGIN_TAGS * LABEL_OVERHEAD_BYTES;
+// Upper bound on how long idle eviction keeps a freed series in the internal metrics subsystem.
+const ORIGIN_SERIES_RETIREMENT_MILLIS: u128 = 5_000;
+
+/// Returns the memory bound for origin context telemetry.
+///
+/// Each series holds its canonical tags here, and its encoded labels in the internal metrics registry key, resolver
+/// cache key, and resolved context. Canonical tags never exceed their encoded size. Slots are freed and reused at
+/// most once per flush, so a series retired in each flush within the retirement window can still be held there.
+/// The per-context admission ID is already included in AggregatedMetric's size.
+pub(super) fn origin_telemetry_bytes(flush_interval: Duration) -> usize {
+    let retiring_generations = ORIGIN_SERIES_RETIREMENT_MILLIS.div_ceil(flush_interval.as_millis().max(1)) as usize;
+    MAX_ORIGIN_SERIES * ORIGIN_SERIES_BYTES
+        + (1 + retiring_generations) * MAX_ORIGIN_SERIES * 3 * ORIGIN_SERIES_BYTES
+        + size_of::<OriginContexts>()
+}
 
 const BARE_TAGS_LABEL: &str = "origin_bare_tags";
 const ESCAPED_LABEL_PREFIX: &str = "U__";
@@ -182,7 +198,11 @@ where
         encoded_tags.push(format!("{BARE_TAGS_LABEL}:{}", join_label_values(bare_tags)));
     }
     for (key, values) in values_by_key {
-        encoded_tags.push(format!("{}:{}", encode_origin_label_key(key), join_label_values(values)));
+        encoded_tags.push(format!(
+            "{}:{}",
+            encode_origin_label_key(key),
+            join_label_values(values)
+        ));
     }
     encoded_tags
 }
@@ -205,18 +225,42 @@ fn join_label_values(mut values: Vec<&str>) -> String {
     joined
 }
 
+// Upper bound on a tag's bytes in its encoded labels, and whether it is listed as a bare tag.
+fn encoded_label_len(tag: &str) -> (usize, bool) {
+    let escaped_value_len = |value: &str| value.len() + value.bytes().filter(|b| matches!(b, b',' | b'\\')).count();
+    match tag.split_once(':') {
+        Some((key, value)) if !value.is_empty() => (encoded_label_key_len(key) + 1 + escaped_value_len(value), false),
+        _ => (escaped_value_len(tag) + 1, true),
+    }
+}
+
 // Keys that aren't plain label names, or that clash with labels we add, use Prometheus's reversible `U__` escaping.
-fn encode_origin_label_key(key: &str) -> String {
+fn is_plain_label_key(key: &str) -> bool {
     let mut chars = key.chars();
-    let plain = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
         && !key.starts_with("__")
         && !key.starts_with(ESCAPED_LABEL_PREFIX)
         && !matches!(
             key,
             "component_id" | "component_type" | "emitter" | OVERFLOW_LABEL | BARE_TAGS_LABEL
-        );
-    if plain {
+        )
+}
+
+fn encoded_label_key_len(key: &str) -> usize {
+    if is_plain_label_key(key) {
+        return key.len();
+    }
+    let escaped_char_len = |c: char| match c {
+        '_' => 2,
+        c if c.is_ascii_alphanumeric() => 1,
+        c => (32 - u32::from(c).leading_zeros()).max(1).div_ceil(4) as usize + 2,
+    };
+    ESCAPED_LABEL_PREFIX.len() + key.chars().map(escaped_char_len).sum::<usize>()
+}
+
+fn encode_origin_label_key(key: &str) -> String {
+    if is_plain_label_key(key) {
         return key.to_owned();
     }
 
@@ -265,9 +309,12 @@ impl OriginContexts {
     }
 
     fn increment_overflow(&mut self, builder: &MetricsBuilder) -> OriginContextId {
-        let (gauge, count) = self
-            .overflow
-            .get_or_insert_with(|| (builder.register_gauge_with_tags(ORIGIN_METRIC, ["origin_overflow:true"]), 0));
+        let (gauge, count) = self.overflow.get_or_insert_with(|| {
+            (
+                builder.register_gauge_with_tags(ORIGIN_METRIC, ["origin_overflow:true"]),
+                0,
+            )
+        });
         *count += 1;
         gauge.set(*count as f64);
         OriginContextId(1)
@@ -532,7 +579,7 @@ mod tests {
     fn origin_budget_limits_bytes_and_tags_before_allocating_owned_keys() {
         let builder = MetricsBuilder::default();
         let mut contexts = OriginContexts::default();
-        let long = tag_set(&[&"x".repeat(MAX_ORIGIN_TAG_BYTES + 1)]);
+        let long = tag_set(&[&format!("k:{}", "x".repeat(MAX_ORIGIN_LABEL_BYTES - 1))]);
         assert!(OriginTagSetRef::new(&long).is_none());
         let id = contexts.increment(&builder, &long);
         assert_eq!(id.0, 1);
@@ -544,7 +591,11 @@ mod tests {
         assert!(OriginTagSetRef::new(&many).is_none());
         assert_eq!(contexts.increment(&builder, &many).0, 1);
         assert!(contexts.indices.is_empty());
-        assert!(OriginTagSetRef::new(&tag_set(&[&"x".repeat(MAX_ORIGIN_TAG_BYTES)])).is_some());
+        assert!(OriginTagSetRef::new(&tag_set(&[&format!("k:{}", "x".repeat(MAX_ORIGIN_LABEL_BYTES - 2))])).is_some());
+        // Escaping counts against the limit: each '.' in a key encodes as `_2e_`.
+        let escaped_key = format!("{}:x", ".".repeat((MAX_ORIGIN_LABEL_BYTES - 5) / 4));
+        assert!(OriginTagSetRef::new(&tag_set(&[&escaped_key])).is_some());
+        assert!(OriginTagSetRef::new(&tag_set(&[&format!(".{escaped_key}")])).is_none());
     }
 
     #[test]
@@ -578,9 +629,12 @@ mod tests {
         fn property_test_origin_encoding_preserves_identity(tags in proptest::collection::vec("[a-zA-Z0-9_: .,%\\\\\\n\\x00é€\u{10FFFF}-]{0,32}", 0..32)) {
             let tags = tag_set(&tags.iter().map(String::as_str).collect::<Vec<_>>());
             let (canonical, encoded) = canonical_labels(&tags);
-            proptest::prop_assert_eq!(decode_origin_labels(&encoded), canonical);
+            proptest::prop_assert_eq!(&decode_origin_labels(&encoded), &canonical);
             let names: std::collections::HashSet<_> = encoded.iter().map(|tag| tag.split_once(':').unwrap().0).collect();
             proptest::prop_assert_eq!(names.len(), encoded.len());
+            let bound: usize = canonical.iter().map(|tag| encoded_label_len(tag).0).sum::<usize>()
+                + if canonical.iter().any(|tag| encoded_label_len(tag).1) { BARE_TAGS_LABEL.len() } else { 0 };
+            proptest::prop_assert!(encoded.iter().map(String::len).sum::<usize>() <= bound);
             for tag in &encoded {
                 let (name, value) = tag.split_once(':').unwrap();
                 proptest::prop_assert!(!value.is_empty());

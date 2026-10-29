@@ -31,7 +31,7 @@ use tokio::{
 use tracing::{debug, error, info, trace, warn};
 
 mod telemetry;
-use self::telemetry::{FlushCounts, OriginContextId, Telemetry, ORIGIN_TELEMETRY_BYTES};
+use self::telemetry::{origin_telemetry_bytes, FlushCounts, OriginContextId, Telemetry};
 
 mod config;
 pub use self::config::HistogramConfiguration;
@@ -349,7 +349,7 @@ pub struct AggregateConfiguration {
     ///
     /// Defaults to `false` in runtime configuration. Enable this to diagnose origin-specific context usage.
     /// Contexts without origin tags are skipped. At most 199 origin groups and one `origin_overflow:true`
-    /// series are registered. Groups exceeding 32 tags or 4096 source-tag bytes also contribute to overflow.
+    /// series are registered. Groups exceeding 32 tags or 4096 bytes of encoded labels also contribute to overflow.
     /// A context stays in its original group until expiry; vacant origin slots can admit new contexts.
     /// Values remain exact, but overflow intentionally loses the per-origin breakdown.
     pub origin_telemetry_enabled: bool,
@@ -453,9 +453,10 @@ impl MemoryBounds for AggregateConfiguration {
         if self.origin_telemetry_enabled {
             // Origin telemetry has independent series and byte limits, including owned label storage and
             // registry/resolver copies rather than assuming strings share the metric context's allocation.
-            builder
-                .firm()
-                .with_fixed_amount("bounded origin context telemetry", ORIGIN_TELEMETRY_BYTES);
+            builder.firm().with_fixed_amount(
+                "bounded origin context telemetry",
+                origin_telemetry_bytes(self.primary_flush_interval),
+            );
         }
     }
 }
@@ -1419,11 +1420,13 @@ mod tests {
         let origin_registry = ComponentRegistry::default();
         origin_config.specify_bounds(&mut origin_registry.bounds_builder(&SubsystemIdentifier::from_dotted("test")));
         let origin_bounds = origin_registry.as_bounds();
-        let origin_tracking_bytes = ORIGIN_TELEMETRY_BYTES;
+        let origin_tracking_bytes = origin_telemetry_bytes(origin_config.primary_flush_interval);
         assert_eq!(
             origin_bounds.total_firm_limit_bytes(),
             expected_minimum + aggregation_state_bytes + context_snapshot_bytes + origin_tracking_bytes
         );
+        // Faster flushes reuse slots more often while retired series wait for idle eviction.
+        assert!(origin_telemetry_bytes(Duration::from_secs(1)) > origin_telemetry_bytes(Duration::from_secs(15)));
     }
 
     #[tokio::test]
