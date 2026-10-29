@@ -363,47 +363,44 @@ fn pair_bucket<L: Borrow<Log>>(
                 .zip(remaining_comparison.iter().copied()),
         );
     } else {
-        // Pair greedily by the smallest number of unexpected differences, then of all differences. Only the counts are
-        // kept for each candidate, and the diffs are recomputed for the selected pairs.
+        // Pair by an optimal assignment that minimizes the number of unexpected differences, then the total number
+        // of differences. Greedy choices don't work here: tolerances make "no difference" non-transitive, and taking
+        // one pair early can force differences, known or not, onto others. Only the counts are kept for each
+        // candidate, and the diffs are recomputed for the selected pairs.
         let baseline_views = remaining_baseline
             .iter()
             .map(|&b| (b, baseline[b].borrow().semantic_view()))
             .collect::<BTreeMap<_, _>>();
-        let mut candidates = Vec::with_capacity(candidate_count);
-        for &b in &remaining_baseline {
-            for &c in &remaining_comparison {
-                let diffs = diff_logs(baseline[b].borrow(), comparison[c].borrow());
-                let unknown = diffs
-                    .iter()
-                    .filter(|diff| !is_known(known_differences, diff, &baseline_views[&b]))
-                    .count();
-                candidates.push((unknown, diffs.len(), b, c));
-            }
-        }
-        candidates.sort_unstable();
-
-        // Greedy pairing can strand a log when equality isn't transitive, as with the encode-time timestamp
-        // tolerance, so first pair as many logs as possible using only candidates without unexpected differences.
-        let mut taken_baseline = BTreeSet::new();
-        let mut taken_comparison = BTreeSet::new();
-        let clean = candidates
+        let counts = remaining_baseline
             .iter()
-            .filter(|(unknown, _, _, _)| *unknown == 0)
-            .map(|(_, _, b, c)| (*b, *c))
+            .map(|&b| {
+                remaining_comparison
+                    .iter()
+                    .map(|&c| {
+                        let diffs = diff_logs(baseline[b].borrow(), comparison[c].borrow());
+                        let unknown = diffs
+                            .iter()
+                            .filter(|diff| !is_known(known_differences, diff, &baseline_views[&b]))
+                            .count();
+                        (unknown as i64, diffs.len() as i64)
+                    })
+                    .collect::<Vec<_>>()
+            })
             .collect::<Vec<_>>();
-        for (b, c) in maximum_matching(&clean) {
-            taken_baseline.insert(b);
-            taken_comparison.insert(c);
-            selected.push((b, c));
-        }
 
-        for (_, _, b, c) in candidates {
-            if !taken_baseline.contains(&b) && !taken_comparison.contains(&c) {
-                taken_baseline.insert(b);
-                taken_comparison.insert(c);
-                selected.push((b, c));
-            }
-        }
+        // Weight unexpected differences so that one always outweighs any number of other differences.
+        let max_total = counts.iter().flatten().map(|(_, total)| *total).max().unwrap_or(0);
+        let pairs = remaining_baseline.len().min(remaining_comparison.len()) as i64;
+        let weight = max_total * pairs + 1;
+        let costs = counts
+            .iter()
+            .map(|row| row.iter().map(|(unknown, total)| unknown * weight + total).collect())
+            .collect::<Vec<Vec<i64>>>();
+        selected.extend(
+            min_cost_assignment(&costs)
+                .into_iter()
+                .map(|(row, column)| (remaining_baseline[row], remaining_comparison[column])),
+        );
     }
 
     let paired_baseline = selected.iter().map(|(b, _)| *b).collect::<BTreeSet<_>>();
@@ -424,40 +421,86 @@ fn pair_bucket<L: Borrow<Log>>(
     );
 }
 
-/// Returns a maximum matching in the bipartite graph of candidate `(baseline, comparison)` pairs.
+/// Returns an assignment of rows to columns with the smallest total cost, as `(row, column)` pairs sorted by row.
 ///
-/// Candidates are tried in the given order, so the result is deterministic and prefers earlier candidates.
-fn maximum_matching(candidates: &[(usize, usize)]) -> Vec<(usize, usize)> {
-    let mut edges = BTreeMap::<usize, Vec<usize>>::new();
-    for &(b, c) in candidates {
-        edges.entry(b).or_default().push(c);
+/// Every row is assigned when there are at least as many columns as rows, and every column otherwise. This is the
+/// Hungarian algorithm, which is cubic in the size of the matrix; callers keep matrices small.
+fn min_cost_assignment(costs: &[Vec<i64>]) -> Vec<(usize, usize)> {
+    let rows = costs.len();
+    let columns = costs.first().map_or(0, Vec::len);
+    if rows == 0 || columns == 0 {
+        return Vec::new();
+    }
+    // The algorithm needs at least as many columns as rows, so solve the transpose otherwise.
+    if rows > columns {
+        let transposed = (0..columns)
+            .map(|column| costs.iter().map(|row| row[column]).collect())
+            .collect::<Vec<Vec<i64>>>();
+        let mut pairs = min_cost_assignment(&transposed)
+            .into_iter()
+            .map(|(column, row)| (row, column))
+            .collect::<Vec<_>>();
+        pairs.sort_unstable();
+        return pairs;
     }
 
-    fn augment(
-        b: usize, edges: &BTreeMap<usize, Vec<usize>>, matched: &mut BTreeMap<usize, usize>,
-        visited: &mut BTreeSet<usize>,
-    ) -> bool {
-        for &c in &edges[&b] {
-            if visited.insert(c) {
-                let free = match matched.get(&c) {
-                    None => true,
-                    Some(&other) => augment(other, edges, matched, visited),
-                };
-                if free {
-                    matched.insert(c, b);
-                    return true;
+    // Potentials and the row assigned to each column, 1-indexed with 0 as a sentinel.
+    let mut row_potential = vec![0i64; rows + 1];
+    let mut column_potential = vec![0i64; columns + 1];
+    let mut assigned_row = vec![0usize; columns + 1];
+    let mut previous = vec![0usize; columns + 1];
+    for row in 1..=rows {
+        assigned_row[0] = row;
+        let mut column = 0;
+        let mut min_slack = vec![i64::MAX; columns + 1];
+        let mut used = vec![false; columns + 1];
+        loop {
+            used[column] = true;
+            let current_row = assigned_row[column];
+            let mut delta = i64::MAX;
+            let mut next_column = 0;
+            for candidate in 1..=columns {
+                if used[candidate] {
+                    continue;
+                }
+                let slack =
+                    costs[current_row - 1][candidate - 1] - row_potential[current_row] - column_potential[candidate];
+                if slack < min_slack[candidate] {
+                    min_slack[candidate] = slack;
+                    previous[candidate] = column;
+                }
+                if min_slack[candidate] < delta {
+                    delta = min_slack[candidate];
+                    next_column = candidate;
                 }
             }
+            for candidate in 0..=columns {
+                if used[candidate] {
+                    row_potential[assigned_row[candidate]] += delta;
+                    column_potential[candidate] -= delta;
+                } else {
+                    min_slack[candidate] -= delta;
+                }
+            }
+            column = next_column;
+            if assigned_row[column] == 0 {
+                break;
+            }
         }
-        false
+        loop {
+            let previous_column = previous[column];
+            assigned_row[column] = assigned_row[previous_column];
+            column = previous_column;
+            if column == 0 {
+                break;
+            }
+        }
     }
 
-    // Matched baseline index for each comparison index.
-    let mut matched = BTreeMap::new();
-    for &b in edges.keys() {
-        augment(b, &edges, &mut matched, &mut BTreeSet::new());
-    }
-    let mut pairs = matched.into_iter().map(|(c, b)| (b, c)).collect::<Vec<_>>();
+    let mut pairs = (1..=columns)
+        .filter(|&column| assigned_row[column] != 0)
+        .map(|column| (assigned_row[column] - 1, column - 1))
+        .collect::<Vec<_>>();
     pairs.sort_unstable();
     pairs
 }
@@ -1397,11 +1440,39 @@ mod tests {
     }
 
     #[test]
-    fn maximum_matching_is_complete_and_deterministic() {
-        assert_eq!(maximum_matching(&[(0, 0), (0, 1), (1, 0)]), vec![(0, 1), (1, 0)]);
-        assert_eq!(maximum_matching(&[(0, 0), (1, 1)]), vec![(0, 0), (1, 1)]);
-        assert_eq!(maximum_matching(&[(0, 0), (1, 0)]), vec![(0, 0)]);
-        assert!(maximum_matching(&[]).is_empty());
+    fn min_cost_assignment_is_optimal_for_square_and_rectangular_costs() {
+        assert_eq!(
+            min_cost_assignment(&[vec![4, 1, 3], vec![2, 0, 5], vec![3, 2, 2]]),
+            vec![(0, 1), (1, 0), (2, 2)]
+        );
+        // More columns than rows, and more rows than columns.
+        assert_eq!(min_cost_assignment(&[vec![5, 1, 9]]), vec![(0, 1)]);
+        assert_eq!(min_cost_assignment(&[vec![5], vec![1], vec![9]]), vec![(1, 0)]);
+        assert!(min_cost_assignment(&[]).is_empty());
+    }
+
+    #[test]
+    fn pairing_doesnt_manufacture_known_differences() {
+        // Pairing in index order matches every log within the timestamp tolerance with no differences at all, so the
+        // known difference in `k` must not be used and should be reported as stale.
+        let base = 1_793_268_000_000u64;
+        let entry = |k: u64, offset: u64| log(json!({"message": "a", "k": k, "timestamp": base + offset}));
+        let baseline = [entry(0, 40_000), entry(1, 0), entry(1, 40_000)];
+        let comparison = [entry(0, 0), entry(1, 0), entry(1, 80_000)];
+        let known_differences = vec![known("gap/test", &["envelope_properties.k"])];
+
+        let result = compare_logs(&baseline, &comparison, &defaults(), &known_differences);
+
+        assert_eq!(result.pairs.len(), 3);
+        assert!(
+            result.pairs.iter().all(|pair| pair.diffs.is_empty()),
+            "{:?}",
+            result
+                .pairs
+                .iter()
+                .map(|pair| (pair.baseline, pair.comparison, paths(&pair.diffs)))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
