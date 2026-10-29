@@ -168,6 +168,13 @@ where
         let mut payload_writer = (&mut payload).writer();
         generator.to_bytes(&mut rng, max_bytes, &mut payload_writer)?;
 
+        // Generators return nothing when a single item can't fit, which would send empty requests.
+        if payload.is_empty() {
+            return Err(generic_error!(
+                "Generated an empty payload: the payload configuration can't produce any data within {} bytes.",
+                max_bytes
+            ));
+        }
         payloads.push(payload.freeze());
     }
 
@@ -220,6 +227,10 @@ corpus:
     }
 
     fn logs_config(seed_byte: u8) -> Config {
+        logs_config_with(seed_byte, "{}")
+    }
+
+    fn logs_config_with(seed_byte: u8, payload_config: &str) -> Config {
         let yaml = format!(
             r#"
 seed: [{seed}, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
@@ -228,9 +239,10 @@ volume: 1
 corpus:
   size: 20
   payload:
-    opentelemetry_logs: {{}}
+    opentelemetry_logs: {payload_config}
 "#,
-            seed = seed_byte
+            seed = seed_byte,
+            payload_config = payload_config
         );
         serde_saphyr::from_str(&yaml).expect("config should parse")
     }
@@ -246,5 +258,15 @@ corpus:
         assert!(first.iter().all(|payload| !payload.is_empty() && payload.len() <= 8192));
         assert_eq!(first, second.into_payloads());
         assert_ne!(first, other_seed.into_payloads());
+    }
+
+    #[test]
+    fn a_payload_configuration_that_cant_fit_is_rejected() {
+        let config = logs_config_with(1, "{body_size: {constant: 65535}}");
+
+        let error = Corpus::from_config(&config)
+            .err()
+            .expect("an empty payload should be rejected");
+        assert!(error.to_string().contains("Generated an empty payload"), "{}", error);
     }
 }
