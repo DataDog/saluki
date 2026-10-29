@@ -193,6 +193,11 @@ pub struct LogsComparison {
 ///
 /// Differences covered by `known_differences` count for less than unexpected ones when pairing, so that a pairing with
 /// only known differences is preferred.
+///
+/// Greedy pairing can miss the best pairing in a group with a real choice: several non-identical logs on each side
+/// sharing an identity key, where one log is equally close to two others, or where encode-time timestamps are spread
+/// wider than their tolerance. A wrong pairing only adds differences, so it fails the case rather than hiding one, and
+/// it's deterministic, since ties are broken by content. None of the current cases have such groups.
 pub fn compare_logs<L: Borrow<Log>>(
     baseline: &[L], comparison: &[L], identity_fields: &[String], known_differences: &[KnownDifference],
 ) -> LogsComparison {
@@ -300,7 +305,11 @@ fn pair_bucket<L: Borrow<Log>>(
         }
     }
     let mut remaining_comparison = identical.into_values().flatten().collect::<Vec<_>>();
-    remaining_comparison.sort_unstable();
+
+    // Order the remaining logs by content rather than by arrival, so that ties below are broken the same way however
+    // the logs happened to arrive at the intake.
+    remaining_baseline.sort_by_cached_key(|&idx| (exact_match_key(baseline[idx].borrow()), idx));
+    remaining_comparison.sort_by_cached_key(|&idx| (exact_match_key(comparison[idx].borrow()), idx));
 
     let mut selected = Vec::new();
     let candidate_count = remaining_baseline.len().saturating_mul(remaining_comparison.len());
@@ -326,22 +335,23 @@ fn pair_bucket<L: Borrow<Log>>(
             .iter()
             .map(|&b| (b, baseline[b].borrow().semantic_view()))
             .collect::<BTreeMap<_, _>>();
+        // Candidates are ranked by their position in the content order above, not by index.
         let mut candidates = Vec::with_capacity(candidate_count);
-        for &b in &remaining_baseline {
-            for &c in &remaining_comparison {
+        for (b_rank, &b) in remaining_baseline.iter().enumerate() {
+            for (c_rank, &c) in remaining_comparison.iter().enumerate() {
                 let diffs = diff_logs(baseline[b].borrow(), comparison[c].borrow());
                 let unknown = diffs
                     .iter()
                     .filter(|diff| !is_known(known_differences, diff, &baseline_views[&b]))
                     .count();
-                candidates.push((unknown, diffs.len(), b, c));
+                candidates.push((unknown, diffs.len(), b_rank, c_rank, b, c));
             }
         }
         candidates.sort_unstable();
 
         let mut taken_baseline = BTreeSet::new();
         let mut taken_comparison = BTreeSet::new();
-        for (_, _, b, c) in candidates {
+        for (_, _, _, _, b, c) in candidates {
             if !taken_baseline.contains(&b) && !taken_comparison.contains(&c) {
                 taken_baseline.insert(b);
                 taken_comparison.insert(c);
@@ -982,6 +992,36 @@ mod tests {
         assert_eq!(result.pairs.len(), 1);
         assert_eq!(paths(&result.pairs[0].diffs), vec!["envelope.status"]);
         assert_eq!(result.pairs[0].diffs[0].kind, DiffKind::Extra);
+    }
+
+    #[test]
+    fn pairing_doesnt_depend_on_arrival_order() {
+        // All four logs share an identity key and differ from each other equally, so every pairing ties. The result
+        // must be the same whichever order the logs arrived in.
+        let a = agent_log(json!({"message": "m", "x": 1}));
+        let b = agent_log(json!({"message": "m", "x": 2}));
+        let c = agent_log(json!({"message": "m", "x": 3}));
+        let d = agent_log(json!({"message": "m", "x": 4}));
+
+        let pairing = |baseline: &[Log], comparison: &[Log]| {
+            let result = compare_logs(baseline, comparison, &defaults(), &[]);
+            let mut pairs = result
+                .pairs
+                .iter()
+                .map(|pair| {
+                    (
+                        baseline[pair.baseline].semantic_view()["x"].clone(),
+                        comparison[pair.comparison].semantic_view()["x"].clone(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            pairs.sort_by_key(|(x, _)| x.to_string());
+            pairs
+        };
+
+        let in_order = pairing(&[a.clone(), b.clone()], &[c.clone(), d.clone()]);
+        let reversed = pairing(&[a, b], &[d, c]);
+        assert_eq!(in_order, reversed);
     }
 
     #[test]
