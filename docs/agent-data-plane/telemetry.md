@@ -165,16 +165,22 @@ legacy expvar equivalent.
 
 Set `telemetry.dogstatsd_origin: true` to emit `aggregator__dogstatsd_contexts_by_origin` on
 `/telemetry`. The default is `false`. This gauge groups active DogStatsD contexts by their complete
-resolved origin-tag set; contexts without resolved origin tags are omitted. It is not a legacy
-expvar and does not replace `aggregator/DogstatsdContexts`.
+resolved origin-tag set. Contexts without resolved origin tags are omitted, so the gauge stays empty
+unless `dogstatsd_origin_detection` is also enabled. It is not a legacy expvar and does not replace
+`aggregator/DogstatsdContexts`.
 
 The gauge exports up to 199 distinct origin groups and one `origin_overflow="true"` group for
-additional sets or sets exceeding 32 tags or 4 KiB of tag text. Groups keep their assignment
-until their contexts expire. Origin label names are made safe for Prometheus; repeated tag keys
-get deterministic numbered labels (for example, `kube_service_0` and `kube_service_1`). Bare tags
-and tags with empty values use distinct marker labels. ADP escapes special characters in label
-values according to Prometheus text exposition rules. Check the overflow group when comparing
-per-origin counts against the total.
+additional sets or sets exceeding 32 tags or 4096 bytes of encoded labels. Groups keep their
+assignment until their contexts expire, so an origin's own series is too low while the overflow
+group holds some of its contexts. Check the overflow group when comparing per-origin counts against
+the total. An emptied group reports 0 briefly before its series is removed.
+
+Each tag key becomes one label. Keys that aren't valid Prometheus label names, or that clash with
+labels ADP adds, use the reversible Prometheus `U__` escaping: for example, `git.commit.sha` becomes
+`U__git_2e_commit_2e_sha`. A key with several values gets one label that lists them sorted and
+comma-separated, such as `kube_service="api,worker"`, with commas and backslashes inside a value
+escaped by a backslash. Bare tags and tags with empty values are listed in the `origin_bare_tags`
+label. ADP escapes special characters in label values according to Prometheus text exposition rules.
 
 The six processed-message expvar metrics share `dogstatsd__processed`, so select both labels when
 querying `/telemetry`. For example, metric packets use `message_type="metrics"` and `state="ok"`:
