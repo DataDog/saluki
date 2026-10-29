@@ -260,6 +260,7 @@ fn write_decoded_records(path: &Path, side: Side, data: &CollectedData) -> Resul
         writer.write_kind("span", data.spans())?,
         writer.write_kind("trace_stats", std::slice::from_ref(data.trace_stats()))?,
         writer.write_kind("dogstatsd_forwarded_packet", data.dogstatsd_forwarded_packets())?,
+        writer.write_kind("log_request", data.log_requests())?,
     ];
 
     let (records, uncompressed_bytes, digest, encoder) = writer.finish();
@@ -990,6 +991,46 @@ mod tests {
             assert_eq!(
                 manifest["input_unavailable_reason"],
                 INTEGRATION_INPUT_UNAVAILABLE_REASON
+            );
+        }
+
+        #[tokio::test]
+        async fn captured_logs_requests_are_recorded_as_their_own_kind() {
+            let logs = |payload: &[u8]| stele::Log::try_from_payload(payload).expect("logs should parse");
+            let requests = vec![
+                stele::LogsRequest::new(
+                    "/api/v2/logs",
+                    [("dd-protocol", "agent-json")],
+                    logs(br#"[{"message": "one"}, {"message": "two"}]"#),
+                ),
+                stele::LogsRequest::new("/v1/input", [], logs(br#"[{"message": "three"}]"#)),
+            ];
+            let intake = MockIntake::serving_dumps(
+                json!([]),
+                serde_json::to_value(&requests).expect("requests should serialize"),
+            )
+            .await;
+            install_crypto_provider();
+            let log_dir = tempfile::tempdir().expect("temp dir should be created");
+            let dir = traffic_dir(log_dir.path());
+
+            capture_intake(
+                &dir,
+                &IntakeClient::new(intake.port()),
+                &CancellationToken::new(),
+                Duration::from_secs(5),
+            )
+            .await;
+
+            let decoded = read_json(&dir.join(Side::Integration.manifest_file_name()));
+            let records_by_kind = decoded["records_by_kind"]
+                .as_array()
+                .expect("records by kind should be an array");
+            assert_eq!(
+                records_by_kind.last(),
+                Some(&json!({"kind": "log_request", "count": 2})),
+                "{}",
+                decoded
             );
         }
 

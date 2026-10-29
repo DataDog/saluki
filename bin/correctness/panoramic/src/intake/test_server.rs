@@ -31,11 +31,19 @@ pub(crate) struct MockIntake {
 impl MockIntake {
     /// Serves `metrics` from the metrics dump endpoint and an empty dump from every other endpoint.
     pub(crate) async fn serving(metrics: serde_json::Value) -> Self {
-        let metrics = metrics.to_string();
+        Self::serving_dumps(metrics, serde_json::json!([])).await
+    }
+
+    /// Serves `metrics` and `logs` from their dump endpoints and an empty dump from every other endpoint.
+    pub(crate) async fn serving_dumps(metrics: serde_json::Value, logs: serde_json::Value) -> Self {
+        let dumps = Arc::new(Dumps {
+            metrics: metrics.to_string(),
+            logs: logs.to_string(),
+        });
         Self::spawn(move |listener, connections| async move {
             while let Ok((stream, _)) = listener.accept().await {
                 connections.fetch_add(1, Ordering::SeqCst);
-                tokio::spawn(respond(stream, metrics.clone()));
+                tokio::spawn(respond(stream, dumps.clone()));
             }
         })
         .await
@@ -118,7 +126,12 @@ impl Drop for MockIntake {
     }
 }
 
-async fn respond(mut stream: TcpStream, metrics: String) {
+struct Dumps {
+    metrics: String,
+    logs: String,
+}
+
+async fn respond(mut stream: TcpStream, dumps: Arc<Dumps>) {
     let mut request = Vec::new();
     let mut buffer = [0u8; 1024];
     while !request.windows(4).any(|window| window == b"\r\n\r\n") {
@@ -131,7 +144,8 @@ async fn respond(mut stream: TcpStream, metrics: String) {
     let request = String::from_utf8_lossy(&request);
     let path = request.split_whitespace().nth(1).unwrap_or_default();
     let body = match path {
-        "/metrics/dump" => metrics,
+        "/metrics/dump" => dumps.metrics.clone(),
+        "/logs/dump" => dumps.logs.clone(),
         "/traces/dump_stats" => r#"{"groups":{}}"#.to_string(),
         _ => "[]".to_string(),
     };
