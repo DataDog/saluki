@@ -27,7 +27,7 @@ const RAW_ENVELOPE_FIELDS: &[&str] = &["message", "status", "hostname", "service
 const SAMPLE_MISMATCH_LIMIT: usize = 20;
 
 /// Maximum number of candidate pairs to evaluate when pairing non-identical logs that share an identity key.
-const MAX_NEAR_MATCH_CANDIDATES: usize = 1_000_000;
+const MAX_NEAR_MATCH_CANDIDATES: usize = 10_000;
 
 fn default_identity_fields() -> Vec<String> {
     ["message", "otel.timestamp", "otel.trace_id", "otel.span_id"]
@@ -779,16 +779,16 @@ mod tests {
 
     #[test]
     fn very_large_groups_of_near_matches_pair_in_order() {
-        // 1001 × 1001 candidates is over the limit, so the logs are paired in index order without evaluating them.
+        // 101 × 101 candidates is over the limit, so the logs are paired in index order without evaluating them.
         let side = |label: &str| {
-            (0..1001)
+            (0..101)
                 .map(|i| agent_log(json!({"message": "m", "n": i, "side": label})))
                 .collect::<Vec<_>>()
         };
 
         let result = compare_logs(&side("baseline"), &side("comparison"), &defaults());
 
-        assert_eq!(result.pairs.len(), 1001);
+        assert_eq!(result.pairs.len(), 101);
         assert!(result.missing.is_empty() && result.extra.is_empty());
         assert!(result.pairs.iter().all(|pair| pair.baseline == pair.comparison));
         assert_eq!(paths(&result.pairs[0].diffs), vec!["content.side"]);
