@@ -430,7 +430,7 @@ fn diff_optional(path: String, baseline: Option<&Value>, comparison: Option<&Val
     }
 }
 
-/// Diffs two values, recursing into objects and into arrays of equal length.
+/// Diffs two values, descending into objects and into arrays of equal length.
 fn diff_values(path: String, baseline: &Value, comparison: &Value, diffs: &mut Vec<FieldDiff>) {
     match (baseline, comparison) {
         (Value::Object(baseline), Value::Object(comparison)) => {
