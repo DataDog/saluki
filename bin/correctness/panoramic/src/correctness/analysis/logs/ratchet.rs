@@ -60,14 +60,8 @@ pub struct KnownDifference {
 impl KnownDifference {
     /// Returns `true` if this entry covers `diff`.
     pub fn covers(&self, diff: &FieldDiff) -> bool {
-        self.matching_path(diff).is_some()
-    }
-
-    fn matching_path(&self, diff: &FieldDiff) -> Option<usize> {
-        if !self.kinds.is_empty() && !self.kinds.iter().any(|kind| kind.matches(&diff.kind)) {
-            return None;
-        }
-        self.paths.iter().position(|pattern| path_matches(pattern, &diff.path))
+        (self.kinds.is_empty() || self.kinds.iter().any(|kind| kind.matches(&diff.kind)))
+            && self.paths.iter().any(|pattern| path_matches(pattern, &diff.path))
     }
 }
 
@@ -91,15 +85,23 @@ impl<'a> Ratchet<'a> {
         }
     }
 
-    /// Returns the gap of the first entry matching `diff`, if any, and records the match.
+    /// Returns the gap of the first entry matching `diff`, if any.
+    ///
+    /// Every entry path matching `diff` is recorded as used, so overlapping entries aren't reported as stale.
     pub fn classify(&mut self, diff: &FieldDiff) -> Option<&'a str> {
-        for (entry_idx, entry) in self.entries.iter().enumerate() {
-            if let Some(path_idx) = entry.matching_path(diff) {
-                self.used[entry_idx][path_idx] += 1;
-                return Some(&entry.gap);
+        let mut gap = None;
+        for (entry, used) in self.entries.iter().zip(&mut self.used) {
+            if !entry.kinds.is_empty() && !entry.kinds.iter().any(|kind| kind.matches(&diff.kind)) {
+                continue;
+            }
+            for (pattern, count) in entry.paths.iter().zip(used.iter_mut()) {
+                if path_matches(pattern, &diff.path) {
+                    *count += 1;
+                    gap.get_or_insert(entry.gap.as_str());
+                }
             }
         }
-        None
+        gap
     }
 
     /// Returns a description of every entry path that matched no diff.
@@ -234,6 +236,21 @@ mod tests {
         );
         assert_eq!(ratchet.classify(&diff("envelope.hostname", DiffKind::Value)), None);
         assert!(ratchet.stale_entries().is_empty());
+    }
+
+    #[test]
+    fn overlapping_entries_are_all_used() {
+        let entries = [
+            entry("gap/content-in-message", &["content.**", "content.attr.k"], &[]),
+            entry("gap/as-string-coercion", &["content.attr.*"], &[]),
+        ];
+        let mut ratchet = Ratchet::new(&entries);
+
+        assert_eq!(
+            ratchet.classify(&diff("content.attr.k", DiffKind::Value)),
+            Some("gap/content-in-message")
+        );
+        assert!(ratchet.stale_entries().is_empty(), "{:?}", ratchet.stale_entries());
     }
 
     #[test]
