@@ -1453,9 +1453,11 @@ dependencies = [
 name = "datadog-intake"
 version = "0.1.0"
 dependencies = [
+ "async-compression",
  "axum",
  "base64 0.23.1",
  "datadog-protos",
+ "http-body-util",
  "protobuf",
  "rmp-serde",
  "saluki-common",
@@ -1465,6 +1467,7 @@ dependencies = [
  "socket2",
  "stele",
  "tokio",
+ "tower",
  "tower-http 0.7.1",
  "tracing",
  "tracing-subscriber",
