@@ -18,8 +18,8 @@ use serde_json::Value;
 use stele::Log;
 use tracing::{error, info, warn};
 
-pub use self::ratchet::KnownDifference;
-use self::ratchet::Ratchet;
+use self::ratchet::{is_known, path_matches, Ratchet};
+pub use self::ratchet::{KnownDiffKind, KnownDifference};
 use crate::intake::CollectedData;
 
 mod ratchet;
@@ -190,7 +190,12 @@ pub struct LogsComparison {
 ///
 /// Within a group of logs sharing an identity key, identical logs are paired first. The remaining logs are paired
 /// greedily by the smallest number of differences, with ties broken by index, so the result is deterministic.
-pub fn compare_logs<L: Borrow<Log>>(baseline: &[L], comparison: &[L], identity_fields: &[String]) -> LogsComparison {
+///
+/// Differences covered by `known_differences` count for less than unexpected ones when pairing, so that a pairing with
+/// only known differences is preferred.
+pub fn compare_logs<L: Borrow<Log>>(
+    baseline: &[L], comparison: &[L], identity_fields: &[String], known_differences: &[KnownDifference],
+) -> LogsComparison {
     let mut buckets = BTreeMap::<String, (Vec<usize>, Vec<usize>)>::new();
     for (idx, log) in baseline.iter().map(Borrow::borrow).enumerate() {
         buckets
@@ -213,7 +218,14 @@ pub fn compare_logs<L: Borrow<Log>>(baseline: &[L], comparison: &[L], identity_f
         extra: Vec::new(),
     };
     for (baseline_idxs, comparison_idxs) in buckets.into_values() {
-        pair_bucket(baseline, comparison, baseline_idxs, comparison_idxs, &mut result);
+        pair_bucket(
+            baseline,
+            comparison,
+            baseline_idxs,
+            comparison_idxs,
+            known_differences,
+            &mut result,
+        );
     }
 
     result.pairs.sort_by_key(|pair| pair.baseline);
@@ -263,7 +275,7 @@ fn identity_key(log: &Log, identity_fields: &[String]) -> String {
 
 fn pair_bucket<L: Borrow<Log>>(
     baseline: &[L], comparison: &[L], baseline_idxs: Vec<usize>, comparison_idxs: Vec<usize>,
-    result: &mut LogsComparison,
+    known_differences: &[KnownDifference], result: &mut LogsComparison,
 ) {
     // Pair identical logs first. This keeps large groups of duplicates cheap, since they never reach the quadratic
     // pairing below.
@@ -308,20 +320,21 @@ fn pair_bucket<L: Borrow<Log>>(
                 .zip(remaining_comparison.iter().copied()),
         );
     } else {
-        // Pair greedily by the smallest number of differences. Only the counts are kept for each candidate, and the
-        // diffs are recomputed for the selected pairs.
+        // Pair greedily by the smallest number of unexpected differences, then of all differences. Only the counts are
+        // kept for each candidate, and the diffs are recomputed for the selected pairs.
         let mut candidates = Vec::with_capacity(candidate_count);
         for &b in &remaining_baseline {
             for &c in &remaining_comparison {
-                let count = diff_logs(baseline[b].borrow(), comparison[c].borrow()).len();
-                candidates.push((count, b, c));
+                let diffs = diff_logs(baseline[b].borrow(), comparison[c].borrow());
+                let unknown = diffs.iter().filter(|diff| !is_known(known_differences, diff)).count();
+                candidates.push((unknown, diffs.len(), b, c));
             }
         }
         candidates.sort_unstable();
 
         let mut taken_baseline = BTreeSet::new();
         let mut taken_comparison = BTreeSet::new();
-        for (_, b, c) in candidates {
+        for (_, _, b, c) in candidates {
             if !taken_baseline.contains(&b) && !taken_comparison.contains(&c) {
                 taken_baseline.insert(b);
                 taken_comparison.insert(c);
@@ -564,10 +577,16 @@ impl<'a> LogsAnalyzer<'a> {
             }
         }
 
+        if let Some(msg) = self.identity_field_conflict() {
+            error!("{}", msg);
+            return Err((generic_error!("{}", msg), vec![msg]));
+        }
+
         let comparison = compare_logs(
             &self.baseline_logs,
             &self.comparison_logs,
             &self.options.identity_fields,
+            &self.options.known_differences,
         );
 
         let mut ratchet = Ratchet::new(&self.options.known_differences);
@@ -623,6 +642,32 @@ impl<'a> LogsAnalyzer<'a> {
             ),
             details,
         ))
+    }
+
+    /// Returns an error message if a known difference covers an identity field.
+    ///
+    /// Logs are paired by identity key before known differences are applied, so a known difference in an identity field
+    /// would split the logs into missing and extra ones instead of being ignored.
+    fn identity_field_conflict(&self) -> Option<String> {
+        for field in &self.options.identity_fields {
+            for prefix in ["envelope", "envelope_properties", "content"] {
+                let path = format!("{}.{}", prefix, field);
+                for entry in &self.options.known_differences {
+                    // A location difference doesn't change the semantic view, so it can't change the identity key.
+                    if !entry.kinds.is_empty() && entry.kinds.iter().all(|kind| *kind == KnownDiffKind::Location) {
+                        continue;
+                    }
+                    if let Some(pattern) = entry.paths.iter().find(|pattern| path_matches(pattern, &path)) {
+                        return Some(format!(
+                            "Known difference `{}` for {} covers identity field `{}`, which would stop logs from \
+                             pairing. Remove `{}` from `logs.identity_fields` for this case.",
+                            pattern, entry.gap, field, field
+                        ));
+                    }
+                }
+            }
+        }
+        None
     }
 
     fn describe(
@@ -703,7 +748,7 @@ mod tests {
         let a = agent_log(json!({"message": "a", "otel.timestamp": "1"}));
         let b = agent_log(json!({"message": "b", "otel.timestamp": "2"}));
 
-        let result = compare_logs(&[a.clone(), b.clone()], &[b, a], &defaults());
+        let result = compare_logs(&[a.clone(), b.clone()], &[b, a], &defaults(), &[]);
 
         assert!(result.missing.is_empty() && result.extra.is_empty());
         assert_eq!(result.pairs.len(), 2);
@@ -722,7 +767,7 @@ mod tests {
         let baseline = agent_log(json!({"message": "a", "otel.timestamp": "1", "attr": {"k": 1, "list": [1, 2]}}));
         let comparison = agent_log(json!({"message": "a", "otel.timestamp": "1", "attr": {"k": 2, "list": [1, 3]}}));
 
-        let result = compare_logs(&[baseline], &[comparison], &defaults());
+        let result = compare_logs(&[baseline], &[comparison], &defaults(), &[]);
 
         assert_eq!(result.pairs.len(), 1);
         let diffs = &result.pairs[0].diffs;
@@ -814,7 +859,7 @@ mod tests {
         let b = agent_log(json!({"message": "b"}));
         let c = agent_log(json!({"message": "c"}));
 
-        let result = compare_logs(&[a.clone(), b], &[a.clone(), c.clone()], &defaults());
+        let result = compare_logs(&[a.clone(), b], &[a.clone(), c.clone()], &defaults(), &[]);
         assert_eq!(result.pairs.len(), 1);
         assert_eq!(result.missing, vec![1]);
         assert_eq!(result.extra, vec![1]);
@@ -839,7 +884,7 @@ mod tests {
     fn duplicate_logs_pair_one_to_one() {
         let a = agent_log(json!({"message": "a"}));
 
-        let result = compare_logs(&[a.clone(), a.clone(), a.clone()], &[a.clone(), a], &defaults());
+        let result = compare_logs(&[a.clone(), a.clone(), a.clone()], &[a.clone(), a], &defaults(), &[]);
 
         assert_eq!(result.pairs.len(), 2);
         assert!(result.pairs.iter().all(|pair| pair.diffs.is_empty()));
@@ -856,7 +901,7 @@ mod tests {
         let c0 = agent_log(json!({"message": "m", "x": 2, "y": 3}));
         let c1 = agent_log(json!({"message": "m", "x": 1, "y": 4}));
 
-        let result = compare_logs(&[b0, b1], &[c0, c1], &defaults());
+        let result = compare_logs(&[b0, b1], &[c0, c1], &defaults(), &[]);
 
         let pairs = result
             .pairs
@@ -875,7 +920,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
 
-        let result = compare_logs(&side("baseline"), &side("comparison"), &defaults());
+        let result = compare_logs(&side("baseline"), &side("comparison"), &defaults(), &[]);
 
         assert_eq!(result.pairs.len(), 101);
         assert!(result.missing.is_empty() && result.extra.is_empty());
@@ -895,7 +940,7 @@ mod tests {
             .map(|i| log(json!({"message": format!("{{ \"n\": {}, \"message\": \"m\" }}", i)})))
             .collect::<Vec<_>>();
 
-        let result = compare_logs(&compact, &reformatted, &defaults());
+        let result = compare_logs(&compact, &reformatted, &defaults(), &[]);
 
         assert_eq!(result.pairs.len(), 101);
         assert!(result.missing.is_empty() && result.extra.is_empty());
@@ -907,7 +952,7 @@ mod tests {
         let absent = log(json!({"message": "a"}));
         let null = log(json!({"message": "a", "status": null}));
 
-        let result = compare_logs(&[absent], &[null], &defaults());
+        let result = compare_logs(&[absent], &[null], &defaults(), &[]);
 
         assert_eq!(result.pairs.len(), 1);
         assert_eq!(paths(&result.pairs[0].diffs), vec!["envelope.status"]);
@@ -923,10 +968,11 @@ mod tests {
             std::slice::from_ref(&baseline),
             std::slice::from_ref(&comparison),
             &defaults(),
+            &[],
         );
         assert_eq!((by_default.missing.len(), by_default.extra.len()), (1, 1));
 
-        let by_message = compare_logs(&[baseline], &[comparison], &["message".to_string()]);
+        let by_message = compare_logs(&[baseline], &[comparison], &["message".to_string()], &[]);
         assert_eq!(paths(&by_message.pairs[0].diffs), vec!["content.otel.timestamp"]);
     }
 
@@ -1013,6 +1059,56 @@ mod tests {
     }
 
     #[test]
+    fn known_differences_in_identity_fields_are_rejected() {
+        let a = data(vec![agent_log(json!({"message": "a"}))]);
+        let with = |entry: Value| LogsAnalysisOptions {
+            known_differences: vec![serde_json::from_value(entry).expect("entry should parse")],
+            ..LogsAnalysisOptions::default()
+        };
+
+        let (error, _) = LogsAnalyzer::new(
+            &a,
+            &a,
+            with(json!({"gap": "gap/observed-timestamp", "paths": ["content.otel.timestamp"], "reason": "test"})),
+        )
+        .run_analysis()
+        .expect_err("a known difference in an identity field should be rejected");
+        assert!(
+            error.to_string().contains("covers identity field `otel.timestamp`"),
+            "{}",
+            error
+        );
+
+        // Location differences don't change the identity key, so they're allowed.
+        let location_only = with(
+            json!({"gap": "gap/content-in-message", "paths": ["content.**"], "kinds": ["location"], "reason": "test"}),
+        );
+        let (error, _) = LogsAnalyzer::new(&a, &a, location_only)
+            .run_analysis()
+            .expect_err("the unused entry should be stale");
+        assert!(error.to_string().contains("1 known differences are stale"), "{}", error);
+    }
+
+    #[test]
+    fn near_matches_prefer_pairs_with_only_known_differences() {
+        // Baseline #0 differs from comparison #0 in two known fields, and from comparison #1 in one unexpected field.
+        let b0 = agent_log(json!({"message": "m", "k1": 1, "k2": 1, "u": 1}));
+        let b1 = agent_log(json!({"message": "m", "k1": 9, "k2": 9, "u": 2}));
+        let c0 = agent_log(json!({"message": "m", "k1": 2, "k2": 2, "u": 1}));
+        let c1 = agent_log(json!({"message": "m", "k1": 1, "k2": 1, "u": 3}));
+        let known_differences = vec![known("gap/as-string-coercion", &["content.k1", "content.k2"])];
+
+        let result = compare_logs(&[b0, b1], &[c0, c1], &defaults(), &known_differences);
+
+        let pairs = result
+            .pairs
+            .iter()
+            .map(|pair| (pair.baseline, pair.comparison))
+            .collect::<Vec<_>>();
+        assert_eq!(pairs, vec![(0, 0), (1, 1)]);
+    }
+
+    #[test]
     fn stale_known_differences_fail() {
         let a = data(vec![agent_log(json!({"message": "a"}))]);
         let options = LogsAnalysisOptions {
@@ -1063,7 +1159,7 @@ mod tests {
         let mut reversed = logs.clone();
         reversed.reverse();
 
-        let result = compare_logs(&logs, &reversed, &defaults());
+        let result = compare_logs(&logs, &reversed, &defaults(), &[]);
 
         assert_eq!(result.pairs.len(), 10_000);
         assert!(result.missing.is_empty() && result.extra.is_empty());
