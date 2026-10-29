@@ -18,10 +18,12 @@ use serde_json::Value;
 use stele::Log;
 use tracing::{error, info, warn};
 
+use self::intake::{classify, IntakeLog, Visibility};
 use self::ratchet::{is_known, Ratchet};
 pub use self::ratchet::{KnownDiffKind, KnownDifference};
 use crate::intake::CollectedData;
 
+mod intake;
 mod ratchet;
 
 /// Envelope fields held as raw values, in the order they're compared.
@@ -512,6 +514,8 @@ fn diff_values(path: String, baseline: &Value, comparison: &Value, diffs: &mut V
 pub struct LogsAnalyzer<'a> {
     baseline_logs: Vec<&'a Log>,
     comparison_logs: Vec<&'a Log>,
+    baseline_agent_json: Vec<bool>,
+    comparison_agent_json: Vec<bool>,
     options: LogsAnalysisOptions,
 }
 
@@ -523,6 +527,8 @@ impl<'a> LogsAnalyzer<'a> {
         Self {
             baseline_logs: baseline_data.logs().collect(),
             comparison_logs: comparison_data.logs().collect(),
+            baseline_agent_json: agent_json_flags(baseline_data),
+            comparison_agent_json: agent_json_flags(comparison_data),
             options,
         }
     }
@@ -567,31 +573,43 @@ impl<'a> LogsAnalyzer<'a> {
         );
 
         let mut ratchet = Ratchet::new(&self.options.known_differences);
-        let mut known_by_gap = BTreeMap::<&str, usize>::new();
-        let unknown = comparison
-            .pairs
-            .iter()
-            .map(|pair| {
-                let view = self.baseline_logs[pair.baseline].semantic_view();
-                let unknown = pair
-                    .diffs
-                    .iter()
-                    .filter(|diff| match ratchet.classify(diff, &view) {
-                        Some(gap) => {
-                            *known_by_gap.entry(gap).or_default() += 1;
-                            false
-                        }
-                        None => true,
-                    })
-                    .collect::<Vec<_>>();
-                (pair, unknown)
-            })
-            .filter(|(_, unknown)| !unknown.is_empty())
-            .collect::<Vec<_>>();
+        let mut known_by_gap = BTreeMap::<(&str, Visibility), usize>::new();
+        let mut unknown = Vec::new();
+        for pair in &comparison.pairs {
+            if pair.diffs.is_empty() {
+                continue;
+            }
+            let baseline_intake = IntakeLog::from_log(
+                self.baseline_logs[pair.baseline],
+                self.baseline_agent_json[pair.baseline],
+            );
+            let comparison_intake = IntakeLog::from_log(
+                self.comparison_logs[pair.comparison],
+                self.comparison_agent_json[pair.comparison],
+            );
+
+            let view = self.baseline_logs[pair.baseline].semantic_view();
+            let mut pair_unknown = Vec::new();
+            for diff in &pair.diffs {
+                let visibility = classify(&diff.path, &baseline_intake, &comparison_intake);
+                match ratchet.classify(diff, &view) {
+                    Some(gap) => *known_by_gap.entry((gap, visibility)).or_default() += 1,
+                    None => pair_unknown.push((diff, visibility)),
+                }
+            }
+            if !pair_unknown.is_empty() {
+                unknown.push((pair, pair_unknown));
+            }
+        }
         let stale = ratchet.stale_entries();
 
-        for (gap, count) in &known_by_gap {
-            info!("Ignored {} known differences for {}.", count, gap);
+        for ((gap, visibility), count) in &known_by_gap {
+            info!(
+                "Ignored {} known {} differences for {}.",
+                count,
+                visibility.label(),
+                gap
+            );
         }
 
         let details = self.describe(&unknown, &comparison, &stale);
@@ -666,7 +684,7 @@ impl<'a> LogsAnalyzer<'a> {
     }
 
     fn describe(
-        &self, unknown: &[(&LogPair, Vec<&FieldDiff>)], comparison: &LogsComparison, stale: &[String],
+        &self, unknown: &[(&LogPair, Vec<(&FieldDiff, Visibility)>)], comparison: &LogsComparison, stale: &[String],
     ) -> Vec<String> {
         let mut details = Vec::new();
 
@@ -677,9 +695,8 @@ impl<'a> LogsAnalyzer<'a> {
                 pair.comparison,
                 describe_message(self.baseline_logs[pair.baseline])
             );
-            for diff in diffs {
-                detail.push_str("\n    ");
-                detail.push_str(&diff.to_string());
+            for (diff, visibility) in diffs {
+                detail.push_str(&format!("\n    [{}] {}", visibility.label(), diff));
             }
             details.push(detail);
         }
@@ -701,6 +718,19 @@ impl<'a> LogsAnalyzer<'a> {
         details.extend(stale.iter().cloned());
         details
     }
+}
+
+/// Returns, for each log in order, whether its request was sent with `DD-PROTOCOL: agent-json`.
+fn agent_json_flags(data: &CollectedData) -> Vec<bool> {
+    data.log_requests()
+        .iter()
+        .flat_map(|request| {
+            let agent_json = request
+                .header("dd-protocol")
+                .is_some_and(|protocol| protocol.eq_ignore_ascii_case("agent-json"));
+            std::iter::repeat_n(agent_json, request.logs().len())
+        })
+        .collect()
 }
 
 fn describe_message(log: &Log) -> String {
@@ -1018,7 +1048,11 @@ mod tests {
             "{}",
             error
         );
-        assert!(details[0].contains("content.attr.k: value differs"), "{}", details[0]);
+        assert!(
+            details[0].contains("[intake-visible] content.attr.k: value differs"),
+            "{}",
+            details[0]
+        );
         assert!(!details[0].contains("envelope.status"), "{}", details[0]);
     }
 

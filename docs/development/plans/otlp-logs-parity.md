@@ -384,7 +384,7 @@ A step isn't done until its entries are gone and the tests pass without them.
 
 ### Test foundations
 
-- [ ] `intake-logs-capture` **Fake intake decodes logs.**
+- [x] `intake-logs-capture` **Fake intake decodes logs.**
   - Add `POST /api/v2/logs` and `POST /v1/input` (used when `use_v2_api` is false) to `datadog-intake`, plus
     `GET /logs/dump`.
   - Capture per request: `{path, headers, logs}`, so later steps can assert headers (`intake-headers`) and batching
@@ -395,7 +395,7 @@ A step isn't done until its entries are gone and the tests pass without them.
     JSON. Also provide a canonical semantic view for matching. Keeping the locations separate means
     `gap/content-in-message` shows up as a diff instead of being normalized away.
   - Tests: intake unit tests with captured Agent and ADP payloads (gzip and zstd), and malformed compression and JSON.
-- [ ] `logs-analyzer` **Panoramic logs plumbing and analyzer.**
+- [x] `logs-analyzer` **Panoramic logs plumbing and analyzer.**
   - Add `IntakeClient::logs()`, the request-level captures in `CollectedData`, and logs in the traffic artifacts.
   - Add `AnalysisMode::Logs`. Matching uses a deliberately stable identity key (message plus input timestamp and
     trace identifiers, after configured normalization), not all properties, so a single property regression still
@@ -407,7 +407,11 @@ A step isn't done until its entries are gone and the tests pass without them.
     Tests for the model cover numeric statuses, `error` vs. `emergency`, and empty and unmappable status strings.
   - Require non-empty output from both sides, with an optional expected minimum count, as the events and service
     check analyzers already do.
-  - Add the gap-tagged `ignore_fields` list (the ratchet) and a comparator for encode-time timestamps.
+  - Add the gap-tagged `ignore_fields` list (the ratchet) and a comparator for encode-time timestamps. This landed as
+    `logs.known_differences`: each entry names a gap, location-qualified path globs (`*` within a segment, `**` for
+    any number of segments), and optionally the diff kinds (`value`, `missing`, `extra`, `location`). An entry path
+    that matches nothing fails the case as stale. A known difference may not name an identity field, since logs are
+    paired before known differences apply; drop the field from `logs.identity_fields` instead.
   - Tests: analyzer unit tests for identical, reordered, field diff, field-location diff, missing, extra, both
     sides empty, one side empty, duplicate keys, competing near-matches, ignored nested fields, timestamp tolerance
     boundaries, and a large input.
@@ -782,6 +786,8 @@ tested with one table-driven case per precedence edge, not only with presence ch
   `TagsFromAttributes` (`attributes/attributes.go:218-287`) emits the container, cloud, ECS, `datadog.container.tag.*`,
   and GCP serverless tags in randomized Go map order. The **normalized tag set** must still match exactly, and the
   analyzer and golden vectors compare `ddtags` as that set.
+- **The fake intake's fallback stays lenient**: unhandled paths still get 200. Failing loudly on known Datadog intake
+  paths isn't related to logs, and the Agent calls some of those endpoints at startup.
 - **HTTP first, TCP later**: everything before the TCP transport phase covers only the HTTP logs transport.
   Correctness cases force HTTP on the Agent side (`logs_config.force_use_http: true`) until that phase decides
   otherwise.
