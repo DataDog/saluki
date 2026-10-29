@@ -106,7 +106,7 @@ mod tests {
         processor.process(
             MetricsSnapshot {
                 upserts: metrics,
-                ..MetricsSnapshot::default()
+                evictions: Vec::new(),
             },
             &state,
         );

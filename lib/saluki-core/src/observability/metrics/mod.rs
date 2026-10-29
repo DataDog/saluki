@@ -89,12 +89,6 @@ pub struct MetricsSnapshot {
 
     /// Metrics which are no longer active and should be removed.
     pub evictions: Vec<Context>,
-
-    /// Whether `upserts` contains the complete visible gauge set, including an empty set.
-    ///
-    /// Periodic snapshots set this so consumers can reconcile gauges after missing a broadcast.
-    /// Partial updates, such as counter eviction notifications, leave this `false`.
-    pub gauges_are_complete: bool,
 }
 
 /// A [`MetricsSnapshot`] that can be cheaply cloned and shared between multiple consumers.
@@ -433,7 +427,6 @@ fn delete_counter_from_state(state: &State, prefixed_key: &Key) -> Option<Metric
     let mut snapshot = MetricsSnapshot {
         upserts: Vec::new(),
         evictions: vec![context.clone()],
-        ..MetricsSnapshot::default()
     };
     if delta > 0 && handle.level() >= current_level {
         snapshot
@@ -551,10 +544,7 @@ fn flush_once(state: &State, context_resolver: &mut MetricsContextResolver, flus
     let has_listeners = state.flush_tx.receiver_count() > 0;
     let current_level = *state.current_level.lock().unwrap();
     let idle_threshold = state.idle_evict_intervals;
-    let mut snapshot = MetricsSnapshot {
-        gauges_are_complete: true,
-        ..MetricsSnapshot::default()
-    };
+    let mut snapshot = MetricsSnapshot::default();
 
     flush_state.clear();
     let FlushState {
@@ -682,8 +672,9 @@ fn flush_once(state: &State, context_resolver: &mut MetricsContextResolver, flus
             .push(Event::Metric(Metric::histogram(context, &samples[..])));
     }
 
-    // Even an empty complete gauge snapshot must be delivered: it retires the last gauge after lag.
-    let _ = state.flush_tx.send(Arc::new(snapshot));
+    if !snapshot.upserts.is_empty() || !snapshot.evictions.is_empty() {
+        let _ = state.flush_tx.send(Arc::new(snapshot));
+    }
 }
 
 struct MetricsContextResolver {
@@ -797,7 +788,7 @@ pub(crate) fn aggregate_upserts(upserts: Vec<Event>) -> AggregatedMetricsState {
     processor.process(
         MetricsSnapshot {
             upserts,
-            ..MetricsSnapshot::default()
+            evictions: Vec::new(),
         },
         &state,
     );
@@ -971,48 +962,6 @@ mod tests {
         }
         assert!(resolver.key_context_cache.is_empty());
         assert_eq!(metric_count(&aggregated, "origin_contexts"), 0);
-    }
-
-    #[tokio::test]
-    async fn complete_gauge_snapshots_recover_after_lost_eviction_broadcasts() {
-        let (state, mut rx) = make_state(IDLE_EVICT_INTERVALS);
-        let mut resolver = resolver();
-        let mut flush_state = FlushState::default();
-        let processor = AggregatedMetricsProcessor;
-        let aggregated = processor.build_initial_state();
-        let first = Key::from_parts("origins", vec![Label::new("origin", "first")]);
-        state.registry.get_or_create_gauge(&first, Level::INFO).set(1.0);
-        flush_once(&state, &mut resolver, &mut flush_state);
-        for snapshot in drain(&mut rx) {
-            processor.process(snapshot, &aggregated);
-        }
-        state.registry.maps.lock().unwrap().gauges.remove(&first);
-        let second = Key::from_parts("origins", vec![Label::new("origin", "second")]);
-        let gauge = state.registry.get_or_create_gauge(&second, Level::INFO);
-        gauge.set(2.0);
-        // Overrun the 64-snapshot receiver, including the first origin's one-shot eviction.
-        for _ in 0..70 {
-            flush_once(&state, &mut resolver, &mut flush_state);
-        }
-        assert!(matches!(rx.try_recv(), Err(broadcast::error::TryRecvError::Lagged(_))));
-        for snapshot in drain(&mut rx) {
-            processor.process(snapshot, &aggregated);
-        }
-        assert_eq!(metric_count(&aggregated, "origins"), 1);
-        assert_eq!(aggregated.find_single_with_tags("origins", &["origin:first"]), None);
-        assert_eq!(
-            aggregated.find_single_with_tags("origins", &["origin:second"]),
-            Some(2.0)
-        );
-        state.registry.maps.lock().unwrap().gauges.remove(&second);
-        for _ in 0..70 {
-            flush_once(&state, &mut resolver, &mut flush_state);
-        }
-        assert!(matches!(rx.try_recv(), Err(broadcast::error::TryRecvError::Lagged(_))));
-        for snapshot in drain(&mut rx) {
-            processor.process(snapshot, &aggregated);
-        }
-        assert_eq!(metric_count(&aggregated, "origins"), 0);
     }
 
     #[tokio::test]
