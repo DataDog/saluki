@@ -1,3 +1,12 @@
+# Property tests build every test binary with the release profile (thin LTO, full debuginfo). At the
+# end of a cold build, the `saluki-components`, `panoramic`, and `agent-data-plane` test binaries
+# compile and link at the same time, and together peak at about 14GB, which exceeds the 12Gi limit
+# of the heavy test job.
+.property-tests-memory:
+  variables:
+    KUBERNETES_MEMORY_REQUEST: "16Gi"
+    KUBERNETES_MEMORY_LIMIT: "20Gi"
+
 unit-tests-linux-amd64:
   extends: .linux-amd64-test-job-heavy
   stage: test
@@ -12,7 +21,7 @@ check-schema-overlay:
     - git diff --exit-code && test -z "$(git status --porcelain)" || (echo "Schema overlay output not up-to-date. Run 'make build-schema-overlay' locally and commit."; exit 1)
 
 property-tests-linux-amd64:
-  extends: .linux-amd64-test-job-heavy
+  extends: [.linux-amd64-test-job-heavy, .property-tests-memory]
   stage: test
   script:
     - make test-property
@@ -36,7 +45,7 @@ unit-tests-linux-arm64:
     - make test
 
 property-tests-linux-arm64:
-  extends: .linux-arm64-test-job-heavy
+  extends: [.linux-arm64-test-job-heavy, .property-tests-memory]
   stage: test
   script:
     - make test-property
