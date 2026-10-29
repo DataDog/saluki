@@ -2186,11 +2186,12 @@ inventory:
       Both lists default to empty, and both match-prefix settings default to `false`. Accepted
       runtime changes to any of these settings update filtering.
 
-      Entries are normalized before matching. The Datadog metrics intake rewrites metric names on
-      ingest, so a metric submitted as `my metric-name` is stored and displayed as `my_metric_name`.
-      ADP normalizes configured entries in the same way so operators can copy names directly from
-      traffic or from Datadog. Entries that can never match a stored name, including empty names,
-      names longer than 350 bytes, and names containing no ASCII letter, are dropped.
+      Entries are matched against the *normalized* metric name. The Datadog metrics intake rewrites
+      metric names on ingest, so a metric submitted as `my metric-name` is stored and displayed as
+      `my_metric_name`. Write entries as the metric name appears in Datadog: entries themselves are
+      matched as written, so an entry that is not itself a normalized name matches nothing. Metric
+      names the intake rejects outright, meaning empty names, names longer than 350 bytes, and names
+      containing no ASCII letter, never match.
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:
