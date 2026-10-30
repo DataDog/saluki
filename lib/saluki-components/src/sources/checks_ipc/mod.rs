@@ -346,6 +346,9 @@ fn proto_alert_type_to_alert_type(alert_type: ProtoAlertType) -> Option<AlertTyp
 }
 
 #[cfg(test)]
+mod logs_on_the_wire;
+
+#[cfg(test)]
 mod tests {
     use std::num::NonZeroUsize;
 
