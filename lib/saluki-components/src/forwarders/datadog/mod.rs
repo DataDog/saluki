@@ -11,7 +11,7 @@ use saluki_core::{
     data_model::payload::{PayloadMetadata, PayloadType},
     observability::ComponentMetricsExt as _,
 };
-use saluki_error::GenericError;
+use saluki_error::{ErrorContext as _, GenericError};
 use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 use tokio::select;
@@ -179,7 +179,10 @@ impl Forwarder for Datadog {
 
         // Both of these calls spawn supervised children of this component. When this run-future returns, the children
         // stop, and their drain has a time limit.
-        let mut validation = forwarder.api_key_validator().spawn();
+        let mut validation = forwarder
+            .api_key_validator()
+            .error_context("Failed to create API key validation client.")?
+            .spawn();
         let forwarder = forwarder.spawn();
 
         debug!("Datadog forwarder started.");
