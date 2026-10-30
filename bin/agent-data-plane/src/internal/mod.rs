@@ -10,4 +10,4 @@ mod remote_agent;
 pub use self::remote_agent::{AdpLocalConfig, AgentDataPlane};
 
 mod status;
-pub use self::status::DogStatsDStatusSection;
+pub use self::status::{DogStatsDStatusSection, ForwarderStatusSection};
