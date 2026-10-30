@@ -1,17 +1,31 @@
 //! Shared DogStatsD metric filterlist matcher.
 
-use agent_data_plane_config::domains::dogstatsd::{MetricFilter, MetricPrefixRule};
-
 use super::metric_name::{is_normalized, normalize_into, normalize_prefix_into, NameBuf};
 
 /// Metric names or prefixes that the DogStatsD filters drop.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MetricNameFilter {
-    /// Metric names or prefixes that are dropped. An empty list disables filtering.
+    /// Metric names or prefixes that are dropped.
     pub values: Vec<String>,
 
     /// Whether entries match by prefix rather than exact name.
     pub match_prefix: bool,
+
+    /// Additional prefix rules with exceptions shared across all rules.
+    pub prefix_rules: Vec<MetricPrefixRule>,
+}
+
+/// A metric-name prefix to drop, with exceptions shared across all prefix rules.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MetricPrefixRule {
+    /// Prefix to drop. An empty prefix matches every stored metric name.
+    pub prefix: String,
+
+    /// Prefixes to keep, unless blocked by the unconditional filter entries.
+    pub except_prefix: Vec<String>,
+
+    /// Exact names to keep, unless blocked by the unconditional filter entries.
+    pub except_exact: Vec<String>,
 }
 
 /// Compiled blocklist for metric names that should be filtered.
@@ -58,8 +72,8 @@ pub(super) struct CompilationReport {
     pub shadowed_rules: Vec<String>,
 }
 
-/// Compiles a runtime [`MetricFilter`] into a matcher.
-pub(super) fn compile_metric_filter(metric_filter: &MetricFilter) -> (Blocklist, CompilationReport) {
+/// Compiles a runtime [`MetricNameFilter`] into a matcher.
+pub(super) fn compile_metric_filter(metric_filter: &MetricNameFilter) -> (Blocklist, CompilationReport) {
     let (normalized_entries, dropped_entries) = normalize_entries(&metric_filter.values, metric_filter.match_prefix);
     let (normalized_rules, dropped_rules, dropped_exceptions) = normalize_prefix_rules(&metric_filter.prefix_rules);
 
@@ -620,7 +634,7 @@ mod tests {
 
     #[test]
     fn compile_metric_filter_normalizes_entries_and_rules() {
-        let metric_filter = MetricFilter {
+        let metric_filter = MetricNameFilter {
             values: vec!["my metric-name".to_string(), "123".to_string(), "service_".to_string()],
             match_prefix: false,
             prefix_rules: vec![rule("prefix.", &["prefix exact"], &["prefix-keep-"])],
@@ -648,7 +662,7 @@ mod tests {
 
     #[test]
     fn compile_metric_filter_prefix_mode_preserves_boundaries() {
-        let metric_filter = MetricFilter {
+        let metric_filter = MetricNameFilter {
             values: vec!["service_".to_string()],
             match_prefix: true,
             prefix_rules: Vec::new(),
@@ -665,7 +679,7 @@ mod tests {
 
     #[test]
     fn compile_metric_filter_drops_unusable_prefix_rule_but_keeps_others() {
-        let metric_filter = MetricFilter {
+        let metric_filter = MetricNameFilter {
             values: Vec::new(),
             match_prefix: false,
             prefix_rules: vec![

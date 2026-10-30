@@ -3,7 +3,7 @@
 use agent_data_plane_config::domains::{dogstatsd, multi_region_failover};
 
 use crate::components::{
-    dogstatsd_filterlist::MetricNameFilter,
+    dogstatsd_filterlist::{MetricNameFilter, MetricPrefixRule},
     metric_filter::MetricMirroring,
     tag_filterlist::{FilterAction, MetricTagFilterEntry, MetricTagValueAllowlistEntry, TagValueMismatchAction},
 };
@@ -13,6 +13,15 @@ pub(crate) fn metric_name_filter(filter: &dogstatsd::MetricFilter) -> MetricName
     MetricNameFilter {
         values: filter.values.clone(),
         match_prefix: filter.match_prefix,
+        prefix_rules: filter
+            .prefix_rules
+            .iter()
+            .map(|rule| MetricPrefixRule {
+                prefix: rule.prefix.clone(),
+                except_prefix: rule.except_prefix.clone(),
+                except_exact: rule.except_exact.clone(),
+            })
+            .collect(),
     }
 }
 
@@ -67,12 +76,22 @@ mod tests {
         let filter = metric_name_filter(&dogstatsd::MetricFilter {
             values: vec!["blocked.metric".to_string()],
             match_prefix: true,
+            prefix_rules: vec![dogstatsd::MetricPrefixRule {
+                prefix: "dropped.".to_string(),
+                except_prefix: vec!["dropped.keep.".to_string()],
+                except_exact: vec!["dropped.exact".to_string()],
+            }],
         });
 
         assert_eq!(
             MetricNameFilter {
                 values: vec!["blocked.metric".to_string()],
                 match_prefix: true,
+                prefix_rules: vec![MetricPrefixRule {
+                    prefix: "dropped.".to_string(),
+                    except_prefix: vec!["dropped.keep.".to_string()],
+                    except_exact: vec!["dropped.exact".to_string()],
+                }],
             },
             filter
         );

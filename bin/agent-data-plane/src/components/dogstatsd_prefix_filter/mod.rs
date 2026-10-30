@@ -307,6 +307,7 @@ mod tests {
                 metric_filter: Live::new_fixed(MetricNameFilter {
                     values: Vec::new(),
                     match_prefix: false,
+                    prefix_rules: Vec::new(),
                 }),
                 telemetry: FilterlistTelemetry::noop(),
             }
@@ -495,10 +496,10 @@ mod tests {
 
     #[test]
     fn typed_filter_prefix_rules_with_exceptions_are_applied() {
-        let metric_filter = Live::new_fixed(MetricFilter {
+        let metric_filter = Live::new_fixed(MetricNameFilter {
             values: vec!["exact.blocked".to_string()],
             match_prefix: false,
-            prefix_rules: vec![agent_data_plane_config::domains::dogstatsd::MetricPrefixRule {
+            prefix_rules: vec![crate::components::dogstatsd_filterlist::MetricPrefixRule {
                 prefix: "prefixed.".to_string(),
                 except_prefix: vec!["prefixed.keep.".to_string()],
                 except_exact: vec!["prefixed.keep.exact".to_string()],
@@ -523,10 +524,10 @@ mod tests {
 
     #[test]
     fn histogram_input_is_preserved_when_descendant_aggregate_output_is_excepted() {
-        let metric_filter = Live::new_fixed(MetricFilter {
+        let metric_filter = Live::new_fixed(MetricNameFilter {
             values: Vec::new(),
             match_prefix: false,
-            prefix_rules: vec![agent_data_plane_config::domains::dogstatsd::MetricPrefixRule {
+            prefix_rules: vec![crate::components::dogstatsd_filterlist::MetricPrefixRule {
                 prefix: "requests.".to_string(),
                 except_prefix: Vec::new(),
                 except_exact: vec!["requests.exact.keep.avg".to_string()],
@@ -546,10 +547,10 @@ mod tests {
 
     #[test]
     fn histogram_input_still_drops_when_metric_filterlist_exact_entry_matches() {
-        let metric_filter = Live::new_fixed(MetricFilter {
+        let metric_filter = Live::new_fixed(MetricNameFilter {
             values: vec!["requests.exact.keep".to_string()],
             match_prefix: false,
-            prefix_rules: vec![agent_data_plane_config::domains::dogstatsd::MetricPrefixRule {
+            prefix_rules: vec![crate::components::dogstatsd_filterlist::MetricPrefixRule {
                 prefix: "requests.".to_string(),
                 except_prefix: Vec::new(),
                 except_exact: vec!["requests.exact.keep.avg".to_string()],
@@ -565,10 +566,10 @@ mod tests {
 
     #[test]
     fn preserved_histogram_input_still_gets_namespace_prefix_applied() {
-        let metric_filter = Live::new_fixed(MetricFilter {
+        let metric_filter = Live::new_fixed(MetricNameFilter {
             values: Vec::new(),
             match_prefix: false,
-            prefix_rules: vec![agent_data_plane_config::domains::dogstatsd::MetricPrefixRule {
+            prefix_rules: vec![crate::components::dogstatsd_filterlist::MetricPrefixRule {
                 prefix: "tenant.requests.".to_string(),
                 except_prefix: Vec::new(),
                 except_exact: vec!["tenant.requests.exact.keep.avg".to_string()],
@@ -646,6 +647,27 @@ mod tests {
             .await;
 
         assert_eq!(kept(&control, output, &["foobar", "foo", "bar"]).await, ["bar"]);
+
+        publisher.publish(MetricNameFilter {
+            values: Vec::new(),
+            match_prefix: false,
+            prefix_rules: vec![crate::components::dogstatsd_filterlist::MetricPrefixRule {
+                prefix: "foo".to_string(),
+                except_prefix: vec!["foobar".to_string()],
+                except_exact: vec!["foo".to_string()],
+            }],
+        });
+        control
+            .wait_until(
+                || updates() == Some(2),
+                || "the prefix rule update is applied".to_string(),
+            )
+            .await;
+
+        assert_eq!(
+            kept(&control, output, &["foobar", "foo", "foobaz", "bar"]).await,
+            ["bar", "foo", "foobar"]
+        );
 
         control.shutdown().await.expect("prefix filter run should succeed");
     }

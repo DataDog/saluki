@@ -36,7 +36,7 @@ use saluki_components::{
         ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration, OtlpForwarderConfiguration,
         RoutingTargetCatalog,
     },
-    relays::{apm::ApmRelayConfiguration, otlp::OtlpRelayConfiguration},
+    relays::otlp::OtlpRelayConfiguration,
     sources::{
         ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDCaptureControl, DogStatsDConfiguration,
         DogStatsDReplayAPIHandler, DogStatsDReplayControl, EnablePayloadsConfiguration, ListenerRequirement,
@@ -58,8 +58,8 @@ use tracing::{debug, info, warn};
 
 use crate::{
     component_inputs::{
-        apm_stats_configuration, datadog_metrics_configuration, forwarder_configuration, metric_mirroring,
-        metric_name_filter, mrf_configuration, obfuscation_configuration, origin_tag_cardinality,
+        apm_relay_configuration, apm_stats_configuration, datadog_metrics_configuration, forwarder_configuration,
+        metric_mirroring, metric_name_filter, mrf_configuration, obfuscation_configuration, origin_tag_cardinality,
         otlp_context_settings, otlp_metrics_settings, otlp_receiver, otlp_traces_settings, ottl_error_mode,
         resolve_static_tags, tag_filter_entries, tag_value_allowlist, trace_configuration, trace_sampler_configuration,
     },
@@ -974,8 +974,12 @@ async fn add_apm_pipeline_to_blueprint(
     let config = config_system.config();
     // In standalone mode there is no workload provider, so the resolver finds nothing and the relay forwards requests
     // without a container ID
-    let dd_traces_relay = ApmRelayConfiguration::from_configuration(&config, datadog_agent_config::is_containerized())
-        .with_capture_entity_resolver(Arc::new(env_provider.workload().clone()));
+    let dd_traces_relay = apm_relay_configuration(
+        &config.domains.apm,
+        &config.shared,
+        datadog_agent_config::is_containerized(),
+        Some(Arc::new(env_provider.workload().clone())),
+    );
     blueprint
         .add_relay("dd_traces_relay", dd_traces_relay)?
         // The relay has no output path of its own, but a topology can't hold a component with no connections, so it

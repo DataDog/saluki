@@ -1441,7 +1441,6 @@ mod tests {
             time::Duration,
         };
 
-        use agent_data_plane_config::domains::dogstatsd::MetricFilter;
         use async_trait::async_trait;
         use saluki_common::sync::live::Live;
         use saluki_components::transforms::{
@@ -1464,6 +1463,7 @@ mod tests {
         use tokio::sync::{mpsc, oneshot};
 
         use super::*;
+        use crate::components::dogstatsd_filterlist::MetricNameFilter;
         use crate::components::{
             dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
             dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration,
@@ -1490,7 +1490,7 @@ mod tests {
                 let prefix_filter = DogStatsDPrefixFilterConfiguration::new(
                     "tenant".to_string(),
                     Vec::new(),
-                    Live::new_fixed(MetricFilter {
+                    Live::new_fixed(MetricNameFilter {
                         values: vec!["tenant.raw.blocked".to_string()],
                         match_prefix: false,
                         prefix_rules: Vec::new(),
@@ -1510,8 +1510,7 @@ mod tests {
                         replacement: "other".to_string(),
                     }],
                     0,
-                )
-                .expect("tag filter configuration should be valid");
+                );
                 let hist_config = HistogramConfiguration::try_new(
                     &[
                         "max".to_string(),
@@ -1669,8 +1668,7 @@ mod tests {
                     }]),
                     &[],
                     0,
-                )
-                .expect("tag filter configuration should be valid");
+                );
                 let hist_config = HistogramConfiguration::try_new(&[], &[], false, String::new())
                     .expect("histogram settings should be valid");
                 let (snapshot_handle, context_snapshot_receiver) = aggregate_context_snapshot_channel();
