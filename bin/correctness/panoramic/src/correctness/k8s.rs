@@ -396,6 +396,7 @@ pub async fn run_k8s_correctness_test(case: CorrectnessTestCase, tctx: TestConte
         comparison_data,
         traces_options,
     )
+    .with_logs_options(case.config.logs.clone())
     .with_dogstatsd_forwarding_requirement(case.config.require_dogstatsd_forwarded_packets);
     let analysis_result = analysis_runner.run_analysis();
     let analysis_duration = phase.elapsed();
