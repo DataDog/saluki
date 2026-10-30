@@ -359,6 +359,45 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn command_discovery_tracks_registration_session_changes() {
+        use datadog_protos::agent::command::v1::{
+            remote_command_provider_client::RemoteCommandProviderClient,
+            remote_command_provider_server::RemoteCommandProviderServer, ListCommandsRequest,
+        };
+
+        let session_id = datadog_agent_commons::ipc::session::SessionIdHandle::empty();
+        let service = RemoteCommandProviderImpl::new(
+            session_id.clone(),
+            Arc::new(arc_swap::ArcSwap::from_pointee(
+                agent_data_plane_config::SalukiConfiguration::default(),
+            )),
+        );
+        let mut client =
+            RemoteCommandProviderClient::new(tonic::service::Routes::new(RemoteCommandProviderServer::new(service)));
+
+        // Registration clears the shared handle on refresh failure and replaces it after re-registration.
+        for current in [None, Some("first-session"), None, Some("replacement-session")] {
+            session_id.update(current.map(|value| SessionId::new(value).expect("valid session ID")));
+            let response = client.list_commands(ListCommandsRequest {}).await;
+            match current {
+                Some(expected) => {
+                    let response = response.expect("registered command provider should be discoverable");
+                    assert_eq!(response.metadata().get("session_id").expect("session header"), expected);
+                    assert_eq!(response.into_inner().providers, vec![dogstatsd_command_provider()]);
+                }
+                None => {
+                    assert_eq!(
+                        response
+                            .expect_err("unregistered provider must reject discovery")
+                            .code(),
+                        tonic::Code::FailedPrecondition,
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn dropping_command_stream_cancels_execution() {
         let cancellation = CancellationToken::new();

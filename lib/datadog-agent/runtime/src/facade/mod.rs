@@ -20,7 +20,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use datadog_agent_commons::ipc::config::RemoteAgentClientConfiguration;
+use datadog_agent_commons::ipc::{config::RemoteAgentClientConfiguration, session::SessionIdHandle};
 use datadog_agent_remote_config::RemoteConfigurationClient;
 use saluki_app::{
     accounting::initialize_memory_bounds, bootstrap::BootstrapGuard, metrics::emit_startup_metrics,
@@ -34,6 +34,7 @@ use saluki_core::{
     topology::TopologyBlueprint,
 };
 use saluki_error::{ErrorContext as _, GenericError};
+use tonic::service::Routes;
 use tracing::{info, warn};
 
 use crate::{
@@ -137,7 +138,7 @@ where
             let client_config = local.client_configuration()?;
             let ra_bootstrap = async {
                 let secure_api_listen_address = local.advertised_secure_api_address()?;
-                RemoteAgentBootstrap::new(&client_config, &secure_api_listen_address).await
+                RemoteAgentBootstrap::new(&client_config, &secure_api_listen_address, R::ADDITIONAL_SERVICE_NAMES).await
             }
             .await
             .error_context("Failed to bootstrap remote agent state.")?;
@@ -314,13 +315,15 @@ where
     /// [`RemoteAgentBootstrap`]: it serves the status, flare, and telemetry services, and reports diagnostic events to
     /// the Datadog Agent.
     ///
-    /// `status_sections` and `telemetry_rules` are passed to [`RemoteAgentBootstrap::create_services_worker`].
+    /// `status_sections`, `telemetry_rules`, and `extend_services` are passed to
+    /// [`RemoteAgentBootstrap::create_services_worker`]. In standalone mode, `extend_services` is not called.
     ///
     /// # Errors
     ///
     /// If the supervisor can't be created, an error is returned.
     pub fn create_remote_agent_supervisor(
         &self, status_sections: Vec<Arc<dyn StatusSectionProvider>>, telemetry_rules: Vec<RemapperRule>,
+        extend_services: impl FnOnce(Routes, SessionIdHandle) -> Routes,
     ) -> Result<Supervisor, GenericError> {
         let mut supervisor = Supervisor::new("remote-agent")?.with_restart_strategy(RestartStrategy::one_to_one());
 
@@ -328,7 +331,11 @@ where
         if let Some(ra_bootstrap) = &self.inner.started.ra_bootstrap {
             supervisor.add_worker(ra_bootstrap.create_dataspace_anchor());
             supervisor.add_worker(ra_bootstrap.create_event_reporter());
-            supervisor.add_worker(ra_bootstrap.create_services_worker(status_sections, telemetry_rules));
+            supervisor.add_worker(ra_bootstrap.create_services_worker(
+                status_sections,
+                telemetry_rules,
+                extend_services,
+            ));
         }
 
         Ok(supervisor)
