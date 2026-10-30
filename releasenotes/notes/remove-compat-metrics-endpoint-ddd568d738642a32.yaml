@@ -1,0 +1,9 @@
+---
+upgrade:
+  - |
+    Remove the Agent Data Plane ``/compat/metrics`` endpoint. Scrapes of
+    this endpoint now return HTTP 404. For ADP-only telemetry, scrape
+    ``/metrics`` and update queries to use ADP-native metric names. For
+    metrics reported through the Core Agent, scrape ``/telemetry`` and
+    use the corresponding metric names. Neither endpoint is a drop-in
+    replacement for the removed compatibility aliases.

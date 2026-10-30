@@ -5,35 +5,24 @@ You can scrape this endpoint to collect ADP process, pipeline, and component met
 
 ## Endpoints
 
-ADP registers two internal telemetry routes:
-
-| Route             | Description                                                                                 |
-| ----------------- | ------------------------------------------------------------------------------------------- |
-| `/metrics`        | Full ADP internal telemetry, rendered as Prometheus/OpenMetrics text exposition.             |
-| `/compat/metrics` | ADP-only compatibility view with selected metrics under legacy-compatible aliases.          |
-
-The routes are served from `data_plane.api_listen_address`, also called the "unprivileged API
-address." The default address uses port `5100`, so a default local scrape target is:
+ADP serves its full internal telemetry at `/metrics` on `data_plane.api_listen_address`, also
+called the "unprivileged API address." The default address uses port `5100`, so a default local
+scrape target is:
 
 ```text
 http://127.0.0.1:5100/metrics
 ```
 
-Use `/metrics` when you want the complete ADP telemetry surface. Use `/compat/metrics` when you
-need the ADP-local compatibility aliases. `/compat/metrics` has its own naming scheme; it is not the
-same as the RAR metric names on the Core Agent's `/telemetry` endpoint or the names consumed by the
-`go_expvar` bridge.
-
-These are ADP-local endpoints. When ADP registers with the Core Agent, the Core Agent also exposes
+This is an ADP-local endpoint. When ADP registers with the Core Agent, the Core Agent also exposes
 ADP series on its own `/telemetry` endpoint alongside Core Agent series. Prefer the Core Agent
-endpoint when you want a combined view; use the ADP-local routes when you want ADP telemetry only.
+endpoint when you want a combined view; use ADP's `/metrics` endpoint when you want ADP telemetry only.
 ADP series on the Core Agent endpoint carry an `emitter` label so you can distinguish them from
 Core Agent series.
 
 > [!NOTE]
 > The Core Agent serves `/telemetry` even when `telemetry.enabled` is `false`. Enabling that key
 > adds other Core Agent telemetry; it is not a prerequisite for the combined scrape. ADP ignores
-> the key and registers its local `/metrics` and `/compat/metrics` routes independently.
+> the key and registers its local `/metrics` route independently.
 
 ## Configure a scrape
 
@@ -56,9 +45,6 @@ instances:
     metrics:
       - ".*"
 ```
-
-To scrape the compatibility view, change `openmetrics_endpoint` to
-`http://127.0.0.1:5100/compat/metrics`.
 
 For a combined Core Agent and ADP scrape, use the Core Agent's telemetry listener rather than
 `data_plane.api_listen_address`:
@@ -96,17 +82,6 @@ scrape_configs:
           - 127.0.0.1:5100
 ```
 
-To scrape the compatibility view, change `metrics_path` to `/compat/metrics`:
-
-```yaml
-scrape_configs:
-  - job_name: agent-data-plane-compat
-    metrics_path: /compat/metrics
-    static_configs:
-      - targets:
-          - 127.0.0.1:5100
-```
-
 To scrape the combined Core Agent and ADP view instead, target the Core Agent telemetry listener:
 
 ```yaml
@@ -136,9 +111,9 @@ configured host and port.
 The Core Agent's `/telemetry` endpoint includes ADP series alongside local Agent series. The
 bridge combines ADP and local values only for its explicit mappings; a metric on `/telemetry` does
 not automatically become an expvar. The table shows the legacy paths and RAR metric families
-used by the proposed bridge, including known gaps. These names are *not* the names from ADP's
-`/compat/metrics` endpoint. Paths below are relative to `/debug/vars`. The mappings identify
-series and selectors, not a guarantee that the two processes count every event at the same stage.
+used by the proposed bridge, including known gaps. Paths below are relative to `/debug/vars`.
+The mappings identify series and selectors, not a guarantee that the two processes count every
+event at the same stage.
 
 | Legacy expvar paths | ADP series on `/telemetry` | Fidelity and bridge status |
 | --- | --- | --- |
@@ -213,7 +188,7 @@ If you configured a non-default `data_plane.api_listen_address`, use that addres
 `127.0.0.1:5100`.
 
 If the endpoint returns data but dashboards do not populate, check whether the dashboard expects
-ADP-native names from `/metrics` or compatibility names from `/compat/metrics`.
+ADP-native names from `/metrics` or RAR names from the Core Agent's `/telemetry` endpoint.
 
 If you are investigating DogStatsD-specific counters, the internal telemetry endpoint includes
 aggregate DogStatsD counters such as processed message counts, packet and byte counts, packet pool

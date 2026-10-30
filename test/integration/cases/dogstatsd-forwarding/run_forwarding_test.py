@@ -29,10 +29,7 @@ DOGSTATSD_ADDR = ("127.0.0.1", 58125)
 DOGSTATSD_STREAM_ADDR = ("127.0.0.1", 9126)
 DOGSTATSD_UDS_PATH = "/tmp/dsd-forwarding.sock"
 DOGSTATSD_UDS_STREAM_PATH = "/tmp/dsd-forwarding-stream.sock"
-TELEMETRY_URLS = (
-    "http://127.0.0.1:55100/metrics",
-    "http://127.0.0.1:55100/compat/metrics",
-)
+TELEMETRY_URL = "http://127.0.0.1:55100/metrics"
 PROBE_TIMEOUT_SECS = 60
 PROBE_INTERVAL_SECS = 0.25
 SOCKET_TIMEOUT_SECS = 0.2
@@ -211,18 +208,18 @@ def poll_ingestion_telemetry():
     deadline = time.monotonic() + PROBE_TIMEOUT_SECS
 
     while not stop_event.is_set() and time.monotonic() < deadline:
-        for telemetry_url in TELEMETRY_URLS:
-            try:
-                with urllib.request.urlopen(telemetry_url, timeout=1) as response:
-                    body = response.read().decode("utf-8", errors="replace")
-            except Exception:
-                continue
+        try:
+            with urllib.request.urlopen(TELEMETRY_URL, timeout=1) as response:
+                body = response.read().decode("utf-8", errors="replace")
+        except Exception:
+            time.sleep(PROBE_INTERVAL_SECS)
+            continue
 
-            for line in body.splitlines():
-                if metric_parsed_line(line):
-                    with open(PARSED_METRIC_PATH, "w", encoding="utf-8") as output_file:
-                        output_file.write(line)
-                    return
+        for line in body.splitlines():
+            if metric_parsed_line(line):
+                with open(PARSED_METRIC_PATH, "w", encoding="utf-8") as output_file:
+                    output_file.write(line)
+                return
 
         time.sleep(PROBE_INTERVAL_SECS)
 
