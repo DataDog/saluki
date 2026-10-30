@@ -7,9 +7,9 @@
 //! The tests stop at the request the encoder builds. Headers that the forwarder adds when it sends a request, and the
 //! transport itself, aren't covered here.
 //!
-//! Today, each entry wraps the check's message in a JSON-encoded `{"message": ...}` object, carries one of the Agent's
-//! lowercase statuses, and gets an `@timestamp` from the encoder's clock. Check logs have no hostname, service, or
-//! source, so those keys are absent.
+//! Today, each entry wraps the check's message in a JSON-encoded `{"message": ...}` object, carries a lowercase
+//! status, and gets an `@timestamp` from the encoder's clock. Check logs have no hostname, service, or source, so
+//! those keys are absent.
 
 use std::time::Duration;
 

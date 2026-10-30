@@ -19,7 +19,7 @@ pub const SPAN_ID_ATTR_KEYS: &[&str] = &["spanid", "span_id", "contextmap.spanid
 
 static DEFAULT_SOURCE: MetaString = MetaString::from_static("otlp_log_ingestion");
 
-/// Derives a log's status the way the Agent's translator does (`transform.go`).
+/// Derives a log's status from its status attributes, severity text, and severity number.
 ///
 /// The status is the last status attribute (`status`, `severity`, `level`, or `syslog.severity`), then the severity
 /// text, then the name of the severity number's range, taking the first that isn't empty. Attribute and severity
@@ -34,7 +34,7 @@ pub fn derive_status(status: Option<&str>, severity_text: &str, severity_number:
     }
 }
 
-/// Returns the name of the range that a severity number falls in, as the Agent's `statusFromSeverityNumber` does.
+/// Returns the name of the range that a severity number falls in.
 ///
 /// The names follow the ranges of the OpenTelemetry log data model, and numbers above the last range are errors:
 /// <https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/logs/data-model.md#field-severitynumber>
@@ -368,7 +368,7 @@ mod tests {
     use super::{derive_status, status_from_severity_number};
 
     #[test]
-    fn derive_status_follows_the_agent_precedence() {
+    fn derive_status_follows_the_reference_precedence() {
         // (status attribute, severity text, severity number, status)
         let cases = [
             // The status attribute comes first, then the severity text, then the severity number.
@@ -400,10 +400,10 @@ mod tests {
     }
 
     #[test]
-    fn status_from_severity_number_matches_the_agent() {
-        // Ported from `TestDeriveStatus` in the Agent's `pkg/opentelemetry-mapping-go/otlp/logs/transform_test.go`:
+    fn status_from_severity_number_matches_the_reference() {
+        // Ported from `TestDeriveStatus` in the reference implementation:
         // https://github.com/DataDog/datadog-agent/blob/e0c8d8d93befb6864f13e2d88acbe13fb2d380b7/pkg/opentelemetry-mapping-go/otlp/logs/transform_test.go
-        // with the boundaries of every range, and negative numbers, which the Agent treats as trace.
+        // with the boundaries of every range, and negative numbers, which the reference implementation treats as trace.
         let cases = [
             (-1, "trace"),
             (1, "trace"),

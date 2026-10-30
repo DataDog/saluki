@@ -305,7 +305,7 @@ fn check_data_to_event(check_data: Data, default_hostname: &MetaString) -> Optio
     }
 }
 
-/// Returns the status of a check log, as one of the Agent's log statuses (`pkg/logs/message/status.go`).
+/// Returns the status of a check log, as one of the lowercase log statuses of the intake protocol.
 fn log_level_to_log_status(log_level: LogLevel) -> &'static str {
     match log_level {
         LogLevel::Trace => "trace",

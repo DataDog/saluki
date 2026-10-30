@@ -28,7 +28,7 @@ use crate::common::datadog::{
 
 const MAX_LOGS_PER_PAYLOAD: usize = 1000;
 
-/// The envelope status of a log that has none, as the Agent sends it (`message.StatusInfo`).
+/// The envelope status of a log that has none.
 const DEFAULT_STATUS: &str = "info";
 
 static CONTENT_TYPE_JSON: HeaderValue = HeaderValue::from_static("application/json");
@@ -195,7 +195,7 @@ impl LogsEndpointEncoder {
             serde_json::to_string(&JsonValue::Object(message_inner)).unwrap_or_else(|_| log.message().to_string());
         obj.insert("message".to_string(), JsonValue::String(message_str));
 
-        // Like the Agent's logs agent exporter, a log without a status is sent as `info`.
+        // A log without a status is sent as `info`.
         let status = if log.status().is_empty() {
             DEFAULT_STATUS
         } else {
