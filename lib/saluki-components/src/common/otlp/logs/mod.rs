@@ -12,25 +12,25 @@ enum ContentField<'a> {
     Value(&'a JsonValue),
 }
 
-/// Renders a translated OTLP log into its content, as the Agent's logs agent exporter does.
+/// Renders a translated OTLP log into the content of its log message.
 ///
-/// The Agent's translator returns a `datadogV2.HTTPLogItem`, and the exporter sends the item, without its `ddtags`, as
-/// the content of the log message, serialized by `HTTPLogItem.MarshalJSON`. The content holds:
+/// The content is the log as a `datadogV2.HTTPLogItem` without its `ddtags`, serialized by `HTTPLogItem.MarshalJSON`.
+/// It holds:
 ///
 /// - `hostname` and `service`, when the log has them, and `message`.
 /// - Every additional property, overwriting a top-level field of the same name. A `datadog.log.source` property, and a
 ///   `ddtags` property from a resource attribute, stay in the content.
-/// - `status`, the log's status, even when it's empty. The translator sets it after every other property, so it
-///   overwrites a `status` property.
+/// - `status`, the log's status, even when it's empty. It's set after every other property, so it overwrites a
+///   `status` property.
 ///
 /// The content is serialized as Go's `encoding/json` does, with sorted keys, Go's escaping, and Go's number formatting.
 ///
 /// # Errors
 ///
-/// If a property can't be serialized as Go serializes it, an error is returned. The Agent drops such logs.
+/// If a property can't be serialized as Go serializes it, an error is returned, and the log should be dropped.
 pub fn render_content(log: &Log) -> Result<String, GenericError> {
     // Go sorts map keys by their bytes, as `BTreeMap` orders `&str` keys. Later inserts overwrite earlier ones, in the
-    // order that the Agent's item assembles them.
+    // order that `HTTPLogItem.MarshalJSON` assembles them.
     let mut fields = BTreeMap::new();
     if !log.hostname().is_empty() {
         fields.insert("hostname", ContentField::String(log.hostname()));
@@ -107,7 +107,7 @@ mod tests {
     }
 
     #[test]
-    fn matches_the_agent_byte_for_byte() {
+    fn matches_the_reference_byte_for_byte() {
         let vectors: Vec<RenderVector> = serde_json::from_str(RENDER_VECTORS).expect("vectors should parse");
         assert!(!vectors.is_empty());
 

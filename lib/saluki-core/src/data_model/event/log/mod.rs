@@ -47,8 +47,8 @@ impl Log {
 
     /// Replaces the message with the log's rendered content.
     ///
-    /// The content is the message as it's sent, with the log's properties already in it, such as the JSON object that
-    /// the Agent sends for an OTLP log. The properties of the log are left as they are.
+    /// The content is the message as it's sent, with the log's properties already in it, such as a JSON object that
+    /// holds an OTLP log's attributes. The properties of the log are left as they are.
     pub fn with_rendered_content(mut self, content: impl Into<MetaString>) -> Self {
         self.message = content.into();
         self.message_is_content = true;

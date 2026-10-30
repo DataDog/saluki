@@ -1,11 +1,11 @@
 // Command generate-render-vectors writes the byte-exact test vectors for rendering OTLP log content.
 //
-// Each vector is a log as the Agent's OTLP logs translator returns it, and the message content that the Agent's logs
-// agent exporter sends for it: the `datadogV2.HTTPLogItem` without its `ddtags`, serialized by its own MarshalJSON.
-// The status is set as the last additional property, as the translator (`transform.go`) sets it.
+// Each vector is a translated OTLP log, and the message content for it: the `datadogV2.HTTPLogItem` without its
+// `ddtags`, serialized by its own MarshalJSON. The status is set as the last additional property, as the reference
+// translator (`transform.go`) sets it.
 //
 // The Go version and the datadog-api-client-go version are pinned in go.mod, and should match the versions that the
-// Datadog Agent builds with. Regenerate the vectors from the repository root with:
+// reference implementation builds with. Regenerate the vectors from the repository root with:
 //
 //	go -C lib/saluki-components/src/common/otlp/logs/testdata/generate-render-vectors run . \
 //	    > lib/saluki-components/src/common/otlp/logs/testdata/render_vectors.json
