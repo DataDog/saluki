@@ -1,7 +1,7 @@
 //! Characterization tests for check logs, from the Checks IPC data model to the Datadog logs encoder's request.
 //!
-//! These tests record what ADP sends for check logs today, byte for byte, rather than what the Agent sends. A change to
-//! the wire format should show up here as a change to an expected request or entry.
+//! These tests record what the encoder sends for check logs today, byte for byte. A change to the wire format should
+//! show up here as a change to an expected request or entry.
 //!
 //! Today, each entry wraps the check's message in a JSON-encoded `{"message": ...}` object, carries the capitalized
 //! status, and gets an `@timestamp` from the encoder's clock. Check logs have no hostname, service, or source, so
