@@ -877,12 +877,13 @@ async fn run_endpoint_io_loop<B>(
         .map_request(with_allow_arbitrary_tags(config.allow_arbitrary_tags))
         // Set the User-Agent and DD-Agent-Version headers indicating the version of the data plane sending the request.
         .map_request(with_version_info())
-        // Stamp logs requests with the send time. This runs on every attempt, so retries carry a fresh value.
-        .map_request(with_logs_current_timestamp())
         .concurrency_limit(config.effective_endpoint_concurrency())
         .layer(retry_circuit_breaker)
         .layer(build_diagnostics_layer(emitter, endpoint_url.clone()))
         .map_request(|req: Request<TransactionBody<B>>| req.map(into_client_body))
+        // Stamp logs requests with the send time, after any wait for a concurrency permit or the circuit breaker. This
+        // runs on every attempt, so retries carry a fresh value.
+        .map_request(with_logs_current_timestamp())
         .service(service);
 
     let retry = &config.retry;
