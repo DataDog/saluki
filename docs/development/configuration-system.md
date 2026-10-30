@@ -23,7 +23,7 @@ parsing, and defaults. The typed system places a translation boundary between co
                                                 SalukiConfiguration
                                                 { control, shared, domains }
                                                                     │
-                                           typed slices and Live<T> │
+                      binary adapters: component values and Live<T> │
                                                                     v
                                                          runtime components
 ```
@@ -37,6 +37,7 @@ A generated witness trait creates a compile-time obligation to translate every s
 |---|---|
 | Source-agnostic typed model | `lib/agent-data-plane-config/` |
 | `Live<T>`, a live view of a shared value, and the channel that publishes it | `lib/saluki-common/src/sync/live.rs` |
+| Adapters from the model to component inputs | `bin/agent-data-plane/src/component_inputs/` |
 | Loading, translation, authority, updates, compatibility | `lib/agent-data-plane-config-system/` |
 | Datadog source model, witness, classifier, environment decoding | `lib/datadog-agent/config/` |
 | Hand-edited ADP support inventory for Datadog schema keys | `lib/datadog-agent/config/schema/schema_overlay.yaml` |
@@ -62,17 +63,20 @@ The intended end state is:
 
 - `agent-data-plane-config` depends on neither the raw map nor the Datadog source model.
 - `agent-data-plane-config-system` bridges sources to the model and constructs no components.
-- `saluki-components` define their own input arguments and structs.
-- `bin/agent-data-plane` hands each component what it requires.
+- `saluki-components` and `bin/agent-data-plane/src/components/` never depend on `agent-data-plane-config`, not even
+  in tests.
+- The rest of `bin/agent-data-plane` adapts the model into the inputs each component defines.
 
-### The `saluki-components` dependency
+### Component inputs
 
-Components **SHOULD NOT** accept model types from `agent-data-plane-config`. The binary supplies values through
-fields or argument structs defined by the component. For live values, use `Live<T>` from `saluki-common`.
+Components define their inputs: concrete values, component-owned types, or a `Live<T>` of a component-owned `T`.
+They **MUST NOT** name model types, in production code or tests.
 
-Existing dependencies remain through model slices (`SharedConfiguration` and `domains::*`) and `defaults` constants.
-These are exceptions, not patterns for new migrations. `ConfigValue<T>` occurs within those slices; model methods such
-as `Endpoints::primary_endpoint` resolve provenance and return effective values.
+The binary converts the model with free functions in `bin/agent-data-plane/src/component_inputs/`, because the orphan
+rule forbids `From` implementations between the two crates' types. An adapter copies fields and calls model methods
+that resolve provenance, such as `Endpoints::primary_endpoint` and `Compression::effective_zstd_level`, so components
+receive effective values and never see `ConfigValue<T>`. Adapters add no defaults, parsing, or validation. Test each
+adapter with a distinct value in every field, so that a swapped field fails the test.
 
 ## Datadog versus Saluki keys
 
@@ -212,15 +216,21 @@ An inventory key marked `none` or `unknown`, or a key under `excluded`, is absen
    it. Components don't read `control`.
 5. Add any missing model, witness, or seed path with the workflows above.
 6. Delete `from_configuration`, and pick its replacement by the shape of the `*Configuration` struct:
-   - Fewer than four fields: `new(...)` taking concrete values.
-   - Four or more fields: make them `pub` and let the caller build the struct by field, with no constructor. Avoid
-     introducing a new arguments or settings struct, and don't implement `Default` or `Deserialize` on the
-     configuration struct.
-   - Runtime wiring the caller can't read out of configuration: have the caller create it and assign what the
-     component needs to a `pub` field. See `aggregate_context_snapshot_channel` and
-     `AggregateConfiguration::context_snapshot_receiver`.
-   - Values that change at runtime: pass a narrow `Live<T>`, and rebuild the reactive state after `changed()`. Values
-     that must change together belong in one `Live<T>`: separate views advance independently.
+   - Count every value the caller supplies, including runtime wiring the caller can't read out of configuration.
+   - Fewer than four values: `new(...)` taking concrete values, with private fields. Existing `with_*` wiring methods
+     stay.
+   - Four or more values: make the fields `pub` and let the caller build the struct by field, with no constructor.
+     Wiring becomes a `pub` field too: see `aggregate_context_snapshot_channel` and
+     `AggregateConfiguration::context_snapshot_receiver`. Avoid introducing a new arguments or settings struct, and
+     don't implement `Default` or `Deserialize` on the configuration struct.
+   - With `pub` fields, compute derived values and run input handling in `build()` or a private accessor, once per
+     build. Keep a `with_*` method only when it does more than set one field.
+   - Keep a constructor, whatever the count, when it does more than assign fields: it builds private types,
+     compiles or validates input, or decides which endpoints apply. Name it for what it builds.
+   - Values that change at runtime: pass a `Live<T>` of a component-owned `T`, and rebuild the reactive state after
+     `changed()`. Use `project` when the model value already has the right type, `map` when it must convert, and
+     `into_stream` for a stream of changed values without an initial value. Values that must change together belong
+     in one `Live<T>`: separate views advance independently.
 7. Remove source serde, Datadog key names, raw-map access, key watches, parsing, configuration defaults, and code made
    unused by the cutover. `#[allow(dead_code)]` isn't an acceptable way to keep migration residue.
 8. Update topology call sites and tests. Preserve behavior tests by using typed inputs, and remove tests only when they
@@ -246,7 +256,7 @@ For any configuration change, check the risks:
 - **Reachability**: every formerly configurable value still has a path from source to model to consumer.
 - **Defaults**: the effective default is unchanged, and is stated once in the configuration layer.
 - **Input handling**: parsing, coercion, normalization, and validation moved to the configuration layer.
-- **Model boundary**: components receive only the domain and shared slices they need.
+- **Model boundary**: components receive component-owned values, never model slices.
 - **Dynamic behavior**: startup and update paths construct the same reactive state from typed input.
 - **Test preservation**: deleting legacy deserialization coverage didn't delete behavioral coverage.
 

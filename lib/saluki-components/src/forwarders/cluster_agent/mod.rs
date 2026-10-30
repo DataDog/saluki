@@ -1,6 +1,5 @@
 //! Cluster Agent forwarder.
 
-use agent_data_plane_config::shared::SharedConfiguration;
 use async_trait::async_trait;
 use http::{
     header::AUTHORIZATION,
@@ -43,18 +42,18 @@ pub struct ClusterAgentForwarderConfiguration {
 }
 
 impl ClusterAgentForwarderConfiguration {
-    /// Creates a new `ClusterAgentForwarderConfiguration` from the given Cluster Agent endpoint and bearer token.
+    /// Creates a new `ClusterAgentForwarderConfiguration` that sends to the given Cluster Agent endpoint with a bearer
+    /// token, using the remaining settings of `forwarder`.
     ///
-    /// The Cluster Agent is the only destination this forwarder sends to: the configured Datadog
-    /// intake endpoints, the alternate metrics intakes, and dual shipping do not apply to it, and it
-    /// accepts only V2 series payloads. Because the destination is part of construction, no later
-    /// step can overwrite it.
+    /// The Cluster Agent is the only destination this forwarder sends to: the endpoints of `forwarder`, the alternate
+    /// metrics intakes, and dual shipping do not apply to it, it accepts only V2 series payloads, and it is not told
+    /// to allow arbitrary tag values. Because the destination is part of construction, no later step can overwrite it.
     ///
     /// # Errors
     ///
     /// Returns an error if the bearer token cannot be represented in an HTTP header.
-    pub fn from_configuration(
-        shared: &SharedConfiguration, endpoint_url: String, auth_token: String,
+    pub fn new(
+        forwarder: ForwarderConfiguration, endpoint_url: String, auth_token: String,
     ) -> Result<Self, GenericError> {
         let auth_header_value = bearer_auth_header_value(&auth_token)?;
         let destination = SingleDestination {
@@ -62,8 +61,8 @@ impl ClusterAgentForwarderConfiguration {
             api_key: auth_token,
             accepts_v3_series: false,
         };
-        let forwarder_config =
-            ForwarderConfiguration::for_single_destination(shared, &destination).with_allow_arbitrary_tags(false);
+        let mut forwarder_config = forwarder.for_single_destination(&destination);
+        forwarder_config.allow_arbitrary_tags = false;
 
         Ok(Self {
             forwarder_config,
@@ -110,13 +109,13 @@ impl MemoryBounds for ClusterAgentForwarderConfiguration {
             "in-flight requests",
             UsageExpr::config(
                 "forwarder_retry_queue_payloads_max_size",
-                self.forwarder_config.retry().queue_max_size_bytes() as usize,
+                self.forwarder_config.retry.queue_max_size_bytes as usize,
             ),
             UsageExpr::product(
                 "high priority queue",
                 UsageExpr::config(
                     "forwarder_high_prio_buffer_size",
-                    self.forwarder_config.endpoint_buffer_size(),
+                    self.forwarder_config.endpoint_buffer_size,
                 ),
                 UsageExpr::constant("maximum compressed payload size", DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT),
             ),
@@ -215,14 +214,15 @@ fn get_cluster_agent_endpoint_name(_uri: &Uri) -> Option<MetaString> {
 mod tests {
     use std::collections::HashMap;
 
-    use agent_data_plane_config::{
-        shared::{AltMetricsIntake, V3SeriesMode},
-        ConfigValue,
-    };
     use http::Method;
 
     use super::*;
-    use crate::common::datadog::{endpoints::EndpointRoute, test_util::shared_configuration};
+    use crate::common::datadog::{
+        config::OpwMetricsSettings,
+        endpoints::{EndpointConfiguration, EndpointRoute},
+        protocol::V3SeriesMode,
+        test_util::forwarder_configuration,
+    };
 
     #[test]
     fn request_mapper_preserves_cluster_agent_series_identity_and_sets_bearer_auth() {
@@ -259,31 +259,29 @@ mod tests {
     #[tokio::test]
     async fn configuration_uses_only_cluster_agent_endpoint() {
         // Every configured Datadog intake setting here conflicts with the Cluster Agent destination:
-        // a different API key, an explicit `dd_url`, a `site`, an additional endpoint, an alternate
-        // metrics intake, and V3 series routing. None of them may reach the built forwarder.
-        let mut shared = shared_configuration();
-        shared.endpoints.api_key = "primary-api-key".to_string();
-        shared.endpoints.site = ConfigValue::explicit("datadoghq.eu".to_string());
-        shared.endpoints.dd_url = ConfigValue::explicit("https://app.datadoghq.com".to_string());
-        shared.endpoints.additional_endpoints = HashMap::from([(
-            "https://additional.example.com".to_string(),
-            vec!["additional-api-key".to_string()],
-        )]);
-        shared.endpoints.opw_intake = AltMetricsIntake {
+        // a different API key and primary endpoint, an additional endpoint, an alternate metrics intake,
+        // V3 series routing, and arbitrary tags. None of them may reach the built forwarder.
+        let mut forwarder = forwarder_configuration();
+        forwarder.endpoint = EndpointConfiguration::new(
+            "primary-api-key".to_string(),
+            "https://app.datadoghq.com".to_string(),
+            HashMap::from([(
+                "https://additional.example.com".to_string(),
+                vec!["additional-api-key".to_string()],
+            )]),
+        );
+        forwarder.opw_metrics.observability_pipelines_worker = OpwMetricsSettings {
             enabled: true,
             url: "https://opw.example.com".to_string(),
             use_v3_series: true,
         };
-        shared.metrics_encoding.v3_series_mode = V3SeriesMode::Enabled;
-        shared.metrics_encoding.v3_series_endpoint_modes =
+        forwarder.use_v3_api.series.enabled = V3SeriesMode::Enabled;
+        forwarder.use_v3_api.series.endpoints =
             HashMap::from([("https://app.datadoghq.com".to_string(), V3SeriesMode::Enabled)]);
+        forwarder.allow_arbitrary_tags = true;
 
-        // The same configuration drives a plain Datadog forwarder, which does honor all of it.
-        let datadog_forwarder = ForwarderConfiguration::from_configuration(&shared);
-        assert_eq!(V3SeriesMode::Enabled, datadog_forwarder.use_v3_api_series().enabled);
-
-        let config = ClusterAgentForwarderConfiguration::from_configuration(
-            &shared,
+        let config = ClusterAgentForwarderConfiguration::new(
+            forwarder,
             "https://cluster-agent.example.com".to_string(),
             "secret-token".to_string(),
         )
@@ -302,9 +300,10 @@ mod tests {
         assert_eq!(&*endpoints[0].endpoint().api_key(), "secret-token");
         assert_eq!(
             V3SeriesMode::Disabled,
-            config.forwarder_config.use_v3_api_series().enabled
+            config.forwarder_config.use_v3_api.series.enabled
         );
-        assert!(config.forwarder_config.use_v3_api_series().endpoints.is_empty());
-        assert!(!config.forwarder_config.allow_arbitrary_tags());
+        assert!(config.forwarder_config.use_v3_api.series.endpoints.is_empty());
+        assert_eq!(None, config.forwarder_config.opw_metrics_v3_series_override());
+        assert!(!config.forwarder_config.allow_arbitrary_tags);
     }
 }

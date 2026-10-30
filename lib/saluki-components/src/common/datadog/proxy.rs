@@ -1,7 +1,6 @@
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use agent_data_plane_config::shared;
 use headers::Authorization;
 use hyper_http_proxy::{Intercept, Proxy};
 use saluki_error::GenericError;
@@ -13,17 +12,17 @@ use url::Url;
 pub struct ProxyConfiguration {
     /// The proxy server for HTTP requests.
     ///
-    /// Defaults to unset, meaning HTTP requests are not proxied.
-    http: Option<String>,
+    /// If empty, HTTP requests are not proxied.
+    pub http: String,
 
     /// The proxy server for HTTPS requests.
     ///
-    /// Defaults to unset, meaning HTTPS requests are not proxied.
-    https: Option<String>,
+    /// If empty, HTTPS requests are not proxied.
+    pub https: String,
 
     /// List of hosts that should bypass the proxy.
     ///
-    /// Defaults to empty. Each entry can be one of:
+    /// Each entry can be one of:
     ///
     /// - An exact IP address: `192.168.1.1` or `::1`. An optional port suffix (`192.168.1.1:8080`)
     ///   restricts the match to that port only; without a port, all ports match.
@@ -37,18 +36,18 @@ pub struct ProxyConfiguration {
     ///   only, not the domain itself (for example, `.example.com` matches `sub.example.com` but not
     ///   `example.com`).
     /// - A wildcard `*`: bypasses the proxy for all destinations. Only used in nonexact mode.
-    no_proxy: Vec<String>,
+    pub no_proxy: Vec<String>,
 
     /// When true, `no_proxy` uses full domain/CIDR/wildcard matching, mirroring the behavior of Go's
     /// [`golang.org/x/net/http/httpproxy`](https://pkg.go.dev/golang.org/x/net/http/httpproxy) package.
-    /// When false (the default), only exact host matches are applied; suffix and CIDR entries are ignored.
-    no_proxy_nonexact_match: bool,
+    /// When false, only exact host matches are applied; suffix and CIDR entries are ignored.
+    pub no_proxy_nonexact_match: bool,
 
     /// When true, proxy settings apply to requests for cloud provider metadata endpoints.
     ///
-    /// When false (the default), the well-known cloud metadata addresses are automatically added to
-    /// the `no_proxy` list so they always bypass the proxy.
-    use_proxy_for_cloud_metadata: bool,
+    /// When false, the well-known cloud metadata addresses are automatically added to the `no_proxy` list so they
+    /// always bypass the proxy.
+    pub use_proxy_for_cloud_metadata: bool,
 }
 
 /// Well-known cloud provider metadata endpoint addresses that bypass the proxy by default.
@@ -58,19 +57,6 @@ const CLOUD_METADATA_ADDRS: &[&str] = &[
 ];
 
 impl ProxyConfiguration {
-    /// Creates a new `ProxyConfiguration` from the resolved proxy configuration.
-    ///
-    /// An empty proxy URL means the corresponding scheme is not proxied.
-    pub fn from_configuration(proxy: &shared::Proxy) -> Self {
-        Self {
-            http: non_empty(&proxy.http),
-            https: non_empty(&proxy.https),
-            no_proxy: proxy.no_proxy.clone(),
-            no_proxy_nonexact_match: proxy.no_proxy_nonexact_match,
-            use_proxy_for_cloud_metadata: proxy.use_proxy_for_cloud_metadata,
-        }
-    }
-
     /// Builds the configured proxies.
     ///
     /// Each proxy uses a custom intercept that forwards only requests matching the proxy's scheme
@@ -93,7 +79,7 @@ impl ProxyConfiguration {
 
         let mut proxies = Vec::new();
 
-        if let Some(url) = &self.http {
+        if let Some(url) = non_empty(&self.http) {
             let m = Arc::clone(&matcher);
             let intercept = Intercept::from(move |scheme: Option<&str>, host: Option<&str>, port: Option<u16>| {
                 scheme == Some("http") && !host.is_some_and(|h| m.matches(h, port))
@@ -101,7 +87,7 @@ impl ProxyConfiguration {
             proxies.push(new_proxy(url, intercept)?);
         }
 
-        if let Some(url) = &self.https {
+        if let Some(url) = non_empty(&self.https) {
             let m = Arc::clone(&matcher);
             let intercept = Intercept::from(move |scheme: Option<&str>, host: Option<&str>, port: Option<u16>| {
                 scheme == Some("https") && !host.is_some_and(|h| m.matches(h, port))
@@ -114,8 +100,8 @@ impl ProxyConfiguration {
 }
 
 /// Returns the value unless it is empty, in which case the setting is not configured.
-fn non_empty(value: &str) -> Option<String> {
-    (!value.is_empty()).then(|| value.to_string())
+fn non_empty(value: &str) -> Option<&str> {
+    (!value.is_empty()).then_some(value)
 }
 
 fn new_proxy(proxy_url: &str, intercept: Intercept) -> Result<Proxy, GenericError> {
@@ -315,27 +301,37 @@ mod tests {
 
     use super::*;
 
-    fn proxy_configuration(proxy: shared::Proxy) -> ProxyConfiguration {
-        ProxyConfiguration::from_configuration(&proxy)
+    fn unproxied() -> ProxyConfiguration {
+        ProxyConfiguration {
+            http: String::new(),
+            https: String::new(),
+            no_proxy: Vec::new(),
+            no_proxy_nonexact_match: false,
+            use_proxy_for_cloud_metadata: false,
+        }
     }
 
     fn matcher(entries: &[&str], nonexact: bool) -> NoProxyMatcher {
         NoProxyMatcher::new(&entries.iter().map(|s| s.to_string()).collect::<Vec<_>>(), nonexact)
     }
 
-    // --- construction from resolved configuration ---
+    // --- construction ---
 
     #[test]
     fn an_empty_proxy_url_is_not_configured() {
-        let config = proxy_configuration(shared::Proxy {
-            http: String::new(),
+        let config = ProxyConfiguration {
             https: "http://proxy.example.com:3128".to_string(),
-            ..Default::default()
-        });
+            ..unproxied()
+        };
 
-        assert_eq!(None, config.http);
-        assert_eq!(Some("http://proxy.example.com:3128".to_string()), config.https);
-        assert_eq!(1, config.build().expect("should build").len());
+        let proxies = config.build().expect("should build");
+        assert_eq!(1, proxies.len());
+        assert!(!proxies[0]
+            .intercept()
+            .matches(&"http://example.com/".parse::<hyper::Uri>().unwrap()));
+        assert!(proxies[0]
+            .intercept()
+            .matches(&"https://example.com/".parse::<hyper::Uri>().unwrap()));
     }
 
     // --- wildcard ---
@@ -513,11 +509,11 @@ mod tests {
     // --- cloud metadata defaults ---
 
     fn proxy_config_with_cloud_flag(use_proxy: bool) -> ProxyConfiguration {
-        proxy_configuration(shared::Proxy {
+        ProxyConfiguration {
             http: "http://proxy.example.com:3128".to_string(),
             use_proxy_for_cloud_metadata: use_proxy,
-            ..Default::default()
-        })
+            ..unproxied()
+        }
     }
 
     #[test]
@@ -585,11 +581,11 @@ mod tests {
     }
 
     fn proxy_config_for_routing(proxy_http: &str, no_proxy: &[&str]) -> ProxyConfiguration {
-        proxy_configuration(shared::Proxy {
+        ProxyConfiguration {
             http: proxy_http.to_string(),
             no_proxy: no_proxy.iter().map(|entry| entry.to_string()).collect(),
-            ..Default::default()
-        })
+            ..unproxied()
+        }
     }
 
     #[tokio::test]
@@ -681,10 +677,10 @@ mod tests {
         // handshake will fail after the tunnel is established (no real server behind it), but
         // receiving the CONNECT confirms the request was routed through the proxy.
         let (proxy_port, mut rx) = start_mock_connect_proxy().await;
-        let config = proxy_configuration(shared::Proxy {
+        let config = ProxyConfiguration {
             https: format!("http://127.0.0.1:{proxy_port}"),
-            ..Default::default()
-        });
+            ..unproxied()
+        };
         let proxies = config.build().unwrap();
 
         let mut client = saluki_io::net::client::http::HttpClient::builder()
@@ -718,11 +714,11 @@ mod tests {
         // the proxy. We verify this by asserting the proxy receives no CONNECT request.
         let (proxy_port, mut rx) = start_mock_connect_proxy().await;
         let direct_port = start_mock_http_server(http::StatusCode::OK).await;
-        let config = proxy_configuration(shared::Proxy {
+        let config = ProxyConfiguration {
             https: format!("http://127.0.0.1:{proxy_port}"),
             no_proxy: vec![format!("127.0.0.1:{direct_port}")],
-            ..Default::default()
-        });
+            ..unproxied()
+        };
         let proxies = config.build().unwrap();
 
         let mut client = saluki_io::net::client::http::HttpClient::builder()

@@ -1,6 +1,5 @@
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
-use agent_data_plane_config::domains::otlp::Contexts;
 use saluki_core::{
     components::ComponentContext,
     data_model::event::metric::context::{ContextResolver, ContextResolverBuilder, TagsResolverBuilder},
@@ -12,6 +11,22 @@ use crate::sources::otlp::OtlpOriginTagResolver;
 
 const RESOLVER_CACHE_EXPIRATION: Duration = Duration::from_secs(30);
 
+/// Settings of the context resolver for OTLP metrics and logs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OtlpContextSettings {
+    /// Whether contexts may allocate on the heap when the string interner is full.
+    pub allow_context_heap_allocs: bool,
+
+    /// Maximum number of cached contexts.
+    pub cached_contexts_limit: usize,
+
+    /// Maximum number of cached tag sets.
+    pub cached_tagsets_limit: usize,
+
+    /// Size of the context string interner, in bytes. Must be greater than `0`.
+    pub string_interner_size: u64,
+}
+
 /// Creates a new `ContextResolver` instance from the given configuration.
 ///
 /// # Errors
@@ -19,7 +34,8 @@ const RESOLVER_CACHE_EXPIRATION: Duration = Duration::from_secs(30);
 /// If the context resolver string interner size is invalid, or there is an error creating either of the context
 /// resolvers, an error is returned.
 pub fn build_context_resolver(
-    contexts: &Contexts, context: &ComponentContext, maybe_origin_tags_resolver: Option<OtlpOriginTagResolver>,
+    contexts: &OtlpContextSettings, context: &ComponentContext,
+    maybe_origin_tags_resolver: Option<OtlpOriginTagResolver>,
 ) -> Result<ContextResolver, GenericError> {
     let context_string_interner_size = NonZeroUsize::new(contexts.string_interner_size as usize)
         .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))?;

@@ -2,7 +2,6 @@
 
 use std::time::Duration;
 
-use agent_data_plane_config::shared::SharedConfiguration;
 use async_trait::async_trait;
 use datadog_protos::traces::{
     ClientGroupedStats as ProtoClientGroupedStats, ClientStatsBucket as ProtoClientStatsBucket,
@@ -55,13 +54,14 @@ pub struct DatadogApmStatsEncoderConfiguration {
 }
 
 impl DatadogApmStatsEncoderConfiguration {
-    /// Creates a new `DatadogApmStatsEncoderConfiguration` from the resolved configuration.
+    /// Creates a new `DatadogApmStatsEncoderConfiguration`.
     ///
-    /// Each payload carries `agent_env` as its agent environment.
-    pub fn from_configuration(shared: &SharedConfiguration, agent_env: AgentEnv) -> Self {
+    /// The encoder waits up to `flush_timeout` before flushing a partially filled payload; a zero duration flushes
+    /// almost immediately. Each payload carries `agent_env` as its agent environment.
+    pub fn new(flush_timeout: Duration, agent_env: AgentEnv) -> Self {
         let app_details = saluki_metadata::get_app_details();
         Self {
-            flush_timeout: shared.metrics_encoding.flush_timeout,
+            flush_timeout,
             agent_hostname: None,
             agent_version: format!("agent-data-plane/{}", app_details.version().raw()),
             agent_env,
@@ -459,8 +459,7 @@ mod tests {
             (AgentEnv::resolve(Some("!!!"), None, &[], &[]), ""),
         ];
         for (agent_env, expected) in cases {
-            let config =
-                DatadogApmStatsEncoderConfiguration::from_configuration(&SharedConfiguration::default(), agent_env);
+            let config = DatadogApmStatsEncoderConfiguration::new(Duration::from_secs(2), agent_env);
             let mut buf = Vec::new();
             config
                 .endpoint_encoder()

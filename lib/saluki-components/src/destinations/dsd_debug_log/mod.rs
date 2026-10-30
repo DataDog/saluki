@@ -230,7 +230,6 @@ mod tests {
         time::Duration,
     };
 
-    use agent_data_plane_config::SalukiConfiguration;
     use saluki_common::sync::live::Live;
     use saluki_core::{
         components::test_util::TestComponentDriver,
@@ -309,9 +308,10 @@ mod tests {
     async fn run_starts_and_stops_logging_with_metrics_stats_setting() {
         let tempdir = tempdir().expect("temporary directory should be created");
         let log_file = tempdir.path().join("dogstatsd-stats.log");
-        let (mut publisher, source) = saluki_common::sync::live::channel(SalukiConfiguration::default());
+        // Stands in for the shared source the setting is projected out of.
+        let (mut publisher, source) = saluki_common::sync::live::channel(false);
         let mut config = test_config(log_file.clone(), 64_000, 3);
-        config.metrics_stats_enabled = source.live(|config| &config.domains.dogstatsd.debug_log.metrics_stats_enable);
+        config.metrics_stats_enabled = source.live(|enabled| enabled);
         let log_file_max_rolls = config.log_file_max_rolls;
         let control = TestComponentDriver::destination(config)
             .await
@@ -321,9 +321,7 @@ mod tests {
         control.wait_until_input_drained().await;
         assert!(!log_file.exists());
 
-        let mut updated = (*source.load()).clone();
-        updated.domains.dogstatsd.debug_log.metrics_stats_enable = true;
-        publisher.publish(updated);
+        publisher.publish(true);
 
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
@@ -337,9 +335,7 @@ mod tests {
         .await
         .expect("metrics should be logged after the runtime setting is enabled");
 
-        let mut updated = (*source.load()).clone();
-        updated.domains.dogstatsd.debug_log.metrics_stats_enable = false;
-        publisher.publish(updated);
+        publisher.publish(false);
 
         let line_count_after_disable = tokio::time::timeout(Duration::from_secs(2), async {
             let mut previous_line_count = read_log_files(&log_file, log_file_max_rolls).lines().count();

@@ -15,10 +15,6 @@ mod telemetry;
 
 use std::{collections::hash_map::Entry, num::NonZeroUsize, time::Duration};
 
-use agent_data_plane_config::domains::dogstatsd::{
-    validate_metric_tag_value_allowlists, FilterAction, MetricTagFilterEntry, MetricTagValueAllowlistEntry,
-    TagValueMismatchAction,
-};
 use async_trait::async_trait;
 use saluki_common::collections::{FastHashMap, FastHashSet};
 use saluki_common::sync::live::Live;
@@ -42,10 +38,64 @@ use saluki_core::{
     observability::ComponentMetricsExt,
     topology::OutputDefinition,
 };
-use saluki_error::{generic_error, GenericError};
+use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
 use tokio::select;
 use tracing::{debug, error};
+
+/// One whole-tag filter entry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MetricTagFilterEntry {
+    /// Metric name the entry applies to. An entry with an empty name is ignored.
+    pub metric_name: String,
+
+    /// Whether the listed tags are kept or removed.
+    pub action: FilterAction,
+
+    /// Tag keys the action applies to.
+    pub tags: Vec<String>,
+}
+
+/// Whether a whole-tag filter entry keeps or removes its tags.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FilterAction {
+    /// Keep only the listed tags.
+    Include,
+
+    /// Remove the listed tags.
+    Exclude,
+}
+
+/// One tag value allow-list entry.
+///
+/// Matching is exact and case-sensitive, including any whitespace.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MetricTagValueAllowlistEntry {
+    /// Metric-name prefix the entry applies to.
+    pub metric_prefix: String,
+
+    /// Tag key whose values are constrained. Bare tags have no value and are not changed.
+    pub tag_name: String,
+
+    /// Tag values retained unchanged. An empty list treats every key/value tag as a mismatch.
+    pub values: Vec<String>,
+
+    /// Action applied when a tag value is absent from `values`.
+    pub on_miss: TagValueMismatchAction,
+
+    /// Replacement value used when `on_miss` is [`Replace`][TagValueMismatchAction::Replace], emitted as configured.
+    pub replacement: String,
+}
+
+/// Action applied when a tag value is absent from its allow-list.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TagValueMismatchAction {
+    /// Removes the tag.
+    Remove,
+
+    /// Replaces the tag value with the entry's replacement.
+    Replace,
+}
 
 const CONTEXT_CACHE_TTI: Duration = Duration::from_secs(30);
 const CONTEXT_CACHE_EXPIRATION_INTERVAL: Duration = Duration::from_secs(1);
@@ -171,17 +221,8 @@ pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> CompiledFilters {
 /// Adds value allow-list entries to a compiled filter table.
 ///
 /// Distinct metric prefixes must not overlap, ensuring that each metric matches at most one prefix. Multiple rules may
-/// use the same prefix when they target different tags.
-///
-/// # Errors
-///
-/// Returns an error when an entry has invalid fields, distinct metric prefixes overlap, or the same prefix and tag are
-/// configured more than once.
-pub fn add_value_allowlists(
-    filters: &mut CompiledFilters, entries: &[MetricTagValueAllowlistEntry],
-) -> Result<(), GenericError> {
-    validate_metric_tag_value_allowlists(entries).map_err(|error| generic_error!(error.to_string()))?;
-
+/// use the same prefix when they target different tags. The configuration boundary validates entries; this does not.
+pub fn add_value_allowlists(filters: &mut CompiledFilters, entries: &[MetricTagValueAllowlistEntry]) {
     for entry in entries {
         let on_miss = match entry.on_miss {
             TagValueMismatchAction::Remove => CompiledMismatchAction::Remove,
@@ -216,15 +257,14 @@ pub fn add_value_allowlists(
     }
 
     filters.value_prefix_filters.sort();
-    Ok(())
 }
 
 fn compile_all_filters(
     entries: &[MetricTagFilterEntry], value_allowlists: &[MetricTagValueAllowlistEntry],
-) -> Result<CompiledFilters, GenericError> {
+) -> CompiledFilters {
     let mut filters = compile_filters(entries);
-    add_value_allowlists(&mut filters, value_allowlists)?;
-    Ok(filters)
+    add_value_allowlists(&mut filters, value_allowlists);
+    filters
 }
 
 fn compile_filters_with_values(
@@ -247,9 +287,8 @@ pub struct TagFilterlistConfiguration {
     /// Compiled per-metric-prefix tag value allow-list rules.
     ///
     /// Configured independently from `metric_tag_filterlist` so a remotely configured whole-tag filter does not
-    /// replace locally configured value rules. This key is static in the initial implementation; changing it requires
-    /// restarting ADP. The configuration boundary rejects invalid rules, and construction compiles them once so
-    /// dynamic whole-tag updates cannot fail on unchanged static configuration.
+    /// replace locally configured value rules. This key is static: changing it requires restarting ADP. Construction
+    /// compiles the rules once.
     value_prefix_filters: CompiledValuePrefixFilters,
 
     /// Maximum number of entries in the per-context deduplication cache used by the tag filter.
@@ -257,27 +296,24 @@ pub struct TagFilterlistConfiguration {
     /// Configured via `data_plane.dogstatsd.aggregator_tag_filter_cache_capacity` in the agent config
     /// stream. High-throughput deployments with many unique metric contexts may benefit from
     /// increasing this value to reduce cache churn.
-    ///
-    /// Defaults to 100,000.
     context_cache_capacity: usize,
 }
 
 impl TagFilterlistConfiguration {
     /// Creates a new `TagFilterlistConfiguration`.
     ///
-    /// # Errors
-    ///
-    /// Returns an error when the initial value allow-list rules are invalid.
+    /// `value_allowlists` must already be valid: distinct metric prefixes don't overlap, and each prefix and tag pair
+    /// appears once. The configuration boundary rejects invalid rules, at startup and on update.
     pub fn new(
         entries: Live<Vec<MetricTagFilterEntry>>, value_allowlists: &[MetricTagValueAllowlistEntry],
         context_cache_capacity: usize,
-    ) -> Result<Self, GenericError> {
-        let value_prefix_filters = compile_all_filters(&[], value_allowlists)?.value_prefix_filters;
-        Ok(Self {
+    ) -> Self {
+        let value_prefix_filters = compile_all_filters(&[], value_allowlists).value_prefix_filters;
+        Self {
             entries,
             value_prefix_filters,
             context_cache_capacity,
-        })
+        }
     }
 }
 
@@ -648,8 +684,7 @@ mod tests {
                 TagValueMismatchAction::Remove,
                 "other",
             )],
-        )
-        .expect("valid value rules should compile");
+        );
         let mut state = TagSetMutViewState::default();
 
         let mut allowed = counter_metric("my.metric", &["customer_id:top-1", "service:web"]);
@@ -685,8 +720,7 @@ mod tests {
                 TagValueMismatchAction::Replace,
                 "other",
             )],
-        )
-        .expect("valid value rules should compile");
+        );
         let mut metric = distribution_metric(
             "my.metric",
             &[
@@ -717,8 +751,7 @@ mod tests {
                 TagValueMismatchAction::Remove,
                 "other",
             )],
-        )
-        .expect("valid value rules should compile");
+        );
         let mut unlisted_empty = counter_metric("my.metric", &["customer_id", "customer_id:", "service:web"]);
 
         assert_eq!(
@@ -736,8 +769,7 @@ mod tests {
                 TagValueMismatchAction::Remove,
                 "other",
             )],
-        )
-        .expect("valid value rules should compile");
+        );
         let mut listed_empty = counter_metric("my.metric", &["customer_id", "customer_id:", "service:web"]);
 
         assert_eq!(
@@ -761,8 +793,7 @@ mod tests {
                 TagValueMismatchAction::Replace,
                 "other",
             )],
-        )
-        .expect("valid value rules should compile");
+        );
         let mut metric = distribution_metric_with_origin_tags(
             "my.metric",
             &[],
@@ -781,52 +812,6 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_value_allowlist_prefixes_are_rejected_across_tags() {
-        let broad = value_allowlist(
-            "my.",
-            "customer_id",
-            &["top-1"],
-            TagValueMismatchAction::Replace,
-            "other",
-        );
-        let narrow = value_allowlist(
-            "my.metric",
-            "region",
-            &["us-east-1"],
-            TagValueMismatchAction::Replace,
-            "other",
-        );
-
-        let error = compile_all_filters(&[], &[broad, narrow])
-            .err()
-            .expect("overlapping distinct prefixes must fail even for different tags");
-        assert!(error
-            .to_string()
-            .contains("overlapping metric prefixes 'my.' and 'my.metric' are configured"));
-
-        let duplicate = value_allowlist(
-            "my.",
-            "customer_id",
-            &["top-2"],
-            TagValueMismatchAction::Replace,
-            "other",
-        );
-        let error = compile_all_filters(
-            &[],
-            &[
-                value_allowlist("my.", "customer_id", &[], TagValueMismatchAction::Remove, "other"),
-                value_allowlist("my.", "region", &[], TagValueMismatchAction::Remove, "other"),
-                duplicate,
-            ],
-        )
-        .err()
-        .expect("duplicate prefix and tag pairs must fail");
-        assert!(error
-            .to_string()
-            .contains("metric prefix 'my.' is configured more than once for tag 'customer_id'"));
-    }
-
-    #[test]
     fn same_value_allowlist_prefix_for_different_tags_applies_both_rules() {
         let filters = compile_all_filters(
             &[],
@@ -840,8 +825,7 @@ mod tests {
                 ),
                 value_allowlist("my.", "region", &["us-east-1"], TagValueMismatchAction::Remove, "other"),
             ],
-        )
-        .expect("different tags may use the same prefix");
+        );
         let mut metric = distribution_metric("my.metric.requests", &["customer_id:long-tail", "region:us-west-2"]);
         let mut state = TagSetMutViewState::default();
 
@@ -850,30 +834,6 @@ mod tests {
             FilterMetricTagsOutcome::Modified { removed_tags: 2 }
         );
         assert!(tag_names(&metric).is_empty());
-    }
-
-    #[test]
-    fn empty_value_allowlist_prefixes_and_tag_names_are_rejected() {
-        let empty_prefix = value_allowlist("", "customer_id", &[], TagValueMismatchAction::Remove, "other");
-        let error = compile_all_filters(&[], &[empty_prefix])
-            .err()
-            .expect("an empty metric prefix must fail");
-        assert!(error.to_string().contains("empty `metric_prefix`"));
-
-        let empty_tag_name = value_allowlist("my.", "", &[], TagValueMismatchAction::Remove, "other");
-        let error = compile_all_filters(&[], &[empty_tag_name])
-            .err()
-            .expect("an empty tag name must fail");
-        assert!(error.to_string().contains("empty `tag_name`"));
-    }
-
-    #[test]
-    fn value_allowlist_rejects_tag_names_containing_a_colon() {
-        let entry = value_allowlist("my.", "customer:id", &[], TagValueMismatchAction::Remove, "other");
-        let error = compile_all_filters(&[], &[entry])
-            .err()
-            .expect("a tag name containing a colon must fail");
-        assert!(error.to_string().contains("tag name 'customer:id' contains ':'"));
     }
 
     #[test]
@@ -887,8 +847,7 @@ mod tests {
                 TagValueMismatchAction::Replace,
                 " other ",
             )],
-        )
-        .expect("valid value rules should compile");
+        );
         let mut state = TagSetMutViewState::default();
 
         let mut allowed = distribution_metric("my. requests", &["customer_id : top-1 "]);
@@ -918,7 +877,7 @@ mod tests {
             value_allowlist("my.", "region", &[], TagValueMismatchAction::Remove, "other"),
         ];
 
-        let filters = compile_all_filters(&key_entries, &value_entries).expect("rules should compile");
+        let filters = compile_all_filters(&key_entries, &value_entries);
         assert_eq!(filters.rule_count(), 3);
     }
 
@@ -1293,9 +1252,8 @@ mod tests {
             ))
         };
 
-        let (mut publisher, source) =
-            saluki_common::sync::live::channel(agent_data_plane_config::SalukiConfiguration::default());
-        let entries = source.live(|config| &config.domains.dogstatsd.tag_filterlist);
+        let (mut publisher, source) = saluki_common::sync::live::channel(Vec::<MetricTagFilterEntry>::new());
+        let entries = source.live(|entries| entries);
         let value_allowlists = [value_allowlist(
             "my.",
             "customer_id",
@@ -1303,8 +1261,7 @@ mod tests {
             TagValueMismatchAction::Remove,
             "other",
         )];
-        let builder = TagFilterlistConfiguration::new(entries, &value_allowlists, 100_000)
-            .expect("typed configuration should be valid");
+        let builder = TagFilterlistConfiguration::new(entries, &value_allowlists, 100_000);
         let (control, mut outputs) = TestComponentDriver::options()
             .with_component_id("tag_filterlist")
             .transform(builder)
@@ -1315,13 +1272,11 @@ mod tests {
         // This caches the probe's context, so later probes only change if an update rebuilds the cache.
         assert_eq!(filter_probe(&control, output).await, ["host:h1", "service:web"]);
 
-        let mut updated = (*source.load()).clone();
-        updated.domains.dogstatsd.tag_filterlist = vec![MetricTagFilterEntry {
+        publisher.publish(vec![MetricTagFilterEntry {
             metric_name: "my.metric".to_string(),
             action: FilterAction::Exclude,
             tags: vec!["host".to_string()],
-        }];
-        publisher.publish(updated);
+        }]);
         control
             .wait_until(
                 || updates() == Some(1),
@@ -1330,9 +1285,7 @@ mod tests {
             .await;
         assert_eq!(filter_probe(&control, output).await, ["service:web"]);
 
-        let mut updated = (*source.load()).clone();
-        updated.domains.dogstatsd.tag_filterlist.clear();
-        publisher.publish(updated);
+        publisher.publish(Vec::new());
         control
             .wait_until(
                 || updates() == Some(2),
@@ -1413,8 +1366,7 @@ mod tests {
             TagValueMismatchAction::Replace,
             "other",
         )];
-        let builder = TagFilterlistConfiguration::new(Live::new_fixed(entries), &value_allowlists, 100_000)
-            .expect("typed configuration should be valid");
+        let builder = TagFilterlistConfiguration::new(Live::new_fixed(entries), &value_allowlists, 100_000);
         let (control, mut outputs) = TestComponentDriver::transform(builder)
             .await
             .expect("tag filterlist should build");
@@ -1489,7 +1441,6 @@ mod tests {
             time::Duration,
         };
 
-        use agent_data_plane_config::domains::dogstatsd::MetricFilter;
         use async_trait::async_trait;
         use saluki_common::sync::live::Live;
         use saluki_components::transforms::{
@@ -1512,6 +1463,7 @@ mod tests {
         use tokio::sync::{mpsc, oneshot};
 
         use super::*;
+        use crate::components::dogstatsd_filterlist::MetricNameFilter;
         use crate::components::{
             dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
             dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration,
@@ -1538,7 +1490,7 @@ mod tests {
                 let prefix_filter = DogStatsDPrefixFilterConfiguration::new(
                     "tenant".to_string(),
                     Vec::new(),
-                    Live::new_fixed(MetricFilter {
+                    Live::new_fixed(MetricNameFilter {
                         values: vec!["tenant.raw.blocked".to_string()],
                         match_prefix: false,
                         prefix_rules: Vec::new(),
@@ -1558,8 +1510,7 @@ mod tests {
                         replacement: "other".to_string(),
                     }],
                     0,
-                )
-                .expect("tag filter configuration should be valid");
+                );
                 let hist_config = HistogramConfiguration::try_new(
                     &[
                         "max".to_string(),
@@ -1717,8 +1668,7 @@ mod tests {
                     }]),
                     &[],
                     0,
-                )
-                .expect("tag filter configuration should be valid");
+                );
                 let hist_config = HistogramConfiguration::try_new(&[], &[], false, String::new())
                     .expect("histogram settings should be valid");
                 let (snapshot_handle, context_snapshot_receiver) = aggregate_context_snapshot_channel();

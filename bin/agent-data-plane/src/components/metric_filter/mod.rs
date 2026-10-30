@@ -2,7 +2,6 @@
 
 use std::collections::HashSet;
 
-use agent_data_plane_config::domains::multi_region_failover::MetricMirroring;
 use async_trait::async_trait;
 use metrics::{Counter, Gauge};
 use saluki_common::sync::live::Live;
@@ -26,6 +25,19 @@ use super::metric_name::{is_normalized, normalize_into, NameBuf};
 
 const ALLOWLIST_METRICS_FILTERED_METRIC: &str = "metrics_endpoint_allowlist_metrics_filtered_total";
 const ALLOWLIST_SIZE_METRIC: &str = "metrics_endpoint_allowlist_size";
+
+/// Multi-Region Failover metric mirroring settings, delivered as a [`Live`] value.
+///
+/// Activation and the allowlist arrive together, so each update rebuilds the filter from one configuration version.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MetricMirroring {
+    /// Whether metrics are mirrored to the failover region.
+    pub enabled: bool,
+
+    /// Metric names permitted to be mirrored, matched exactly. While mirroring is enabled, an empty list mirrors every
+    /// metric.
+    pub allowlist: Vec<String>,
+}
 
 /// Configuration for a metric filter between enrichment and encoding.
 ///
@@ -307,7 +319,6 @@ impl Transform for MetricFilter {
 mod tests {
     use std::{mem::size_of, time::Duration};
 
-    use agent_data_plane_config::SalukiConfiguration;
     use metrics::{set_default_local_recorder, Key};
     use saluki_common::sync::live::{self, LivePublisher, LiveSource};
     use saluki_core::{
@@ -320,13 +331,13 @@ mod tests {
 
     use super::*;
 
-    /// A configuration the tests can replace, plus the live view projected out of it.
+    /// Mirroring settings the tests can replace, plus the live view of them.
     ///
-    /// This stands in for the configuration system: publishing a configuration is what the system does once it has
+    /// This stands in for the configuration system: publishing the settings is what the system does once it has
     /// translated an update.
     struct LiveConfiguration {
-        publisher: LivePublisher<SalukiConfiguration>,
-        source: LiveSource<SalukiConfiguration>,
+        publisher: LivePublisher<MetricMirroring>,
+        source: LiveSource<MetricMirroring>,
     }
 
     impl LiveConfiguration {
@@ -336,8 +347,7 @@ mod tests {
         }
 
         fn metric_mirroring(&self) -> Live<MetricMirroring> {
-            self.source
-                .live(|config| &config.domains.multi_region_failover.metric_mirroring)
+            self.source.live(|mirroring| mirroring)
         }
 
         fn publish(&mut self, failover_metrics: bool, metric_allowlist: &[&str]) {
@@ -346,13 +356,11 @@ mod tests {
         }
     }
 
-    fn configuration(failover_metrics: bool, metric_allowlist: &[&str]) -> SalukiConfiguration {
-        let mut config = SalukiConfiguration::default();
-        let mirroring = &mut config.domains.multi_region_failover.metric_mirroring;
-        mirroring.enabled = failover_metrics;
-        mirroring.allowlist = metric_allowlist.iter().map(|name| (*name).to_string()).collect();
-
-        config
+    fn configuration(failover_metrics: bool, metric_allowlist: &[&str]) -> MetricMirroring {
+        MetricMirroring {
+            enabled: failover_metrics,
+            allowlist: metric_allowlist.iter().map(|name| (*name).to_string()).collect(),
+        }
     }
 
     /// Builds the routing state the transform starts from, the way `run` does.

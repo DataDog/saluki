@@ -10,7 +10,6 @@ mod sql;
 mod sql_filters;
 mod sql_tokenizer;
 
-use agent_data_plane_config::domains;
 use async_trait::async_trait;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
@@ -32,13 +31,6 @@ const TEXT_NON_PARSABLE_SQL: &str = "Non-parsable SQL query";
 pub struct TraceObfuscationConfiguration {
     /// Obfuscator configuration.
     pub config: ObfuscationConfig,
-}
-
-impl TraceObfuscationConfiguration {
-    /// Creates a new `TraceObfuscationConfiguration` from the resolved trace configuration.
-    pub fn from_configuration(config: &domains::traces::Obfuscation) -> Self {
-        Self { config: config.into() }
-    }
 }
 
 #[async_trait]

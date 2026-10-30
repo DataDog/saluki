@@ -248,6 +248,26 @@ impl<T: Clone + PartialEq + 'static> Live<T> {
             }
         }
     }
+
+    /// Creates a child view by computing an owned value with `f`.
+    ///
+    /// Unlike [`project`](Self::project), `f` returns an owned value rather than a reference. A dynamic child reads the
+    /// source, not this view's cached snapshot, and processes updates independently. It calls `f` when created and
+    /// whenever it or its children read the source. [`changed`](Self::changed) compares mapped values and stays pending
+    /// when they are equal. A fixed child is mapped once and remains fixed.
+    pub fn map<U>(&self, f: impl Fn(&T) -> U + Send + Sync + 'static) -> Live<U>
+    where
+        U: Clone + PartialEq + 'static,
+    {
+        match &self.inner {
+            Inner::Fixed(value) => Live::new_fixed(f(value)),
+            Inner::Dynamic { source, tick, .. } => {
+                let parent = Arc::clone(source);
+                let source: Source<U> = Arc::new(move |g: &mut dyn FnMut(&U)| parent(&mut |value| g(&f(value))));
+                Live::from_source(source, tick.clone())
+            }
+        }
+    }
 }
 
 impl<T> Deref for Live<T> {
@@ -482,6 +502,110 @@ mod tests {
     }
 
     #[test]
+    fn fixed_map_maps_once_and_never_changes() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let parent = Live::new_fixed(Selected { value: 1, sibling: 2 });
+        let mut child = parent.map(move |selected| {
+            counter.fetch_add(1, Ordering::Relaxed);
+            selected.value + selected.sibling
+        });
+
+        assert_eq!(*child, 3);
+        assert_pending!(spawn(child.changed()).poll());
+        let _ = child.clone();
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn mapped_view_ignores_changes_outside_the_map_and_equal_mapped_values() {
+        let mut shared = Shared::new();
+        let mut child = shared
+            .source
+            .live(|root| &root.selected)
+            .map(|selected| selected.value % 2 == 1);
+        assert!(!*child);
+        let mut changed = spawn(child.changed());
+        assert_pending!(changed.poll());
+
+        shared.update(|root| root.unrelated = 1);
+        assert!(changed.is_woken());
+        assert_pending!(changed.poll());
+
+        shared.update(|root| root.selected.value = 2);
+        assert!(changed.is_woken());
+        assert_pending!(changed.poll());
+
+        shared.update(|root| root.selected.value = 3);
+        assert!(assert_ready!(changed.poll()));
+        drop(changed);
+        assert!(*child);
+    }
+
+    #[test]
+    fn map_composes_with_project_in_both_orders() {
+        let mut shared = Shared::new();
+        let parent = shared.source.live(|root| root);
+        let mut project_then_map = parent
+            .project(|root| &root.selected)
+            .map(|selected| selected.value * 10);
+        let mut map_then_project = parent
+            .map(|root| root.selected.clone())
+            .project(|selected| &selected.value);
+
+        shared.update(|root| root.selected.sibling = 1);
+        assert_pending!(spawn(project_then_map.changed()).poll());
+        assert_pending!(spawn(map_then_project.changed()).poll());
+
+        shared.update(|root| root.selected.value = 2);
+        assert_eq!(assert_ready!(spawn(project_then_map.changed()).poll()), 20);
+        assert_eq!(assert_ready!(spawn(map_then_project.changed()).poll()), 2);
+        assert_eq!(*parent, Root::default());
+    }
+
+    #[test]
+    fn map_reads_the_source_for_the_child_initial_snapshot() {
+        let mut shared = Shared::new();
+        let parent = shared.source.live(|root| &root.selected);
+
+        shared.update(|root| root.selected.value = 1);
+        let child = parent.map(|selected| selected.value + 1);
+
+        assert_eq!(*child, 2);
+        assert_eq!(parent.value, 0);
+    }
+
+    #[test]
+    fn mapped_stream_suppresses_equal_mapped_values_and_yields_changes() {
+        let mut shared = Shared::new();
+        let child = shared.source.live(|root| &root.selected.value).map(|value| *value / 10);
+        let mut values = spawn(child.into_stream());
+        assert_pending!(values.poll_next());
+
+        shared.update(|root| root.selected.value = 9);
+        assert!(values.is_woken());
+        assert_pending!(values.poll_next());
+
+        shared.update(|root| root.selected.value = 15);
+        assert_eq!(assert_ready!(values.poll_next()), Some(1));
+        assert_pending!(values.poll_next());
+    }
+
+    #[test]
+    fn mapped_clones_have_their_own_snapshot_and_notification_cursor() {
+        let mut shared = Shared::new();
+        let mut original = shared.source.live(|root| &root.selected.value).map(|value| *value + 1);
+        let mut clone = original.clone();
+
+        shared.update(|root| root.selected.value = 1);
+        assert_eq!(assert_ready!(spawn(original.changed()).poll()), 2);
+        assert_eq!(*clone, 1);
+
+        assert_eq!(assert_ready!(spawn(clone.changed()).poll()), 2);
+        assert_pending!(spawn(original.changed()).poll());
+    }
+
+    #[test]
     fn dynamic_view_and_stream_park_after_the_publisher_drops() {
         let shared = Shared::new();
         let mut view = shared.source.live(|root| &root.selected.value);
@@ -657,5 +781,11 @@ mod tests {
         assert_eq!(*late, 1);
         assert_pending!(spawn(late.changed()).poll());
         assert_eq!(source.load().selected.value, 1);
+    }
+
+    #[test]
+    fn mapped_view_is_send_and_sync() {
+        let shared = Shared::new();
+        assert_send_sync(&shared.source.live(|root| &root.selected).map(|selected| selected.value));
     }
 }

@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use agent_data_plane_config::domains::dogstatsd::OriginTagCardinality as ConfigOriginTagCardinality;
 use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common, any_value::Value};
 use saluki_common::collections::FastHashSet;
 use saluki_core::data_model::{
@@ -80,14 +79,11 @@ impl OtlpOriginTagResolver {
 
     /// Resolves entity and global tags for one OTLP metrics resource by entity precedence.
     pub fn resolve_resource_tags(
-        &self, attributes: &[otlp_common::KeyValue], tag_cardinality: ConfigOriginTagCardinality,
+        &self, attributes: &[otlp_common::KeyValue], tag_cardinality: OriginTagCardinality,
     ) -> SharedTagSet {
-        let tag_cardinality = match tag_cardinality {
-            ConfigOriginTagCardinality::Low => OriginTagCardinality::Low,
-            ConfigOriginTagCardinality::Orchestrator => OriginTagCardinality::Orchestrator,
-            ConfigOriginTagCardinality::High => OriginTagCardinality::High,
-            ConfigOriginTagCardinality::None => return SharedTagSet::default(),
-        };
+        if tag_cardinality == OriginTagCardinality::None {
+            return SharedTagSet::default();
+        }
 
         let attributes = OtlpResourceAttributes::from_attributes(attributes);
         let mut tags = TagSet::default();
@@ -339,7 +335,7 @@ mod tests {
         ];
 
         assert_eq!(
-            tags(resolver.resolve_resource_tags(&resource, ConfigOriginTagCardinality::Low)),
+            tags(resolver.resolve_resource_tags(&resource, OriginTagCardinality::Low)),
             vec![
                 "container:present",
                 "deployment:present",
@@ -365,7 +361,7 @@ mod tests {
         let resource = vec![attribute(PROCESS_PID, Value::IntValue(42))];
 
         assert_eq!(
-            tags(resolver.resolve_resource_tags(&resource, ConfigOriginTagCardinality::Low)),
+            tags(resolver.resolve_resource_tags(&resource, OriginTagCardinality::Low)),
             vec!["container:present", "process:present", "service:container"]
         );
     }
@@ -380,7 +376,7 @@ mod tests {
         let resource = vec![attribute(CGROUP_INODE, Value::IntValue(123))];
 
         assert_eq!(
-            tags(resolver.resolve_resource_tags(&resource, ConfigOriginTagCardinality::Low)),
+            tags(resolver.resolve_resource_tags(&resource, OriginTagCardinality::Low)),
             vec!["container:present", "service:container"]
         );
     }
@@ -400,7 +396,7 @@ mod tests {
         ];
 
         assert_eq!(
-            tags(resolver.resolve_resource_tags(&resource, ConfigOriginTagCardinality::Low)),
+            tags(resolver.resolve_resource_tags(&resource, OriginTagCardinality::Low)),
             vec!["container:present", "service:container"]
         );
     }
@@ -416,15 +412,15 @@ mod tests {
         let resolver = OtlpOriginTagResolver::new(Arc::new(provider));
 
         assert_eq!(
-            tags(resolver.resolve_resource_tags(&[], ConfigOriginTagCardinality::Low)),
+            tags(resolver.resolve_resource_tags(&[], OriginTagCardinality::Low)),
             vec!["low:present"]
         );
         assert_eq!(
-            tags(resolver.resolve_resource_tags(&[], ConfigOriginTagCardinality::High)),
+            tags(resolver.resolve_resource_tags(&[], OriginTagCardinality::High)),
             vec!["high:present", "low:present", "orchestrator:present"]
         );
         assert!(resolver
-            .resolve_resource_tags(&[], ConfigOriginTagCardinality::None)
+            .resolve_resource_tags(&[], OriginTagCardinality::None)
             .is_empty());
     }
 }

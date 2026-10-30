@@ -10,7 +10,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
-use agent_data_plane_config::domains;
 use async_trait::async_trait;
 use datadog_agent_apm::sampling::{RemoteSampling, SamplerSettings, TraceSamplingSubscription};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -59,78 +58,76 @@ const KEY_ANALYZED_SPANS: &str = "_dd.analyzed";
 /// Configuration for the trace sampler transform.
 #[derive(Debug)]
 pub struct TraceSamplerConfiguration {
-    probabilistic_sampler_enabled: bool,
-    probabilistic_hash_seed: u32,
-    probabilistic_full_trace_id: bool,
-    sampling_percentage: f64,
-    error_sampling_enabled: bool,
-    error_tracking_standalone: bool,
-    errors_per_second: f64,
-    target_traces_per_second: f64,
-    extra_sample_rate: f64,
-    max_catalog_entries: usize,
-    /// Environment the priority sampler uses for traces without one, and used to select a remote `by_env` entry.
-    agent_env: AgentEnv,
-    rare_sampler_enabled: bool,
-    rare_sampler_tps: f64,
-    rare_sampler_cooldown_secs: f64,
-    rare_sampler_cardinality: usize,
-    compute_top_level_by_span_kind: bool,
-    analyzed_spans_by_service: HashMap<String, HashMap<String, f64>>,
-    analyzed_rate_by_service: HashMap<String, f64>,
-    max_events_per_second: f64,
+    /// Whether the probabilistic sampler decides traces, in place of the priority, error, and rare samplers.
+    pub probabilistic_sampler_enabled: bool,
 
-    /// Remote updates, or an inert subscription when remote sampling is not configured.
-    remote_sampling: TraceSamplingSubscription,
+    /// Seed mixed into the trace-ID hash before probabilistic sampling.
+    pub probabilistic_hash_seed: u32,
+
+    /// Whether the probabilistic sampler hashes the full 128-bit trace ID instead of its low 64 bits.
+    pub probabilistic_full_trace_id: bool,
+
+    /// Percentage of traces the probabilistic sampler keeps.
+    pub sampling_percentage: f64,
+
+    /// Whether error traces are sampled independently of the base sampler.
+    pub error_sampling_enabled: bool,
+
+    /// Whether Error Tracking standalone mode is enabled.
+    pub error_tracking_standalone: bool,
+
+    /// Target number of error traces sampled per second.
+    pub errors_per_second: f64,
+
+    /// Target number of traces sampled per second.
+    pub target_traces_per_second: f64,
+
+    /// Multiplier applied to every learned keep-rate of the adaptive samplers.
+    pub extra_sample_rate: f64,
+
+    /// Maximum number of service signatures the priority sampler tracks rates for. If set to `0`, the catalog's
+    /// default size applies.
+    pub max_catalog_entries: usize,
+
+    /// Environment the priority sampler uses for traces without one, and used to select a remote `by_env` entry.
+    pub agent_env: AgentEnv,
+
+    /// Whether the rare sampler is enabled.
+    pub rare_sampler_enabled: bool,
+
+    /// Target number of rare traces sampled per second.
+    pub rare_sampler_tps: f64,
+
+    /// Cooldown, in seconds, before a signature may be sampled again by the rare sampler.
+    pub rare_sampler_cooldown_secs: f64,
+
+    /// Maximum number of distinct signatures the rare sampler tracks.
+    pub rare_sampler_cardinality: usize,
+
+    /// Whether spans are marked top-level by their span kind.
+    pub compute_top_level_by_span_kind: bool,
+
+    /// Event extraction rates by service and operation name. Takes precedence over `analyzed_rate_by_service` when
+    /// non-empty.
+    pub analyzed_spans_by_service: HashMap<String, HashMap<String, f64>>,
+
+    /// Event extraction rates by service, for the deprecated analytics configuration.
+    ///
+    /// Rates are ignored when `analyzed_spans_by_service` is non-empty. Building the sampler logs a deprecation warning
+    /// whenever this map is non-empty, even when its rates are ignored.
+    pub analyzed_rate_by_service: HashMap<String, f64>,
+
+    /// Upper bound on the average number of extracted events sampled per second.
+    pub max_events_per_second: f64,
+
+    /// Remote `APM_SAMPLING` updates, or an inert subscription when remote sampling is not configured.
+    ///
+    /// Only priority and error sampling targets and rare sampling can change. For each field left unset by the remote
+    /// configuration, the sampler uses its local setting.
+    pub remote_sampling: TraceSamplingSubscription,
 }
 
 impl TraceSamplerConfiguration {
-    /// Creates a new `TraceSamplerConfiguration` from the resolved traces domain.
-    ///
-    /// The OTLP trace settings live in their own domain, so they arrive as a separate slice rather
-    /// than through the traces domain. The priority sampler samples traces without an environment
-    /// under `agent_env`, and remote sampling selects its `by_env` entry with it.
-    pub fn from_configuration(
-        traces: &domains::traces::Domain, otlp_traces: &domains::otlp::Traces, agent_env: AgentEnv,
-    ) -> Self {
-        if !traces.analyzed_rate_by_service.is_empty() {
-            warn!("analyzed_rate_by_service is deprecated, please use analyzed_spans instead");
-        }
-        Self {
-            probabilistic_sampler_enabled: traces.probabilistic_sampler.enabled,
-            probabilistic_hash_seed: traces.probabilistic_sampler.hash_seed,
-            probabilistic_full_trace_id: traces
-                .features
-                .contains(&domains::traces::ApmFeature::ProbabilisticSamplerFullTraceId),
-            sampling_percentage: traces.probabilistic_sampler.sampling_percentage,
-            error_sampling_enabled: traces.error_sampling_enabled,
-            error_tracking_standalone: traces.error_tracking_standalone_enabled,
-            errors_per_second: traces.errors_per_second,
-            target_traces_per_second: traces.target_traces_per_second,
-            extra_sample_rate: traces.extra_sample_rate,
-            max_catalog_entries: traces.max_catalog_entries,
-            agent_env,
-            rare_sampler_enabled: traces.enable_rare_sampler,
-            rare_sampler_tps: traces.rare_sampler.tps,
-            rare_sampler_cooldown_secs: traces.rare_sampler.cooldown,
-            rare_sampler_cardinality: traces.rare_sampler.cardinality,
-            compute_top_level_by_span_kind: otlp_traces.enable_compute_top_level_by_span_kind,
-            analyzed_spans_by_service: traces.analyzed_spans_by_service.clone(),
-            analyzed_rate_by_service: traces.analyzed_rate_by_service.clone(),
-            max_events_per_second: traces.max_events_per_second,
-            remote_sampling: TraceSamplingSubscription::default(),
-        }
-    }
-
-    /// Connects the trace sampler to `APM_SAMPLING` remote updates.
-    ///
-    /// Only priority and error sampling targets and rare sampling can change. For each field
-    /// left unset by the remote configuration, the sampler uses its local setting.
-    pub fn with_remote_sampling(mut self, remote_sampling: TraceSamplingSubscription) -> Self {
-        self.remote_sampling = remote_sampling;
-        self
-    }
-
     fn build_sampler(&self) -> TraceSampler {
         let telemetry = DecisionWindow::new();
         let event_processor = EventProcessor::new(
@@ -197,6 +194,9 @@ impl TransformBuilder for TraceSamplerConfiguration {
     }
 
     async fn build(&self, _context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+        if !self.analyzed_rate_by_service.is_empty() {
+            warn!("analyzed_rate_by_service is deprecated, please use analyzed_spans instead");
+        }
         Ok(Box::new(self.build_sampler()))
     }
 }
@@ -858,6 +858,33 @@ impl Transform for TraceSampler {
     }
 }
 
+/// Returns sampler settings carrying the configuration defaults.
+#[cfg(test)]
+pub(crate) fn sampler_configuration(agent_env: AgentEnv) -> TraceSamplerConfiguration {
+    TraceSamplerConfiguration {
+        probabilistic_sampler_enabled: false,
+        probabilistic_hash_seed: 0,
+        probabilistic_full_trace_id: false,
+        sampling_percentage: 0.0,
+        error_sampling_enabled: true,
+        error_tracking_standalone: false,
+        errors_per_second: 0.0,
+        target_traces_per_second: 0.0,
+        extra_sample_rate: 1.0,
+        max_catalog_entries: 0,
+        agent_env,
+        rare_sampler_enabled: false,
+        rare_sampler_tps: 5.0,
+        rare_sampler_cooldown_secs: 300.0,
+        rare_sampler_cardinality: 200,
+        compute_top_level_by_span_kind: true,
+        analyzed_spans_by_service: HashMap::new(),
+        analyzed_rate_by_service: HashMap::new(),
+        max_events_per_second: 0.0,
+        remote_sampling: TraceSamplingSubscription::default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -1428,26 +1455,6 @@ mod tests {
         assert!(!full.sample_probabilistic(0, low));
         full.sampling_rate = 0.90;
         assert!(full.sample_probabilistic(0, low));
-    }
-
-    #[test]
-    fn from_configuration_reads_the_full_trace_id_feature() {
-        let traces = domains::traces::Domain {
-            features: vec![domains::traces::ApmFeature::ProbabilisticSamplerFullTraceId],
-            ..Default::default()
-        };
-        let config =
-            TraceSamplerConfiguration::from_configuration(&traces, &domains::otlp::Traces::default(), prod_env());
-        assert!(config.probabilistic_full_trace_id);
-
-        // Unrecognized flags are carried, not rejected, and enable nothing.
-        let traces = domains::traces::Domain {
-            features: vec![domains::traces::ApmFeature::Other("table_names".to_owned())],
-            ..Default::default()
-        };
-        let config =
-            TraceSamplerConfiguration::from_configuration(&traces, &domains::otlp::Traces::default(), prod_env());
-        assert!(!config.probabilistic_full_trace_id);
     }
 
     #[test]
@@ -2567,18 +2574,16 @@ mod tests {
         AgentEnv::resolve(None, Some("Prod"), &[], &[])
     }
 
-    /// Traces settings where probabilistic sampling drops every trace, so only the rare sampler keeps one.
-    fn rare_only_traces() -> domains::traces::Domain {
-        domains::traces::Domain {
+    /// Sampler settings where probabilistic sampling drops every trace, so only the rare sampler keeps one.
+    fn rare_only_sampler(agent_env: AgentEnv, remote_sampling: TraceSamplingSubscription) -> TraceSamplerConfiguration {
+        TraceSamplerConfiguration {
             target_traces_per_second: 7.0,
             errors_per_second: 9.0,
-            enable_rare_sampler: true,
-            probabilistic_sampler: domains::traces::ProbabilisticSampler {
-                enabled: true,
-                sampling_percentage: 0.0,
-                ..Default::default()
-            },
-            ..Default::default()
+            rare_sampler_enabled: true,
+            probabilistic_sampler_enabled: true,
+            sampling_percentage: 0.0,
+            remote_sampling,
+            ..sampler_configuration(agent_env)
         }
     }
 
@@ -2662,12 +2667,7 @@ mod tests {
     #[test]
     fn remote_sampling_subscription_reaches_the_built_sampler() {
         let (publisher, subscription) = TestSamplingPublisher::new();
-        let config = TraceSamplerConfiguration::from_configuration(
-            &rare_only_traces(),
-            &domains::otlp::Traces::default(),
-            prod_env(),
-        )
-        .with_remote_sampling(subscription);
+        let config = rare_only_sampler(prod_env(), subscription);
         let mut sampler = config.build_sampler();
         assert_eq!(live_tps(&sampler), (7.0, 9.0));
         assert!(rare_keeps_new_trace(&mut sampler, 1));
@@ -2714,13 +2714,7 @@ mod tests {
         for (agent_env, expected) in cases {
             let (publisher, subscription) = TestSamplingPublisher::new();
             let env = agent_env.as_str().to_owned();
-            let mut sampler = TraceSamplerConfiguration::from_configuration(
-                &rare_only_traces(),
-                &domains::otlp::Traces::default(),
-                agent_env,
-            )
-            .with_remote_sampling(subscription)
-            .build_sampler();
+            let mut sampler = rare_only_sampler(agent_env, subscription).build_sampler();
             publisher.assign([("sampling", payload)]);
             transform_empty_buffer(&mut sampler);
             assert_eq!(live_tps(&sampler), expected, "agent env {env:?}");
@@ -2735,13 +2729,7 @@ mod tests {
     fn remote_selection_and_priority_sampling_share_agent_env() {
         let (publisher, subscription) = TestSamplingPublisher::new();
         let agent_env = AgentEnv::resolve(Some("Staging"), Some("prod"), &[], &[]);
-        let mut sampler = TraceSamplerConfiguration::from_configuration(
-            &rare_only_traces(),
-            &domains::otlp::Traces::default(),
-            agent_env,
-        )
-        .with_remote_sampling(subscription)
-        .build_sampler();
+        let mut sampler = rare_only_sampler(agent_env, subscription).build_sampler();
         publisher.assign([(
             "sampling",
             r#"{"by_env":[{"env":"staging","config":{"priority_sampler_target_TPS":43}},
@@ -2778,12 +2766,7 @@ mod tests {
     #[tokio::test]
     async fn run_loop_samples_with_the_published_remote_settings() {
         let (publisher, subscription) = TestSamplingPublisher::new();
-        let config = TraceSamplerConfiguration::from_configuration(
-            &rare_only_traces(),
-            &domains::otlp::Traces::default(),
-            prod_env(),
-        )
-        .with_remote_sampling(subscription);
+        let config = rare_only_sampler(prod_env(), subscription);
         let (control, mut outputs) = TestComponentDriver::transform(config)
             .await
             .expect("the sampler should start");
@@ -2966,12 +2949,7 @@ mod tests {
     #[tokio::test]
     async fn run_loop_applies_a_configuration_withdrawn_before_the_first_buffer() {
         let (publisher, subscription) = TestSamplingPublisher::new();
-        let config = TraceSamplerConfiguration::from_configuration(
-            &rare_only_traces(),
-            &domains::otlp::Traces::default(),
-            prod_env(),
-        )
-        .with_remote_sampling(subscription);
+        let config = rare_only_sampler(prod_env(), subscription);
         publisher.assign([("sampling", r#"{"all_envs":{"rare_sampler_enabled":false}}"#)]);
         publisher.assign(std::iter::empty::<(&str, &str)>());
 

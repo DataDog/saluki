@@ -4,6 +4,7 @@
 
 pub mod attributes;
 pub mod origin;
+pub mod receiver;
 pub mod semantics;
 pub mod traces;
 pub mod util;
@@ -216,28 +217,6 @@ pub fn build_metrics(component_context: &ComponentContext) -> Metrics {
             [("tag", "_dd.base_service"), ("reason", "invalid")],
         ),
     }
-}
-
-/// Converts the gRPC receiver's connection settings into HTTP/2 server settings.
-///
-/// The keepalive interval and timeout are already resolved by the configuration layer, so they map across directly.
-/// The connection age limits and `max_concurrent_streams` use a zero value to mean "no limit," which is translated
-/// here into the absence of a limit.
-pub fn resolve_grpc_http2_config(
-    keepalive: &agent_data_plane_config::domains::otlp::KeepaliveServerParameters, max_concurrent_streams: u32,
-) -> Http2Config {
-    let mut config = Http2Config::default().with_keepalive(keepalive.time, keepalive.timeout);
-
-    if !keepalive.max_connection_age.is_zero() {
-        let grace = (!keepalive.max_connection_age_grace.is_zero()).then_some(keepalive.max_connection_age_grace);
-        config = config.with_max_connection_age(keepalive.max_connection_age, grace);
-    }
-
-    if max_concurrent_streams > 0 {
-        config = config.with_max_concurrent_streams(max_concurrent_streams);
-    }
-
-    config
 }
 
 /// Handler for OTLP data.

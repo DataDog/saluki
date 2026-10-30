@@ -641,3 +641,62 @@ pub struct DebugLog {
     /// Defaults to `false`. Enable this to reduce error-level log volume from malformed packets.
     pub disable_verbose_logs: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn value_allowlist(metric_prefix: &str, tag_name: &str) -> MetricTagValueAllowlistEntry {
+        MetricTagValueAllowlistEntry {
+            metric_prefix: metric_prefix.to_string(),
+            tag_name: tag_name.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn validation_error(entries: &[MetricTagValueAllowlistEntry]) -> String {
+        validate_metric_tag_value_allowlists(entries)
+            .expect_err("the allow-list should be rejected")
+            .to_string()
+    }
+
+    #[test]
+    fn value_allowlists_may_share_a_prefix_for_different_tags() {
+        let entries = [
+            value_allowlist("my.", "customer_id"),
+            value_allowlist("my.", "region"),
+            value_allowlist("other.", "customer_id"),
+        ];
+
+        assert_eq!(Ok(()), validate_metric_tag_value_allowlists(&entries));
+    }
+
+    #[test]
+    fn empty_value_allowlist_prefixes_and_tag_names_are_rejected() {
+        assert!(validation_error(&[value_allowlist("", "customer_id")]).contains("empty `metric_prefix`"));
+        assert!(validation_error(&[value_allowlist("my.", "")]).contains("empty `tag_name`"));
+    }
+
+    #[test]
+    fn value_allowlist_rejects_tag_names_containing_a_colon() {
+        assert!(
+            validation_error(&[value_allowlist("my.", "customer:id")]).contains("tag name 'customer:id' contains ':'")
+        );
+    }
+
+    #[test]
+    fn overlapping_value_allowlist_prefixes_are_rejected_across_tags() {
+        let error = validation_error(&[
+            value_allowlist("my.", "customer_id"),
+            value_allowlist("my.metric", "region"),
+        ]);
+        assert!(error.contains("overlapping metric prefixes 'my.' and 'my.metric' are configured"));
+
+        let error = validation_error(&[
+            value_allowlist("my.", "customer_id"),
+            value_allowlist("my.", "region"),
+            value_allowlist("my.", "customer_id"),
+        ]);
+        assert!(error.contains("metric prefix 'my.' is configured more than once for tag 'customer_id'"));
+    }
+}
