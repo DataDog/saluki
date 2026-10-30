@@ -1,13 +1,13 @@
-//! Golden vectors for OTLP logs: the Agent's target output next to ADP's current output.
+//! Golden vectors for OTLP logs: the target output of a reference implementation next to the current output.
 //!
-//! Each vector in [`vectors`] is an OTLP request and the logs the Agent sends to the intake for it. The test sends
+//! Each vector in [`vectors`] is an OTLP request and the target logs on the wire for it. The test sends
 //! every request to the OTLP source over gRPC, encodes the logs the source dispatches with the Datadog logs encoder,
 //! the way the topology connects `otlp_in.logs` to `dd_logs_encode`, and parses the encoded request body with
 //! `stele::Log`, the parser the fake intake uses.
 //!
 //! The test checks two things for every vector:
 //!
-//! - **Current output.** ADP's output must match the vector's current fixture exactly. Vectors whose current output
+//! - **Current output.** The output must match the vector's current fixture exactly. Vectors whose current output
 //!   differs from the target have a fixture in `testdata/golden_vectors_current.json`; for the others, the target is
 //!   the current fixture. Any change to the output, whether a regression or an accidental fix, fails the test.
 //! - **Gap manifest.** Every field difference between the target and the current output must be covered by an entry
@@ -47,11 +47,11 @@ use self::vectors::{golden_vectors, GoldenVector};
 /// Placeholder for an envelope `timestamp` set to the time the log was encoded, in milliseconds.
 const ENCODE_TIME_MS: &str = "<encode-time-ms>";
 
-/// Placeholder for an `@timestamp` that ADP sets to the time the log was encoded.
+/// Placeholder for an `@timestamp` that the encoder sets to the time the log was encoded.
 const ENCODE_TIME_RFC3339: &str = "<encode-time-rfc3339>";
 
-/// The Agent's hostname, which the Agent uses when a log has none.
-const AGENT_HOSTNAME: &str = "agent-hostname";
+/// The default hostname, which the target uses when a log has none.
+const DEFAULT_HOSTNAME: &str = "default-hostname";
 
 /// Path of the current fixtures, for the vectors whose current output differs from their target.
 const CURRENT_FIXTURES_PATH: &str = concat!(
@@ -194,7 +194,7 @@ fn unix_millis() -> u64 {
 
 /// Replaces the encode-time timestamps of a log with placeholders.
 ///
-/// The envelope `timestamp` and ADP's `@timestamp` are replaced only when they fall within the time the log was being
+/// The envelope `timestamp` and the encoder's `@timestamp` are replaced only when they fall within the time the log was being
 /// encoded, so a timestamp taken from the OTLP record stays as it is.
 fn normalize_encode_times(mut item: Value, start_ms: u64, end_ms: u64) -> Value {
     let object = item.as_object_mut().expect("a log should be a JSON object");
@@ -253,7 +253,7 @@ fn parse(items: &[Value]) -> Vec<Log> {
 /// Diffs a target log with a current log, field by field.
 ///
 /// This uses the same paths as the panoramic logs analyzer. When both logs have content, the raw `message` is left
-/// out: the target's serialization only stands in for the Agent's, so only the content properties are compared.
+/// out: the target's serialization only stands in for the reference serialization, so only the content properties are compared.
 fn diff_logs(target: &Log, current: &Log) -> Vec<FieldDiff> {
     let mut diffs = Vec::new();
 

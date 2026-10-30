@@ -1,4 +1,4 @@
-//! The gap manifest: the known differences between the Agent's target output and ADP's current output.
+//! The gap manifest: the known differences between the target output and the current output.
 //!
 //! Each entry names a gap from the OTLP logs parity plan (DataDog/saluki#2966), the vectors it affects, and the field
 //! paths and kinds of difference it explains. Remove an entry in the change that fixes its gap.
@@ -93,7 +93,7 @@ pub const KNOWN_GAPS: &[KnownGap] = &[
         ],
         paths: &["content.**"],
         kinds: &[DiffKind::Location],
-        reason: "ADP puts properties at the top level instead of in the `message` content.",
+        reason: "The current output puts properties at the top level instead of in the `message` content.",
     },
     KnownGap {
         gap: "gap/content-in-message",
@@ -151,7 +151,7 @@ pub const KNOWN_GAPS: &[KnownGap] = &[
         ],
         paths: &["content.status", "content.hostname"],
         kinds: &[DiffKind::Missing],
-        reason: "ADP's content holds only `message` and `service`.",
+        reason: "The current content holds only `message` and `service`.",
     },
     KnownGap {
         gap: "gap/content-in-message",
@@ -197,7 +197,7 @@ pub const KNOWN_GAPS: &[KnownGap] = &[
         ],
         paths: &["envelope.service"],
         kinds: &[DiffKind::Missing],
-        reason: "The Agent's envelope always has `service`, empty when unset; ADP omits an empty service.",
+        reason: "The target envelope always has `service`, empty when unset; the current output omits an empty service.",
     },
     KnownGap {
         gap: "gap/status-strings",
@@ -245,7 +245,7 @@ pub const KNOWN_GAPS: &[KnownGap] = &[
         ],
         paths: &["envelope.status"],
         kinds: &[DiffKind::Value],
-        reason: "ADP capitalizes the envelope status instead of sending the Agent's lowercase or raw status.",
+        reason: "The current output capitalizes the envelope status instead of sending the target's lowercase or raw status.",
     },
     KnownGap {
         gap: "gap/zero-severity-status",
@@ -256,7 +256,7 @@ pub const KNOWN_GAPS: &[KnownGap] = &[
         ],
         paths: &["envelope.status"],
         kinds: &[DiffKind::Value],
-        reason: "ADP maps severity number 0 to `Trace`; the Agent gives no status, so the envelope says `info`.",
+        reason: "The current output maps severity number 0 to `Trace`; the target has no status, so its envelope says `info`.",
     },
     KnownGap {
         gap: "gap/envelope-timestamp",
@@ -314,7 +314,7 @@ pub const KNOWN_GAPS: &[KnownGap] = &[
         ],
         paths: &["envelope.timestamp"],
         kinds: &[DiffKind::Missing],
-        reason: "ADP has no encode-time envelope `timestamp`.",
+        reason: "The current output has no encode-time envelope `timestamp`.",
     },
     KnownGap {
         gap: "gap/envelope-timestamp",
@@ -363,14 +363,14 @@ pub const KNOWN_GAPS: &[KnownGap] = &[
         ],
         paths: &["envelope_properties.@timestamp"],
         kinds: &[DiffKind::Extra],
-        reason: "ADP injects the current time as `@timestamp` when the record has no timestamp.",
+        reason: "The current output injects the current time as `@timestamp` when the record has no timestamp.",
     },
     KnownGap {
         gap: "gap/observed-timestamp",
         vectors: &["translator/observed-timestamp"],
         paths: &["content.@timestamp", "content.otel.timestamp"],
         kinds: &[DiffKind::Value, DiffKind::Missing],
-        reason: "ADP doesn't fall back to the observed timestamp, and injects the current time instead.",
+        reason: "The current output doesn't fall back to the observed timestamp, and injects the current time instead.",
     },
     KnownGap {
         gap: "gap/default-hostname",
@@ -427,14 +427,14 @@ pub const KNOWN_GAPS: &[KnownGap] = &[
         ],
         paths: &["envelope.hostname"],
         kinds: &[DiffKind::Missing],
-        reason: "ADP doesn't fall back to the Agent's hostname when the log has none.",
+        reason: "The current output doesn't fall back to the default hostname when the log has none.",
     },
     KnownGap {
         gap: "gap/log-source-attribute",
         vectors: &["exporter/message-attribute", "exporter/resource-attribute-source"],
         paths: &["envelope.ddsource"],
         kinds: &[DiffKind::Value],
-        reason: "ADP doesn't use `datadog.log.source` as the source.",
+        reason: "The current output doesn't use `datadog.log.source` as the source.",
     },
     KnownGap {
         gap: "gap/array-attributes",
@@ -451,14 +451,14 @@ pub const KNOWN_GAPS: &[KnownGap] = &[
             "content.matrix",
         ],
         kinds: &[DiffKind::Value],
-        reason: "ADP stringifies arrays instead of keeping them as JSON arrays.",
+        reason: "The current output stringifies arrays instead of keeping them as JSON arrays.",
     },
     KnownGap {
         gap: "gap/event-name",
         vectors: &["translator/event-name"],
         paths: &["content.otel.event_name"],
         kinds: &[DiffKind::Missing],
-        reason: "ADP doesn't set `otel.event_name`.",
+        reason: "The current output doesn't set `otel.event_name`.",
     },
     KnownGap {
         gap: "gap/scope-metadata",
@@ -469,7 +469,7 @@ pub const KNOWN_GAPS: &[KnownGap] = &[
         ],
         paths: &["content.otel.scope.name", "content.otel.scope.version"],
         kinds: &[DiffKind::Missing],
-        reason: "ADP doesn't set the scope name and version.",
+        reason: "The current output doesn't set the scope name and version.",
     },
     KnownGap {
         gap: "gap/scope-metadata",
@@ -479,6 +479,6 @@ pub const KNOWN_GAPS: &[KnownGap] = &[
             "envelope_properties.otel.library.version",
         ],
         kinds: &[DiffKind::Extra],
-        reason: "ADP keeps the `otel.library.*` aliases instead of mapping them to scope keys.",
+        reason: "The current output keeps the `otel.library.*` aliases instead of mapping them to scope keys.",
     },
 ];

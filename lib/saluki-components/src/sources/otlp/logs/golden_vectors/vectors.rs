@@ -1,24 +1,24 @@
-//! The golden vectors: OTLP requests and the Agent's wire output for them.
+//! The golden vectors: OTLP requests and the target wire output for them.
 //!
-//! Ported from the Datadog Agent at commit `e0c8d8d93befb6864f13e2d88acbe13fb2d380b7`:
+//! Ported from the reference implementation's tests at commit `e0c8d8d93befb6864f13e2d88acbe13fb2d380b7`:
 //!
 //! - `TestTranslator` and `TestDeriveStatus` in
 //!   <https://github.com/DataDog/datadog-agent/blob/e0c8d8d93befb6864f13e2d88acbe13fb2d380b7/pkg/opentelemetry-mapping-go/otlp/logs/transform_test.go>
 //! - `TestLogsExporter` in
 //!   <https://github.com/DataDog/datadog-agent/blob/e0c8d8d93befb6864f13e2d88acbe13fb2d380b7/comp/otelcol/otlp/components/exporter/logsagentexporter/logs_exporter_test.go>
 //!
-//! The Agent's tests stop at the translator's `HTTPLogItem` or at the exporter's message. Each target here is that
-//! expected value carried through the rest of the Agent's pipeline by [`agent_wire_log`], so that it can be compared
-//! with what ADP puts on the wire.
+//! Those tests stop at the translator's `HTTPLogItem` or at the exporter's message. Each target here is that expected
+//! value carried through the rest of the reference pipeline by [`target_wire_log`], so that it can be compared with
+//! the current wire output.
 //!
-//! The targets differ from the Agent's tests in two ways, both because ADP runs as the Agent's embedded OTLP receiver:
+//! The targets differ from those tests in two ways, both because the source runs as an embedded OTLP receiver:
 //!
 //! - The translator tests build their translator with the OTel source `test`, so their tags end in
 //!   `otel_source:test`. The embedded receiver uses `datadog_agent`.
 //! - `exporter/ddtags-different-tags` configures the OTel source `datadog_exporter` and an empty log source name. The
 //!   targets use the embedded receiver's `datadog_agent` and `otlp_log_ingestion`.
 //!
-//! `TestTranslatorWithRUMRouting` isn't ported: the logs agent exporter calls `MapLogs`, which doesn't route RUM events.
+//! `TestTranslatorWithRUMRouting` isn't ported: the exporter calls `MapLogs`, which doesn't route RUM events.
 
 use otlp_protos::opentelemetry::proto::collector::logs::v1::ExportLogsServiceRequest;
 use otlp_protos::opentelemetry::proto::common::v1::{
@@ -28,12 +28,12 @@ use otlp_protos::opentelemetry::proto::logs::v1::{LogRecord, ResourceLogs, Scope
 use otlp_protos::opentelemetry::proto::resource::v1::Resource;
 use serde_json::{json, Map, Value};
 
-use super::{AGENT_HOSTNAME, ENCODE_TIME_MS};
+use super::{DEFAULT_HOSTNAME, ENCODE_TIME_MS};
 
-/// The log source name of the Agent's OTLP logs, used as `ddsource` unless `datadog.log.source` is set.
-const AGENT_LOG_SOURCE: &str = "otlp_log_ingestion";
+/// The log source name of OTLP logs, used as `ddsource` unless `datadog.log.source` is set.
+const DEFAULT_LOG_SOURCE: &str = "otlp_log_ingestion";
 
-/// A golden vector: one OTLP request, and the logs the Agent sends for it.
+/// A golden vector: one OTLP request, and the target logs for it.
 pub struct GoldenVector {
     /// The vector's name, which the gap manifest and the current fixtures refer to.
     pub name: &'static str,
@@ -41,13 +41,13 @@ pub struct GoldenVector {
     /// The OTLP request to send.
     pub request: ExportLogsServiceRequest,
 
-    /// The logs the Agent sends to the intake for the request, in order, as JSON objects.
+    /// The target logs on the wire for the request, in order, as JSON objects.
     ///
     /// A `message` that is a JSON object stands for that object serialized as a string.
     pub target: Vec<Value>,
 }
 
-/// The fields of the `datadogV2.HTTPLogItem` that the Agent's translator returns.
+/// The fields of the `datadogV2.HTTPLogItem` that the reference translator returns.
 #[derive(Default)]
 struct HttpLogItem {
     ddtags: &'static str,
@@ -57,17 +57,17 @@ struct HttpLogItem {
     additional_properties: Value,
 }
 
-/// Returns the log that the Agent sends to the intake for a translated `item`.
+/// Returns the target log on the wire for a translated `item`.
 ///
-/// This follows the rest of the Agent's pipeline after the translator:
+/// This follows the rest of the reference pipeline after the translator:
 ///
-/// - The logs agent exporter (`logs_exporter.go`) moves `ddtags` to the message origin, takes the status from the
+/// - The exporter (`logs_exporter.go`) moves `ddtags` to the message origin, takes the status from the
 ///   `status` property (`info` when it's missing or empty), and the source from the `datadog.log.source` property (the
 ///   log source name when it's missing or empty). The message content is the rest of the item, serialized by
 ///   `HTTPLogItem.MarshalJSON`, where the additional properties overwrite the top-level fields.
-/// - The logs processor (`processor.go`) uses the Agent's hostname when the log has none.
+/// - The logs processor (`processor.go`) uses the default hostname when the log has none.
 /// - The JSON encoder (`json.go`) writes every envelope field, with an encode-time timestamp in milliseconds.
-fn agent_wire_log(item: HttpLogItem) -> Value {
+fn target_wire_log(item: HttpLogItem) -> Value {
     let mut content = Map::new();
     if let Some(hostname) = item.hostname {
         content.insert("hostname".to_string(), json!(hostname));
@@ -90,14 +90,14 @@ fn agent_wire_log(item: HttpLogItem) -> Value {
     };
     let status = non_empty_property("status").unwrap_or("info").to_string();
     let ddsource = non_empty_property("datadog.log.source")
-        .unwrap_or(AGENT_LOG_SOURCE)
+        .unwrap_or(DEFAULT_LOG_SOURCE)
         .to_string();
 
     json!({
         "message": content,
         "status": status,
         "timestamp": ENCODE_TIME_MS,
-        "hostname": item.hostname.unwrap_or(AGENT_HOSTNAME),
+        "hostname": item.hostname.unwrap_or(DEFAULT_HOSTNAME),
         "service": item.service.unwrap_or(""),
         "ddsource": ddsource,
         "ddtags": item.ddtags,
@@ -141,7 +141,7 @@ fn key_value(key: &str, value: AnyValue) -> KeyValue {
     }
 }
 
-/// Builds a log record, the way the Agent's tests fill in a `plog.LogRecord`.
+/// Builds a log record, the way the reference tests fill in a `plog.LogRecord`.
 #[derive(Default)]
 struct Record(LogRecord);
 
@@ -273,7 +273,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
                 no_scope(),
                 vec![record().attr("app", string("test")).severity_number(5)],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 additional_properties: json!({
                     "app": "test",
@@ -290,7 +290,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
                 no_scope(),
                 vec![record().attr("app", string("test")).severity_number(5)],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: "service:otlp_col,otel_source:datadog_agent",
                 service: Some("otlp_col"),
                 additional_properties: json!({
@@ -312,7 +312,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
                     .attr("ddtags", string("foo:bar"))
                     .severity_number(5)],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: "service:otlp_col,foo:bar,otel_source:datadog_agent",
                 service: Some("otlp_col"),
                 additional_properties: json!({
@@ -334,7 +334,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
                     .attr("service.name", string("otlp_col"))
                     .severity_number(5)],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 service: Some("otlp_col"),
                 additional_properties: json!({
@@ -349,7 +349,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
         GoldenVector {
             name: "translator/trace",
             request: request(resource([]), no_scope(), vec![traced().severity_number(5)]),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 service: Some("otlp_col"),
                 additional_properties: json!({
@@ -377,7 +377,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
                     .attr("service.name", string("otlp_col"))
                     .severity_number(5)],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 service: Some("otlp_col"),
                 additional_properties: json!({
@@ -405,7 +405,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
                     .attr("service.name", string("otlp_col"))
                     .severity_number(5)],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 service: Some("otlp_col"),
                 additional_properties: json!({
@@ -433,7 +433,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
                     .attr("service.name", string("otlp_col"))
                     .severity_number(5)],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 service: Some("otlp_col"),
                 additional_properties: json!({
@@ -462,7 +462,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
                     .attr("service.name", string("otlp_col"))
                     .severity_number(5)],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 service: Some("otlp_col"),
                 additional_properties: json!({
@@ -481,7 +481,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
                 no_scope(),
                 vec![traced().severity_text("alert").severity_number(5)],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 service: Some("otlp_col"),
                 additional_properties: json!({
@@ -505,7 +505,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
                 no_scope(),
                 vec![traced().severity_number(13).body("This is log")],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 service: Some("otlp_col"),
                 additional_properties: json!({
@@ -529,7 +529,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
                 no_scope(),
                 vec![traced().attr("level", string("error")).body("This is log")],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 service: Some("otlp_col"),
                 additional_properties: json!({
@@ -552,7 +552,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
                 no_scope(),
                 vec![record().attr("app", string("test")).severity_number(5)],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: "service:otlp_col,otel_source:datadog_agent",
                 service: Some("otlp_col"),
                 additional_properties: json!({
@@ -572,7 +572,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
                 no_scope(),
                 vec![record().attr("app", string("test")).severity_number(5)],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: "service:otlp_col,otel_source:datadog_agent",
                 additional_properties: json!({
                     "app": "test",
@@ -598,7 +598,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
                     ]),
                 )],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 additional_properties: json!({
                     "root.nest1.nest2": "val",
@@ -612,7 +612,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
         GoldenVector {
             name: "translator/nil-map",
             request: request(resource([]), no_scope(), vec![record()]),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 additional_properties: json!({"status": ""}),
                 ..Default::default()
@@ -658,7 +658,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
                     )]),
                 )],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 additional_properties: json!({
                     "nest1.nest2.nest3.nest4.nest5.nest6.nest7.nest8.nest9.nest10": "{\"nest11\":{\"nest12\":\"ok\"}}",
@@ -675,7 +675,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
                 no_scope(),
                 vec![record().timestamp(1_700_499_303_397_000_000).severity_number(5)],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 additional_properties: json!({
                     "status": "debug",
@@ -695,7 +695,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
                     .observed_timestamp(1_700_499_303_397_000_000)
                     .severity_number(5)],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 additional_properties: json!({
                     "status": "debug",
@@ -713,7 +713,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
                 no_scope(),
                 vec![record().event_name("app.screen.click").severity_number(5)],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 additional_properties: json!({
                     "status": "debug",
@@ -737,7 +737,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
                 ),
                 vec![record().body("hello world").severity_number(5)],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 message: "hello world",
                 additional_properties: json!({
@@ -756,7 +756,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
                 scope("go.opentelemetry.io/contrib/bridges/otelslog", "", []),
                 vec![record().body("hello world").severity_number(5)],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 message: "hello world",
                 additional_properties: json!({
@@ -774,7 +774,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
                 scope("go.opentelemetry.io/contrib/bridges/otelslog", "v1.2.3", []),
                 vec![record().body("hello world").severity_number(5)],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 message: "hello world",
                 additional_properties: json!({
@@ -797,7 +797,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
                     .attr("otel.library.name", string("my-library"))
                     .attr("otel.library.version", string("v0.1.0"))],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 message: "hello world",
                 additional_properties: json!({
@@ -820,7 +820,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
                     .attr("otel.scope.name", string("explicit-scope-name"))
                     .attr("otel.library.name", string("library-alias-name"))],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 message: "hello world",
                 additional_properties: json!({
@@ -841,7 +841,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
                     .severity_number(5)
                     .attr("test_array", strings(["value1", "value2", "value3"]))],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 message: "test array attribute",
                 additional_properties: json!({
@@ -865,7 +865,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
                     ]),
                 )],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 message: "test array with maps",
                 additional_properties: json!({
@@ -915,7 +915,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
                     ]),
                 )],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 message: "test multiple nesting",
                 additional_properties: json!({
@@ -957,7 +957,7 @@ fn translator_vectors() -> Vec<GoldenVector> {
                     })),
                 )],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 message: "test slice of slices of maps",
                 additional_properties: json!({
@@ -1001,7 +1001,7 @@ fn derive_status_vectors() -> Vec<GoldenVector> {
             no_scope(),
             vec![record().severity_number(severity_number)],
         ),
-        target: vec![agent_wire_log(HttpLogItem {
+        target: vec![target_wire_log(HttpLogItem {
             ddtags: OTEL_SOURCE_TAG,
             additional_properties: json!({
                 "status": status,
@@ -1102,7 +1102,7 @@ fn exporter_vectors() -> Vec<GoldenVector> {
         GoldenVector {
             name: "exporter/message",
             request: request(testutil_resource([]), no_scope(), vec![log_one()]),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 additional_properties: log_one_properties(json!({})),
                 ..Default::default()
@@ -1118,7 +1118,7 @@ fn exporter_vectors() -> Vec<GoldenVector> {
                     .attr("datadog.log.source", string("custom_source"))
                     .attr("host.name", string("test-host"))],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 hostname: Some("test-host"),
                 additional_properties: log_one_properties(json!({
@@ -1136,7 +1136,7 @@ fn exporter_vectors() -> Vec<GoldenVector> {
                 no_scope(),
                 vec![log_one()],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 additional_properties: log_one_properties(json!({
                     "datadog.log.source": "custom_source_rattr",
@@ -1151,7 +1151,7 @@ fn exporter_vectors() -> Vec<GoldenVector> {
                 no_scope(),
                 vec![log_one().severity_text("Fatal")],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: OTEL_SOURCE_TAG,
                 additional_properties: log_one_properties(json!({
                     "status": "Fatal",
@@ -1167,7 +1167,7 @@ fn exporter_vectors() -> Vec<GoldenVector> {
                 no_scope(),
                 vec![log_one().attr("ddtags", string("tag1:true"))],
             ),
-            target: vec![agent_wire_log(HttpLogItem {
+            target: vec![target_wire_log(HttpLogItem {
                 ddtags: "tag1:true,otel_source:datadog_agent",
                 additional_properties: log_one_properties(json!({})),
                 ..Default::default()
@@ -1184,12 +1184,12 @@ fn exporter_vectors() -> Vec<GoldenVector> {
                 ],
             ),
             target: vec![
-                agent_wire_log(HttpLogItem {
+                target_wire_log(HttpLogItem {
                     ddtags: "tag1:true,otel_source:datadog_agent",
                     additional_properties: log_one_properties(json!({})),
                     ..Default::default()
                 }),
-                agent_wire_log(HttpLogItem {
+                target_wire_log(HttpLogItem {
                     ddtags: "tag1:true,otel_source:datadog_agent",
                     additional_properties: log_two_properties(),
                     ..Default::default()
@@ -1207,12 +1207,12 @@ fn exporter_vectors() -> Vec<GoldenVector> {
                 ],
             ),
             target: vec![
-                agent_wire_log(HttpLogItem {
+                target_wire_log(HttpLogItem {
                     ddtags: "tag1:true,otel_source:datadog_agent",
                     additional_properties: log_one_properties(json!({})),
                     ..Default::default()
                 }),
-                agent_wire_log(HttpLogItem {
+                target_wire_log(HttpLogItem {
                     ddtags: "tag2:true,otel_source:datadog_agent",
                     additional_properties: log_two_properties(),
                     ..Default::default()
