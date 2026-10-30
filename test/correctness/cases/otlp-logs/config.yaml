@@ -51,11 +51,3 @@ procedure:
     baseline: intake-agent
     logs:
       min_count: 1000
-      # Every difference ADP shows today, tagged with its gap from the OTLP logs parity plan (DataDog/saluki#2966). Remove
-      # an entry in the change that fixes its gap.
-      known_differences:
-        - gap: gap/missing-headers
-          paths:
-            - headers.dd-current-timestamp
-          kinds: [missing]
-          reason: ADP doesn't send the `dd-current-timestamp` header on logs requests.
