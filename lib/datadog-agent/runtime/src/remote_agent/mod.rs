@@ -82,7 +82,8 @@ impl RemoteAgentBootstrap {
     /// A remote agent client is created and immediately attempts to register with the Core Agent, advertising
     /// `secure_api_listen_address` as the address where the Core Agent reaches the status, flare, and telemetry
     /// services. This function does not return until the first registration attempt finishes, whether successful or
-    /// not.
+    /// not. `additional_service_names` advertises services the binary adds through
+    /// [`create_services_worker`](Self::create_services_worker).
     ///
     /// Registration runs in a background task that this function spawns outside of any supervision tree. The task
     /// refreshes the registration periodically, and registers again whenever a refresh fails, for the rest of the
@@ -98,16 +99,18 @@ impl RemoteAgentBootstrap {
     /// this function again: each call starts another background task, and each task registers its own session.
     pub async fn new(
         client_config: &RemoteAgentClientConfiguration, secure_api_listen_address: &ListenAddress,
+        additional_service_names: &[&str],
     ) -> Result<Self, GenericError> {
         let api_listen_addr = GrpcTargetAddress::try_from_listen_addr(secure_api_listen_address)
             .ok_or_else(|| generic_error!("Failed to get valid gRPC target address from secure API listen address."))?;
 
         // Generate our remote agent state, which is mostly fixed but has a few dynamic bits.
-        let service_names = vec![
+        let mut service_names = vec![
             <StatusProviderServer<()> as NamedService>::NAME.to_string(),
             <FlareProviderServer<()> as NamedService>::NAME.to_string(),
             <TelemetryProviderServer<()> as NamedService>::NAME.to_string(),
         ];
+        service_names.extend(additional_service_names.iter().map(|name| (*name).to_owned()));
 
         let (state, init_reg_rx) = RemoteAgentState::new(api_listen_addr, service_names);
         let session_id = state.session_id.clone();
@@ -180,8 +183,12 @@ impl RemoteAgentBootstrap {
     /// The telemetry service reports the internal metrics that match the given `telemetry_rules`, renamed to the names
     /// the Datadog Agent expects. Metrics that match no rule are not reported, so if `telemetry_rules` is empty, the
     /// service reports no metrics at all.
+    ///
+    /// `extend_services` adds binary-specific services using the live registration session handle. Their names must
+    /// be included in the `additional_service_names` passed to [`new`](Self::new).
     pub fn create_services_worker(
         &self, status_sections: Vec<Arc<dyn StatusSectionProvider>>, telemetry_rules: Vec<RemapperRule>,
+        extend_services: impl FnOnce(Routes, SessionIdHandle) -> Routes,
     ) -> RemoteAgentServicesWorker {
         let routes = Routes::new(StatusProviderServer::new(self.build_impl(status_sections, Vec::new())))
             .add_service(FlareProviderServer::new(self.build_impl(Vec::new(), Vec::new())))
@@ -189,7 +196,9 @@ impl RemoteAgentBootstrap {
                 self.build_impl(Vec::new(), telemetry_rules),
             ));
 
-        RemoteAgentServicesWorker { routes }
+        RemoteAgentServicesWorker {
+            routes: extend_services(routes, self.session_id.clone()),
+        }
     }
 
     /// Creates a config stream that receives configuration events from the Core Agent.

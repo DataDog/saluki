@@ -6,6 +6,7 @@ use datadog_agent_runtime::{
     facade::{Initialized, RemoteAgent},
     remote_agent::StatusSectionProvider,
 };
+use datadog_protos::agent::command::v1::remote_command_provider_server::RemoteCommandProviderServer;
 use saluki_api::EndpointType;
 use saluki_app::{
     accounting::ResourceTelemetryWorker,
@@ -22,7 +23,8 @@ use saluki_error::GenericError;
 use crate::{
     config::DataPlaneConfiguration,
     internal::{
-        logging::get_translated_log_level_stream, AgentDataPlane, DogStatsDStatusSection, TopologyControlSurfaces,
+        logging::get_translated_log_level_stream, remote_command::RemoteCommandProviderImpl, AgentDataPlane,
+        DogStatsDStatusSection, TopologyControlSurfaces,
     },
     state::metrics::{get_compat_remappings, get_datadog_agent_remappings},
 };
@@ -73,7 +75,16 @@ pub async fn create_control_plane_supervisor(
     privileged_api = control_surfaces.register_control_surfaces(privileged_api);
 
     let status_sections: Vec<Arc<dyn StatusSectionProvider>> = vec![Arc::new(DogStatsDStatusSection::new())];
-    supervisor.add_worker(agent.create_remote_agent_supervisor(status_sections, get_datadog_agent_remappings())?);
+    supervisor.add_worker(agent.create_remote_agent_supervisor(
+        status_sections,
+        get_datadog_agent_remappings(),
+        |routes, session_id| {
+            routes.add_service(RemoteCommandProviderServer::new(RemoteCommandProviderImpl::new(
+                session_id,
+                config_system.current_handle(),
+            )))
+        },
+    )?);
 
     supervisor.add_worker(privileged_api.into_supervisor());
 
