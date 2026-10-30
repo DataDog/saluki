@@ -146,6 +146,10 @@ fn add_to_breakdown(breakdown: &mut BTreeMap<String, f64>, label: &str, value: f
 
 fn set_breakdown<K: std::fmt::Display>(section: &mut StatusSectionWriter<'_>, name: &str, values: BTreeMap<K, f64>) {
     for (label, count) in values {
+        // Like the Core Agent, only list labels that have occurred. ADP registers some counters at zero on startup.
+        if count == 0.0 {
+            continue;
+        }
         section.set_field(format!("{name}: {label}"), count.to_string());
     }
 }
@@ -393,7 +397,18 @@ mod tests {
             counter(HTTP_REQUESTS_ERRORS, &["error_type:gt_400"], 3.0),
             counter(HTTP_REQUESTS_ERRORS, &["error_type:sent_request_error"], 4.0),
             counter(HTTP_REQUESTS_ERRORS, &["error_type:dns_error"], 5.0),
-            counter(HTTP_REQUESTS_ERRORS, &["error_type:tls_error"], 6.0),
+            // Counters registered at zero on startup must not produce breakdown entries.
+            counter(HTTP_REQUESTS_ERRORS, &["error_type:tls_error"], 0.0),
+            counter(
+                HTTP_REQUESTS_ERRORS,
+                &["error_type:client_error", "code:404", "endpoint:series_v2"],
+                0.0,
+            ),
+            counter(
+                HTTP_REQUESTS_SUCCESS,
+                &["component_id:dd_out", "endpoint:logs_v2", "proto_version:HTTP/2.0"],
+                0.0,
+            ),
             counter(HTTP_REQUESTS_ERRORS, &["error_type:connection_error"], 7.0),
             counter(HTTP_REQUESTS_ERRORS, &["error_type:wrote_request_error"], 8.0),
             counter(
@@ -438,7 +453,6 @@ mod tests {
             ("Errors by Type: ConnectionErrors", "7"),
             ("Errors by Type: DNSErrors", "5"),
             ("Errors by Type: SentRequestErrors", "4"),
-            ("Errors by Type: TLSErrors", "6"),
             ("Errors by Type: WroteRequestErrors", "8"),
             ("HTTP Errors", "10"),
             ("HTTP Errors by Code: 429", "1"),
