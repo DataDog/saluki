@@ -1,24 +1,23 @@
-#![allow(dead_code)]
-
 use saluki_core::{
     constants::datadog::*,
     data_model::{
         origin::OriginTagCardinality,
-        tags::{BorrowedTag, RawTags, RawTagsFilter, RawTagsFilterPredicate},
+        tags::{BorrowedTag, RawTags},
     },
 };
+use smallvec::SmallVec;
 
-/// Filter predicate for well-known tags.
-#[derive(Clone)]
-pub struct WellKnownTagsFilterPredicate;
+/// Regular (non-well-known) tags from a DogStatsD payload.
+///
+/// Sized to hold the tags of typical payloads inline, without allocating.
+pub type RegularTags<'a> = SmallVec<[&'a str; 32]>;
 
-impl RawTagsFilterPredicate for WellKnownTagsFilterPredicate {
-    fn matches(&self, tag: &str) -> bool {
-        tag.starts_with(HOST_TAG_KEY_SUFFIXED)
-            || tag.starts_with(ENTITY_ID_TAG_KEY_SUFFIXED)
-            || tag.starts_with(JMX_CHECK_NAME_TAG_KEY_SUFFIXED)
-            || tag.starts_with(CARDINALITY_TAG_KEY_SUFFIXED)
-    }
+/// Returns `true` if the given tag is a well-known tag.
+fn is_well_known_tag(tag: &str) -> bool {
+    tag.starts_with(HOST_TAG_KEY_SUFFIXED)
+        || tag.starts_with(ENTITY_ID_TAG_KEY_SUFFIXED)
+        || tag.starts_with(JMX_CHECK_NAME_TAG_KEY_SUFFIXED)
+        || tag.starts_with(CARDINALITY_TAG_KEY_SUFFIXED)
 }
 
 /// Well-known tags shared across DogStatsD payloads.
@@ -33,21 +32,29 @@ pub struct WellKnownTags<'a> {
 }
 
 impl<'a> WellKnownTags<'a> {
-    /// Extracts well-known tags from the raw tags of a DogStatsD payload.
+    /// Splits the raw tags of a DogStatsD payload into well-known tags and regular tags.
     ///
-    /// All fields default to `None`.
-    pub fn from_raw_tags(tags: &'a RawTags<'_>) -> Self {
+    /// Any tag with a well-known tag key is excluded from the regular tags, even if its value is ignored. All fields
+    /// of the well-known tags default to `None`.
+    ///
+    /// The raw tags are walked exactly once, so callers can iterate over the regular tags as many times as needed
+    /// (such as for both hashing and building a context) without re-parsing the raw tags.
+    pub fn split_raw_tags(tags: &'a RawTags<'_>) -> (Self, RegularTags<'a>) {
         let mut well_known_tags = Self {
             hostname: None,
             pod_uid: None,
             jmx_check_name: None,
             cardinality: None,
         };
+        let mut regular_tags = RegularTags::new();
 
-        let filtered_tags = RawTagsFilter::include(tags, WellKnownTagsFilterPredicate);
-        for tag in filtered_tags {
-            let tag = BorrowedTag::from(tag);
-            match tag.name_and_value() {
+        for tag in tags.iter() {
+            if !is_well_known_tag(tag) {
+                regular_tags.push(tag);
+                continue;
+            }
+
+            match BorrowedTag::from(tag).name_and_value() {
                 (HOST_TAG_KEY, Some(hostname)) => {
                     well_known_tags.hostname = Some(hostname);
                 }
@@ -65,7 +72,8 @@ impl<'a> WellKnownTags<'a> {
                 _ => {}
             }
         }
-        well_known_tags
+
+        (well_known_tags, regular_tags)
     }
 }
 
@@ -81,12 +89,33 @@ mod tests {
     #[test]
     fn well_known_tags_empty() {
         let tags = RawTags::new("", usize::MAX, usize::MAX);
-        let wkt = WellKnownTags::from_raw_tags(&tags);
+        let (wkt, _) = WellKnownTags::split_raw_tags(&tags);
 
         assert_eq!(wkt.cardinality, None);
         assert_eq!(wkt.hostname, None);
         assert_eq!(wkt.jmx_check_name, None);
         assert_eq!(wkt.pod_uid, None);
+    }
+
+    #[test]
+    fn regular_tags_exclude_well_known_tags() {
+        let raw_tags_input = format!(
+            "env:prod,{}:my-host,host,hostname:other,{}:{},{}:bogus,{}:check,env:prod",
+            HOST_TAG_KEY, ENTITY_ID_TAG_KEY, ENTITY_ID_IGNORE_VALUE, CARDINALITY_TAG_KEY, JMX_CHECK_NAME_TAG_KEY
+        );
+        let tags = RawTags::new(&raw_tags_input, usize::MAX, usize::MAX);
+        let (wkt, regular_tags) = WellKnownTags::split_raw_tags(&tags);
+
+        // Well-known tags are excluded even when their value is ignored, while regular tags retain their order and
+        // duplicates.
+        assert_eq!(
+            regular_tags.as_slice(),
+            ["env:prod", "host", "hostname:other", "env:prod"]
+        );
+        assert_eq!(wkt.hostname, Some("my-host"));
+        assert_eq!(wkt.pod_uid, None);
+        assert_eq!(wkt.cardinality, None);
+        assert_eq!(wkt.jmx_check_name, Some("check"));
     }
 
     #[test]
@@ -109,7 +138,7 @@ mod tests {
         for (tag_value, expected) in cases {
             let card_tag = format!("{}:{}", CARDINALITY_TAG_KEY, tag_value);
             let tags = RawTags::new(&card_tag, usize::MAX, usize::MAX);
-            let wkt = WellKnownTags::from_raw_tags(&tags);
+            let (wkt, _) = WellKnownTags::split_raw_tags(&tags);
 
             assert_eq!(wkt.cardinality, expected);
         }
@@ -122,7 +151,7 @@ mod tests {
         for (tag_value, expected) in cases {
             let host_tag = format!("{}:{}", HOST_TAG_KEY, tag_value);
             let tags = RawTags::new(&host_tag, usize::MAX, usize::MAX);
-            let wkt = WellKnownTags::from_raw_tags(&tags);
+            let (wkt, _) = WellKnownTags::split_raw_tags(&tags);
 
             assert_eq!(wkt.hostname, expected);
         }
@@ -135,7 +164,7 @@ mod tests {
         for (tag_value, expected) in cases {
             let jmx_tag = format!("{}:{}", JMX_CHECK_NAME_TAG_KEY, tag_value);
             let tags = RawTags::new(&jmx_tag, usize::MAX, usize::MAX);
-            let wkt = WellKnownTags::from_raw_tags(&tags);
+            let (wkt, _) = WellKnownTags::split_raw_tags(&tags);
 
             assert_eq!(wkt.jmx_check_name, expected);
         }
@@ -148,7 +177,7 @@ mod tests {
         for (tag_value, expected) in cases {
             let pod_tag = format!("{}:{}", ENTITY_ID_TAG_KEY, tag_value);
             let tags = RawTags::new(&pod_tag, usize::MAX, usize::MAX);
-            let wkt = WellKnownTags::from_raw_tags(&tags);
+            let (wkt, _) = WellKnownTags::split_raw_tags(&tags);
 
             assert_eq!(wkt.pod_uid, expected);
         }
