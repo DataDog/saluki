@@ -5826,6 +5826,7 @@ dependencies = [
  "simdutf8",
  "smallvec",
  "snafu",
+ "stele",
  "stringtheory",
  "tempfile",
  "test-strategy",

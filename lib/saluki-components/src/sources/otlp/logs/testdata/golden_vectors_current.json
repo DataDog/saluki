@@ -1,0 +1,791 @@
+{
+  "derive-status/debug5": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": ""
+      },
+      "otel.severity_number": "5",
+      "status": "Debug"
+    }
+  ],
+  "derive-status/debug7": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": ""
+      },
+      "otel.severity_number": "7",
+      "status": "Debug"
+    }
+  ],
+  "derive-status/debug8": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": ""
+      },
+      "otel.severity_number": "8",
+      "status": "Debug"
+    }
+  ],
+  "derive-status/error17": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": ""
+      },
+      "otel.severity_number": "17",
+      "status": "Error"
+    }
+  ],
+  "derive-status/error20": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": ""
+      },
+      "otel.severity_number": "20",
+      "status": "Error"
+    }
+  ],
+  "derive-status/fatal21": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": ""
+      },
+      "otel.severity_number": "21",
+      "status": "Fatal"
+    }
+  ],
+  "derive-status/fatal24": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": ""
+      },
+      "otel.severity_number": "24",
+      "status": "Fatal"
+    }
+  ],
+  "derive-status/info12": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": ""
+      },
+      "otel.severity_number": "12",
+      "status": "Info"
+    }
+  ],
+  "derive-status/info9": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": ""
+      },
+      "otel.severity_number": "9",
+      "status": "Info"
+    }
+  ],
+  "derive-status/trace3": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": ""
+      },
+      "otel.severity_number": "3",
+      "status": "Trace"
+    }
+  ],
+  "derive-status/trace4": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": ""
+      },
+      "otel.severity_number": "4",
+      "status": "Trace"
+    }
+  ],
+  "derive-status/undefined": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": ""
+      },
+      "otel.severity_number": "50",
+      "status": "Error"
+    }
+  ],
+  "derive-status/warn13": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": ""
+      },
+      "otel.severity_number": "13",
+      "status": "Warning"
+    }
+  ],
+  "derive-status/warn16": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": ""
+      },
+      "otel.severity_number": "16",
+      "status": "Warning"
+    }
+  ],
+  "exporter/ddtags": [
+    {
+      "@timestamp": "2020-02-11T20:26:13.000Z",
+      "app": "server",
+      "dd.span_id": "72624976397598720",
+      "dd.trace_id": "0",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent,tag1:true",
+      "instance_num": 1,
+      "message": {
+        "message": "This is a log message"
+      },
+      "otel.severity_number": "9",
+      "otel.severity_text": "Info",
+      "otel.span_id": "0102040800000000",
+      "otel.timestamp": "1581452773000000789",
+      "otel.trace_id": "08040201000000000000000000000000",
+      "resource-attr": "resource-attr-val-1",
+      "status": "Info"
+    }
+  ],
+  "exporter/ddtags-different-tags": [
+    {
+      "@timestamp": "2020-02-11T20:26:13.000Z",
+      "app": "server",
+      "dd.span_id": "72624976397598720",
+      "dd.trace_id": "0",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent,tag1:true",
+      "instance_num": 1,
+      "message": {
+        "message": "This is a log message"
+      },
+      "otel.severity_number": "9",
+      "otel.severity_text": "Info",
+      "otel.span_id": "0102040800000000",
+      "otel.timestamp": "1581452773000000789",
+      "otel.trace_id": "08040201000000000000000000000000",
+      "resource-attr": "resource-attr-val-1",
+      "status": "Info"
+    },
+    {
+      "@timestamp": "2020-02-11T20:26:13.000Z",
+      "customer": "acme",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent,tag2:true",
+      "env": "dev",
+      "message": {
+        "message": "something happened"
+      },
+      "otel.severity_number": "9",
+      "otel.severity_text": "Info",
+      "otel.timestamp": "1581452773000000789",
+      "resource-attr": "resource-attr-val-1",
+      "status": "Info"
+    }
+  ],
+  "exporter/ddtags-same-tags": [
+    {
+      "@timestamp": "2020-02-11T20:26:13.000Z",
+      "app": "server",
+      "dd.span_id": "72624976397598720",
+      "dd.trace_id": "0",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent,tag1:true",
+      "instance_num": 1,
+      "message": {
+        "message": "This is a log message"
+      },
+      "otel.severity_number": "9",
+      "otel.severity_text": "Info",
+      "otel.span_id": "0102040800000000",
+      "otel.timestamp": "1581452773000000789",
+      "otel.trace_id": "08040201000000000000000000000000",
+      "resource-attr": "resource-attr-val-1",
+      "status": "Info"
+    },
+    {
+      "@timestamp": "2020-02-11T20:26:13.000Z",
+      "customer": "acme",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent,tag1:true",
+      "env": "dev",
+      "message": {
+        "message": "something happened"
+      },
+      "otel.severity_number": "9",
+      "otel.severity_text": "Info",
+      "otel.timestamp": "1581452773000000789",
+      "resource-attr": "resource-attr-val-1",
+      "status": "Info"
+    }
+  ],
+  "exporter/message": [
+    {
+      "@timestamp": "2020-02-11T20:26:13.000Z",
+      "app": "server",
+      "dd.span_id": "72624976397598720",
+      "dd.trace_id": "0",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "instance_num": 1,
+      "message": {
+        "message": "This is a log message"
+      },
+      "otel.severity_number": "9",
+      "otel.severity_text": "Info",
+      "otel.span_id": "0102040800000000",
+      "otel.timestamp": "1581452773000000789",
+      "otel.trace_id": "08040201000000000000000000000000",
+      "resource-attr": "resource-attr-val-1",
+      "status": "Info"
+    }
+  ],
+  "exporter/message-attribute": [
+    {
+      "@timestamp": "2020-02-11T20:26:13.000Z",
+      "app": "server",
+      "datadog.log.source": "custom_source",
+      "dd.span_id": "72624976397598720",
+      "dd.trace_id": "0",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "host.name": "test-host",
+      "hostname": "test-host",
+      "instance_num": 1,
+      "message": {
+        "message": "hello"
+      },
+      "otel.severity_number": "9",
+      "otel.severity_text": "Info",
+      "otel.span_id": "0102040800000000",
+      "otel.timestamp": "1581452773000000789",
+      "otel.trace_id": "08040201000000000000000000000000",
+      "resource-attr": "resource-attr-val-1",
+      "status": "Info"
+    }
+  ],
+  "exporter/resource-attribute-source": [
+    {
+      "@timestamp": "2020-02-11T20:26:13.000Z",
+      "app": "server",
+      "datadog.log.source": "custom_source_rattr",
+      "dd.span_id": "72624976397598720",
+      "dd.trace_id": "0",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "instance_num": 1,
+      "message": {
+        "message": "This is a log message"
+      },
+      "otel.severity_number": "9",
+      "otel.severity_text": "Info",
+      "otel.span_id": "0102040800000000",
+      "otel.timestamp": "1581452773000000789",
+      "otel.trace_id": "08040201000000000000000000000000",
+      "resource-attr": "resource-attr-val-1",
+      "status": "Info"
+    }
+  ],
+  "exporter/status": [
+    {
+      "@timestamp": "2020-02-11T20:26:13.000Z",
+      "app": "server",
+      "dd.span_id": "72624976397598720",
+      "dd.trace_id": "0",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "instance_num": 1,
+      "message": {
+        "message": "This is a log message"
+      },
+      "otel.severity_number": "9",
+      "otel.severity_text": "Fatal",
+      "otel.span_id": "0102040800000000",
+      "otel.timestamp": "1581452773000000789",
+      "otel.trace_id": "08040201000000000000000000000000",
+      "resource-attr": "resource-attr-val-1",
+      "status": "Fatal"
+    }
+  ],
+  "translator/append-tags": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "app": "test",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "service:otlp_col,otel_source:datadog_agent,foo:bar",
+      "message": {
+        "message": "",
+        "service": "otlp_col"
+      },
+      "otel.severity_number": "5",
+      "service": "otlp_col",
+      "service.name": "otlp_col",
+      "status": "Debug"
+    }
+  ],
+  "translator/array-of-maps": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "array_with_maps": "[{\"item_name\":\"item1\",\"value\":100},{\"item_name\":\"item2\",\"value\":200}]",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": "test array with maps"
+      },
+      "otel.severity_number": "5",
+      "status": "Debug"
+    }
+  ],
+  "translator/array-of-strings": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": "test array attribute"
+      },
+      "otel.severity_number": "5",
+      "status": "Debug",
+      "test_array": "[\"value1\",\"value2\",\"value3\"]"
+    }
+  ],
+  "translator/basic": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "app": "test",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": ""
+      },
+      "otel.severity_number": "5",
+      "status": "Debug"
+    }
+  ],
+  "translator/body": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "app": "test",
+      "dd.span_id": "167772160",
+      "dd.trace_id": "167772160",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": "This is log",
+        "service": "otlp_col"
+      },
+      "otel.severity_number": "13",
+      "otel.span_id": "000000000a000000",
+      "otel.trace_id": "0802030405060708000000000a000000",
+      "service": "otlp_col",
+      "service.name": "otlp_col",
+      "status": "Warning"
+    }
+  ],
+  "translator/event-name": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": ""
+      },
+      "otel.severity_number": "5",
+      "status": "Debug"
+    }
+  ],
+  "translator/explicit-scope-name": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": "hello world"
+      },
+      "otel.library.name": "library-alias-name",
+      "otel.scope.name": "explicit-scope-name",
+      "otel.severity_number": "5",
+      "status": "Debug"
+    }
+  ],
+  "translator/library-aliases": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": "hello world"
+      },
+      "otel.library.name": "my-library",
+      "otel.library.version": "v0.1.0",
+      "otel.severity_number": "5",
+      "status": "Debug"
+    }
+  ],
+  "translator/log-level": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "app": "test",
+      "dd.span_id": "167772160",
+      "dd.trace_id": "167772160",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": "This is log",
+        "service": "otlp_col"
+      },
+      "otel.span_id": "000000000a000000",
+      "otel.trace_id": "0802030405060708000000000a000000",
+      "service": "otlp_col",
+      "service.name": "otlp_col",
+      "status": "Error"
+    }
+  ],
+  "translator/multiple-nesting": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": "test multiple nesting"
+      },
+      "multiple_nesting": "[{\"categories\":[\"meetings\",\"personal\",\"holidays\"],\"events\":[{\"attendees\":[\"a\",\"b\",\"c\"],\"title\":\"Team Meeting\"},{\"attendees\":[\"d\",\"e\"],\"title\":\"Project Review\"}],\"month\":\"January\"},{\"categories\":[\"conferences\",\"workshops\"],\"events\":[{\"attendees\":[\"f\",\"g\",\"h\"],\"title\":\"Tech Conference\"}],\"month\":\"February\"}]",
+      "otel.severity_number": "5",
+      "status": "Debug"
+    }
+  ],
+  "translator/nestings": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": ""
+      },
+      "root.nest1.nest2": "val",
+      "root.nest12.nest22.nest3": "val2",
+      "root.nest13": "val3",
+      "status": "Trace"
+    }
+  ],
+  "translator/nil-map": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": ""
+      },
+      "status": "Trace"
+    }
+  ],
+  "translator/observed-timestamp": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": ""
+      },
+      "otel.severity_number": "5",
+      "status": "Debug"
+    }
+  ],
+  "translator/reserved-resource-attributes": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "app": "test",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "service:otlp_col,otel_source:datadog_agent",
+      "message": {
+        "message": ""
+      },
+      "otel.hostname": "example_host",
+      "otel.service": "otlp_col",
+      "otel.severity_number": "5",
+      "status": "Debug"
+    }
+  ],
+  "translator/resource": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "app": "test",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "service:otlp_col,otel_source:datadog_agent",
+      "message": {
+        "message": "",
+        "service": "otlp_col"
+      },
+      "otel.severity_number": "5",
+      "service": "otlp_col",
+      "service.name": "otlp_col",
+      "status": "Debug"
+    }
+  ],
+  "translator/resource-attributes": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "app": "test",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "service:otlp_col,otel_source:datadog_agent",
+      "key": "val",
+      "message": {
+        "message": "",
+        "service": "otlp_col"
+      },
+      "otel.severity_number": "5",
+      "service": "otlp_col",
+      "service.name": "otlp_col",
+      "status": "Debug"
+    }
+  ],
+  "translator/scope-attributes": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": "hello world"
+      },
+      "otel.severity_number": "5",
+      "otelcol.component.id": "otlp",
+      "otelcol.component.kind": "Receiver",
+      "status": "Debug"
+    }
+  ],
+  "translator/scope-name": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": "hello world"
+      },
+      "otel.severity_number": "5",
+      "status": "Debug"
+    }
+  ],
+  "translator/scope-version": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": "hello world"
+      },
+      "otel.severity_number": "5",
+      "status": "Debug"
+    }
+  ],
+  "translator/service": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "app": "test",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": "",
+        "service": "otlp_col"
+      },
+      "otel.severity_number": "5",
+      "service": "otlp_col",
+      "service.name": "otlp_col",
+      "status": "Debug"
+    }
+  ],
+  "translator/severity-text": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "app": "test",
+      "dd.span_id": "167772160",
+      "dd.trace_id": "167772160",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": "",
+        "service": "otlp_col"
+      },
+      "otel.severity_number": "5",
+      "otel.severity_text": "alert",
+      "otel.span_id": "000000000a000000",
+      "otel.trace_id": "0802030405060708000000000a000000",
+      "service": "otlp_col",
+      "service.name": "otlp_col",
+      "status": "Alert"
+    }
+  ],
+  "translator/slice-of-slices-of-maps": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "matrix": "[[{\"col\":0,\"row\":0,\"value\":\"a\"},{\"col\":1,\"row\":0,\"value\":\"b\"}],[{\"col\":0,\"row\":1,\"value\":\"c\"},{\"col\":1,\"row\":1,\"value\":\"d\"}],[{\"col\":0,\"row\":2,\"value\":\"e\"},{\"col\":1,\"row\":2,\"value\":\"f\"}]]",
+      "message": {
+        "message": "test slice of slices of maps"
+      },
+      "otel.severity_number": "5",
+      "status": "Debug"
+    }
+  ],
+  "translator/timestamp": [
+    {
+      "@timestamp": "2023-11-20T16:55:03.397Z",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": ""
+      },
+      "otel.severity_number": "5",
+      "otel.timestamp": "1700499303397000000",
+      "status": "Debug"
+    }
+  ],
+  "translator/too-many-nestings": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": ""
+      },
+      "nest1.nest2.nest3.nest4.nest5.nest14.nest15": "ok2",
+      "nest1.nest2.nest3.nest4.nest5.nest6.nest7.nest8.nest9.nest10": "{\"nest11\":{\"nest12\":\"ok\"}}",
+      "status": "Trace"
+    }
+  ],
+  "translator/trace": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "app": "test",
+      "dd.span_id": "167772160",
+      "dd.trace_id": "167772160",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": "",
+        "service": "otlp_col"
+      },
+      "otel.severity_number": "5",
+      "otel.span_id": "000000000a000000",
+      "otel.trace_id": "0802030405060708000000000a000000",
+      "service": "otlp_col",
+      "service.name": "otlp_col",
+      "status": "Debug"
+    }
+  ],
+  "translator/trace-from-attributes": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "app": "test",
+      "dd.span_id": "3325585652813450620",
+      "dd.trace_id": "13479048940416379481",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": "",
+        "service": "otlp_col"
+      },
+      "otel.severity_number": "5",
+      "otel.span_id": "2e26da881214cd7c",
+      "otel.trace_id": "437ab4d83468c540bb0f3398a39faa59",
+      "service": "otlp_col",
+      "service.name": "otlp_col",
+      "status": "Debug"
+    }
+  ],
+  "translator/trace-from-attributes-decode-error": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "app": "test",
+      "dd.span_id": "3325585652813450620",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": "",
+        "service": "otlp_col"
+      },
+      "otel.severity_number": "5",
+      "otel.span_id": "2e26da881214cd7c",
+      "service": "otlp_col",
+      "service.name": "otlp_col",
+      "status": "Debug"
+    }
+  ],
+  "translator/trace-from-attributes-size-error": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "app": "test",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": "",
+        "service": "otlp_col"
+      },
+      "otel.severity_number": "5",
+      "service": "otlp_col",
+      "service.name": "otlp_col",
+      "status": "Debug"
+    }
+  ],
+  "translator/trace-from-attributes-underscore": [
+    {
+      "@timestamp": "<encode-time-rfc3339>",
+      "app": "test",
+      "dd.span_id": "3325585652813450620",
+      "dd.trace_id": "14414413676535528551",
+      "ddsource": "otlp_log_ingestion",
+      "ddtags": "otel_source:datadog_agent",
+      "message": {
+        "message": "",
+        "service": "otlp_col"
+      },
+      "otel.severity_number": "5",
+      "otel.span_id": "2e26da881214cd7c",
+      "otel.trace_id": "740112b325075be8c80a48de336ebc67",
+      "service": "otlp_col",
+      "service.name": "otlp_col",
+      "status": "Debug"
+    }
+  ]
+}

@@ -37,6 +37,21 @@ cargo nextest run -p architecture-tests
 Failures report a dependency route or source location. Inspect symbol matches before changing code: unrelated names
 can produce false positives.
 
+### Golden vectors
+
+Golden vectors are unit tests that keep a reference implementation's output next to ADP's current output. The OTLP
+logs golden vectors (`lib/saluki-components/src/sources/otlp/logs/golden_vectors/`) port the Agent's OTLP logs tests:
+each vector sends an OTLP request through the OTLP source and the logs encoder, and compares the logs on the wire with
+the Agent's output for the same request.
+
+- ADP's output must match the vector's current fixture exactly, so any change to the output fails the test.
+- Every difference from the Agent's output must be covered by an entry in the gap manifest, tagged with its gap ID, in
+  the same way as the known differences of a correctness case. An entry that no longer matches fails the test.
+
+When a change fixes a gap, rewrite the current fixtures with
+`SALUKI_UPDATE_GOLDEN_VECTORS=1 cargo nextest run -p saluki-components golden_vectors`, check the fixture diff, and
+remove the manifest entries that the test reports as stale.
+
 ## Correctness tests (panoramic)
 
 These tests serve to answer the question: *Does ADP produce the same output as the Datadog Agent for a given workload?*
