@@ -319,10 +319,10 @@ mod tests {
     #[test]
     fn prefix_rules_apply_to_histogram_outputs_with_global_exceptions() {
         let histogram_suffixes = HistogramSuffixes::try_new(&["avg".to_string()], &[]).unwrap();
-        let metric_filter = MetricFilter {
+        let metric_filter = MetricNameFilter {
             values: Vec::new(),
             match_prefix: false,
-            prefix_rules: vec![agent_data_plane_config::domains::dogstatsd::MetricPrefixRule {
+            prefix_rules: vec![crate::components::dogstatsd_filterlist::MetricPrefixRule {
                 prefix: "requests.".to_string(),
                 except_prefix: vec!["requests.keep.".to_string()],
                 except_exact: vec!["requests.exact.keep.avg".to_string()],
@@ -490,6 +490,7 @@ mod tests {
         let (mut publisher, source) = saluki_common::sync::live::channel(MetricNameFilter {
             values: vec!["request.duration.max".to_string()],
             match_prefix: false,
+            prefix_rules: Vec::new(),
         });
         let metric_filter = source.live(|filter| filter);
         let aggregates = ["max", "median", "avg", "count"].map(String::from);
@@ -505,6 +506,7 @@ mod tests {
         publisher.publish(MetricNameFilter {
             values: vec!["request.duration.avg".to_string()],
             match_prefix: false,
+            prefix_rules: Vec::new(),
         });
 
         // Nothing counts updates, so keep probing until the transform has applied this one.
