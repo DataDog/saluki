@@ -223,10 +223,11 @@ impl FromStr for OriginTagCardinality {
     }
 }
 
-/// Telemetry emitted by the DogStatsD source.
+/// Telemetry emitted by the DogStatsD pipeline.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Telemetry {
-    /// Whether processed-metric telemetry is broken down by detected origin.
+    /// Whether the source's processed-metric telemetry and the aggregator's active context counts are broken down by
+    /// detected origin. Has no effect unless origin detection is enabled.
     pub origin_breakdown: bool,
 }
 

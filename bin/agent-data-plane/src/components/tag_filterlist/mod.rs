@@ -1589,6 +1589,7 @@ mod tests {
                     flush_open_windows: false,
                     counter_expiry_seconds: Some(300),
                     hist_config,
+                    origin_telemetry_enabled: false,
                     context_snapshot_receiver,
                 };
 
@@ -1738,6 +1739,7 @@ mod tests {
                     flush_open_windows: false,
                     counter_expiry_seconds: Some(300),
                     hist_config,
+                    origin_telemetry_enabled: false,
                     context_snapshot_receiver,
                 };
 
