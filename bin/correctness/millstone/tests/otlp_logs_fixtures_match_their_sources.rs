@@ -253,6 +253,91 @@ fn attributes_fixture() -> Vec<u8> {
     )
 }
 
+/// Severity, timestamps, and bodies.
+fn severity_body_fixture() -> Vec<u8> {
+    let mut records = Vec::new();
+    let mut index = 0;
+    let mut next = |id: String, attributes: Vec<KeyValue>| {
+        let built = record(index, &id, attributes);
+        index += 1;
+        built
+    };
+
+    // gap/zero-severity-status: severity number 0 with no text gives no status, which becomes `info` on the envelope.
+    // gap/raw-status-strings and the number mapping: each range boundary, and a number past the last range.
+    for number in [0, 1, 4, 5, 8, 9, 12, 13, 16, 17, 20, 21, 24, 25] {
+        let mut severity = next(format!("severity-number-{}", number), vec![]);
+        severity.severity_number = number;
+        severity.severity_text = String::new();
+        records.push(severity);
+    }
+
+    // Severity text takes precedence over the number, and unknown text passes through raw (gap/raw-status-strings).
+    for (id, text, number) in [
+        ("severity-text-over-number", "WARN", 17),
+        ("severity-text-unknown", "notice-ish", 9),
+        ("severity-text-only", "Error", 0),
+    ] {
+        let mut severity = next(id.to_string(), vec![]);
+        severity.severity_number = number;
+        severity.severity_text = text.to_string();
+        records.push(severity);
+    }
+
+    // Status attributes take precedence over severity, and unknown values pass through raw (gap/raw-status-strings).
+    records.push(next(
+        "status-attribute-unknown".to_string(),
+        vec![kv("status", string("custom"))],
+    ));
+    records.push(next(
+        "severity-attribute".to_string(),
+        vec![kv("severity", string("debug"))],
+    ));
+
+    // gap/observed-timestamp: the observed timestamp is the fallback when the timestamp is unset.
+    let mut observed = next("timestamp-observed-only".to_string(), vec![]);
+    observed.observed_time_unix_nano = observed.time_unix_nano;
+    observed.time_unix_nano = 0;
+    records.push(observed);
+    let mut both = next("timestamp-and-observed".to_string(), vec![]);
+    both.observed_time_unix_nano = both.time_unix_nano + 5_000_000;
+    records.push(both);
+    let mut neither = next("timestamp-neither".to_string(), vec![]);
+    neither.time_unix_nano = 0;
+    records.push(neither);
+
+    // gap/value-formatting and gap/bytes-encoding: bodies other than strings use `AsString` in the Agent.
+    for (id, body) in [
+        ("body-int", int(-7)),
+        ("body-double", double(0.25)),
+        ("body-large-double", double(1e21)),
+        ("body-bool", boolean(true)),
+        ("body-bytes", bytes(b"body bytes")),
+        ("body-map", map(vec![kv("b", int(2)), kv("a", string("<&>"))])),
+        (
+            "body-array",
+            array(vec![int(1), string("two"), map(vec![kv("k", boolean(false))])]),
+        ),
+        ("body-empty", empty()),
+    ] {
+        let mut with_body = next(id.to_string(), vec![]);
+        with_body.body = Some(body);
+        records.push(with_body);
+    }
+    let mut no_body = next("body-missing".to_string(), vec![]);
+    no_body.body = None;
+    records.push(no_body);
+
+    request(
+        vec![
+            kv("service.name", string("fixture-severity-body")),
+            kv("host.name", string("fixture-host")),
+        ],
+        InstrumentationScope::default(),
+        records,
+    )
+}
+
 fn case_millstone_config(case: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../test/correctness/cases")
@@ -295,7 +380,10 @@ type FixtureBuilder = fn() -> Vec<u8>;
 
 #[test]
 fn otlp_logs_fixtures_match_their_sources() {
-    let fixtures: &[(&str, FixtureBuilder)] = &[("otlp-logs-attributes", attributes_fixture)];
+    let fixtures: &[(&str, FixtureBuilder)] = &[
+        ("otlp-logs-attributes", attributes_fixture),
+        ("otlp-logs-severity-body", severity_body_fixture),
+    ];
 
     let errors = fixtures
         .iter()
