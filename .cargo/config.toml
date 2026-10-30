@@ -6,3 +6,6 @@ rustflags = ["--cfg", "tokio_unstable", "-C", "target-feature=+crt-static"]
 
 [env]
 JEMALLOC_SYS_WITH_MALLOC_CONF = "abort_conf:true,max_background_threads:1,narenas:1,tcache:false,thp:never,oversize_threshold:32768,dirty_decay_ms:1000,muzzy_decay_ms:0"
+# jemalloc has no THP support on AIX, and `abort_conf:true` makes it abort at startup on `thp:never`. Keep the rest in sync
+# with the line above.
+POWERPC64_IBM_AIX_JEMALLOC_SYS_WITH_MALLOC_CONF = "abort_conf:true,max_background_threads:1,narenas:1,tcache:false,oversize_threshold:32768,dirty_decay_ms:1000,muzzy_decay_ms:0"
