@@ -1,4 +1,4 @@
-//! Shared fixtures for the Datadog component tests.
+//! Shared fixtures and payload helpers for the Datadog component tests.
 //!
 //! The fixtures state the values a translated Agent configuration carries when nothing is configured, so a test only
 //! has to state what it is actually varying. They copy those defaults by hand, so they can drift from the schema.
@@ -7,7 +7,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use http_body_util::BodyExt as _;
 use saluki_common::sync::live::{self, LivePublisher, LiveSource};
+use saluki_core::data_model::payload::Payload;
 
 use super::api_key::{ApiKeyView, LiveApiKeys};
 use super::config::{ForwarderConfiguration, ForwarderHttpProtocol, OpwMetricsConfiguration};
@@ -154,4 +156,42 @@ impl LiveConfiguration {
             additional: Some(self.source.live(|root| &root.additional_endpoints)),
         }
     }
+}
+
+/// Returns a string of `len` pseudo-random characters, which barely compresses.
+///
+/// The characters come from a pseudo-random generator seeded with `seed`, so every run produces the same string.
+pub(crate) fn incompressible_string(len: usize, seed: u64) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    // Spread the seed so that nearby seeds give unrelated strings, and keep the state non-zero, as xorshift needs.
+    let mut state = (seed.wrapping_add(1).wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ 0x2545_f491_4f6c_dd1d).max(1);
+    (0..len)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            ALPHABET[(state % ALPHABET.len() as u64) as usize] as char
+        })
+        .collect()
+}
+
+/// Returns the event count and decompressed body of each zstd-compressed HTTP payload, in order.
+pub(crate) async fn decompressed_bodies(payloads: Vec<Payload>) -> Vec<(usize, Vec<u8>)> {
+    let mut bodies = Vec::new();
+    for payload in payloads {
+        let (metadata, request) = payload
+            .try_into_http_payload()
+            .expect("payload should be HTTP")
+            .into_parts();
+        let compressed = request
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let body = zstd::stream::decode_all(compressed.as_ref()).expect("body should decompress");
+        bodies.push((metadata.event_count(), body));
+    }
+    bodies
 }
