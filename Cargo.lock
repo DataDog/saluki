@@ -4117,6 +4117,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "lading-payload",
+ "otlp-protos",
  "prost",
  "rand 0.10.3",
  "saluki-common",
