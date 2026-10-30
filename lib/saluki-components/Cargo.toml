@@ -98,6 +98,7 @@ url = { workspace = true }
 zstd = { workspace = true }
 
 [dev-dependencies]
+async-compression = { workspace = true, features = ["gzip", "tokio"] }
 datadog-agent-apm = { workspace = true, features = ["test-util"] }
 proptest = { workspace = true }
 saluki-config = { workspace = true, features = ["test-util"] }
