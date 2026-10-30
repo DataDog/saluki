@@ -35,7 +35,8 @@ A generated witness trait creates a compile-time obligation to translate every s
 
 | Responsibility | Canonical location |
 |---|---|
-| Source-agnostic typed model and `Live<T>` | `lib/agent-data-plane-config/` |
+| Source-agnostic typed model | `lib/agent-data-plane-config/` |
+| `Live<T>`, a live view of a shared value, and the channel that publishes it | `lib/saluki-common/src/sync/live.rs` |
 | Loading, translation, authority, updates, compatibility | `lib/agent-data-plane-config-system/` |
 | Datadog source model, witness, classifier, environment decoding | `lib/datadog-agent/config/` |
 | Hand-edited ADP support inventory for Datadog schema keys | `lib/datadog-agent/config/schema/schema_overlay.yaml` |
@@ -66,14 +67,12 @@ The intended end state is:
 
 ### The `saluki-components` dependency
 
-Initially we wanted `saluki-components` to depend on `agent-data-plane-config`, but we changed our mind. We can't end
-this dependency immediately because of `Live<T>` and `ConfigValue<T>`. However, most migrations don't require these
-types. Migrations that don't require them **SHOULD NOT** depend on types in `agent-data-plane-config`, and should
-instead rely on the binary to copy data into fields or an arguments struct that the component presents.
+Components **SHOULD NOT** accept model types from `agent-data-plane-config`. The binary supplies values through
+fields or argument structs defined by the component. For live values, use `Live<T>` from `saluki-common`.
 
-The end state removes `agent-data-plane-config` from the `saluki-components` `Cargo.toml`. Minimize the impact of that
-change when migrating components. Some migrations predate this design change: they're temporary exceptions, so don't
-follow them.
+Existing dependencies remain through model slices (`SharedConfiguration` and `domains::*`) and `defaults` constants.
+These are exceptions, not patterns for new migrations. `ConfigValue<T>` occurs within those slices; model methods such
+as `Endpoints::primary_endpoint` resolve provenance and return effective values.
 
 ## Datadog versus Saluki keys
 
@@ -169,9 +168,13 @@ that the typed model doesn't carry, so they read the sources rather than the mod
 
 ### Runtime updates
 
-Startup translation is strict. Live updates are translated against tentative state: success atomically replaces both
-the typed model and the retained sources, while failure keeps the last-known-good model and leaves the sources as they
-were.
+Startup translation is strict. Live updates are translated against tentative state. On success, the update task
+replaces the retained sources and publishes the typed model before releasing the sources lock. Separate reads of the
+model and the sources can still observe different versions; they don't form a combined snapshot. On failure, the task
+keeps the last-known-good model and leaves the sources as they were.
+
+`ConfigurationSystem` holds the read-only `LiveSource` of a `live::channel`, and the update task owns its only
+`LivePublisher`. Tests that need a changing value create their own channel and publish replacements through it.
 
 ## Workflows
 
@@ -216,7 +219,8 @@ An inventory key marked `none` or `unknown`, or a key under `excluded`, is absen
    - Runtime wiring the caller can't read out of configuration: have the caller create it and assign what the
      component needs to a `pub` field. See `aggregate_context_snapshot_channel` and
      `AggregateConfiguration::context_snapshot_receiver`.
-   - Values that change at runtime: pass a narrow `Live<T>`, and rebuild the reactive state after `changed()`.
+   - Values that change at runtime: pass a narrow `Live<T>`, and rebuild the reactive state after `changed()`. Values
+     that must change together belong in one `Live<T>`: separate views advance independently.
 7. Remove source serde, Datadog key names, raw-map access, key watches, parsing, configuration defaults, and code made
    unused by the cutover. `#[allow(dead_code)]` isn't an acceptable way to keep migration residue.
 8. Update topology call sites and tests. Preserve behavior tests by using typed inputs, and remove tests only when they

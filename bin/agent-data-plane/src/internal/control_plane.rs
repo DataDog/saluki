@@ -56,8 +56,9 @@ pub async fn create_control_plane_supervisor(
         logging_controller,
     ));
     supervisor.add_worker(ConfigWorker::new(config_system.raw_snapshot()));
-    supervisor.add_worker(ConfigRuntimeWorker::new(RuntimeConfigSnapshot::from_shared(
-        config_system.current_handle(),
+    let current = config_system.current_handle();
+    supervisor.add_worker(ConfigRuntimeWorker::new(RuntimeConfigSnapshot::from_loader(
+        move || current.load(),
     )));
 
     let api_listen_address = dp.api_listen_address()?;

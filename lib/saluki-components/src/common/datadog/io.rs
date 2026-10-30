@@ -45,14 +45,13 @@ use std::{
 };
 
 use agent_data_plane_config::shared::Secrets;
-use agent_data_plane_config::Live;
 use bytes::Buf;
 use futures::FutureExt as _;
 use http::{Request, StatusCode, Uri};
 use http_body::Body;
 use http_body_util::BodyExt as _;
 use hyper::{body::Incoming, Response};
-use saluki_common::{collections::FastHashMap, hash::hash_single_stable, time::get_unix_timestamp};
+use saluki_common::{collections::FastHashMap, hash::hash_single_stable, sync::live::Live, time::get_unix_timestamp};
 use saluki_core::components::ComponentContext;
 use saluki_core::diagnostic::{DiagnosticDetails, DiagnosticEvent, DiagnosticsEmitter};
 use saluki_core::runtime::{self, get_sanitized_name};
@@ -2488,7 +2487,9 @@ mod tests {
         let mut config = SalukiConfiguration::default();
         config.shared.secrets.backend_command = Some("/bin/true".to_string());
 
-        LiveConfiguration::new(config).live(|config| &config.shared.secrets)
+        LiveConfiguration::new(config)
+            .source
+            .live(|config| &config.shared.secrets)
     }
 
     /// Returns a configuration whose primary API key is `api_key`.
@@ -2829,7 +2830,7 @@ mod tests {
     async fn a_rotated_api_key_reaches_the_requests_a_spawned_forwarder_sends() {
         let (server_url, _counter, mut requests) =
             start_recording_http_server_with_requests(vec![StatusCode::OK]).await;
-        let live = LiveConfiguration::new(config_with_api_key(TEST_API_KEY));
+        let mut live = LiveConfiguration::new(config_with_api_key(TEST_API_KEY));
         let following = LiveForwarderConfiguration {
             api_keys: live.api_keys(),
             ..Default::default()
@@ -2849,7 +2850,7 @@ mod tests {
             .expect("the server should be running");
         assert_eq!(Some(TEST_API_KEY), recorded_api_key(&request));
 
-        live.store(config_with_api_key("rotated-api-key"));
+        live.publisher.publish(config_with_api_key("rotated-api-key"));
 
         // A key is installed by a task of its own, so keep sending until a request carries the new one.
         let rotated = timeout(Duration::from_secs(3), async {

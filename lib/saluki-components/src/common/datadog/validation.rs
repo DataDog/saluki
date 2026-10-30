@@ -420,7 +420,7 @@ mod tests {
 
         let mut live_config = SalukiConfiguration::default();
         live_config.shared.endpoints.api_key = "primary-key".to_string();
-        let live = LiveConfiguration::new(live_config.clone());
+        let mut live = LiveConfiguration::new(live_config.clone());
         let refresher =
             ApiKeyRefresher::new(&endpoints, &live.api_keys()).expect("the endpoint should follow the live views");
         let api_key_changes = refresher.changes();
@@ -453,7 +453,7 @@ mod tests {
         assert_eq!(await_readiness(&mut readiness_rx).await, ValidationReadiness::NotReady);
 
         live_config.shared.endpoints.api_key = "rotated-key".to_string();
-        live.store(live_config);
+        live.publisher.publish(live_config);
 
         assert_eq!(await_readiness(&mut readiness_rx).await, ValidationReadiness::Ready);
     }
@@ -556,7 +556,7 @@ mod tests {
         let mut live_config = SalukiConfiguration::default();
         live_config.shared.endpoints.api_key = "primary-key".to_string();
         live_config.shared.endpoints.additional_endpoints = shared.endpoints.additional_endpoints.clone();
-        let live = LiveConfiguration::new(live_config.clone());
+        let mut live = LiveConfiguration::new(live_config.clone());
 
         let endpoints = ForwarderConfiguration::from_configuration(&shared)
             .build_routable_endpoints()
@@ -574,7 +574,7 @@ mod tests {
                 vec!["ignored-new-domain-key".to_string()],
             ),
         ]);
-        live.store(live_config);
+        live.publisher.publish(live_config);
 
         let targets = tokio::time::timeout(Duration::from_secs(2), async {
             loop {

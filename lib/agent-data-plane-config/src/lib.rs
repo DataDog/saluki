@@ -22,13 +22,11 @@ use serde::Serialize;
 pub mod control;
 pub mod defaults;
 pub mod domains;
-pub mod live;
 pub mod provenance;
 pub mod shared;
 
 pub use control::{ControlConfiguration, Logging};
 pub use domains::DomainConfiguration;
-pub use live::Live;
 pub use provenance::{ConfigValue, Provenance};
 pub use shared::SharedConfiguration;
 

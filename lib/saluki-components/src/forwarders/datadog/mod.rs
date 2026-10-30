@@ -1,10 +1,10 @@
 use std::{collections::HashMap, sync::Arc};
 
 use agent_data_plane_config::shared::{Secrets, SharedConfiguration};
-use agent_data_plane_config::Live;
 use async_trait::async_trait;
 use http::Uri;
 use saluki_common::buf::FrozenChunkedBytesBuffer;
+use saluki_common::sync::live::Live;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_core::{
     components::{forwarders::*, BuildContext},
@@ -319,14 +319,14 @@ mod tests {
         let mut live_config = SalukiConfiguration::default();
         live_config.shared.endpoints.api_key = "primary-api-key".to_string();
         live_config.domains.multi_region_failover.api_key = Some("mrf-api-key".to_string());
-        let live = LiveConfiguration::new(live_config.clone());
+        let mut live = LiveConfiguration::new(live_config.clone());
 
         let config = DatadogForwarderConfiguration::for_endpoint_override(
             &shared_configuration(),
             "http://mrf.example.test".to_string(),
             "mrf-api-key".to_string(),
-            live.live(|config| &config.domains.multi_region_failover.api_key),
-            live.live(|config| &config.shared.secrets),
+            live.source.live(|config| &config.domains.multi_region_failover.api_key),
+            live.source.live(|config| &config.shared.secrets),
         );
 
         let endpoints = config
@@ -346,10 +346,10 @@ mod tests {
 
         // Rotate the primary key first: the override does not follow it.
         live_config.shared.endpoints.api_key = "rotated-primary-api-key".to_string();
-        live.store(live_config.clone());
+        live.publisher.publish(live_config.clone());
 
         live_config.domains.multi_region_failover.api_key = Some("rotated-mrf-api-key".to_string());
-        live.store(live_config);
+        live.publisher.publish(live_config);
 
         let endpoint = endpoints[0].endpoint();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {

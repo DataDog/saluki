@@ -5,14 +5,14 @@ use std::future::Future;
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
 
-use agent_data_plane_config::{Live, SalukiConfiguration};
-use arc_swap::ArcSwap;
+use agent_data_plane_config::SalukiConfiguration;
 use datadog_agent_config::{DatadogConfiguration, TranslateErrors};
+use saluki_common::sync::live::{self, Live, LivePublisher, LiveSource};
 use saluki_config::dynamic::ConfigUpdate;
 use serde::Deserialize;
 use serde_json::Value;
 use snafu::Snafu;
-use tokio::sync::{mpsc, watch, Mutex};
+use tokio::sync::{mpsc, Mutex};
 use tokio::time::timeout;
 use tracing::{debug, warn};
 
@@ -79,18 +79,13 @@ type Result<T> = std::result::Result<T, Error>;
 ///
 /// The configuration system is the single owner of the Datadog Agent's `ConfigUpdate` stream. It
 /// folds each update onto the local source base and builds the typed [`SalukiConfiguration`] from
-/// the result. The current configuration lives in an [`ArcSwap`] cell so readers load a whole,
-/// self-consistent version with no lock, while the update task replaces it in one atomic store.
+/// the result. Readers load a whole, self-consistent version with no lock, while the update task
+/// publishes each accepted version.
 pub struct ConfigurationSystem {
-    current: Arc<ArcSwap<SalukiConfiguration>>,
-    // The merged sources the current configuration was translated from, kept so consumers that work
-    // a key at a time have a by-key view carrying provenance. The update task holds the write lock
-    // while it replaces both, so a reader never sees sources that `current` does not match.
+    current: LiveSource<SalukiConfiguration>,
+    // Retained for by-key readers that need source values and provenance. The update task holds the write lock
+    // until it has also published the typed configuration. Loading each separately can still return different versions.
     sources: Arc<RwLock<Arc<SourceTree>>>,
-    // Fired once after each accepted update so live views wake and re-project. Shared with the
-    // update task via `Arc` because `watch::Sender` is not `Clone` and both the system (to mint
-    // views) and the task (to notify) need it.
-    tick: Arc<watch::Sender<()>>,
 }
 
 impl ConfigurationSystem {
@@ -133,67 +128,60 @@ impl ConfigurationSystem {
         let merged = base.overlay(&agent);
         let config = translate_authoritative(&merged)?;
 
-        let current = Arc::new(ArcSwap::from_pointee(config));
+        let (publisher, current) = live::channel(config);
         let sources = Arc::new(RwLock::new(Arc::new(merged)));
-        // The initial receiver is dropped immediately; `send_replace` works with zero receivers, and
-        // each live view subscribes its own receiver from the sender.
-        let (tick, _) = watch::channel(());
-        let tick = Arc::new(tick);
 
         let updates = ConfigurationUpdates {
             state: Arc::new(Mutex::new(UpdateState {
                 agent_rx,
                 base,
                 agent,
-                current: Arc::clone(&current),
+                publisher,
                 sources: Arc::clone(&sources),
-                tick: Arc::clone(&tick),
             })),
         };
 
-        Ok((Self { current, sources, tick }, updates))
+        Ok((Self { current, sources }, updates))
     }
 
     /// Installs a static configuration without an update task.
     ///
-    /// Live views retain their initial values because this system sends no update notifications.
+    /// Live views retain their initial values because nothing publishes an update.
     pub(crate) fn standalone(config: SalukiConfiguration, sources: SourceTree) -> Self {
-        let current = Arc::new(ArcSwap::from_pointee(config));
-        let (tick, _) = watch::channel(());
+        let (_, current) = live::channel(config);
         Self {
             current,
             sources: Arc::new(RwLock::new(Arc::new(sources))),
-            tick: Arc::new(tick),
         }
     }
 
     /// Returns a live view of the given projection of the current configuration. Narrow further with
-    /// [`Live::project`]. This is the only way a consumer subscribes to runtime updates.
+    /// [`Live::project`].
     pub fn live<T>(&self, project: impl for<'a> Fn(&'a SalukiConfiguration) -> &'a T + Send + Sync + 'static) -> Live<T>
     where
         T: Clone + PartialEq + 'static,
     {
-        Live::new_dynamic(Arc::clone(&self.current), self.tick.subscribe(), project)
+        self.current.live(project)
     }
 
     /// Loads the current translated configuration.
     ///
-    /// The returned guard pins one whole version; a concurrent refresh never tears the read.
-    pub fn config(&self) -> arc_swap::Guard<Arc<SalukiConfiguration>> {
+    /// The returned `Arc` keeps that version available even after a later update.
+    pub fn config(&self) -> Arc<SalukiConfiguration> {
         self.current.load()
     }
 
-    /// Returns a shared handle to the current-configuration cell for readers that load it
+    /// Returns a read-only handle to the current configuration for readers that load it
     /// independently.
-    pub fn current_handle(&self) -> Arc<ArcSwap<SalukiConfiguration>> {
-        Arc::clone(&self.current)
+    pub fn current_handle(&self) -> LiveSource<SalukiConfiguration> {
+        self.current.clone()
     }
 
     /// Returns a callback that reads the current merged sources as JSON.
     ///
     /// This is the raw source view: the values every input supplied, untranslated, including keys the
-    /// typed model does not carry. It reflects the last update the typed path accepted, so it is
-    /// consistent with the running configuration.
+    /// typed model does not carry. It reflects only updates the typed path accepted. Each call reads
+    /// the sources separately from [`config`](Self::config), so the two can observe different versions.
     pub fn raw_snapshot(&self) -> Arc<dyn Fn() -> Value + Send + Sync> {
         let sources = Arc::clone(&self.sources);
         Arc::new(move || load_sources(&sources).to_value())
@@ -246,9 +234,8 @@ struct UpdateState {
     base: SourceTree,
     // The accumulated Agent layer of the last accepted update.
     agent: SourceTree,
-    current: Arc<ArcSwap<SalukiConfiguration>>,
+    publisher: LivePublisher<SalukiConfiguration>,
     sources: Arc<RwLock<Arc<SourceTree>>>,
-    tick: Arc<watch::Sender<()>>,
 }
 
 impl UpdateState {
@@ -271,9 +258,8 @@ impl UpdateState {
                     {
                         let mut sources = self.sources.write().unwrap_or_else(PoisonError::into_inner);
                         *sources = Arc::new(merged);
-                        self.current.store(Arc::new(config));
+                        self.publisher.publish(config);
                     }
-                    self.tick.send_replace(());
                     debug!("Applied configuration update.");
                 }
                 Err(e) => warn!(
@@ -408,7 +394,7 @@ mod tests {
     use agent_data_plane_config::domains::dogstatsd::{MetricPrefixRule, OriginTagCardinality};
     use agent_data_plane_config::shared::V3SeriesMode;
     use agent_data_plane_config::Provenance;
-    use agent_data_plane_config::{Live, SalukiConfiguration};
+    use agent_data_plane_config::SalukiConfiguration;
     use datadog_agent_config::{apply_datadog_env_vars, DatadogConfiguration};
     use futures::StreamExt as _;
     use saluki_config::dynamic::{ConfigSetting, ConfigUpdate, Provenance as StreamProvenance};
@@ -1553,16 +1539,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fixed_view_never_changes() {
-        let mut view: Live<bool> = Live::new_fixed(true);
-        assert!(*view);
-        // A fixed view never resolves, so this bound is deterministic rather than timing-dependent.
-        assert!(tokio::time::timeout(Duration::from_millis(100), view.changed())
-            .await
-            .is_err());
-    }
-
-    #[tokio::test]
     async fn live_stream_yields_each_change() {
         let (system, agent_tx) = connected_system(json!({})).await;
         let mut levels = Box::pin(system.live(|c| &c.control.logging.level).into_stream());
@@ -1581,15 +1557,6 @@ mod tests {
                 .expect("the stream observes the log level update");
             assert_eq!(updated.as_deref(), Some(level));
         }
-    }
-
-    #[tokio::test]
-    async fn fixed_live_stream_never_yields_or_ends() {
-        let mut values = Box::pin(Live::new_fixed(true).into_stream());
-        // Like `changed`, the stream of a fixed view never resolves, so this bound is deterministic.
-        assert!(tokio::time::timeout(Duration::from_millis(100), values.next())
-            .await
-            .is_err());
     }
 
     #[tokio::test]

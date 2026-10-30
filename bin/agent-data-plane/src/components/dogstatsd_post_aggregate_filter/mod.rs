@@ -1,8 +1,9 @@
 //! DogStatsD post-aggregate metric filter transform.
 //!
 //! Drops post-aggregation scalar metrics whose generated histogram aggregate names match the metric filterlist.
-use agent_data_plane_config::{domains::dogstatsd::MetricFilter, Live};
+use agent_data_plane_config::domains::dogstatsd::MetricFilter;
 use async_trait::async_trait;
+use saluki_common::sync::live::Live;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{
@@ -206,7 +207,7 @@ impl Transform for DogStatsDPostAggregateFilter {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Duration};
+    use std::time::Duration;
 
     use metrics::set_default_local_recorder;
     use saluki_core::{
@@ -488,11 +489,8 @@ mod tests {
 
         let mut initial = agent_data_plane_config::SalukiConfiguration::default();
         initial.domains.dogstatsd.metric_filter.values = vec!["request.duration.max".to_string()];
-        let cell = Arc::new(arc_swap::ArcSwap::from_pointee(initial));
-        let (tick_tx, tick_rx) = tokio::sync::watch::channel(());
-        let metric_filter = Live::new_dynamic(Arc::clone(&cell), tick_rx, |config| {
-            &config.domains.dogstatsd.metric_filter
-        });
+        let (mut publisher, source) = saluki_common::sync::live::channel(initial);
+        let metric_filter = source.live(|config| &config.domains.dogstatsd.metric_filter);
         let aggregates = ["max", "median", "avg", "count"].map(String::from);
         let builder = DogStatsDPostAggregateFilterConfiguration::new(metric_filter, &aggregates, &["0.95".to_string()])
             .expect("filter configuration should be valid");
@@ -503,10 +501,9 @@ mod tests {
 
         assert_eq!(kept_probes(&control, output).await, ["request.duration.avg"]);
 
-        let mut updated = (*cell.load_full()).clone();
+        let mut updated = (*source.load()).clone();
         updated.domains.dogstatsd.metric_filter.values = vec!["request.duration.avg".to_string()];
-        cell.store(Arc::new(updated));
-        tick_tx.send_replace(());
+        publisher.publish(updated);
 
         // Nothing counts updates, so keep probing until the transform has applied this one.
         tokio::time::timeout(Duration::from_secs(5), async {
