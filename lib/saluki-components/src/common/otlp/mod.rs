@@ -3,6 +3,9 @@
 //! Provides shared server setup code for both OTLP receiver (proxy mode) and OTLP source (translation mode).
 
 pub mod attributes;
+// Not used outside of tests until the OTLP logs render transform uses it.
+#[allow(dead_code)]
+pub mod logs;
 pub mod origin;
 pub mod receiver;
 pub mod semantics;

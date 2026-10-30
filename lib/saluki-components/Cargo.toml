@@ -31,6 +31,7 @@ float-cmp = { workspace = true, features = ["ratio"] }
 fnv = { workspace = true }
 foldhash = { workspace = true }
 futures = { workspace = true }
+go-json = { workspace = true }
 hashbrown = { workspace = true }
 headers = { workspace = true }
 http = { workspace = true }
