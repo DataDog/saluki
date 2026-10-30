@@ -5,7 +5,7 @@ use bytes::{BufMut as _, Bytes, BytesMut};
 use bytesize::ByteSize;
 use lading_payload::{
     opentelemetry::metric::OpentelemetryMetrics, trace_agent::v04::V04, trace_agent::v1::V1, DogStatsD,
-    OpentelemetryTraces,
+    OpentelemetryLogs, OpentelemetryTraces,
 };
 use rand::{rngs::StdRng, SeedableRng as _};
 use saluki_error::{generic_error, GenericError};
@@ -71,6 +71,7 @@ fn get_finalized_corpus_blueprint(config: &Config) -> Result<CorpusBlueprint, Ge
         | Payload::StaticBase64(_)
         | Payload::OpenTelemetryMetrics(_)
         | Payload::OpenTelemetryTraces(_)
+        | Payload::OpenTelemetryLogs(_)
         | Payload::DatadogTraces(_) => {}
     }
 
@@ -99,6 +100,10 @@ fn generate_payloads(mut rng: StdRng, blueprint: CorpusBlueprint) -> Result<(Vec
         }
         Payload::OpenTelemetryTraces(config) => {
             let mut generator = OpentelemetryTraces::with_config(&config, &mut rng)?;
+            generate_payloads_inner(&mut generator, rng, &mut payloads, blueprint.size, 8192)?
+        }
+        Payload::OpenTelemetryLogs(config) => {
+            let mut generator = OpentelemetryLogs::new(config, usize::MAX, &mut rng)?;
             generate_payloads_inner(&mut generator, rng, &mut payloads, blueprint.size, 8192)?
         }
         Payload::DatadogTraces(lading_payload::trace_agent::Config::V04(config)) => {
@@ -158,12 +163,21 @@ fn generate_payloads_inner<G>(
 where
     G: lading_payload::Serialize,
 {
+    let first = payloads.len();
     for _ in 0..size.get() {
         let mut payload = BytesMut::new();
         let mut payload_writer = (&mut payload).writer();
         generator.to_bytes(&mut rng, max_bytes, &mut payload_writer)?;
-
         payloads.push(payload.freeze());
+    }
+
+    // Generators return nothing when an item doesn't fit. An occasional empty payload is harmless, but if every one
+    // is empty, the configuration can't produce data at all, and millstone would only send empty requests.
+    if payloads[first..].iter().all(Bytes::is_empty) {
+        return Err(generic_error!(
+            "Generated only empty payloads: the payload configuration can't produce any data within {} bytes.",
+            max_bytes
+        ));
     }
 
     Ok(())
@@ -212,5 +226,49 @@ corpus:
             "unix:///tmp/dsd.socket",
             Some("/v1/dogstatsd")
         )));
+    }
+
+    fn logs_config(seed_byte: u8) -> Config {
+        logs_config_with(seed_byte, "{}")
+    }
+
+    fn logs_config_with(seed_byte: u8, payload_config: &str) -> Config {
+        let yaml = format!(
+            r#"
+seed: [{seed}, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+target: "grpc://localhost:4317/opentelemetry.proto.collector.logs.v1.LogsService/Export"
+volume: 1
+corpus:
+  size: 20
+  payload:
+    opentelemetry_logs: {payload_config}
+"#,
+            seed = seed_byte,
+            payload_config = payload_config
+        );
+        serde_saphyr::from_str(&yaml).expect("config should parse")
+    }
+
+    #[test]
+    fn opentelemetry_logs_corpus_is_deterministic_for_a_seed() {
+        let first = Corpus::from_config(&logs_config(1)).expect("corpus should generate");
+        let second = Corpus::from_config(&logs_config(1)).expect("corpus should generate");
+        let other_seed = Corpus::from_config(&logs_config(2)).expect("corpus should generate");
+
+        let first = first.into_payloads();
+        assert_eq!(first.len(), 20);
+        assert!(first.iter().all(|payload| !payload.is_empty() && payload.len() <= 8192));
+        assert_eq!(first, second.into_payloads());
+        assert_ne!(first, other_seed.into_payloads());
+    }
+
+    #[test]
+    fn a_payload_configuration_that_cant_fit_is_rejected() {
+        let config = logs_config_with(1, "{body_size: {constant: 65535}}");
+
+        let error = Corpus::from_config(&config)
+            .err()
+            .expect("an empty payload should be rejected");
+        assert!(error.to_string().contains("Generated only empty payloads"), "{}", error);
     }
 }
