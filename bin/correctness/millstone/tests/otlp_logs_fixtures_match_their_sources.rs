@@ -338,6 +338,155 @@ fn severity_body_fixture() -> Vec<u8> {
     )
 }
 
+fn resource_logs(resource_attributes: Vec<KeyValue>, scope_logs: Vec<ScopeLogs>) -> ResourceLogs {
+    ResourceLogs {
+        resource: Some(Resource {
+            attributes: resource_attributes,
+            ..Default::default()
+        }),
+        scope_logs,
+        ..Default::default()
+    }
+}
+
+fn scope_logs(scope: InstrumentationScope, records: Vec<LogRecord>) -> ScopeLogs {
+    ScopeLogs {
+        scope: Some(scope),
+        log_records: records,
+        ..Default::default()
+    }
+}
+
+/// Resource and scope attributes, and host and service resolution.
+fn resource_host_fixture() -> Vec<u8> {
+    let no_scope = InstrumentationScope::default;
+    let mut resources = vec![
+        // gap/as-string-coercion: resource and scope attributes use `AsString`, and `hostname`/`service` are renamed.
+        resource_logs(
+            vec![
+                kv("service.name", string("fixture-resource")),
+                kv("host.name", string("resource-host")),
+                kv("res_int", int(3)),
+                kv("res_double", double(2.5)),
+                kv("res_bool", boolean(false)),
+                kv("res_map", map(vec![kv("k", string("v"))])),
+                kv("res_array", array(vec![int(1), int(2)])),
+                kv("res_empty", empty()),
+                kv("hostname", string("renamed-host")),
+                kv("service", string("renamed-service")),
+            ],
+            vec![scope_logs(
+                InstrumentationScope {
+                    name: "resource-scope".to_string(),
+                    version: "2.0.0".to_string(),
+                    attributes: vec![kv("scope_string", string("s")), kv("scope_int", int(5))],
+                    ..Default::default()
+                },
+                vec![record(0, "resource-types", vec![])],
+            )],
+        ),
+        // gap/as-string-coercion: a non-string `service.name` uses `AsString`.
+        resource_logs(
+            vec![kv("service.name", int(12)), kv("host.name", string("resource-host"))],
+            vec![scope_logs(no_scope(), vec![record(1, "service-name-int", vec![])])],
+        ),
+        // gap/default-hostname: with no host at all, the Agent's hostname fills the envelope.
+        resource_logs(
+            vec![kv("service.name", string("fixture-no-host"))],
+            vec![scope_logs(no_scope(), vec![record(2, "no-host", vec![])])],
+        ),
+        // gap/log-source-attribute: `datadog.log.source` sets the source when it's a non-empty string, from record or resource attributes.
+        resource_logs(
+            vec![
+                kv("service.name", string("fixture-log-source")),
+                kv("host.name", string("resource-host")),
+            ],
+            vec![scope_logs(
+                no_scope(),
+                vec![
+                    record(
+                        6,
+                        "log-source-record",
+                        vec![kv("datadog.log.source", string("record-source"))],
+                    ),
+                    record(7, "log-source-empty", vec![kv("datadog.log.source", string(""))]),
+                    record(8, "log-source-int", vec![kv("datadog.log.source", int(1))]),
+                ],
+            )],
+        ),
+        resource_logs(
+            vec![
+                kv("service.name", string("fixture-log-source")),
+                kv("host.name", string("resource-host")),
+                kv("datadog.log.source", string("resource-source")),
+            ],
+            vec![scope_logs(no_scope(), vec![record(9, "log-source-resource", vec![])])],
+        ),
+        // gap/host-resolution: the record-level host and service fallbacks carry over to later records of the same resource,
+        // including records in a later `ScopeLogs`.
+        resource_logs(
+            vec![],
+            vec![
+                scope_logs(
+                    no_scope(),
+                    vec![
+                        record(
+                            3,
+                            "carry-over-first",
+                            vec![
+                                kv("host.name", string("record-host")),
+                                kv("service.name", string("record-service")),
+                            ],
+                        ),
+                        record(4, "carry-over-second", vec![]),
+                    ],
+                ),
+                scope_logs(no_scope(), vec![record(5, "carry-over-next-scope", vec![])]),
+            ],
+        ),
+    ];
+
+    // gap/host-resolution: resource host precedence.
+    let host_cases: Vec<(&str, Vec<KeyValue>)> = vec![
+        (
+            "host-datadog-over-host-name",
+            vec![
+                kv("datadog.host.name", string("datadog-host")),
+                kv("host.name", string("plain-host")),
+            ],
+        ),
+        (
+            "host-k8s-node-and-cluster",
+            vec![
+                kv("k8s.node.name", string("node-1")),
+                kv("k8s.cluster.name", string("cluster-1")),
+            ],
+        ),
+        (
+            "host-aws-host-id",
+            vec![
+                kv("cloud.provider", string("aws")),
+                kv("host.id", string("i-0123456789")),
+                kv("host.name", string("aws-host-name")),
+            ],
+        ),
+        ("host-id-only", vec![kv("host.id", string("generic-host-id"))]),
+        ("host-localhost", vec![kv("host.name", string("localhost"))]),
+    ];
+    for (index, (id, mut attributes)) in host_cases.into_iter().enumerate() {
+        attributes.push(kv("service.name", string("fixture-host-precedence")));
+        resources.push(resource_logs(
+            attributes,
+            vec![scope_logs(no_scope(), vec![record(10 + index as u64, id, vec![])])],
+        ));
+    }
+
+    ExportLogsServiceRequest {
+        resource_logs: resources,
+    }
+    .encode_to_vec()
+}
+
 fn case_millstone_config(case: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../test/correctness/cases")
@@ -383,6 +532,7 @@ fn otlp_logs_fixtures_match_their_sources() {
     let fixtures: &[(&str, FixtureBuilder)] = &[
         ("otlp-logs-attributes", attributes_fixture),
         ("otlp-logs-severity-body", severity_body_fixture),
+        ("otlp-logs-resource-host", resource_host_fixture),
     ];
 
     let errors = fixtures
