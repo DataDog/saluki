@@ -1,0 +1,4 @@
+---
+enhancements:
+  - |
+    Expose transaction retry queue size by ``domain``.
