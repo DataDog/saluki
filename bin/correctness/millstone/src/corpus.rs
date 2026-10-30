@@ -163,19 +163,21 @@ fn generate_payloads_inner<G>(
 where
     G: lading_payload::Serialize,
 {
+    let first = payloads.len();
     for _ in 0..size.get() {
         let mut payload = BytesMut::new();
         let mut payload_writer = (&mut payload).writer();
         generator.to_bytes(&mut rng, max_bytes, &mut payload_writer)?;
-
-        // Generators return nothing when a single item can't fit, which would send empty requests.
-        if payload.is_empty() {
-            return Err(generic_error!(
-                "Generated an empty payload: the payload configuration can't produce any data within {} bytes.",
-                max_bytes
-            ));
-        }
         payloads.push(payload.freeze());
+    }
+
+    // Generators return nothing when an item doesn't fit. An occasional empty payload is harmless, but if every one
+    // is empty, the configuration can't produce data at all, and millstone would only send empty requests.
+    if payloads[first..].iter().all(Bytes::is_empty) {
+        return Err(generic_error!(
+            "Generated only empty payloads: the payload configuration can't produce any data within {} bytes.",
+            max_bytes
+        ));
     }
 
     Ok(())
@@ -267,6 +269,6 @@ corpus:
         let error = Corpus::from_config(&config)
             .err()
             .expect("an empty payload should be rejected");
-        assert!(error.to_string().contains("Generated an empty payload"), "{}", error);
+        assert!(error.to_string().contains("Generated only empty payloads"), "{}", error);
     }
 }
