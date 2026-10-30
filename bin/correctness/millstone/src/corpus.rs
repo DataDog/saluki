@@ -5,7 +5,7 @@ use bytes::{BufMut as _, Bytes, BytesMut};
 use bytesize::ByteSize;
 use lading_payload::{
     opentelemetry::metric::OpentelemetryMetrics, trace_agent::v04::V04, trace_agent::v1::V1, DogStatsD,
-    OpentelemetryTraces,
+    OpentelemetryLogs, OpentelemetryTraces,
 };
 use rand::{rngs::StdRng, SeedableRng as _};
 use saluki_error::{generic_error, GenericError};
@@ -71,6 +71,7 @@ fn get_finalized_corpus_blueprint(config: &Config) -> Result<CorpusBlueprint, Ge
         | Payload::StaticBase64(_)
         | Payload::OpenTelemetryMetrics(_)
         | Payload::OpenTelemetryTraces(_)
+        | Payload::OpenTelemetryLogs(_)
         | Payload::DatadogTraces(_) => {}
     }
 
@@ -99,6 +100,10 @@ fn generate_payloads(mut rng: StdRng, blueprint: CorpusBlueprint) -> Result<(Vec
         }
         Payload::OpenTelemetryTraces(config) => {
             let mut generator = OpentelemetryTraces::with_config(&config, &mut rng)?;
+            generate_payloads_inner(&mut generator, rng, &mut payloads, blueprint.size, 8192)?
+        }
+        Payload::OpenTelemetryLogs(config) => {
+            let mut generator = OpentelemetryLogs::new(config, usize::MAX, &mut rng)?;
             generate_payloads_inner(&mut generator, rng, &mut payloads, blueprint.size, 8192)?
         }
         Payload::DatadogTraces(lading_payload::trace_agent::Config::V04(config)) => {
@@ -212,5 +217,34 @@ corpus:
             "unix:///tmp/dsd.socket",
             Some("/v1/dogstatsd")
         )));
+    }
+
+    fn logs_config(seed_byte: u8) -> Config {
+        let yaml = format!(
+            r#"
+seed: [{seed}, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+target: "grpc://localhost:4317/opentelemetry.proto.collector.logs.v1.LogsService/Export"
+volume: 1
+corpus:
+  size: 20
+  payload:
+    opentelemetry_logs: {{}}
+"#,
+            seed = seed_byte
+        );
+        serde_saphyr::from_str(&yaml).expect("config should parse")
+    }
+
+    #[test]
+    fn opentelemetry_logs_corpus_is_deterministic_for_a_seed() {
+        let first = Corpus::from_config(&logs_config(1)).expect("corpus should generate");
+        let second = Corpus::from_config(&logs_config(1)).expect("corpus should generate");
+        let other_seed = Corpus::from_config(&logs_config(2)).expect("corpus should generate");
+
+        let first = first.into_payloads();
+        assert_eq!(first.len(), 20);
+        assert!(first.iter().all(|payload| !payload.is_empty() && payload.len() <= 8192));
+        assert_eq!(first, second.into_payloads());
+        assert_ne!(first, other_seed.into_payloads());
     }
 }
