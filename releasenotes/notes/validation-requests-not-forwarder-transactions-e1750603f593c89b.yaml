@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    API key validation requests are no longer counted as forwarder transactions. Previously, a failed validation
+    request, such as a connection error or an HTTP 5xx response, was added to the forwarder's transaction error
+    telemetry, including the ``transactions.errors`` value. Validation still emits its HTTP telemetry, now tagged with
+    ``purpose:api_key_validation``.
