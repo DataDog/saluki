@@ -1489,8 +1489,9 @@ mod tests {
             time::Duration,
         };
 
-        use agent_data_plane_config::{domains::dogstatsd::MetricFilter, Live};
+        use agent_data_plane_config::domains::dogstatsd::MetricFilter;
         use async_trait::async_trait;
+        use saluki_common::sync::live::Live;
         use saluki_components::transforms::{
             aggregate_context_snapshot_channel, AggregateConfiguration, AggregateMetricType, ChainedConfiguration,
             DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping, HistogramConfiguration,
