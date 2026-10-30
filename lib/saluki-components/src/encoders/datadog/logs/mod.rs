@@ -28,6 +28,9 @@ use crate::common::datadog::{
 
 const MAX_LOGS_PER_PAYLOAD: usize = 1000;
 
+/// The envelope status of a log that has none, as the Agent sends it (`message.StatusInfo`).
+const DEFAULT_STATUS: &str = "info";
+
 static CONTENT_TYPE_JSON: HeaderValue = HeaderValue::from_static("application/json");
 
 /// Datadog Logs incremental encoder.
@@ -192,9 +195,13 @@ impl LogsEndpointEncoder {
             serde_json::to_string(&JsonValue::Object(message_inner)).unwrap_or_else(|_| log.message().to_string());
         obj.insert("message".to_string(), JsonValue::String(message_str));
 
-        if let Some(status) = log.status() {
-            obj.insert("status".to_string(), JsonValue::String(status.as_str().to_string()));
-        }
+        // Like the Agent's logs agent exporter, a log without a status is sent as `info`.
+        let status = if log.status().is_empty() {
+            DEFAULT_STATUS
+        } else {
+            log.status()
+        };
+        obj.insert("status".to_string(), JsonValue::String(status.to_string()));
         if !log.hostname().is_empty() {
             obj.insert("hostname".to_string(), JsonValue::String(log.hostname().to_string()));
         }
@@ -284,7 +291,7 @@ mod tests {
     use std::collections::{BTreeSet, HashMap};
 
     use saluki_core::data_model::{
-        event::log::{Log, LogStatus},
+        event::log::Log,
         tags::{Tag, TagSet},
     };
     use serde_json::json;
@@ -300,7 +307,7 @@ mod tests {
     fn build_agent_json_enriches_documented_fields() {
         let mut encoder = LogsEndpointEncoder::new(Utc::now);
         let log = Log::new("hello world")
-            .with_status(LogStatus::Error)
+            .with_status("Err")
             .with_source(MetaString::from_static("nginx"))
             .with_hostname(MetaString::from_static("host-a"))
             .with_service(MetaString::from_static("web"))
@@ -315,8 +322,8 @@ mod tests {
         assert_eq!(json!("hello world"), message_inner["message"]);
         assert_eq!(json!("web"), message_inner["service"]);
 
-        // Status renders via `LogStatus::as_str` (capitalized), and hostname/service/ddsource are lifted out.
-        assert_eq!(json!("Error"), obj["status"]);
+        // The status is sent as it is, and hostname/service/ddsource are lifted out.
+        assert_eq!(json!("Err"), obj["status"]);
         assert_eq!(json!("host-a"), obj["hostname"]);
         assert_eq!(json!("web"), obj["service"]);
         assert_eq!(json!("nginx"), obj["ddsource"]);
@@ -329,13 +336,13 @@ mod tests {
 
     #[test]
     fn build_agent_json_omits_empty_optional_fields() {
-        // A bare log has no status/hostname/service/ddsource/ddtags keys, and its `message` object carries only the
-        // message (no `service`).
+        // A bare log has no hostname/service/ddsource/ddtags keys, its status is the default `info`, and its `message`
+        // object carries only the message (no `service`).
         let mut encoder = LogsEndpointEncoder::new(Utc::now);
         let json = encoder.build_agent_json(&Log::new("bare"));
         let obj = json.as_object().expect("agent JSON should be an object");
 
-        assert!(!obj.contains_key("status"));
+        assert_eq!(json!("info"), obj["status"]);
         assert!(!obj.contains_key("hostname"));
         assert!(!obj.contains_key("service"));
         assert!(!obj.contains_key("ddsource"));

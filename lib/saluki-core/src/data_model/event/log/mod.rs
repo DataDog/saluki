@@ -12,8 +12,10 @@ use crate::data_model::tags::TagSet;
 pub struct Log {
     /// Log message body.
     message: MetaString,
-    /// Log status/severity (for example, `"info"`, `"warn"`, `"error"`).
-    status: Option<LogStatus>,
+    /// Log status, as the producer of the log gives it (for example, `"info"`, `"warn"`, or `"Fatal"`).
+    ///
+    /// It isn't normalized, and is empty when the producer gave no status.
+    status: MetaString,
     /// Log source
     source: Option<MetaString>,
     /// Hostname associated with the log.
@@ -26,52 +28,12 @@ pub struct Log {
     additional_properties: HashMap<MetaString, JsonValue>,
 }
 
-/// Log status.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum LogStatus {
-    /// Trace status.
-    Trace,
-    /// Emergency status.
-    Emergency,
-    /// Alert status.
-    Alert,
-    /// Fatal status.
-    Fatal,
-    /// Error status.
-    Error,
-    /// Warning status.
-    Warning,
-    /// Notice status.
-    Notice,
-    /// Info status.
-    Info,
-    /// Debug status.
-    Debug,
-}
-
-impl LogStatus {
-    /// Returns the log status in string format
-    pub fn as_str(&self) -> &str {
-        match self {
-            LogStatus::Trace => "Trace",
-            LogStatus::Emergency => "Emergency",
-            LogStatus::Alert => "Alert",
-            LogStatus::Fatal => "Fatal",
-            LogStatus::Error => "Error",
-            LogStatus::Warning => "Warning",
-            LogStatus::Notice => "Notice",
-            LogStatus::Info => "Info",
-            LogStatus::Debug => "Debug",
-        }
-    }
-}
-
 impl Log {
     /// Creates a new `Log` with the given message.
     pub fn new(message: impl Into<MetaString>) -> Self {
         Self {
             message: message.into(),
-            status: None,
+            status: MetaString::empty(),
             source: None,
             hostname: MetaString::empty(),
             service: MetaString::empty(),
@@ -81,7 +43,9 @@ impl Log {
     }
 
     /// Sets the log status.
-    pub fn with_status(mut self, status: impl Into<Option<LogStatus>>) -> Self {
+    ///
+    /// The status is kept as it is given, without normalization. An empty status means the log has none.
+    pub fn with_status(mut self, status: impl Into<MetaString>) -> Self {
         self.status = status.into();
         self
     }
@@ -123,9 +87,9 @@ impl Log {
         &self.message
     }
 
-    /// Returns the log status, if set.
-    pub fn status(&self) -> Option<LogStatus> {
-        self.status
+    /// Returns the log status, or an empty string if the log has none.
+    pub fn status(&self) -> &str {
+        &self.status
     }
 
     /// Returns the log source, if set.

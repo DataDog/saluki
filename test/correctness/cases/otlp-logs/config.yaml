@@ -18,10 +18,6 @@ logs:
       paths: ["envelope.service"]
       kinds: [missing]
       reason: The Agent's envelope always has `service`, empty when unset; ADP omits an empty service.
-    - gap: gap/status-strings
-      paths: ["envelope.status"]
-      kinds: [value]
-      reason: ADP capitalizes the envelope status (`Info`, `Warning`) instead of sending the Agent's raw status.
     - gap: gap/envelope-timestamp
       paths: ["envelope.timestamp"]
       kinds: [missing]
