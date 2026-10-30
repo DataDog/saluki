@@ -26,6 +26,9 @@ pub use self::dogstatsd_mapper::{DogStatsDMapperConfiguration, DogStatsDMapperPr
 mod metric_router;
 pub use self::metric_router::MetricRouterConfiguration;
 
+mod otlp_logs_render;
+pub use self::otlp_logs_render::OtlpLogsRenderConfiguration;
+
 mod trace_sampler;
 #[cfg(test)]
 pub(crate) use self::trace_sampler::sampler_configuration;
