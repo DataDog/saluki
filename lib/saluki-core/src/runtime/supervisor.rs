@@ -4134,9 +4134,13 @@ mod tests {
             .with_restart_strategy(RestartStrategy::new(RestartMode::OneForOne, 0, Duration::from_secs(5)));
         child_sup.add_worker(MockWorker::failing("inner", Duration::from_millis(10)));
 
-        let mut parent_sup = Supervisor::new("parent-sup")
-            .unwrap()
-            .with_restart_strategy(RestartStrategy::one_to_one().with_intensity_and_period(50, Duration::from_secs(5)));
+        // The nested supervisor fails every time its worker does, so the parent restarts it once per timer tick. Timer
+        // granularity varies by platform (about 15ms on Windows, which also stretches the sampling loop below), so the
+        // parent's intensity has to be far beyond the number of restarts the test can provoke: exhausting it would
+        // stop the parent and empty the tree out from under the assertions.
+        let mut parent_sup = Supervisor::new("parent-sup").unwrap().with_restart_strategy(
+            RestartStrategy::one_to_one().with_intensity_and_period(10_000, Duration::from_secs(5)),
+        );
         parent_sup.add_worker(child_sup);
 
         let tree = parent_sup.tree_handle();
