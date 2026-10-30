@@ -1,0 +1,308 @@
+{
+  "requests": [
+    {
+      "headers": {
+        "Content-Encoding": "gzip",
+        "Content-Type": "application/x-protobuf",
+        "DD-API-KEY": "test"
+      },
+      "path": "/api/v0.2/traces",
+      "payload": {
+        "agentVersion": "",
+        "env": "none",
+        "errorTPS": 10,
+        "hostName": "agent-host",
+        "idxTracerPayloads": [
+          {
+            "appVersionRef": 2,
+            "attributes": {},
+            "chunks": [
+              {
+                "attributes": {},
+                "droppedTrace": false,
+                "originRef": 0,
+                "priority": 1,
+                "samplingMechanism": 0,
+                "spans": [
+                  {
+                    "attributes": {
+                      "15": {
+                        "stringValueRef": 3
+                      },
+                      "9": {
+                        "doubleValue": 1
+                      }
+                    },
+                    "componentRef": 0,
+                    "duration": "20000000",
+                    "envRef": 0,
+                    "error": false,
+                    "events": [],
+                    "kind": "SPAN_KIND_UNSPECIFIED",
+                    "links": [],
+                    "nameRef": 12,
+                    "parentID": "0",
+                    "resourceRef": 1,
+                    "serviceRef": 11,
+                    "spanID": "1",
+                    "start": "\u003cstart:-1900000000\u003e",
+                    "typeRef": 11,
+                    "versionRef": 0
+                  },
+                  {
+                    "attributes": {
+                      "15": {
+                        "stringValueRef": 7
+                      },
+                      "9": {
+                        "doubleValue": 1
+                      }
+                    },
+                    "componentRef": 0,
+                    "duration": "20000000",
+                    "envRef": 0,
+                    "error": false,
+                    "events": [],
+                    "kind": "SPAN_KIND_UNSPECIFIED",
+                    "links": [],
+                    "nameRef": 12,
+                    "parentID": "0",
+                    "resourceRef": 1,
+                    "serviceRef": 11,
+                    "spanID": "2",
+                    "start": "\u003cstart:-1900000000\u003e",
+                    "typeRef": 11,
+                    "versionRef": 0
+                  },
+                  {
+                    "attributes": {
+                      "15": {
+                        "stringValueRef": 6
+                      },
+                      "9": {
+                        "doubleValue": 1
+                      }
+                    },
+                    "componentRef": 0,
+                    "duration": "20000000",
+                    "envRef": 0,
+                    "error": false,
+                    "events": [],
+                    "kind": "SPAN_KIND_UNSPECIFIED",
+                    "links": [],
+                    "nameRef": 12,
+                    "parentID": "0",
+                    "resourceRef": 1,
+                    "serviceRef": 11,
+                    "spanID": "3",
+                    "start": "\u003cstart:-1900000000\u003e",
+                    "typeRef": 11,
+                    "versionRef": 0
+                  },
+                  {
+                    "attributes": {
+                      "15": {
+                        "stringValueRef": 10
+                      },
+                      "8": {
+                        "doubleValue": 1
+                      },
+                      "9": {
+                        "doubleValue": 1
+                      }
+                    },
+                    "componentRef": 0,
+                    "duration": "20000000",
+                    "envRef": 0,
+                    "error": false,
+                    "events": [],
+                    "kind": "SPAN_KIND_UNSPECIFIED",
+                    "links": [],
+                    "nameRef": 12,
+                    "parentID": "0",
+                    "resourceRef": 1,
+                    "serviceRef": 11,
+                    "spanID": "4",
+                    "start": "\u003cstart:-1900000000\u003e",
+                    "typeRef": 11,
+                    "versionRef": 0
+                  }
+                ],
+                "traceID": "AAAAAAAAAAAAAAAAAAAAAA=="
+              }
+            ],
+            "containerDebug": null,
+            "containerIDRef": 0,
+            "envRef": 13,
+            "hostnameRef": 0,
+            "languageNameRef": 14,
+            "languageVersionRef": 5,
+            "runtimeIDRef": 0,
+            "strings": [
+              "",
+              "/pkg.Service/Method",
+              "1.2.3",
+              "13",
+              "2.0.0",
+              "3.12.0",
+              "DEADLINE_EXCEEDED",
+              "StatusCode.Canceled",
+              "_sampling_priority_rate_v1",
+              "_top_level",
+              "bogus",
+              "grpc",
+              "grpc.request",
+              "prod",
+              "python",
+              "rpc.grpc.status_code"
+            ],
+            "tracerVersionRef": 4
+          }
+        ],
+        "rareSamplerEnabled": false,
+        "tags": {},
+        "targetTPS": 10,
+        "tracerPayloads": []
+      }
+    },
+    {
+      "headers": {
+        "Content-Encoding": "gzip",
+        "Content-Type": "application/msgpack",
+        "DD-API-KEY": "test"
+      },
+      "path": "/api/v0.2/stats",
+      "payload": {
+        "agentEnv": "none",
+        "agentHostname": "agent-host",
+        "agentVersion": "",
+        "clientComputed": false,
+        "splitPayload": false,
+        "stats": [
+          {
+            "agentAggregation": "",
+            "containerID": "",
+            "env": "prod",
+            "gitCommitSha": "",
+            "hostname": "agent-host",
+            "imageTag": "",
+            "lang": "python",
+            "processTags": "",
+            "processTagsHash": "0",
+            "runtimeID": "",
+            "sequence": "0",
+            "service": "",
+            "stats": [
+              {
+                "agentTimeShift": "0",
+                "duration": "10000000000",
+                "start": "\u003cbucket\u003e",
+                "stats": [
+                  {
+                    "DBType": "",
+                    "GRPCStatusCode": "",
+                    "HTTPEndpoint": "",
+                    "HTTPMethod": "",
+                    "HTTPStatusCode": 0,
+                    "additionalMetricTags": [],
+                    "duration": "20000000",
+                    "errorSummary": "CgkJ/UqBWr9S8D8SABoA",
+                    "errors": "0",
+                    "hits": "1",
+                    "isTraceRoot": "TRUE",
+                    "name": "grpc.request",
+                    "okSummary": "CgkJ/UqBWr9S8D8SDRIIAAAAAAAA8D8YkA0aAA==",
+                    "peerTags": [],
+                    "resource": "/pkg.Service/Method",
+                    "service": "grpc",
+                    "serviceSource": "",
+                    "spanDerivedPrimaryTags": [],
+                    "spanKind": "unknown",
+                    "synthetics": false,
+                    "topLevelHits": "1",
+                    "type": "grpc"
+                  },
+                  {
+                    "DBType": "",
+                    "GRPCStatusCode": "1",
+                    "HTTPEndpoint": "",
+                    "HTTPMethod": "",
+                    "HTTPStatusCode": 0,
+                    "additionalMetricTags": [],
+                    "duration": "20000000",
+                    "errorSummary": "CgkJ/UqBWr9S8D8SABoA",
+                    "errors": "0",
+                    "hits": "1",
+                    "isTraceRoot": "TRUE",
+                    "name": "grpc.request",
+                    "okSummary": "CgkJ/UqBWr9S8D8SDRIIAAAAAAAA8D8YkA0aAA==",
+                    "peerTags": [],
+                    "resource": "/pkg.Service/Method",
+                    "service": "grpc",
+                    "serviceSource": "",
+                    "spanDerivedPrimaryTags": [],
+                    "spanKind": "unknown",
+                    "synthetics": false,
+                    "topLevelHits": "1",
+                    "type": "grpc"
+                  },
+                  {
+                    "DBType": "",
+                    "GRPCStatusCode": "13",
+                    "HTTPEndpoint": "",
+                    "HTTPMethod": "",
+                    "HTTPStatusCode": 0,
+                    "additionalMetricTags": [],
+                    "duration": "20000000",
+                    "errorSummary": "CgkJ/UqBWr9S8D8SABoA",
+                    "errors": "0",
+                    "hits": "1",
+                    "isTraceRoot": "TRUE",
+                    "name": "grpc.request",
+                    "okSummary": "CgkJ/UqBWr9S8D8SDRIIAAAAAAAA8D8YkA0aAA==",
+                    "peerTags": [],
+                    "resource": "/pkg.Service/Method",
+                    "service": "grpc",
+                    "serviceSource": "",
+                    "spanDerivedPrimaryTags": [],
+                    "spanKind": "unknown",
+                    "synthetics": false,
+                    "topLevelHits": "1",
+                    "type": "grpc"
+                  },
+                  {
+                    "DBType": "",
+                    "GRPCStatusCode": "4",
+                    "HTTPEndpoint": "",
+                    "HTTPMethod": "",
+                    "HTTPStatusCode": 0,
+                    "additionalMetricTags": [],
+                    "duration": "20000000",
+                    "errorSummary": "CgkJ/UqBWr9S8D8SABoA",
+                    "errors": "0",
+                    "hits": "1",
+                    "isTraceRoot": "TRUE",
+                    "name": "grpc.request",
+                    "okSummary": "CgkJ/UqBWr9S8D8SDRIIAAAAAAAA8D8YkA0aAA==",
+                    "peerTags": [],
+                    "resource": "/pkg.Service/Method",
+                    "service": "grpc",
+                    "serviceSource": "",
+                    "spanDerivedPrimaryTags": [],
+                    "spanKind": "unknown",
+                    "synthetics": false,
+                    "topLevelHits": "1",
+                    "type": "grpc"
+                  }
+                ]
+              }
+            ],
+            "tags": [],
+            "tracerVersion": "",
+            "version": "1.2.3"
+          }
+        ]
+      }
+    }
+  ]
+}

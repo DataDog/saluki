@@ -1,0 +1,28 @@
+{
+  "comment": "Peer-IP quantization: IP-valued peer tags are quantized during matching — the IP becomes the 'blocked-ip-address' sentinel while the port is kept; non-IP peer tag values are left unchanged.",
+  "payload": {
+    "chunks": [
+      {
+        "priority": 1,
+        "spans": [
+          {
+            "span_id": 1,
+            "parent_id": 0,
+            "service": "web",
+            "name": "db.query",
+            "resource": "SELECT * FROM orders",
+            "type": "sql",
+            "kind": "client",
+            "start": "-2s",
+            "duration": "30ms",
+            "attributes": {
+              "peer.hostname": "192.168.1.42:5432",
+              "peer.db.name": "orders"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "name": "peer_ip_quantize"
+}

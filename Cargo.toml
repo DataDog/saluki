@@ -6,6 +6,7 @@ members = [
   "bin/correctness/millstone",
   "bin/correctness/panoramic",
   "bin/correctness/stele",
+  "bin/correctness/trace-goldens",
   "lib/agent-data-plane-config",
   "lib/agent-data-plane-config-system",
   "lib/datadog-agent/apm",
@@ -84,6 +85,7 @@ saluki-metrics = { path = "lib/saluki-metrics" }
 saluki-metrics-macros = { path = "lib/saluki-metrics-macros" }
 saluki-tls = { path = "lib/saluki-tls" }
 stele = { path = "bin/correctness/stele" }
+trace-goldens = { path = "bin/correctness/trace-goldens" }
 stringtheory = { path = "lib/stringtheory" }
 ottl = { path = "lib/ottl" }
 otlp-protos = { path = "lib/protos/otlp" }
