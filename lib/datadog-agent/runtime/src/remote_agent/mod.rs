@@ -214,7 +214,7 @@ impl RemoteAgentBootstrap {
 
 struct RemoteAgentState {
     pid: u32,
-    process_instance_id: String,
+    process_instance_id: &'static str,
     display_name: String,
     flavor: String,
     api_listen_addr: String,
@@ -237,7 +237,7 @@ impl RemoteAgentState {
             pid: std::process::id(),
             process_instance_id: PROCESS_INSTANCE_ID
                 .get_or_init(|| uuid::Uuid::new_v4().to_string())
-                .clone(),
+                .as_str(),
             display_name,
             flavor,
             api_listen_addr: api_listen_addr.to_string(),
@@ -275,7 +275,7 @@ async fn run_remote_agent_registration_loop(mut client: RemoteAgentClient, mut s
                 match client
                     .register_remote_agent(
                         state.pid,
-                        &state.process_instance_id,
+                        state.process_instance_id,
                         &state.display_name,
                         &state.flavor,
                         &state.api_listen_addr,
@@ -294,7 +294,12 @@ async fn run_remote_agent_registration_loop(mut client: RemoteAgentClient, mut s
                             }
                         };
                         let new_refresh_interval = resp.recommended_refresh_interval_secs;
-                        info!(session_id = %new_session_id, "Successfully registered with the Datadog Agent. Refreshing every {} seconds.", new_refresh_interval);
+                        info!(
+                            session_id = %new_session_id,
+                            process_instance_id = %state.process_instance_id,
+                            "Successfully registered with the Datadog Agent. Refreshing every {} seconds.",
+                            new_refresh_interval
+                        );
 
                         state.session_id.update(Some(new_session_id));
                         loop_timer.reset_after(Duration::from_secs(new_refresh_interval as u64));
@@ -902,23 +907,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn remote_agent_process_id_is_shared_across_states_and_sessions() {
+    fn remote_agent_process_instance_id_is_shared_across_states() {
         let address = || GrpcTargetAddress::Tcp("127.0.0.1:1234".parse().unwrap());
         let (first, _) = RemoteAgentState::new(address(), vec![]);
-        let first_id = first.process_instance_id.clone();
-        assert!(uuid::Uuid::parse_str(&first_id).is_ok());
+        assert!(uuid::Uuid::parse_str(first.process_instance_id).is_ok());
         assert_eq!(first.pid, std::process::id());
 
-        // Changing RAR sessions does not create a new process identity.
-        first.session_id.update(Some(SessionId::new("session-a").unwrap()));
-        first.session_id.update(None);
-        first.session_id.update(Some(SessionId::new("session-b").unwrap()));
-        assert_eq!(first.process_instance_id, first_id);
-
-        // Even a second bootstrap in the same process uses the original identity, not a new UUID.
+        // Each bootstrap creates a fresh state, but all states share one process identity.
         let (second, _) = RemoteAgentState::new(address(), vec![]);
         assert_eq!(second.pid, first.pid);
-        assert_eq!(second.process_instance_id, first_id);
+        assert_eq!(second.process_instance_id, first.process_instance_id);
     }
 
     #[test]
