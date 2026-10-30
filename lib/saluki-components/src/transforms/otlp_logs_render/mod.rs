@@ -1,25 +1,32 @@
 //! OTLP logs render transform.
 //!
-//! Renders each translated OTLP log into the content that the Agent sends for it, the way the Agent's logs agent
-//! exporter does at the end of its OTLP logs path. See [`render_content`] for what the content holds.
+//! Renders each translated OTLP log into the content of its log message, as the last step of the OTLP logs path. See
+//! [`render_content`] for what the content holds.
 //!
 //! Enrichment of OTLP logs belongs before this transform, since it changes the properties that go into the content.
-//! Processing rules belong after it, since the Agent applies them to the content.
+//! Processing rules belong after it, since they apply to the content.
 
 use std::mem;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use metrics::Counter;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{transforms::*, BuildContext},
     data_model::event::{log::Log, Event},
+    observability::ComponentMetricsExt as _,
     topology::EventsBuffer,
 };
 use saluki_error::GenericError;
+use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 use tracing::error;
 
 use crate::common::otlp::logs::render_content;
+
+/// The shortest time between two logged render failures.
+const RENDER_FAILURE_LOG_INTERVAL: Duration = Duration::from_secs(10);
 
 /// OTLP logs render transform.
 ///
@@ -31,8 +38,16 @@ pub struct OtlpLogsRenderConfiguration;
 
 #[async_trait]
 impl SynchronousTransformBuilder for OtlpLogsRenderConfiguration {
-    async fn build(&self, _context: BuildContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
-        Ok(Box::new(OtlpLogsRender))
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
+        let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
+        let events_dropped = metrics_builder.register_counter_with_tags(
+            "component_events_dropped_total",
+            ["intentional:false", "drop_reason:render_failure"],
+        );
+        Ok(Box::new(OtlpLogsRender {
+            events_dropped,
+            last_failure_logged: None,
+        }))
     }
 }
 
@@ -44,11 +59,15 @@ impl MemoryBounds for OtlpLogsRenderConfiguration {
     }
 }
 
-struct OtlpLogsRender;
+struct OtlpLogsRender {
+    events_dropped: Counter,
+    last_failure_logged: Option<Instant>,
+}
 
 impl SynchronousTransform for OtlpLogsRender {
     fn transform_buffer(&mut self, buffer: &mut EventsBuffer) {
-        let mut failed = false;
+        let mut failures = 0;
+        let mut first_failure = None;
         for event in &mut *buffer {
             let Event::Log(log) = event else {
                 continue;
@@ -65,16 +84,26 @@ impl SynchronousTransform for OtlpLogsRender {
                         .with_additional_properties(None);
                 }
                 Err(e) => {
-                    error!(error = %e, "Failed to render OTLP log content. Dropping log.");
-                    failed = true;
+                    failures += 1;
+                    first_failure.get_or_insert(e);
                 }
             }
         }
 
-        // Like the Agent's exporter, drop a log that can't be rendered. That only happens for a property that Go can't
-        // serialize either, such as a non-finite float. Removing it can reorder the rest of the buffer.
-        if failed {
+        // Drop the logs that can't be rendered. That only happens for a property that can't be serialized, such as a
+        // non-finite float. Removing them can reorder the rest of the buffer.
+        if let Some(error) = first_failure {
             buffer.remove_if(|event| matches!(event, Event::Log(log) if !log.message_is_content()));
+            self.events_dropped.increment(failures);
+
+            let now = Instant::now();
+            let log_due = self
+                .last_failure_logged
+                .is_none_or(|last| now.duration_since(last) >= RENDER_FAILURE_LOG_INTERVAL);
+            if log_due {
+                self.last_failure_logged = Some(now);
+                error!(%error, failures, "Failed to render OTLP log content. Dropping logs.");
+            }
         }
     }
 }
