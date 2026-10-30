@@ -1,15 +1,15 @@
 //! Characterization of the requests that the Datadog logs encoder builds.
 //!
-//! These tests run the encoder the way the topology does, wrapped in `BufferedIncrementalConfiguration`, and record what
-//! it does today: the request line and headers, compression, the 1000-log cap, splitting by compressed size, the
+//! These tests run the encoder the way the topology does, wrapped in `BufferedIncrementalConfiguration`, and record
+//! what it does today: the request line and headers, compression, the 1000-log cap, splitting by compressed size, the
 //! handling of a single oversized log, and that no log is lost or reordered across requests. They don't describe what
-//! the encoder should do. Where the Agent behaves differently, an ignored test states the target, named after the step
-//! of the OTLP logs wire format work (DataDog/saluki#2970) that adopts it:
+//! the encoder should do. Where the target behavior differs, an ignored test states it, named after the step of the
+//! OTLP logs wire format work (DataDog/saluki#2970) that adopts it:
 //!
-//! - `intake-headers`: the Agent's logs sender sets `DD-PROTOCOL: agent-json`, `DD-EVP-ORIGIN: agent`,
+//! - `intake-headers`: the target logs sender sets `DD-PROTOCOL: agent-json`, `DD-EVP-ORIGIN: agent`,
 //!   `DD-EVP-ORIGIN-VERSION`, and `dd-message-timestamp`. It also sets `dd-current-timestamp` on each send attempt,
 //!   which belongs to the forwarder rather than the encoder.
-//! - `logs-sender-batching`: the Agent's logs sender batches up to 1000 logs or 5 MB of content before compression,
+//! - `logs-sender-batching`: the target logs sender batches up to 1000 logs or 5 MB of content before compression,
 //!   and drops a single log whose content is over that limit.
 //!
 //! Every test sends at most 1024 logs, so that they all go to the encoder in a single event buffer. The encoder handles
@@ -28,8 +28,8 @@ use super::{DatadogLogsConfiguration, MAX_LOGS_PER_PAYLOAD};
 use crate::common::datadog::DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT;
 use crate::encoders::BufferedIncrementalConfiguration;
 
-/// The Agent logs sender's limit on the content of a batch, before compression (`logs_config.batch_max_content_size`).
-const AGENT_BATCH_MAX_CONTENT_SIZE: usize = 5_000_000;
+/// The target logs sender's limit on the content of a batch, before compression.
+const TARGET_BATCH_MAX_CONTENT_SIZE: usize = 5_000_000;
 
 /// A request built by the encoder.
 #[derive(Clone)]
@@ -173,7 +173,7 @@ async fn request_line_and_headers() {
 
         assert_eq!(request.method, http::Method::POST);
         assert_eq!(request.path, "/api/v2/logs");
-        // Only the content headers: none of the Agent's `DD-*` headers yet (`intake-headers`).
+        // Only the content headers: none of the target `DD-*` headers yet (`intake-headers`).
         assert_eq!(
             request.headers,
             vec![
@@ -247,13 +247,13 @@ async fn splits_requests_by_compressed_size() {
 
 #[tokio::test]
 async fn does_not_split_compressible_requests_by_content_size() {
-    // About 10 MB of content that compresses to almost nothing. ADP limits requests by their compressed size, so this
-    // fits in one request, and only the 1000-log cap applies.
+    // About 10 MB of content that compresses to almost nothing. The encoder limits requests by their compressed size,
+    // so this fits in one request, and only the 1000-log cap applies.
     let logs = compressible_logs(1000, 10_000);
     let requests = encode("zstd", logs.clone()).await;
 
     assert_eq!(requests.len(), 1);
-    assert!(requests[0].body.len() > 2 * AGENT_BATCH_MAX_CONTENT_SIZE);
+    assert!(requests[0].body.len() > 2 * TARGET_BATCH_MAX_CONTENT_SIZE);
     assert_eq!(all_messages(&requests), messages_of(&logs));
 }
 
@@ -271,9 +271,9 @@ async fn drops_a_single_log_over_the_compressed_size_limit() {
 }
 
 #[tokio::test]
-async fn sends_a_compressible_log_over_the_agent_content_limit() {
-    // ADP only limits a single log by its compressed size, so a log with more content than the Agent allows is sent.
-    let logs = compressible_logs(1, AGENT_BATCH_MAX_CONTENT_SIZE + 1_000_000);
+async fn sends_a_compressible_log_over_the_target_content_limit() {
+    // The encoder only limits a single log by its compressed size, so a log over the target content limit is sent.
+    let logs = compressible_logs(1, TARGET_BATCH_MAX_CONTENT_SIZE + 1_000_000);
     let requests = encode("zstd", logs.clone()).await;
 
     assert_eq!(all_messages(&requests), messages_of(&logs));
@@ -303,22 +303,22 @@ async fn target_intake_headers() {
 
 #[tokio::test]
 #[ignore = "target for `logs-sender-batching` (DataDog/saluki#2970)"]
-async fn target_logs_sender_batching_splits_at_the_agent_content_limit() {
+async fn target_logs_sender_batching_splits_at_the_target_content_limit() {
     let logs = compressible_logs(1000, 10_000);
     let requests = encode("zstd", logs.clone()).await;
 
     assert!(requests.len() > 1);
     for request in &requests {
-        assert!(request.body.len() <= AGENT_BATCH_MAX_CONTENT_SIZE);
+        assert!(request.body.len() <= TARGET_BATCH_MAX_CONTENT_SIZE);
     }
     assert_eq!(all_messages(&requests), messages_of(&logs));
 }
 
 #[tokio::test]
 #[ignore = "target for `logs-sender-batching` (DataDog/saluki#2970)"]
-async fn target_logs_sender_batching_drops_a_log_over_the_agent_content_limit() {
+async fn target_logs_sender_batching_drops_a_log_over_the_target_content_limit() {
     let mut logs = vec![Log::new("before")];
-    logs.extend(compressible_logs(1, AGENT_BATCH_MAX_CONTENT_SIZE + 1_000_000));
+    logs.extend(compressible_logs(1, TARGET_BATCH_MAX_CONTENT_SIZE + 1_000_000));
     logs.push(Log::new("after"));
     let requests = encode("zstd", logs).await;
 
