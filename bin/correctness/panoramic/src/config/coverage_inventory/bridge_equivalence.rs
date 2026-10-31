@@ -1,5 +1,11 @@
-//! Checks that participant-schema twins built from the checked-in logging-case inventory reproduce its rows and
-//! configurations through the integration runner translation.
+//! Checks logging-case translation and inventory entries against a frozen integration-schema baseline.
+//!
+//! Participant-schema twins of the seven logging cases use `logging_baseline.json`, copied while the cases used the
+//! integration schema. Both the translated twins and checked-in inventory must match this copy, except `schema`
+//! and `container.exposed_ports` for participant-schema cases.
+//!
+//! Never regenerate the copy from the inventory. If the inventory format changes intentionally (such as a new column
+//! or `execution` value), edit the copy by hand so reviewers can see the change.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -8,7 +14,7 @@ use std::{
 
 use serde_json::{json, Value};
 
-use super::{read_text, repository_root, Inventory, INTEGRATION, JSON_PATH, PARTICIPANTS};
+use super::{read_text, repository_root, Inventory, INTEGRATION, JSON_PATH, OLD, PARTICIPANTS};
 use crate::{
     config::{
         case::{CaseConfig, Os},
@@ -214,9 +220,57 @@ fn recorded_integration_cases() -> BTreeMap<String, RecordedCase> {
     recorded
 }
 
+fn logging_baseline() -> BTreeMap<String, RecordedCase> {
+    let inventory: Value = serde_json::from_str(include_str!("logging_baseline.json")).unwrap();
+    let rows = inventory["rows"].as_array().unwrap();
+    let recorded: BTreeMap<_, _> = inventory["cases"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(key, case)| {
+            let name = key
+                .strip_prefix("integration/")
+                .expect("baseline cases must be integration cases");
+            let rows: Vec<_> = rows.iter().filter(|row| row["name"] == name).cloned().collect();
+            assert!(!rows.is_empty(), "missing baseline rows for {name}");
+            (
+                name.to_string(),
+                RecordedCase {
+                    rows,
+                    case: case.clone(),
+                    old_schema: true,
+                },
+            )
+        })
+        .collect();
+    assert_eq!(
+        recorded.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+        LOGGING_CASES.into_iter().collect(),
+        "the frozen baseline must contain exactly the seven logging cases"
+    );
+    for row in rows {
+        let name = row["name"].as_str().unwrap();
+        assert!(recorded.contains_key(name), "missing baseline case for {name}");
+        assert_eq!(row["suite"], INTEGRATION, "{name}: unexpected baseline suite");
+        assert_eq!(row["schema"], INTEGRATION, "{name}: unexpected baseline schema");
+        assert_eq!(row["execution"], OLD, "{name}: unexpected baseline execution");
+    }
+    recorded
+}
+
+fn migrated(baseline: &RecordedCase) -> (Vec<Value>, Value) {
+    let mut rows = baseline.rows.clone();
+    for row in &mut rows {
+        row["schema"] = json!(PARTICIPANTS);
+    }
+    let mut case = baseline.case.clone();
+    case["config"]["container"]["exposed_ports"] = json!([]);
+    (rows, case)
+}
+
 #[test]
-fn logging_case_twins_reproduce_the_recorded_inventory_except_schema_and_exposed_ports() {
-    let recorded = recorded_integration_cases();
+fn logging_case_twins_reproduce_the_frozen_baseline_except_schema_and_exposed_ports() {
+    let baseline = logging_baseline();
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     std::fs::create_dir_all(root.join("test/integration/cases")).unwrap();
@@ -224,46 +278,53 @@ fn logging_case_twins_reproduce_the_recorded_inventory_except_schema_and_exposed
     let mut expected_rows = Vec::new();
     let mut expected_cases = serde_json::Map::new();
     for name in LOGGING_CASES {
-        let recorded = &recorded[name];
-        if !recorded.old_schema {
-            continue;
-        }
-        let (twin, _) = participant_twin(&recorded.case["config"]).unwrap_or_else(|reason| panic!("{name}: {reason}"));
+        let baseline = &baseline[name];
+        let (twin, _) = participant_twin(&baseline.case["config"]).unwrap_or_else(|reason| panic!("{name}: {reason}"));
         write_case(&root.join("test/integration/cases"), name, &twin);
-        for mut row in recorded.rows.clone() {
-            row["schema"] = json!(PARTICIPANTS);
-            expected_rows.push(row);
-        }
-        let mut case = recorded.case.clone();
-        case["config"]["container"]["exposed_ports"] = json!([]);
+        let (rows, case) = migrated(baseline);
+        expected_rows.extend(rows);
         expected_cases.insert(format!("integration/{name}"), case);
     }
-    let checkout = repository_root();
-    let old_files = LOGGING_CASES
-        .into_iter()
-        .filter(|name| {
-            let path = checkout.join(format!("test/integration/cases/{name}/config.yaml"));
-            let file: Value = serde_saphyr::from_str(&read_text(&path)).unwrap();
-            file.get("type").is_some()
-        })
-        .count();
-    assert_eq!(
-        expected_cases.len(),
-        old_files,
-        "every old-schema logging file must have a twin"
-    );
     let actual = serde_json::to_value(Inventory::generate(&root)).unwrap();
     assert_eq!(actual["rows"], json!(expected_rows));
     assert_eq!(actual["cases"], Value::Object(expected_cases));
 }
 
 #[test]
-fn logging_case_twins_use_the_default_log_file_fact_exactly_where_the_case_asserts_the_default_path() {
+fn checked_in_logging_cases_match_the_frozen_baseline_apart_from_the_schema_migration() {
+    let baseline = logging_baseline();
     let recorded = recorded_integration_cases();
+    for name in LOGGING_CASES {
+        let baseline = &baseline[name];
+        let recorded = &recorded[name];
+        let (rows, case, expected_form) = if recorded.old_schema {
+            (
+                baseline.rows.clone(),
+                baseline.case.clone(),
+                "the unchanged integration schema",
+            )
+        } else {
+            let (rows, case) = migrated(baseline);
+            (
+                rows,
+                case,
+                "the participant schema with only schema and exposed_ports changed",
+            )
+        };
+        assert_eq!(
+            json!({"rows": recorded.rows, "case": recorded.case}),
+            json!({"rows": rows, "case": case}),
+            "{name}: expected {expected_form}, but its inventory entry differs from the frozen baseline"
+        );
+    }
+}
+
+#[test]
+fn logging_case_twins_use_the_default_log_file_fact_exactly_where_the_case_asserts_the_default_path() {
+    let baseline = logging_baseline();
     let used_fact: BTreeSet<_> = LOGGING_CASES
         .into_iter()
-        .filter(|name| recorded[*name].old_schema)
-        .filter(|name| participant_twin(&recorded[*name].case["config"]).unwrap().1)
+        .filter(|name| participant_twin(&baseline[*name].case["config"]).unwrap().1)
         .collect();
     let expected: BTreeSet<_> = [
         "adp-logging-default-path",
@@ -271,17 +332,21 @@ fn logging_case_twins_use_the_default_log_file_fact_exactly_where_the_case_asser
         "adp-logging-windows-default-path",
     ]
     .into_iter()
-    .filter(|name| recorded[*name].old_schema)
     .collect();
     assert_eq!(used_fact, expected);
 }
 
 #[test]
 fn only_the_logging_cases_and_the_log_parsed_exit_cases_fit_the_integration_runner_translation() {
+    let baseline = logging_baseline();
     let recorded = recorded_integration_cases();
-    let supported: BTreeSet<_> = recorded
+    let supported: BTreeSet<_> = baseline
         .iter()
-        .filter(|(_, recorded)| recorded.old_schema)
+        .chain(
+            recorded
+                .iter()
+                .filter(|(name, recorded)| !LOGGING_CASES.contains(&name.as_str()) && recorded.old_schema),
+        )
         .filter_map(|(name, recorded)| {
             let (twin, _) = participant_twin(&recorded.case["config"]).ok()?;
             let cases = CaseConfig::load_content(&twin, name, Path::new("config.yaml"))
@@ -298,8 +363,11 @@ fn only_the_logging_cases_and_the_log_parsed_exit_cases_fit_the_integration_runn
         .collect();
     let expected: BTreeSet<_> = LOGGING_CASES
         .into_iter()
-        .chain(LOG_PARSED_EXIT_CASES)
-        .filter(|name| recorded[*name].old_schema)
+        .chain(
+            LOG_PARSED_EXIT_CASES
+                .into_iter()
+                .filter(|name| recorded[*name].old_schema),
+        )
         .collect();
     assert_eq!(supported, expected);
 }

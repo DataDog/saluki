@@ -260,11 +260,13 @@ A participant case runs on the integration runner only if it has one `agent-adp`
 output: the container's log stream (Agent and ADP under s6) on Linux, stdout and stderr of the spawned Agent and ADP
 processes on macOS, and the container's console output only on Windows.
 
-Participant-schema twins of the old-schema logging cases, built from this inventory, must reproduce their rows and
-cases except `schema` and `container.exposed_ports`. The seven logging files declare `58125/udp`; only
-`port_listening` reads a published port's mapping. The translation uses default container settings, so changing
-these files' schema changes only the inventory's `schema` column and `container.exposed_ports: []`. List
-`subject_os` in `runtimes` order to preserve runtime order.
+Participant-schema twins of the seven logging cases are built from a frozen copy of their inventory entries taken
+before their schema changed (`bin/correctness/panoramic/src/config/coverage_inventory/logging_baseline.json`). Both
+the twins and this inventory's entries must match that copy, apart from `schema` and `container.exposed_ports: []`
+for participant-schema cases. Edit the copy by hand when the inventory format changes; never regenerate it. The
+seven logging files declare `58125/udp`; only `port_listening` reads a published port's mapping. The translation
+uses default container settings, so changing these files' schema changes only the inventory's `schema` column and
+`container.exposed_ports: []`. List `subject_os` in `runtimes` order to preserve runtime order.
 
 `adp-disabled-exit` and `adp-no-pipelines-exit` also fit the supported subset, but their log line stands in for a
 process exit. They keep the old schema until exits are observed directly.
