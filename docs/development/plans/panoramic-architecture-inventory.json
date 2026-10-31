@@ -1757,7 +1757,7 @@
       "subject_os": "macos",
       "runtime": "mac",
       "source": "test/integration/cases/adp-logging-mac-ignores-core-agent-log-file/config.yaml",
-      "schema": "integration",
+      "schema": "participants",
       "execution": "old",
       "status": "selected",
       "timeout": "120s",
@@ -6925,9 +6925,7 @@
         "container": {
           "command": [],
           "entrypoint": [],
-          "exposed_ports": [
-            "58125/udp"
-          ],
+          "exposed_ports": [],
           "files": [],
           "host_cgroup_namespace": false
         },

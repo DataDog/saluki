@@ -1,31 +1,34 @@
-type: integration
 name: "adp-logging-mac-ignores-core-agent-log-file"
 description: "Verifies ADP ignores the Core Agent's `log_file` setting on the macOS host-process runtime"
 timeout: 120s
-runtimes: [mac]
+subject_os: [macos]
 
-env:
-  DD_API_KEY: "00000000000000000000000000000000"
-  DD_HOSTNAME: "integration-test-mac-ignore-core-log-file"
-  DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
-  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-  DD_LOG_FILE: "/tmp/coreagent-only-mac.log"
-  DD_DATA_PLANE_LOG_FILE: "/tmp/adp-mac-ignores-core-agent-log-file.log"
-
-container:
-  exposed_ports:
-    - "58125/udp"
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    config:
+      env:
+        DD_API_KEY: "00000000000000000000000000000000"
+        DD_HOSTNAME: "integration-test-mac-ignore-core-log-file"
+        DD_DATA_PLANE_ENABLED: "true"
+        DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+        DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+        DD_LOG_FILE: "/tmp/coreagent-only-mac.log"
+        DD_DATA_PLANE_LOG_FILE: "/tmp/adp-mac-ignores-core-agent-log-file.log"
 
 procedure:
-  - assertion: log_contains
+  - step: log_contains
+    on: adp
     pattern: "Initial configuration received."
     timeout: 30s
-  - assertion: file_contains
+  - step: file_contains
+    on: adp
     path: "/tmp/coreagent-only-mac.log"
     pattern: "CORE"
     timeout: 30s
-  - assertion: file_contains
+  - step: file_contains
+    on: adp
     path: "/tmp/adp-mac-ignores-core-agent-log-file.log"
     pattern: "DATAPLANE"
     timeout: 30s
