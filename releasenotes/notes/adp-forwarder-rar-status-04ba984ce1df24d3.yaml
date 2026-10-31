@@ -1,0 +1,6 @@
+---
+enhancements:
+  - |
+    Report Agent Data Plane Forwarder transaction status in the Remote Agents section of ``agent status``, matching the
+    transaction fields of the Core Agent's own Forwarder status: retry queue size, requeued and retried transactions,
+    successes by endpoint, errors by type, and HTTP errors by status code.

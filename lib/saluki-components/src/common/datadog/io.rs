@@ -396,6 +396,49 @@ impl TlsCertificateValidation {
     }
 }
 
+/// Value of the `purpose` tag on telemetry emitted by the API key validation client.
+///
+/// Validation requests are not forwarding transactions, so consumers of the HTTP client's telemetry use this tag to
+/// tell the two apart.
+pub(crate) const API_KEY_VALIDATION_PURPOSE: &str = "api_key_validation";
+
+/// Returns an HTTP client builder for Datadog intake traffic, emitting telemetry through `metrics_builder`.
+fn http_client_builder(
+    config: &ForwarderConfiguration, metrics_builder: MetricsBuilder, endpoint_name: Arc<EndpointNameFn>,
+) -> Result<HttpClientBuilder, GenericError> {
+    let mut client_builder = HttpClient::builder()
+        .with_request_timeout(config.request_timeout())
+        .with_max_idle_conns_per_host(config.max_idle_connections_per_host())
+        .with_min_tls_version(config.min_tls_version())
+        .with_tls_handshake_timeout(config.tls_handshake_timeout())
+        .with_http_protocol(config.http_protocol())
+        .with_endpoint_telemetry(metrics_builder, Some(move |uri: &Uri| endpoint_name(uri)));
+    if let Some(path) = config.ssl_key_log_file_path() {
+        client_builder = client_builder.with_tls_config(|builder| builder.with_key_log_file(path));
+    }
+    client_builder = client_builder.with_proxies(config.proxy().build()?);
+
+    if config.connection_reset_interval() > Duration::ZERO {
+        client_builder = client_builder.with_connection_age_limit(config.connection_reset_interval());
+    }
+
+    Ok(TlsCertificateValidation::from_forwarder_config(config).apply_to(client_builder))
+}
+
+/// Returns an HTTP client builder for API key validation.
+///
+/// Like the Core Agent, validation uses its own client so that its requests are never counted as forwarding
+/// transactions. Its telemetry is still emitted, tagged with `purpose` so that consumers can tell the two apart.
+fn validation_http_client_builder(
+    config: &ForwarderConfiguration, metrics_builder: MetricsBuilder, endpoint_name: Arc<EndpointNameFn>,
+) -> Result<HttpClientBuilder, GenericError> {
+    http_client_builder(
+        config,
+        metrics_builder.add_default_tag(("purpose", API_KEY_VALIDATION_PURPOSE)),
+        endpoint_name,
+    )
+}
+
 impl<B> TransactionForwarder<B>
 where
     B: Body + Buf + Clone + Unpin + Send + Sync + 'static,
@@ -441,29 +484,8 @@ where
         let endpoints = config.build_routable_endpoints()?;
         let api_key_refresher = ApiKeyRefresher::new(&endpoints, &live.api_keys);
         let endpoint_name: Arc<EndpointNameFn> = Arc::new(endpoint_name);
-        let endpoint_name_for_client = Arc::clone(&endpoint_name);
-        let mut client_builder = HttpClient::builder()
-            .with_request_timeout(config.request_timeout())
-            .with_max_idle_conns_per_host(config.max_idle_connections_per_host())
-            .with_min_tls_version(config.min_tls_version())
-            .with_tls_handshake_timeout(config.tls_handshake_timeout())
-            .with_http_protocol(config.http_protocol())
-            .with_endpoint_telemetry(
-                metrics_builder.clone(),
-                Some(move |uri: &Uri| endpoint_name_for_client(uri)),
-            );
-        if let Some(path) = config.ssl_key_log_file_path() {
-            client_builder = client_builder.with_tls_config(|builder| builder.with_key_log_file(path));
-        }
-        client_builder = client_builder.with_proxies(config.proxy().build()?);
 
-        if config.connection_reset_interval() > Duration::ZERO {
-            client_builder = client_builder.with_connection_age_limit(config.connection_reset_interval());
-        }
-
-        client_builder = TlsCertificateValidation::from_forwarder_config(&config).apply_to(client_builder);
-
-        let client = client_builder.build()?;
+        let client = http_client_builder(&config, metrics_builder.clone(), Arc::clone(&endpoint_name))?.build()?;
 
         let emitter = DiagnosticsEmitter::from_current(context.identity())
             .error_context("Failed to create diagnostics emitter for transaction forwarder.")?;
@@ -554,14 +576,26 @@ where
     /// The forwarder's diagnostics emitter (see [`with_diagnostics_emitter`][Self::with_diagnostics_emitter]) is used to
     /// surface a diagnostic event when validation determines that every configured API key is invalid, allowing
     /// interested subscribers to react to the credentials being rejected.
-    pub(crate) fn api_key_validator(&self) -> ApiKeyValidator {
-        ApiKeyValidator::new(
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the validation HTTP client cannot be built.
+    pub(crate) fn api_key_validator(&self) -> Result<ApiKeyValidator, GenericError> {
+        // Built here rather than up front, since not every forwarder validates its API keys.
+        let client = validation_http_client_builder(
+            &self.config,
+            self.metrics_builder.clone(),
+            Arc::clone(&self.endpoint_name),
+        )?
+        .build()?;
+
+        Ok(ApiKeyValidator::new(
             self.endpoints.clone(),
-            self.client.clone(),
+            client,
             self.api_key_refresher.as_ref().map(ApiKeyRefresher::changes),
             self.config.api_key_validation_interval(),
             self.emitter.clone(),
-        )
+        ))
     }
 }
 
@@ -2149,6 +2183,115 @@ mod tests {
             error.to_string().contains("Entry is too large to persist"),
             "unexpected error: {error}"
         );
+    }
+
+    /// Starts a plain HTTP server that answers every request with a 500.
+    async fn start_http_server_returning_500() -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener should bind");
+        let port = listener.local_addr().expect("listener should have an address").port();
+
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    let _ = stream.read(&mut buf).await;
+                    let _ = stream
+                        .write_all(
+                            b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+
+        port
+    }
+
+    fn validation_request(port: u16) -> Request<Empty<Bytes>> {
+        Request::builder()
+            .method("GET")
+            .uri(format!("http://127.0.0.1:{port}/api/v1/validate"))
+            .body(Empty::<Bytes>::new())
+            .expect("request should build")
+    }
+
+    fn error_counter(recorder: &TestRecorder, tags: &[(&'static str, &'static str)]) -> Option<u64> {
+        recorder.counter(("network_http_requests_errors_total", tags))
+    }
+
+    #[tokio::test]
+    async fn validation_client_errors_are_tagged_and_kept_out_of_forwarder_counters() {
+        init_tls_crypto_provider();
+
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let config = forwarder_config_from(shared_configuration()).await;
+        let endpoint_name: Arc<EndpointNameFn> = Arc::new(|_: &Uri| None);
+
+        // The tests don't use TLS, so skip loading the process-wide root certificate store.
+        let build = |builder: Result<HttpClientBuilder, GenericError>| {
+            builder
+                .expect("client builder")
+                .with_tls_config(|builder| builder.with_root_cert_store(RootCertStore::empty()))
+                .build()
+                .expect("client should build")
+        };
+        let _forwarder_client = build(http_client_builder(
+            &config,
+            MetricsBuilder::default(),
+            Arc::clone(&endpoint_name),
+        ));
+        let mut validation_client = build(validation_http_client_builder(
+            &config,
+            MetricsBuilder::default(),
+            Arc::clone(&endpoint_name),
+        ));
+
+        // An HTTP 500 from the validation endpoint.
+        let port = start_http_server_returning_500().await;
+        let response = validation_client
+            .send(validation_request(port))
+            .await
+            .expect("validation request should get a response");
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        // A connection failure: nothing is listening on this port anymore.
+        let closed_port = {
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener should bind");
+            listener.local_addr().expect("listener should have an address").port()
+        };
+        validation_client
+            .send(validation_request(closed_port))
+            .await
+            .expect_err("connecting to a closed port should fail");
+
+        let validation = |error_type: &'static str, scope: &'static str| {
+            error_counter(
+                &recorder,
+                &[
+                    ("purpose", API_KEY_VALIDATION_PURPOSE),
+                    ("error_type", error_type),
+                    ("error_scope", scope),
+                ],
+            )
+        };
+        let forwarding = |error_type: &'static str, scope: &'static str| {
+            error_counter(&recorder, &[("error_type", error_type), ("error_scope", scope)])
+        };
+
+        // Transaction-scoped and phase-scoped errors from validation land on the tagged series...
+        assert_eq!(validation("gt_400", "transaction"), Some(1));
+        assert_eq!(validation("cant_send", "transaction"), Some(1));
+        assert_eq!(validation("connection_error", "phase"), Some(1));
+
+        // ...and the forwarder's own series, registered by its own client, never see them.
+        assert_eq!(forwarding("gt_400", "transaction"), Some(0));
+        assert_eq!(forwarding("cant_send", "transaction"), Some(0));
+        assert_eq!(forwarding("connection_error", "phase"), Some(0));
     }
 
     #[tokio::test]

@@ -22,7 +22,8 @@ use saluki_error::GenericError;
 use crate::{
     config::DataPlaneConfiguration,
     internal::{
-        logging::get_translated_log_level_stream, AgentDataPlane, DogStatsDStatusSection, TopologyControlSurfaces,
+        logging::get_translated_log_level_stream, AgentDataPlane, DogStatsDStatusSection, ForwarderStatusSection,
+        TopologyControlSurfaces,
     },
     state::metrics::get_datadog_agent_remappings,
 };
@@ -72,7 +73,10 @@ pub async fn create_control_plane_supervisor(
 
     privileged_api = control_surfaces.register_control_surfaces(privileged_api);
 
-    let status_sections: Vec<Arc<dyn StatusSectionProvider>> = vec![Arc::new(DogStatsDStatusSection::new())];
+    let status_sections: Vec<Arc<dyn StatusSectionProvider>> = vec![
+        Arc::new(DogStatsDStatusSection::new()),
+        Arc::new(ForwarderStatusSection::new()),
+    ];
     supervisor.add_worker(agent.create_remote_agent_supervisor(status_sections, get_datadog_agent_remappings())?);
 
     supervisor.add_worker(privileged_api.into_supervisor());
