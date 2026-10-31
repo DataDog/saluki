@@ -1,0 +1,8 @@
+---
+enhancements:
+  - |
+    Send a process-instance UUID with Agent Data Plane's Remote Agent Registry
+    registrations. The ID stays stable across re-registrations and changes
+    when the process restarts, even if the operating system reuses its PID.
+    This lets compatible Core Agent versions distinguish process lifetimes
+    when accumulating telemetry counters. The reported OS PID is unchanged.
