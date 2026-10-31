@@ -1,0 +1,12 @@
+# Uses dotted YAML keys at the top level and inside an unknown map, plus a URL map key.
+# Shows that dotted paths are split before schema lookup, but keys inside a leaf map stay intact.
+name: yaml-dotted-keys
+group: behavior
+why: [yaml-dotted-key-split-before-schema]
+yaml: |
+  data_plane.api_listen_address: tcp://127.0.0.1:5199
+  unknown_labels_xyz:
+    host.name: a
+  additional_endpoints:
+    https://x.test: [k]
+keys: [additional_endpoints, data_plane.api_listen_address, unknown_labels_xyz.host.name]
