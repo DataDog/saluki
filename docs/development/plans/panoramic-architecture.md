@@ -282,9 +282,18 @@ process exit. They keep the old schema until exits are observed directly.
 ## Migration proofs
 
 When changing a case's schema or runner, add CI evidence per (case, subject OS) and reference the inventory commit
-used for comparison.
+used for comparison. Each proof names the tested commit, links the passing CI jobs and identifies the runner and
+execution value.
 
 <!-- migration-proofs:begin -->
 | Case | Subject OS | Proof |
 | --- | --- | --- |
+| adp-logging-default-path | linux | `33e3e697c5`: [test-integration](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351927); passed on the integration runner (execution `old`). |
+| adp-logging-ignores-core-agent-log-file | linux | `33e3e697c5`: [test-integration](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351927); passed on the integration runner (execution `old`). |
+| adp-logging-respects-data-plane-log-file | linux | `33e3e697c5`: [test-integration](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351927); passed on the integration runner (execution `old`). |
+| adp-logging-respects-data-plane-log-file | macos | `33e3e697c5`: [test-integration-macos-arm64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351928), [test-integration-macos-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351929); passed on the integration runner (execution `old`). |
+| adp-logging-mac-ignores-core-agent-log-file | macos | `33e3e697c5`: [test-integration-macos-arm64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351928), [test-integration-macos-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351929); passed on the integration runner (execution `old`). |
+| adp-logging-windows-default-path | windows | `33e3e697c5`: [test-integration-windows-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351930); passed on the integration runner (execution `old`). |
+| adp-logging-windows-ignores-core-agent-log-file | windows | `33e3e697c5`: [test-integration-windows-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351930); passed on the integration runner (execution `old`). |
+| adp-logging-windows-respects-data-plane-log-file | windows | `33e3e697c5`: [test-integration-windows-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351930); passed on the integration runner (execution `old`). |
 <!-- migration-proofs:end -->

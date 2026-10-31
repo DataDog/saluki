@@ -1020,6 +1020,7 @@ fn migration_proofs_name_inventoried_rows() {
     let mut lines = proofs.lines().filter(|line| !line.trim().is_empty());
     assert_eq!(lines.next(), Some("| Case | Subject OS | Proof |"));
     assert_eq!(lines.next(), Some("| --- | --- | --- |"));
+    let mut proven_rows = BTreeSet::new();
     for line in lines {
         assert!(
             line.starts_with('|') && line.ends_with('|'),
@@ -1030,6 +1031,8 @@ fn migration_proofs_name_inventoried_rows() {
             .map(|s| s.trim().trim_matches('`'))
             .collect();
         assert_eq!(columns.len(), 3, "Invalid proof row: {line}");
+        assert!(!columns[2].is_empty(), "Missing migration proof: {line}");
+        proven_rows.insert((columns[0], columns[1]));
         let matches = inventory
             .rows
             .iter()
@@ -1039,6 +1042,14 @@ fn migration_proofs_name_inventoried_rows() {
             matches, 1,
             "Migration proof must name exactly one inventory row: {} / {}",
             columns[0], columns[1],
+        );
+    }
+    for row in inventory.rows.iter().filter(|row| row.schema == PARTICIPANTS) {
+        assert!(
+            proven_rows.contains(&(row.name.as_str(), row.subject_os.as_str())),
+            "Participant-schema row must have a migration proof: {} / {}",
+            row.name,
+            row.subject_os,
         );
     }
 }
