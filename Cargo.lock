@@ -4486,7 +4486,6 @@ dependencies = [
  "k8s-openapi",
  "kube",
  "rand 0.10.3",
- "rand_distr",
  "regex",
  "reqwest",
  "rustls",
