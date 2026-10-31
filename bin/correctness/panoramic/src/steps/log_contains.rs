@@ -62,6 +62,7 @@ impl Step for LogNotContains {
 /// Builds `log_contains` from its case-file fields.
 pub(crate) const LOG_CONTAINS: StepDeclaration = StepDeclaration {
     name: "log_contains",
+    template_fields: &[],
     build: |fields: &StepFields| {
         let step: LogContains = decode_fields(fields)?;
         check_pattern(&step.pattern, step.regex)?;
@@ -72,6 +73,7 @@ pub(crate) const LOG_CONTAINS: StepDeclaration = StepDeclaration {
 /// Builds `log_not_contains` from its case-file fields.
 pub(crate) const LOG_NOT_CONTAINS: StepDeclaration = StepDeclaration {
     name: "log_not_contains",
+    template_fields: &[],
     build: |fields: &StepFields| {
         let step: LogNotContains = decode_fields(fields)?;
         check_pattern(&step.pattern, step.regex)?;

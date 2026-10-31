@@ -71,9 +71,10 @@ fail-fast shell options, ignored-key detection, and migration-proof references.
 ## Effective configuration scope
 
 The JSON records the loader's configuration with defaults and matrix environments applied, before CLI image
-overrides. For a participant case, the JSON records the integration configuration it is translated to.
-Paths and template values remain as configured. Use product `config_dump` output from CI runs to compare effective
-product configurations.
+overrides. For a participant case, the generator translates the integration configuration for each subject OS,
+requires the translations to be identical, and records one. Fact references in step paths are resolved; other paths
+and template values remain as configured. Use product `config_dump` output from CI runs to compare effective product
+configurations.
 
 <!-- coverage-inventory:begin -->
 

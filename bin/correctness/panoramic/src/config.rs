@@ -13,8 +13,9 @@ use serde::{
 use serde_json::Value;
 
 use self::case::CaseConfig;
-pub(crate) use self::participant_check::ParticipantDeclaration;
+pub(crate) use self::participant_check::{FactDeclaration, ParticipantDeclaration};
 pub(crate) use self::step_check::{decode_fields, Need, Step, StepDeclaration, StepFields};
+pub(crate) use self::template::Template;
 use crate::correctness::config::Config as CorrectnessConfig;
 use crate::image_override::{ImageOverride, ImageOverrides};
 use crate::integration::IntegrationSettings;
@@ -806,7 +807,7 @@ pub(crate) fn build_runners<'a>(
     let mut runners = Vec::new();
     let mut errors = Vec::new();
     for case in cases {
-        match case.build_test(&settings, &overrides) {
+        match case.build_test(integration_runtime, &settings, &overrides) {
             Ok(runner) => runners.push(runner),
             Err(error) => errors.push(format!("{error:#}").replace('\n', "\n    ")),
         }
@@ -864,6 +865,7 @@ mod case_file;
 mod integration_bridge;
 mod participant_check;
 mod step_check;
+mod template;
 
 #[cfg(test)]
 mod coverage_inventory;

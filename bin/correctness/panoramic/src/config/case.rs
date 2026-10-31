@@ -139,8 +139,9 @@ impl CaseConfig {
     /// with a letter, other than `self`; exactly one subject is required, without an `os` override.
     /// Types must be registered, configuration names declared by the type, and OS overlays reachable.
     /// Connections must join a declared consumed endpoint to another participant's declared served endpoint.
-    /// Each step must name a registered step, decode its fields strictly, contain no `{{` template reference,
-    /// and reference only declared participants and the processes their types declare.
+    /// Each step must name a registered step and decode its fields strictly. Only `file_contains.path`
+    /// accepts template references, to participant facts declared on every OS the participant may run on.
+    /// Participant and process names must be declared.
     pub(super) fn load_content(content: &str, directory: &str, source: &Path) -> Result<Vec<Self>, GenericError> {
         let peek: serde_json::Value = serde_saphyr::from_str(content)
             .error_context(format!("Failed to parse config file as YAML: {}", source.display()))?;
@@ -151,7 +152,7 @@ impl CaseConfig {
                 let name = case_name(file.name.as_deref(), directory, source)?;
                 let subject_os = file.check(&name, source)?;
                 check_participants(&file, &subject_os, REGISTERED_TYPES, &name, source)?;
-                let procedure = build_steps(&file, REGISTERED_STEPS, REGISTERED_TYPES, &name, source)?;
+                let procedure = build_steps(&file, &subject_os, REGISTERED_STEPS, REGISTERED_TYPES, &name, source)?;
                 return Ok(vec![Self {
                     name,
                     description: file.description.clone(),
@@ -277,8 +278,8 @@ impl CaseConfig {
     /// # Errors
     ///
     /// Returns an error naming the case and source if it uses another schema or suite, or has unsupported
-    /// participant settings or steps; see [`CaseFile::integration_config`].
-    pub(super) fn integration_config(&self) -> Result<IntegrationConfig, GenericError> {
+    /// participant settings or steps, or does not declare the requested subject OS; see [`CaseFile::integration_config`].
+    pub(super) fn integration_config(&self, os: Os) -> Result<IntegrationConfig, GenericError> {
         let CaseSchema::Participants { file, procedure } = &self.schema else {
             return Err(generic_error!(
                 "Cannot run case '{}' from {}: integration translation requires a case that declares participants",
@@ -293,7 +294,15 @@ impl CaseConfig {
                 self.source.display()
             ));
         }
-        file.integration_config(&self.name, &self.source, procedure)
+        if !self.subject_os.contains(&os) {
+            return Err(generic_error!(
+                "Cannot run case '{}' from {}: it does not declare subject OS '{}'",
+                self.name,
+                self.source.display(),
+                os.name()
+            ));
+        }
+        file.integration_config(&self.name, &self.source, procedure, os)
             .map_err(|reason| {
                 generic_error!(
                     "Cannot run case '{}' from {}: {}",
@@ -308,9 +317,9 @@ impl CaseConfig {
     ///
     /// # Errors
     ///
-    /// Propagates [`Self::integration_config`] errors for participant cases.
+    /// Participant cases require a recognized subject OS runtime and propagate [`Self::integration_config`] errors.
     pub(super) fn build_test(
-        &self, settings: &IntegrationSettings, overrides: &ImageOverrides<'_>,
+        &self, integration_runtime: &str, settings: &IntegrationSettings, overrides: &ImageOverrides<'_>,
     ) -> Result<Box<dyn Test>, GenericError> {
         match &self.schema {
             CaseSchema::Integration(config) => Ok(Box::new(IntegrationTestCase::new(config.clone(), settings))),
@@ -320,7 +329,18 @@ impl CaseConfig {
                 Ok(Box::new(CorrectnessTestCase::new(self.name.clone(), config)))
             }
             CaseSchema::Participants { .. } => {
-                Ok(Box::new(IntegrationTestCase::new(self.integration_config()?, settings)))
+                let os = Os::from_runtime(integration_runtime).ok_or_else(|| {
+                    generic_error!(
+                        "Cannot run case '{}' from {}: runtime '{}' is not a subject OS",
+                        self.name,
+                        self.source.display(),
+                        integration_runtime
+                    )
+                })?;
+                Ok(Box::new(IntegrationTestCase::new(
+                    self.integration_config(os)?,
+                    settings,
+                )))
             }
         }
     }
@@ -350,6 +370,11 @@ impl CaseConfig {
 
 #[cfg(test)]
 impl CaseConfig {
+    /// Subject OSes used to check that inventory translation is OS-independent.
+    pub(super) fn subject_os(&self) -> &BTreeSet<Os> {
+        &self.subject_os
+    }
+
     /// The parsed file data, for tests that inspect what the loader produced.
     pub(super) fn schema(&self) -> &CaseSchema {
         &self.schema
@@ -467,7 +492,7 @@ mod tests {
             let cases = CaseConfig::load_content(&yaml, "alpha", Path::new("alpha/config.yaml")).unwrap();
             assert_eq!(cases.len(), 1);
             assert_eq!(
-                cases[0].integration_config().unwrap_err().to_string(),
+                cases[0].integration_config(Os::Linux).unwrap_err().to_string(),
                 "Cannot run case 'alpha' from alpha/config.yaml: \
                  integration translation requires a case that declares participants"
             );
@@ -551,10 +576,68 @@ procedure:
         assert_eq!(absent.during.0, Duration::from_secs(10));
         let file_step = (file_step.as_ref() as &dyn Any).downcast_ref::<FileContains>().unwrap();
         assert_eq!(file_step.on, "adp");
-        assert_eq!(file_step.path, "/var/log/datadog/agent-data-plane.log");
+        assert_eq!(file_step.path, "/var/log/datadog/agent-data-plane.log".parse().unwrap());
         assert_eq!(file_step.pattern, "DATAPLANE");
         assert!(!file_step.regex);
         assert_eq!(file_step.timeout.0, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn default_log_file_references_load_on_linux_and_windows_but_not_macos() {
+        let dir = tempfile::tempdir().unwrap();
+        let yaml = PARTICIPANT_FIELDS.replace("procedure: []", "procedure: [{step: file_contains, on: adp, path: '{{ adp.facts.default_log_file }}', pattern: ready, timeout: 1s}]");
+        for oses in ["linux", "windows", "linux, windows"] {
+            let path = write_case(dir.path(), "alpha", &yaml.replace("[linux]", &format!("[{oses}]")));
+            let cases = CaseConfig::load_file(&path).unwrap();
+            let CaseSchema::Participants { procedure, .. } = cases[0].schema() else {
+                panic!("expected participant data")
+            };
+            let [ProcedureNode::Step(step)] = procedure.as_slice() else {
+                panic!("expected one step")
+            };
+            assert_eq!(
+                step.needs(),
+                [
+                    Need::Handle("adp".into()),
+                    Need::Fact("adp".into(), "default_log_file".into())
+                ]
+            );
+        }
+        let path = write_case(dir.path(), "alpha", &yaml.replace("[linux]", "[linux, macos, windows]"));
+        let message = CaseConfig::load_file(&path)
+            .err()
+            .expect("macOS has no declared default log file")
+            .to_string();
+        assert_eq!(message, format!(
+            "case 'alpha' in {}: step 1 'file_contains' references fact 'default_log_file' of participant 'adp', which type 'agent-adp' does not provide on macos; it provides it on linux, windows",
+            path.canonicalize().unwrap().display()
+        ));
+    }
+
+    #[test]
+    fn participant_translation_requires_a_declared_subject_os() {
+        let cases = CaseConfig::load_content(PARTICIPANT_FIELDS, "alpha", Path::new("alpha/config.yaml")).unwrap();
+        assert_eq!(
+            cases[0].integration_config(Os::Windows).unwrap_err().to_string(),
+            "Cannot run case 'alpha' from alpha/config.yaml: it does not declare subject OS 'windows'"
+        );
+        let message = build_runners(&cases, WINDOWS_RUNTIME, &[])
+            .err()
+            .expect("runner construction must translate for the requested OS")
+            .to_string();
+        assert_eq!(message, "Failed to build test runners:\n  - Cannot run case 'alpha' from alpha/config.yaml: it does not declare subject OS 'windows'");
+    }
+
+    #[test]
+    fn participant_runners_require_a_subject_os_runtime() {
+        let cases = CaseConfig::load_content(PARTICIPANT_FIELDS, "alpha", Path::new("alpha/config.yaml")).unwrap();
+        for runtime in ["docker", "macos", "unknown"] {
+            let message = build_runners(&cases, runtime, &[])
+                .err()
+                .expect("invalid subject OS runtime")
+                .to_string();
+            assert_eq!(message, format!("Failed to build test runners:\n  - Cannot run case 'alpha' from alpha/config.yaml: runtime '{runtime}' is not a subject OS"));
+        }
     }
 
     #[test]
@@ -621,8 +704,20 @@ procedure:
                 "'log_contains': pattern '(' is not a valid regex",
             ),
             (
-                "step: file_contains, on: adp, path: '{{ adp.facts.default_log_file }}', pattern: ready, timeout: 1s",
-                "'file_contains': field 'path' contains a template reference",
+                "step: file_contains, on: adp, path: /logs/output.log, pattern: '{{ adp.facts.default_log_file }}', timeout: 1s",
+                "'file_contains': field 'pattern' contains a template reference",
+            ),
+            (
+                "step: file_contains, on: adp, path: '{{ self.facts.default_log_file }}', pattern: ready, timeout: 1s",
+                "'file_contains': path: '{{ self.facts.default_log_file }}': a step has no 'self'; name the participant",
+            ),
+            (
+                "step: file_contains, on: adp, path: '{{ adp.endpoints.api.url }}', pattern: ready, timeout: 1s",
+                "'file_contains': path: '{{ adp.endpoints.api.url }}' is not a fact reference",
+            ),
+            (
+                "step: file_contains, on: adp, path: '{{PANORAMIC_DYNAMIC_PATH}}', pattern: ready, timeout: 1s",
+                "'file_contains': path: '{{PANORAMIC_DYNAMIC_PATH}}' is not a fact reference",
             ),
             (
                 "step: log_contains, on: missing, pattern: ready, timeout: 1s",

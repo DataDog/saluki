@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use saluki_error::GenericError;
+use saluki_error::{generic_error, GenericError};
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -438,9 +438,20 @@ fn record_cases(cases: &[CaseConfig]) -> Result<Vec<(String, Case)>, GenericErro
                 ignored_fields: Vec::new(),
             },
             CaseSchema::Participants { .. } => {
-                let translated = case.integration_config()?;
+                let mut subject_os = case.subject_os().iter();
+                let first_os = *subject_os.next().expect("loaded cases declare at least one subject OS");
+                let translated = case.integration_config(first_os)?;
+                let config = serde_json::to_value(&translated)?;
+                for os in subject_os {
+                    if serde_json::to_value(case.integration_config(*os)?)? != config {
+                        return Err(generic_error!(
+                            "case '{}' translates to different integration configurations on {} and {}; the coverage inventory records one configuration per case",
+                            case.name(), first_os.name(), os.name()
+                        ));
+                    }
+                }
                 Case {
-                    config: serde_json::to_value(&translated)?,
+                    config,
                     steps: Some(Steps::from_config(&translated)),
                     comparison: None,
                     ignored_fields: Vec::new(),
@@ -656,35 +667,62 @@ fn coverage_inventory_matches_the_case_files() {
 
 #[test]
 fn a_participant_case_and_its_integration_twin_produce_the_same_inventory_apart_from_the_schema_column() {
-    let participant_root = tempfile::tempdir().unwrap();
-    let integration_root = tempfile::tempdir().unwrap();
-    for (root, yaml) in [
-        (participant_root.path(), LOGGING_PARTICIPANT),
-        (integration_root.path(), LOGGING_INTEGRATION),
+    for (participant_yaml, integration_yaml, oses) in [
+        (
+            LOGGING_PARTICIPANT.to_string(),
+            LOGGING_INTEGRATION.to_string(),
+            vec!["linux", "macos", "windows"],
+        ),
+        (
+            LOGGING_PARTICIPANT
+                .replace("linux, macos, windows", "linux")
+                .replace(r"C:\adp\adp.log", "{{ adp.facts.default_log_file }}"),
+            LOGGING_INTEGRATION
+                .replace("linux, mac, windows", "linux")
+                .replace(r"C:\adp\adp.log", "/var/log/datadog/agent-data-plane.log"),
+            vec!["linux"],
+        ),
     ] {
-        fs::create_dir_all(root.join("test/correctness/cases")).unwrap();
-        write_case(&root.join("test/integration/cases"), "alpha", yaml);
+        let participant_root = tempfile::tempdir().unwrap();
+        let integration_root = tempfile::tempdir().unwrap();
+        for (root, yaml) in [
+            (participant_root.path(), &participant_yaml),
+            (integration_root.path(), &integration_yaml),
+        ] {
+            fs::create_dir_all(root.join("test/correctness/cases")).unwrap();
+            write_case(&root.join("test/integration/cases"), "alpha", yaml);
+        }
+        let mut participant =
+            serde_json::to_value(Inventory::generate(&participant_root.path().canonicalize().unwrap())).unwrap();
+        let integration =
+            serde_json::to_value(Inventory::generate(&integration_root.path().canonicalize().unwrap())).unwrap();
+        let participant_rows = participant["rows"].as_array_mut().unwrap();
+        let integration_rows = integration["rows"].as_array().unwrap();
+        assert_eq!(participant_rows.len(), oses.len());
+        assert_eq!(integration_rows.len(), oses.len());
+        for ((participant, integration), os) in participant_rows.iter_mut().zip(integration_rows).zip(oses) {
+            assert_eq!(participant["subject_os"], os);
+            assert_eq!(participant["schema"], PARTICIPANTS);
+            assert_eq!(participant["execution"], OLD);
+            assert_eq!(integration["schema"], INTEGRATION);
+            participant["schema"] = integration["schema"].clone();
+        }
+        assert_eq!(participant, integration);
     }
-    let mut participant =
-        serde_json::to_value(Inventory::generate(&participant_root.path().canonicalize().unwrap())).unwrap();
-    let integration =
-        serde_json::to_value(Inventory::generate(&integration_root.path().canonicalize().unwrap())).unwrap();
-    let participant_rows = participant["rows"].as_array_mut().unwrap();
-    let integration_rows = integration["rows"].as_array().unwrap();
-    assert_eq!(participant_rows.len(), 3);
-    assert_eq!(integration_rows.len(), 3);
-    for ((participant, integration), os) in participant_rows
-        .iter_mut()
-        .zip(integration_rows)
-        .zip(["linux", "macos", "windows"])
-    {
-        assert_eq!(participant["subject_os"], os);
-        assert_eq!(participant["schema"], PARTICIPANTS);
-        assert_eq!(participant["execution"], OLD);
-        assert_eq!(integration["schema"], INTEGRATION);
-        participant["schema"] = integration["schema"].clone();
-    }
-    assert_eq!(participant, integration);
+}
+
+#[test]
+#[should_panic(
+    expected = "case 'alpha' translates to different integration configurations on linux and windows; the coverage inventory records one configuration per case"
+)]
+fn inventory_rejects_participant_cases_whose_configuration_differs_by_os() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir_all(root.path().join("test/correctness/cases")).unwrap();
+    let yaml = LOGGING_PARTICIPANT
+        .replace("linux, macos, windows", "linux, windows")
+        .replace(r"C:\adp\adp.log", "{{ adp.facts.default_log_file }}");
+    write_case(&root.path().join("test/integration/cases"), "alpha", &yaml);
+    Inventory::generate(&root.path().canonicalize().unwrap());
 }
 
 #[test]

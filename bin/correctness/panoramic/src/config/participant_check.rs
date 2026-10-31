@@ -9,6 +9,12 @@ use super::{
     case_file::{CaseFile, ParticipantEntry},
 };
 
+/// A participant fact available before execution, with values by OS.
+pub(crate) struct FactDeclaration {
+    pub(crate) name: &'static str,
+    pub(crate) values: &'static [(Os, &'static str)],
+}
+
 /// The names a case may use for one participant type, checked when the case loads.
 pub(crate) struct ParticipantDeclaration {
     /// Registry name, as written in a participant's `type`.
@@ -21,8 +27,22 @@ pub(crate) struct ParticipantDeclaration {
     pub(crate) consumes: &'static [&'static str],
     /// Names a case may set under `config.params`.
     pub(crate) params: &'static [&'static str],
+    /// Early facts steps may reference, sorted by name.
+    pub(crate) facts: &'static [FactDeclaration],
     /// Named processes steps may address with `process`, in sorted order.
     pub(crate) processes: &'static [&'static str],
+}
+
+impl ParticipantDeclaration {
+    /// Looks up a declared fact's value for a participant OS.
+    pub(crate) fn fact_value(&self, fact: &str, os: Os) -> Option<&'static str> {
+        self.facts
+            .iter()
+            .find(|declaration| declaration.name == fact)?
+            .values
+            .iter()
+            .find_map(|(provided_os, value)| (*provided_os == os).then_some(*value))
+    }
 }
 
 /// Checks participant names, configuration and connections against registered types.
@@ -170,7 +190,7 @@ fn is_dns_label(name: &str) -> bool {
         && !name.ends_with('-')
 }
 
-fn possible_os(entry: &ParticipantEntry, subject_os: &BTreeSet<Os>) -> BTreeSet<Os> {
+pub(super) fn possible_os(entry: &ParticipantEntry, subject_os: &BTreeSet<Os>) -> BTreeSet<Os> {
     match entry.os {
         Some(os) => BTreeSet::from([os]),
         None => subject_os.clone(),
@@ -204,6 +224,7 @@ mod tests {
         endpoints: &["api"],
         consumes: &[],
         params: &["mode"],
+        facts: &[],
         processes: &["server"],
     };
     const CLIENT: ParticipantDeclaration = ParticipantDeclaration {
@@ -212,6 +233,7 @@ mod tests {
         endpoints: &[],
         consumes: &["upstream"],
         params: &[],
+        facts: &[],
         processes: &[],
     };
     const TYPES: &[&ParticipantDeclaration] = &[&SERVER, &CLIENT];
