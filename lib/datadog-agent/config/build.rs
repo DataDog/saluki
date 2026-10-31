@@ -15,6 +15,7 @@ mod witness_gen;
 
 fn main() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("cargo sets OUT_DIR for build scripts"));
     let files = Files::default();
 
     let core_schema_dir = files
@@ -45,5 +46,5 @@ fn main() {
     datadog_config_gen::generate(&overlay, &composed_schema, &schema_map, &manifest_dir);
     env_reader_gen::generate(&overlay, &schema_map, &manifest_dir);
     // Must run after datadog_config_gen: it parses the freshly-written datadog_configuration.rs.
-    witness_gen::generate(&overlay, &manifest_dir);
+    witness_gen::generate(&overlay, &manifest_dir, &out_dir);
 }

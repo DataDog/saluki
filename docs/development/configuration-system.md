@@ -184,6 +184,13 @@ were.
 4. Implement the generated `consume_<key>` in `DatadogTranslator`, and find the right home for it in
    `SalukiConfiguration`.
 
+A support change needs only these steps. Do not record the corpus or add replay bookkeeping for
+it: the corpus decides which replay checks exist, and a newly supported key gets value comparisons
+once a later recording includes it. A replay check that fails after a support change means a
+recorded outcome changed: fix ADP, or edit the matching expectation deliberately. Removing support
+from a key the baseline case recorded fails coverage and may leave value-check expectations
+unused; handle that as deliberate corpus maintenance.
+
 An inventory key marked `none` or `unknown`, or a key under `excluded`, is absent from the witnessed model.
 
 ### Add or change a Saluki-only key
@@ -245,6 +252,13 @@ For any configuration change, check the risks:
 - **Model boundary**: components receive only the domain and shared slices they need.
 - **Dynamic behavior**: startup and update paths construct the same reactive state from typed input.
 - **Test preservation**: deleting legacy deserialization coverage didn't delete behavioral coverage.
+
+- **Replay coverage:** a change to a deserializer, the environment reader, translation, or a key's
+  support runs the replay tests,
+  `cargo nextest run --lib -p agent-data-plane-config-system corpus_replay`. A failing check means a
+  recorded outcome changed. Update production code, or the matching typed expectation in
+  `src/corpus_replay/` deliberately, in the same change; never regenerate the corpus to make an
+  agent-data-plane change pass.
 
 ## Check your work
 
