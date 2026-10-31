@@ -40,15 +40,15 @@ A generated witness trait creates a compile-time obligation to translate every s
 | Datadog source model, witness, classifier, environment decoding | `lib/datadog-agent/config/` |
 | Hand-edited ADP support inventory for Datadog schema keys | `lib/datadog-agent/config/schema/schema_overlay.yaml` |
 | Vendored Datadog JSON schema, written in YAML | `lib/datadog-agent/config/schema/core/` |
-| Overlay types, validation, `SALUKI_KEYS`, smoke-test metadata | `lib/datadog-agent/config-overlay-model/` |
-| Configuration registry, `run_config_smoke_tests`, documentation generation | `lib/datadog-agent/config-testing/` |
+| Overlay types, validation, `SALUKI_KEYS` | `lib/datadog-agent/config-overlay-model/` |
+| Documentation generation | `lib/datadog-agent/config-docs/` |
 | Raw map and loader: a general-purpose library, unused by ADP | `lib/saluki-config/` |
 | Hand-written Datadog witness implementation | `lib/agent-data-plane-config-system/src/translators/datadog_translator.rs` |
 | Saluki-only source model and `seed` | `lib/agent-data-plane-config-system/src/saluki_only.rs` |
 | Saluki-only defaults | `lib/agent-data-plane-config/src/defaults.rs` |
 | Runtime loading and authority selection | `lib/agent-data-plane-config-system/src/loaded.rs` |
 | Translation gate and update loop | `lib/agent-data-plane-config-system/src/system.rs` |
-| Datadog environment reader and its Figment provider | `lib/datadog-agent/config/src/env_reader.rs`, `env_provider.rs` |
+| Datadog environment reader | `lib/datadog-agent/config/src/env_reader.rs` |
 | Saluki-only environment reader (by convention, with no table) | `lib/agent-data-plane-config-system/src/saluki_env_overlay.rs` |
 | Merged sources with per-value provenance | `lib/agent-data-plane-config-system/src/source.rs` |
 
@@ -117,7 +117,7 @@ reasons such as "Core Agent-only" or claims that support can never be added.
 The Datadog Agent doesn't derive a variable's name from its key path: `DD_PROXY_HTTP` reaches `proxy.http`, while
 `DD_DOGSTATSD_PORT` reaches the flat `dogstatsd_port`. No separator convention reproduces this. Datadog keys read the
 environment through the generated tables, and Saluki-only keys are derived through a serde workaround. The environment
-is read by `apply_datadog_env` and by the Saluki-only reader.
+is read by `apply_datadog_env_vars` and by the Saluki-only reader.
 
 **A modeled key arrives in the Agent's canonical shape.** A source model **MUST** read that shape: don't add a
 `#[serde(rename)]` or `#[serde(alias)]`. Unmodeled environment variables aren't read.
@@ -203,7 +203,7 @@ An inventory key marked `none` or `unknown`, or a key under `excluded`, is absen
    Saluki-only environment reader discovers paths from `SalukiOnly`, so without a field, the key is unreachable from
    the environment.
 5. Add one `seed` assignment to the destination.
-6. Keep the legacy `SALUKI_KEYS` consistent with the source key, type, and default.
+6. Keep `SALUKI_KEYS` consistent with the source key and default.
 
 ### Migrate a raw consumer
 
@@ -228,10 +228,7 @@ An inventory key marked `none` or `unknown`, or a key under `excluded`, is absen
    unused by the cutover. `#[allow(dead_code)]` isn't an acceptable way to keep migration residue.
 8. Update topology call sites and tests. Preserve behavior tests by using typed inputs, and remove tests only when they
    tested legacy deserialization and nothing else.
-9. Remove the component's `run_config_smoke_tests` invocation once it no longer deserializes from
-   `GenericConfiguration`. Replace migrated structs in `used_by` with `TypedConfigSystem` in `schema_overlay.yaml`, or
-   with the string `TYPED_CONFIG_SYSTEM` in `SALUKI_KEYS`.
-10. Test higher-risk cutovers with correctness or integration tests that exercise the affected configurations.
+9. Test higher-risk cutovers with correctness or integration tests that exercise the affected configurations.
 
 A cutover should be behaviorally transparent. If the old behavior conflicts with the source schema or the typed
 system's invariants, surface the conflict rather than silently choosing one. Don't leave deserialization artifacts

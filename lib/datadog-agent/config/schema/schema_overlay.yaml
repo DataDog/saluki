@@ -14,29 +14,16 @@
 # - none:    ADP does not support this key
 # - unknown: ADP's compatibility with this key has not yet been determined
 #
-# Rust code and Markdown documentation are generated from the contents of this file. Your edits here
-# have consequences downstream as follows (see the generator code to be certain):
+# Code generation includes full and partial keys in the typed configuration model.
+# The runtime classifier includes partial keys with warn: true, all none keys, and unknown keys
+# with severity. Unknown keys with severity affect all pipelines; full and excluded keys have no entry.
 #
-# support: full              -> runtime classifier: Full; docs: "Transparent Settings" table
-#
-# support: partial           -> runtime classifier: Partial; docs: "Behavioral Differences"
-#                               table; multi-line documentation renders as a detail block
-#                               below the table
-#
-# support: none + planned    -> runtime classifier: Incompatible(severity); docs: "Being
-#                               Worked On" table; issue required
-#
-# support: none + !planned   -> runtime classifier: Incompatible(severity); docs: "Not
-#                               Planned" table; single-line documentation fills the "Reason"
-#                               column; multi-line renders as a detail block below the table
-#
-# support: unknown + severity -> runtime classifier: Incompatible(severity, cross_cutting);
-#                                docs: "Compatibility Unknown" table
-#
-# support: unknown (no sev)  -> no classifier entry (docs-only); "Compatibility Unknown"
-#                               table
-#
-# excluded                   -> no classifier entry; no docs table entry
+# Documentation groups keys by support:
+# - full: "Fully Supported Settings"
+# - partial: "Behavioral Differences"
+# - none: "Being Worked On" if planned, otherwise "Not Planned"
+# - unknown: "Compatibility Unknown"
+# Excluded keys have no documentation entry.
 #
 # Validation rules are somewhat complex. For complete rules, see the code in `config-overlay-model`,
 # but here are some of the basics:
@@ -49,21 +36,11 @@ inventory:
     support: full
     pipelines: [cross_cutting]
     description: "Dual-ship to extra endpoints"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '{"smoke-host-1.example.com": ["smoke-api-key"]}'
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   agent_ipc.grpc_max_message_size:
     support: full
     pipelines: [cross_cutting]
     description: "Max inbound gRPC message size for IPC client"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "4194304"
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   aggregator_buffer_size:
     support: none
@@ -149,11 +126,6 @@ inventory:
       and the aggregate transform performs its final flush when its input stream ends. Whether open
       aggregation windows are included is controlled by `dogstatsd_flush_incomplete_buckets`.
     issue: "#1681"
-    test_support:
-      used_by: [get_typed]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: get_typed.rs
 
   aggregator_use_tags_store:
     support: none
@@ -181,85 +153,56 @@ inventory:
     support: full
     pipelines: [cross_cutting]
     description: "Relax backend tag validation via HTTP header"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_ALLOW_ARBITRARY_TAGS]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   api_key:
     support: full
     pipelines: [cross_cutting]
     description: "API key for endpoint auth"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   apm_config.analyzed_rate_by_service:
     support: full
     pipelines: [traces]
     description: "Legacy per-service event extraction rates"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.analyzed_spans:
     support: full
     pipelines: [traces]
     description: "Per service|operation APM event extraction rates"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.apm_non_local_traffic:
     support: full
     pipelines: [traces]
     description: "Accept non-local traffic on the APM receiver"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.compute_stats_by_span_kind:
     support: full
     pipelines: [traces]
     description: "Compute APM stats per span kind"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.enable_rare_sampler:
     support: full
     pipelines: [traces]
     description: "Enable the APM rare-span sampler"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.env:
     support: full
     pipelines: [traces]
     description: "Trace environment"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
 
   apm_config.error_tracking_standalone.enabled:
     support: full
     pipelines: [traces]
     description: "Enable Error Tracking standalone"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.errors_per_second:
     support: full
     pipelines: [traces]
     description: "APM error-span sampling rate (per sec)"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.extra_sample_rate:
     support: full
     pipelines: [traces]
     description: "Extra sample rate multiplier"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.features:
     support: partial
@@ -275,251 +218,146 @@ inventory:
       versions, so unrecognized entries are inert rather than errors. Operators running multiple
       probabilistic samplers in one ingestion path should enable the flag consistently on every
       sampler that supports it.
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.max_catalog_entries:
     support: full
     pipelines: [traces]
     description: "Priority sampler service-signature catalog cap"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.max_events_per_second:
     support: full
     pipelines: [traces]
     description: "Upper bound on sampled APM events per second"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.max_traces_per_second:
     support: full
     pipelines: [traces]
     description: "Deprecated alias for target_traces_per_second"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.obfuscation.credit_cards.enabled:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.credit_cards.enabled"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "true"
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.credit_cards.keep_values:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.credit_cards.keep_values"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.credit_cards.luhn:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.credit_cards.luhn"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.elasticsearch.enabled:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.elasticsearch.enabled"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "true"
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.elasticsearch.keep_values:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.elasticsearch.keep_values"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.elasticsearch.obfuscate_sql_values:
     support: full
     pipelines: [traces]
     description: "Obfuscate SQL values in ES queries"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.http.remove_paths_with_digits:
     support: full
     pipelines: [traces]
     description: "Strip numeric segments from HTTP paths"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.http.remove_query_string:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.http.remove_query_string"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.memcached.enabled:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.memcached.enabled"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "true"
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.memcached.keep_command:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.memcached.keep_command"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.mongodb.enabled:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.mongodb.enabled"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "true"
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.mongodb.keep_values:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.mongodb.keep_values"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.mongodb.obfuscate_sql_values:
     support: full
     pipelines: [traces]
     description: "Obfuscate SQL values in MongoDB queries"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.opensearch.enabled:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.opensearch.enabled"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "true"
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.opensearch.keep_values:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.opensearch.keep_values"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.opensearch.obfuscate_sql_values:
     support: full
     pipelines: [traces]
     description: "Obfuscate SQL values in OpenSearch queries"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.redis.enabled:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.redis.enabled"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "true"
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.redis.remove_all_args:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.redis.remove_all_args"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.valkey.enabled:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.valkey.enabled"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "true"
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.valkey.remove_all_args:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.valkey.remove_all_args"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: trace_obfuscation.rs
 
   apm_config.peer_tags:
     support: full
     pipelines: [traces]
     description: "Extra peer tags for stats aggregation"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.peer_tags_aggregation:
     support: full
     pipelines: [traces]
     description: "Aggregate APM stats by peer tags"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.probabilistic_sampler.enabled:
     support: full
     pipelines: [traces]
     description: "Enable APM probabilistic sampler"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.probabilistic_sampler.hash_seed:
     support: full
     pipelines: [traces]
     description: "Probabilistic sampler hash seed"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.probabilistic_sampler.sampling_percentage:
     support: full
     pipelines: [traces]
     description: "Probabilistic sampler percentage"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.receiver_port:
     support: full
@@ -530,139 +368,76 @@ inventory:
       `apm_config.receiver_socket`) in front of the trace-agent, which moves to
       `data_plane.experimental.apm.proxy_destination`. `0` disables the TCP listener, as it does for
       the trace-agent.
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.receiver_socket:
     support: full
     pipelines: [traces]
     description: "APM receiver Unix domain socket path"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.replace_tags:
     support: full
     pipelines: [traces]
     description: "Regex-based trace tag replacement rules"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '[{"name": "*", "pattern": "token=[A-Za-z0-9]+", "repl": "token=?"}]'
-      additional_attributes:
-        config_registry_filename: trace_tag_replacer.rs
 
   apm_config.target_traces_per_second:
     support: full
     pipelines: [traces]
     description: "Target sampled traces per second"
-    test_support:
-      used_by: [NO_SMOKE]
 
   auth_token_file_path:
     support: full
     pipelines: [cross_cutting]
     description: "Agent authentication token file path"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   autoscaling.failover.enabled:
     support: full
     pipelines: [checks, dogstatsd, otlp]
     description: "Enable autoscaling failover metric routing"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "true"
-      additional_attributes:
-        config_registry_filename: shared.rs
 
   autoscaling.failover.metrics:
     support: full
     pipelines: [checks, dogstatsd, otlp]
     description: "Metric names forwarded to DCA for failover"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '["container.memory.usage"]'
-      additional_attributes:
-        config_registry_filename: shared.rs
 
   basic_telemetry_add_container_tags:
     support: full
     pipelines: [cross_cutting]
     description: "Add container tags to basic telemetry signals"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "true"
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   bind_host:
     support: full
     pipelines: [dogstatsd, traces]
     description: "Global listen host fallback"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: shared.rs
 
   cluster_agent.auth_token:
     support: full
     pipelines: [checks, dogstatsd, otlp]
     description: "Bearer token for Cluster Agent requests"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '"cluster-agent-token"'
-      additional_attributes:
-        config_registry_filename: shared.rs
 
   cluster_agent.enabled:
     support: full
     pipelines: [checks, dogstatsd, otlp]
     description: "Enable Cluster Agent communication"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "true"
-      additional_attributes:
-        config_registry_filename: shared.rs
 
   cluster_agent.kubernetes_service_name:
     support: full
     pipelines: [checks, dogstatsd, otlp]
     description: "Cluster Agent Kubernetes service name"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '"datadog-cluster-agent"'
-      additional_attributes:
-        config_registry_filename: shared.rs
 
   cluster_agent.url:
     support: full
     pipelines: [checks, dogstatsd, otlp]
     description: "Cluster Agent HTTPS endpoint"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '"https://cluster-agent.example.com"'
-      additional_attributes:
-        config_registry_filename: shared.rs
 
   cluster_name:
     support: full
     pipelines: [dogstatsd, otlp]
     description: "EKS Fargate cluster name static tag"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: shared.rs
 
   cmd_port:
     support: full
     pipelines: [cross_cutting]
     description: "Core Agent CMD API port for ADP gRPC IPC"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "5101"
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   config_id:
     support: none
@@ -685,10 +460,6 @@ inventory:
       independent of the procfs mount. The core Agent reports its own detected root as a default
       value, which ADP can't tell apart from a schema default, so ADP repeats the detection instead
       of consuming it.
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: containerd.rs
 
   container_proc_root:
     support: full
@@ -698,28 +469,16 @@ inventory:
       ADP inspects container processes under this root. When the key is not set explicitly, ADP
       selects the root from detected features: the host-mapped `/host/proc` when a host-mapped
       procfs is detected, and `/proc` otherwise.
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: containerd.rs
 
   cri_connection_timeout:
     support: full
     pipelines: [cross_cutting]
     description: "CRI container runtime connection timeout (s)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: containerd.rs
 
   cri_query_timeout:
     support: full
     pipelines: [cross_cutting]
     description: "CRI container runtime query timeout (s)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: containerd.rs
 
   cri_socket_path:
     support: partial
@@ -739,10 +498,6 @@ inventory:
       undetected.
 
       Container ID resolution through cgroups is independent of this key and is unaffected.
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: containerd.rs
 
   data_plane.api_listen_address:
     support: full
@@ -752,34 +507,21 @@ inventory:
       This is the unprivileged (internal) API endpoint. Addresses must include a URL scheme
       (for example, `tcp://`). See `data_plane.secure_api_listen_address` for the privileged
       endpoint.
-    test_support:
-      used_by: [get_typed]
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   data_plane.dogstatsd.aggregator_tag_filter_cache_capacity:
     support: full
     pipelines: [dogstatsd]
     description: "Tag-filter deduplication cache size"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: tag_filterlist.rs
 
   data_plane.dogstatsd.enabled:
     support: full
     pipelines: [cross_cutting]
     description: "Enable the DogStatsD pipeline"
-    test_support:
-      used_by: [NO_SMOKE]
 
   data_plane.enabled:
     support: full
     pipelines: [cross_cutting]
     description: "Enable the data plane"
-    test_support:
-      used_by: [NO_SMOKE]
 
   data_plane.log_file:
     support: full
@@ -789,58 +531,36 @@ inventory:
       ADP writes to its own log file, separate from the Core Agent. The Core Agent's `log_file`
       key is deliberately not consulted. Set `disable_file_logging: true` to disable file logging
       entirely, which causes this key to have no effect.
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   data_plane.otlp.enabled:
     support: full
     pipelines: [cross_cutting]
     description: "Enable the OTLP pipeline"
-    test_support:
-      used_by: [NO_SMOKE]
 
   data_plane.otlp.proxy.enabled:
     support: full
     pipelines: [otlp]
     description: "Enable OTLP proxy to Core Agent"
-    test_support:
-      used_by: [NO_SMOKE]
 
   data_plane.otlp.proxy.logs.enabled:
     support: full
     pipelines: [otlp]
     description: "Proxy OTLP logs to Core Agent"
-    test_support:
-      used_by: [get_typed]
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   data_plane.otlp.proxy.metrics.enabled:
     support: full
     pipelines: [otlp]
     description: "Proxy OTLP metrics to Core Agent"
-    test_support:
-      used_by: [get_typed]
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   data_plane.otlp.proxy.receiver.protocols.grpc.endpoint:
     support: full
     pipelines: [otlp]
     description: "OTLP proxy gRPC receiver endpoint"
-    test_support:
-      used_by: [NO_SMOKE]
 
   data_plane.otlp.proxy.traces.enabled:
     support: full
     pipelines: [otlp]
     description: "Proxy OTLP traces to Core Agent"
-    test_support:
-      used_by: [get_typed]
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   data_plane.remote_agent_enabled:
     support: full
@@ -852,10 +572,6 @@ inventory:
       These two keys are transitional flags being phased out. Both will be implied by
       `data_plane.standalone_mode=false` in a future release. Do not rely on them for
       new deployments.
-    test_support:
-      used_by: [get_typed]
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   data_plane.secure_api_listen_address:
     support: full
@@ -884,10 +600,6 @@ inventory:
       provide an overlap window for old and new certificates. Coordinate replacement of
       `ipc_cert.pem` with restarts so ADP and every client use the same certificate throughout a
       rotation.
-    test_support:
-      used_by: [get_typed]
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   data_plane.serializer_zstd_compressor_level:
     support: full
@@ -900,10 +612,6 @@ inventory:
       smaller payloads (65.3 MB versus 69.3 MB) without a net CPU increase, since ADP is more
       efficient than the Agent and can afford higher compression. Configure it under `data_plane`
       or with `DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL`.
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   data_plane.stop_timeout:
     support: full
@@ -912,10 +620,6 @@ inventory:
     documentation: |-
       ADP uses an explicitly configured value as its topology-wide graceful shutdown timeout. When
       unset, it derives the timeout from `aggregator_stop_timeout + forwarder_stop_timeout`.
-    test_support:
-      used_by: [get_typed]
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   data_plane.telemetry_enabled:
     support: none
@@ -942,97 +646,54 @@ inventory:
     pipelines: [cross_cutting]
     description: "Use new config stream endpoint"
     documentation: "See `data_plane.remote_agent_enabled` above."
-    test_support:
-      used_by: [get_typed]
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   dd_url:
     support: full
     pipelines: [cross_cutting]
     description: "Override intake endpoint URL"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   disable_file_logging:
     support: full
     pipelines: [cross_cutting]
     description: "Disable writing logs to a file"
-    test_support:
-      used_by: [NO_SMOKE]
 
   dogstatsd_buffer_size:
     support: full
     pipelines: [dogstatsd]
     description: "Receive buffer size (bytes)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_capture_depth:
     support: full
     pipelines: [dogstatsd]
     description: "Traffic capture channel depth"
     issue: "#1381"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_capture_path:
     support: full
     pipelines: [dogstatsd]
     description: "Traffic capture file location"
     issue: "#1381"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_context_expiry_seconds:
     support: full
     pipelines: [dogstatsd]
     description: "Context cache TTL (seconds)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_disable_verbose_logs:
     support: full
     pipelines: [dogstatsd]
     description: "Suppress noisy parse error logs"
     issue: "#1350"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_entity_id_precedence:
     support: full
     pipelines: [dogstatsd]
     description: "Entity ID over auto-detection"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_DOGSTATSD_ENTITY_ID_PRECEDENCE]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_eol_required:
     support: full
     pipelines: [dogstatsd]
     description: "Require newline-terminated messages"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '["udp"]'
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_experimental_http.max_concurrent_requests:
     support: none
@@ -1065,19 +726,11 @@ inventory:
     support: full
     pipelines: [dogstatsd, checks]
     description: "Counter value expiry (seconds)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: aggregate.rs
 
   dogstatsd_flush_incomplete_buckets:
     support: full
     pipelines: [dogstatsd, checks]
     description: "Flush open buckets on shutdown"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: aggregate.rs
 
   dogstatsd_host_socket_path:
     support: none
@@ -1091,30 +744,16 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "DSD dedicated log file path"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_log_file_max_rolls:
     support: full
     pipelines: [dogstatsd]
     description: "DSD log file max roll count"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_log_file_max_size:
     support: full
     pipelines: [dogstatsd]
     description: "DSD log file max size"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '"42MB"'
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_logging_enabled:
     support: full
@@ -1153,10 +792,6 @@ inventory:
       This debug log differs from the `dogstatsd_capture_*` settings. The debug log records decoded
       metric summaries after DogStatsD parsing. The capture settings record raw DogStatsD traffic
       for packet-level investigation, and they remain tracked separately under [#1381].
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_mapper_cache_size:
     support: partial
@@ -1177,21 +812,11 @@ inventory:
       If you previously set `dogstatsd_mapper_cache_size: 0` in the core agent to turn off the
       mapper, clear `dogstatsd_mapper_profiles` instead when running ADP.
     issue: "#1687"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: dogstatsd_mapper.rs
 
   dogstatsd_mapper_profiles:
     support: full
     pipelines: [dogstatsd]
     description: "Metric mapping profile definitions"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '[{"name":"test","prefix":"test.","mappings":[]}]'
-      additional_attributes:
-        config_registry_filename: dogstatsd_mapper.rs
 
   dogstatsd_mem_based_rate_limiter.enabled:
     support: none
@@ -1297,19 +922,11 @@ inventory:
     description: "Enable per-metric debug stats"
     documentation: "See `dogstatsd_stats_enable`"
     issue: "#1352"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_no_aggregation_pipeline:
     support: full
     pipelines: [dogstatsd, checks]
     description: "Enable no-agg timestamped path"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: aggregate.rs
 
   dogstatsd_no_aggregation_pipeline_batch_size:
     support: none
@@ -1336,10 +953,6 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "Accept non-localhost UDP/TCP"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_origin_detection:
     support: full
@@ -1362,31 +975,16 @@ inventory:
       metadata can still populate `ContainerPid` aliases in the tag store on Unix platforms, which
       covers steady-state tagging when another source provides a PID, but macOS UDS origin detection
       cannot obtain that PID from the socket.
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_DOGSTATSD_ORIGIN_DETECTION]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_origin_detection_client:
     support: full
     pipelines: [dogstatsd]
     description: "Honor client origin proto fields"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_DOGSTATSD_ORIGIN_DETECTION_CLIENT]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_origin_optout_enabled:
     support: full
     pipelines: [dogstatsd]
     description: "Allow clients to opt out origin"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_DOGSTATSD_ORIGIN_OPTOUT_ENABLED]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_packet_buffer_flush_timeout:
     support: none
@@ -1408,10 +1006,6 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "Windows named pipe path"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_pipeline_autoadjust:
     support: none
@@ -1433,11 +1027,6 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "UDP listen port"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_queue_size:
     support: none
@@ -1451,29 +1040,16 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "Require an active DogStatsD listener"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_so_rcvbuf:
     support: full
     pipelines: [dogstatsd]
     description: "Socket receive buffer size"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_socket:
     support: full
     pipelines: [dogstatsd]
     description: "UDS datagram socket path"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_stats_buffer:
     support: none
@@ -1533,49 +1109,26 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "Log oversized UDS stream frames"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_stream_socket:
     support: full
     pipelines: [dogstatsd]
     description: "UDS stream socket path"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_string_interner_size:
     support: full
     pipelines: [dogstatsd]
     description: "String interner capacity"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_tag_cardinality:
     support: full
     pipelines: [dogstatsd]
     description: "Default tag cardinality level"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_DOGSTATSD_TAG_CARDINALITY]
-      test_json: '"high"'
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_tags:
     support: full
     pipelines: [dogstatsd]
     description: "Extra tags added to all DSD data"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_telemetry_enabled_listener_id:
     support: none
@@ -1589,10 +1142,6 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "Windows named pipe ACL descriptor"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   dogstatsd_workers_count:
     support: partial
@@ -1608,19 +1157,11 @@ inventory:
       pipeline settings: one listener worker, one aggregation pipeline, and at least two decoder
       workers. Connection-oriented listeners continue to use one decoder per connection.
     issue: "#2079"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   eks_fargate:
     support: full
     pipelines: [dogstatsd, otlp]
     description: "Enable EKS Fargate static tags"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: shared.rs
 
   enable_json_stream_shared_compressor_buffers:
     support: none
@@ -1635,37 +1176,21 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "Allow sending event payloads"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   enable_payloads.series:
     support: full
     pipelines: [dogstatsd]
     description: "Allow sending series payloads"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   enable_payloads.service_checks:
     support: full
     pipelines: [dogstatsd]
     description: "Allow sending service check payloads"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   enable_payloads.sketches:
     support: full
     pipelines: [dogstatsd]
     description: "Allow sending sketch payloads"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   entity_id:
     support: none
@@ -1688,19 +1213,11 @@ inventory:
       precedence over the `env:` global tags, and the trace environment becomes `none`. An empty
       `DD_ENV` counts as unset. ADP does not apply this setting directly to the DogStatsD metrics
       path.
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
 
   expected_tags_duration:
     support: full
     pipelines: [cross_cutting]
     description: "How long startup host tags are attached"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: shared.rs
 
   extra_tags:
     support: full
@@ -1709,11 +1226,6 @@ inventory:
     documentation: |-
       When neither `apm_config.env` nor `env` is set, the first `env:` entry in `tags`, then in
       `extra_tags`, supplies the trace environment.
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_EXTRA_TAGS]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   forwarder_apikey_validation_interval:
     support: partial
@@ -1732,57 +1244,31 @@ inventory:
       Runtime updates can rotate keys for those domains, but brand-new domains are not added or validated until
       restart.
     issue: "#1357"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_backoff_base:
     support: full
     pipelines: [cross_cutting]
     description: "Retry backoff base (secs)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_backoff_factor:
     support: full
     pipelines: [cross_cutting]
     description: "Retry backoff jitter factor"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_backoff_max:
     support: full
     pipelines: [cross_cutting]
     description: "Retry backoff ceiling (secs)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_connection_reset_interval:
     support: full
     pipelines: [cross_cutting]
     description: "HTTP conn reset interval (secs)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_flush_to_disk_mem_ratio:
     support: full
     pipelines: [cross_cutting]
     description: "Mem-to-disk flush ratio"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_high_prio_buffer_size:
     support: partial
@@ -1792,34 +1278,18 @@ inventory:
       ADP implements `forwarder_high_prio_buffer_size` and matches the core agent's default of `100`. The
       value sizes ADP's per-endpoint high-priority pending queue.
     issue: "#1362"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_http_protocol:
     support: full
     pipelines: [cross_cutting]
     description: "HTTP version selection (auto/http1/http2)"
     issue: "#1361"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '"http1"'
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
+  # ADP uses a byte-bounded retry queue for low-priority transactions, not a separate count-bounded channel.
+  # This key does not size that queue; use `forwarder_retry_queue_payloads_max_size` and disk persistence settings.
   forwarder_low_prio_buffer_size:
     support: unknown
-    pipelines: [cross_cutting]
     description: "Low-priority request queue size"
-    documentation: |
-      ADP does not implement `forwarder_low_prio_buffer_size`. The core agent uses it to size a separate count-bounded
-      low-priority worker channel; ADP routes low-priority pending transactions through the forwarder's retry queue
-      instead, which is bounded by payload bytes via `forwarder_retry_queue_payloads_max_size` and optional disk
-      persistence settings rather than by a transaction count. ADP still preserves the same broad priority behavior: new
-      transactions are processed through the high-priority queue first, retries use the low-priority retry queue, and
-      high-priority overflow is moved to the low-priority retry queue.
     severity: medium
     issue: "#1362"
 
@@ -1828,11 +1298,6 @@ inventory:
     pipelines: [cross_cutting]
     description: "Max concurrent HTTP requests"
     issue: "#1363"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_num_workers:
     support: partial
@@ -1844,41 +1309,22 @@ inventory:
       longer controls the maximum number of concurrent requests per endpoint.
     warn: true
     issue: "#1363"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_outdated_file_in_days:
     support: full
     pipelines: [cross_cutting]
     description: "Days before retry files are deleted"
     issue: "#1360"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_recovery_interval:
     support: full
     pipelines: [cross_cutting]
     description: "Backoff recovery decrease factor"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_recovery_reset:
     support: full
     pipelines: [cross_cutting]
     description: "Reset errors on success"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_requeue_buffer_size:
     support: none
@@ -1900,31 +1346,16 @@ inventory:
     pipelines: [cross_cutting]
     description: "Retry queue time-based capacity"
     issue: "#1365"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_retry_queue_max_size:
     support: full
     pipelines: [cross_cutting]
     description: "Retry queue max size (deprecated)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_retry_queue_payloads_max_size:
     support: full
     pipelines: [cross_cutting]
     description: "Retry queue max size (bytes)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_stop_timeout:
     support: partial
@@ -1940,58 +1371,31 @@ inventory:
       Support is partial because ADP does not apply this timeout only to a forwarder component. It
       bounds graceful shutdown for the full Saluki topology.
     issue: "#1754"
-    test_support:
-      used_by: [get_typed]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: get_typed.rs
 
   forwarder_stop_wait_for_inflight:
     support: full
     pipelines: [cross_cutting]
     description: "Wait for in-flight forwarder requests"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_storage_max_disk_ratio:
     support: full
     pipelines: [cross_cutting]
     description: "Max disk usage ratio for retry"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_storage_max_size_in_bytes:
     support: full
     pipelines: [cross_cutting]
     description: "Max on-disk retry storage size"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_storage_path:
     support: full
     pipelines: [cross_cutting]
     description: "On-disk retry storage directory"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   forwarder_timeout:
     support: full
     pipelines: [cross_cutting]
     description: "Forwarder HTTP request timeout"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   heroku_dyno:
     support: none
@@ -2017,39 +1421,21 @@ inventory:
     support: full
     pipelines: [dogstatsd, checks]
     description: "Histogram aggregate statistics"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '["count"]'
-      additional_attributes:
-        config_registry_filename: aggregate.rs
 
   histogram_copy_to_distribution:
     support: full
     pipelines: [dogstatsd, checks]
     description: "Copy histograms to distributions"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: aggregate.rs
 
   histogram_copy_to_distribution_prefix:
     support: full
     pipelines: [dogstatsd, checks]
     description: "Prefix for hist-to-dist copies"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: aggregate.rs
 
   histogram_percentiles:
     support: full
     pipelines: [checks, dogstatsd]
     description: "Histogram percentile aggregates"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '["0.95"]'
-      additional_attributes:
-        config_registry_filename: aggregate.rs
 
   hostname:
     support: full
@@ -2058,58 +1444,36 @@ inventory:
     documentation: |-
       ADP uses this only in standalone mode, where the fixed host provider requires a configured
       hostname. In connected mode the hostname comes from the Datadog Agent.
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: shared.rs
 
   ipc_cert_file_path:
     support: full
     pipelines: [cross_cutting]
     description: "Agent IPC certificate file path"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
   kubernetes_kubelet_nodename:
     support: full
     pipelines: [dogstatsd, otlp]
     description: "Kubernetes node name for EKS Fargate static tags"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: shared.rs
 
   log_file_max_rolls:
     support: full
     pipelines: [cross_cutting]
     description: "Max rolled log files to retain"
-    test_support:
-      used_by: [NO_SMOKE]
 
   log_file_max_size:
     support: full
     pipelines: [cross_cutting]
     description: "Max log file size before rolling"
-    test_support:
-      used_by: [NO_SMOKE]
 
   log_format_json:
     support: full
     pipelines: [cross_cutting]
     description: "Emit logs as JSON"
-    test_support:
-      used_by: [NO_SMOKE]
 
   log_format_rfc3339:
     support: full
     pipelines: [cross_cutting]
     description: "Use RFC 3339 timestamps in log output"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: get_typed.rs
 
   log_level:
     support: partial
@@ -2136,10 +1500,6 @@ inventory:
       log_level: warn,agent_data_plane=debug,hyper=warn
       ```
 
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: get_typed.rs
 
   log_payloads:
     support: full
@@ -2159,17 +1519,11 @@ inventory:
 
       ADP does not dump the exact encoded JSON or protobuf HTTP request body, and it does not log
       compressed wire payload bytes.
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
 
   log_to_console:
     support: full
     pipelines: [cross_cutting]
     description: "Write logs to the console"
-    test_support:
-      used_by: [NO_SMOKE]
 
   log_to_syslog:
     support: full
@@ -2183,8 +1537,6 @@ inventory:
       empty while syslog logging is enabled, ADP uses the platform default local syslog socket:
       `unixgram:///dev/log` on Linux and `unixgram:///var/run/syslog` on macOS. Set
       `syslog_rfc: true` when the receiving syslog daemon expects the Agent's RFC-style header.
-    test_support:
-      used_by: [NO_SMOKE]
 
   logging_frequency:
     support: none
@@ -2215,19 +1567,11 @@ inventory:
       matched as written, so an entry that is not itself a normalized name matches nothing. Metric
       names the intake rejects outright, meaning empty names, names longer than 350 bytes, and names
       containing no ASCII letter, never match.
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd_prefix_filter.rs
 
   metric_filterlist_match_prefix:
     support: full
     pipelines: [dogstatsd]
     description: "Blocklist uses prefix matching"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd_prefix_filter.rs
 
   metric_filterlist_prefix:
     support: full
@@ -2247,11 +1591,6 @@ inventory:
 
       The empty `prefix` matches every stored metric name. The empty `except_prefix` keeps every
       stored metric name, making the rule a no-op.
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '[{"prefix":"svc.","except_exact":["svc.keep"],"except_prefix":["svc.keep."]}]'
-      additional_attributes:
-        config_registry_filename: dogstatsd_prefix_filter.rs
 
   metric_lookback.capacity:
     support: none
@@ -2356,10 +1695,6 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "Per-metric tag allow/deny filter list"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: tag_filterlist.rs
 
   min_tls_version:
     support: partial
@@ -2377,33 +1712,16 @@ inventory:
 
       This setting does not affect ADP IPC, local privileged APIs, ADP control-plane clients,
       OTLP proxying to the core agent, or unrelated HTTP clients.
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_MIN_TLS_VERSION]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   multi_region_failover.api_key:
     support: full
     pipelines: [cross_cutting]
     description: "API key for the failover-region endpoint"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_MULTI_REGION_FAILOVER_API_KEY]
-      value_type_override: string
-      additional_attributes:
-        config_registry_filename: mrf.rs
 
   multi_region_failover.dd_url:
     support: full
     pipelines: [cross_cutting]
     description: "Failover intake URL"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_MULTI_REGION_FAILOVER_DD_URL]
-      value_type_override: string
-      additional_attributes:
-        config_registry_filename: mrf.rs
 
   multi_region_failover.enabled:
     support: partial
@@ -2433,103 +1751,51 @@ inventory:
       | `multi_region_failover.api_key`          | API key for the failover-region endpoint.                                  | unset   |
       | `multi_region_failover.site`             | Datadog site for the failover region, used as `https://app.mrf.<site>`.    | unset   |
       | `multi_region_failover.dd_url`           | Explicit failover intake URL. Takes precedence over `site` when set.       | unset   |
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_MULTI_REGION_FAILOVER_ENABLED]
-      additional_attributes:
-        config_registry_filename: mrf.rs
 
   multi_region_failover.failover_metrics:
     support: full
     pipelines: [cross_cutting]
     description: "Enable metrics forwarding to failover region"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_MULTI_REGION_FAILOVER_FAILOVER_METRICS]
-      additional_attributes:
-        config_registry_filename: mrf.rs
 
   multi_region_failover.metric_allowlist:
     support: full
     pipelines: [cross_cutting]
     description: "Metric name allowlist for MRF forwarding"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_MULTI_REGION_FAILOVER_METRIC_ALLOWLIST]
-      value_type_override: string_list
-      additional_attributes:
-        config_registry_filename: mrf.rs
 
   multi_region_failover.site:
     support: full
     pipelines: [cross_cutting]
     description: "Datadog site for the failover region"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_MULTI_REGION_FAILOVER_SITE]
-      value_type_override: string
-      additional_attributes:
-        config_registry_filename: mrf.rs
 
   no_proxy_nonexact_match:
     support: full
     pipelines: [cross_cutting]
     description: "Domain/CIDR `no_proxy` matching"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_NO_PROXY_NONEXACT_MATCH]
-      additional_attributes:
-        config_registry_filename: proxy.rs
 
   observability_pipelines_worker.metrics.enabled:
     support: full
     pipelines: [cross_cutting]
     description: "Route metrics to OPW instance"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_OBSERVABILITY_PIPELINES_WORKER_METRICS_ENABLED]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   observability_pipelines_worker.metrics.url:
     support: full
     pipelines: [cross_cutting]
     description: "OPW metrics intake URL"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_OBSERVABILITY_PIPELINES_WORKER_METRICS_URL]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   observability_pipelines_worker.metrics.use_v3_api.series:
     support: full
     pipelines: [dogstatsd]
     description: "Use V3 series for OPW"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_OBSERVABILITY_PIPELINES_WORKER_METRICS_USE_V3_API_SERIES]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   origin_detection_unified:
     support: full
     pipelines: [dogstatsd]
     description: "Unified origin detection mode"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_ORIGIN_DETECTION_UNIFIED]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   otlp_config.logs.enabled:
     support: full
     pipelines: [otlp]
     description: "otlp_config.logs.enabled"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "false"
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.metrics.batch.flush_timeout:
     support: none
@@ -2572,39 +1838,21 @@ inventory:
       Raise this for high-cardinality or low-frequency series that report infrequently enough to
       trip spurious "initial value" resets; lower it to bound memory use when many short-lived
       series are seen.
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.metrics.enabled:
     support: full
     pipelines: [otlp]
     description: "otlp_config.metrics.enabled"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.metrics.histograms.mode:
     support: full
     pipelines: [otlp]
     description: "OTLP histogram bucket reporting mode"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '"counters"'
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.metrics.histograms.send_aggregation_metrics:
     support: full
     pipelines: [otlp]
     description: "Emit OTLP histogram aggregation metrics."
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: "true"
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.metrics.infra_attributes.as_tags:
     support: none
@@ -2621,19 +1869,11 @@ inventory:
     support: full
     pipelines: [otlp]
     description: "Add instrumentation scope metadata as metric tags."
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.metrics.resource_attributes_as_tags:
     support: full
     pipelines: [otlp]
     description: "Add scalar resource attributes as raw tags."
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.metrics.summaries.mode:
     support: full
@@ -2642,11 +1882,6 @@ inventory:
     documentation: |-
       Controls how summary quantiles are reported. The default `gauges` emits one gauge metric per quantile. Set this
       to `noquantiles` to omit quantile metrics.
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '"noquantiles"'
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.metrics.sums.cumulative_monotonic_mode:
     support: full
@@ -2655,11 +1890,6 @@ inventory:
     documentation: |-
       Controls how cumulative monotonic sums are reported. The default `to_delta` converts cumulative values to
       deltas and reports them as counts. Set this to `raw_value` to report cumulative values as gauges.
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '"raw_value"'
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.metrics.sums.initial_cumulative_monotonic_value:
     support: full
@@ -2669,11 +1899,6 @@ inventory:
       Controls how the first cumulative monotonic sum value is reported. The default `auto` reports the value only
       when the series started after the Agent Data Plane process. Set this to `drop` to always discard the first value
       or `keep` to always report it.
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '"drop"'
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.metrics.tag_cardinality:
     support: full
@@ -2683,20 +1908,11 @@ inventory:
       Controls the cardinality of entity and global tags added to OTLP metrics. The default `low` adds
       low-cardinality workload tags. Set this to `orchestrator` or `high` only when the resulting additional metric
       series are acceptable. Set it to `none` to disable entity and global tag enrichment.
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '"high"'
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.metrics.tags:
     support: full
     pipelines: [otlp]
     description: "Comma-separated tags for all OTLP metrics."
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.dialer.timeout:
     support: unknown
@@ -2706,10 +1922,6 @@ inventory:
     support: full
     pipelines: [otlp]
     description: "otlp_config.receiver.protocols.grpc.endpoint"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.include_metadata:
     support: none
@@ -2780,19 +1992,11 @@ inventory:
     support: full
     pipelines: [otlp]
     description: "gRPC keepalive: max connection age"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_age_grace:
     support: full
     pipelines: [otlp]
     description: "gRPC keepalive: max conn age grace"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_idle:
     support: none
@@ -2831,39 +2035,21 @@ inventory:
     support: full
     pipelines: [otlp]
     description: "gRPC keepalive: ping time"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.keepalive.server_parameters.timeout:
     support: full
     pipelines: [otlp]
     description: "gRPC keepalive: ping timeout"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.max_concurrent_streams:
     support: full
     pipelines: [otlp]
     description: "HTTP/2 max concurrent streams (0 = unlimited)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib:
     support: full
     pipelines: [otlp]
     description: "Max OTLP inbound gRPC message size (MiB)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.read_buffer_size:
     support: none
@@ -2890,10 +2076,6 @@ inventory:
       Path to a PEM-encoded CA certificate file for verifying client certificates on the OTLP gRPC receiver.
       When set, the server requests client certificates and verifies them if presented, but does not require them.
       Defaults to empty (no client certificate verification).
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.tls.ca_pem:
     support: none
@@ -2911,10 +2093,6 @@ inventory:
     documentation: |-
       Path to the PEM-encoded certificate chain file for the OTLP gRPC receiver. When set together with
       `key_file`, enables TLS on the receiver. Defaults to empty (TLS disabled).
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.tls.cert_pem:
     support: none
@@ -2967,10 +2145,6 @@ inventory:
     documentation: |-
       Path to the PEM-encoded private key file for the OTLP gRPC receiver. The key must correspond to the leaf
       certificate in `cert_file`. Defaults to empty (TLS disabled).
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.tls.key_pem:
     support: none
@@ -3034,10 +2208,6 @@ inventory:
     support: full
     pipelines: [otlp]
     description: "otlp_config.receiver.protocols.grpc.transport"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.write_buffer_size:
     support: none
@@ -3065,46 +2235,26 @@ inventory:
     support: full
     pipelines: [otlp]
     description: "HTTP CORS allowed headers"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.cors.allowed_origins:
     support: full
     pipelines: [otlp]
     description: "HTTP CORS allowed origins"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.cors.exposed_headers:
     support: full
     pipelines: [otlp]
     description: "HTTP CORS exposed headers"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.cors.max_age:
     support: full
     pipelines: [otlp]
     description: "HTTP CORS max age"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.endpoint:
     support: full
     pipelines: [otlp]
     description: "otlp_config.receiver.protocols.http.endpoint"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.idle_timeout:
     support: unknown
@@ -3137,11 +2287,6 @@ inventory:
     support: full
     pipelines: [otlp]
     description: "HTTP max request body size in bytes (0 = 20 MiB)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.metrics_url_path:
     support: unknown
@@ -3167,10 +2312,6 @@ inventory:
       Path to a PEM-encoded CA certificate file for verifying client certificates on the OTLP HTTP receiver.
       When set, the server requests client certificates and verifies them if presented, but does not require them.
       Defaults to empty (no client certificate verification).
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.tls.ca_pem:
     support: none
@@ -3188,10 +2329,6 @@ inventory:
     documentation: |-
       Path to the PEM-encoded certificate chain file for the OTLP HTTP receiver. When set together with
       `key_file`, enables TLS on the receiver. Defaults to empty (TLS disabled).
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.tls.cert_pem:
     support: none
@@ -3244,10 +2381,6 @@ inventory:
     documentation: |-
       Path to the PEM-encoded private key file for the OTLP HTTP receiver. The key must correspond to the leaf
       certificate in `cert_file`. Defaults to empty (TLS disabled).
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.tls.key_pem:
     support: none
@@ -3319,10 +2452,6 @@ inventory:
     support: full
     pipelines: [traces]
     description: "otlp_config.traces.enabled"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.traces.infra_attributes.container_tag_promotion:
     support: none
@@ -3340,96 +2469,51 @@ inventory:
     support: full
     pipelines: [traces]
     description: "otlp_config.traces.internal_port"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.traces.probabilistic_sampler.sampling_percentage:
     support: full
     pipelines: [traces]
     description: "OTLP trace sampling percentage"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   provider_kind:
     support: full
     pipelines: [dogstatsd, otlp]
     description: "Provider kind static tag"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_PROVIDER_KIND]
-      additional_attributes:
-        config_registry_filename: shared.rs
 
   proxy.http:
     support: full
     pipelines: [cross_cutting]
     description: "HTTP proxy URL"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_PROXY_HTTP, HTTP_PROXY]
-      additional_attributes:
-        config_registry_filename: proxy.rs
 
   proxy.https:
     support: full
     pipelines: [cross_cutting]
     description: "HTTPS proxy URL"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_PROXY_HTTPS, HTTPS_PROXY]
-      additional_attributes:
-        config_registry_filename: proxy.rs
 
   proxy.no_proxy:
     support: full
     pipelines: [cross_cutting]
     description: "Hosts bypassing proxy"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_PROXY_NO_PROXY]
-      additional_attributes:
-        config_registry_filename: proxy.rs
 
   remote_configuration.apm_sampling.enabled:
     support: full
     pipelines: [traces]
     description: "Apply APM_SAMPLING remote configurations"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: remote_config.rs
 
   remote_configuration.apm_semantics.enabled:
     support: full
     pipelines: [traces]
     description: "Apply APM_SEMANTIC_CORE_DD remote configurations"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: remote_config.rs
 
   remote_configuration.enabled:
     support: full
     pipelines: [traces]
     description: "Enable Remote Configuration"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: remote_config.rs
 
   run_path:
     support: full
     pipelines: [cross_cutting]
     description: "Runtime state directory"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: shared.rs
 
   secret_backend_command:
     support: partial
@@ -3447,10 +2531,6 @@ inventory:
       ADP never executes the command and never inspects the path, so the settings that govern how the
       Agent runs it (`secret_backend_arguments`, `secret_backend_timeout`, `secret_backend_type`, and the
       rest of the `secret_*` family) have no effect in ADP.
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   secret_refresh_on_api_key_failure_interval:
     support: partial
@@ -3469,28 +2549,16 @@ inventory:
       ADP does not observe the interval itself: it does not pace, delay, or count retries by it, and retry
       timing continues to come from the forwarder's own `forwarder_backoff_*` settings. A negative value is
       clamped to `0` with a warning, matching the Agent's own tolerance of the value.
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   serializer_compressor_kind:
     support: full
     pipelines: [cross_cutting]
     description: "Payload compression algorithm"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
 
   serializer_experimental_use_v3_api.compression_level:
     support: full
     pipelines: [dogstatsd]
     description: "V3 API zstd compression level"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
 
   serializer_experimental_use_v3_api.sketches.beta_route:
     support: none
@@ -3505,10 +2573,6 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "Endpoints enabling v3 sketches API"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
 
   serializer_experimental_use_v3_api.sketches.shadow_sample_rate:
     support: none
@@ -3532,51 +2596,26 @@ inventory:
     support: full
     pipelines: [checks, dogstatsd]
     description: "Max compressed payload size (generic)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: encoders.rs
 
   serializer_max_series_payload_size:
     support: full
     pipelines: [checks, dogstatsd]
     description: "Max compressed V2 series payload size"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: encoders.rs
 
   serializer_max_series_points_per_payload:
     support: full
     pipelines: [checks, dogstatsd]
     description: "Max data points per series payload"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: encoders.rs
 
   serializer_max_series_uncompressed_payload_size:
     support: full
     pipelines: [checks, dogstatsd]
     description: "Max uncompressed V2 series payload size"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: encoders.rs
 
   serializer_max_uncompressed_payload_size:
     support: full
     pipelines: [checks, dogstatsd]
     description: "Max uncompressed payload size (generic)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: encoders.rs
 
   serializer_zstd_compressor_level:
     support: partial
@@ -3586,20 +2625,11 @@ inventory:
       The Core Agent's zstd compression level. ADP prefers `data_plane.serializer_zstd_compressor_level`;
       when that is unset, ADP applies this value if you set it explicitly, and otherwise uses its own
       default of 3. Setting this key to the Agent's default of 1 therefore compresses at level 1.
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      additional_attributes:
-        config_registry_filename: encoders.rs
 
   site:
     support: full
     pipelines: [cross_cutting]
     description: "Datadog site domain"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   skip_ssl_validation:
     support: partial
@@ -3613,11 +2643,6 @@ inventory:
 
       This setting does not affect ADP IPC, local privileged APIs, ADP control-plane clients,
       OTLP proxying to the core agent, or unrelated HTTP clients.
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_SKIP_SSL_VALIDATION]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   sslkeylogfile:
     support: full
@@ -3628,12 +2653,6 @@ inventory:
       set `DD_SSLKEYLOGFILE`. The file is opened once per path with owner read/write permissions
       on Unix. If the file cannot be opened, ADP logs a single warning and continues without TLS
       key logging. Protect the generated file as sensitive data.
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_SSLKEYLOGFILE]
-      test_json: '"/tmp/saluki-sslkeylogfile"'
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   statsd_forward_host:
     support: partial
@@ -3646,77 +2665,41 @@ inventory:
       does not preserve the core Agent's packet-buffer grouping, so forwarded UDP datagrams may
       be split differently while carrying the same DogStatsD messages. ADP logs setup failures
       and tracks send failures through telemetry.
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '"127.0.0.1"'
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   statsd_forward_port:
     support: full
     pipelines: [dogstatsd]
     description: "UDP packet forwarding destination port"
-    test_support:
-      used_by: [TypedConfigSystem]
-      value_type_override: integer
-      test_json: "9125"
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   statsd_metric_blocklist:
     support: full
     pipelines: [dogstatsd]
     description: "List of metric names to block/drop"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd_prefix_filter.rs
 
   statsd_metric_blocklist_match_prefix:
     support: full
     pipelines: [dogstatsd]
     description: "Treat blocklist entries as prefixes"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd_prefix_filter.rs
 
   statsd_metric_namespace:
     support: full
     pipelines: [dogstatsd]
     description: "Prefix prepended to all metric names"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd_prefix_filter.rs
 
   statsd_metric_namespace_blacklist:
     support: full
     pipelines: [dogstatsd]
     description: "Prefixes exempt from namespace"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_yaml_paths: [statsd_metric_namespace_blocklist]
-      additional_attributes:
-        config_registry_filename: dogstatsd_prefix_filter.rs
 
   syslog_rfc:
     support: full
     pipelines: [cross_cutting]
     description: "Use RFC-style syslog header"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: get_typed.rs
 
   syslog_uri:
     support: full
     pipelines: [cross_cutting]
     description: "Syslog destination URI"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: get_typed.rs
 
   tags:
     support: full
@@ -3725,10 +2708,6 @@ inventory:
     documentation: |-
       When neither `apm_config.env` nor `env` is set, the first `env:` entry in `tags`, then in
       `extra_tags`, supplies the trace environment.
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   telemetry.dogstatsd.aggregator_channel_latency_buckets:
     support: none
@@ -3761,10 +2740,6 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "Per-origin processed-metrics telemetry"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: dogstatsd.rs
 
   tls_handshake_timeout:
     support: full
@@ -3775,10 +2750,6 @@ inventory:
       independent of `forwarder_timeout`, which bounds the full request. ADP owns the TLS layer directly rather than
       delegating the handshake to an opaque connect-and-handshake future, so it can time out the handshake without
       also aborting an in-progress TCP connect.
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
     issue: "#178"
 
   use_dogstatsd:
@@ -3793,81 +2764,41 @@ inventory:
     support: full
     pipelines: [cross_cutting]
     description: "Proxy cloud metadata endpoints"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_USE_PROXY_FOR_CLOUD_METADATA]
-      additional_attributes:
-        config_registry_filename: proxy.rs
 
   use_v2_api.series:
     support: full
     pipelines: [checks, dogstatsd]
     description: "Send series via V2 protobuf endpoint"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
 
   use_v3_api.series.enabled:
     support: full
     pipelines: [dogstatsd]
     description: "Global V3 series mode"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_USE_V3_API_SERIES_ENABLED]
-      additional_attributes:
-        config_registry_filename: encoders.rs
 
   use_v3_api.series.endpoints:
     support: full
     pipelines: [dogstatsd]
     description: "Per-endpoint V3 series modes"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_USE_V3_API_SERIES_ENDPOINTS]
-      test_json: '"{\"http://datadog.example.com\":\"false\"}"'
-      additional_attributes:
-        config_registry_filename: encoders.rs
 
   vector.metrics.enabled:
     support: full
     pipelines: [cross_cutting]
     description: "Route metrics to OPW (legacy alias)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_VECTOR_METRICS_ENABLED]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   vector.metrics.url:
     support: full
     pipelines: [cross_cutting]
     description: "OPW metrics intake URL (legacy alias)"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_VECTOR_METRICS_URL]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   vector.metrics.use_v3_api.series:
     support: full
     pipelines: [dogstatsd]
     description: "Use V3 series for Vector"
-    test_support:
-      used_by: [TypedConfigSystem]
-      env_var_override: [DD_VECTOR_METRICS_USE_V3_API_SERIES]
-      additional_attributes:
-        config_registry_filename: forwarder.rs
 
   vsock_addr:
     support: full
     pipelines: [cross_cutting]
     description: "vsock address for Agent IPC endpoint"
-    test_support:
-      used_by: [TypedConfigSystem]
-      test_json: '"host"'
-      additional_attributes:
-        config_registry_filename: data_plane.rs
 
 excluded:
   GUI_host: "ignored in initial audit 2026-04-23"
