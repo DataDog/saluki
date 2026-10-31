@@ -708,12 +708,13 @@ where
 /// Each `config.yaml` found in a direct subdirectory either declares participants without a top-level
 /// `type`, or selects `"integration"`, `"correctness"`, or `"correctness_matrix"` with that field.
 /// Each matrix variant produces one case. A `config.yml` file is rejected, even alongside a
-/// `config.yaml`; discovery still loads the latter to report every problem.
+/// `config.yaml`; discovery still loads the latter to report every problem. A `config.yaml` entry
+/// that cannot be resolved or read is a load error, including a dangling symlink.
 ///
 /// # Errors
 ///
-/// Returns an error if a test directory is missing or cannot be read, a case file fails to load,
-/// a case directory contains `config.yml`, or more than one case declares the same name.
+/// Returns an error if a test directory is missing or cannot be read, a `config.yaml` cannot be resolved,
+/// read, or loaded, a case directory contains `config.yml`, or more than one case declares the same name.
 pub(crate) fn discover_cases(dirs: &[PathBuf]) -> Result<Vec<CaseConfig>, GenericError> {
     let mut cases = Vec::new();
     let mut load_errors = Vec::new();
@@ -732,7 +733,7 @@ pub(crate) fn discover_cases(dirs: &[PathBuf]) -> Result<Vec<CaseConfig>, Generi
 
             if path.is_dir() {
                 let config_path = path.join("config.yaml");
-                if config_path.exists() {
+                if std::fs::symlink_metadata(&config_path).is_ok() {
                     match CaseConfig::load_file(&config_path) {
                         Ok(loaded) => cases.extend(loaded),
                         // Continue loading so one report names every problem. Reject the whole list on error:
@@ -1220,6 +1221,56 @@ timeout: 30s
                 stray_path.display()
             )
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discovery_rejects_a_dangling_config_yaml_symlink() {
+        // A `config.yaml` whose symlink target is missing still names a case, so discovery must report it.
+        let dir = tempfile::tempdir().unwrap();
+        let case_dir = dir.path().join("stray");
+        std::fs::create_dir(&case_dir).unwrap();
+        let stray_path = case_dir.join("config.yaml");
+        std::os::unix::fs::symlink("missing.yaml", &stray_path).unwrap();
+        let good = write_case(
+            dir.path(),
+            "good",
+            "type: integration\nname: good\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n",
+        );
+
+        let error = discover_cases(&[dir.path().to_path_buf()])
+            .err()
+            .expect("a dangling config.yaml symlink must fail discovery");
+        let message = format!("{error:#}");
+        assert!(
+            message.starts_with(&format!(
+                "Failed to load test cases:\n  - Failed to resolve configuration file: {}",
+                stray_path.display()
+            )),
+            "{message}"
+        );
+        assert!(
+            !message.contains(&good.canonicalize().unwrap().display().to_string()),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn discovery_ignores_a_directory_without_a_case_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let case_dir = dir.path().join("support");
+        std::fs::create_dir(&case_dir).unwrap();
+        std::fs::write(case_dir.join("datadog.yaml"), "api_key: test\n").unwrap();
+        std::fs::write(dir.path().join("loose.yaml"), "type: bogus\n").unwrap();
+        let good = write_case(
+            dir.path(),
+            "good",
+            "type: integration\nname: good\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n",
+        );
+
+        let cases = discover_cases(&[dir.path().to_path_buf()]).unwrap();
+        assert_eq!(cases.iter().map(CaseConfig::name).collect::<Vec<_>>(), ["good"]);
+        assert_eq!(cases[0].source(), good.canonicalize().unwrap());
     }
 
     #[test]

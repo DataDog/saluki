@@ -13,7 +13,9 @@ configuration. Use it to check coverage when changing case schemas or runners.
   `type: integration` must declare `runtimes` explicitly because the loader's default depends on the host OS.
   A participant case must declare `subject_os`.
 - **Runtime:** the loader's runtime identifier (`mac` means macOS; correctness uses `docker` or `kubernetes_in_docker`).
-- **Status:** selected by CI discovery, or disabled in the case file.
+- **Status:** selected by CI discovery, or disabled: the file sets `disabled: true` and lives in
+  `test/correctness/disabled/`, which CI does not list. The inventory requires each case's directory to match
+  its suite and status.
 - **CI job:** the job that selects this row. Correctness jobs belong to the `run-correctness-tests` child pipeline.
   Disabled rows have no job. macOS rows list both architectures.
 - **Schema:** the file's `type` value, or `participants` for a file that declares participants.
@@ -39,14 +41,16 @@ PANORAMIC_WRITE_COVERAGE_INVENTORY=1 cargo nextest run -p panoramic coverage_inv
 Review the diff. Update the inventory whenever a case file, its platforms or its CI job changes.
 Without the environment variable, the test compares the generated JSON and coverage tables with the checked-in
 versions and reports added or removed row keys and the first differing line in each file. The other inventory tests
-check file accounting, case-name uniqueness across both suites, CI job and mixin definitions, the correctness generator's
-fail-fast shell options, ignored-key detection, logging-case translation equivalence, and migration-proof references.
+check file accounting, case placement by suite and status, case-name uniqueness across both suites, CI job and mixin
+definitions, the correctness generator's fail-fast shell options, ignored-key detection, logging-case translation
+equivalence, and migration-proof references.
 
 ## Coverage details
 
-- There are 52 integration files and 42 correctness files. Integration selects 45 Linux, 31 macOS and 34 Windows rows.
-  Correctness selects 46 Linux rows: 39 Docker and seven Kubernetes-in-Docker variants. Two correctness cases are
-  disabled (`otlp-traces` and `otlp-traces-ets`). The inventory has 158 rows.
+- There are 52 integration files and 42 correctness files, two of them under `test/correctness/disabled/`.
+  Integration selects 45 Linux, 31 macOS and 34 Windows rows. Correctness selects 46 Linux rows: 39 Docker and seven
+  Kubernetes-in-Docker variants. Two correctness cases are disabled (`otlp-traces` and `otlp-traces-ets`) and live in
+  `test/correctness/disabled/`. The inventory has 158 rows.
 - Correctness discovery ignores the integration runtime flag. CI runs all selected correctness cases on Linux.
   The seven variants come from `dsd-origin-detection-matrix`: `legacy`, `legacy-high-cardinality`,
   `legacy-optout-disabled`, `legacy-with-client-fields`, `unified`, `unified-high-cardinality` and

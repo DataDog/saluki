@@ -35,6 +35,8 @@ used to assert correctness.
 However, in our repository, *integration tests* refer to a specific set of smoke tests [below](#integration-tests-panoramic).
 
 Correctness test cases are specified by YAML configuration files found in `test/correctness/cases`.
+Cases that are kept but must not run live in `test/correctness/disabled/`. CI and the `test-correctness` targets select
+only `test/correctness/cases/`.
 
 ### Binaries and program flow
 

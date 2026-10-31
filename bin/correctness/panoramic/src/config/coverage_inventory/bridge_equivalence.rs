@@ -14,7 +14,7 @@ use std::{
 
 use serde_json::{json, Value};
 
-use super::{read_text, repository_root, Inventory, INTEGRATION, JSON_PATH, OLD, PARTICIPANTS};
+use super::{create_case_dirs, read_text, repository_root, Inventory, INTEGRATION, JSON_PATH, OLD, PARTICIPANTS};
 use crate::{
     config::{
         case::{CaseConfig, Os},
@@ -273,8 +273,7 @@ fn logging_case_twins_reproduce_the_frozen_baseline_except_schema_and_exposed_po
     let baseline = logging_baseline();
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
-    std::fs::create_dir_all(root.join("test/integration/cases")).unwrap();
-    std::fs::create_dir_all(root.join("test/correctness/cases")).unwrap();
+    create_case_dirs(&root);
     let mut expected_rows = Vec::new();
     let mut expected_cases = serde_json::Map::new();
     for name in LOGGING_CASES {

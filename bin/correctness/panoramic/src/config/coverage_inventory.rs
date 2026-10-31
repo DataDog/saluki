@@ -44,6 +44,13 @@ const SELECTED: &str = "selected";
 const DISABLED: &str = "disabled";
 const OLD: &str = "old";
 
+/// Case directories relative to the repository root, with the suite and status their cases must have.
+const CASE_DIRS: [(&str, &str, &str); 3] = [
+    ("test/integration/cases", INTEGRATION, SELECTED),
+    ("test/correctness/cases", CORRECTNESS, SELECTED),
+    ("test/correctness/disabled", CORRECTNESS, DISABLED),
+];
+
 /// Coverage rows and effective case configurations recorded by the loader.
 #[derive(Serialize)]
 struct Inventory {
@@ -193,12 +200,10 @@ impl Row {
 
 impl Inventory {
     fn generate(root: &Path) -> Self {
-        let integration_dir = root.join("test/integration/cases");
-        let correctness_dir = root.join("test/correctness/cases");
         let mut schemas = BTreeMap::new();
         let mut rows = Vec::new();
-        for suite_dir in [&integration_dir, &correctness_dir] {
-            for entry in fs::read_dir(suite_dir).unwrap() {
+        for (suite_dir, ..) in CASE_DIRS {
+            for entry in fs::read_dir(root.join(suite_dir)).unwrap() {
                 let dir = entry.unwrap().path();
                 let path = dir.join("config.yaml");
                 if !dir.is_dir() || !path.is_file() {
@@ -208,7 +213,7 @@ impl Inventory {
                 let text = read_text(&path);
                 let doc: Value = serde_saphyr::from_str(&text).unwrap();
                 if let Some(schema) = doc.get("type").and_then(Value::as_str) {
-                    if suite_dir == &integration_dir {
+                    if suite_dir == "test/integration/cases" {
                         assert!(
                             doc.get("runtimes").is_some(),
                             "{source} must declare runtimes: the loader default depends on the host OS",
@@ -218,10 +223,9 @@ impl Inventory {
                 }
             }
         }
-        // Discover both suites together to reject duplicate names across suites, as a run over both directories would.
-        // CI discovers each suite separately.
-        let cases = discover_cases(&[integration_dir.clone(), correctness_dir.clone()])
-            .unwrap_or_else(|error| panic!("{error:#}"));
+        // Discover all directories together to reject duplicate names across suites and statuses.
+        let cases =
+            discover_cases(&CASE_DIRS.map(|(dir, ..)| root.join(dir))).unwrap_or_else(|error| panic!("{error:#}"));
         let (integration_cases, correctness_cases): (Vec<_>, Vec<_>) =
             cases.iter().partition(|case| case.suite() == TestSuite::Integration);
         for (runtime, os) in [
@@ -266,6 +270,19 @@ impl Inventory {
         rows.sort_by(|a, b| (&a.suite, &a.name, &a.subject_os).cmp(&(&b.suite, &b.name, &b.subject_os)));
         let mut keys = BTreeSet::new();
         for row in &rows {
+            let source = &row.source;
+            let suite = row.suite;
+            let status = row.status;
+            let Some((dir, ..)) = CASE_DIRS
+                .iter()
+                .find(|(_, expected_suite, expected_status)| *expected_suite == suite && *expected_status == status)
+            else {
+                panic!("{source}: a {status} {suite} case has no case directory");
+            };
+            assert!(
+                source.starts_with(&format!("{dir}/")),
+                "{source}: a {status} {suite} case belongs in {dir}/"
+            );
             let key = (&row.suite, &row.name, &row.subject_os);
             assert!(keys.insert(key), "Duplicate inventory row: {key:?}");
         }
@@ -284,9 +301,9 @@ impl Inventory {
 
     fn assert_file_accounting(&self, root: &Path) {
         let sources: BTreeSet<_> = self.rows.iter().map(|row| row.source.as_str()).collect();
-        for suite in [INTEGRATION, CORRECTNESS] {
+        for (dir, ..) in CASE_DIRS {
             let mut files = Vec::new();
-            collect_case_files(&root.join(format!("test/{suite}/cases")), &mut files);
+            collect_case_files(&root.join(dir), &mut files);
             for path in files {
                 let source = relative_path(root, &path);
                 assert!(
@@ -549,6 +566,12 @@ fn repository_root() -> PathBuf {
         .unwrap()
 }
 
+fn create_case_dirs(root: &Path) {
+    for (dir, ..) in CASE_DIRS {
+        fs::create_dir_all(root.join(dir)).unwrap();
+    }
+}
+
 fn relative_path(root: &Path, path: &Path) -> String {
     path.strip_prefix(root).unwrap().to_str().unwrap().replace('\\', "/")
 }
@@ -689,7 +712,7 @@ fn a_participant_case_and_its_integration_twin_produce_the_same_inventory_apart_
             (participant_root.path(), &participant_yaml),
             (integration_root.path(), &integration_yaml),
         ] {
-            fs::create_dir_all(root.join("test/correctness/cases")).unwrap();
+            create_case_dirs(root);
             write_case(&root.join("test/integration/cases"), "alpha", yaml);
         }
         let mut participant =
@@ -717,7 +740,7 @@ fn a_participant_case_and_its_integration_twin_produce_the_same_inventory_apart_
 )]
 fn inventory_rejects_participant_cases_whose_configuration_differs_by_os() {
     let root = tempfile::tempdir().unwrap();
-    fs::create_dir_all(root.path().join("test/correctness/cases")).unwrap();
+    create_case_dirs(root.path());
     let yaml = LOGGING_PARTICIPANT
         .replace("linux, macos, windows", "linux, windows")
         .replace(r"C:\adp\adp.log", "{{ adp.facts.default_log_file }}");
@@ -735,6 +758,7 @@ fn every_case_file_produces_an_inventory_row() {
 #[should_panic(expected = "Case name 'shared' is declared more than once")]
 fn inventory_rejects_a_case_name_used_in_both_suites() {
     let root = tempfile::tempdir().unwrap();
+    create_case_dirs(root.path());
     write_case(
         &root.path().join("test/integration/cases"),
         "shared",
@@ -749,10 +773,88 @@ fn inventory_rejects_a_case_name_used_in_both_suites() {
 }
 
 #[test]
+fn inventory_records_a_case_in_the_disabled_directory_as_disabled_without_ci_jobs() {
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path().canonicalize().unwrap();
+    create_case_dirs(&root);
+    write_case(
+        &root.join("test/correctness/disabled"),
+        "alpha",
+        "type: correctness\ndisabled: true\nruntime: docker\nanalysis_mode: metrics\nbaseline: {image: base}\ncomparison: {image: comp}\n",
+    );
+
+    let inventory = Inventory::generate(&root);
+    assert_eq!(inventory.rows.len(), 1);
+    let row = &inventory.rows[0];
+    assert_eq!(row.status, DISABLED);
+    assert!(row.ci_jobs.is_empty());
+    assert!(row.ci_mixins.is_empty());
+    assert_eq!(row.source, "test/correctness/disabled/alpha/config.yaml");
+    inventory.assert_file_accounting(&root);
+}
+
+#[test]
+#[should_panic(expected = "a disabled correctness case belongs in test/correctness/disabled/")]
+fn inventory_rejects_a_disabled_case_in_the_selected_correctness_directory() {
+    let root = tempfile::tempdir().unwrap();
+    create_case_dirs(root.path());
+    write_case(
+        &root.path().join("test/correctness/cases"),
+        "alpha",
+        "type: correctness\ndisabled: true\nruntime: docker\nanalysis_mode: metrics\nbaseline: {image: base}\ncomparison: {image: comp}\n",
+    );
+    Inventory::generate(&root.path().canonicalize().unwrap());
+}
+
+#[test]
+#[should_panic(expected = "a selected correctness case belongs in test/correctness/cases/")]
+fn inventory_rejects_an_enabled_case_in_the_disabled_directory() {
+    let root = tempfile::tempdir().unwrap();
+    create_case_dirs(root.path());
+    write_case(
+        &root.path().join("test/correctness/disabled"),
+        "alpha",
+        "type: correctness\nruntime: docker\nanalysis_mode: metrics\nbaseline: {image: base}\ncomparison: {image: comp}\n",
+    );
+    Inventory::generate(&root.path().canonicalize().unwrap());
+}
+
+#[test]
+#[should_panic(expected = "a selected integration case belongs in test/integration/cases/")]
+fn inventory_rejects_an_integration_case_in_a_correctness_directory() {
+    let root = tempfile::tempdir().unwrap();
+    create_case_dirs(root.path());
+    write_case(
+        &root.path().join("test/correctness/cases"),
+        "alpha",
+        "type: integration\nname: alpha\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n",
+    );
+    Inventory::generate(&root.path().canonicalize().unwrap());
+}
+
+#[test]
+#[should_panic(expected = "Case name 'shared' is declared more than once")]
+fn inventory_rejects_a_case_name_used_in_the_selected_and_disabled_correctness_directories() {
+    let root = tempfile::tempdir().unwrap();
+    create_case_dirs(root.path());
+    write_case(
+        &root.path().join("test/correctness/cases"),
+        "shared",
+        "type: correctness\nruntime: docker\nanalysis_mode: metrics\nbaseline: {image: base}\ncomparison: {image: comp}\n",
+    );
+    write_case(
+        &root.path().join("test/correctness/disabled"),
+        "shared",
+        "type: correctness\ndisabled: true\nruntime: docker\nanalysis_mode: metrics\nbaseline: {image: base}\ncomparison: {image: comp}\n",
+    );
+    Inventory::generate(&root.path().canonicalize().unwrap());
+}
+
+#[test]
 #[should_panic(expected = "must be a string: 'integration', 'correctness' or 'correctness_matrix'")]
 fn inventory_reports_the_loader_error_for_a_non_string_type() {
     let root = tempfile::tempdir().unwrap();
-    fs::create_dir_all(root.path().join("test/correctness/cases")).unwrap();
+    create_case_dirs(root.path());
     write_case(&root.path().join("test/integration/cases"), "alpha", "type: 3\n");
     Inventory::generate(root.path());
 }
