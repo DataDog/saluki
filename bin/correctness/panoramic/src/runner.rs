@@ -22,8 +22,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::deadline::{Budget, Deadline};
+use crate::ledger::RECLAIM_TIME;
 use crate::probe::probe;
 use crate::record::{ActiveStep, CaseRecord, StepStatus, Verdict};
+use crate::tasks::TASK_STOP_TIME;
 use crate::test::{RunnerSettings, Test, TestContext};
 use crate::{
     assertions::{AssertionContext, LogBuffer, TargetCommand},
@@ -409,6 +411,7 @@ impl Runner {
         let phases = tctx.phases.clone();
         let record = tctx.record.clone();
         let ledger = tctx.ledger.clone();
+        let tasks = tctx.tasks.clone();
 
         let mut result = {
             let run_fut = test.run(tctx);
@@ -434,12 +437,23 @@ impl Runner {
                     stop.settle(returned, &name, timeout, started.elapsed(), &phases, &record)
                 }
             }
-            // Drop the body before cleanup to release its resources and end its resource registration.
+            // Drop the body before cleanup; its tracked background tasks are handled below.
         };
 
-        // Cleanup needs its own deadline because the test token may already be cancelled.
+        // Cleanup has its own budget because the test token may already be cancelled. Give tracked tasks time to stop
+        // and mark interrupted creations before reclaim reads the ledger.
         let reclaim_started = Instant::now();
-        let (reclaim, issues) = ledger.reclaim().await;
+        let deadline = tokio::time::Instant::now() + RECLAIM_TIME;
+        let running = tasks.stop_all(tokio::time::Instant::now() + TASK_STOP_TIME).await;
+        if running > 0 {
+            warn!(
+                test = %name,
+                running,
+                "Background tasks were still tracked after the {:?} stop budget expired.",
+                TASK_STOP_TIME
+            );
+        }
+        let (reclaim, issues) = ledger.reclaim(deadline).await;
         if !reclaim.is_empty() {
             result.phase_timings.push(PhaseTiming {
                 phase: "reclaim".to_string(),
@@ -656,7 +670,12 @@ impl IntegrationRunner {
         };
 
         info!(test = %test_name, "Starting container...");
-        let details = match self.start_container(&driver).await {
+        let details = match self
+            .tctx
+            .ledger
+            .start_container(&driver, &self.isolation_group_id, &self.tctx.test_cancel_token())
+            .await
+        {
             Ok(details) => details,
             Err(e) => {
                 error!(test = %test_name, error = %e, "Failed to start container.");
@@ -842,33 +861,6 @@ impl IntegrationRunner {
         result
     }
 
-    /// Creates and starts `driver`'s container, stopping on test cancellation.
-    ///
-    /// Cancellation during creation marks the group unsettled: Docker may finish creating resources after cleanup lists
-    /// the group. Starting creates nothing, so cancellation after creation leaves the group settled.
-    async fn start_container(&self, driver: &Driver) -> Result<DriverDetails, GenericError> {
-        let cancel = self.tctx.test_cancel_token();
-        match cancel.run_until_cancelled(driver.create()).await {
-            Some(created) => created?,
-            None => {
-                self.tctx.ledger.mark_unsettled(&self.isolation_group_id);
-                return Err(generic_error!(
-                    "Cancelled while creating a container in isolation group '{}'.",
-                    self.isolation_group_id
-                ));
-            }
-        }
-        cancel
-            .run_until_cancelled(driver.start_container())
-            .await
-            .unwrap_or_else(|| {
-                Err(generic_error!(
-                    "Cancelled while starting a container in isolation group '{}'.",
-                    self.isolation_group_id
-                ))
-            })
-    }
-
     async fn build_driver_config(&self) -> Result<DriverConfig, GenericError> {
         let container = &self.test_case.config.container;
 
@@ -974,7 +966,11 @@ impl IntegrationRunner {
 
         let mut driver = Driver::from_config(self.isolation_group_id.clone(), config)?
             .with_logging(self.tctx.log_dir().to_path_buf());
-        let details = self.start_container(&driver).await?;
+        let details = self
+            .tctx
+            .ledger
+            .start_container(&driver, &self.isolation_group_id, &self.tctx.test_cancel_token())
+            .await?;
 
         // Bound the health wait and watch cancellation so an unhealthy sidecar releases the test promptly.
         probe(
@@ -1230,6 +1226,42 @@ pub(crate) mod test_support {
         pub(crate) intake: Option<u16>,
         /// A directory the test creates and registers before its behavior runs.
         pub(crate) registers: Option<PathBuf>,
+        /// Spawns a pending task and records its drop.
+        pub(crate) spawns: Option<TaskProbe>,
+    }
+
+    /// Observes task shutdown for a [`ScriptedTest`].
+    #[derive(Debug, Default, Clone)]
+    pub(crate) struct TaskProbe(Arc<std::sync::Mutex<Option<Dropped>>>);
+
+    /// What a [`TaskProbe`] saw when its task was dropped.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(crate) struct Dropped {
+        /// Elapsed time since the task's drop guard was created.
+        pub(crate) elapsed: Duration,
+        /// Whether the test's registered directory still existed.
+        pub(crate) directory_existed: bool,
+    }
+
+    impl TaskProbe {
+        pub(crate) fn dropped(&self) -> Option<Dropped> {
+            *self.0.lock().unwrap()
+        }
+    }
+
+    struct ProbeGuard {
+        probe: TaskProbe,
+        started: tokio::time::Instant,
+        directory: Option<PathBuf>,
+    }
+
+    impl Drop for ProbeGuard {
+        fn drop(&mut self) {
+            *self.probe.0.lock().unwrap() = Some(Dropped {
+                elapsed: self.started.elapsed(),
+                directory_existed: self.directory.as_ref().is_some_and(|dir| dir.exists()),
+            });
+        }
     }
 
     impl ScriptedTest {
@@ -1243,6 +1275,7 @@ pub(crate) mod test_support {
                 entered: None,
                 intake: None,
                 registers: None,
+                spawns: None,
             }
         }
     }
@@ -1277,6 +1310,17 @@ pub(crate) mod test_support {
             if let Some(dir) = &self.registers {
                 std::fs::create_dir_all(dir).expect("the registered directory should be creatable");
                 tctx.ledger.directory(dir.clone());
+            }
+            if let Some(probe) = &self.spawns {
+                let guard = ProbeGuard {
+                    probe: probe.clone(),
+                    started: tokio::time::Instant::now(),
+                    directory: self.registers.clone(),
+                };
+                tctx.tasks.spawn(async move {
+                    let _guard = guard;
+                    std::future::pending::<()>().await;
+                });
             }
 
             // Keep the phase active to model an interrupted phase; `ProcedureThenWait` finishes it before switching.
@@ -1384,7 +1428,7 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::{test_runner_settings, Behavior, ScriptedTest};
+    use super::test_support::{test_runner_settings, Behavior, ScriptedTest, TaskProbe};
     use super::*;
     use crate::record::StepStatus;
     use crate::reporter::test_support::{each_outcome, NOT_RUN_KIND};
@@ -1963,6 +2007,61 @@ mod tests {
             assert!(!dir.exists(), "{} should be removed", dir.display());
             assert_eq!(phase_names(result).last(), Some(&"reclaim"), "{}", result.name);
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_passing_case_keeps_its_verdict_and_stops_its_tasks_before_reclaim() {
+        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let registered = tempfile::tempdir().expect("temp dir should be creatable");
+        let dir = registered.path().join("passing");
+        let probe = TaskProbe::default();
+        let test = ScriptedTest {
+            registers: Some(dir.clone()),
+            spawns: Some(probe.clone()),
+            ..ScriptedTest::new("passing", Behavior::Pass)
+        };
+
+        let result = run_scripted_test(&test, log_base_dir.path(), &CancellationToken::new(), PAUSED_BOUND).await;
+
+        assert_eq!(result.outcome, TestOutcome::Passed, "{:?}", result.error);
+        assert_eq!(result.issues, []);
+        let resource = format!("directory:{}", dir.display());
+        assert_eq!(reclaimed(&result), [(resource.as_str(), ReclaimResult::Reclaimed)]);
+        assert!(!dir.exists(), "{} should be removed", dir.display());
+        let dropped = probe.dropped().expect("the runner should stop the test's task");
+        assert!(dropped.directory_existed, "the task should stop before reclaim");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_timed_out_case_stops_its_tasks_at_the_deadline() {
+        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let registered = tempfile::tempdir().expect("temp dir should be creatable");
+        let dir = registered.path().join("stuck");
+        let probe = TaskProbe::default();
+        let test = ScriptedTest {
+            timeout: Duration::from_secs(1),
+            registers: Some(dir.clone()),
+            spawns: Some(probe.clone()),
+            ..ScriptedTest::new(
+                "stuck",
+                Behavior::WaitForCancel {
+                    finish_on_cancel: false,
+                },
+            )
+        };
+
+        let result = run_scripted_test(&test, log_base_dir.path(), &CancellationToken::new(), PAUSED_BOUND).await;
+
+        assert_eq!(result.outcome, TestOutcome::TimedOut);
+        let timeout = result
+            .timeout
+            .as_ref()
+            .expect("a timed-out test should carry timeout detail");
+        assert_eq!(timeout.deadline, TimeoutDeadline::CleanupGrace);
+        let dropped = probe.dropped().expect("the case deadline should stop the test's task");
+        assert_eq!(dropped.elapsed, Duration::from_secs(1));
+        let resource = format!("directory:{}", dir.display());
+        assert_eq!(reclaimed(&result), [(resource.as_str(), ReclaimResult::Reclaimed)]);
     }
 
     #[tokio::test(start_paused = true)]

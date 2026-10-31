@@ -1,9 +1,6 @@
 use std::{
-    collections::HashMap,
     future::Future,
     path::PathBuf,
-    pin::Pin,
-    task::{ready, Context, Poll},
     time::{Duration, Instant},
 };
 
@@ -12,9 +9,9 @@ use airlock::{
     driver::{Driver, DriverConfig, DriverDetails, ExitStatus},
 };
 use saluki_error::{generic_error, GenericError};
-use tokio::{select, task::JoinHandle, time::sleep};
-use tokio_util::{sync::CancellationToken, task::TaskTracker};
-use tracing::{debug, error, info, info_span, warn, Instrument as _, Span};
+use tokio::{select, time::sleep};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, info, info_span, warn, Instrument as _, Span};
 
 use crate::correctness::{
     analysis::{AnalysisMode, AnalysisRunner, TracesAnalysisOptions},
@@ -24,8 +21,9 @@ use crate::correctness::{
 use crate::{
     assertions::{AssertionResult, AssertionStatus},
     intake::{CollectedData, IntakeClient},
-    ledger::random_id,
+    ledger::ResourceLedger,
     reporter::{ErrorKind, PhaseTiming, TestResult},
+    tasks::CaseTasks,
     test::TestContext,
     traffic::{self, Side},
 };
@@ -144,18 +142,6 @@ async fn run_docker_correctness_test(case: CorrectnessTestCase, tctx: TestContex
     }
 }
 
-/// Cleans up remaining Docker resources for all three isolation groups.
-///
-/// Call after `DriverTasks::stop_and_wait` has waited for container cleanup. Partially started groups are safe to
-/// clean up; errors are logged and cleanup continues.
-async fn cleanup_groups(baseline_id: &str, comparison_id: &str, millstone_id: &str) {
-    for id in [baseline_id, comparison_id, millstone_id] {
-        if let Err(e) = Driver::clean_related_resources(id.to_string()).await {
-            error!(error = %e, "Failed to clean up isolation group '{}'. Manual cleanup may be required.", id);
-        }
-    }
-}
-
 /// Builds a setup-error result carrying the timings of the phases the test finished before failing.
 pub(crate) fn make_error_result(
     name: String, started: Instant, phase_timings: Vec<PhaseTiming>, e: GenericError,
@@ -181,7 +167,6 @@ pub struct CorrectnessRunner {
     baseline_target_driver_config: DriverConfig,
     comparison_target_driver_config: DriverConfig,
     tctx: TestContext,
-    driver_tasks: DriverTasks,
 }
 
 impl CorrectnessRunner {
@@ -194,14 +179,12 @@ impl CorrectnessRunner {
             case.target_driver_config(&case.config.comparison).await?,
             tctx.mounts_dir(),
         )?;
-        let driver_tasks = DriverTasks::new(&tctx.test_cancel_token());
         Ok(Self {
             datadog_intake_config: case.datadog_intake_config(),
             millstone_config: case.millstone_config(),
             baseline_target_driver_config: baseline,
             comparison_target_driver_config: comparison,
             tctx,
-            driver_tasks,
         })
     }
 
@@ -209,13 +192,7 @@ impl CorrectnessRunner {
     async fn build_baseline_group_runner(&self, isolation_group_id: String) -> Result<GroupRunner, GenericError> {
         debug!("Creating baseline group runner...");
 
-        let mut group_runner = GroupRunner::new(
-            isolation_group_id,
-            "baseline",
-            self.tctx.log_dir().to_path_buf(),
-            &self.driver_tasks,
-            self.tctx.settings.alpine_image.clone(),
-        );
+        let mut group_runner = GroupRunner::new(isolation_group_id, "baseline", &self.tctx);
         group_runner
             .with_driver(DriverConfig::datadog_intake(self.datadog_intake_config.clone()).await?)?
             // Give the agent a "baseline" alias on its network so the shared millstone can
@@ -233,13 +210,7 @@ impl CorrectnessRunner {
     async fn build_comparison_group_runner(&self, isolation_group_id: String) -> Result<GroupRunner, GenericError> {
         debug!("Creating comparison group runner...");
 
-        let mut group_runner = GroupRunner::new(
-            isolation_group_id,
-            "comparison",
-            self.tctx.log_dir().to_path_buf(),
-            &self.driver_tasks,
-            self.tctx.settings.alpine_image.clone(),
-        );
+        let mut group_runner = GroupRunner::new(isolation_group_id, "comparison", &self.tctx);
 
         group_runner
             .with_driver(DriverConfig::datadog_intake(self.datadog_intake_config.clone()).await?)?
@@ -345,56 +316,17 @@ impl CorrectnessRunner {
             .with_network(format!("airlock-{}", baseline_isolation_group_id))
             .with_network(format!("airlock-{}", comparison_isolation_group_id));
 
-        let mut group_runner = GroupRunner::new(
-            isolation_group_id,
-            "millstone",
-            self.tctx.log_dir().to_path_buf(),
-            &self.driver_tasks,
-            self.tctx.settings.alpine_image.clone(),
-        );
+        let mut group_runner = GroupRunner::new(isolation_group_id, "millstone", &self.tctx);
         group_runner.with_driver(driver_config)?;
 
         Ok(group_runner)
     }
 
-    async fn unwrap_or_shutdown<T>(
-        &self, step_id: &'static str, baseline_result: Result<T, GenericError>,
-        comparison_result: Result<T, GenericError>,
-    ) -> Result<(T, T), GenericError> {
-        match (baseline_result, comparison_result) {
-            (Ok(baseline_result), Ok(comparison_result)) => Ok((baseline_result, comparison_result)),
-
-            // If either side failed, we need to shutdown everything before returning the error.
-            (maybe_baseline_error, maybe_comparison_error) => {
-                // Trigger any spawned drivers to shutdown and cleanup, and wait for that to happen.
-                self.driver_tasks.stop_and_wait().await;
-
-                // Figure out which side failed to initially spawn successfully, and return the appropriate
-                // error. If both failed, then we log both errors and return a generic error instead.
-                match (maybe_baseline_error, maybe_comparison_error) {
-                    (Ok(_), Err(comparison_error)) => {
-                        error!("Baseline group runner completed step '{}' successfully, but comparison group runner encountered an error.", step_id);
-                        Err(comparison_error)
-                    }
-                    (Err(baseline_error), Ok(_)) => {
-                        error!("Comparison group runner completed step '{}' successfully, but baseline group runner encountered an error.", step_id);
-                        Err(baseline_error)
-                    }
-                    (Err(baseline_error), Err(comparison_error)) => {
-                        error!(error = ?baseline_error, "Baseline group runner encountered an error at step '{}'.", step_id);
-                        error!(error = ?comparison_error, "Comparison group runner encountered an error at step '{}'.", step_id);
-                        Err(generic_error!("Failed to complete step '{}'.", step_id))
-                    }
-                    _ => unreachable!(),
-                }
-            }
-        }
-    }
-
     pub async fn run(self) -> Result<(CollectedData, CollectedData), GenericError> {
-        let baseline_isolation_group_id = random_id();
-        let comparison_isolation_group_id = random_id();
-        let millstone_isolation_group_id = random_id();
+        // Register Millstone last so reclaim attempts its removal before the networks and volumes it uses.
+        let baseline_isolation_group_id = self.tctx.ledger.isolation_group();
+        let comparison_isolation_group_id = self.tctx.ledger.isolation_group();
+        let millstone_isolation_group_id = self.tctx.ledger.isolation_group();
 
         let baseline_runner_span = info_span!(
             "runner",
@@ -433,47 +365,18 @@ impl CorrectnessRunner {
         // agent groups before starting millstone so that the volumes exist when the millstone
         // container mounts them, and the networks exist when it connects to them.
         info!("Spawning containers for baseline and comparison targets...");
-        let baseline_spawn_result = run_in_background(&baseline_runner_span, baseline_group_runner.spawn());
-        let comparison_spawn_result = run_in_background(&comparison_runner_span, comparison_group_runner.spawn());
-
-        let (baseline_collector, comparison_collector) = match self
-            .unwrap_or_shutdown(
-                "spawn_agent_containers",
-                baseline_spawn_result.await,
-                comparison_spawn_result.await,
-            )
-            .await
-        {
-            Ok(pair) => pair,
-            Err(e) => {
-                cleanup_groups(
-                    &baseline_isolation_group_id,
-                    &comparison_isolation_group_id,
-                    &millstone_isolation_group_id,
-                )
-                .await;
-                return Err(e);
-            }
-        };
+        let tasks = &self.tctx.tasks;
+        let (baseline_collector, comparison_collector) = tokio::try_join!(
+            run_in_background(tasks, &baseline_runner_span, baseline_group_runner.spawn()),
+            run_in_background(tasks, &comparison_runner_span, comparison_group_runner.spawn()),
+        )?;
         info!("Agent containers spawned successfully. Starting shared Millstone...");
 
         // Phase 4: Spawn the shared Millstone container and wait until both senders finish sending. The container
         // healthcheck reports completion while both sender processes remain alive.
-        let millstone_guard =
-            match run_in_background(&millstone_runner_span, millstone_group_runner.spawn_millstone()).await {
-                Ok(guard) => guard,
-                Err(e) => {
-                    self.driver_tasks.stop_and_wait().await;
-                    cleanup_groups(
-                        &baseline_isolation_group_id,
-                        &comparison_isolation_group_id,
-                        &millstone_isolation_group_id,
-                    )
-                    .await;
-                    return Err(generic_error!("Failed to spawn shared millstone container: {}", e));
-                }
-            };
-        let mut millstone_exit = Box::pin(millstone_guard.millstone_handle.wait());
+        let millstone = run_in_background(tasks, &millstone_runner_span, millstone_group_runner.spawn_millstone())
+            .await
+            .map_err(|e| generic_error!("Failed to spawn shared millstone container: {}", e))?;
         debug!(
             "Millstone finished sending. Waiting {:?} for agents to flush...",
             FLUSH_WAIT
@@ -485,124 +388,86 @@ impl CorrectnessRunner {
         // determine when the next flush has happened... and further, we might not need to care
         // about this for particular analysis modes if the functionality we're testing doesn't rely
         // on flushing like metrics does.
-        select! {
-            _ = sleep(FLUSH_WAIT) => {}
-            status = &mut millstone_exit => {
-                self.driver_tasks.stop_and_wait().await;
-                cleanup_groups(
-                    &baseline_isolation_group_id,
-                    &comparison_isolation_group_id,
-                    &millstone_isolation_group_id,
-                )
-                .await;
-
-                return match status {
-                    ExitStatus::Success => {
-                        Err(generic_error!("Shared Millstone exited before telemetry collection completed."))
-                    }
-                    ExitStatus::Failed { code, error } => Err(generic_error!(
-                        "Shared Millstone exited before telemetry collection completed with code {}: {}",
-                        code,
-                        error
-                    )),
-                };
-            }
-        }
-
-        // Phase 6: Collect data from both datadog-intake containers, then shut everything down.
-        info!("Collecting data from baseline and comparison intake containers...");
-        let baseline_intake_port = baseline_collector.datadog_intake_port;
-        let maybe_baseline_data = run_in_background(&baseline_runner_span, async move {
-            let client = IntakeClient::new(baseline_intake_port);
-            CollectedData::collect(&client).await
-        });
-        let comparison_intake_port = comparison_collector.datadog_intake_port;
-        let maybe_comparison_data = run_in_background(&comparison_runner_span, async move {
-            let client = IntakeClient::new(comparison_intake_port);
-            CollectedData::collect(&client).await
-        });
-
-        let (baseline_data, comparison_data) = match self
-            .unwrap_or_shutdown("collect_data", maybe_baseline_data.await, maybe_comparison_data.await)
-            .await
-        {
-            Ok(pair) => pair,
-            Err(e) => {
-                cleanup_groups(
-                    &baseline_isolation_group_id,
-                    &comparison_isolation_group_id,
-                    &millstone_isolation_group_id,
-                )
-                .await;
-                return Err(e);
-            }
+        let millstone_exit = async {
+            millstone
+                .wait_for_container_exit()
+                .await
+                .unwrap_or_else(|e| ExitStatus::Failed {
+                    code: -1,
+                    error: format!("failed to wait for container exit: {}", e),
+                })
         };
+        wait_for_flush(&self.tctx.test_cancel_token(), millstone_exit).await?;
 
-        // Signal all remaining containers to shut down and wait for them.
-        info!("Cleaning up remaining containers and resources...");
-        self.driver_tasks.stop_and_wait().await;
-        let _ = millstone_exit.await;
-
-        cleanup_groups(
-            &baseline_isolation_group_id,
-            &comparison_isolation_group_id,
-            &millstone_isolation_group_id,
+        // Phase 6: Collect data from both datadog-intake containers.
+        info!("Collecting data from baseline and comparison intake containers...");
+        let collect = |port| async move { CollectedData::collect(&IntakeClient::new(port)).await };
+        tokio::try_join!(
+            run_in_background(
+                tasks,
+                &baseline_runner_span,
+                collect(baseline_collector.datadog_intake_port)
+            ),
+            run_in_background(
+                tasks,
+                &comparison_runner_span,
+                collect(comparison_collector.datadog_intake_port)
+            ),
         )
-        .await;
-
-        info!("Cleanup complete.");
-
-        Ok((baseline_data, comparison_data))
     }
 }
 
-fn run_in_background<F, T>(span: &Span, f: F) -> SpawnedResult<T>
+/// Waits [`FLUSH_WAIT`] for the agents to flush, failing early on cancellation or if Millstone exits.
+async fn wait_for_flush(
+    cancel: &CancellationToken, millstone_exit: impl Future<Output = ExitStatus>,
+) -> Result<(), GenericError> {
+    select! {
+        // Report cancellation even if Millstone exits in the same instant.
+        biased;
+        _ = cancel.cancelled() => Err(generic_error!("Cancelled while waiting {:?} for the agents to flush.", FLUSH_WAIT)),
+        status = millstone_exit => match status {
+            ExitStatus::Success => Err(generic_error!("Shared Millstone exited before telemetry collection completed.")),
+            ExitStatus::Failed { code, error } => Err(generic_error!(
+                "Shared Millstone exited before telemetry collection completed with code {}: {}",
+                code,
+                error
+            )),
+        },
+        _ = sleep(FLUSH_WAIT) => Ok(()),
+    }
+}
+
+/// Spawns `f` in `span` through the case's task owner and returns a future for its result.
+fn run_in_background<F, T>(tasks: &CaseTasks, span: &Span, f: F) -> impl Future<Output = Result<T, GenericError>>
 where
     F: Future<Output = Result<T, GenericError>> + Send + 'static,
     T: Send + 'static,
 {
-    let handle = tokio::spawn(f.instrument(span.clone()));
-    SpawnedResult { handle }
-}
-
-struct SpawnedResult<T> {
-    handle: JoinHandle<Result<T, GenericError>>,
-}
-
-impl<T> Future for SpawnedResult<T>
-where
-    T: Send + 'static,
-{
-    type Output = Result<T, GenericError>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // SAFETY: `JoinHandle<T>` is `Unpin`, which means we're `Unpin`, so we can safely project the inner
-        // `JoinHandle` field.
-        let handle = unsafe { self.map_unchecked_mut(|sr| &mut sr.handle) };
-        match ready!(handle.poll(cx)) {
-            Ok(result) => Poll::Ready(result),
-            Err(e) => Poll::Ready(Err(generic_error!("Task panicked during normal operation: {}", e))),
+    let handle = tasks.spawn(f.instrument(span.clone()));
+    async move {
+        match handle.await {
+            Ok(Some(result)) => result,
+            Ok(None) => Err(generic_error!("Stopped before finishing: the test was cancelled.")),
+            Err(e) => Err(generic_error!("Task panicked during normal operation: {}", e)),
         }
     }
 }
 
-/// Manages the lifecycle of a group of containers related to a specific SUT.
+/// Starts a group of containers; the runner reclaims their registered isolation group.
 struct GroupRunner {
     isolation_group_id: String,
     runner_log_dir: PathBuf,
     drivers: Vec<Driver>,
-    tracker: TaskTracker,
-    cancel_token: CancellationToken,
     alpine_image: String,
+    ledger: ResourceLedger,
+    /// Shared with the task wrapper so interrupted creation marks the ledger before task shutdown.
+    stop: CancellationToken,
 }
 
 impl GroupRunner {
-    fn new(
-        isolation_group_id: String, group_name: &'static str, log_dir: PathBuf, tasks: &DriverTasks,
-        alpine_image: String,
-    ) -> Self {
+    fn new(isolation_group_id: String, group_name: &'static str, tctx: &TestContext) -> Self {
         // Create a subdirectory for the isolation group's container logs.
-        let group_log_dir = log_dir.join(group_name);
+        let group_log_dir = tctx.log_dir().join(group_name);
 
         info!(
             "Creating test group runner for target '{}'. Logs will be saved to {}",
@@ -614,9 +479,9 @@ impl GroupRunner {
             isolation_group_id,
             runner_log_dir: group_log_dir,
             drivers: Vec::new(),
-            tracker: tasks.tracker.clone(),
-            cancel_token: tasks.cancel_token.child_token(),
-            alpine_image,
+            alpine_image: tctx.settings.alpine_image.clone(),
+            ledger: tctx.ledger.clone(),
+            stop: tctx.tasks.stop.clone(),
         }
     }
 
@@ -632,362 +497,177 @@ impl GroupRunner {
         AgentGroupCollector::new(self.spawn_into().await?)
     }
 
-    /// Spawns all drivers in this group and returns the resulting [`SpawnedDrivers`].
+    async fn spawn_millstone(self) -> Result<Driver, GenericError> {
+        self.spawn_into()
+            .await?
+            .into_iter()
+            .find(|spawned| spawned.driver.driver_id() == "millstone")
+            .map(|spawned| spawned.driver)
+            .ok_or_else(|| generic_error!("Failed to get millstone driver from shared millstone group."))
+    }
+
+    /// Starts each driver in this group in turn and waits for it to become healthy, stopping at the first failure.
     ///
-    /// If any driver fails to start, any already-started drivers are cleaned up and the error is
-    /// returned. This is the shared core of [`spawn`][Self::spawn] and
-    /// [`spawn_millstone`][Self::spawn_millstone].
-    async fn spawn_into(self) -> Result<SpawnedDrivers, GenericError> {
-        let mut driver_handles = Vec::new();
+    /// The runner reclaims the registered group, including resources from partial starts.
+    async fn spawn_into(self) -> Result<Vec<SpawnedDriver>, GenericError> {
+        let mut spawned = Vec::with_capacity(self.drivers.len());
+        for mut driver in self.drivers {
+            let driver_id = driver.driver_id();
+            debug!(driver_id, "Starting container...");
+            let details = self
+                .ledger
+                .start_container(&driver, &self.isolation_group_id, &self.stop)
+                .await?;
+            debug!(driver_id, "Container started. Waiting for it to become healthy...");
 
-        // Spawn all of our drivers, short-circuiting if any of them fail to start.
-        //
-        // We capture the error if any of them _do_ happen to fail, and return it only after we
-        // have attempted to clean up any drivers that were successfully spawned.
-        let mut maybe_spawn_error = None;
-        for driver in self.drivers {
-            let driver_token = self.cancel_token.child_token();
-            match spawn_driver_with_details(driver, &self.tracker, driver_token).await {
-                Ok(handle) => {
-                    driver_handles.push(handle);
-                }
-                Err(e) => {
-                    maybe_spawn_error = Some(e);
-                    break;
-                }
-            }
+            driver.wait_for_container_healthy().await?;
+            debug!(driver_id, "Container is healthy. Proceeding...");
+            spawned.push(SpawnedDriver { driver, details });
         }
-
-        let mut spawned_drivers = SpawnedDrivers::new(self.cancel_token);
-        for driver_handle in driver_handles {
-            spawned_drivers.add_driver_handle(driver_handle);
-        }
-
-        match maybe_spawn_error {
-            Some(e) => {
-                debug!("Encountered error while spawning drivers. Cleaning up any successfully spawned drivers...");
-                let driver_results = spawned_drivers.stop_and_wait().await;
-                if !driver_results.all_succeeded() {
-                    error!("Failed to stop spawned drivers cleanly after encountering error during spawn.");
-                    for (driver_id, status) in driver_results.failures() {
-                        error!(driver_id, %status, "Driver failed to stop cleanly.");
-                    }
-                }
-                debug!("Successfully cleaned up any spawned drivers.");
-                Err(e)
-            }
-            None => Ok(spawned_drivers),
-        }
+        Ok(spawned)
     }
 }
 
-#[derive(Default)]
-pub struct DriverResults {
-    results: HashMap<&'static str, ExitStatus>,
-}
-
-impl DriverResults {
-    pub fn add_driver_result(&mut self, driver_id: &'static str, exit_status: ExitStatus) {
-        self.results.insert(driver_id, exit_status);
-    }
-
-    pub fn all_succeeded(&self) -> bool {
-        self.results
-            .iter()
-            .all(|(_, status)| matches!(status, ExitStatus::Success))
-    }
-
-    pub fn failures(&self) -> impl Iterator<Item = (&'static str, &ExitStatus)> {
-        self.results
-            .iter()
-            .filter(|(_, status)| !matches!(status, ExitStatus::Success))
-            .map(|(id, status)| (*id, status))
-    }
+/// A driver whose container is running and healthy.
+struct SpawnedDriver {
+    driver: Driver,
+    details: DriverDetails,
 }
 
 /// Holds the intake port for one agent group after all containers have been spawned.
-///
-/// The millstone waiter is managed separately; this type is only responsible for tracking the
-/// port needed to collect data from `datadog-intake`.
 struct AgentGroupCollector {
     datadog_intake_port: u16,
 }
 
 impl AgentGroupCollector {
-    fn new(spawned_drivers: SpawnedDrivers) -> Result<Self, GenericError> {
-        let datadog_intake_port = spawned_drivers
-            .get_driver_details("datadog-intake")
-            .and_then(|details| details.try_get_exposed_port("tcp", 2049))
+    fn new(spawned: Vec<SpawnedDriver>) -> Result<Self, GenericError> {
+        let datadog_intake_port = spawned
+            .iter()
+            .find(|spawned| spawned.driver.driver_id() == "datadog-intake")
+            .and_then(|spawned| spawned.details.try_get_exposed_port("tcp", 2049))
             .ok_or_else(|| generic_error!("Failed to get exposed port details for datadog-intake container."))?;
 
         Ok(Self { datadog_intake_port })
     }
 }
 
-/// Keeps the shared Millstone container alive after both senders finish.
-///
-/// The container healthcheck reports healthy only after both senders finish. The caller retains the driver handle to
-/// detect an unexpected exit before telemetry collection completes.
-struct MillstoneGuard {
-    millstone_handle: DriverHandle,
-}
-
-impl MillstoneGuard {
-    fn new(mut spawned_drivers: SpawnedDrivers) -> Result<Self, GenericError> {
-        let millstone_handle = spawned_drivers
-            .take_driver_handle("millstone")
-            .ok_or_else(|| generic_error!("Failed to get millstone driver handle from shared millstone group."))?;
-
-        Ok(Self { millstone_handle })
-    }
-}
-
-impl GroupRunner {
-    async fn spawn_millstone(self) -> Result<MillstoneGuard, GenericError> {
-        MillstoneGuard::new(self.spawn_into().await?)
-    }
-}
-
-/// Tracks a correctness case's driver tasks and coordinates their shutdown.
-///
-/// The driver token is a child of the case token: case cancellation stops the drivers, while driver shutdown
-/// preserves the case's cancellation state.
-struct DriverTasks {
-    tracker: TaskTracker,
-    cancel_token: CancellationToken,
-}
-
-impl DriverTasks {
-    fn new(case_token: &CancellationToken) -> Self {
-        Self {
-            tracker: TaskTracker::new(),
-            cancel_token: case_token.child_token(),
-        }
-    }
-
-    /// Signals driver shutdown and waits for all tracked tasks to finish.
-    ///
-    /// Driver tasks attempt container cleanup before returning. [`TaskTracker::wait`] completes when the tracker is
-    /// closed and empty. Repeated calls are safe.
-    async fn stop_and_wait(&self) {
-        self.cancel_token.cancel();
-        self.tracker.close();
-        self.tracker.wait().await;
-    }
-}
-
-struct SpawnedDrivers {
-    cancel_token: CancellationToken,
-    handles: Vec<DriverHandle>,
-}
-
-impl SpawnedDrivers {
-    fn new(cancel_token: CancellationToken) -> Self {
-        Self {
-            cancel_token,
-            handles: Vec::new(),
-        }
-    }
-
-    fn add_driver_handle(&mut self, driver_handle: DriverHandle) {
-        self.handles.push(driver_handle);
-    }
-
-    fn get_driver_details(&self, driver_id: &'static str) -> Option<&DriverDetails> {
-        self.handles
-            .iter()
-            .find(|handle| handle.driver_id == driver_id)
-            .map(|handle| &handle.details)
-    }
-
-    fn take_driver_handle(&mut self, driver_id: &'static str) -> Option<DriverHandle> {
-        let handle_idx = self.handles.iter().position(|handle| handle.driver_id == driver_id)?;
-
-        Some(self.handles.remove(handle_idx))
-    }
-
-    async fn stop_and_wait(self) -> DriverResults {
-        // Trigger all drivers to stop and wait for them to complete.
-        self.cancel_token.cancel();
-        debug!("Triggered shutdown signal. Waiting for drivers to stop...");
-
-        // Wait for each driver's cleanup and collect its exit status.
-        let mut driver_results = DriverResults::default();
-
-        for handle in self.handles {
-            let driver_id = handle.driver_id;
-            let exit_status = handle.wait().await;
-
-            driver_results.add_driver_result(driver_id, exit_status);
-        }
-
-        driver_results
-    }
-}
-
-struct DriverHandle {
-    driver_id: &'static str,
-    details: DriverDetails,
-    handle: JoinHandle<ExitStatus>,
-}
-
-impl DriverHandle {
-    async fn wait(self) -> ExitStatus {
-        match self.handle.await {
-            Ok(exit_status) => exit_status,
-            Err(e) => {
-                error!(error = %e, "Driver management task panicked during normal operation!");
-                ExitStatus::Failed {
-                    code: -1,
-                    error: format!("driver management task panicked: {}", e),
-                }
-            }
-        }
-    }
-}
-
-async fn spawn_driver_with_details(
-    mut driver: Driver, tracker: &TaskTracker, cancel_token: CancellationToken,
-) -> Result<DriverHandle, GenericError> {
-    let driver_id = driver.driver_id();
-    debug!(driver_id, "Starting container...");
-
-    // Start the container and wait for it to become healthy.
-    let details = driver.start().await?;
-    debug!(driver_id, "Container started. Waiting for it to become healthy...");
-
-    driver.wait_for_container_healthy().await?;
-    debug!(driver_id, "Container is healthy. Proceeding...");
-
-    // Spawn a management task that will ensure the container runs until the shutdown signal is received, or the
-    // container stops, whichever comes first.
-    let handle = tracker.spawn(async move {
-        select! {
-            result = driver.wait_for_container_exit() => {
-                debug!(driver_id, "Container exited.");
-
-                if let Err(e) = driver.cleanup().await {
-                    error!(driver_id, error = %e, "Failed to cleanup container.");
-                }
-
-                debug!(driver_id, "Container cleanup complete.");
-
-                match result {
-                    Ok(exit_status) => exit_status,
-                    Err(e) => ExitStatus::Failed { code: -1, error: format!("failed to wait for container exit: {}", e) },
-                }
-            },
-            _ = cancel_token.cancelled() => {
-                debug!(driver_id, "Container stopping due to shutdown signal.");
-                if let Err(e) = driver.cleanup().await {
-                    error!(driver_id, error = %e, "Failed to cleanup container.");
-                }
-                debug!(driver_id, "Container cleanup complete.");
-
-                ExitStatus::Success
-            },
-        }
-    }.in_current_span());
-
-    Ok(DriverHandle {
-        driver_id,
-        details,
-        handle,
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    };
-
-    use tokio::{sync::oneshot, time::timeout};
+    use tokio::time::timeout;
 
     use super::*;
+    use crate::intake::test_server::{install_crypto_provider, MockIntake};
 
     const BOUND: Duration = Duration::from_secs(5);
 
-    /// Simulates a driver task: waits for group cancellation, runs `cleanup`, then sets the returned flag.
-    fn spawn_driver_task<F>(tasks: &DriverTasks, cleanup: F) -> Arc<AtomicBool>
-    where
-        F: Future<Output = ()> + Send + 'static,
-    {
-        let group_token = tasks.cancel_token.child_token();
-        let finished = Arc::new(AtomicBool::new(false));
-        let task_finished = Arc::clone(&finished);
-        tasks.tracker.spawn(async move {
-            group_token.cancelled().await;
-            cleanup.await;
-            task_finished.store(true, Ordering::SeqCst);
-        });
-        finished
-    }
+    /// Bounds paused-time tests while allowing [`FLUSH_WAIT`] to pass.
+    const PAUSED_BOUND: Duration = Duration::from_secs(120);
 
-    #[tokio::test]
-    async fn stop_and_wait_returns_when_no_driver_task_was_spawned() {
-        let tasks = DriverTasks::new(&CancellationToken::new());
-
-        timeout(BOUND, tasks.stop_and_wait())
+    /// Runs [`wait_for_flush`] within the bound, returning its result and how long it took.
+    async fn flush(
+        cancel: &CancellationToken, millstone_exit: impl Future<Output = ExitStatus>,
+    ) -> (Result<(), GenericError>, Duration) {
+        let started = tokio::time::Instant::now();
+        let flushed = timeout(PAUSED_BOUND, wait_for_flush(cancel, millstone_exit))
             .await
-            .expect("stop_and_wait should return");
+            .expect("the flush wait should finish within the bound");
+        (flushed, started.elapsed())
     }
 
-    // Regression coverage for `Coordinator` losing the last task's wakeup between its count check and notification
-    // registration. This checks teardown completion under normal scheduling.
-    #[tokio::test]
-    async fn stop_and_wait_returns_after_driver_tasks_finish() {
-        let case_token = CancellationToken::new();
-        let tasks = DriverTasks::new(&case_token);
-        let first = spawn_driver_task(&tasks, async {});
-        let second = spawn_driver_task(&tasks, async {});
-
-        timeout(BOUND, tasks.stop_and_wait())
-            .await
-            .expect("stop_and_wait should return");
-
-        assert!(first.load(Ordering::SeqCst), "first driver task should have finished");
-        assert!(second.load(Ordering::SeqCst), "second driver task should have finished");
-        assert!(
-            !case_token.is_cancelled(),
-            "stopping drivers should not cancel the case token"
-        );
+    async fn exits_after(after: Duration, status: ExitStatus) -> ExitStatus {
+        sleep(after).await;
+        status
     }
 
-    #[tokio::test]
-    async fn stop_and_wait_waits_for_a_driver_task_still_cleaning_up() {
-        let tasks = DriverTasks::new(&CancellationToken::new());
-        let (cleanup_done, cleanup_gate) = oneshot::channel::<()>();
-        let finished = spawn_driver_task(&tasks, async move {
-            let _ = cleanup_gate.await;
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_flush_returns_when_the_test_is_cancelled() {
+        let cancel = CancellationToken::new();
+        let canceller = cancel.clone();
+        tokio::spawn(async move {
+            sleep(Duration::from_secs(1)).await;
+            canceller.cancel();
         });
 
-        let mut stop = Box::pin(tasks.stop_and_wait());
-        assert!(
-            timeout(Duration::from_millis(100), &mut stop).await.is_err(),
-            "stop_and_wait should wait while a driver task is cleaning up"
-        );
-        assert!(!finished.load(Ordering::SeqCst));
+        let (flushed, elapsed) = flush(&cancel, std::future::pending()).await;
 
-        cleanup_done.send(()).expect("driver task should still be waiting");
-        timeout(BOUND, stop)
-            .await
-            .expect("stop_and_wait should return after cleanup");
-        assert!(finished.load(Ordering::SeqCst), "driver task should have finished");
+        let error = flushed.expect_err("a cancelled flush wait should fail").to_string();
+        assert_eq!(
+            error,
+            format!("Cancelled while waiting {:?} for the agents to flush.", FLUSH_WAIT)
+        );
+        assert_eq!(elapsed, Duration::from_secs(1));
     }
 
-    #[test]
-    fn case_cancellation_reaches_driver_tasks() {
-        let case_token = CancellationToken::new();
-        let tasks = DriverTasks::new(&case_token);
-        let group_token = tasks.cancel_token.child_token();
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_flush_fails_when_millstone_exits() {
+        let exit = exits_after(
+            Duration::from_secs(1),
+            ExitStatus::Failed {
+                code: 3,
+                error: "boom".to_string(),
+            },
+        );
 
-        case_token.cancel();
+        let (flushed, elapsed) = flush(&CancellationToken::new(), exit).await;
 
+        let error = flushed
+            .expect_err("a Millstone exit should fail the flush wait")
+            .to_string();
+        assert_eq!(
+            error,
+            "Shared Millstone exited before telemetry collection completed with code 3: boom"
+        );
+        assert_eq!(elapsed, Duration::from_secs(1));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_flush_waits_out_the_flush() {
+        let (flushed, elapsed) = flush(&CancellationToken::new(), std::future::pending()).await;
+
+        flushed.expect("an undisturbed flush wait should succeed");
+        assert_eq!(elapsed, FLUSH_WAIT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_flush_reports_cancellation_when_millstone_exits_at_the_same_time() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        for _ in 0..100 {
+            let (flushed, _) = flush(&cancel, std::future::ready(ExitStatus::Success)).await;
+
+            let error = flushed.expect_err("a cancelled flush wait should fail").to_string();
+            assert!(error.starts_with("Cancelled while waiting"), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stalled_collection_stops_when_the_test_is_cancelled() {
+        install_crypto_provider();
+        let intake = MockIntake::unresponsive().await;
+        let test_token = CancellationToken::new();
+        let tasks = CaseTasks::new(&test_token);
+        let port = intake.port();
+        let collected = run_in_background(&tasks, &Span::none(), async move {
+            CollectedData::collect(&IntakeClient::new(port)).await
+        });
+        let canceller = test_token.clone();
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(100)).await;
+            canceller.cancel();
+        });
+
+        let collected = timeout(BOUND, collected)
+            .await
+            .expect("the collection should stop within the bound");
+
+        let Err(error) = collected else {
+            panic!("a stopped collection should fail");
+        };
+        assert_eq!(error.to_string(), "Stopped before finishing: the test was cancelled.");
         assert!(
-            group_token.is_cancelled(),
-            "cancelling the case token should reach driver tasks"
+            intake.connections() > 0,
+            "the collection should have reached the intake"
         );
     }
 }

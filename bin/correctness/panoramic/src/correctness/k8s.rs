@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     path::PathBuf,
+    pin::pin,
     time::{Duration, Instant},
 };
 
@@ -12,7 +13,7 @@ use k8s_openapi::{
     apimachinery::pkg::apis::meta::v1::ObjectMeta,
 };
 use kube::{
-    api::{Api, AttachParams, DeleteParams, LogParams, PostParams},
+    api::{Api, AttachParams, LogParams, PostParams},
     Client,
 };
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -28,8 +29,9 @@ use crate::{
         runner::make_error_result,
     },
     intake::{CollectedData, IntakeClient},
-    ledger::random_id,
-    reporter::TestResult,
+    ledger::{random_id, ResourceLedger},
+    reporter::{TestResult, UNKNOWN_PHASE},
+    tasks::CaseTasks,
     test::TestContext,
     traffic::{self, Side},
 };
@@ -77,15 +79,24 @@ pub async fn run_k8s_correctness_test(case: CorrectnessTestCase, tctx: TestConte
     }
     phase.finish();
 
+    let cancel = tctx.test_cancel_token();
     let phase = phases.enter("k8s_connect");
-    let client = match Client::try_default().await {
-        Ok(c) => c,
-        Err(e) => {
+    let client = match cancel.run_until_cancelled(Client::try_default()).await {
+        Some(Ok(c)) => c,
+        Some(Err(e)) => {
             return make_error_result(
                 name,
                 started,
                 phase.finish_and_collect(),
                 generic_error!("Failed to connect to Kubernetes cluster: {}", e),
+            )
+        }
+        None => {
+            return make_error_result(
+                name,
+                started,
+                phase.finish_and_collect(),
+                generic_error!("Cancelled while connecting to the Kubernetes cluster."),
             )
         }
     };
@@ -95,6 +106,9 @@ pub async fn run_k8s_correctness_test(case: CorrectnessTestCase, tctx: TestConte
     let baseline_ns = format!("airlock-{}-baseline", run_id);
     let comparison_ns = format!("airlock-{}-comparison", run_id);
     let millstone_ns = format!("airlock-{}-millstone", run_id);
+    for namespace in [&baseline_ns, &comparison_ns, &millstone_ns] {
+        tctx.ledger.namespace(client.clone(), namespace.clone());
+    }
 
     // Socket directories are created on the kind node via DirectoryOrCreate HostPath volumes:
     // no manual setup required. Both agent pods and the shared millstone pod mount these paths,
@@ -128,243 +142,192 @@ pub async fn run_k8s_correctness_test(case: CorrectnessTestCase, tctx: TestConte
 
     let use_socket_wait = is_socket_target(&millstone_template);
 
-    // Clean up all three namespaces regardless of outcome.
-    let cleanup = |err: GenericError| {
-        let client = client.clone();
-        let (bns, cns, mns) = (baseline_ns.clone(), comparison_ns.clone(), millstone_ns.clone());
-        async move {
-            tokio::join!(
-                cleanup_namespace(client.clone(), &bns),
-                cleanup_namespace(client.clone(), &cns),
-                cleanup_namespace(client.clone(), &mns),
-            );
-            err
-        }
-    };
+    // Apply cancellation to the region from namespace creation through collection.
+    let (baseline_data, comparison_data) = {
+        let mut pods = pin!(async {
+            // Phase 1a: Create the namespaces, then start both agent pods in parallel.
+            let phase = phases.enter("agent_pod_start");
+            let prepared = async {
+                for namespace in [&baseline_ns, &comparison_ns, &millstone_ns] {
+                    create_namespace(&tctx.ledger, client.clone(), namespace, &cancel).await?;
+                }
+                tokio::try_join!(
+                    prepare_agent_group(
+                        client.clone(),
+                        baseline_ns.clone(),
+                        &case,
+                        &case.config.baseline,
+                        &baseline_socket_dir,
+                        tctx.log_dir().join("baseline"),
+                        &tctx.tasks,
+                    ),
+                    prepare_agent_group(
+                        client.clone(),
+                        comparison_ns.clone(),
+                        &case,
+                        &case.config.comparison,
+                        &comparison_socket_dir,
+                        tctx.log_dir().join("comparison"),
+                        &tctx.tasks,
+                    ),
+                )
+            }
+            .await;
+            phase.finish();
+            prepared?;
 
-    // Phase 1a: Start both agent pods in parallel.
-    let phase = phases.enter("agent_pod_start");
-    let (baseline_prep, comparison_prep) = tokio::join!(
-        prepare_agent_group(
-            client.clone(),
-            baseline_ns.clone(),
-            &case,
-            &case.config.baseline,
-            &baseline_socket_dir,
-            tctx.log_dir().join("baseline"),
-        ),
-        prepare_agent_group(
-            client.clone(),
-            comparison_ns.clone(),
-            &case,
-            &case.config.comparison,
-            &comparison_socket_dir,
-            tctx.log_dir().join("comparison"),
-        ),
-    );
-    if let Err(e) = baseline_prep {
-        return make_error_result(name, started, phase.finish_and_collect(), cleanup(e).await);
-    }
-    if let Err(e) = comparison_prep {
-        return make_error_result(name, started, phase.finish_and_collect(), cleanup(e).await);
-    }
-    phase.finish();
-
-    // Phase 1b: For TCP/gRPC/UDP targets, fetch the agent pod IPs now that both pods are Running
-    // so the millstone pod can include a port-readiness check in its startup wait condition.
-    // For socket targets, the -S check already gates readiness, so we start millstone immediately
-    // in parallel with the agent pods (which is fine, as the socket won't appear until the agent is
-    // ready regardless).
-    let tcp_readiness_checks = if !use_socket_wait {
-        if let Some(port) = extract_target_port(&millstone_template) {
-            let phase = phases.enter("get_pod_ips");
-            let baseline_pod_api: Api<Pod> = Api::namespaced(client.clone(), &baseline_ns);
-            let comparison_pod_api: Api<Pod> = Api::namespaced(client.clone(), &comparison_ns);
-            match tokio::try_join!(
-                get_pod_ip(&baseline_pod_api, POD_NAME),
-                get_pod_ip(&comparison_pod_api, POD_NAME),
-            ) {
-                Ok((baseline_ip, comparison_ip)) => {
+            // Phase 1b: Millstone checks network readiness at each agent pod's IP. Socket targets use a file check.
+            let tcp_readiness_checks = match extract_target_port(&millstone_template) {
+                Some(port) if !use_socket_wait => {
+                    let phase = phases.enter("get_pod_ips");
+                    let ips = get_pod_ips(&client, &baseline_ns, &comparison_ns).await;
                     phase.finish();
+                    let (baseline_ip, comparison_ip) = ips?;
                     vec![(baseline_ip, port), (comparison_ip, port)]
                 }
-                Err(e) => return make_error_result(name, started, phase.finish_and_collect(), cleanup(e).await),
-            }
-        } else {
-            vec![]
-        }
-    } else {
-        vec![]
-    };
+                _ => vec![],
+            };
 
-    // Phase 1c: Start the millstone pod.
-    let phase = phases.enter("millstone_pod_start");
-    if let Err(e) = prepare_millstone_group(
-        client.clone(),
-        millstone_ns.clone(),
-        tctx.log_dir().join("millstone"),
-        MillstoneGroupConfig {
-            millstone_image: &millstone_cfg.image,
-            millstone_binary: &millstone_binary,
-            baseline_socket_dir: &baseline_socket_dir,
-            comparison_socket_dir: &comparison_socket_dir,
-            use_socket_wait,
-            tcp_readiness_checks,
-        },
-    )
-    .await
-    {
-        return make_error_result(name, started, phase.finish_and_collect(), cleanup(e).await);
-    }
-    phase.finish();
+            // Phase 1c: Start the millstone pod.
+            let phase = phases.enter("millstone_pod_start");
+            let prepared = prepare_millstone_group(
+                client.clone(),
+                millstone_ns.clone(),
+                tctx.log_dir().join("millstone"),
+                &tctx.tasks,
+                MillstoneGroupConfig {
+                    millstone_image: &millstone_cfg.image,
+                    millstone_binary: &millstone_binary,
+                    baseline_socket_dir: &baseline_socket_dir,
+                    comparison_socket_dir: &comparison_socket_dir,
+                    use_socket_wait,
+                    tcp_readiness_checks,
+                },
+            )
+            .await;
+            phase.finish();
+            prepared?;
 
-    // Phase 2: All pods are Running. Gather origin data from the millstone pod and write both
-    // configs. Both runs use the same container ID and pod UID so both agents resolve identical
-    // enrichment, even though the origin actually belongs to the millstone pod, not the agents.
-    let millstone_pod_api: Api<Pod> = Api::namespaced(client.clone(), &millstone_ns);
+            // Phase 2: All pods are Running. Gather origin data from the millstone pod and write both
+            // configs. Both runs use the same container ID and pod UID so both agents resolve identical
+            // enrichment, even though the origin actually belongs to the millstone pod, not the agents.
+            let millstone_pod_api: Api<Pod> = Api::namespaced(client.clone(), &millstone_ns);
 
-    let phase = phases.enter("gather_origin_data");
-    let origin_data = match gather_pod_origin_data(&millstone_pod_api, POD_NAME).await {
-        Ok(d) => d,
-        Err(e) => return make_error_result(name, started, phase.finish_and_collect(), cleanup(e).await),
-    };
-    phase.finish();
+            let phase = phases.enter("gather_origin_data");
+            let origin_data = gather_pod_origin_data(&millstone_pod_api, POD_NAME).await;
+            phase.finish();
+            let origin_data = origin_data?;
 
-    debug!(
-        "Millstone pod origin data: pod_uid={}, container_id={}",
-        origin_data.pod_uid, origin_data.millstone_container_id
-    );
+            debug!(
+                "Millstone pod origin data: pod_uid={}, container_id={}",
+                origin_data.pod_uid, origin_data.millstone_container_id
+            );
 
-    let config_content = substitute_origin_placeholders(&millstone_template, &origin_data);
+            let config_content = substitute_origin_placeholders(&millstone_template, &origin_data);
 
-    // For socket targets $GROUP is the group name (used in the airlock volume path).
-    // For TCP/gRPC targets $GROUP is the agent pod's cluster IP (the only routable address
-    // from the separate millstone pod).
-    let (baseline_group_value, comparison_group_value) = if is_socket_target(&config_content) {
-        ("baseline".to_string(), "comparison".to_string())
-    } else {
-        let phase = phases.enter("get_pod_ips");
-        let baseline_pod_api: Api<Pod> = Api::namespaced(client.clone(), &baseline_ns);
-        let comparison_pod_api: Api<Pod> = Api::namespaced(client.clone(), &comparison_ns);
-        let (baseline_pod_ip, comparison_pod_ip) = match tokio::try_join!(
-            get_pod_ip(&baseline_pod_api, POD_NAME),
-            get_pod_ip(&comparison_pod_api, POD_NAME),
-        ) {
-            Ok(ips) => ips,
-            Err(e) => return make_error_result(name, started, phase.finish_and_collect(), cleanup(e).await),
-        };
-        phase.finish();
-        (baseline_pod_ip, comparison_pod_ip)
-    };
+            // For socket targets $GROUP is the group name (used in the airlock volume path).
+            // For TCP/gRPC targets $GROUP is the agent pod's cluster IP (the only routable address
+            // from the separate millstone pod).
+            let (baseline_group_value, comparison_group_value) = if is_socket_target(&config_content) {
+                ("baseline".to_string(), "comparison".to_string())
+            } else {
+                let phase = phases.enter("get_pod_ips");
+                let ips = get_pod_ips(&client, &baseline_ns, &comparison_ns).await;
+                phase.finish();
+                ips?
+            };
 
-    let baseline_config = make_millstone_config_for_group(&config_content, &baseline_group_value);
-    let comparison_config = make_millstone_config_for_group(&config_content, &comparison_group_value);
+            let baseline_config = make_millstone_config_for_group(&config_content, &baseline_group_value);
+            let comparison_config = make_millstone_config_for_group(&config_content, &comparison_group_value);
 
-    let phase = phases.enter("write_millstone_configs");
-    let write_result = tokio::try_join!(
-        exec_write_file(
-            client.clone(),
-            &millstone_ns,
-            POD_NAME,
-            "millstone",
-            "/etc/millstone/baseline.toml",
-            &baseline_config,
-        ),
-        exec_write_file(
-            client.clone(),
-            &millstone_ns,
-            POD_NAME,
-            "millstone",
-            "/etc/millstone/comparison.toml",
-            &comparison_config,
-        ),
-    );
-    if let Err(e) = write_result {
-        return make_error_result(name, started, phase.finish_and_collect(), cleanup(e).await);
-    }
-    phase.finish();
+            let phase = phases.enter("write_millstone_configs");
+            let written = tokio::try_join!(
+                exec_write_file(
+                    client.clone(),
+                    &millstone_ns,
+                    POD_NAME,
+                    "millstone",
+                    "/etc/millstone/baseline.toml",
+                    &baseline_config,
+                ),
+                exec_write_file(
+                    client.clone(),
+                    &millstone_ns,
+                    POD_NAME,
+                    "millstone",
+                    "/etc/millstone/comparison.toml",
+                    &comparison_config,
+                ),
+            );
+            phase.finish();
+            written?;
 
-    // Phase 3: Both agent pods are ready; start port-forwards for data collection.
-    let phase = phases.enter("port_forward");
-    let baseline_pf_cancel = CancellationToken::new();
-    let comparison_pf_cancel = CancellationToken::new();
-    let (baseline_port, comparison_port) = match tokio::try_join!(
-        start_port_forward(
-            client.clone(),
-            baseline_ns.clone(),
-            POD_NAME.to_string(),
-            2049,
-            baseline_pf_cancel.clone()
-        ),
-        start_port_forward(
-            client.clone(),
-            comparison_ns.clone(),
-            POD_NAME.to_string(),
-            2049,
-            comparison_pf_cancel.clone()
-        ),
-    ) {
-        Ok(ports) => ports,
-        Err(e) => return make_error_result(name, started, phase.finish_and_collect(), cleanup(e).await),
-    };
-    phase.finish();
+            // Phase 3: Both agent pods are ready; start port-forwards for data collection.
+            let phase = phases.enter("port_forward");
+            let ports = tokio::try_join!(
+                start_port_forward(
+                    client.clone(),
+                    baseline_ns.clone(),
+                    POD_NAME.to_string(),
+                    2049,
+                    &tctx.tasks
+                ),
+                start_port_forward(
+                    client.clone(),
+                    comparison_ns.clone(),
+                    POD_NAME.to_string(),
+                    2049,
+                    &tctx.tasks
+                ),
+            );
+            phase.finish();
+            let (baseline_port, comparison_port) = ports?;
 
-    // Phase 4: Wait for millstone to finish both parallel runs, then flush.
-    let phase = phases.enter("millstone_exit");
-    if let Err(e) = wait_for_millstone_exit(&millstone_pod_api, POD_NAME, MILLSTONE_EXIT_TIMEOUT).await {
-        baseline_pf_cancel.cancel();
-        comparison_pf_cancel.cancel();
-        return make_error_result(name, started, phase.finish_and_collect(), cleanup(e).await);
-    }
+            // Phase 4: Wait for millstone to finish both parallel runs, then flush.
+            let phase = phases.enter("millstone_exit");
+            let exited = wait_for_millstone_exit(&millstone_pod_api, POD_NAME, MILLSTONE_EXIT_TIMEOUT).await;
+            phase.finish();
+            exited?;
 
-    phase.finish();
+            let phase = phases.enter("flush_wait");
+            debug!("Millstone completed. Waiting {:?} for flush...", FLUSH_WAIT);
+            sleep(FLUSH_WAIT).await;
+            phase.finish();
 
-    let phase = phases.enter("flush_wait");
-    debug!("Millstone completed. Waiting {:?} for flush...", FLUSH_WAIT);
-    sleep(FLUSH_WAIT).await;
-    phase.finish();
+            // Phase 5: Collect data from both agent pods in parallel.
+            let phase = phases.enter("collect_data");
+            let (baseline_client, comparison_client) =
+                (IntakeClient::new(baseline_port), IntakeClient::new(comparison_port));
+            let collected = tokio::join!(
+                CollectedData::collect(&baseline_client),
+                CollectedData::collect(&comparison_client),
+            );
+            phase.finish();
 
-    // Phase 5: Collect data from both agent pods in parallel.
-    let phase = phases.enter("collect_data");
-    let (baseline_result, comparison_result) = tokio::join!(
-        async move {
-            let client = IntakeClient::new(baseline_port);
-            CollectedData::collect(&client).await
-        },
-        async move {
-            let client = IntakeClient::new(comparison_port);
-            CollectedData::collect(&client).await
-        },
-    );
-
-    baseline_pf_cancel.cancel();
-    comparison_pf_cancel.cancel();
-    phase.finish();
-
-    // Clean up all three namespaces now that data is collected.
-    let phase = phases.enter("cleanup");
-    tokio::join!(
-        cleanup_namespace(client.clone(), &baseline_ns),
-        cleanup_namespace(client.clone(), &comparison_ns),
-        cleanup_namespace(client.clone(), &millstone_ns),
-    );
-    phase.finish();
-
-    let (baseline_data, comparison_data) = match (baseline_result, comparison_result) {
-        (Ok(b), Ok(c)) => (b, c),
-        (Err(baseline_err), Err(comparison_err)) => {
-            return make_error_result(
-                name,
-                started,
-                phases.completed(),
-                generic_error!(
+            match collected {
+                (Ok(b), Ok(c)) => Ok((b, c)),
+                (Err(baseline_err), Err(comparison_err)) => Err(generic_error!(
                     "Both groups failed to collect data.\n  baseline: {:?}\n  comparison: {:?}",
                     baseline_err,
                     comparison_err
-                ),
-            );
+                )),
+                (Err(e), _) | (_, Err(e)) => Err(e),
+            }
+        });
+        // Borrow the pinned future so its active phase remains available for the cancellation error.
+        match cancel.run_until_cancelled(pods.as_mut()).await {
+            Some(Ok(data)) => data,
+            Some(Err(e)) => return make_error_result(name, started, phases.completed(), e),
+            None => {
+                let phase = phases.active().unwrap_or_else(|| UNKNOWN_PHASE.to_string());
+                return make_error_result(
+                    name,
+                    started,
+                    phases.completed(),
+                    generic_error!("Cancelled during {}.", phase),
+                );
+            }
         }
-        (Err(e), _) | (_, Err(e)) => return make_error_result(name, started, phases.completed(), e),
     };
 
     // Persist what each side decoded before the analysis consumes it.
@@ -433,20 +396,16 @@ pub async fn run_k8s_correctness_test(case: CorrectnessTestCase, tctx: TestConte
 const AGENT_CONTAINER_NAMES: &[&str] = &["datadog-intake", "target"];
 const MILLSTONE_CONTAINER_NAMES: &[&str] = &["millstone"];
 
-/// Creates the namespace and agent pod (datadog-intake + target agent) for one test group,
+/// Creates the agent pod (datadog-intake + target agent) for one test group in its namespace,
 /// waits for the pod to reach Running, and starts background log streaming.
 ///
 /// The airlock volume is a HostPath directory on the kind node so the shared millstone pod can
 /// mount both groups' socket directories simultaneously.
 async fn prepare_agent_group(
-    client: Client, namespace: String, case: &CorrectnessTestCase,
-    target_config: &crate::correctness::config::TargetConfig, socket_dir: &str, log_dir: PathBuf,
+    client: Client, namespace: String, case: &CorrectnessTestCase, target_config: &TargetConfig, socket_dir: &str,
+    log_dir: PathBuf, tasks: &CaseTasks,
 ) -> Result<(), GenericError> {
     let intake_cfg = case.datadog_intake_config();
-
-    create_namespace(client.clone(), &namespace)
-        .await
-        .with_error_context(|| format!("Failed to create namespace '{}'", namespace))?;
 
     let (agent_volumes, agent_volume_mounts) =
         build_agent_config_volumes(client.clone(), &namespace, case, target_config)
@@ -480,7 +439,7 @@ async fn prepare_agent_group(
         warn!("Failed to create log directory '{}': {}", log_dir.display(), e);
     } else {
         for &container in AGENT_CONTAINER_NAMES {
-            tokio::spawn(stream_container_logs(
+            tasks.spawn(stream_container_logs(
                 pod_api.clone(),
                 POD_NAME,
                 container.to_string(),
@@ -493,12 +452,7 @@ async fn prepare_agent_group(
     Ok(())
 }
 
-/// Creates the namespace and shared millstone pod, waits for it to reach Running, and starts
-/// background log streaming.
-///
-/// The millstone pod mounts both agent socket directories and waits for both config files and
-/// both sockets before launching two parallel millstone processes each targeting one agent.
-/// Arguments for [`prepare_millstone_group`], bundled to stay within the argument-count lint.
+/// Configuration for [`prepare_millstone_group`].
 struct MillstoneGroupConfig<'a> {
     millstone_image: &'a str,
     millstone_binary: &'a str,
@@ -508,8 +462,9 @@ struct MillstoneGroupConfig<'a> {
     tcp_readiness_checks: Vec<(String, u16)>,
 }
 
+/// Creates the shared Millstone pod in its namespace, waits for Running, and starts background log streaming.
 async fn prepare_millstone_group(
-    client: Client, namespace: String, log_dir: PathBuf, cfg: MillstoneGroupConfig<'_>,
+    client: Client, namespace: String, log_dir: PathBuf, tasks: &CaseTasks, cfg: MillstoneGroupConfig<'_>,
 ) -> Result<(), GenericError> {
     let MillstoneGroupConfig {
         millstone_image,
@@ -519,10 +474,6 @@ async fn prepare_millstone_group(
         use_socket_wait,
         tcp_readiness_checks,
     } = cfg;
-    create_namespace(client.clone(), &namespace)
-        .await
-        .with_error_context(|| format!("Failed to create millstone namespace '{}'", namespace))?;
-
     let pod = build_millstone_pod(MillstonePodConfig {
         namespace: &namespace,
         millstone_image,
@@ -552,7 +503,7 @@ async fn prepare_millstone_group(
         warn!("Failed to create log directory '{}': {}", log_dir.display(), e);
     } else {
         for &container in MILLSTONE_CONTAINER_NAMES {
-            tokio::spawn(stream_container_logs(
+            tasks.spawn(stream_container_logs(
                 pod_api.clone(),
                 POD_NAME,
                 container.to_string(),
@@ -961,7 +912,10 @@ async fn build_agent_config_volumes(
 // Kubernetes API helpers
 // ---------------------------------------------------------------------------
 
-async fn create_namespace(client: Client, name: &str) -> Result<(), GenericError> {
+/// Creates a registered namespace, marking it unsettled if cancellation interrupts the request.
+async fn create_namespace(
+    ledger: &ResourceLedger, client: Client, name: &str, cancel: &CancellationToken,
+) -> Result<(), GenericError> {
     let ns_api: Api<Namespace> = Api::all(client);
     let ns = Namespace {
         metadata: ObjectMeta {
@@ -971,9 +925,10 @@ async fn create_namespace(client: Client, name: &str) -> Result<(), GenericError
         },
         ..Default::default()
     };
-    ns_api
-        .create(&PostParams::default(), &ns)
+    ledger
+        .create(name, cancel, ns_api.create(&PostParams::default(), &ns))
         .await
+        .ok_or_else(|| generic_error!("Cancelled while creating namespace '{}'.", name))?
         .map_err(|e| generic_error!("Failed to create namespace '{}': {}", name, e))?;
     Ok(())
 }
@@ -996,15 +951,6 @@ async fn create_config_map(
         .await
         .map_err(|e| generic_error!("Failed to create ConfigMap '{}': {}", name, e))?;
     Ok(())
-}
-
-async fn cleanup_namespace(client: Client, name: &str) {
-    let ns_api: Api<Namespace> = Api::all(client);
-    if let Err(e) = ns_api.delete(name, &DeleteParams::default()).await {
-        warn!("Failed to delete namespace '{}': {}", name, e);
-    } else {
-        debug!("Deleted namespace '{}'.", name);
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1039,6 +985,18 @@ async fn wait_for_pod_running(pods: &Api<Pod>, pod_name: &str, timeout: Duration
             }
         }
     }
+}
+
+/// Returns the baseline and comparison agent pod IP addresses.
+async fn get_pod_ips(
+    client: &Client, baseline_ns: &str, comparison_ns: &str,
+) -> Result<(String, String), GenericError> {
+    let baseline_pod_api: Api<Pod> = Api::namespaced(client.clone(), baseline_ns);
+    let comparison_pod_api: Api<Pod> = Api::namespaced(client.clone(), comparison_ns);
+    tokio::try_join!(
+        get_pod_ip(&baseline_pod_api, POD_NAME),
+        get_pod_ip(&comparison_pod_api, POD_NAME),
+    )
 }
 
 /// Returns the cluster IP of a running pod.
@@ -1110,8 +1068,7 @@ async fn wait_for_millstone_exit(pods: &Api<Pod>, pod_name: &str, timeout: Durat
 // Container log streaming
 // ---------------------------------------------------------------------------
 
-/// Streams logs from a single container to a file. Runs as a background task; errors are logged
-/// and the task exits cleanly when the pod is deleted.
+/// Streams container logs to a file as a case-owned task. Stops on stream closure, errors, or task cancellation.
 async fn stream_container_logs(pods: Api<Pod>, pod_name: &'static str, container: String, path: PathBuf) {
     let params = LogParams {
         container: Some(container.clone()),
@@ -1165,9 +1122,9 @@ use crate::utils::strip_ansi_codes;
 // ---------------------------------------------------------------------------
 
 /// Binds a local TCP listener and forwards each accepted connection to the given pod port.
-/// Returns the local ephemeral port number. The forward runs until `cancel` is triggered.
+/// Returns the local ephemeral port. The case's task owner tracks the listener and each forwarding task.
 async fn start_port_forward(
-    client: Client, namespace: String, pod_name: String, pod_port: u16, cancel: CancellationToken,
+    client: Client, namespace: String, pod_name: String, pod_port: u16, tasks: &CaseTasks,
 ) -> Result<u16, GenericError> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -1177,27 +1134,22 @@ async fn start_port_forward(
         .error_context("Failed to get local address")?
         .port();
 
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                _ = cancel.cancelled() => break,
-                result = listener.accept() => {
-                    let Ok((mut conn, _)) = result else { break };
-                    let client = client.clone();
-                    let namespace = namespace.clone();
-                    let pod_name = pod_name.clone();
-                    tokio::spawn(async move {
-                        let pods: Api<Pod> = Api::namespaced(client, &namespace);
-                        let Ok(mut pf) = pods.portforward(&pod_name, &[pod_port]).await else {
-                            return;
-                        };
-                        let Some(mut stream) = pf.take_stream(pod_port) else {
-                            return;
-                        };
-                        let _ = tokio::io::copy_bidirectional(&mut conn, &mut stream).await;
-                    });
-                }
-            }
+    let connections = tasks.clone();
+    tasks.spawn(async move {
+        while let Ok((mut conn, _)) = listener.accept().await {
+            let client = client.clone();
+            let namespace = namespace.clone();
+            let pod_name = pod_name.clone();
+            connections.spawn(async move {
+                let pods: Api<Pod> = Api::namespaced(client, &namespace);
+                let Ok(mut pf) = pods.portforward(&pod_name, &[pod_port]).await else {
+                    return;
+                };
+                let Some(mut stream) = pf.take_stream(pod_port) else {
+                    return;
+                };
+                let _ = tokio::io::copy_bidirectional(&mut conn, &mut stream).await;
+            });
         }
     });
 
@@ -1335,7 +1287,60 @@ async fn exec_write_file(
 
 #[cfg(test)]
 mod tests {
+    use tokio::io::AsyncReadExt as _;
+
     use super::*;
+    use crate::intake::test_server::MockIntake;
+
+    const BOUND: Duration = Duration::from_secs(5);
+
+    #[tokio::test]
+    async fn port_forwards_stop_with_their_case() {
+        // Keep the upgrade request pending so only task cancellation closes the forwarded connection.
+        let api = MockIntake::unresponsive().await;
+        let config = kube::Config::new(
+            format!("http://127.0.0.1:{}", api.port())
+                .parse()
+                .expect("the address should be a URI"),
+        );
+        let client = Client::try_from(config).expect("kube should build a client offline");
+        let tasks = CaseTasks::new(&CancellationToken::new());
+        let port = start_port_forward(client, "default".to_string(), POD_NAME.to_string(), 2049, &tasks)
+            .await
+            .expect("the port-forward should bind");
+        let mut forwarded = tokio::time::timeout(BOUND, tokio::net::TcpStream::connect(("127.0.0.1", port)))
+            .await
+            .expect("the first connection should finish within the bound")
+            .expect("the port-forward should accept a connection");
+        tokio::time::timeout(BOUND, async {
+            while api.connections() == 0 {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the forwarded connection should reach the API within the bound");
+
+        let running = tokio::time::timeout(BOUND, tasks.stop_all(tokio::time::Instant::now() + BOUND))
+            .await
+            .expect("stop_all should return within the bound");
+
+        assert_eq!(running, 0);
+        let mut buf = [0u8; 1];
+        let read = tokio::time::timeout(BOUND, forwarded.read(&mut buf))
+            .await
+            .expect("stopping the forwarded connection's task should close it within the bound");
+        assert!(
+            matches!(read, Ok(0) | Err(_)),
+            "the forwarded connection should be closed: {read:?}"
+        );
+        let reconnected = tokio::time::timeout(BOUND, tokio::net::TcpStream::connect(("127.0.0.1", port)))
+            .await
+            .expect("the second connection should finish within the bound");
+        assert!(
+            reconnected.is_err(),
+            "the stopped port-forward should refuse connections"
+        );
+    }
 
     #[test]
     fn agent_pod_target_env_mirrors_the_target_environment_map() {
