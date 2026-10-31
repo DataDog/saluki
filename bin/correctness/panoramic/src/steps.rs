@@ -21,13 +21,13 @@ fn check_pattern(pattern: &str, regex: bool) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use serde_json::Value;
 
     use super::*;
     use crate::config::{Need, StepFields};
 
-    pub(super) fn fields(name: &str) -> StepFields {
+    pub(crate) fn fields(name: &str) -> StepFields {
         let yaml = match name {
             "log_contains" => "on: subject\npattern: ready\ntimeout: 30s",
             "log_not_contains" => "on: subject\npattern: panic\nduring: 10s",

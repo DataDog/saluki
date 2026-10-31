@@ -40,7 +40,7 @@ Review the diff. Update the inventory whenever a case file, its platforms or its
 Without the environment variable, the test compares the generated JSON and coverage tables with the checked-in
 versions and reports added or removed row keys and the first differing line in each file. The other inventory tests
 check file accounting, case-name uniqueness across both suites, CI job and mixin definitions, the correctness generator's
-fail-fast shell options, ignored-key detection, and migration-proof references.
+fail-fast shell options, ignored-key detection, logging-case translation equivalence, and migration-proof references.
 
 ## Coverage details
 
@@ -251,6 +251,23 @@ Total: 158 rows.
 | unprivileged-api-endpoints | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 5, actions: 0 | 0 |
 
 <!-- coverage-inventory:end -->
+
+## Integration runner translation
+
+A participant case runs on the integration runner only if it has one `agent-adp` participant configured by
+`config.env`, with `log_contains` and `log_not_contains` (`process` omitted), translated to `stream: both`, and
+`file_contains`. File paths may reference the participant's facts, resolved per subject OS. Log steps search captured
+output: the container's log stream (Agent and ADP under s6) on Linux, stdout and stderr of the spawned Agent and ADP
+processes on macOS, and the container's console output only on Windows.
+
+Participant-schema twins of the old-schema logging cases, built from this inventory, must reproduce their rows and
+cases except `schema` and `container.exposed_ports`. The seven logging files declare `58125/udp`; only
+`port_listening` reads a published port's mapping. The translation uses default container settings, so changing
+these files' schema changes only the inventory's `schema` column and `container.exposed_ports: []`. List
+`subject_os` in `runtimes` order to preserve runtime order.
+
+`adp-disabled-exit` and `adp-no-pipelines-exit` also fit the supported subset, but their log line stands in for a
+process exit. They keep the old schema until exits are observed directly.
 
 ## Migration proofs
 

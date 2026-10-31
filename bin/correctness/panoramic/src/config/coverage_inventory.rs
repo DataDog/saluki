@@ -940,3 +940,5 @@ fn migration_proofs_name_inventoried_rows() {
         );
     }
 }
+
+mod bridge_equivalence;

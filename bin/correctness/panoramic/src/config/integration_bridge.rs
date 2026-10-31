@@ -1,8 +1,11 @@
 //! Translates a case that declares participants into an [`IntegrationConfig`] so the integration runner can execute it.
 //!
-//! Supports one `agent-adp` participant configured by `config.env`. Its `log_contains` and `log_not_contains`
-//! steps search all process output together, and `file_contains` searches participant files.
-//! Fact references in file paths resolve for the subject OS before reaching the integration runner.
+//! Supports one `agent-adp` participant configured only by `config.env`, with `log_contains` and `log_not_contains`
+//! (`process` omitted), translated to `stream: both`, and `file_contains`. File paths may reference the participant's
+//! facts, resolved per subject OS. Log steps search captured output: Linux container logs (Agent and ADP under s6),
+//! macOS stdout and stderr of the spawned Agent and ADP processes, or Windows container console output only.
+//! The translated configuration has default container settings, with empty `container.exposed_ports`;
+//! `runtimes` follow `subject_os` order.
 
 use std::{any::Any, path::Path};
 
@@ -110,16 +113,25 @@ impl CaseFile {
                        it searches the output of every process together",
                 )
             };
+            let check_on = |on: &str| {
+                if on == participant {
+                    Ok(())
+                } else {
+                    Err(error(&format!(
+                        "runs on '{on}'; the integration runner runs only participant '{participant}'"
+                    )))
+                }
+            };
             let step = step as &dyn Any;
             if let Some(step) = step.downcast_ref::<LogContains>() {
                 let LogContains {
-                    // The loader checked `on` against the single participant.
-                    on: _,
+                    on,
                     process,
                     pattern,
                     regex,
                     timeout,
                 } = step;
+                check_on(on)?;
                 if process.is_some() {
                     return Err(process_error());
                 }
@@ -131,13 +143,13 @@ impl CaseFile {
                 })
             } else if let Some(step) = step.downcast_ref::<LogNotContains>() {
                 let LogNotContains {
-                    // The loader checked `on` against the single participant.
-                    on: _,
+                    on,
                     process,
                     pattern,
                     regex,
                     during,
                 } = step;
+                check_on(on)?;
                 if process.is_some() {
                     return Err(process_error());
                 }
@@ -149,13 +161,13 @@ impl CaseFile {
                 })
             } else if let Some(step) = step.downcast_ref::<FileContains>() {
                 let FileContains {
-                    // The loader checked `on` against the single participant.
-                    on: _,
+                    on,
                     path,
                     pattern,
                     regex,
                     timeout,
                 } = step;
+                check_on(on)?;
                 Ok(AssertionConfig::FileContains {
                     path: path
                         .resolve(|name, fact| {
@@ -229,6 +241,7 @@ mod tests {
             tests::{write_case, LOGGING_INTEGRATION, LOGGING_PARTICIPANT, PARTICIPANT_FIELDS},
             Need, LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME,
         },
+        steps::{tests::fields, REGISTERED_STEPS},
         test::TestSuite,
     };
 
@@ -352,6 +365,77 @@ mod tests {
                 );
                 assert!(!serde_json::to_string(&translated).unwrap().contains("{{"));
                 assert_eq!(translated.runtimes, runtimes.split(", ").collect::<Vec<_>>());
+            }
+        }
+    }
+
+    #[test]
+    fn translation_rejects_a_step_on_another_participant() {
+        for declaration in REGISTERED_STEPS {
+            for (parallel, label) in [(false, "1"), (true, "1.1")] {
+                let mut file: CaseFile = serde_saphyr::from_str(PARTICIPANT_FIELDS).unwrap();
+                let mut fields = fields(declaration.name);
+                fields.insert("on".into(), serde_json::json!("other"));
+                let step = (declaration.build)(&fields).unwrap();
+                let node = StepNode {
+                    name: declaration.name.into(),
+                    fields,
+                };
+                let procedure = if parallel {
+                    file.procedure = vec![ProcedureNode::Parallel(vec![node])];
+                    vec![ProcedureNode::Parallel(vec![step])]
+                } else {
+                    file.procedure = vec![ProcedureNode::Step(node)];
+                    vec![ProcedureNode::Step(step)]
+                };
+                assert_eq!(
+                    file.integration_config("alpha", Path::new("alpha/config.yaml"), &procedure, Os::Linux)
+                        .unwrap_err(),
+                    format!(
+                        "step {label} '{}' runs on 'other'; the integration runner runs only participant 'adp'",
+                        declaration.name
+                    )
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_registered_step_translates_to_a_log_or_file_assertion_on_every_subject_os() {
+        for declaration in REGISTERED_STEPS {
+            let yaml = PARTICIPANT_FIELDS
+                .replace("[linux]", "[linux, macos, windows]")
+                .replace("  adp:", "  subject:");
+            let mut file: CaseFile = serde_saphyr::from_str(&yaml).unwrap();
+            assert_eq!(file.subject_os, [Os::Linux, Os::MacOs, Os::Windows]);
+            let fields = fields(declaration.name);
+            let procedure = [ProcedureNode::Step((declaration.build)(&fields).unwrap())];
+            file.procedure = vec![ProcedureNode::Step(StepNode {
+                name: declaration.name.into(),
+                fields,
+            })];
+            for os in &file.subject_os {
+                let config = file
+                    .integration_config("alpha", Path::new("alpha/config.yaml"), &procedure, *os)
+                    .unwrap();
+                let [AssertionStep::Single(assertion)] = config.procedure.as_slice() else {
+                    panic!("expected one assertion for '{}' on {os:?}", declaration.name);
+                };
+                match assertion {
+                    AssertionConfig::LogContains { stream, .. } | AssertionConfig::LogNotContains { stream, .. } => {
+                        assert!(matches!(stream, LogStream::Both));
+                    }
+                    AssertionConfig::FileContains { pattern, .. } => assert!(pattern.is_some()),
+                    AssertionConfig::ProcessStableFor { .. }
+                    | AssertionConfig::AdpExitsWith { .. }
+                    | AssertionConfig::PortListening { .. }
+                    | AssertionConfig::HttpCheck { .. }
+                    | AssertionConfig::AdpConfigKeyEquals { .. }
+                    | AssertionConfig::IntakeHasMetric { .. } => panic!(
+                        "step '{}' on {os:?} would be observed through container liveness, log-parsed exits or another old mechanism",
+                        declaration.name
+                    ),
+                }
             }
         }
     }

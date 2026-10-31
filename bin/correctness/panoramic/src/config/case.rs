@@ -687,6 +687,18 @@ procedure:
                 "names unknown step 'wait_ready'; registered steps: file_contains, log_contains, log_not_contains",
             ),
             (
+                "step: adp_cli, on: adp, args: [status]",
+                "names unknown step 'adp_cli'; registered steps: file_contains, log_contains, log_not_contains",
+            ),
+            (
+                "step: port_listening, on: adp, port: 58125, protocol: udp, timeout: 1s",
+                "names unknown step 'port_listening'; registered steps: file_contains, log_contains, log_not_contains",
+            ),
+            (
+                "step: file_contains, on: adp, path: /logs/output.log, pattern: null, timeout: 1s",
+                "'file_contains': pattern: invalid type: null, expected a string",
+            ),
+            (
                 "step: log_contains, on: adp, pattern: ready, timeout: 1s, unknown: x",
                 "'log_contains': unknown: unknown field `unknown`",
             ),
@@ -724,8 +736,12 @@ procedure:
                 "'log_contains' runs on unknown participant 'missing'; participants: adp",
             ),
             (
+                "step: log_contains, on: agent, pattern: ready, timeout: 1s",
+                "'log_contains' runs on unknown participant 'agent'; participants: adp",
+            ),
+            (
                 "step: log_contains, on: adp, pattern: ready, timeout: 1s, stream: stdout",
-                "unknown field `stream`",
+                "'log_contains': stream: unknown field `stream`",
             ),
             (
                 "step: file_contains, on: adp, path: /logs/output.log, pattern: ready, timeout: 1s, process: adp",
@@ -748,6 +764,28 @@ procedure:
             );
             assert!(message.contains(expected), "expected {expected}: {message}");
         }
+    }
+
+    #[test]
+    fn an_unknown_field_in_a_parallel_step_fails_to_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let yaml = PARTICIPANT_FIELDS.replace(
+            "procedure: []",
+            "procedure: [{parallel: [{step: log_contains, on: adp, pattern: ready, timeout: 1s, unknown: x}]}]",
+        );
+        let path = write_case(dir.path(), "alpha", &yaml);
+        let message = CaseConfig::load_file(&path)
+            .err()
+            .expect("unknown parallel step field must fail")
+            .to_string();
+        assert!(
+            message.starts_with(&format!(
+                "case 'alpha' in {}: step 1.1 ",
+                path.canonicalize().unwrap().display()
+            )),
+            "{message}"
+        );
+        assert!(message.contains("unknown field `unknown`"), "{message}");
     }
 
     #[test]
@@ -976,7 +1014,22 @@ procedure:
         for (yaml, reason) in [
             ("type: [".to_string(), "Failed to parse config file as YAML"),
             ("type: 3\n".to_string(), "must be a string"),
-            (format!("{PARTICIPANT_FIELDS}unknown: true\n"), "unknown field"),
+            (
+                format!("{PARTICIPANT_FIELDS}unknown: true\n"),
+                "unknown field `unknown`",
+            ),
+            (
+                format!("{PARTICIPANT_FIELDS}container: {{files: ['settings.yaml:/etc/settings.yaml']}}\n"),
+                "unknown field `container`",
+            ),
+            (
+                format!("{PARTICIPANT_FIELDS}intake: {{enabled: true}}\n"),
+                "unknown field `intake`",
+            ),
+            (
+                PARTICIPANT_FIELDS.replace("procedure: []", "procedure: [{action: adp_cli, args: [status]}]"),
+                "a procedure node must have 'step' or 'parallel'",
+            ),
             (PARTICIPANT_FIELDS.replace("1s", "1nope"), "unknown duration unit"),
             (PARTICIPANT_FIELDS.replace("[linux]", "[]"), "empty subject_os list"),
             (
