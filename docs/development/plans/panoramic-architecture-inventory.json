@@ -1812,7 +1812,7 @@
       "subject_os": "windows",
       "runtime": "windows",
       "source": "test/integration/cases/adp-logging-windows-default-path/config.yaml",
-      "schema": "integration",
+      "schema": "participants",
       "execution": "old",
       "status": "selected",
       "timeout": "120s",
@@ -1831,7 +1831,7 @@
       "subject_os": "windows",
       "runtime": "windows",
       "source": "test/integration/cases/adp-logging-windows-ignores-core-agent-log-file/config.yaml",
-      "schema": "integration",
+      "schema": "participants",
       "execution": "old",
       "status": "selected",
       "timeout": "120s",
@@ -1850,7 +1850,7 @@
       "subject_os": "windows",
       "runtime": "windows",
       "source": "test/integration/cases/adp-logging-windows-respects-data-plane-log-file/config.yaml",
-      "schema": "integration",
+      "schema": "participants",
       "execution": "old",
       "status": "selected",
       "timeout": "120s",
@@ -7044,9 +7044,7 @@
         "container": {
           "command": [],
           "entrypoint": [],
-          "exposed_ports": [
-            "58125/udp"
-          ],
+          "exposed_ports": [],
           "files": [],
           "host_cgroup_namespace": false
         },
@@ -7100,9 +7098,7 @@
         "container": {
           "command": [],
           "entrypoint": [],
-          "exposed_ports": [
-            "58125/udp"
-          ],
+          "exposed_ports": [],
           "files": [],
           "host_cgroup_namespace": false
         },
@@ -7165,9 +7161,7 @@
         "container": {
           "command": [],
           "entrypoint": [],
-          "exposed_ports": [
-            "58125/udp"
-          ],
+          "exposed_ports": [],
           "files": [],
           "host_cgroup_namespace": false
         },

@@ -172,9 +172,9 @@ Total: 158 rows.
 | adp-logging-mac-ignores-core-agent-log-file | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | old | assertions: 3, actions: 0 | 0 |
 | adp-logging-respects-data-plane-log-file | integration | linux | linux | selected | test-integration | participants | old | assertions: 2, actions: 0 | 0 |
 | adp-logging-respects-data-plane-log-file | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | old | assertions: 2, actions: 0 | 0 |
-| adp-logging-windows-default-path | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 2, actions: 0 | 0 |
-| adp-logging-windows-ignores-core-agent-log-file | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
-| adp-logging-windows-respects-data-plane-log-file | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 2, actions: 0 | 0 |
+| adp-logging-windows-default-path | integration | windows | windows | selected | test-integration-windows-amd64 | participants | old | assertions: 2, actions: 0 | 0 |
+| adp-logging-windows-ignores-core-agent-log-file | integration | windows | windows | selected | test-integration-windows-amd64 | participants | old | assertions: 3, actions: 0 | 0 |
+| adp-logging-windows-respects-data-plane-log-file | integration | windows | windows | selected | test-integration-windows-amd64 | participants | old | assertions: 2, actions: 0 | 0 |
 | adp-memory-mode-disabled | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
 | adp-memory-mode-disabled | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
 | adp-memory-mode-disabled | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
@@ -261,14 +261,16 @@ output: the container's log stream (Agent and ADP under s6) on Linux, stdout and
 processes on macOS, and the container's console output only on Windows.
 
 Participant-schema twins of the seven logging cases are built from a frozen copy of their inventory entries taken
-before their schema changed (`bin/correctness/panoramic/src/config/coverage_inventory/logging_baseline.json`). Both
-the twins and this inventory's entries must match that copy, apart from `schema` and `container.exposed_ports: []`
-for participant-schema cases. Edit the copy by hand when the inventory format changes; never regenerate it. In the
-integration schema the logging files declare `58125/udp`, which their participant-schema versions drop; only
-`port_listening` reads a published port's mapping. On Linux an empty list also stops Docker publishing the image's
-exposed ports; macOS host processes have no container, so there the list only feeds `port_listening`. The translation
-uses default container settings, so changing these files' schema changes only the inventory's `schema` column and
-`container.exposed_ports: []`. List `subject_os` in `runtimes` order to preserve runtime order.
+before their schema changed (`bin/correctness/panoramic/src/config/coverage_inventory/logging_baseline.json`). All
+seven logging cases use the participant schema. Both the twins and this inventory's entries must match that copy,
+apart from `schema` and `container.exposed_ports: []`. Edit the copy by hand when the inventory format changes;
+never regenerate it. In the integration schema the logging files declare `58125/udp`, which their participant-schema
+versions drop; only `port_listening` reads a published port's mapping. On Linux an empty list also stops Docker
+publishing the image's exposed ports; macOS host processes have no container, so there the list only feeds
+`port_listening`. Windows containers never publish exposed ports, so there an empty list only stops the container
+declaring the port. The translation uses default container settings, so changing these files' schema changes only
+the inventory's `schema` column and `container.exposed_ports: []`. List `subject_os` in `runtimes` order to preserve
+runtime order.
 
 `adp-disabled-exit` and `adp-no-pipelines-exit` also fit the supported subset, but their log line stands in for a
 process exit. They keep the old schema until exits are observed directly.

@@ -1,8 +1,8 @@
 //! Checks logging-case translation and inventory entries against a frozen integration-schema baseline.
 //!
 //! Participant-schema twins of the seven logging cases use `logging_baseline.json`, copied while the cases used the
-//! integration schema. Both the translated twins and checked-in inventory must match this copy, except `schema`
-//! and `container.exposed_ports` for participant-schema cases.
+//! integration schema. All seven use the participant schema. Both the translated twins and checked-in inventory
+//! must match this copy, except `schema` and `container.exposed_ports`.
 //!
 //! Never regenerate the copy from the inventory. If the inventory format changes intentionally (such as a new column
 //! or `execution` value), edit the copy by hand so reviewers can see the change.
@@ -291,30 +291,18 @@ fn logging_case_twins_reproduce_the_frozen_baseline_except_schema_and_exposed_po
 }
 
 #[test]
-fn checked_in_logging_cases_match_the_frozen_baseline_apart_from_the_schema_migration() {
+fn checked_in_logging_cases_use_the_participant_schema_and_otherwise_match_the_frozen_baseline() {
     let baseline = logging_baseline();
     let recorded = recorded_integration_cases();
     for name in LOGGING_CASES {
-        let baseline = &baseline[name];
         let recorded = &recorded[name];
-        let (rows, case, expected_form) = if recorded.old_schema {
-            (
-                baseline.rows.clone(),
-                baseline.case.clone(),
-                "the unchanged integration schema",
-            )
-        } else {
-            let (rows, case) = migrated(baseline);
-            (
-                rows,
-                case,
-                "the participant schema with only schema and exposed_ports changed",
-            )
-        };
+        assert!(!recorded.old_schema, "{name}: must use the participant schema");
+        let (rows, case) = migrated(&baseline[name]);
         assert_eq!(
             json!({"rows": recorded.rows, "case": recorded.case}),
             json!({"rows": rows, "case": case}),
-            "{name}: expected {expected_form}, but its inventory entry differs from the frozen baseline"
+            "{name}: expected the participant schema with only schema and exposed_ports changed, \
+             but its inventory entry differs from the frozen baseline"
         );
     }
 }
@@ -335,14 +323,10 @@ fn unrecorded_logging_case_fields(case: &Value) -> Value {
 }
 
 #[test]
-fn participant_schema_logging_files_keep_their_twins_participants_and_unresolved_step_paths() {
+fn logging_files_keep_their_twins_participants_and_unresolved_step_paths() {
     let baseline = logging_baseline();
-    let recorded = recorded_integration_cases();
     let root = repository_root();
     for name in LOGGING_CASES {
-        if recorded[name].old_schema {
-            continue;
-        }
         let path = root.join(format!("test/integration/cases/{name}/config.yaml"));
         let case: Value = serde_saphyr::from_str(&read_text(&path)).unwrap();
         let (twin, _) =
