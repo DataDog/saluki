@@ -36,7 +36,16 @@ advisory_fingerprints() {
         printf '%s\n' "${output}" >&2
         exit "${status}"
     fi
-    printf '%s\n' "${output}" | jq -r '
+    # Cargo-deny normally writes one JSON object per stderr line, but Cargo can add non-JSON
+    # warnings to the same stream in CI. Preserve those warnings in job output while only sending
+    # JSON diagnostics to the fingerprint parser.
+    while IFS= read -r line; do
+        if [[ "${line}" == \{* ]]; then
+            printf '%s\n' "${line}"
+        elif [[ -n "${line}" ]]; then
+            printf '%s\n' "${line}" >&2
+        fi
+    done <<< "${output}" | jq -r '
         select(.type == "diagnostic")
         | select(.fields.severity == "error")
         | "\(.fields.code)|\(.fields.advisory.id // "")|\(.fields.labels[0].span // "")"

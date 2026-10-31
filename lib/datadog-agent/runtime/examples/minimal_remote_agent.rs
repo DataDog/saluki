@@ -318,7 +318,11 @@ async fn create_control_plane(
     supervisor.add_worker(ConfigWorker::new(config.config_snapshot()));
     supervisor.add_worker(ConfigRuntimeWorker::new(config.runtime_config()));
     supervisor.add_worker(APIBuilder::new(EndpointType::Unprivileged, config.api_listen_address()?).into_supervisor());
-    supervisor.add_worker(agent.create_remote_agent_supervisor(vec![Arc::new(ExampleStatusSection)], Vec::new())?);
+    supervisor.add_worker(agent.create_remote_agent_supervisor(
+        vec![Arc::new(ExampleStatusSection)],
+        Vec::new(),
+        |routes, _| routes,
+    )?);
 
     // Every client of the privileged API endpoint must present the Agent IPC certificate.
     let ipc_auth = IpcAuthConfiguration::new(PathBuf::new(), PathBuf::new());

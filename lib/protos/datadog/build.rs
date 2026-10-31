@@ -237,6 +237,7 @@ fn main() {
                 "proto/datadog-agent/datadog/remoteagent/status.proto",
                 "proto/datadog-agent/datadog/remoteagent/telemetry.proto",
                 "proto/datadog-agent/datadog/remoteagent/flare.proto",
+                "proto/datadog-agent/datadog/remoteagent/command.proto",
             ],
             &["proto", "proto/datadog-agent"],
         )

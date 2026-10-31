@@ -11,3 +11,5 @@ pub use self::remote_agent::{AdpLocalConfig, AgentDataPlane};
 
 mod status;
 pub use self::status::DogStatsDStatusSection;
+
+mod remote_command;
