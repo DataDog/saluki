@@ -319,6 +319,43 @@ fn checked_in_logging_cases_match_the_frozen_baseline_apart_from_the_schema_migr
     }
 }
 
+/// Extracts logging participants' names and config, plus unresolved step paths omitted by integration translation.
+fn unrecorded_logging_case_fields(case: &Value) -> Value {
+    let step_paths: Vec<_> = case["procedure"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|node| match node.get("parallel") {
+            Some(parallel) => parallel.as_array().unwrap().as_slice(),
+            None => std::slice::from_ref(node),
+        })
+        .map(|step| step["path"].clone())
+        .collect();
+    json!({"participants": case["participants"], "step_paths": step_paths})
+}
+
+#[test]
+fn participant_schema_logging_files_keep_their_twins_participants_and_unresolved_step_paths() {
+    let baseline = logging_baseline();
+    let recorded = recorded_integration_cases();
+    let root = repository_root();
+    for name in LOGGING_CASES {
+        if recorded[name].old_schema {
+            continue;
+        }
+        let path = root.join(format!("test/integration/cases/{name}/config.yaml"));
+        let case: Value = serde_saphyr::from_str(&read_text(&path)).unwrap();
+        let (twin, _) =
+            participant_twin(&baseline[name].case["config"]).unwrap_or_else(|reason| panic!("{name}: {reason}"));
+        let twin: Value = serde_json::from_str(&twin).unwrap();
+        assert_eq!(
+            unrecorded_logging_case_fields(&case),
+            unrecorded_logging_case_fields(&twin),
+            "{name}: participants and unresolved step paths must match the frozen baseline's twin"
+        );
+    }
+}
+
 #[test]
 fn logging_case_twins_use_the_default_log_file_fact_exactly_where_the_case_asserts_the_default_path() {
     let baseline = logging_baseline();

@@ -1,28 +1,30 @@
-type: integration
 name: "adp-logging-respects-data-plane-log-file"
 description: "Verifies ADP honors the per-subagent `data_plane.log_file` setting when explicitly configured"
 timeout: 120s
-runtimes: [linux, mac]
+subject_os: [linux, macos]
 
-env:
-  DD_API_KEY: "00000000000000000000000000000000"
-  DD_HOSTNAME: "integration-test-data-plane-log-override"
-  DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
-  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-  DD_DATA_PLANE_LOG_FILE: "/tmp/adp-custom.log"
-
-container:
-  exposed_ports:
-    - "58125/udp"
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    config:
+      env:
+        DD_API_KEY: "00000000000000000000000000000000"
+        DD_HOSTNAME: "integration-test-data-plane-log-override"
+        DD_DATA_PLANE_ENABLED: "true"
+        DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+        DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+        DD_DATA_PLANE_LOG_FILE: "/tmp/adp-custom.log"
 
 procedure:
   # Wait for ADP to receive its initial configuration from the Core Agent and reload logging.
-  - assertion: log_contains
+  - step: log_contains
+    on: adp
     pattern: "Initial configuration received."
     timeout: 30s
   # ADP writes to the explicitly-configured per-subagent path.
-  - assertion: file_contains
+  - step: file_contains
+    on: adp
     path: "/tmp/adp-custom.log"
     pattern: "DATAPLANE"
     timeout: 30s

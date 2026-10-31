@@ -1719,7 +1719,7 @@
       "subject_os": "linux",
       "runtime": "linux",
       "source": "test/integration/cases/adp-logging-default-path/config.yaml",
-      "schema": "integration",
+      "schema": "participants",
       "execution": "old",
       "status": "selected",
       "timeout": "120s",
@@ -1738,7 +1738,7 @@
       "subject_os": "linux",
       "runtime": "linux",
       "source": "test/integration/cases/adp-logging-ignores-core-agent-log-file/config.yaml",
-      "schema": "integration",
+      "schema": "participants",
       "execution": "old",
       "status": "selected",
       "timeout": "120s",
@@ -1775,7 +1775,7 @@
       "subject_os": "linux",
       "runtime": "linux",
       "source": "test/integration/cases/adp-logging-respects-data-plane-log-file/config.yaml",
-      "schema": "integration",
+      "schema": "participants",
       "execution": "old",
       "status": "selected",
       "timeout": "120s",
@@ -1794,7 +1794,7 @@
       "subject_os": "macos",
       "runtime": "mac",
       "source": "test/integration/cases/adp-logging-respects-data-plane-log-file/config.yaml",
-      "schema": "integration",
+      "schema": "participants",
       "execution": "old",
       "status": "selected",
       "timeout": "120s",
@@ -6809,9 +6809,7 @@
         "container": {
           "command": [],
           "entrypoint": [],
-          "exposed_ports": [
-            "58125/udp"
-          ],
+          "exposed_ports": [],
           "files": [],
           "host_cgroup_namespace": false
         },
@@ -6865,9 +6863,7 @@
         "container": {
           "command": [],
           "entrypoint": [],
-          "exposed_ports": [
-            "58125/udp"
-          ],
+          "exposed_ports": [],
           "files": [],
           "host_cgroup_namespace": false
         },
@@ -6994,9 +6990,7 @@
         "container": {
           "command": [],
           "entrypoint": [],
-          "exposed_ports": [
-            "58125/udp"
-          ],
+          "exposed_ports": [],
           "files": [],
           "host_cgroup_namespace": false
         },
