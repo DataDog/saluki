@@ -95,10 +95,68 @@ make list-integration-tests  # list available tests
 Test cases live in `test/integration/cases/` as `config.yaml` files. The runner is **panoramic**
 (`bin/correctness/panoramic/`). A case file must be named `config.yaml`; discovery rejects `config.yml`.
 
-Each test defines a container and a list of high-level assertions. Assertions run sequentially by default but can also
-be configured to run in `parallel`.
+A case file either sets `type: integration`, defining a container and a list of high-level assertions, or declares
+participants; see [Participant cases](#participant-cases). Assertions run sequentially by default but can also be
+configured to run in `parallel`.
 
 CI: `.gitlab/e2e.yml`—same file as correctness, `e2e` stage, 10 min timeout, retry 2.
+
+### Participant cases
+
+A case file without a top-level `type` declares **participants**: named instances of a participant type. The case
+states what runs, how it's configured and what the procedure checks. The participant type knows how its product is
+installed and where it writes. The `adp-logging-*` cases in `test/integration/cases/` use this schema;
+`adp-logging-default-path` looks like this:
+
+```yaml
+name: "adp-logging-default-path"     # Optional; must match the directory name.
+description: "Verifies ADP writes to its default log file"
+timeout: 120s                       # Required.
+subject_os: [linux]                 # Required; any of linux, macos and windows.
+
+participants:
+  adp:                             # The participant's name, used by `on` and in references.
+    type: agent-adp                # The Core Agent and ADP running together.
+    subject: true
+    config:
+      env:
+        DD_API_KEY: "00000000000000000000000000000000"
+        DD_DATA_PLANE_ENABLED: "true"
+
+procedure:
+  - step: log_contains
+    on: adp
+    pattern: "Initial configuration received."
+    timeout: 30s
+  - step: file_contains
+    on: adp
+    path: "{{ adp.facts.default_log_file }}"
+    pattern: "DATAPLANE"
+    timeout: 30s
+```
+
+These cases run on the integration runner. Panoramic translates each case into an integration case for every subject
+OS and runs it: in a Linux or Windows container with default settings, or as host processes on macOS. The translation
+supports this subset of the schema:
+
+- One participant, of type `agent-adp` with `subject: true`, configured only through `config.env`. Environment values
+  must be YAML strings.
+- The steps `log_contains` and `log_not_contains`, without `process`. They search the output of every process
+  together, and what is captured differs by OS.
+- The step `file_contains`. Its `path` may reference a participant fact as `{{ <participant>.facts.<fact> }}`.
+  `agent-adp` declares `default_log_file` on Linux and Windows only, so a case that runs on macOS writes the path out.
+- `parallel` blocks of these steps.
+
+Every step names the participant it acts on with `on`. Step fields differ from the integration schema: steps use
+`step:` instead of `assertion:`, and `file_contains` requires `pattern`. The loader accepts other participant and
+configuration fields, but the integration runner rejects a case that sets them, with an error naming the field.
+
+The source documents each part; start in `bin/correctness/panoramic/src/`:
+
+- `config/case_file.rs`: the case file's fields and their defaults.
+- `participants/agent_adp.rs`: what `agent-adp` declares, including its facts.
+- `steps/`: each step's fields.
+- `config/integration_bridge.rs`: the subset the integration runner supports, and the output each OS captures.
 
 ### Step deadlines
 

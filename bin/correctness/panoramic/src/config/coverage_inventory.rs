@@ -36,6 +36,9 @@ const COVERAGE_BEGIN: &str = "<!-- coverage-inventory:begin -->";
 const COVERAGE_END: &str = "<!-- coverage-inventory:end -->";
 const PROOFS_BEGIN: &str = "<!-- migration-proofs:begin -->";
 const PROOFS_END: &str = "<!-- migration-proofs:end -->";
+const PROOF_PIPELINE_URL: &str = "https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/";
+const PROOF_JOB_URL: &str = "https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/";
+const PROOF_COMPARISON: &str = "Compared with the inventory at `";
 const REGENERATE: &str = "PANORAMIC_WRITE_COVERAGE_INVENTORY=1 cargo nextest run -p panoramic coverage_inventory";
 const INTEGRATION: &str = "integration";
 const CORRECTNESS: &str = "correctness";
@@ -1012,7 +1015,7 @@ fn loaded_view_fails_for_a_participant_case_the_translation_cannot_run() {
 }
 
 #[test]
-fn migration_proofs_name_inventoried_rows() {
+fn migration_proofs_name_inventoried_rows_and_their_ci_evidence() {
     let root = repository_root();
     let inventory = Inventory::generate(&root);
     let markdown = read_text(&root.join(MARKDOWN_PATH));
@@ -1032,6 +1035,18 @@ fn migration_proofs_name_inventoried_rows() {
             .collect();
         assert_eq!(columns.len(), 3, "Invalid proof row: {line}");
         assert!(!columns[2].is_empty(), "Missing migration proof: {line}");
+        assert!(
+            columns[2].contains(PROOF_PIPELINE_URL),
+            "Migration proof must link its pipeline: {line}"
+        );
+        assert!(
+            columns[2].contains(PROOF_JOB_URL),
+            "Migration proof must link a passing job: {line}"
+        );
+        assert!(
+            columns[2].contains(PROOF_COMPARISON),
+            "Migration proof must name its comparison commit: {line}"
+        );
         proven_rows.insert((columns[0], columns[1]));
         let matches = inventory
             .rows

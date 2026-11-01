@@ -85,9 +85,14 @@ test/integration/
 
 ### Configuration Schema
 
-Create a `config.yaml` file in your test directory:
+Create a `config.yaml` file in your test directory. This page describes the integration schema, selected by
+`type: integration`. A file without `type` declares participants instead; see
+[Participant cases](../../docs/development/testing.md#participant-cases) in the testing guide.
 
 ```yaml
+# Required: selects the integration schema. A file without `type` declares participants.
+type: integration
+
 # Required: unique name for the test
 name: "my-new-test"
 
@@ -96,6 +101,7 @@ description: "Verifies that feature X works correctly"
 
 # Required: overall timeout for the test
 timeout: 60s
+runtimes: [linux]
 
 # Optional: Datadog intake sidecar. When enabled, the runner starts a datadog-intake
 # container on the test's Docker network under the `datadog-intake` alias, so the

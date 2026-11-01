@@ -43,7 +43,7 @@ Without the environment variable, the test compares the generated JSON and cover
 versions and reports added or removed row keys and the first differing line in each file. The other inventory tests
 check file accounting, case placement by suite and status, case-name uniqueness across both suites, CI job and mixin
 definitions, the correctness generator's fail-fast shell options, ignored-key detection, logging-case translation
-equivalence, and migration-proof references.
+equivalence, and migration proofs: their rows, CI links and comparison commit.
 
 ## Coverage details
 
@@ -281,19 +281,23 @@ process exit. They keep the old schema until exits are observed directly.
 
 ## Migration proofs
 
-When changing a case's schema or runner, add CI evidence per (case, subject OS) and reference the inventory commit
-used for comparison. Each proof names the tested commit, links the passing CI jobs and identifies the runner and
-execution value.
+When changing a case's schema or runner, add CI evidence per (case, subject OS). Each proof names the tested commit and
+links its pipeline, links the passing CI jobs, identifies the runner and execution value, and names the commit whose
+inventory the case was compared with. Link CI runs; don't copy their logs into the repository.
 
 <!-- migration-proofs:begin -->
 | Case | Subject OS | Proof |
 | --- | --- | --- |
-| adp-logging-default-path | linux | `33e3e697c5`: [test-integration](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351927); passed on the integration runner (execution `old`). |
-| adp-logging-ignores-core-agent-log-file | linux | `33e3e697c5`: [test-integration](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351927); passed on the integration runner (execution `old`). |
-| adp-logging-respects-data-plane-log-file | linux | `33e3e697c5`: [test-integration](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351927); passed on the integration runner (execution `old`). |
-| adp-logging-respects-data-plane-log-file | macos | `33e3e697c5`: [test-integration-macos-arm64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351928), [test-integration-macos-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351929); passed on the integration runner (execution `old`). |
-| adp-logging-mac-ignores-core-agent-log-file | macos | `33e3e697c5`: [test-integration-macos-arm64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351928), [test-integration-macos-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351929); passed on the integration runner (execution `old`). |
-| adp-logging-windows-default-path | windows | `33e3e697c5`: [test-integration-windows-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351930); passed on the integration runner (execution `old`). |
-| adp-logging-windows-ignores-core-agent-log-file | windows | `33e3e697c5`: [test-integration-windows-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351930); passed on the integration runner (execution `old`). |
-| adp-logging-windows-respects-data-plane-log-file | windows | `33e3e697c5`: [test-integration-windows-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351930); passed on the integration runner (execution `old`). |
+| adp-logging-default-path | linux | Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351927) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
+| adp-logging-ignores-core-agent-log-file | linux | Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351927) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
+| adp-logging-respects-data-plane-log-file | linux | Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351927) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
+| adp-logging-respects-data-plane-log-file | macos | Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration-macos-arm64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351928) and [test-integration-macos-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351929) passed on the macOS host-process runner (execution `old`). Compared with the inventory at `b975a993e0`. Caveat: the case writes to a fixed `/tmp` path that nothing deletes, so `file_contains` could match a file left by an earlier run on the same host. |
+| adp-logging-mac-ignores-core-agent-log-file | macos | Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration-macos-arm64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351928) and [test-integration-macos-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351929) passed on the macOS host-process runner (execution `old`). Compared with the inventory at `b975a993e0`. Caveat: the case writes to fixed `/tmp` paths that nothing deletes, so `file_contains` could match a file left by an earlier run on the same host. |
+| adp-logging-windows-default-path | windows | Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration-windows-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351930) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
+| adp-logging-windows-ignores-core-agent-log-file | windows | Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration-windows-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351930) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
+| adp-logging-windows-respects-data-plane-log-file | windows | Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration-windows-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351930) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
 <!-- migration-proofs:end -->
+
+The macOS proofs carry a caveat: the integration runner's macOS host processes share the host's `/tmp`, and nothing
+deletes the log files these cases write there. A stale file can satisfy `file_contains` until macOS cases run on a
+host process backend that gives each run its own files.
