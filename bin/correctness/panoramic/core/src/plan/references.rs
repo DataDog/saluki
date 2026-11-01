@@ -235,14 +235,14 @@ mod tests {
     use super::*;
     use crate::{
         case::{
-            fixtures::{write_case, FixtureConfig, FixtureTypes, Server},
+            fixtures::{FixtureTypes, Server},
             CaseLoader, Registries,
         },
         endpoint::{ConsumedEndpoint, Endpoint},
         layout::{Os, RealizationKind},
         participant::{EffectiveConfig, FactDeclaration},
         plan::{
-            tests::{compile, EveryKindClient, EveryKindServer},
+            tests::{compile, compile_files, FILE_CONFIG},
             CasePlan,
         },
     };
@@ -775,92 +775,8 @@ mod tests {
         error(&yaml, "linux", "step 1 references late fact 'pod_uid' of participant 'subject', which a linux-container does not have; a linux-container has container_id, ip");
     }
 
-    struct FileServer;
-
-    impl ParticipantType for FileServer {
-        fn name(&self) -> &'static str {
-            "file-server"
-        }
-
-        fn supports(&self) -> &'static [(Os, RealizationKind)] {
-            EveryKindServer.supports()
-        }
-
-        fn config_files(&self) -> &'static [&'static str] {
-            &["settings.yaml", "z.yaml"]
-        }
-
-        fn params(&self) -> &'static [&'static str] {
-            &["mode"]
-        }
-
-        fn validate_config(&self, _realization: Realization, config: &CaseValues) -> Result<(), String> {
-            if config.env.get("PORT").is_some_and(|value| value == "broken") {
-                return Err("PORT 'broken' is not a number".into());
-            }
-            Ok(())
-        }
-
-        fn endpoints(
-            &self, realization: Realization, config: &EffectiveConfig,
-        ) -> Result<BTreeMap<String, Endpoint>, String> {
-            let mut endpoints = EveryKindServer.endpoints(realization, config)?;
-            if config.env.get("TCP").is_some_and(|value| value == "off") {
-                endpoints.remove("tcp");
-            }
-            Ok(endpoints)
-        }
-
-        fn consumes(&self, realization: Realization, config: &EffectiveConfig) -> BTreeMap<String, ConsumedEndpoint> {
-            EveryKindClient.consumes(realization, config)
-        }
-
-        fn facts(&self, realization: Realization) -> &'static [FactDeclaration] {
-            Server.facts(realization)
-        }
-
-        fn substituted_late_facts(&self, _realization: Realization) -> &'static [LateFact] {
-            &[LateFact::Ip]
-        }
-
-        fn processes(&self) -> &'static [&'static str] {
-            &[]
-        }
-    }
-
-    const FILE_REGISTRIES: Registries<'_> = Registries {
-        participant_types: &[&FileServer],
-        steps: &[],
-    };
-    const FILE_CONFIG: &str = "{files: {settings.yaml: {from: source.yaml, template: true}}}";
-
     fn file_case(os: &str) -> String {
         case(FILE_CONFIG, os).replace("type: server", "type: file-server")
-    }
-
-    fn compile_files(yaml: &str, sources: &[(&str, &str)], os: Os) -> Result<CasePlan<FixtureConfig>, String> {
-        let dir = tempfile::tempdir().unwrap();
-        let source = write_case(dir.path(), "alpha", yaml);
-        for (from, text) in sources {
-            std::fs::write(source.parent().unwrap().join(from), text).unwrap();
-        }
-        let loader = CaseLoader::new(FILE_REGISTRIES, FixtureTypes, "fixture");
-        let normalize = |error: saluki_error::GenericError| {
-            error
-                .to_string()
-                .replace(&source.display().to_string(), "cases/alpha/config.yaml")
-        };
-        let case = loader
-            .load_content(yaml, "alpha", &source)
-            .map_err(normalize)?
-            .remove(0);
-        // Planning must use the contents captured at load, even if the source disappears.
-        for (from, _) in sources {
-            std::fs::remove_file(source.parent().unwrap().join(from)).unwrap();
-        }
-        CasePlan::compile(case, os, &FILE_REGISTRIES)
-            .map_err(normalize)
-            .map(Option::unwrap)
     }
 
     #[track_caller]

@@ -174,6 +174,14 @@ may reference any late fact the referenced participant has, including the pod's 
 file may not reference the participant's own late facts, except for a host process group's fixed `ip`.
 The integration runner rejects `config.files`.
 
+Panoramic orders participants before running a case. A participant is created after every other Linux or Windows container
+whose `container_id` its configuration references. It starts after every participant it connects to. A Kubernetes pod
+also starts after every other container or pod whose `ip` its template files reference, and after every other pod whose
+`container_id` or `pod_uid` they reference. Own late facts are supplied by init hooks or late files; a host process
+group's fixed `ip`, facts and endpoint addresses are available before creation, and steps run after all participants
+start. Use `connect` when a participant needs another running first. A cycle in either order on any OS in `subject_os`
+fails the case. `panoramic list` prints both orders, grouping independent participants.
+
 Durations in a participant case need a unit: write `30s`, not `30`.
 
 Every step names the participant it acts on with `on`. Step fields differ from the integration schema: steps use

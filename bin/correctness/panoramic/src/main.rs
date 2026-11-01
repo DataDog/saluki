@@ -524,6 +524,14 @@ fn listing_text(plan: &LoadedPlan) -> String {
             .map(|(name, realization)| format!("{name} on {} as {}", realization.os.name(), realization.kind.name()))
             .collect();
         writeln!(text, "    Layout: {}", participants.join("; ")).unwrap();
+        for (label, order) in [("Create", plan.create_order()), ("Start", plan.start_order())] {
+            let levels = order
+                .expect("participant layouts have dependency orders")
+                .iter()
+                .map(|level| level.join(", "))
+                .collect::<Vec<_>>();
+            writeln!(text, "    {label} order: {}", levels.join(" then ")).unwrap();
+        }
     }
     text.push('\n');
     text
@@ -1069,7 +1077,8 @@ comparison: {image: comp}
             listing_text(&plan),
             "  participant\n    Timeout: 1s\n    \
              Layout: adp on macos as host-process-group; alpha on linux as linux-container; \
-             zebra on macos as host-process-group\n\n"
+             zebra on macos as host-process-group\n    Create order: adp, alpha, zebra\n    \
+             Start order: adp, alpha, zebra\n\n"
         );
         for (yaml, expected) in [
             (

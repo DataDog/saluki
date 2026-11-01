@@ -16,16 +16,21 @@ use crate::{
 };
 
 mod connections;
+mod order;
 mod references;
 mod routes;
 
-use self::connections::{check_connections, ParticipantEndpoints};
+use self::{
+    connections::{check_connections, ParticipantEndpoints},
+    order::{dependency_order, DependencyOrder},
+};
 
 /// A loaded case with the layout selected for execution.
 pub struct CasePlan<C> {
     case: CaseConfig<C>,
     subject_os: Os,
     layout: Option<Layout>,
+    order: Option<DependencyOrder>,
     participants: BTreeMap<String, PlannedParticipant>,
 }
 
@@ -49,11 +54,13 @@ impl<C> CasePlan<C> {
     /// accepted kind, route, delivered env keys; then required endpoints in name order);
     /// configuration endpoint and connection references per participant in name order (`env`, then `params`,
     /// then template files);
+    /// create order, then start order;
     /// step fact and late-fact references in procedure order with step labels.
     pub fn compile(
         case: CaseConfig<C>, subject_os: Os, registries: &Registries<'_>,
     ) -> Result<Option<Self>, GenericError> {
         let mut layout = None;
+        let mut order = None;
         let mut participants = BTreeMap::new();
         if let CaseSchema::Participants { file, procedure } = case.schema() {
             for &os in case.subject_os() {
@@ -67,7 +74,7 @@ impl<C> CasePlan<C> {
                     )
                 };
                 let candidate = lay_out(&file.participants, registries.participant_types, os).map_err(&error)?;
-                let candidate_participants =
+                let (candidate_participants, candidate_order) =
                     plan_participants(file, case.file_templates(), &candidate, registries.participant_types)
                         .map_err(&error)?;
                 check_reference_needs(
@@ -80,6 +87,7 @@ impl<C> CasePlan<C> {
                 .map_err(error)?;
                 if os == subject_os {
                     layout = Some(candidate);
+                    order = Some(candidate_order);
                     participants = candidate_participants;
                 }
             }
@@ -91,6 +99,7 @@ impl<C> CasePlan<C> {
             case,
             subject_os,
             layout,
+            order,
             participants,
         }))
     }
@@ -108,6 +117,23 @@ impl<C> CasePlan<C> {
     /// Returns `Some(layout)` for participant cases and `None` for typed cases.
     pub fn layout(&self) -> Option<&Layout> {
         self.layout.as_ref()
+    }
+
+    /// Returns create dependency levels for participant cases, or `None` for typed cases.
+    ///
+    /// A participant follows every other participant whose late fact, known once created, its configuration embeds.
+    /// Each level lists independent participants in name order.
+    pub fn create_order(&self) -> Option<&[Vec<String>]> {
+        self.order.as_ref().map(|order| order.create.as_slice())
+    }
+
+    /// Returns start dependency levels for participant cases, or `None` for typed cases.
+    ///
+    /// A participant follows every participant it connects to. A pod also follows every other participant
+    /// whose late fact its template files reference when that fact becomes available only after start.
+    /// Each level lists independent participants in name order.
+    pub fn start_order(&self) -> Option<&[Vec<String>]> {
+        self.order.as_ref().map(|order| order.start.as_slice())
     }
 
     /// Returns a fact from the participant's planned realization.
@@ -130,10 +156,11 @@ impl<C> CasePlan<C> {
     }
 }
 
-/// Builds effective configurations and checks endpoints, then connections, in participant name order.
+/// Builds effective configurations, checks endpoints, connections and configuration address references
+/// in participant name order, then computes create and start orders.
 fn plan_participants(
     file: &CaseFile, templates: &FileTemplates, layout: &Layout, types: &[&dyn ParticipantType],
-) -> Result<BTreeMap<String, PlannedParticipant>, String> {
+) -> Result<(BTreeMap<String, PlannedParticipant>, DependencyOrder), String> {
     let mut participants = BTreeMap::new();
     let mut participant_endpoints = BTreeMap::new();
     for (name, realization) in layout.iter() {
@@ -180,7 +207,8 @@ fn plan_participants(
     }
     check_connections(file, layout, &participant_endpoints)?;
     references::check_address_references(file, templates, layout, &participant_endpoints)?;
-    Ok(participants)
+    let order = dependency_order(file, templates, layout, &participant_endpoints)?;
+    Ok((participants, order))
 }
 
 /// Rejects the first step needing an unavailable fact or late fact.
@@ -336,6 +364,92 @@ mod tests {
         fn processes(&self) -> &'static [&'static str] {
             &[]
         }
+    }
+
+    pub(super) struct FileServer;
+
+    impl ParticipantType for FileServer {
+        fn name(&self) -> &'static str {
+            "file-server"
+        }
+
+        fn supports(&self) -> &'static [(Os, RealizationKind)] {
+            EveryKindServer.supports()
+        }
+
+        fn config_files(&self) -> &'static [&'static str] {
+            &["settings.yaml", "z.yaml"]
+        }
+
+        fn params(&self) -> &'static [&'static str] {
+            &["mode"]
+        }
+
+        fn validate_config(&self, _realization: Realization, config: &CaseValues) -> Result<(), String> {
+            if config.env.get("PORT").is_some_and(|value| value == "broken") {
+                return Err("PORT 'broken' is not a number".into());
+            }
+            Ok(())
+        }
+
+        fn endpoints(
+            &self, realization: Realization, config: &EffectiveConfig,
+        ) -> Result<BTreeMap<String, Endpoint>, String> {
+            let mut endpoints = EveryKindServer.endpoints(realization, config)?;
+            if config.env.get("TCP").is_some_and(|value| value == "off") {
+                endpoints.remove("tcp");
+            }
+            Ok(endpoints)
+        }
+
+        fn consumes(&self, realization: Realization, config: &EffectiveConfig) -> BTreeMap<String, ConsumedEndpoint> {
+            EveryKindClient.consumes(realization, config)
+        }
+
+        fn facts(&self, realization: Realization) -> &'static [FactDeclaration] {
+            Server.facts(realization)
+        }
+
+        fn substituted_late_facts(&self, _realization: Realization) -> &'static [backend::LateFact] {
+            &[backend::LateFact::Ip]
+        }
+
+        fn processes(&self) -> &'static [&'static str] {
+            &[]
+        }
+    }
+
+    pub(super) const FILE_REGISTRIES: Registries<'_> = Registries {
+        participant_types: &[&FileServer],
+        steps: &[],
+    };
+    pub(super) const FILE_CONFIG: &str = "{files: {settings.yaml: {from: source.yaml, template: true}}}";
+
+    pub(super) fn compile_files(
+        yaml: &str, sources: &[(&str, &str)], os: Os,
+    ) -> Result<CasePlan<FixtureConfig>, String> {
+        let dir = tempfile::tempdir().unwrap();
+        let source = write_case(dir.path(), "alpha", yaml);
+        for (from, text) in sources {
+            std::fs::write(source.parent().unwrap().join(from), text).unwrap();
+        }
+        let loader = CaseLoader::new(FILE_REGISTRIES, FixtureTypes, "fixture");
+        let normalize = |error: saluki_error::GenericError| {
+            error
+                .to_string()
+                .replace(&source.display().to_string(), "cases/alpha/config.yaml")
+        };
+        let case = loader
+            .load_content(yaml, "alpha", &source)
+            .map_err(normalize)?
+            .remove(0);
+        // Planning uses the template contents captured at load.
+        for (from, _) in sources {
+            std::fs::remove_file(source.parent().unwrap().join(from)).unwrap();
+        }
+        CasePlan::compile(case, os, &FILE_REGISTRIES)
+            .map_err(normalize)
+            .map(Option::unwrap)
     }
 
     struct SharedDeliveryClient;
@@ -621,6 +735,85 @@ procedure: []
             compile(&yaml, Os::Windows).unwrap().unwrap().fact("subject", "file"),
             Some(r"C:\logs\output.log")
         );
+    }
+
+    #[test]
+    fn compile_checks_address_references_then_create_order_then_start_order_then_step_facts() {
+        let registries = Registries {
+            steps: STEPS,
+            ..FILE_REGISTRIES
+        };
+        let loader = CaseLoader::new(registries, FixtureTypes, "fixture-participants");
+        let mut yaml = r#"timeout: 1s
+subject_os: [linux]
+participants:
+  subject:
+    type: file-server
+    subject: true
+    config: {env: {ADDRESS: '{{fixture.endpoints.missing.url}}', ID: '{{fixture.late.container_id}}'}}
+    connect: {target: fixture.tcp}
+  fixture:
+    type: file-server
+    config: {params: {mode: '{{subject.late.container_id}}'}}
+    connect: {target: subject.tcp}
+  observer: {type: file-server, os: macos}
+procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
+"#
+        .to_string();
+        for (bad, fix, expected) in [
+            (
+                "{{fixture.endpoints.missing.url}}",
+                "literal",
+                "references endpoint 'missing'",
+            ),
+            (
+                "{{fixture.late.container_id}}",
+                "literal",
+                "participants can't be created in any order",
+            ),
+            (
+                "connect: {target: fixture.tcp}",
+                "connect: {}",
+                "participants can't be started in any order",
+            ),
+            (
+                "{{observer.facts.file}}",
+                "literal",
+                "step 1 references fact 'file' of participant 'observer'",
+            ),
+        ] {
+            let case = loader
+                .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
+                .unwrap()
+                .remove(0);
+            let message = CasePlan::compile(case, Os::Linux, &registries)
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(message.contains(expected), "{message}");
+            assert!(yaml.contains(bad));
+            yaml = yaml.replace(bad, fix);
+        }
+        let case = loader
+            .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
+            .unwrap()
+            .remove(0);
+        let plan = CasePlan::compile(case, Os::Linux, &registries).unwrap().unwrap();
+        assert_eq!(
+            plan.create_order().unwrap(),
+            [vec!["observer", "subject"], vec!["fixture"]]
+        );
+        assert_eq!(
+            plan.start_order().unwrap(),
+            [vec!["observer", "subject"], vec!["fixture"]]
+        );
+    }
+
+    #[test]
+    fn a_typed_plan_has_no_dependency_orders() {
+        let plan = compile("type: fixture", Os::MacOs).unwrap().unwrap();
+        assert_eq!(plan.create_order(), None);
+        assert_eq!(plan.start_order(), None);
     }
 
     const CONNECTION_CASE: &str = r#"timeout: 1s
