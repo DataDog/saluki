@@ -9,7 +9,8 @@ use clap::{
     builder::{PossibleValuesParser, TypedValueParser},
     Args, Parser, Subcommand, ValueEnum,
 };
-use panoramic_core::layout::Os;
+use panoramic_core::{artifact::ArtifactKind, layout::Os};
+use panoramic_participants::AgentAdp;
 
 use crate::config::{os_for_runtime, runtime_for_os, LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME};
 use crate::text_output::OutputFormat;
@@ -27,11 +28,12 @@ Environment variables:
   RUST_LOG       tracing-subscriber filter, for expert use. When set, it takes precedence over
                  --log-level and applies to every crate, including external dependencies.";
 
-/// Default `agent-data-plane` binary for host-process tests, resolved against the current directory.
-const DEFAULT_ADP_BINARY_PATH: &str = "target/release/agent-data-plane";
-
-/// Default Datadog Agent binary for host-process tests: the sandbox install `make provision-macos-test-env` writes.
-const DEFAULT_CORE_AGENT_BINARY_PATH: &str = "/tmp/saluki-dda/datadog-agent/bin/agent/agent";
+fn default_core_agent_binary_path() -> PathBuf {
+    let ArtifactKind::Install { main_binary } = AgentAdp::AGENT_HOST_INSTALL.kind else {
+        unreachable!("the Core Agent role declares an install");
+    };
+    Path::new(AgentAdp::AGENT_HOST_INSTALL.local_default).join(main_binary)
+}
 
 /// Crates that `--log-level` applies to: Panoramic itself and the first-party libraries it links.
 ///
@@ -192,7 +194,7 @@ pub enum Command {
     /// List available integration tests.
     List(ListCommand),
 
-    /// Manage the artifacts participant cases need.
+    /// Manage the artifacts cases need.
     Artifacts(ArtifactsCommand),
 }
 
@@ -246,8 +248,9 @@ pub struct ArtifactCasesCommand {
     pub subject_os: Os,
 
     /// Artifact manifest (TOML) binding artifact roles to image references and paths.
-    /// Roles it omits use their local defaults; a role no participant type or backend
-    /// declares is an error. Each needed role is printed with the reference it resolves to.
+    /// Roles it omits use their local defaults; a role no participant type, backend or
+    /// typed case schema declares is an error. Each needed role is printed with the
+    /// reference it resolves to.
     #[arg(long, value_name = "FILE", verbatim_doc_comment)]
     pub artifacts: Option<PathBuf>,
 }
@@ -313,13 +316,13 @@ pub struct RunCommand {
 
     /// `agent-data-plane` binary that host-process (`runtime: mac`) tests spawn. A
     /// relative path resolves against the current directory
-    #[arg(long, env = "PANORAMIC_ADP_BINARY_PATH", default_value = DEFAULT_ADP_BINARY_PATH, verbatim_doc_comment)]
+    #[arg(long, env = "PANORAMIC_ADP_BINARY_PATH", default_value = AgentAdp::ADP_HOST_BINARY.local_default, verbatim_doc_comment)]
     adp_binary_path: PathBuf,
 
     /// Datadog Agent binary that converged host-process tests spawn. Point this at
     /// another install (a system-wide /opt/datadog-agent, for example) to test
     /// against it
-    #[arg(long, env = "PANORAMIC_CORE_AGENT_BINARY_PATH", default_value = DEFAULT_CORE_AGENT_BINARY_PATH, verbatim_doc_comment)]
+    #[arg(long, env = "PANORAMIC_CORE_AGENT_BINARY_PATH", default_value_os_t = default_core_agent_binary_path(), verbatim_doc_comment)]
     core_agent_binary_path: PathBuf,
 
     /// Alpine image for the short-lived container that fixes up shared-volume
@@ -383,8 +386,9 @@ pub struct ListCommand {
     pub subject_os: SubjectOsArgs,
 
     /// Artifact manifest (TOML) binding artifact roles to image references and paths.
-    /// Roles it omits use their local defaults; a role no participant type or backend
-    /// declares is an error. The text listing shows the reference each role resolves to
+    /// Roles it omits use their local defaults; a role no participant type, backend or
+    /// typed case schema declares is an error. The text listing shows the reference
+    /// each role resolves to.
     #[arg(long, value_name = "FILE", verbatim_doc_comment)]
     pub artifacts: Option<PathBuf>,
 
@@ -782,12 +786,29 @@ mod tests {
         let settings = run_command_of(&cli).runner_settings();
 
         assert_eq!(settings.mounts_dir, default_mounts_dir());
-        assert_eq!(settings.adp_binary_path, Path::new(DEFAULT_ADP_BINARY_PATH));
+        assert_eq!(
+            settings.adp_binary_path,
+            Path::new(AgentAdp::ADP_HOST_BINARY.local_default)
+        );
+        let ArtifactKind::Install { main_binary } = AgentAdp::AGENT_HOST_INSTALL.kind else {
+            panic!("the Core Agent role must declare an install");
+        };
         assert_eq!(
             settings.core_agent_binary_path,
-            Path::new(DEFAULT_CORE_AGENT_BINARY_PATH)
+            Path::new(AgentAdp::AGENT_HOST_INSTALL.local_default).join(main_binary)
         );
         assert_eq!(settings.alpine_image, DEFAULT_ALPINE_IMAGE);
+    }
+
+    #[test]
+    fn run_help_shows_the_core_agent_binary_default() {
+        let help = Cli::command()
+            .find_subcommand_mut("run")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        let path = Path::new("/tmp/saluki-dda/datadog-agent").join("bin/agent/agent");
+        assert!(help.contains(&format!("[default: {}]", path.display())), "{help}");
     }
 
     #[test]
@@ -879,6 +900,20 @@ mod tests {
             .unwrap();
         assert_eq!(argument.get_env(), None);
         assert!(Cli::try_parse_from(["panoramic", "run", "--artifacts", "artifacts.toml"]).is_err());
+    }
+
+    #[test]
+    fn artifact_help_names_typed_case_schemas_as_role_declarers() {
+        for path in [vec!["list"], vec!["artifacts", "verify"], vec!["artifacts", "pull"]] {
+            let mut command = Cli::command();
+            command.build();
+            let mut subcommand = &mut command;
+            for name in path {
+                subcommand = subcommand.find_subcommand_mut(name).unwrap();
+            }
+            let help = subcommand.render_long_help().to_string();
+            assert!(help.contains("typed case schema declares is an error."), "{help}");
+        }
     }
 
     #[test]

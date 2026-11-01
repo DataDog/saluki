@@ -553,6 +553,7 @@ participants:
         let registries = Registries {
             participant_types: &[&hooks, &Server],
             steps: STEPS,
+            ..Default::default()
         };
         let loader = CaseLoader::new(registries, FixtureTypes, "fixture-participants");
         let yaml = CONNECTION_CASE.replace("type: client", "type: hooks, config: {env: {CASE: value}}");
@@ -840,6 +841,7 @@ participants:
         let registries = Registries {
             participant_types: &[&Minimal, &Client],
             steps: STEPS,
+            ..Default::default()
         };
         let loader = CaseLoader::new(registries, FixtureTypes, "fixture-participants");
         for (participants, expected) in [

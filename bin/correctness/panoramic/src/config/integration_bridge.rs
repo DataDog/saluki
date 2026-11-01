@@ -493,6 +493,7 @@ mod tests {
         let registries = Registries {
             participant_types: &[&Configured],
             steps: REGISTERED_STEPS,
+            ..Default::default()
         };
         let loader = CaseLoader::new(registries, TypedConfigLoader, TestSuite::Integration.name());
         let dir = tempfile::tempdir().unwrap();

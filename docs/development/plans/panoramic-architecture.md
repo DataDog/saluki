@@ -60,6 +60,9 @@ equivalence, and migration proofs: their rows, CI links and comparison commit.
   assertions, 23 actions and 42 parallel blocks.
 - Every correctness baseline and comparison declares `saluki-images/datadog-agent:testing-release`. Every selected
   correctness job extends `.test-correctness-adp-baseline`; CI supplies the same `bundled-agent-adp` image to both sides.
+- Correctness baseline and comparison both bind to `agent-adp-linux-image`, matching CI's shared image. Its local
+  default is `saluki-images/datadog-agent:testing-devel` (debug), while correctness files declare `:testing-release`
+  (release). Artifact commands and text listings use the role binding; runners use the files' images.
 - Integration uses `saluki-images/datadog-agent:testing-devel` on Linux and
   `saluki-images/agent-data-plane:testing-windows` on Windows (overridden in CI by `--image-override container=$ImageTag`).
   macOS uses host processes. The intake uses `saluki-images/correctness-tools:latest` and is enabled only in

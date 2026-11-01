@@ -196,9 +196,9 @@ Parent-directory components must stay within the case directory; symlink targets
 Plan compilation checks fact availability for both steps and configuration on every OS in `subject_os`.
 A referenced fact missing for a participant's realization fails planning and therefore discovery.
 
-`panoramic list` also prints each artifact role a participant case needs on the selected subject OS, with the
+`panoramic list` also prints each artifact role a case needs on the selected subject OS, with the
 reference it resolves to and whether it comes from a manifest or the role's local default. Roles are stable names
-for the images, binaries and installs its participants and their realizations run. Use `--artifacts <file>` to
+for the images, binaries and installs its runner uses. Use `--artifacts <file>` to
 read a TOML manifest:
 
 ```toml
@@ -210,10 +210,30 @@ fixup-image = "registry.example/alpine:3"
 ```
 
 Omitted roles use their local defaults: for example, `agent-adp-linux-image` defaults to
-`saluki-images/datadog-agent:testing-devel`. A role no participant type or backend declares fails the listing;
+`saluki-images/datadog-agent:testing-devel`. A role no participant type, backend or typed schema declares fails the listing;
 a declared role the selected cases don't need is ignored. Relative binary and install paths resolve against the
 working directory, whether supplied by a manifest or a local default. Runners choose images and binaries from their
 settings.
+
+Typed integration and correctness cases map their containers and host processes to these roles:
+
+| Case and subject OS | Container or process | Artifact roles |
+| --- | --- | --- |
+| Integration, Linux | Target container | `agent-adp-linux-image` |
+| Integration, Linux, intake enabled | Intake sidecar | `tools-linux-image` |
+| Integration, Windows | Target container | `agent-adp-windows-image` |
+| Integration, macOS | ADP and Core Agent host processes | `adp-host-binary`, `agent-host-install` |
+| Correctness, Linux, Docker or Kubernetes-in-Docker | Baseline and comparison | `agent-adp-linux-image` |
+| Correctness, Linux, Docker or Kubernetes-in-Docker | Datadog intake and millstone | `tools-linux-image` |
+
+Each case also needs the roles its backend declares, such as `fixup-image` for Linux containers. Integration cases need the
+intake role only on Linux, where the sidecar runs. Correctness cases are compiled for Linux under every subject OS;
+their roles appear in text listings, verification and pulling only when you select Linux.
+
+Both correctness targets bind to `agent-adp-linux-image`, as CI supplies the same bundled image to both sides.
+Locally, correctness files declare `saluki-images/datadog-agent:testing-release`, while that role defaults to the
+integration image, `saluki-images/datadog-agent:testing-devel`. These are release and debug builds, respectively.
+The role binding applies to artifact commands and text listings; runs use the images the files declare.
 
 Use `panoramic artifacts render --set <role>=<reference> … -o <file>` to write a manifest, replacing an existing
 file. Repeat `--set` to bind more roles; omitting it writes a manifest binding nothing. Rendering checks bindings
@@ -222,7 +242,7 @@ nothing and exits 2, leaving an existing output file untouched. References may c
 separates the role from its reference.
 
 Use `panoramic artifacts verify -d <cases> [--subject-os linux|macos|windows] [--artifacts <file>]` to check every
-artifact the selected participant cases need. The subject OS defaults to the host's OS. Verification prints each
+artifact the selected cases need. The subject OS defaults to the host's OS. Verification prints each
 role once, sorted by name, with its reference, source and identity or failure:
 
 - An image must exist on the Docker daemon Panoramic connects to. Its identity is the daemon's image ID.
@@ -233,10 +253,10 @@ role once, sorted by name, with its reference, source and identity or failure:
 File checks follow symlinks. Verification never pulls images or creates containers, and contacts the Docker daemon
 only when an image is needed. It reports every verification failure and exits 2 if any fails, or if no test directory
 is given, the manifest is invalid or cases fail discovery or planning. It exits 0 when all artifacts verify, including
-when none are needed. Only participant cases contribute artifact roles.
+when none are needed. Participant, integration and correctness cases contribute artifact roles.
 
 Use `panoramic artifacts pull -d <cases> [--subject-os linux|macos|windows] [--artifacts <file>]` to fetch only the
-images those participant cases need, in role-name order. Check binary and install roles with `verify`;
+images those cases need, in role-name order. Check binary and install roles with `verify`;
 `pull` reports only images. Images are always pulled again, even if present, so moving tags are refreshed. A failed
 pull fails even if a local copy exists: use `verify` for locally built images. An untagged reference pulls `latest`.
 Each pull has a five-minute limit; the inspection afterwards has a 30-second limit. Either timeout fails that image

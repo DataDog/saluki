@@ -3,7 +3,7 @@
 //! [`CaseConfig`] records each case's metadata and parsed data.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -12,6 +12,7 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::de::DeserializeOwned;
 
 use crate::{
+    artifact::ArtifactRole,
     layout::Os,
     participant::ParticipantType,
     step::{Step, StepFactory},
@@ -38,13 +39,15 @@ pub use self::{
     template::Template,
 };
 
-/// The participant types and steps a case file may name.
-#[derive(Clone, Copy)]
+/// Participant types, steps and typed-schema artifact roles available to case files. Defaults to empty registries.
+#[derive(Clone, Copy, Default)]
 pub struct Registries<'a> {
     /// Participant types registered as [`ParticipantType`] values, available to case files.
     pub participant_types: &'a [&'a dyn ParticipantType],
     /// Steps available to case procedures.
     pub steps: &'a [&'a dyn StepFactory],
+    /// Artifact roles declared by typed case schemas in addition to participant types and backends.
+    pub typed_case_roles: &'a [ArtifactRole],
 }
 
 /// Loads case files that select their schema with a top-level `type` key.
@@ -71,6 +74,8 @@ pub struct TypedCase<C> {
     pub timeout: Duration,
     /// Operating systems the subject supports.
     pub subject_os: BTreeSet<Os>,
+    /// Roles the runner uses on each declared subject OS, including backend roles.
+    pub artifact_roles: BTreeMap<Os, Vec<ArtifactRole>>,
     /// Whether the case is excluded from execution.
     pub disabled: bool,
     /// Parsed data supplied by the typed loader.
@@ -213,6 +218,7 @@ where
     /// # Errors
     ///
     /// Returns an error for invalid YAML or a typed file that declares no cases. Propagates typed-loader errors unchanged.
+    /// Typed artifact-role keys must match the case's declared subject operating systems.
     /// A declared name must match the directory. Participant cases require at least one participant,
     /// a nonempty, unique `subject_os` list using `linux`, `macos` or `windows`, and a nonempty procedure.
     /// Participant names must be DNS labels starting with a letter, other than `self`;
@@ -250,6 +256,7 @@ where
                 source: source.to_path_buf(),
                 timeout: file.timeout.into(),
                 subject_os,
+                artifact_roles: BTreeMap::new(),
                 disabled: false,
                 schema: CaseSchema::Participants { file, procedure },
                 file_templates,
@@ -259,20 +266,32 @@ where
         if cases.is_empty() {
             return Err(generic_error!("{} declares no cases", source.display()));
         }
-        Ok(cases
+        cases
             .into_iter()
-            .map(|case| CaseConfig {
-                name: case.name,
-                description: case.description,
-                suite: case.suite,
-                source: source.to_path_buf(),
-                timeout: case.timeout,
-                subject_os: case.subject_os,
-                disabled: case.disabled,
-                schema: CaseSchema::Typed(case.config),
-                file_templates: FileTemplates::default(),
+            .map(|case| {
+                if !case.artifact_roles.keys().copied().eq(case.subject_os.iter().copied()) {
+                    return Err(generic_error!(
+                        "case '{}' in {}: artifact role operating systems must match subject_os: roles cover [{}], subject_os is [{}]",
+                        case.name,
+                        source.display(),
+                        case.artifact_roles.keys().map(|os| os.name()).collect::<Vec<_>>().join(", "),
+                        case.subject_os.iter().map(|os| os.name()).collect::<Vec<_>>().join(", "),
+                    ));
+                }
+                Ok(CaseConfig {
+                    name: case.name,
+                    description: case.description,
+                    suite: case.suite,
+                    source: source.to_path_buf(),
+                    timeout: case.timeout,
+                    subject_os: case.subject_os,
+                    artifact_roles: case.artifact_roles,
+                    disabled: case.disabled,
+                    schema: CaseSchema::Typed(case.config),
+                    file_templates: FileTemplates::default(),
+                })
             })
-            .collect())
+            .collect()
     }
 }
 
@@ -284,6 +303,7 @@ pub struct CaseConfig<C> {
     source: PathBuf,
     timeout: Duration,
     subject_os: BTreeSet<Os>,
+    artifact_roles: BTreeMap<Os, Vec<ArtifactRole>>,
     disabled: bool,
     schema: CaseSchema<C>,
     file_templates: FileTemplates,
@@ -303,6 +323,11 @@ pub enum CaseSchema<C> {
 }
 
 impl<C> CaseConfig<C> {
+    /// Roles for a typed case on `os`, which must be in `subject_os`; loading guarantees a matching map entry.
+    pub(crate) fn typed_artifact_roles(&self, os: Os) -> &[ArtifactRole] {
+        &self.artifact_roles[&os]
+    }
+
     pub(crate) fn file_templates(&self) -> &FileTemplates {
         &self.file_templates
     }
@@ -431,6 +456,33 @@ mod tests {
             .expect("the case loader propagates typed errors");
         assert_eq!(error.to_string(), "Unsupported fixture type: \"unknown\"");
         assert_eq!(format!("{error:#}"), format!("{expected:#}"));
+    }
+
+    #[test]
+    fn a_typed_case_artifact_role_map_must_cover_exactly_its_declared_operating_systems() {
+        for (systems, covered) in [
+            (vec![], ""),
+            (vec![Os::MacOs], "macos"),
+            (vec![Os::Linux, Os::Windows], "linux, windows"),
+            (vec![Os::Linux, Os::MacOs, Os::Windows], "linux, macos, windows"),
+        ] {
+            let loader = CaseLoader::new(
+                fixtures::REGISTRIES,
+                fixtures::FixtureTypesWithRoles(systems.into_iter().map(|os| (os, vec![])).collect()),
+                "fixture-participants",
+            );
+            let error = loader
+                .load_content("type: fixture", "alpha", Path::new("alpha/config.yaml"))
+                .err()
+                .expect("typed roles must cover exactly subject_os");
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "case 'alpha' in alpha/config.yaml: artifact role operating systems must match subject_os: \
+                         roles cover [{covered}], subject_os is [macos, windows]"
+                )
+            );
+        }
     }
 
     #[test]

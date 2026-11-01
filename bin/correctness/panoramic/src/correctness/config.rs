@@ -95,7 +95,7 @@ pub struct MillstoneConfig {
 impl Default for MillstoneConfig {
     fn default() -> Self {
         Self {
-            image: "saluki-images/correctness-tools:latest".to_string(),
+            image: panoramic_participants::TOOLS_LINUX_IMAGE.local_default.to_string(),
             binary_path: "/usr/local/bin/millstone".to_string(),
             config_path: "millstone.yaml".into(),
         }
@@ -122,7 +122,7 @@ pub struct DatadogIntakeConfig {
 impl Default for DatadogIntakeConfig {
     fn default() -> Self {
         Self {
-            image: "saluki-images/correctness-tools:latest".to_string(),
+            image: panoramic_participants::TOOLS_LINUX_IMAGE.local_default.to_string(),
             binary_path: "/usr/local/bin/datadog-intake".to_string(),
         }
     }

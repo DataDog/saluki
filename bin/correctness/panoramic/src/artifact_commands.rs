@@ -1,4 +1,4 @@
-//! Commands for writing manifests, verifying artifacts and pulling images selected participant cases need.
+//! Commands for writing manifests, verifying artifacts and pulling images selected cases need.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -18,7 +18,7 @@ use tracing::{error, info};
 use crate::{
     cli::{ArtifactCasesCommand, RenderCommand},
     collector::EXIT_HARNESS_ERROR,
-    config::discover_in_scope,
+    config::{discover_in_scope, typed_case::LoadedPlan},
 };
 
 pub(crate) fn render(cmd: RenderCommand) -> ExitCode {
@@ -95,7 +95,16 @@ fn needed_bindings(cmd: &ArtifactCasesCommand) -> Result<(Os, Vec<ArtifactBindin
         error!("Failed to discover tests: {error:#}");
         ExitCode::from(EXIT_HARNESS_ERROR)
     })?;
-    Ok((subject_os, needed_artifacts(&plans), base))
+    Ok((subject_os, selected_artifacts(&plans, subject_os), base))
+}
+
+fn selected_artifacts(plans: &[LoadedPlan], subject_os: Os) -> Vec<ArtifactBinding> {
+    needed_artifacts(plans.iter().filter(|plan| compiled_for(plan, subject_os)))
+}
+
+/// Correctness cases are compiled for Linux under every subject OS; include their roles only in Linux selections.
+pub(crate) fn compiled_for(plan: &LoadedPlan, os: Os) -> bool {
+    plan.subject_os() == os
 }
 
 pub(crate) async fn verify(cmd: ArtifactCasesCommand, output: &mut impl Write) -> ExitCode {
@@ -174,7 +183,7 @@ mod tests {
     use tracing::instrument::WithSubscriber as _;
 
     use super::*;
-    use crate::config::tests::{write_case, PARTICIPANT_FIELDS};
+    use crate::config::tests::{planner, write_case, CORRECTNESS_FIELDS, PARTICIPANT_FIELDS};
 
     #[derive(Clone, Copy)]
     enum Subcommand {
@@ -287,6 +296,21 @@ mod tests {
             )
         );
         assert!(log.contains("Verified 2 artifact(s)."), "{log}");
+    }
+
+    #[test]
+    fn artifacts_render_accepts_the_tools_role_declared_by_typed_schemas() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("artifacts.toml");
+        let (exit, log) = render_with_logs(RenderCommand {
+            set: vec![("tools-linux-image".into(), "tools:custom".into())],
+            output: output.clone(),
+        });
+        assert_eq!(exit, ExitCode::SUCCESS, "{log}");
+        assert_eq!(
+            ArtifactManifest::load(&output).unwrap().render(),
+            "schema = 1\n\n[roles]\ntools-linux-image = \"tools:custom\"\n"
+        );
     }
 
     #[test]
@@ -436,6 +460,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn artifacts_verify_reports_typed_integration_host_roles_like_participant_cases() {
+        let dir = tempfile::tempdir().unwrap();
+        let participants = dir.path().join("participants");
+        let typed = dir.path().join("typed");
+        for name in ["first", "second"] {
+            write_case(&participants, name, &PARTICIPANT_FIELDS.replace("[linux]", "[macos]"));
+            write_case(
+                &typed,
+                name,
+                &format!("type: integration\nname: {name}\ntimeout: 1s\nruntimes: [mac]\nprocedure: []\n"),
+            );
+        }
+        let binary = dir.path().join("tool");
+        let install = dir.path().join("install");
+        write_executable(&binary);
+        write_executable(&install.join("bin/agent/agent"));
+        let manifest = dir.path().join("artifacts.toml");
+        std::fs::write(
+            &manifest,
+            ArtifactManifest::new(
+                "test",
+                BTreeMap::from([
+                    ("adp-host-binary".into(), binary.to_str().unwrap().to_string()),
+                    ("agent-host-install".into(), install.to_str().unwrap().to_string()),
+                ]),
+            )
+            .unwrap()
+            .render(),
+        )
+        .unwrap();
+        for missing in 0..=2 {
+            match missing {
+                1 => std::fs::remove_file(&binary).unwrap(),
+                2 => std::fs::remove_file(install.join("bin/agent/agent")).unwrap(),
+                _ => {}
+            }
+            let (participant_exit, participant_report, participant_log) =
+                artifact_command_with_logs(vec![participants.clone()], Some(manifest.clone()), Subcommand::Verify)
+                    .await;
+            let (typed_exit, typed_report, typed_log) =
+                artifact_command_with_logs(vec![typed.clone()], Some(manifest.clone()), Subcommand::Verify).await;
+            let expected_exit = if missing == 0 {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(2)
+            };
+            assert_eq!(participant_exit, expected_exit, "{participant_log}");
+            assert_eq!(typed_exit, expected_exit, "{typed_log}");
+            assert_eq!(typed_report, participant_report);
+            assert_eq!(typed_report.lines().count(), 3, "{typed_report}");
+            assert!(typed_report.contains("adp-host-binary"), "{typed_report}");
+            assert!(typed_report.contains("agent-host-install"), "{typed_report}");
+            assert_eq!(typed_report.matches("FAILED:").count(), missing, "{typed_report}");
+        }
+    }
+
+    #[tokio::test]
     async fn artifacts_verify_validates_manifests_before_discovery_even_without_cases() {
         let dir = tempfile::tempdir().unwrap();
         let cases = dir.path().join("cases");
@@ -478,27 +559,79 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn artifacts_verify_needs_nothing_for_typed_cases_or_no_cases() {
+    async fn artifacts_verify_needs_nothing_for_no_cases() {
         let dir = tempfile::tempdir().unwrap();
-        for populated in [false, true] {
-            if populated {
-                write_case(
-                    dir.path(),
-                    "typed",
-                    r#"
-type: integration
-name: typed
-timeout: 1s
-runtimes: [mac]
-procedure: []
-"#,
-                );
-            }
-            let (exit, report, log) =
-                artifact_command_with_logs(vec![dir.path().to_path_buf()], None, Subcommand::Verify).await;
-            assert_eq!(exit, ExitCode::SUCCESS, "{log}");
-            assert_eq!(report, "No artifacts needed on macos.\n");
-            assert!(log.contains("Verified 0 artifact(s)."), "{log}");
+        let (exit, report, log) =
+            artifact_command_with_logs(vec![dir.path().to_path_buf()], None, Subcommand::Verify).await;
+        assert_eq!(exit, ExitCode::SUCCESS, "{log}");
+        assert_eq!(report, "No artifacts needed on macos.\n");
+        assert!(log.contains("Verified 0 artifact(s)."), "{log}");
+    }
+
+    #[tokio::test]
+    async fn artifacts_verify_and_pull_omit_correctness_roles_off_linux() {
+        let dir = tempfile::tempdir().unwrap();
+        write_case(
+            dir.path(),
+            "correctness",
+            &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
+        );
+        for os in [Os::MacOs, Os::Windows] {
+            let cmd = ArtifactCasesCommand {
+                test_dirs: vec![dir.path().to_path_buf()],
+                subject_os: os,
+                artifacts: None,
+            };
+            let mut report = Vec::new();
+            assert_eq!(verify(cmd, &mut report).await, ExitCode::SUCCESS);
+            assert_eq!(
+                String::from_utf8(report).unwrap(),
+                format!("No artifacts needed on {}.\n", os.name())
+            );
+            let cmd = ArtifactCasesCommand {
+                test_dirs: vec![dir.path().to_path_buf()],
+                subject_os: os,
+                artifacts: None,
+            };
+            let mut report = Vec::new();
+            assert_eq!(pull(cmd, &mut report).await, ExitCode::SUCCESS);
+            assert_eq!(
+                String::from_utf8(report).unwrap(),
+                format!("No images needed on {}.\n", os.name())
+            );
+        }
+    }
+
+    #[test]
+    fn artifacts_selection_includes_typed_roles_only_for_the_selected_os() {
+        let dir = tempfile::tempdir().unwrap();
+        write_case(
+            dir.path(),
+            "correctness",
+            &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
+        );
+        write_case(
+            dir.path(),
+            "integration",
+            "type: integration\nname: integration\ntimeout: 1s\nruntimes: [linux, mac, windows]\nprocedure: []\n",
+        );
+        for (os, expected) in [
+            (
+                Os::Linux,
+                vec!["agent-adp-linux-image", "fixup-image", "tools-linux-image"],
+            ),
+            (Os::MacOs, vec!["adp-host-binary", "agent-host-install"]),
+            (Os::Windows, vec!["agent-adp-windows-image"]),
+        ] {
+            let plans = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], os).unwrap();
+            assert_eq!(plans.len(), 2);
+            assert_eq!(
+                selected_artifacts(&plans, os)
+                    .iter()
+                    .map(|binding| binding.role.name)
+                    .collect::<Vec<_>>(),
+                expected
+            );
         }
     }
 

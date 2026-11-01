@@ -335,6 +335,7 @@ pub(crate) const TYPES: &[&dyn ParticipantType] = &[&Client, &Server];
 pub(crate) const REGISTRIES: Registries<'static> = Registries {
     participant_types: TYPES,
     steps: STEPS,
+    typed_case_roles: &[],
 };
 
 pub(crate) struct FixtureTypes;
@@ -364,6 +365,7 @@ impl TypedCaseLoader for FixtureTypes {
             suite: "fixture-typed".to_string(),
             timeout: Duration::from_secs(3),
             subject_os: BTreeSet::from([Os::MacOs, Os::Windows]),
+            artifact_roles: BTreeMap::from([(Os::MacOs, vec![]), (Os::Windows, vec![])]),
             disabled: true,
             config: FixtureConfig {
                 case_type: case_type.clone(),
@@ -372,6 +374,22 @@ impl TypedCaseLoader for FixtureTypes {
                 source: source.into(),
             },
         }])
+    }
+}
+
+pub(crate) struct FixtureTypesWithRoles(pub(crate) BTreeMap<Os, Vec<ArtifactRole>>);
+
+impl TypedCaseLoader for FixtureTypesWithRoles {
+    type Config = FixtureConfig;
+
+    fn load(
+        &self, case_type: &Value, content: &str, directory: &str, source: &Path,
+    ) -> Result<Vec<TypedCase<Self::Config>>, GenericError> {
+        let mut cases = FixtureTypes.load(case_type, content, directory, source)?;
+        for case in &mut cases {
+            case.artifact_roles = self.0.clone();
+        }
+        Ok(cases)
     }
 }
 

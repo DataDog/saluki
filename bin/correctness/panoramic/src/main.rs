@@ -11,6 +11,7 @@ use panoramic_core::artifact::ArtifactManifest;
 use panoramic_core::case::{CaseLoader, Registries};
 use panoramic_core::events::create_event_channel;
 use panoramic_core::interrupts::Interrupts;
+use panoramic_core::layout::Os;
 use panoramic_core::machine_output::{revision, RunReport};
 use panoramic_core::plan::Planner;
 use saluki_common::logging::{filter_from_env, parse_filter_directives};
@@ -56,10 +57,11 @@ mod crate_dependencies_tests;
 #[cfg(test)]
 mod source_boundary_tests;
 
-/// Participant types and steps available to loading and compilation.
+/// Participant types, steps and typed-schema artifact roles available to loading and compilation.
 pub(crate) const REGISTRIES: Registries<'static> = Registries {
     participant_types: panoramic_participants::REGISTERED_TYPES,
     steps: panoramic_steps::REGISTERED_STEPS,
+    typed_case_roles: &[panoramic_participants::TOOLS_LINUX_IMAGE],
 };
 
 /// Loads case files with the participant types and steps this binary registers.
@@ -516,14 +518,15 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
         println!();
 
         for plan in &plans {
-            print!("{}", listing_text(plan));
+            print!("{}", listing_text(plan, subject_os));
         }
     }
     ExitCode::SUCCESS
 }
 
 /// Formats one case's text listing, including its layout and resolved artifact references with their sources.
-fn listing_text(plan: &LoadedPlan) -> String {
+/// Artifact roles are printed only for plans compiled for `subject_os`.
+fn listing_text(plan: &LoadedPlan, subject_os: Os) -> String {
     let case = plan.case();
     let mut text = format!("  {}\n", case.name());
     if let Some(description) = case.description() {
@@ -536,7 +539,9 @@ fn listing_text(plan: &LoadedPlan) -> String {
             .map(|(name, realization)| format!("{name} on {} as {}", realization.os.name(), realization.kind.name()))
             .collect();
         writeln!(text, "    Layout: {}", participants.join("; ")).unwrap();
-        let artifacts = plan.artifacts().expect("participant layouts have artifact bindings");
+    }
+    if artifact_commands::compiled_for(plan, subject_os) {
+        let artifacts = plan.artifacts();
         if artifacts.is_empty() {
             writeln!(text, "    Artifact roles: none").unwrap();
         } else {
@@ -546,6 +551,8 @@ fn listing_text(plan: &LoadedPlan) -> String {
                 writeln!(text, "      {} = {} ({source})", binding.role.name, binding.reference).unwrap();
             }
         }
+    }
+    if plan.layout().is_some() {
         for (label, order) in [("Create", plan.create_order()), ("Start", plan.start_order())] {
             let levels = order
                 .expect("participant layouts have dependency orders")
@@ -588,13 +595,8 @@ fn build_revision() -> String {
 
 #[cfg(test)]
 mod tests {
-    use panoramic_core::layout::Os;
-
     use super::*;
-    use crate::config::{
-        tests::{build_case_runners, planner, write_case, CORRECTNESS_FIELDS, PARTICIPANT_FIELDS},
-        DEFAULT_LINUX_TARGET_IMAGE, DEFAULT_WINDOWS_TARGET_IMAGE,
-    };
+    use crate::config::tests::{build_case_runners, planner, write_case, CORRECTNESS_FIELDS, PARTICIPANT_FIELDS};
 
     #[tokio::test]
     async fn conflicting_runtime_and_subject_os_exit_2_for_run_list_and_list_json_before_discovery_or_logs() {
@@ -1213,7 +1215,7 @@ comparison: {image: comp}
     }
 
     #[test]
-    fn listing_text_prints_each_participant_layout_and_resolved_artifact_bindings_and_nothing_for_typed_cases() {
+    fn listing_text_prints_participant_layouts_and_artifact_bindings_for_every_case() {
         let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[macos]").replace(
             "  adp:",
             "  zebra: {type: agent-adp}\n  alpha: {type: agent-adp, os: linux}\n  adp:",
@@ -1233,7 +1235,7 @@ comparison: {image: comp}
             .unwrap()
             .unwrap();
         assert_eq!(
-            listing_text(&plan),
+            listing_text(&plan, Os::MacOs),
             "  participant\n    Timeout: 1s\n    \
              Layout: adp on macos as host-process-group; alpha on linux as linux-container; \
              zebra on macos as host-process-group\n    \
@@ -1250,11 +1252,16 @@ comparison: {image: comp}
                 "type: integration\nname: typed\ndescription: A typed case\n\
                  timeout: 7s\nruntimes: [linux]\nprocedure: []\n"
                     .to_string(),
-                "  typed\n    A typed case\n    Timeout: 7s\n\n",
+                "  typed\n    A typed case\n    Timeout: 7s\n    Artifact roles:\n      \
+                 agent-adp-linux-image = saluki-images/datadog-agent:testing-devel (local default)\n      \
+                 fixup-image = alpine:latest (local default)\n\n",
             ),
             (
                 format!("type: correctness\n{CORRECTNESS_FIELDS}"),
-                "  typed\n    Timeout: 1200s\n\n",
+                "  typed\n    Timeout: 1200s\n    Artifact roles:\n      \
+                 agent-adp-linux-image = saluki-images/datadog-agent:testing-devel (local default)\n      \
+                 fixup-image = alpine:latest (local default)\n      \
+                 tools-linux-image = saluki-images/correctness-tools:latest (local default)\n\n",
             ),
         ] {
             let case = crate::CASE_LOADER
@@ -1262,7 +1269,18 @@ comparison: {image: comp}
                 .unwrap()
                 .remove(0);
             let plan = planner().compile(case, Os::Linux).unwrap().unwrap();
-            assert_eq!(listing_text(&plan), expected);
+            assert_eq!(listing_text(&plan, Os::Linux), expected);
+        }
+    }
+
+    #[test]
+    fn listing_text_omits_correctness_artifacts_when_selected_off_linux() {
+        let dir = tempfile::tempdir().unwrap();
+        write_case(dir.path(), "typed", &format!("type: correctness\n{CORRECTNESS_FIELDS}"));
+        for os in [Os::MacOs, Os::Windows] {
+            let plans = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], os).unwrap();
+            assert_eq!(plans.len(), 1);
+            assert_eq!(listing_text(&plans[0], os), "  typed\n    Timeout: 1200s\n\n");
         }
     }
 
@@ -1297,7 +1315,10 @@ comparison: {image: comp}
         assert_eq!(entry["type"], "integration");
         assert_eq!(entry["runtime"], "windows");
         assert_eq!(entry["timeout"], serde_json::json!({"secs": 7, "nanos": 0}));
-        assert_eq!(entry["images"]["container"], DEFAULT_WINDOWS_TARGET_IMAGE);
+        assert_eq!(
+            entry["images"]["container"],
+            "saluki-images/agent-data-plane:testing-windows"
+        );
 
         let path = write_case(dir.path(), "participant", &PARTICIPANT_FIELDS.replace("1s", "9s"));
         let cases = crate::CASE_LOADER.load_file(&path).unwrap();
@@ -1308,7 +1329,10 @@ comparison: {image: comp}
         assert_eq!(entry["type"], "integration");
         assert_eq!(entry["runtime"], "linux");
         assert_eq!(entry["timeout"], serde_json::json!({"secs": 9, "nanos": 0}));
-        assert_eq!(entry["images"]["container"], DEFAULT_LINUX_TARGET_IMAGE);
+        assert_eq!(
+            entry["images"]["container"],
+            "saluki-images/datadog-agent:testing-devel"
+        );
     }
 
     #[test]

@@ -8,7 +8,8 @@
 use panoramic_core::participant::ParticipantType;
 
 mod agent_adp;
-pub use self::agent_adp::AgentAdp;
+mod tools;
+pub use self::{agent_adp::AgentAdp, tools::TOOLS_LINUX_IMAGE};
 
 /// Participant types available to case files.
 pub const REGISTERED_TYPES: &[&dyn ParticipantType] = &[&AgentAdp];
@@ -38,11 +39,12 @@ mod tests {
     }
 
     #[test]
-    fn registered_types_and_backends_declare_a_consistent_role_catalog() {
+    fn registered_types_backends_and_tools_declare_a_consistent_role_catalog() {
         Planner::new(
             Registries {
                 participant_types: REGISTERED_TYPES,
-                steps: &[],
+                typed_case_roles: &[TOOLS_LINUX_IMAGE],
+                ..Default::default()
             },
             ArtifactManifest::default(),
         )

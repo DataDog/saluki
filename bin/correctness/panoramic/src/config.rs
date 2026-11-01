@@ -8,6 +8,7 @@ use std::{
 
 use panoramic_core::case::{deserialize_case, deserialize_env_map, CaseDuration};
 use panoramic_core::{case::CaseSchema, layout::Os, plan::Planner};
+use panoramic_participants::AgentAdp;
 use saluki_error::{generic_error, GenericError};
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value;
@@ -198,20 +199,14 @@ pub(crate) fn os_for_runtime(runtime: &str) -> Option<Os> {
     }
 }
 
-/// Default container image used by `linux`-runtime integration tests.
-pub const DEFAULT_LINUX_TARGET_IMAGE: &str = "saluki-images/datadog-agent:testing-devel";
-
-/// Default container image used by `windows`-runtime integration tests.
-pub const DEFAULT_WINDOWS_TARGET_IMAGE: &str = "saluki-images/agent-data-plane:testing-windows";
-
 /// Returns the integration-test target image for the given runtime, if the runtime uses one.
 ///
 /// `mac` runs ADP as a host process and has no target image. All other runtimes resolve to a
 /// fixed, harness-owned image; tests do not select images per case.
 pub fn target_image_for_runtime(runtime: &str) -> Option<&'static str> {
     match runtime {
-        LINUX_RUNTIME => Some(DEFAULT_LINUX_TARGET_IMAGE),
-        WINDOWS_RUNTIME => Some(DEFAULT_WINDOWS_TARGET_IMAGE),
+        LINUX_RUNTIME => Some(AgentAdp::LINUX_IMAGE.local_default),
+        WINDOWS_RUNTIME => Some(AgentAdp::WINDOWS_IMAGE.local_default),
         _ => None,
     }
 }
@@ -244,9 +239,6 @@ pub struct IntakeConfig {
     #[serde(default)]
     pub enabled: bool,
 }
-
-/// Container image providing the `datadog-intake` binary.
-pub const DEFAULT_INTAKE_IMAGE: &str = "saluki-images/correctness-tools:latest";
 
 /// Docker network alias under which the target reaches the intake sidecar.
 pub const INTAKE_NETWORK_ALIAS: &str = "datadog-intake";
@@ -1535,7 +1527,7 @@ timeout: 30s
         );
         assert_eq!(
             runners[0].runner.images(),
-            BTreeMap::from([("container", DEFAULT_LINUX_TARGET_IMAGE.to_string())])
+            BTreeMap::from([("container", "saluki-images/datadog-agent:testing-devel".to_string())])
         );
         assert_eq!(runners[1].runner.images()["baseline"], "base:override");
         assert_eq!(runners[1].runner.images()["comparison"], "comp");
@@ -1577,7 +1569,10 @@ procedure: []
         let runners = discover_runners(&[base_dir.path().to_path_buf()], "windows", &[]).unwrap();
         let images = runners[0].runner.images();
 
-        assert_eq!(images.get("container"), Some(&DEFAULT_WINDOWS_TARGET_IMAGE.to_string()));
+        assert_eq!(
+            images.get("container"),
+            Some(&"saluki-images/agent-data-plane:testing-windows".to_string())
+        );
     }
 
     #[test]
@@ -1596,7 +1591,10 @@ procedure: []
         let runners = discover_runners(&[base_dir.path().to_path_buf()], "linux", &[]).unwrap();
         let images = runners[0].runner.images();
 
-        assert_eq!(images.get("container"), Some(&DEFAULT_LINUX_TARGET_IMAGE.to_string()));
+        assert_eq!(
+            images.get("container"),
+            Some(&"saluki-images/datadog-agent:testing-devel".to_string())
+        );
     }
 
     #[test]
@@ -2400,8 +2398,8 @@ comparison: {image: comp}
         );
         let dirs = [integration.path().to_path_buf(), correctness.path().to_path_buf()];
         for (runtime, target) in [
-            (LINUX_RUNTIME, Some(DEFAULT_LINUX_TARGET_IMAGE)),
-            (WINDOWS_RUNTIME, Some(DEFAULT_WINDOWS_TARGET_IMAGE)),
+            (LINUX_RUNTIME, Some("saluki-images/datadog-agent:testing-devel")),
+            (WINDOWS_RUNTIME, Some("saluki-images/agent-data-plane:testing-windows")),
             (MAC_RUNTIME, None),
         ] {
             let runners = discover_runners(&dirs, runtime, &[]).unwrap();

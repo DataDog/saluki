@@ -512,6 +512,7 @@ mod tests {
         Registries {
             participant_types: TYPES,
             steps: STEPS,
+            ..crate::case::fixtures::REGISTRIES
         },
         FixtureTypes,
         "fixture-participants",
@@ -838,6 +839,7 @@ mod tests {
             Registries {
                 participant_types: TYPES,
                 steps: STEPS,
+                ..crate::case::fixtures::REGISTRIES
             },
             FixtureTypes,
             "fixture",

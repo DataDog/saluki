@@ -7,8 +7,7 @@ use panoramic_core::result::TestResult;
 
 use crate::{
     config::{
-        target_image_for_runtime, AssertionStep, IntegrationConfig, DEFAULT_INTAKE_IMAGE, INTAKE_IMAGE_NAME,
-        MAC_RUNTIME, TARGET_IMAGE_NAME,
+        target_image_for_runtime, AssertionStep, IntegrationConfig, INTAKE_IMAGE_NAME, MAC_RUNTIME, TARGET_IMAGE_NAME,
     },
     image_override::ImageOverrides,
     test::{Test, TestContext},
@@ -26,7 +25,10 @@ impl IntegrationSettings {
         Self {
             runtime: runtime.to_string(),
             target_image: target_image_for_runtime(runtime).map(|image| overrides.image(TARGET_IMAGE_NAME, image)),
-            intake_image: overrides.image(INTAKE_IMAGE_NAME, DEFAULT_INTAKE_IMAGE),
+            intake_image: overrides.image(
+                INTAKE_IMAGE_NAME,
+                panoramic_participants::TOOLS_LINUX_IMAGE.local_default,
+            ),
         }
     }
 }

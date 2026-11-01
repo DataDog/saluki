@@ -371,6 +371,7 @@ mod tests {
         let registries = Registries {
             participant_types: &[&Observer, &Server],
             steps: STEPS,
+            ..Default::default()
         };
         let loader = CaseLoader::new(registries, FixtureTypes, "fixture");
         let yaml = concat!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {type: observer, subject: true, config: {env: {PORT: '{{ self.facts.port }}'}, params: {mode: [{nested: ['{{z-other.facts.file}}', false, 7]}]}}}\n  z-other: {type: server}\n", minimal_procedure!(), "\n");

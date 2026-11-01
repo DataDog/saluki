@@ -321,6 +321,7 @@ mod tests {
         let registries = Registries {
             participant_types: &[&ReservedFact, &EveryKindServer],
             steps: STEPS,
+            ..Default::default()
         };
         let loader = CaseLoader::new(registries, FixtureTypes, "fixture");
         for (os, kind) in [

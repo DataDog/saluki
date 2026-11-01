@@ -1,12 +1,19 @@
 //! Typed case schemas and the runners built from case plans.
 
-use std::{collections::BTreeSet, path::Path, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+    time::Duration,
+};
 
 use panoramic_core::case::{case_name, deserialize_case, CaseConfig, CaseSchema, TypedCase, TypedCaseLoader};
 use panoramic_core::{
+    artifact::ArtifactRole,
+    backend,
     layout::{Os, Realization, RealizationKind},
     plan::CasePlan,
 };
+use panoramic_participants::{AgentAdp, TOOLS_LINUX_IMAGE};
 use saluki_error::{generic_error, GenericError};
 
 use super::{
@@ -48,6 +55,26 @@ impl TypedConfig {
             },
         };
         Realization { os, kind }
+    }
+
+    /// Maps the runner's containers and host processes to roles, including backend artifacts.
+    fn artifact_roles(&self, os: Os) -> Vec<ArtifactRole> {
+        let mut roles = match self {
+            Self::Integration(config) => match os {
+                Os::Linux => {
+                    let mut roles = vec![AgentAdp::LINUX_IMAGE];
+                    if config.intake.enabled {
+                        roles.push(TOOLS_LINUX_IMAGE);
+                    }
+                    roles
+                }
+                Os::Windows => vec![AgentAdp::WINDOWS_IMAGE],
+                Os::MacOs => vec![AgentAdp::ADP_HOST_BINARY, AgentAdp::AGENT_HOST_INSTALL],
+            },
+            Self::Correctness(_) => vec![AgentAdp::LINUX_IMAGE, TOOLS_LINUX_IMAGE],
+        };
+        roles.extend_from_slice(backend::artifacts(self.realization(os).kind));
+        roles
     }
 }
 
@@ -121,14 +148,19 @@ impl TypedCaseLoader for TypedConfigLoader {
                         })
                     })
                     .collect::<Result<BTreeSet<_>, _>>()?;
+                let description = config.description.clone();
+                let timeout = config.timeout.0;
+                let config = TypedConfig::Integration(config);
+                let artifact_roles = subject_os.iter().map(|&os| (os, config.artifact_roles(os))).collect();
                 Ok(vec![TypedCase {
                     name,
-                    description: config.description.clone(),
+                    description,
                     suite: TestSuite::Integration.name().to_string(),
-                    timeout: config.timeout.0,
+                    timeout,
                     subject_os,
+                    artifact_roles,
                     disabled: false,
-                    config: TypedConfig::Integration(config),
+                    config,
                 }])
             }
             "correctness" => {
@@ -165,14 +197,18 @@ impl TypedCaseLoader for TypedConfigLoader {
 }
 
 fn from_correctness(name: String, config: CorrectnessConfig) -> TypedCase<TypedConfig> {
+    let disabled = config.disabled;
+    let config = TypedConfig::Correctness(config);
+    let artifact_roles = BTreeMap::from([(Os::Linux, config.artifact_roles(Os::Linux))]);
     TypedCase {
         name,
         description: None,
         suite: TestSuite::Correctness.name().to_string(),
         timeout: CORRECTNESS_TIMEOUT,
         subject_os: BTreeSet::from([Os::Linux]),
-        disabled: config.disabled,
-        config: TypedConfig::Correctness(config),
+        artifact_roles,
+        disabled,
+        config,
     }
 }
 
@@ -255,7 +291,10 @@ impl RunnableCase for LoadedPlan {
 
 #[cfg(test)]
 mod tests {
-    use panoramic_core::case::{CaseLoader, Registries};
+    use panoramic_core::{
+        artifact::BindingSource,
+        case::{CaseLoader, Registries},
+    };
 
     use super::*;
     use crate::config::{
@@ -330,6 +369,73 @@ mod tests {
     }
 
     #[test]
+    fn typed_integration_artifact_roles_follow_the_subject_os_and_linux_intake() {
+        let yaml = "type: integration\nname: case\ntimeout: 1s\nruntimes: [linux, mac, windows]\nprocedure: []\n";
+        for intake in [false, true] {
+            for (os, mut expected) in [
+                (Os::Linux, vec![AgentAdp::LINUX_IMAGE]),
+                (Os::MacOs, vec![AgentAdp::ADP_HOST_BINARY, AgentAdp::AGENT_HOST_INSTALL]),
+                (Os::Windows, vec![AgentAdp::WINDOWS_IMAGE]),
+            ] {
+                if os == Os::Linux {
+                    expected.extend_from_slice(backend::artifacts(RealizationKind::LinuxContainer));
+                    if intake {
+                        expected.push(TOOLS_LINUX_IMAGE);
+                    }
+                }
+                expected.sort_by_key(|role| role.name);
+                let plan = plan(&format!("{yaml}intake: {{enabled: {intake}}}\n"), os);
+                assert_eq!(
+                    plan.artifacts().iter().map(|binding| binding.role).collect::<Vec<_>>(),
+                    expected
+                );
+                for binding in plan.artifacts() {
+                    assert_eq!(binding.reference, binding.role.local_default);
+                    assert_eq!(binding.source, BindingSource::LocalDefault);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn typed_correctness_artifact_roles_map_containers_independently_of_their_file_images() {
+        for (runtime, backend_roles) in [
+            ("docker", backend::artifacts(RealizationKind::LinuxContainer)),
+            (
+                "kubernetes_in_docker",
+                backend::artifacts(RealizationKind::KubernetesPod),
+            ),
+        ] {
+            let mut expected = vec![AgentAdp::LINUX_IMAGE, TOOLS_LINUX_IMAGE];
+            expected.extend_from_slice(backend_roles);
+            expected.sort_by_key(|role| role.name);
+            for fields in [
+                CORRECTNESS_FIELDS.to_string(),
+                format!(
+                    "{}datadog_intake: {{image: 'another:intake'}}\nmillstone: {{image: 'another:generator'}}\n",
+                    CORRECTNESS_FIELDS
+                        .replace("base:file", "another:base")
+                        .replace("comp:file", "another:comparison")
+                ),
+            ] {
+                let yaml = format!(
+                    "type: correctness\n{}",
+                    fields.replace("runtime: docker", &format!("runtime: {runtime}"))
+                );
+                let plan = plan(&yaml, Os::Linux);
+                assert_eq!(
+                    plan.artifacts().iter().map(|binding| binding.role).collect::<Vec<_>>(),
+                    expected
+                );
+                for binding in plan.artifacts() {
+                    assert_eq!(binding.reference, binding.role.local_default);
+                    assert_eq!(binding.source, BindingSource::LocalDefault);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn integration_case_records_its_declared_name_description_timeout_and_subject_os() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_case(
@@ -381,6 +487,7 @@ mod tests {
             Registries {
                 participant_types: panoramic_participants::REGISTERED_TYPES,
                 steps: panoramic_steps::REGISTERED_STEPS,
+                ..Default::default()
             },
             TypedConfigLoader,
             TestSuite::Correctness.name(),

@@ -101,7 +101,8 @@ pub(crate) fn shared_root(kind: RealizationKind, os: Os, scope: &ScopeLayout) ->
     backend(kind).shared_root(os, scope)
 }
 
-pub(crate) fn artifacts(kind: RealizationKind) -> &'static [ArtifactRole] {
+/// Returns the artifact roles required by a realization's backend.
+pub fn artifacts(kind: RealizationKind) -> &'static [ArtifactRole] {
     backend(kind).artifacts()
 }
 

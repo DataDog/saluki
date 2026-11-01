@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use saluki_error::{generic_error, GenericError};
 
 use crate::{
-    artifact::{ArtifactBinding, ArtifactManifest},
+    artifact::{ArtifactBinding, ArtifactManifest, ArtifactRole},
     backend,
     case::{config_references::FileTemplates, CaseConfig, CaseFile, CaseSchema, Registries},
     layout::{describe_participant, lay_out, Layout, Os},
@@ -40,6 +40,7 @@ pub struct Planner<'a> {
     ports: PortRegistry,
     scopes: ScopeRegistry,
     bindings: BTreeMap<String, String>,
+    catalog: BTreeMap<&'static str, ArtifactRole>,
 }
 
 /// A loaded case with the layout selected for execution.
@@ -47,7 +48,7 @@ pub struct CasePlan<C> {
     case: CaseConfig<C>,
     subject_os: Os,
     layout: Option<Layout>,
-    artifacts: Option<Vec<ArtifactBinding>>,
+    artifacts: Vec<ArtifactBinding>,
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "Read when backends prepare isolation scopes.")
@@ -84,14 +85,16 @@ impl<'a> Planner<'a> {
     /// # Errors
     ///
     /// Returns an error for invalid install main-binary paths or conflicting role declarations across registered
-    /// participant types and backends, then for unknown manifest roles.
+    /// participant types, backends and typed schemas, then for unknown manifest roles.
     pub fn new(registries: Registries<'a>, manifest: ArtifactManifest) -> Result<Self, GenericError> {
-        check_artifact_manifest(registries, &manifest)?;
+        let catalog = artifacts::role_catalog(registries).map_err(|error| generic_error!(error))?;
+        artifacts::check_manifest(&catalog, &manifest).map_err(|error| generic_error!(error))?;
         Ok(Self {
             registries,
             ports: PortRegistry::new(),
             scopes: ScopeRegistry::new(),
             bindings: manifest.roles,
+            catalog,
         })
     }
 
@@ -115,7 +118,8 @@ impl<'a> Planner<'a> {
     /// # Errors
     ///
     /// Returns the first failing check, naming the case and source, and for per-OS checks the failing subject OS.
-    /// Participant cases are checked in this order; typed cases are not checked:
+    /// Typed cases must declare roles matching the catalog for the selected OS.
+    /// Participant cases are checked in this order:
     ///
     /// 1. Isolation scope allocation, when the case declares the selected OS.
     /// 2. On each declared subject OS in the order the case lists them, even when the selected OS is excluded:
@@ -136,7 +140,7 @@ impl<'a> Planner<'a> {
     pub fn compile<C>(&mut self, case: CaseConfig<C>, subject_os: Os) -> Result<Option<CasePlan<C>>, GenericError> {
         let selected = case.subject_os().contains(&subject_os);
         let mut layout = None;
-        let mut artifacts = None;
+        let mut artifacts = Vec::new();
         let mut scope = None;
         let mut order = None;
         let mut participants = BTreeMap::new();
@@ -188,12 +192,7 @@ impl<'a> Planner<'a> {
                 )
                 .map_err(error)?;
                 if os == subject_os {
-                    artifacts = Some(artifacts::bind(
-                        file,
-                        &candidate,
-                        self.registries.participant_types,
-                        &self.bindings,
-                    ));
+                    artifacts = artifacts::bind(file, &candidate, self.registries.participant_types, &self.bindings);
                     layout = Some(candidate);
                     order = Some(planned.order);
                     participants = planned.participants;
@@ -203,6 +202,25 @@ impl<'a> Planner<'a> {
             if selected {
                 scope = Some(candidate_scope);
             }
+        } else if selected {
+            let roles = case.typed_artifact_roles(subject_os);
+            for role in roles {
+                let mismatch = match self.catalog.get(role.name) {
+                    None => "is not declared by any participant type, backend or typed case schema".to_string(),
+                    Some(declared) if role != declared => {
+                        format!("is {} but declared as {}", role.describe(), declared.describe())
+                    }
+                    Some(_) => continue,
+                };
+                return Err(generic_error!(
+                    "case '{}' in {}: on subject OS '{}', artifact role '{}' {mismatch}",
+                    case.name(),
+                    case.source().display(),
+                    subject_os.name(),
+                    role.name,
+                ));
+            }
+            artifacts = artifacts::bind_roles(roles.iter().copied(), &self.bindings);
         }
         if !selected {
             return Ok(None);
@@ -236,9 +254,9 @@ impl<C> CasePlan<C> {
         self.layout.as_ref()
     }
 
-    /// Returns the selected layout's artifact bindings, sorted by role name, or `None` for typed cases.
-    pub fn artifacts(&self) -> Option<&[ArtifactBinding]> {
-        self.artifacts.as_deref()
+    /// Returns the case's artifact bindings for the selected OS, sorted by role name.
+    pub fn artifacts(&self) -> &[ArtifactBinding] {
+        &self.artifacts
     }
 
     /// Returns create dependency levels for participant cases, or `None` for typed cases.

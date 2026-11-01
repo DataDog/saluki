@@ -7,39 +7,40 @@ use panoramic_core::participant::{FactDeclaration, ParticipantType};
 /// The Core Agent and ADP running together.
 pub struct AgentAdp;
 
-/// Image `agent-adp` runs as a Linux container. Defaults to the integration runner's Linux target image.
-const LINUX_IMAGE: ArtifactRole = ArtifactRole {
-    name: "agent-adp-linux-image",
-    kind: ArtifactKind::Image,
-    local_default: "saluki-images/datadog-agent:testing-devel",
-};
-
-/// Image `agent-adp` runs as a Windows container. Defaults to the integration runner's Windows target image.
-const WINDOWS_IMAGE: ArtifactRole = ArtifactRole {
-    name: "agent-adp-windows-image",
-    kind: ArtifactKind::Image,
-    local_default: "saluki-images/agent-data-plane:testing-windows",
-};
-
-/// ADP executable `agent-adp` runs on macOS. Defaults to the macOS runner's ADP binary path.
-const ADP_HOST_BINARY: ArtifactRole = ArtifactRole {
-    name: "adp-host-binary",
-    kind: ArtifactKind::Binary,
-    local_default: "target/release/agent-data-plane",
-};
-
-/// Core Agent install and main binary `agent-adp` runs on macOS, matching the macOS runner's defaults.
-const AGENT_HOST_INSTALL: ArtifactRole = ArtifactRole {
-    name: "agent-host-install",
-    kind: ArtifactKind::Install {
-        main_binary: "bin/agent/agent",
-    },
-    local_default: "/tmp/saluki-dda/datadog-agent",
-};
-
 impl AgentAdp {
     /// Participant type name used in case files.
     pub const NAME: &'static str = "agent-adp";
+
+    /// Image providing the Core Agent and ADP in Linux containers.
+    pub const LINUX_IMAGE: ArtifactRole = ArtifactRole {
+        name: "agent-adp-linux-image",
+        kind: ArtifactKind::Image,
+        local_default: "saluki-images/datadog-agent:testing-devel",
+    };
+
+    /// Image providing the Core Agent and ADP in Windows containers.
+    pub const WINDOWS_IMAGE: ArtifactRole = ArtifactRole {
+        name: "agent-adp-windows-image",
+        kind: ArtifactKind::Image,
+        local_default: "saluki-images/agent-data-plane:testing-windows",
+    };
+
+    /// ADP executable for macOS host processes.
+    pub const ADP_HOST_BINARY: ArtifactRole = ArtifactRole {
+        name: "adp-host-binary",
+        kind: ArtifactKind::Binary,
+        local_default: "target/release/agent-data-plane",
+    };
+
+    /// Core Agent install and main binary for macOS host processes.
+    /// Defaults to the sandbox install `make provision-macos-test-env` writes.
+    pub const AGENT_HOST_INSTALL: ArtifactRole = ArtifactRole {
+        name: "agent-host-install",
+        kind: ArtifactKind::Install {
+            main_binary: "bin/agent/agent",
+        },
+        local_default: "/tmp/saluki-dda/datadog-agent",
+    };
 }
 
 impl ParticipantType for AgentAdp {
@@ -57,9 +58,9 @@ impl ParticipantType for AgentAdp {
 
     fn artifacts(&self, realization: Realization) -> &'static [ArtifactRole] {
         match (realization.os, realization.kind) {
-            (Os::Linux, RealizationKind::LinuxContainer) => &[LINUX_IMAGE],
-            (Os::MacOs, RealizationKind::HostProcessGroup) => &[ADP_HOST_BINARY, AGENT_HOST_INSTALL],
-            (Os::Windows, RealizationKind::WindowsContainer) => &[WINDOWS_IMAGE],
+            (Os::Linux, RealizationKind::LinuxContainer) => &[Self::LINUX_IMAGE],
+            (Os::MacOs, RealizationKind::HostProcessGroup) => &[Self::ADP_HOST_BINARY, Self::AGENT_HOST_INSTALL],
+            (Os::Windows, RealizationKind::WindowsContainer) => &[Self::WINDOWS_IMAGE],
             _ => &[],
         }
     }

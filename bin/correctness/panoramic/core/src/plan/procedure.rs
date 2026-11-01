@@ -198,6 +198,7 @@ mod tests {
         let registries = Registries {
             participant_types: &[&PodServer],
             steps: STEPS,
+            ..Default::default()
         };
         let loader = CaseLoader::new(registries, FixtureTypes, "fixture-participants");
         let yaml = FACT_CASE
@@ -263,6 +264,7 @@ mod tests {
         let registries = Registries {
             participant_types: &[&PodServer],
             steps: STEPS,
+            ..Default::default()
         };
         let loader = CaseLoader::new(registries, FixtureTypes, "fixture-participants");
         let yaml = FACT_CASE.replace("type: server", "type: pod-server, realization: {kind: kubernetes-pod}");

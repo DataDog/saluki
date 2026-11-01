@@ -202,6 +202,7 @@ impl ParticipantType for FileServer {
 pub(super) const FILE_REGISTRIES: Registries<'_> = Registries {
     participant_types: &[&FileServer, &Server],
     steps: STEPS,
+    ..crate::case::fixtures::REGISTRIES
 };
 pub(super) const FILE_CONFIG: &str = "{files: {settings.yaml: {from: source.yaml, template: true}}}";
 
@@ -419,6 +420,7 @@ pub(super) const CONFIG_REGISTRIES: Registries<'static> = Registries {
         &AssignedServer,
     ],
     steps: STEPS,
+    ..crate::case::fixtures::REGISTRIES
 };
 pub(super) const CONFIG_LOADER: CaseLoader<'static, FixtureTypes> =
     CaseLoader::new(CONFIG_REGISTRIES, FixtureTypes, "fixture-participants");
