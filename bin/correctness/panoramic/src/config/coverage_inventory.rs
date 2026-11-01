@@ -242,12 +242,11 @@ impl Inventory {
                 .copied()
                 .filter(|case| case.is_eligible_for(runtime))
                 .collect();
-            let runners = build_runners(eligible.iter().copied(), runtime, &[]).unwrap();
-            for (case, runner) in eligible.into_iter().zip(runners) {
+            for built in build_runners(eligible, runtime, &[]).unwrap() {
                 rows.push(Row::from_case(
                     root,
-                    case,
-                    runner.as_ref(),
+                    built.case,
+                    built.runner.as_ref(),
                     os.name(),
                     SELECTED,
                     &schemas,
@@ -255,7 +254,7 @@ impl Inventory {
             }
         }
         for case in correctness_cases {
-            let runners = build_runners(std::slice::from_ref(case), LINUX_RUNTIME, &[]).unwrap();
+            let built = build_runners([case], LINUX_RUNTIME, &[]).unwrap();
             let status = if case.is_eligible_for(LINUX_RUNTIME) {
                 SELECTED
             } else {
@@ -263,8 +262,8 @@ impl Inventory {
             };
             rows.push(Row::from_case(
                 root,
-                case,
-                runners[0].as_ref(),
+                built[0].case,
+                built[0].runner.as_ref(),
                 Os::Linux.name(),
                 status,
                 &schemas,

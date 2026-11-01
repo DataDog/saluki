@@ -40,6 +40,7 @@ mod mounts;
 use self::config::{
     build_runners, default_host_runtime, discover_in_scope,
     typed_case::{LoadedCase, TypedConfigLoader},
+    BuiltCase,
 };
 
 mod image_override;
@@ -142,12 +143,12 @@ fn initialize_logging(log_level: LogLevel) {
 }
 
 /// Splits the `-t` selection into the tests that matched and the names that matched nothing.
-fn resolve_selection(requested: &str, discovered: &[LoadedCase]) -> (Vec<String>, Vec<String>) {
+fn resolve_selection(requested: &str, discovered: &[&str]) -> (Vec<String>, Vec<String>) {
     let mut selected = Vec::new();
     let mut unmatched = Vec::new();
 
     for name in requested.split(',').map(str::trim).filter(|n| !n.is_empty()) {
-        if discovered.iter().any(|case| case.name() == name) {
+        if discovered.contains(&name) {
             selected.push(name.to_string());
         } else {
             unmatched.push(name.to_string());
@@ -181,11 +182,10 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         .runtime
         .clone()
         .unwrap_or_else(|| default_host_runtime().to_string());
-    let (cases, runners) = match discover_in_scope(&cmd.test_dirs, &integration_runtime).and_then(|cases| {
-        let runners = build_runners(&cases, &integration_runtime, &cmd.image_overrides)?;
-        Ok((cases, runners))
-    }) {
-        Ok(pair) => pair,
+    let mut built = match discover_in_scope(&cmd.test_dirs, &integration_runtime)
+        .and_then(|cases| build_runners(cases, &integration_runtime, &cmd.image_overrides))
+    {
+        Ok(built) => built,
         Err(e) => {
             if use_tui {
                 eprintln!("Failed to discover tests: {:#}", e);
@@ -196,7 +196,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         }
     };
 
-    if cases.is_empty() {
+    if built.is_empty() {
         let dirs_str: Vec<_> = cmd.test_dirs.iter().map(|d| d.display().to_string()).collect();
         let msg = format!("No test cases found in: {}", dirs_str.join(", "));
         if use_tui {
@@ -211,7 +211,8 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     // selection that leaves nothing to run, is an error rather than a green run of zero tests.
     let selected_tests = match cmd.tests.as_deref() {
         Some(requested) => {
-            let (selected, unmatched) = resolve_selection(requested, &cases);
+            let names: Vec<_> = built.iter().map(|built| built.case.name()).collect();
+            let (selected, unmatched) = resolve_selection(requested, &names);
             if !unmatched.is_empty() {
                 let msg = format!(
                     "No test matches: {}. Run 'panoramic list' to see the tests in scope for runtime '{}'.",
@@ -239,16 +240,11 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         None => None,
     };
     // Register only the selected tests so the runner and `run.json` share one selection.
-    assert_eq!(cases.len(), runners.len(), "one runner per case");
-    let (cases, runners): (Vec<_>, Vec<_>) = cases
-        .into_iter()
-        .zip(runners)
-        .filter(|(case, _)| {
-            selected_tests
-                .as_ref()
-                .is_none_or(|names| names.iter().any(|name| name == case.name()))
-        })
-        .unzip();
+    built.retain(|built| {
+        selected_tests
+            .as_ref()
+            .is_none_or(|names| names.iter().any(|name| name == built.case.name()))
+    });
 
     // Create log directory.
     let log_dir = match std::path::absolute(cmd.log_dir()) {
@@ -276,7 +272,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
             integration_runtime.clone(),
             cmd.parallelism.get(),
             log_dir.clone(),
-            cases.iter().map(|case| case.name().to_string()).collect(),
+            built.iter().map(|built| built.case.name().to_string()).collect(),
         ),
         cmd.fail_fast,
     );
@@ -286,7 +282,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
 
     // Spawn kind cluster setup in the background so non-kind tests start immediately.
     // Kind tests will wait on `kind_rx` before doing any work.
-    let kind_images = collect_kind_images(&runners);
+    let kind_images = collect_kind_images(&built);
     let kind_lifecycle_slot = std::sync::Arc::new(Mutex::new(None::<KindLifecycle>));
     let kind_rx = if kind_images.is_empty() {
         None
@@ -314,8 +310,8 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     if let Some(ref rx) = kind_rx {
         registry = registry.with_kind_ready(rx.clone());
     }
-    for runner in runners {
-        registry.register(runner).expect("failure to register test");
+    for built in built {
+        registry.register(built).expect("failure to register test");
     }
 
     // The consume loop cancels this on the first interrupt.
@@ -422,13 +418,13 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     collector::exit_code(collector.report())
 }
 
-/// Collects the unique set of images required by all kind-runtime tests in the given list.
-fn collect_kind_images(tests: &[Box<dyn test::Test>]) -> Vec<String> {
+/// Collects the unique images of every kind-runtime runner in `built`.
+fn collect_kind_images(built: &[BuiltCase]) -> Vec<String> {
     use std::collections::BTreeSet;
     let mut images = BTreeSet::new();
-    for test in tests {
-        if test.runtime() == "kubernetes_in_docker" {
-            for (_, image) in test.images() {
+    for BuiltCase { runner, .. } in built {
+        if runner.runtime() == "kubernetes_in_docker" {
+            for (_, image) in runner.images() {
                 images.insert(image);
             }
         }
@@ -469,7 +465,7 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
         };
         println!(
             "{}",
-            serde_json::to_string_pretty(&listing(&cases, &runners)).expect("Unable to serialize a map of the tests")
+            serde_json::to_string_pretty(&listing(&runners)).expect("Unable to serialize a map of the tests")
         )
     } else {
         if cases.is_empty() {
@@ -496,12 +492,10 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
 }
 
 /// Lists each case's suite and timeout, with the runtime and images its runner uses.
-fn listing(cases: &[LoadedCase], runners: &[Box<dyn test::Test>]) -> BTreeMap<String, serde_json::Value> {
-    debug_assert_eq!(cases.len(), runners.len());
-    cases
+fn listing(built: &[BuiltCase<&LoadedCase>]) -> BTreeMap<String, serde_json::Value> {
+    built
         .iter()
-        .zip(runners)
-        .map(|(case, runner)| {
+        .map(|BuiltCase { case, runner }| {
             (
                 case.name().to_string(),
                 serde_json::json!({
@@ -743,7 +737,8 @@ comparison: {image: comp}
             &format!("type: correctness_matrix\n{CORRECTNESS_FIELDS}variants: [{{name: second}}, {{name: first}}]\n"),
         );
         let cases = discover_in_scope(&[dir.path().to_path_buf()], LINUX_RUNTIME).unwrap();
-        let (selected, unmatched) = resolve_selection("matrix/first, missing, integration", &cases);
+        let names: Vec<_> = cases.iter().map(LoadedCase::name).collect();
+        let (selected, unmatched) = resolve_selection("matrix/first, missing, integration", &names);
         assert_eq!(selected, ["matrix/first", "integration"]);
         assert_eq!(unmatched, ["missing"]);
     }
@@ -799,7 +794,7 @@ comparison: {image: comp}
         );
         let cases = crate::CASE_LOADER.load_file(&path).unwrap();
         let runners = build_runners(&cases, LINUX_RUNTIME, &[]).unwrap();
-        let entries = listing(&cases, &runners);
+        let entries = listing(&runners);
         assert_eq!(entries.len(), 1);
         let entry = &entries["correctness"];
         assert_eq!(entry["type"], "correctness");
@@ -814,7 +809,7 @@ comparison: {image: comp}
         );
         let cases = crate::CASE_LOADER.load_file(&path).unwrap();
         let runners = build_runners(&cases, WINDOWS_RUNTIME, &[]).unwrap();
-        let entries = listing(&cases, &runners);
+        let entries = listing(&runners);
         assert_eq!(entries.len(), 1);
         let entry = &entries["integration"];
         assert_eq!(entry["type"], "integration");
@@ -825,7 +820,7 @@ comparison: {image: comp}
         let path = write_case(dir.path(), "participant", &PARTICIPANT_FIELDS.replace("1s", "9s"));
         let cases = crate::CASE_LOADER.load_file(&path).unwrap();
         let runners = build_runners(&cases, LINUX_RUNTIME, &[]).unwrap();
-        let entries = listing(&cases, &runners);
+        let entries = listing(&runners);
         assert_eq!(entries.len(), 1);
         let entry = &entries["participant"];
         assert_eq!(entry["type"], "integration");
@@ -836,7 +831,7 @@ comparison: {image: comp}
 
     #[test]
     fn selection_reports_names_that_match_nothing() {
-        let discovered: Vec<LoadedCase> = Vec::new();
+        let discovered: Vec<&str> = Vec::new();
         let (selected, unmatched) = resolve_selection("no-such-test", &discovered);
         assert!(selected.is_empty());
         assert_eq!(unmatched, vec!["no-such-test".to_string()]);

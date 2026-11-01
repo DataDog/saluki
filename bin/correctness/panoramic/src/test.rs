@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use async_trait::async_trait;
 use panoramic_core::deadline::Deadline;
@@ -8,7 +7,6 @@ use panoramic_core::ledger::ResourceLedger;
 use panoramic_core::record::CaseRecord;
 use panoramic_core::result::{PhaseTracker, TestResult};
 use panoramic_core::tasks::CaseTasks;
-use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
@@ -19,10 +17,8 @@ use tokio_util::sync::CancellationToken;
 /// gets its own independent receiver with its own "last seen" mark—no mutex needed.
 pub(crate) type KindReadyReceiver = watch::Receiver<Option<Result<(), String>>>;
 
-#[derive(Debug, Default, Clone, Copy, Eq, Ord, PartialOrd, PartialEq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum TestSuite {
-    #[default]
     Integration,
     Correctness,
 }
@@ -128,18 +124,6 @@ impl TestContext {
 
 #[async_trait]
 pub(crate) trait Test: Send + Sync {
-    /// The name of the test for reporting. Must be unique among all tests that are being executed.
-    fn name(&self) -> String;
-
-    /// The suite of tests that the test belongs to.
-    fn suite(&self) -> TestSuite;
-
-    /// The directory the test case was loaded from, for reporting.
-    fn case_path(&self) -> PathBuf;
-
-    /// How long the test should be allowed to run for before it's considered a failure.
-    fn timeout(&self) -> Duration;
-
     /// Returns the list of images that this test depends on as a map of `name -> image`.
     ///
     /// Panoramic depends on container images to be built and ready. Build processes need to be able to inspect these
@@ -167,17 +151,5 @@ pub(crate) fn resolve_case_path(loaded_from: &Path, path: impl AsRef<Path>) -> P
         path.to_path_buf()
     } else {
         loaded_from.parent().unwrap_or(Path::new("")).join(path)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::TestSuite;
-
-    #[test]
-    fn listing_suite_names_match_their_serialized_spellings() {
-        for suite in [TestSuite::Integration, TestSuite::Correctness] {
-            assert_eq!(serde_json::to_value(suite).unwrap(), suite.name());
-        }
     }
 }

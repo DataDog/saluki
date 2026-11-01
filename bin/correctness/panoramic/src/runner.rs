@@ -35,7 +35,7 @@ use tracing::{debug, error, info, warn};
 use crate::test::{RunnerSettings, Test, TestContext};
 use crate::{
     assertions::{AssertionContext, LogBuffer, TargetCommand},
-    config::{parse_file_spec, parse_port_spec},
+    config::{parse_file_spec, parse_port_spec, typed_case::LoadedCase, BuiltCase},
     intake::IntakeClient,
     integration::IntegrationTestCase,
 };
@@ -210,7 +210,7 @@ impl RunArgs {
 /// and event dispatch. Individual test logic lives in the `Test`
 /// implementations.
 pub(crate) struct Runner {
-    tests: Vec<Box<dyn Test>>,
+    tests: Vec<BuiltCase>,
     log_base_dir: PathBuf,
     settings: RunnerSettings,
     kind_ready: Option<crate::test::KindReadyReceiver>,
@@ -232,15 +232,19 @@ impl Runner {
     }
 
     /// Register a test. Returns an error if the test name is a duplicate.
-    pub(crate) fn register(&mut self, test: Box<dyn Test>) -> Result<(), GenericError> {
+    pub(crate) fn register(&mut self, built: BuiltCase) -> Result<(), GenericError> {
         // Inefficient but it probably does not matter unless we have thousands of tests.
-        if self.tests.iter().any(|existing| existing.name() == test.name()) {
+        if self
+            .tests
+            .iter()
+            .any(|existing| existing.case.name() == built.case.name())
+        {
             return Err(generic_error!(
                 "A test named '{}' already exists in the registry",
-                test.name()
+                built.case.name()
             ));
         }
-        self.tests.push(test);
+        self.tests.push(built);
         Ok(())
     }
 
@@ -253,7 +257,7 @@ impl Runner {
             cancel_all,
         } = args;
 
-        let tests: Vec<&dyn Test> = self.tests.iter().map(|t| t.as_ref()).collect();
+        let tests = &self.tests;
 
         let _ = event_sender.send(TestEvent::RunStarted {
             total_tests: tests.len(),
@@ -263,17 +267,18 @@ impl Runner {
         let semaphore = Arc::new(Semaphore::new(parallelism));
 
         if fail_fast {
-            self.run_fail_fast(&tests, &semaphore, &event_sender, &cancel_all).await;
+            self.run_fail_fast(tests, &semaphore, &event_sender, &cancel_all).await;
         } else {
-            self.run_parallel(&tests, parallelism, &semaphore, &event_sender, &cancel_all)
+            self.run_parallel(tests, parallelism, &semaphore, &event_sender, &cancel_all)
                 .await;
         }
     }
 
     async fn run_fail_fast(
-        &self, tests: &[&dyn Test], semaphore: &Semaphore, event_sender: &EventSender, cancel_all: &CancellationToken,
+        &self, tests: &[BuiltCase], semaphore: &Semaphore, event_sender: &EventSender, cancel_all: &CancellationToken,
     ) {
-        for test in tests {
+        for built in tests {
+            let test = built.runner.as_ref();
             if cancel_all.is_cancelled() {
                 break;
             }
@@ -295,7 +300,8 @@ impl Runner {
 
             let _permit = semaphore.acquire().await.unwrap();
             let result = Self::run_one(
-                *test,
+                &built.case,
+                test,
                 event_sender,
                 cancel_all,
                 self.log_base_dir.clone(),
@@ -311,12 +317,13 @@ impl Runner {
     }
 
     async fn run_parallel(
-        &self, tests: &[&dyn Test], parallelism: usize, semaphore: &Arc<Semaphore>, event_sender: &EventSender,
+        &self, tests: &[BuiltCase], parallelism: usize, semaphore: &Arc<Semaphore>, event_sender: &EventSender,
         cancel_all: &CancellationToken,
     ) {
         let mut futures = stream::FuturesUnordered::new();
 
-        for test in tests {
+        for built in tests {
+            let test = built.runner.as_ref();
             let semaphore = semaphore.clone();
             let cancel = cancel_all.clone();
             let log_base_dir = self.log_base_dir.clone();
@@ -353,7 +360,16 @@ impl Runner {
                     return;
                 }
 
-                Self::run_one(*test, event_sender, &cancel, log_base_dir, settings, kind_ready).await;
+                Self::run_one(
+                    &built.case,
+                    test,
+                    event_sender,
+                    &cancel,
+                    log_base_dir,
+                    settings,
+                    kind_ready,
+                )
+                .await;
             });
 
             while futures.len() >= parallelism {
@@ -365,19 +381,19 @@ impl Runner {
     }
 
     async fn run_one(
-        test: &dyn Test, event_sender: &EventSender, cancel_all: &CancellationToken, log_base_dir: PathBuf,
-        settings: RunnerSettings, kind_ready: Option<crate::test::KindReadyReceiver>,
+        case: &LoadedCase, test: &dyn Test, event_sender: &EventSender, cancel_all: &CancellationToken,
+        log_base_dir: PathBuf, settings: RunnerSettings, kind_ready: Option<crate::test::KindReadyReceiver>,
     ) -> TestResult {
-        let name = test.name();
-        let suite = test.suite();
-        let timeout = test.timeout();
+        let name = case.name().to_string();
+        let timeout = case.timeout();
+        let case_dir = case.source().parent().unwrap_or(Path::new("")).to_path_buf();
         let started = Instant::now();
 
         // A test-specific token lets a timeout cancel this test without cancelling the run.
         let test_cancel = CancellationToken::new();
 
         // Create a directory for the test to write logs into and pass it into the test context.
-        let log_dir = log_base_dir.join(format!("{:?}", suite).to_lowercase()).join(&name);
+        let log_dir = log_base_dir.join(case.suite()).join(case.name());
         if let Err(e) = tokio::fs::create_dir_all(&log_dir).await {
             let mut result = TestResult::errored(
                 name.clone(),
@@ -389,7 +405,7 @@ impl Runner {
                 started.elapsed(),
                 vec![],
             );
-            result.case_path = Some(test.case_path());
+            result.case_path = Some(case_dir.clone());
 
             // Report setup failures through events so the collector accounts for the selected test.
             let _ = event_sender.send(TestEvent::TestStarted { name });
@@ -401,8 +417,8 @@ impl Runner {
             return result;
         }
 
-        let case = Deadline::after(Budget::Case, timeout);
-        let mut tctx = TestContext::new(test_cancel.clone(), case, log_dir.clone(), settings);
+        let deadline = Deadline::after(Budget::Case, timeout);
+        let mut tctx = TestContext::new(test_cancel.clone(), deadline, log_dir.clone(), settings);
         if test.runtime() == "kubernetes_in_docker" {
             if let Some(rx) = kind_ready {
                 tctx = tctx.with_kind_ready(rx);
@@ -426,7 +442,7 @@ impl Runner {
             // The body precedes `cancel_all` to preserve a result ready when external cancellation arrives.
             tokio::select! {
                 biased;
-                _ = tokio::time::sleep_until(case.at) => {
+                _ = tokio::time::sleep_until(deadline.at) => {
                     let stop = Stop::snapshot(StoppedBy::CaseDeadline, &phases, &record);
                     test_cancel.cancel();
                     let returned = tokio::time::timeout(GRACE_TIME, &mut run_fut).await.ok();
@@ -467,9 +483,9 @@ impl Runner {
         result.reclaim = reclaim;
         result.issues.extend(issues);
 
-        // The runner is the only place that knows both the test and where its artifacts landed, so
-        // it stamps that provenance onto the result before anything reports on it.
-        result.case_path = Some(test.case_path());
+        // Stamp the case identity and artifact provenance before reporting the result.
+        result.name = case.name().to_string();
+        result.case_path = Some(case_dir.clone());
         result.log_dir = Some(log_dir.clone());
 
         write_result_log(&result, &log_dir);
@@ -1175,7 +1191,6 @@ pub(crate) mod test_support {
     use super::*;
     use crate::assertions::run_assertion_steps;
     use crate::assertions::test_support::{host_context, procedure};
-    use crate::test::TestSuite;
 
     /// What a [`ScriptedTest`] does once it has entered its phase.
     #[derive(Clone, Copy, Debug)]
@@ -1269,26 +1284,26 @@ pub(crate) mod test_support {
                 spawns: None,
             }
         }
+
+        /// Loads an integration case with this test's name and timeout, sourced from `/cases/<name>/config.yaml`.
+        pub(crate) fn case(&self) -> LoadedCase {
+            crate::CASE_LOADER
+                .load_content(
+                    &format!(
+                        "type: integration\nname: {}\ntimeout: {}ms\nruntimes: [linux]\nprocedure: []\n",
+                        self.name,
+                        self.timeout.as_millis(),
+                    ),
+                    &self.name,
+                    &PathBuf::from("/cases").join(&self.name).join("config.yaml"),
+                )
+                .expect("the scripted case should load")
+                .remove(0)
+        }
     }
 
     #[async_trait::async_trait]
     impl Test for ScriptedTest {
-        fn name(&self) -> String {
-            self.name.clone()
-        }
-
-        fn suite(&self) -> TestSuite {
-            TestSuite::Integration
-        }
-
-        fn case_path(&self) -> PathBuf {
-            PathBuf::from("/cases").join(&self.name)
-        }
-
-        fn timeout(&self) -> Duration {
-            self.timeout
-        }
-
         fn images(&self) -> BTreeMap<&str, String> {
             BTreeMap::new()
         }
@@ -1434,22 +1449,23 @@ mod tests {
 
     /// Runs a test within `bound`, using `log_base_dir` and run cancellation `cancel_all`. Discards events.
     async fn run_scripted_test(
-        test: &dyn Test, log_base_dir: &Path, cancel_all: &CancellationToken, bound: Duration,
+        test: &ScriptedTest, log_base_dir: &Path, cancel_all: &CancellationToken, bound: Duration,
     ) -> TestResult {
         let mounts_dir = tempfile::tempdir().expect("temp dir should be creatable");
         let settings = test_runner_settings(mounts_dir.path());
-        run_with_settings(test, settings, log_base_dir, cancel_all, bound).await
+        run_with_settings(&test.case(), test, settings, log_base_dir, cancel_all, bound).await
     }
 
     /// Runs a test with explicit settings and a timeout to catch hangs.
     async fn run_with_settings(
-        test: &dyn Test, settings: RunnerSettings, log_base_dir: &Path, cancel_all: &CancellationToken, bound: Duration,
+        case: &LoadedCase, test: &dyn Test, settings: RunnerSettings, log_base_dir: &Path,
+        cancel_all: &CancellationToken, bound: Duration,
     ) -> TestResult {
         let (tx, _rx) = mpsc::unbounded_channel();
 
         tokio::time::timeout(
             bound,
-            Runner::run_one(test, &tx, cancel_all, log_base_dir.to_path_buf(), settings, None),
+            Runner::run_one(case, test, &tx, cancel_all, log_base_dir.to_path_buf(), settings, None),
         )
         .await
         .expect("the runner should finish the test within the bound")
@@ -1523,8 +1539,10 @@ mod tests {
         let mounts_dir = tempfile::tempdir().expect("temp dir should be creatable");
         let (tx, mut rx) = mpsc::unbounded_channel();
 
+        let test = ScriptedTest::new("stuck", Behavior::WaitForCancel { finish_on_cancel: true });
         let result = Runner::run_one(
-            &ScriptedTest::new("stuck", Behavior::WaitForCancel { finish_on_cancel: true }),
+            &test.case(),
+            &test,
             &tx,
             &CancellationToken::new(),
             occupied_base_dir.path().to_path_buf(),
@@ -1548,6 +1566,98 @@ mod tests {
         assert_eq!(reported.name, "stuck");
         assert_eq!(reported.outcome, TestOutcome::Errored);
         assert_eq!(reported.error.as_ref().map(|e| e.kind), Some(ErrorKind::Setup));
+    }
+
+    #[tokio::test]
+    async fn reported_identity_comes_from_the_loaded_case() {
+        let case = crate::CASE_LOADER
+            .load_content(
+                "type: correctness\nruntime: docker\nanalysis_mode: metrics\nbaseline: {image: base}\ncomparison: {image: comp}\n",
+                "reported",
+                Path::new("/cases/reported/config.yaml"),
+            )
+            .unwrap()
+            .remove(0);
+        let test = ScriptedTest::new("body", Behavior::Pass);
+        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let result = tokio::time::timeout(
+            BOUND,
+            Runner::run_one(
+                &case,
+                &test,
+                &tx,
+                &CancellationToken::new(),
+                log_base_dir.path().to_path_buf(),
+                test_runner_settings(log_base_dir.path()),
+                None,
+            ),
+        )
+        .await
+        .expect("the runner should finish the test within the bound");
+
+        let log_dir = log_base_dir.path().join("correctness/reported");
+        assert_eq!(result.outcome, TestOutcome::Passed);
+        assert_eq!(result.name, "reported");
+        assert_eq!(result.case_path.as_deref(), Some(Path::new("/cases/reported")));
+        assert_eq!(result.log_dir.as_ref(), Some(&log_dir));
+        assert_eq!(written_report(&result)["name"], "reported");
+        let result_log = std::fs::read_to_string(log_dir.join(RESULT_LOG_FILE_NAME)).unwrap();
+        assert!(result_log.starts_with("PASS reported "), "{result_log}");
+        assert!(matches!(rx.try_recv().unwrap(), TestEvent::TestStarted { name } if name == "reported"));
+        let TestEvent::TestCompleted {
+            result,
+            log_dir: reported_dir,
+        } = rx.try_recv().unwrap()
+        else {
+            panic!("the runner should report completion");
+        };
+        assert_eq!(result.name, "reported");
+        assert_eq!(result.case_path.as_deref(), Some(Path::new("/cases/reported")));
+        assert_eq!(reported_dir, log_dir);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn the_case_deadline_comes_from_the_loaded_case() {
+        let case = crate::CASE_LOADER
+            .load_content(
+                "type: integration\nname: reported\ntimeout: 50ms\nruntimes: [linux]\nprocedure: []\n",
+                "reported",
+                Path::new("/cases/reported/config.yaml"),
+            )
+            .unwrap()
+            .remove(0);
+        let test = ScriptedTest::new("body", Behavior::WaitForCancel { finish_on_cancel: true });
+        assert_eq!(test.timeout, Duration::from_secs(60));
+        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let result = tokio::time::timeout(
+            BOUND,
+            Runner::run_one(
+                &case,
+                &test,
+                &tx,
+                &CancellationToken::new(),
+                log_base_dir.path().to_path_buf(),
+                test_runner_settings(log_base_dir.path()),
+                None,
+            ),
+        )
+        .await
+        .expect("the runner should enforce the loaded case's deadline");
+
+        assert_eq!(result.outcome, TestOutcome::TimedOut);
+        assert_eq!(result.name, "reported");
+        assert_eq!(
+            result.timeout,
+            Some(TimeoutAttribution::test_deadline(
+                Duration::from_millis(50),
+                Some("assertions".to_string()),
+            ))
+        );
     }
 
     #[tokio::test]
@@ -2204,7 +2314,7 @@ mod tests {
     /// A test case for the `mac` runtime using shell scripts as ADP and Core Agent binaries.
     #[cfg(unix)]
     struct MacCase {
-        test: IntegrationTestCase,
+        built: BuiltCase,
         settings: RunnerSettings,
         /// Holds the scripts until the case is dropped.
         _scripts: tempfile::TempDir,
@@ -2216,9 +2326,7 @@ mod tests {
         fn new(case: &str, core_agent: &str, adp: &str) -> Self {
             use std::os::unix::fs::PermissionsExt as _;
 
-            use crate::config::MAC_RUNTIME;
-            use crate::image_override::ImageOverrides;
-            use crate::integration::IntegrationSettings;
+            use crate::config::{build_runners, MAC_RUNTIME};
 
             let scripts = tempfile::tempdir().expect("temp dir should be creatable");
             let script = |name: &str, body: &str| {
@@ -2233,13 +2341,21 @@ mod tests {
                 core_agent_binary_path: script("core-agent", core_agent),
                 ..test_runner_settings(scripts.path())
             };
-            let config = serde_saphyr::from_str(case).expect("the case should parse");
-            let test = IntegrationTestCase::new(
-                config,
-                &IntegrationSettings::new(MAC_RUNTIME, &ImageOverrides::new(&[])),
-            );
+            let yaml: serde_json::Value = serde_saphyr::from_str(case).expect("the case should parse");
+            let name = yaml["name"].as_str().expect("the case should have a name");
+            let case = crate::CASE_LOADER
+                .load_content(
+                    &format!("type: integration\nruntimes: [mac]\n{case}"),
+                    name,
+                    &PathBuf::from("/cases").join(name).join("config.yaml"),
+                )
+                .expect("the mac case should load")
+                .remove(0);
+            let built = build_runners(vec![case], MAC_RUNTIME, &[])
+                .expect("the mac runner should build")
+                .remove(0);
             Self {
-                test,
+                built,
                 settings,
                 _scripts: scripts,
             }
@@ -2248,7 +2364,8 @@ mod tests {
         /// Runs the case through the runner within `bound`.
         async fn run(&self, log_base_dir: &Path, bound: Duration) -> TestResult {
             run_with_settings(
-                &self.test,
+                &self.built.case,
+                self.built.runner.as_ref(),
                 self.settings.clone(),
                 log_base_dir,
                 &CancellationToken::new(),

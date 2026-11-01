@@ -329,6 +329,7 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::*;
+    use crate::config::BuiltCase;
     use crate::runner::test_support::{test_runner_settings, Behavior, ScriptedTest};
     use crate::runner::{RunArgs, Runner};
     use crate::text_output::OutputFormat;
@@ -364,7 +365,12 @@ mod tests {
 
             let mut runner = Runner::new(log_dir.path(), test_runner_settings(mounts_dir.path()));
             for test in tests {
-                runner.register(Box::new(test)).expect("scripted test names are unique");
+                runner
+                    .register(BuiltCase {
+                        case: test.case(),
+                        runner: Box::new(test),
+                    })
+                    .expect("scripted test names are unique");
             }
             let cancel_all = CancellationToken::new();
             let (tx, events) = create_event_channel();

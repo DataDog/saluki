@@ -77,7 +77,7 @@ impl<'a> ImageOverrides<'a> {
     }
 
     /// Rejects duplicate or unmatched names across all runtime-eligible cases, before selection.
-    pub(crate) fn validate(&self, tests: &[Box<dyn Test>]) -> Result<(), GenericError> {
+    pub(crate) fn validate(&self, tests: &[&dyn Test]) -> Result<(), GenericError> {
         for (position, entry) in self.entries.iter().enumerate() {
             if self.entries[..position]
                 .iter()
@@ -101,7 +101,7 @@ impl<'a> ImageOverrides<'a> {
 }
 
 /// Lists the container names the discovered tests declare, for an error message.
-fn available_names(tests: &[Box<dyn Test>]) -> String {
+fn available_names(tests: &[&dyn Test]) -> String {
     let mut names: Vec<&str> = tests.iter().flat_map(|test| test.images().into_keys()).collect();
     names.sort_unstable();
     names.dedup();
@@ -193,7 +193,7 @@ comparison:
         entries.dedup_by(|a, b| a.name == b.name);
         let overrides = ImageOverrides::new(&entries);
         let tests = [integration_case(&overrides), correctness_case(&overrides)];
-        overrides.validate(&tests).unwrap();
+        overrides.validate(&[tests[0].as_ref(), tests[1].as_ref()]).unwrap();
         for test in tests {
             for image in test.images().values() {
                 assert_eq!(image, "registry.example.com/replacement:v1");
@@ -208,8 +208,10 @@ comparison:
             "container=registry.example.com/agent:abc123".parse().unwrap(),
         ];
         let overrides = ImageOverrides::new(&entries);
-        let tests = vec![integration_case(&overrides), correctness_case(&overrides)];
-        overrides.validate(&tests).expect("both names are declared in this run");
+        let tests = [integration_case(&overrides), correctness_case(&overrides)];
+        overrides
+            .validate(&[tests[0].as_ref(), tests[1].as_ref()])
+            .expect("both names are declared in this run");
 
         assert_eq!(
             tests[0].images().get("container"),
@@ -232,9 +234,9 @@ comparison:
     fn a_name_no_test_declares_is_rejected_with_the_names_that_exist() {
         let entries = ["millstoen=registry.example.com/tools:abc123".parse().unwrap()];
         let overrides = ImageOverrides::new(&entries);
-        let tests = vec![correctness_case(&overrides)];
+        let test = correctness_case(&overrides);
         let error = overrides
-            .validate(&tests)
+            .validate(&[test.as_ref()])
             .expect_err("a misspelled name should be rejected");
         let error = format!("{error:?}");
 
@@ -249,9 +251,9 @@ comparison:
             "millstone=registry.example.com/tools:second".parse().unwrap(),
         ];
         let overrides = ImageOverrides::new(&entries);
-        let tests = vec![correctness_case(&overrides)];
+        let test = correctness_case(&overrides);
         let error = overrides
-            .validate(&tests)
+            .validate(&[test.as_ref()])
             .expect_err("a repeated name should be rejected");
         let error = format!("{error:?}");
 

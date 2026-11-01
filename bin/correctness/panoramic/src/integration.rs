@@ -1,10 +1,6 @@
 //! Prepared integration test cases and their execution settings.
 
-use std::{
-    collections::{BTreeMap, HashMap},
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::collections::{BTreeMap, HashMap};
 
 use async_trait::async_trait;
 use panoramic_core::result::TestResult;
@@ -15,7 +11,7 @@ use crate::{
         MAC_RUNTIME, TARGET_IMAGE_NAME,
     },
     image_override::ImageOverrides,
-    test::{Test, TestContext, TestSuite},
+    test::{Test, TestContext},
 };
 
 /// Image and runtime choices shared by integration cases in a run.
@@ -96,22 +92,6 @@ impl IntegrationTestCase {
 
 #[async_trait]
 impl Test for IntegrationTestCase {
-    fn name(&self) -> String {
-        self.config.name.clone()
-    }
-
-    fn suite(&self) -> TestSuite {
-        TestSuite::Integration
-    }
-
-    fn case_path(&self) -> PathBuf {
-        self.config.loaded_from.parent().unwrap_or(Path::new("")).to_path_buf()
-    }
-
-    fn timeout(&self) -> Duration {
-        self.config.timeout.0
-    }
-
     fn images(&self) -> BTreeMap<&str, String> {
         self.resolved_images
             .iter()
@@ -140,6 +120,8 @@ impl Test for IntegrationTestCase {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use crate::config::{ActionConfig, AssertionConfig, LINUX_RUNTIME};
 

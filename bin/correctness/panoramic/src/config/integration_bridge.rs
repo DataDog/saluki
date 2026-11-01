@@ -309,20 +309,26 @@ mod tests {
             assert_eq!(integration_runners.len(), 1);
             let participant = &participant_runners[0];
             let integration = &integration_runners[0];
-            assert_eq!(participant.name(), integration.name());
-            assert_eq!(participant.name(), "alpha");
-            assert_eq!(participant.suite(), integration.suite());
-            assert_eq!(participant.suite(), TestSuite::Integration);
-            assert_eq!(participant.case_path(), integration.case_path());
-            assert_eq!(participant.case_path(), path.canonicalize().unwrap().parent().unwrap());
-            assert_eq!(participant.timeout(), integration.timeout());
-            assert_eq!(participant.runtime(), integration.runtime());
-            assert_eq!(participant.runtime(), runtime);
-            assert_eq!(participant.images(), integration.images());
+            assert_eq!(participant.case.name(), integration.case.name());
+            assert_eq!(participant.case.name(), "alpha");
+            assert_eq!(participant.case.suite(), integration.case.suite());
+            assert_eq!(participant.case.suite(), TestSuite::Integration.name());
+            assert_eq!(
+                participant.case.source().parent().unwrap(),
+                integration.case.source().parent().unwrap()
+            );
+            assert_eq!(
+                participant.case.source().parent().unwrap(),
+                path.canonicalize().unwrap().parent().unwrap()
+            );
+            assert_eq!(participant.case.timeout(), integration.case.timeout());
+            assert_eq!(participant.runner.runtime(), integration.runner.runtime());
+            assert_eq!(participant.runner.runtime(), runtime);
+            assert_eq!(participant.runner.images(), integration.runner.images());
             if runtime == MAC_RUNTIME {
-                assert!(participant.images().is_empty());
+                assert!(participant.runner.images().is_empty());
             } else {
-                assert_eq!(participant.images()["container"], "target:custom");
+                assert_eq!(participant.runner.images()["container"], "target:custom");
             }
         }
     }

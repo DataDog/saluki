@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::collections::BTreeMap;
 use std::{
     collections::HashMap,
@@ -694,7 +695,18 @@ pub(crate) fn discover_in_scope(dirs: &[PathBuf], integration_runtime: &str) -> 
     Ok(cases)
 }
 
-/// Builds integration and correctness runners, one per case in the input order.
+/// A loaded case and the runner built from it.
+///
+/// `C` is `LoadedCase` when the runner task owns the case, or `&LoadedCase` when the caller builds from the same cases
+/// more than once.
+pub(crate) struct BuiltCase<C = LoadedCase> {
+    /// The loaded case, which supplies the name, suite, directory and timeout the run reports.
+    pub(crate) case: C,
+    /// The runner built from `case` for the selected runtime and image overrides.
+    pub(crate) runner: Box<dyn Test>,
+}
+
+/// Builds an integration or correctness runner for each case and returns each case with its runner, in input order.
 ///
 /// Validates image overrides across every supplied case. Eligibility is the caller's responsibility:
 /// pass the cases intended to run or list.
@@ -703,16 +715,19 @@ pub(crate) fn discover_in_scope(dirs: &[PathBuf], integration_runtime: &str) -> 
 ///
 /// Reports every case that cannot build a runner, in input order, before validating image overrides.
 /// Returns an error if an image override is duplicate or unmatched.
-pub(crate) fn build_runners<'a>(
-    cases: impl IntoIterator<Item = &'a LoadedCase>, integration_runtime: &str, image_overrides: &[ImageOverride],
-) -> Result<Vec<Box<dyn Test>>, GenericError> {
+pub(crate) fn build_runners<C>(
+    cases: impl IntoIterator<Item = C>, integration_runtime: &str, image_overrides: &[ImageOverride],
+) -> Result<Vec<BuiltCase<C>>, GenericError>
+where
+    C: Borrow<LoadedCase>,
+{
     let overrides = ImageOverrides::new(image_overrides);
     let settings = IntegrationSettings::new(integration_runtime, &overrides);
-    let mut runners = Vec::new();
+    let mut built = Vec::new();
     let mut errors = Vec::new();
     for case in cases {
-        match case.build_test(integration_runtime, &settings, &overrides) {
-            Ok(runner) => runners.push(runner),
+        match case.borrow().build_test(integration_runtime, &settings, &overrides) {
+            Ok(runner) => built.push(BuiltCase { case, runner }),
             Err(error) => errors.push(format!("{error:#}").replace('\n', "\n    ")),
         }
     }
@@ -722,8 +737,9 @@ pub(crate) fn build_runners<'a>(
             errors.join("\n  - ")
         ));
     }
+    let runners: Vec<_> = built.iter().map(|b| b.runner.as_ref()).collect();
     overrides.validate(&runners)?;
-    Ok(runners)
+    Ok(built)
 }
 
 /// Parse a port specification (for example, "8125/udp") into port number and protocol.
@@ -1018,9 +1034,9 @@ timeout: 30s
 
     fn discover_runners(
         dirs: &[PathBuf], runtime: &str, image_overrides: &[ImageOverride],
-    ) -> Result<Vec<Box<dyn Test>>, GenericError> {
+    ) -> Result<Vec<BuiltCase>, GenericError> {
         let cases = discover_in_scope(dirs, runtime)?;
-        build_runners(&cases, runtime, image_overrides)
+        build_runners(cases, runtime, image_overrides)
     }
 
     #[test]
@@ -1437,15 +1453,16 @@ timeout: 30s
             cases.iter().map(LoadedCase::name).collect::<Vec<_>>(),
             ["integration", "correctness"]
         );
-        for (case, runner) in cases.iter().zip(&runners) {
-            assert_eq!(runner.name(), case.name());
-        }
         assert_eq!(
-            runners[0].images(),
+            runners.iter().map(|built| built.case.name()).collect::<Vec<_>>(),
+            ["integration", "correctness"]
+        );
+        assert_eq!(
+            runners[0].runner.images(),
             BTreeMap::from([("container", DEFAULT_LINUX_TARGET_IMAGE.to_string())])
         );
-        assert_eq!(runners[1].images()["baseline"], "base:override");
-        assert_eq!(runners[1].images()["comparison"], "comp");
+        assert_eq!(runners[1].runner.images()["baseline"], "base:override");
+        assert_eq!(runners[1].runner.images()["comparison"], "comp");
     }
 
     #[test]
@@ -1464,8 +1481,8 @@ procedure: []
         let runners = discover_runners(&[base_dir.path().to_path_buf()], "windows", &[]).unwrap();
 
         assert_eq!(runners.len(), 1);
-        assert_eq!(runners[0].name(), "windows-smoke");
-        assert_eq!(runners[0].runtime(), "windows");
+        assert_eq!(runners[0].case.name(), "windows-smoke");
+        assert_eq!(runners[0].runner.runtime(), "windows");
     }
 
     #[test]
@@ -1482,7 +1499,7 @@ procedure: []
         );
 
         let runners = discover_runners(&[base_dir.path().to_path_buf()], "windows", &[]).unwrap();
-        let images = runners[0].images();
+        let images = runners[0].runner.images();
 
         assert_eq!(images.get("container"), Some(&DEFAULT_WINDOWS_TARGET_IMAGE.to_string()));
     }
@@ -1501,7 +1518,7 @@ procedure: []
         );
 
         let runners = discover_runners(&[base_dir.path().to_path_buf()], "linux", &[]).unwrap();
-        let images = runners[0].images();
+        let images = runners[0].runner.images();
 
         assert_eq!(images.get("container"), Some(&DEFAULT_LINUX_TARGET_IMAGE.to_string()));
     }
@@ -1533,8 +1550,13 @@ variants:
         assert_eq!(runners.len(), 2);
         // Canonicalized, because the loader canonicalizes the config path it derives this from.
         let case_dir = base_dir.path().join("dsd-matrix").canonicalize().unwrap();
-        for runner in &runners {
-            assert_eq!(runner.case_path(), case_dir, "case path for '{}'", runner.name());
+        for built in &runners {
+            assert_eq!(
+                built.case.source().parent().unwrap(),
+                case_dir,
+                "case path for '{}'",
+                built.case.name()
+            );
         }
     }
 
@@ -2049,8 +2071,6 @@ variants:
             assert_eq!(config.comparison.env["COMPARISON_ONLY"], "comparison");
             assert!(!config.comparison.env.contains_key("BASELINE_ONLY"));
             let case = CorrectnessTestCase::new(name.clone(), config);
-            assert_eq!(case.name(), name);
-            assert_eq!(case.case_path(), path.parent().unwrap().canonicalize().unwrap());
             assert_eq!(case.runtime(), "kubernetes_in_docker");
             assert_eq!(case.images(), ordinary_case.images());
             assert_eq!(
@@ -2203,7 +2223,7 @@ variants: [{name: one, env: {QUOTED: "true"}}]
         let expanded = matrix.expand(&ordinary, "scalars");
         let runners = discover_runners(&[dir.path().to_path_buf()], LINUX_RUNTIME, &[]).unwrap();
         assert_eq!(runners.len(), 1);
-        assert_eq!(runners[0].name(), "scalars/one");
+        assert_eq!(runners[0].case.name(), "scalars/one");
         for config in [&ordinary, &expanded[0].1] {
             assert_eq!(config.baseline.command, ["sleep", "10", "01", "1e3", "true", "1.50"]);
             assert_eq!(config.baseline.entrypoint, ["env", "20", "02", "2e3", "false", "2.50"]);
@@ -2310,16 +2330,16 @@ comparison: {image: comp}
             ("unknown", None),
         ] {
             let runners = discover_runners(&dirs, runtime, &[]).unwrap();
-            assert_eq!(runners[0].name(), "correctness");
-            assert_eq!(runners[0].runtime(), "docker");
+            assert_eq!(runners[0].case.name(), "correctness");
+            assert_eq!(runners[0].runner.runtime(), "docker");
             assert_eq!(runners.len(), if runtime == "unknown" { 1 } else { 2 });
             if runtime != "unknown" {
-                assert_eq!(runners[1].runtime(), runtime);
+                assert_eq!(runners[1].runner.runtime(), runtime);
                 let expected: BTreeMap<&str, String> = target
                     .into_iter()
                     .map(|image| (TARGET_IMAGE_NAME, image.to_string()))
                     .collect();
-                assert_eq!(runners[1].images(), expected);
+                assert_eq!(runners[1].runner.images(), expected);
             }
         }
         let override_entry = ["container=target:override".parse().unwrap()];
@@ -2414,8 +2434,8 @@ comparison: {{image: comp}}
             );
             let runners = discover_runners(&[dir.path().to_path_buf()], LINUX_RUNTIME, &entries).unwrap();
             assert_eq!(runners.len(), count);
-            for runner in runners {
-                let images = runner.images();
+            for built in runners {
+                let images = built.runner.images();
                 for entry in &entries {
                     assert_eq!(images[entry.name.as_str()], entry.image);
                 }
@@ -2440,7 +2460,6 @@ comparison: {image: comp}
         assert_eq!(config.loaded_from, source);
         assert_eq!(config.millstone.config_path, PathBuf::from("millstone.yaml"));
         let case = CorrectnessTestCase::new("relative".to_string(), config);
-        assert_eq!(case.case_path(), Path::new("/cases/relative"));
         assert_eq!(
             case.millstone_config().config_path,
             Path::new("/cases/relative").join("millstone.yaml")

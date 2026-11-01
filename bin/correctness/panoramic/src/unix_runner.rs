@@ -50,7 +50,7 @@ use crate::{
     assertions::{AssertionContext, LogBuffer, TargetCommand},
     config::parse_port_spec,
     integration::IntegrationTestCase,
-    test::{Test, TestContext},
+    test::TestContext,
 };
 
 /// How long to wait for the Core Agent to write its `auth_token` and `ipc_cert.pem` before
@@ -119,7 +119,7 @@ impl UnixIntegrationRunner {
     /// Runs the test case and returns the result.
     pub(crate) async fn run(&mut self) -> TestResult {
         let started = Instant::now();
-        let test_name = self.test_case.name();
+        let test_name = self.test_case.config.name.clone();
         let mut phase_timings = Vec::new();
 
         info!(test = %test_name, "Starting Unix integration test case.");

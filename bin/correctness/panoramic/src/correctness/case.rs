@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use airlock::{
     config::{
@@ -14,8 +13,7 @@ use panoramic_core::result::TestResult;
 use saluki_error::{generic_error, GenericError};
 
 use super::config::{Config, Runtime, TargetConfig};
-use crate::config::typed_case::CORRECTNESS_TIMEOUT;
-use crate::test::{resolve_case_path, Test, TestContext, TestSuite};
+use crate::test::{resolve_case_path, Test, TestContext};
 
 /// Container names a correctness test carries in [`Test::images`] and image overrides.
 pub(crate) const BASELINE_IMAGE_NAME: &str = "baseline";
@@ -114,22 +112,6 @@ pub(crate) fn env_assignments(env: &BTreeMap<String, String>) -> Vec<String> {
 
 #[async_trait]
 impl Test for CorrectnessTestCase {
-    fn name(&self) -> String {
-        self.name.clone()
-    }
-
-    fn suite(&self) -> TestSuite {
-        TestSuite::Correctness
-    }
-
-    fn case_path(&self) -> PathBuf {
-        self.config.loaded_from.parent().unwrap_or(Path::new("")).to_path_buf()
-    }
-
-    fn timeout(&self) -> Duration {
-        CORRECTNESS_TIMEOUT
-    }
-
     fn images(&self) -> BTreeMap<&str, String> {
         let mut m = BTreeMap::new();
         m.insert(BASELINE_IMAGE_NAME, self.config.baseline.image.clone());

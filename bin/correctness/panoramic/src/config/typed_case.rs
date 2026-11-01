@@ -230,14 +230,12 @@ impl RunnableCase for LoadedCase {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
     use panoramic_core::case::{CaseLoader, Registries};
 
     use super::*;
     use crate::{
         config::{
-            build_runners, default_host_runtime,
+            build_runners,
             tests::{write_case, PARTICIPANT_FIELDS},
         },
         participants, steps,
@@ -395,15 +393,16 @@ mod tests {
         );
         let source = path.canonicalize().unwrap();
         let runners = build_runners(&cases, LINUX_RUNTIME, &[]).unwrap();
-        for ((case, runner), variant) in cases.iter().zip(&runners).zip(["second", "first"]) {
+        for (built, variant) in runners.iter().zip(["second", "first"]) {
+            let case = built.case;
             assert_eq!(case.source(), source);
             assert_eq!(case.timeout(), CORRECTNESS_TIMEOUT);
             assert_eq!(case.suite(), TestSuite::Correctness.name());
             assert_eq!(case.description(), None);
             assert_eq!(*case.subject_os(), BTreeSet::from([Os::Linux]));
             assert!(!case.is_disabled());
-            assert_eq!(runner.name(), format!("matrix/{variant}"));
-            assert_eq!(runner.case_path(), source.parent().unwrap());
+            assert_eq!(case.name(), format!("matrix/{variant}"));
+            assert_eq!(case.source().parent().unwrap(), source.parent().unwrap());
 
             // Check the variant data build_test consumes; CorrectnessTestCase exposes its target environment.
             let CaseSchema::Typed(TypedConfig::Correctness(config)) = case.schema() else {
@@ -532,66 +531,8 @@ mod tests {
         let entries = ["baseline=base:override".parse().unwrap()];
         let overridden = build_runners(&cases, LINUX_RUNTIME, &entries).unwrap();
         let declared = build_runners(&cases, LINUX_RUNTIME, &[]).unwrap();
-        assert_eq!(overridden[0].images()["baseline"], "base:override");
-        assert_eq!(declared[0].images()["baseline"], "base:file");
-    }
-
-    #[test]
-    fn facade_metadata_matches_the_built_runner_for_every_checked_in_case() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-        for suite in ["integration", "correctness"] {
-            let mut loaded = 0;
-            let mut built = 0;
-            for entry in fs::read_dir(root.join("test").join(suite).join("cases")).unwrap() {
-                let dir = entry.unwrap().path();
-                let path = dir.join("config.yaml");
-                if !dir.is_dir() || !path.is_file() {
-                    continue;
-                }
-                let cases = crate::CASE_LOADER.load_file(&path).unwrap();
-                assert!(!cases.is_empty(), "{}", path.display());
-                loaded += cases.len();
-                let yaml: serde_json::Value = serde_saphyr::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-                for case in cases {
-                    if yaml["type"] == "integration" {
-                        let declared_os: BTreeSet<_> = match yaml.get("runtimes") {
-                            Some(runtimes) => runtimes
-                                .as_array()
-                                .unwrap()
-                                .iter()
-                                .map(|runtime| os_for_runtime(runtime.as_str().unwrap()).unwrap())
-                                .collect(),
-                            None => BTreeSet::from([os_for_runtime(default_host_runtime()).unwrap()]),
-                        };
-                        assert_eq!(*case.subject_os(), declared_os, "{}", path.display());
-                    }
-                    for runtime in [LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME] {
-                        if !case.is_eligible_for(runtime) {
-                            continue;
-                        }
-                        let runners = build_runners(std::slice::from_ref(&case), runtime, &[]).unwrap();
-                        let runner = &runners[0];
-                        assert_eq!(case.name(), runner.name(), "{} under {runtime}", path.display());
-                        assert_eq!(
-                            case.suite(),
-                            runner.suite().name(),
-                            "{} under {runtime}",
-                            path.display()
-                        );
-                        assert_eq!(
-                            case.source().parent().unwrap(),
-                            runner.case_path(),
-                            "{} under {runtime}",
-                            path.display()
-                        );
-                        assert_eq!(case.timeout(), runner.timeout(), "{} under {runtime}", path.display());
-                        built += 1;
-                    }
-                }
-            }
-            assert!(loaded > 0, "{suite} must contain cases");
-            assert!(built > 0, "{suite} must contain eligible cases");
-        }
+        assert_eq!(overridden[0].runner.images()["baseline"], "base:override");
+        assert_eq!(declared[0].runner.images()["baseline"], "base:file");
     }
 
     #[test]
@@ -658,7 +599,10 @@ mod tests {
         assert_eq!(case.source(), path.canonicalize().unwrap());
         assert_eq!(case.name(), "case");
         let runners = build_runners(&cases, LINUX_RUNTIME, &[]).unwrap();
-        assert_eq!(runners[0].case_path(), path.canonicalize().unwrap().parent().unwrap());
+        assert_eq!(
+            runners[0].case.source().parent().unwrap(),
+            path.canonicalize().unwrap().parent().unwrap()
+        );
     }
 
     #[test]
