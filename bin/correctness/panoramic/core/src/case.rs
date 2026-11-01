@@ -217,10 +217,9 @@ where
     /// a nonempty, unique `subject_os` list using `linux`, `macos` or `windows`, and a nonempty procedure.
     /// Participant names must be DNS labels starting with a letter, other than `self`;
     /// exactly one subject is required, without an `os` override.
-    /// Types and steps must be registered, their fields valid, and their references declared.
-    /// Connections must name another, existing participant. Endpoint and connection checks against types
-    /// run in [`crate::plan::CasePlan::compile`].
-    /// OS overlays must be reachable, and referenced facts must be declared by the participant's type.
+    /// Types and steps must be registered, their fields valid, and participant and process names declared.
+    /// Connections must name another, existing participant. OS overlays must be reachable.
+    /// Fact availability and endpoint and connection checks run in [`crate::plan::CasePlan::compile`].
     /// Configuration file sources, including overlays, must be nonempty relative paths within the case directory
     /// that resolve to existing files or directories. Symlink targets may be outside the directory.
     /// Sources marked `template: true` must be regular UTF-8 files; each is read and parsed once, and its references

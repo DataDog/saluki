@@ -193,7 +193,8 @@ Parent-directory components must stay within the case directory; symlink targets
 
 `panoramic list` shows each participant case's layout. A case whose layout is invalid on any OS it lists in
 `subject_os` fails discovery for `list` and `run`, whatever runtime is selected.
-A referenced fact missing for a participant's realization on any OS in `subject_os` also fails discovery.
+Plan compilation checks fact availability for both steps and configuration on every OS in `subject_os`.
+A referenced fact missing for a participant's realization fails planning and therefore discovery.
 
 Connections and endpoint overrides are checked the same way: on every OS in `subject_os`, each `connect` key
 must be an endpoint the participant consumes, the target must serve the named endpoint with its configuration,

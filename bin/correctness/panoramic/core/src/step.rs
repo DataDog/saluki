@@ -10,8 +10,9 @@ use crate::backend::LateFact;
 /// A step's fields as written in the case file, keyed by field name.
 pub type StepFields = BTreeMap<String, Value>;
 
-/// Something a built step uses, checked against the case when it loads.
-/// Fact and late-fact needs are checked again against each OS's layout when the case is planned.
+/// A dependency of a built step.
+///
+/// Loading checks participant and process names; planning checks fact and late-fact availability for each subject OS.
 #[derive(Debug, PartialEq)]
 pub enum Need {
     /// The participant the step runs on.
@@ -32,8 +33,8 @@ pub trait Step: fmt::Debug + Send + Sync {
 
 /// Builds a named step from its case-file fields at load time.
 ///
-/// The step crate registers factories for steps such as log and file assertions; the case loader
-/// calls them before checking each built step's [`Need`]s against the case and participant types.
+/// The step crate registers factories for log and file assertions. The loader builds steps and checks
+/// participant and process names; planning checks fact and late-fact availability through [`Step::needs`].
 pub trait StepFactory: Send + Sync {
     /// Registry name, as written in a node's `step`.
     fn name(&self) -> &'static str;
@@ -47,7 +48,7 @@ pub trait StepFactory: Send + Sync {
 
     /// Decodes and validates fields without performing I/O or running the step.
     ///
-    /// Report participant, process, fact and late-fact dependencies through [`Step::needs`]; the loader validates them.
+    /// Report dependencies through [`Step::needs`] for load-time and plan-time checks.
     ///
     /// # Errors
     ///

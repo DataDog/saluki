@@ -78,21 +78,41 @@ mod tests {
     };
 
     #[test]
+    fn undeclared_step_facts_fail_at_plan_time() {
+        for (participant, participant_type, fact) in [("subject", "server", "missing"), ("other", "client", "file")] {
+            let yaml = FACT_CASE
+                .replace(
+                    "participants:",
+                    "participants:\n  other: {type: client, connect: {upstream: subject.api}}",
+                )
+                .replace("subject.facts.file", &format!("{participant}.facts.{fact}"));
+            let message = compile(&yaml, Os::Linux).err().unwrap().to_string();
+            assert_eq!(message, format!(
+                "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 1 references fact '{fact}' of participant '{participant}', which type '{participant_type}' does not provide as linux-container on linux; it provides it as none"
+            ));
+        }
+    }
+
+    #[test]
     fn a_step_and_a_configuration_reference_to_a_fact_the_realization_lacks_report_the_same_reason() {
-        let step_yaml = FACT_CASE.replace("[linux]", "[macos]");
-        let config_yaml = PARTICIPANT_FIELDS.replace("[linux]", "[macos]").replace(
-            "subject: true",
-            "subject: true, config: {env: {KEY: '{{ subject.facts.file }}'}}",
-        );
-        let step_error = compile(&step_yaml, Os::MacOs).err().unwrap().to_string();
-        let config_error = compile(&config_yaml, Os::MacOs).err().unwrap().to_string();
-        let step_reason = step_error
-            .strip_prefix("case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', step 1 ")
-            .unwrap();
-        let config_reason = config_error
-            .strip_prefix("case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'subject' of type 'server' as host-process-group on macos environment variable 'KEY' '{{ subject.facts.file }}' ")
-            .unwrap();
-        assert_eq!(step_reason, config_reason);
+        for fact in ["file", "missing"] {
+            let step_yaml = FACT_CASE
+                .replace("[linux]", "[macos]")
+                .replace("subject.facts.file", &format!("subject.facts.{fact}"));
+            let config_yaml = PARTICIPANT_FIELDS.replace("[linux]", "[macos]").replace(
+                "subject: true",
+                &format!("subject: true, config: {{env: {{KEY: '{{{{ subject.facts.{fact} }}}}'}}}}"),
+            );
+            let step_error = compile(&step_yaml, Os::MacOs).err().unwrap().to_string();
+            let config_error = compile(&config_yaml, Os::MacOs).err().unwrap().to_string();
+            let step_reason = step_error
+                .strip_prefix("case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', step 1 ")
+                .unwrap();
+            let config_reason = config_error
+                .strip_prefix(&format!("case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'subject' of type 'server' as host-process-group on macos environment variable 'KEY' '{{{{ subject.facts.{fact} }}}}' "))
+                .unwrap();
+            assert_eq!(step_reason, config_reason);
+        }
     }
 
     #[test]

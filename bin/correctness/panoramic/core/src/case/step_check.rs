@@ -1,6 +1,6 @@
 //! Builds case procedure steps through their factories and checks what each step references.
 
-use std::{collections::BTreeSet, path::Path};
+use std::path::Path;
 
 use saluki_error::{generic_error, GenericError};
 use serde_json::Value;
@@ -10,8 +10,7 @@ use super::{
     participant_check::declared_names,
 };
 use crate::{
-    layout::Realization,
-    participant::{find_type, ParticipantType, SHARED_DIR_FACT},
+    participant::{find_type, ParticipantType},
     record::step_label,
     step::{Need, Step, StepFactory},
 };
@@ -106,22 +105,6 @@ fn build_step(
                 )
             )));
         };
-        if let Need::Fact(_, fact) = &need {
-            let declared: BTreeSet<_> = participant_type
-                .supports()
-                .iter()
-                .flat_map(|&(os, kind)| participant_type.facts(Realization { os, kind }))
-                .map(|declaration| declaration.name)
-                .collect();
-            if fact != SHARED_DIR_FACT && !declared.contains(fact.as_str()) {
-                return Err(error(format!(
-                    "'{}' references fact '{fact}' of participant '{participant}', which type '{}' does not declare; it declares {}",
-                    node.name,
-                    participant_type.name(),
-                    declared_names(&declared.into_iter().collect::<Vec<_>>())
-                )));
-            }
-        }
         if let Need::Process(_, process) = &need {
             if !participant_type.processes().contains(&process.as_str()) {
                 return Err(error(format!(
@@ -150,12 +133,10 @@ fn contains_template_reference(value: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::super::fixtures::{minimal_procedure, Probe, Server, STEPS, TYPES};
+    use super::super::fixtures::{Probe, Server, STEPS, TYPES};
     use super::*;
     use crate::{
         backend::LateFact,
-        layout::{Os, RealizationKind},
-        participant::FactDeclaration,
         step::{decode_fields, StepFields},
     };
 
@@ -296,25 +277,6 @@ mod tests {
     }
 
     #[test]
-    fn every_participant_type_declares_shared_dir_at_load() {
-        for participant_type in TYPES {
-            let mut file = case("- {step: probe, on: subject, path: '{{ subject.facts.shared_dir }}'}");
-            file.participants.get_mut("subject").unwrap().participant_type = participant_type.name().into();
-            let procedure = build_steps(&file, STEPS, TYPES, "alpha", Path::new("cases/alpha/config.yaml")).unwrap();
-            let [ProcedureNode::Step(step)] = procedure.as_slice() else {
-                panic!("expected one step")
-            };
-            assert_eq!(
-                step.needs(),
-                [
-                    Need::Handle("subject".into()),
-                    Need::Fact("subject".into(), SHARED_DIR_FACT.into())
-                ]
-            );
-        }
-    }
-
-    #[test]
     fn late_fact_references_in_declared_template_fields_build_and_report_needs() {
         for fact in [LateFact::ContainerId, LateFact::Ip, LateFact::PodUid] {
             let procedure = build(&format!(
@@ -341,111 +303,10 @@ mod tests {
     }
 
     #[test]
-    fn fact_references_require_a_known_participant_and_a_declared_fact() {
-        for (reference, expected) in [
-            ("missing.facts.file", "'probe' references fact 'file' of unknown participant 'missing'; participants: other, subject"),
-            ("subject.facts.missing", "'probe' references fact 'missing' of participant 'subject', which type 'server' does not declare; it declares file"),
-            ("other.facts.file", "'probe' references fact 'file' of participant 'other', which type 'client' does not declare; it declares none"),
-        ] {
-            let message = build_error(&format!("- {{step: probe, on: subject, path: '{{{{ {reference} }}}}'}}"));
-            assert_eq!(message, format!("case 'alpha' in cases/alpha/config.yaml: step 1 {expected}"));
-        }
-    }
-
-    #[test]
-    fn declared_fact_names_are_the_sorted_union_of_supported_realizations() {
-        struct Declarations {
-            supported: bool,
-        }
-
-        impl ParticipantType for Declarations {
-            fn name(&self) -> &'static str {
-                "server"
-            }
-
-            fn supports(&self) -> &'static [(Os, RealizationKind)] {
-                if self.supported {
-                    &[
-                        (Os::Linux, RealizationKind::LinuxContainer),
-                        (Os::Windows, RealizationKind::WindowsContainer),
-                    ]
-                } else {
-                    &[]
-                }
-            }
-
-            fn facts(&self, realization: Realization) -> &'static [FactDeclaration] {
-                match (realization.os, realization.kind) {
-                    (Os::Linux, RealizationKind::LinuxContainer) => &[
-                        FactDeclaration {
-                            name: "common",
-                            value: "shared",
-                        },
-                        FactDeclaration {
-                            name: "zeta",
-                            value: "last",
-                        },
-                    ],
-                    (Os::Windows, RealizationKind::WindowsContainer) => &[
-                        FactDeclaration {
-                            name: "alpha",
-                            value: "first",
-                        },
-                        FactDeclaration {
-                            name: "common",
-                            value: "shared",
-                        },
-                    ],
-                    _ => &[],
-                }
-            }
-
-            fn processes(&self) -> &'static [&'static str] {
-                &[]
-            }
-        }
-
-        let file = case("- {step: probe, on: subject, path: '{{ subject.facts.missing }}'}");
-        for (supported, expected) in [(true, "alpha, common, zeta"), (false, "none")] {
-            let message = build_steps(
-                &file,
-                STEPS,
-                &[&Declarations { supported }],
-                "alpha",
-                Path::new("config.yaml"),
-            )
-            .unwrap_err()
-            .to_string();
-            assert_eq!(message, format!(
-                "case 'alpha' in config.yaml: step 1 'probe' references fact 'missing' of participant 'subject', which type 'server' does not declare; it declares {expected}"
-            ));
-        }
-    }
-
-    #[test]
-    fn a_fact_declared_for_any_supported_realization_passes_the_load_check() {
-        let yaml = super::super::fixtures::PARTICIPANT_FIELDS
-            .replace("[linux]", "[macos]")
-            .replace(
-                minimal_procedure!(),
-                "procedure: [{step: probe, on: subject, path: '{{ subject.facts.file }}'}]",
-            );
-        let cases = super::super::fixtures::LOADER
-            .load_content(&yaml, "alpha", Path::new("config.yaml"))
-            .unwrap();
-        assert_eq!(cases.len(), 1);
-        let crate::case::CaseSchema::Participants { procedure, .. } = cases[0].schema() else {
-            panic!("expected participant data");
-        };
-        let [ProcedureNode::Step(step)] = procedure.as_slice() else {
-            panic!("expected one step");
-        };
-        assert_eq!(
-            step.needs(),
-            [
-                Need::Handle("subject".into()),
-                Need::Fact("subject".into(), "file".into())
-            ]
+    fn fact_references_require_a_known_participant() {
+        let message = build_error("- {step: probe, on: subject, path: '{{ missing.facts.file }}'}");
+        assert_eq!(message,
+            "case 'alpha' in cases/alpha/config.yaml: step 1 'probe' references fact 'file' of unknown participant 'missing'; participants: other, subject"
         );
     }
 
