@@ -143,7 +143,8 @@ supports this subset of the schema:
   must be YAML strings.
 - The steps `log_contains` and `log_not_contains`, without `process`. They search the output of every process
   together, and what is captured differs by OS.
-- The step `file_contains`. Its `path` may reference a participant fact as `{{ <participant>.facts.<fact> }}`.
+- The step `file_contains`. Its `path` may reference a participant fact, written as in the example above with the
+  participant's name and the fact's name.
   `agent-adp` declares `default_log_file` on Linux and Windows only, so a case that runs on macOS writes the path out.
 - `parallel` blocks of these steps.
 
