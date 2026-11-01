@@ -36,13 +36,28 @@ mod config;
 mod dynamic_vars;
 mod integration;
 mod mounts;
-use self::config::{build_runners, case::CaseConfig, default_host_runtime, discover_in_scope};
+use self::config::{
+    build_runners,
+    case::{CaseLoader, Registries},
+    default_host_runtime, discover_in_scope,
+    typed_case::{LoadedCase, TypedConfigLoader},
+};
 
 mod image_override;
 mod intake;
 
 mod participants;
 mod steps;
+
+/// Loads case files with the participant types and steps this binary registers.
+pub(crate) const CASE_LOADER: CaseLoader<'static, TypedConfigLoader> = CaseLoader::new(
+    Registries {
+        participant_types: participants::REGISTERED_TYPES,
+        steps: steps::REGISTERED_STEPS,
+    },
+    TypedConfigLoader,
+);
+
 mod text_output;
 use self::text_output::{OutputFormat, Reporter};
 
@@ -127,7 +142,7 @@ fn initialize_logging(log_level: LogLevel) {
 }
 
 /// Splits the `-t` selection into the tests that matched and the names that matched nothing.
-fn resolve_selection(requested: &str, discovered: &[CaseConfig]) -> (Vec<String>, Vec<String>) {
+fn resolve_selection(requested: &str, discovered: &[LoadedCase]) -> (Vec<String>, Vec<String>) {
     let mut selected = Vec::new();
     let mut unmatched = Vec::new();
 
@@ -481,7 +496,7 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
 }
 
 /// Lists each case's suite and timeout, with the runtime and images its runner uses.
-fn listing(cases: &[CaseConfig], runners: &[Box<dyn test::Test>]) -> BTreeMap<String, serde_json::Value> {
+fn listing(cases: &[LoadedCase], runners: &[Box<dyn test::Test>]) -> BTreeMap<String, serde_json::Value> {
     debug_assert_eq!(cases.len(), runners.len());
     cases
         .iter()
@@ -660,7 +675,7 @@ comparison: {image: comp}
         );
         let cases = discover_in_scope(&[dir.path().to_path_buf()], LINUX_RUNTIME).unwrap();
         assert_eq!(
-            cases.iter().map(CaseConfig::name).collect::<Vec<_>>(),
+            cases.iter().map(LoadedCase::name).collect::<Vec<_>>(),
             ["good", "participant"]
         );
         for json in [false, true] {
@@ -782,7 +797,7 @@ comparison: {image: comp}
             "correctness",
             &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
         );
-        let cases = CaseConfig::load_file(&path).unwrap();
+        let cases = crate::CASE_LOADER.load_file(&path).unwrap();
         let runners = build_runners(&cases, LINUX_RUNTIME, &[]).unwrap();
         let entries = listing(&cases, &runners);
         assert_eq!(entries.len(), 1);
@@ -797,7 +812,7 @@ comparison: {image: comp}
             "integration",
             "type: integration\nname: integration\ntimeout: 7s\nruntimes: [windows]\nprocedure: []\n",
         );
-        let cases = CaseConfig::load_file(&path).unwrap();
+        let cases = crate::CASE_LOADER.load_file(&path).unwrap();
         let runners = build_runners(&cases, WINDOWS_RUNTIME, &[]).unwrap();
         let entries = listing(&cases, &runners);
         assert_eq!(entries.len(), 1);
@@ -808,7 +823,7 @@ comparison: {image: comp}
         assert_eq!(entry["images"]["container"], DEFAULT_WINDOWS_TARGET_IMAGE);
 
         let path = write_case(dir.path(), "participant", &PARTICIPANT_FIELDS.replace("1s", "9s"));
-        let cases = CaseConfig::load_file(&path).unwrap();
+        let cases = crate::CASE_LOADER.load_file(&path).unwrap();
         let runners = build_runners(&cases, LINUX_RUNTIME, &[]).unwrap();
         let entries = listing(&cases, &runners);
         assert_eq!(entries.len(), 1);
@@ -821,7 +836,7 @@ comparison: {image: comp}
 
     #[test]
     fn selection_reports_names_that_match_nothing() {
-        let discovered: Vec<CaseConfig> = Vec::new();
+        let discovered: Vec<LoadedCase> = Vec::new();
         let (selected, unmatched) = resolve_selection("no-such-test", &discovered);
         assert!(selected.is_empty());
         assert_eq!(unmatched, vec!["no-such-test".to_string()]);

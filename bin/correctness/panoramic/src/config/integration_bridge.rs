@@ -238,8 +238,9 @@ mod tests {
     use crate::{
         config::{
             build_runners,
-            case::{CaseConfig, CaseSchema},
+            case::CaseSchema,
             tests::{write_case, LOGGING_INTEGRATION, LOGGING_PARTICIPANT, PARTICIPANT_FIELDS},
+            typed_case::{RunnableCase, TypedConfig},
             Need, LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME,
         },
         steps::{tests::fields, REGISTERED_STEPS},
@@ -259,8 +260,8 @@ mod tests {
             let integration_root = tempfile::tempdir().unwrap();
             let participant_path = write_case(participant_root.path(), "alpha", participant_yaml);
             let integration_path = write_case(integration_root.path(), "alpha", integration_yaml);
-            let participant_cases = CaseConfig::load_file(&participant_path).unwrap();
-            let integration_cases = CaseConfig::load_file(&integration_path).unwrap();
+            let participant_cases = crate::CASE_LOADER.load_file(&participant_path).unwrap();
+            let integration_cases = crate::CASE_LOADER.load_file(&integration_path).unwrap();
             assert_eq!(participant_cases.len(), 1);
             assert_eq!(integration_cases.len(), 1);
             assert_eq!(build_runners(&participant_cases, LINUX_RUNTIME, &[]).unwrap().len(), 1);
@@ -272,7 +273,7 @@ mod tests {
             let config = file
                 .integration_config(participant.name(), participant.source(), procedure, Os::Linux)
                 .unwrap();
-            let CaseSchema::Integration(integration) = integration_cases[0].schema() else {
+            let CaseSchema::Typed(TypedConfig::Integration(integration)) = integration_cases[0].schema() else {
                 panic!("expected integration data");
             };
             assert_eq!(
@@ -288,9 +289,9 @@ mod tests {
     fn participant_case_runners_match_their_integration_twins_on_every_subject_os() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_case(dir.path(), "alpha", LOGGING_PARTICIPANT);
-        let participant_cases = CaseConfig::load_file(&path).unwrap();
+        let participant_cases = crate::CASE_LOADER.load_file(&path).unwrap();
         write_case(dir.path(), "alpha", LOGGING_INTEGRATION);
-        let integration_cases = CaseConfig::load_file(&path).unwrap();
+        let integration_cases = crate::CASE_LOADER.load_file(&path).unwrap();
         let overrides = ["container=target:custom".parse().unwrap()];
         for runtime in [LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME] {
             let overrides = if runtime == MAC_RUNTIME {
@@ -340,7 +341,7 @@ mod tests {
                 .replace("linux, macos, windows", oses)
                 .replace(r"C:\adp\adp.log", "{{ adp.facts.default_log_file }}");
             let path = write_case(dir.path(), "alpha", &participant_yaml);
-            let participant_cases = CaseConfig::load_file(&path).unwrap();
+            let participant_cases = crate::CASE_LOADER.load_file(&path).unwrap();
             for (os, literal) in [
                 (Os::Linux, "/var/log/datadog/agent-data-plane.log"),
                 (Os::Windows, r"C:\ProgramData\Datadog\logs\agent-data-plane.log"),
@@ -349,8 +350,8 @@ mod tests {
                     .replace("linux, mac, windows", runtimes)
                     .replace(r"C:\adp\adp.log", literal);
                 write_case(dir.path(), "alpha", &integration_yaml);
-                let integration_cases = CaseConfig::load_file(&path).unwrap();
-                let CaseSchema::Integration(integration) = integration_cases[0].schema() else {
+                let integration_cases = crate::CASE_LOADER.load_file(&path).unwrap();
+                let CaseSchema::Typed(TypedConfig::Integration(integration)) = integration_cases[0].schema() else {
                     panic!("expected integration data")
                 };
                 let translated = participant_cases[0].integration_config(os).unwrap();
@@ -510,7 +511,7 @@ mod tests {
         ] {
             let dir = tempfile::tempdir().unwrap();
             let path = write_case(dir.path(), "alpha", &PARTICIPANT_FIELDS.replace(old, new));
-            let cases = CaseConfig::load_file(&path).unwrap();
+            let cases = crate::CASE_LOADER.load_file(&path).unwrap();
             let error = build_runners(&cases, LINUX_RUNTIME, &[])
                 .err()
                 .expect("unsupported participant cases must fail runner construction");

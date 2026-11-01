@@ -16,11 +16,7 @@ use serde_json::{json, Value};
 
 use super::{create_case_dirs, read_text, repository_root, Inventory, INTEGRATION, JSON_PATH, OLD, PARTICIPANTS};
 use crate::{
-    config::{
-        case::{CaseConfig, Os},
-        tests::write_case,
-        ContainerConfig, IntakeConfig,
-    },
+    config::{case::Os, tests::write_case, typed_case::RunnableCase, ContainerConfig, IntakeConfig},
     participants::AGENT_ADP,
 };
 
@@ -369,7 +365,8 @@ fn only_the_logging_cases_and_the_log_parsed_exit_cases_fit_the_integration_runn
         )
         .filter_map(|(name, recorded)| {
             let (twin, _) = participant_twin(&recorded.case["config"]).ok()?;
-            let cases = CaseConfig::load_content(&twin, name, Path::new("config.yaml"))
+            let cases = crate::CASE_LOADER
+                .load_content(&twin, name, Path::new("config.yaml"))
                 .unwrap_or_else(|error| panic!("{name}: {error:#}"));
             let [case] = cases.as_slice() else {
                 panic!("{name}: expected one participant case");

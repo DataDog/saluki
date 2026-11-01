@@ -106,8 +106,8 @@ impl<'de> Deserialize<'de> for Template {
 
 #[cfg(test)]
 mod tests {
+    use super::super::step_check::{decode_fields, StepFields};
     use super::*;
-    use crate::config::{decode_fields, StepFields};
 
     #[test]
     fn literal_templates_resolve_verbatim_including_backslashes_and_single_braces() {

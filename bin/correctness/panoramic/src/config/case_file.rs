@@ -18,7 +18,7 @@ use super::{case::Os, deserialize_env_map, HumanDuration};
 /// A case's identity, participants and procedure.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct CaseFile {
+pub(crate) struct CaseFile {
     /// Reporting name. Defaults to the directory name and must match it when supplied.
     pub(super) name: Option<String>,
     /// Reporting description. Defaults to none.
@@ -28,7 +28,7 @@ pub(super) struct CaseFile {
     /// Required, nonempty list of supported subject operating systems, without duplicates; has no default.
     pub(super) subject_os: Vec<Os>,
     /// Required participant instances keyed by name. Must contain at least one; has no default.
-    pub(super) participants: BTreeMap<String, ParticipantEntry>,
+    pub(crate) participants: BTreeMap<String, ParticipantEntry>,
     /// Required ordered steps and parallel blocks. May be empty; has no default.
     pub(super) procedure: Vec<ProcedureNode>,
 }
@@ -73,7 +73,7 @@ impl CaseFile {
 /// One named instance of a participant type.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ParticipantEntry {
+pub(crate) struct ParticipantEntry {
     /// Required participant type name; has no default.
     #[serde(rename = "type")]
     pub(super) participant_type: String,
@@ -86,7 +86,7 @@ pub(super) struct ParticipantEntry {
     pub(super) realization: Option<RequestedRealization>,
     /// Product configuration. Defaults to empty maps.
     #[serde(default)]
-    pub(super) config: ParticipantConfig,
+    pub(crate) config: ParticipantConfig,
     /// Consumed endpoint names mapped to other participants' endpoints. Defaults to empty.
     #[serde(default)]
     pub(super) connect: BTreeMap<String, ConnectionTarget>,
@@ -125,10 +125,10 @@ pub(super) enum RealizationKind {
 /// Product configuration supplied to a participant.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ParticipantConfig {
+pub(crate) struct ParticipantConfig {
     /// Process environment variables; values must be YAML strings. Defaults to empty.
     #[serde(default, deserialize_with = "deserialize_env_map")]
-    pub(super) env: BTreeMap<String, String>,
+    pub(crate) env: BTreeMap<String, String>,
     /// Declared configuration file names mapped to case-relative sources. Defaults to empty.
     #[serde(default)]
     pub(super) files: BTreeMap<String, FileSource>,
@@ -140,13 +140,13 @@ pub(super) struct ParticipantConfig {
     pub(super) params: BTreeMap<String, Value>,
     /// Configuration overlays selected by participant OS. Defaults to empty.
     #[serde(default)]
-    pub(super) os: BTreeMap<Os, ConfigOverlay>,
+    pub(crate) os: BTreeMap<Os, ConfigOverlay>,
 }
 
 /// Product configuration overlaid for one participant OS.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ConfigOverlay {
+pub(crate) struct ConfigOverlay {
     /// Environment overrides; values must be YAML strings. Defaults to empty.
     // TODO: remove once panoramic builds participants from this field.
     #[allow(
@@ -154,7 +154,7 @@ pub(super) struct ConfigOverlay {
         reason = "Only tests read this field until participant construction uses it."
     )]
     #[serde(default, deserialize_with = "deserialize_env_map")]
-    pub(super) env: BTreeMap<String, String>,
+    pub(crate) env: BTreeMap<String, String>,
     /// Configuration file source overrides. Defaults to empty.
     #[serde(default)]
     pub(super) files: BTreeMap<String, FileSource>,
@@ -271,7 +271,7 @@ impl<'de> Deserialize<'de> for ConnectionTarget {
 
 /// One sequential step or a block of concurrent steps.
 #[derive(Debug)]
-pub(super) enum ProcedureNode<S = StepNode> {
+pub(crate) enum ProcedureNode<S = StepNode> {
     /// A single step, with its declaration-specific fields.
     Step(S),
     /// A nonempty block of steps to run concurrently.
@@ -335,7 +335,7 @@ impl<'de> Deserialize<'de> for ProcedureNode<StepNode> {
 
 /// A step name and the YAML fields its declaration decodes.
 #[derive(Debug)]
-pub(super) struct StepNode {
+pub(crate) struct StepNode {
     /// Required step declaration name; has no default.
     pub(super) name: String,
     /// Declaration-specific fields, preserving YAML value types; decoded by the step's declaration. Defaults to empty.
@@ -390,16 +390,13 @@ mod tests {
 
     use serde_json::json;
 
+    use super::super::case::fixtures::{self, write_case, NO_PARTICIPANT_FIELDS, PARTICIPANT_FIELDS};
     use super::*;
-    use crate::config::{
-        case::CaseConfig,
-        tests::{write_case, NO_PARTICIPANT_FIELDS, PARTICIPANT_FIELDS},
-    };
 
     fn load_error(yaml: &str) -> String {
         let dir = tempfile::tempdir().unwrap();
         let path = write_case(dir.path(), "alpha", yaml);
-        let error = CaseConfig::load_file(&path).err().expect("invalid case must fail");
+        let error = fixtures::LOADER.load_file(&path).err().expect("invalid case must fail");
         let message = format!("{error:#}");
         assert!(
             message.contains(&path.canonicalize().unwrap().display().to_string()),
@@ -417,17 +414,17 @@ description: A portable case
 timeout: 60s
 subject_os: [linux, macos, windows]
 participants:
-  adp:
-    type: agent-adp
+  subject:
+    type: server
     subject: true
     realization:
       kind: linux-container
       options: {host_pid: true}
     config:
-      env: {DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"}
+      env: {LISTEN_EXTERNAL: "true"}
       files:
         scripts: ./scripts/
-        datadog.yaml: {from: datadog-base.yaml, template: true}
+        settings.yaml: {from: settings-base.yaml, template: true}
       endpoints: {otlp_grpc: {port: 4317}}
       params: {nested: {enabled: true, count: 3}}
       os:
@@ -435,16 +432,16 @@ participants:
           env: {OS_NAME: windows}
           files: {scripts: windows/scripts}
           params: {command: [pwsh, -File, send.ps1]}
-    connect: {intake: intake.api}
-  intake:
-    type: datadog-intake
+    connect: {other: other.api}
+  other:
+    type: client
     os: linux
 procedure:
   - step: wait_ready
-    on: adp
+    on: subject
   - parallel:
       - step: log_not_contains
-        on: adp
+        on: subject
         pattern: "panic|PANIC"
         regex: true
         during: 10s
@@ -460,19 +457,19 @@ procedure:
             BTreeSet::from([Os::Linux, Os::MacOs, Os::Windows])
         );
         assert_eq!(file.participants.len(), 2);
-        let adp = &file.participants["adp"];
-        assert_eq!(adp.participant_type, "agent-adp");
-        assert!(adp.subject);
-        assert_eq!(adp.os, None);
-        let realization = adp.realization.as_ref().unwrap();
+        let subject = &file.participants["subject"];
+        assert_eq!(subject.participant_type, "server");
+        assert!(subject.subject);
+        assert_eq!(subject.os, None);
+        let realization = subject.realization.as_ref().unwrap();
         assert_eq!(realization.kind, RealizationKind::LinuxContainer);
         assert_eq!(realization.options, BTreeMap::from([("host_pid".into(), json!(true))]));
         assert_eq!(
-            adp.config.env,
-            BTreeMap::from([("DD_DOGSTATSD_NON_LOCAL_TRAFFIC".into(), "true".into())])
+            subject.config.env,
+            BTreeMap::from([("LISTEN_EXTERNAL".into(), "true".into())])
         );
         assert_eq!(
-            adp.config.files,
+            subject.config.files,
             BTreeMap::from([
                 (
                     "scripts".into(),
@@ -482,22 +479,22 @@ procedure:
                     }
                 ),
                 (
-                    "datadog.yaml".into(),
+                    "settings.yaml".into(),
                     FileSource {
-                        from: "datadog-base.yaml".into(),
+                        from: "settings-base.yaml".into(),
                         template: true
                     }
                 ),
             ])
         );
-        assert_eq!(adp.config.endpoints.len(), 1);
-        assert_eq!(adp.config.endpoints["otlp_grpc"].port, 4317);
+        assert_eq!(subject.config.endpoints.len(), 1);
+        assert_eq!(subject.config.endpoints["otlp_grpc"].port, 4317);
         assert_eq!(
-            adp.config.params,
+            subject.config.params,
             BTreeMap::from([("nested".into(), json!({"enabled": true, "count": 3}))])
         );
-        assert_eq!(adp.config.os.len(), 1);
-        let overlay = &adp.config.os[&Os::Windows];
+        assert_eq!(subject.config.os.len(), 1);
+        let overlay = &subject.config.os[&Os::Windows];
         assert_eq!(overlay.env, BTreeMap::from([("OS_NAME".into(), "windows".into())]));
         assert_eq!(
             overlay.files,
@@ -514,37 +511,37 @@ procedure:
             BTreeMap::from([("command".into(), json!(["pwsh", "-File", "send.ps1"]))])
         );
         assert_eq!(
-            adp.connect,
+            subject.connect,
             BTreeMap::from([(
-                "intake".into(),
+                "other".into(),
                 ConnectionTarget {
-                    participant: "intake".into(),
+                    participant: "other".into(),
                     endpoint: "api".into()
                 }
             )])
         );
-        let intake = &file.participants["intake"];
-        assert_eq!(intake.participant_type, "datadog-intake");
-        assert!(!intake.subject);
-        assert_eq!(intake.os, Some(Os::Linux));
-        assert!(intake.realization.is_none());
-        assert!(intake.config.env.is_empty());
-        assert!(intake.config.files.is_empty());
-        assert!(intake.config.endpoints.is_empty());
-        assert!(intake.config.params.is_empty());
-        assert!(intake.config.os.is_empty());
-        assert!(intake.connect.is_empty());
+        let other = &file.participants["other"];
+        assert_eq!(other.participant_type, "client");
+        assert!(!other.subject);
+        assert_eq!(other.os, Some(Os::Linux));
+        assert!(other.realization.is_none());
+        assert!(other.config.env.is_empty());
+        assert!(other.config.files.is_empty());
+        assert!(other.config.endpoints.is_empty());
+        assert!(other.config.params.is_empty());
+        assert!(other.config.os.is_empty());
+        assert!(other.connect.is_empty());
         let [ProcedureNode::Step(step), ProcedureNode::Parallel(steps)] = file.procedure.as_slice() else {
             panic!("expected one step followed by a parallel block");
         };
         assert_eq!(step.name, "wait_ready");
-        assert_eq!(step.fields, BTreeMap::from([("on".into(), json!("adp"))]));
+        assert_eq!(step.fields, BTreeMap::from([("on".into(), json!("subject"))]));
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].name, "log_not_contains");
         assert_eq!(
             steps[0].fields,
             BTreeMap::from([
-                ("on".into(), json!("adp")),
+                ("on".into(), json!("subject")),
                 ("pattern".into(), json!("panic|PANIC")),
                 ("regex".into(), json!(true)),
                 ("during".into(), json!("10s")),
@@ -631,16 +628,16 @@ procedure:
     #[test]
     fn a_participant_name_declared_twice_is_rejected() {
         let message = load_error(&PARTICIPANT_FIELDS.replace(
-            "  adp: {type: agent-adp, subject: true}",
-            "  adp: {type: agent-adp, subject: true}\n  adp: {type: datadog-intake}",
+            "  subject: {type: server, subject: true}",
+            "  subject: {type: server, subject: true}\n  subject: {type: client}",
         ));
-        assert!(message.contains("duplicate mapping key: adp"), "{message}");
+        assert!(message.contains("duplicate mapping key: subject"), "{message}");
     }
 
     #[test]
     fn connections_must_name_one_participant_and_one_endpoint() {
-        for value in ["intake", "intake.", ".api", "a.b.c", ""] {
-            let yaml = PARTICIPANT_FIELDS.replace("subject: true", &format!("connect: {{intake: '{value}'}}"));
+        for value in ["other", "other.", ".api", "a.b.c", ""] {
+            let yaml = PARTICIPANT_FIELDS.replace("subject: true", &format!("connect: {{other: '{value}'}}"));
             let message = load_error(&yaml);
             assert!(
                 message.contains(&format!(
@@ -649,11 +646,11 @@ procedure:
                 "{message}"
             );
         }
-        let endpoint: ConnectionTarget = serde_saphyr::from_str("intake.api").unwrap();
+        let endpoint: ConnectionTarget = serde_saphyr::from_str("other.api").unwrap();
         assert_eq!(
             endpoint,
             ConnectionTarget {
-                participant: "intake".into(),
+                participant: "other".into(),
                 endpoint: "api".into()
             }
         );
@@ -666,9 +663,9 @@ procedure:
                 "{step: wait_ready, parallel: [{step: wait_ready}]}",
                 "a procedure node must have 'step' or 'parallel', not both",
             ),
-            ("{on: adp}", "a procedure node must have 'step' or 'parallel'"),
+            ("{on: subject}", "a procedure node must have 'step' or 'parallel'"),
             (
-                "{parallel: [{step: wait_ready}], on: adp}",
+                "{parallel: [{step: wait_ready}], on: subject}",
                 "a 'parallel' block takes no other fields; found 'on'",
             ),
             ("{parallel: []}", "a 'parallel' block must contain at least one step"),
@@ -677,7 +674,7 @@ procedure:
                 "a 'parallel' block cannot contain another 'parallel' block",
             ),
             (
-                "{parallel: [{on: adp}]}",
+                "{parallel: [{on: subject}]}",
                 "a step in a 'parallel' block must have 'step'",
             ),
             ("wait_ready", "a procedure node mapping"),
@@ -689,7 +686,7 @@ procedure:
             let yaml = PARTICIPANT_FIELDS.replace("procedure: []", &format!("procedure:\n  - {node}"));
             let message = load_error(&yaml);
             assert!(message.contains(expected), "{message}");
-            if node == "{on: adp}" {
+            if node == "{on: subject}" {
                 assert!(!message.contains("not both"), "{message}");
             }
             assert!(message.contains("line "), "expected a YAML location: {message}");
@@ -796,7 +793,7 @@ procedure:
         for field in ["timeout", "subject_os", "participants", "procedure"] {
             let yaml = match field {
                 "participants" => {
-                    PARTICIPANT_FIELDS.replace("participants:\n  adp: {type: agent-adp, subject: true}\n", "")
+                    PARTICIPANT_FIELDS.replace("participants:\n  subject: {type: server, subject: true}\n", "")
                 }
                 _ => PARTICIPANT_FIELDS
                     .lines()
@@ -807,7 +804,7 @@ procedure:
             let message = load_error(&yaml);
             assert!(message.contains(&format!("missing field `{field}`")), "{message}");
         }
-        let message = load_error(&PARTICIPANT_FIELDS.replace("type: agent-adp, ", ""));
+        let message = load_error(&PARTICIPANT_FIELDS.replace("type: server, ", ""));
         assert!(message.contains("missing field `type`"), "{message}");
     }
 
@@ -816,9 +813,9 @@ procedure:
         for node in [
             "{step: wait_ready, step: wait_exit}",
             "{parallel: [{step: wait_ready}], parallel: [{step: wait_exit}]}",
-            "{step: wait_ready, on: adp, on: intake}",
+            "{step: wait_ready, on: subject, on: other}",
             "{parallel: [{step: wait_ready, step: wait_exit}]}",
-            "{parallel: [{step: wait_ready, on: adp, on: intake}]}",
+            "{parallel: [{step: wait_ready, on: subject, on: other}]}",
         ] {
             let error = serde_saphyr::from_str::<ProcedureNode>(node).unwrap_err();
             assert!(error.to_string().contains("duplicate"), "{error}");

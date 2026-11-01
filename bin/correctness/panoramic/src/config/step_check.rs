@@ -206,62 +206,8 @@ fn contains_template_reference(value: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use serde::Deserialize;
-
+    use super::super::case::fixtures::{Probe, SERVER, STEPS, TYPES};
     use super::*;
-    use crate::config::{FactDeclaration, Template};
-
-    #[derive(Debug, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Probe {
-        on: String,
-        process: Option<String>,
-        #[serde(default)]
-        values: Vec<Value>,
-        path: Option<Template>,
-    }
-
-    impl Step for Probe {
-        fn needs(&self) -> Vec<Need> {
-            let mut needs = match &self.process {
-                Some(process) => vec![Need::Process(self.on.clone(), process.clone())],
-                None => vec![Need::Handle(self.on.clone())],
-            };
-            if let Some(path) = &self.path {
-                needs.extend(
-                    path.references()
-                        .map(|(participant, fact)| Need::Fact(participant.into(), fact.into())),
-                );
-            }
-            needs
-        }
-    }
-
-    const PROBE: StepDeclaration = StepDeclaration {
-        name: "probe",
-        template_fields: &["path"],
-        build: |fields| Ok(Box::new(decode_fields::<Probe>(fields)?)),
-    };
-    const STEPS: &[&StepDeclaration] = &[&PROBE];
-    const SERVER: ParticipantDeclaration = ParticipantDeclaration {
-        name: "server",
-        config_files: &[],
-        endpoints: &[],
-        consumes: &[],
-        params: &[],
-        processes: &["server", "worker"],
-        facts: &[FactDeclaration {
-            name: "file",
-            values: &[(Os::Linux, "/logs/output.log"), (Os::Windows, r"C:\logs\output.log")],
-        }],
-    };
-    const CLIENT: ParticipantDeclaration = ParticipantDeclaration {
-        name: "client",
-        facts: &[],
-        processes: &[],
-        ..SERVER
-    };
-    const TYPES: &[&ParticipantDeclaration] = &[&CLIENT, &SERVER];
 
     fn case(procedure: &str) -> CaseFile {
         serde_saphyr::from_str(&format!(
@@ -296,7 +242,7 @@ mod tests {
         let message = build_error("- {step: missing, on: subject}");
         assert_eq!(
             message,
-            "case 'alpha' in cases/alpha/config.yaml: step 1 names unknown step 'missing'; registered steps: probe"
+            "case 'alpha' in cases/alpha/config.yaml: step 1 names unknown step 'missing'; registered steps: marker, probe"
         );
     }
 
@@ -454,72 +400,6 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert_eq!(message, "case 'alpha' in config.yaml: step 1 'probe' references fact 'file' of participant 'other', which type 'server' does not provide on macos; it provides it on linux, windows");
-    }
-
-    #[test]
-    fn registered_template_fields_match_step_types_and_other_fields_reject_references() {
-        for declaration in crate::steps::REGISTERED_STEPS {
-            let duration = if declaration.name == "log_not_contains" {
-                "during"
-            } else {
-                "timeout"
-            };
-            let mut file = case(&format!(
-                "- {{step: {}, on: subject, pattern: ready, {duration}: 1s}}",
-                declaration.name
-            ));
-            let ProcedureNode::Step(node) = &mut file.procedure[0] else {
-                panic!("expected one step")
-            };
-            if declaration.name == "file_contains" {
-                node.fields
-                    .insert("path".into(), Value::String("/logs/output.log".into()));
-            } else {
-                node.fields.insert("process".into(), Value::String("worker".into()));
-            }
-            let fields = node.fields.clone();
-            assert!(declaration
-                .template_fields
-                .iter()
-                .all(|field| fields.contains_key(*field)));
-            for field in fields
-                .keys()
-                .filter(|field| !matches!(field.as_str(), "during" | "timeout"))
-            {
-                let mut node = StepNode {
-                    name: declaration.name.into(),
-                    fields: fields.clone(),
-                };
-                node.fields
-                    .insert(field.clone(), Value::String("{{ subject.facts.file }}".into()));
-                let step = (declaration.build)(&node.fields).unwrap();
-                let declared = declaration.template_fields.contains(&field.as_str());
-                assert_eq!(
-                    step.needs().contains(&Need::Fact("subject".into(), "file".into())),
-                    declared,
-                    "{}: {field}",
-                    declaration.name
-                );
-                let result = build_step(
-                    &node,
-                    "1",
-                    &file,
-                    &BTreeSet::from([Os::Linux]),
-                    crate::steps::REGISTERED_STEPS,
-                    TYPES,
-                    "alpha",
-                    Path::new("config.yaml"),
-                );
-                if declared {
-                    assert!(result.is_ok(), "{}: {field}: {result:?}", declaration.name);
-                } else {
-                    assert_eq!(result.unwrap_err().to_string(), format!(
-                        "case 'alpha' in config.yaml: step 1 '{}': field '{field}' contains a template reference ('{{{{'); '{}' accepts references only in: {}",
-                        declaration.name, declaration.name, declared_names(declaration.template_fields)
-                    ));
-                }
-            }
-        }
     }
 
     #[test]

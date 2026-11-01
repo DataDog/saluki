@@ -12,10 +12,12 @@ use serde::{
 };
 use serde_json::Value;
 
-use self::case::CaseConfig;
+#[cfg(test)]
+pub(crate) use self::case_file::ProcedureNode;
 pub(crate) use self::participant_check::{FactDeclaration, ParticipantDeclaration};
 pub(crate) use self::step_check::{decode_fields, Need, Step, StepDeclaration, StepFields};
 pub(crate) use self::template::Template;
+use self::typed_case::{LoadedCase, RunnableCase};
 use crate::correctness::config::Config as CorrectnessConfig;
 use crate::image_override::{ImageOverride, ImageOverrides};
 use crate::integration::IntegrationSettings;
@@ -703,90 +705,9 @@ where
     serde_saphyr::from_str(content).error_context(format!("Failed to parse configuration file: {}", source.display()))
 }
 
-/// Discovers every case in the directories, sorted by name, including disabled cases and cases for any runtime.
-///
-/// Each `config.yaml` found in a direct subdirectory either declares participants without a top-level
-/// `type`, or selects `"integration"`, `"correctness"`, or `"correctness_matrix"` with that field.
-/// Each matrix variant produces one case. A `config.yml` file is rejected, even alongside a
-/// `config.yaml`; discovery still loads the latter to report every problem. A `config.yaml` entry
-/// that cannot be resolved or read is a load error, including a dangling symlink.
-///
-/// # Errors
-///
-/// Returns an error if a test directory is missing or cannot be read, a `config.yaml` cannot be resolved,
-/// read, or loaded, a case directory contains `config.yml`, or more than one case declares the same name.
-pub(crate) fn discover_cases(dirs: &[PathBuf]) -> Result<Vec<CaseConfig>, GenericError> {
-    let mut cases = Vec::new();
-    let mut load_errors = Vec::new();
-
-    for base_path in dirs {
-        if !base_path.is_dir() {
-            return Err(generic_error!("Test directory does not exist: {}", base_path.display()));
-        }
-
-        let entries = std::fs::read_dir(base_path)
-            .error_context(format!("Failed to read test directory: {}", base_path.display()))?;
-
-        for entry in entries {
-            let entry = entry.error_context("Failed to read directory entry")?;
-            let path = entry.path();
-
-            if path.is_dir() {
-                let config_path = path.join("config.yaml");
-                if std::fs::symlink_metadata(&config_path).is_ok() {
-                    match CaseConfig::load_file(&config_path) {
-                        Ok(loaded) => cases.extend(loaded),
-                        // Continue loading so one report names every problem. Reject the whole list on error:
-                        // a dropped case could make an incomplete run look like a passing run.
-                        Err(e) => load_errors.push((config_path, e)),
-                    }
-                }
-                // Treat config.yml as an error so a misspelled file cannot silently drop a case from every run.
-                let stray_path = path.join("config.yml");
-                if std::fs::symlink_metadata(&stray_path).is_ok() {
-                    let source = stray_path.canonicalize().unwrap_or_else(|_| stray_path.clone());
-                    load_errors.push((
-                        stray_path,
-                        generic_error!(
-                            "Case file {} is named config.yml; panoramic loads only config.yaml, so rename it",
-                            source.display()
-                        ),
-                    ));
-                }
-            }
-        }
-    }
-
-    load_errors.sort_by(|(a, _), (b, _)| a.cmp(b));
-    let mut problems: Vec<_> = load_errors.into_iter().map(|(_, error)| format!("{error:#}")).collect();
-    cases.sort_by(|a, b| (a.name(), a.source()).cmp(&(b.name(), b.source())));
-    for group in cases.chunk_by(|a, b| a.name() == b.name()) {
-        if group.len() > 1 {
-            let sources: Vec<_> = group.iter().map(|case| case.source().display().to_string()).collect();
-            problems.push(format!(
-                "Case name '{}' is declared more than once: {}",
-                group[0].name(),
-                sources.join(", ")
-            ));
-        }
-    }
-    if !problems.is_empty() {
-        let problems: Vec<_> = problems
-            .into_iter()
-            .map(|problem| problem.replace('\n', "\n    "))
-            .collect();
-        return Err(generic_error!(
-            "Failed to load test cases:\n  - {}",
-            problems.join("\n  - ")
-        ));
-    }
-
-    Ok(cases)
-}
-
 /// Discovers enabled cases eligible for `integration_runtime`, sorted by name.
-pub(crate) fn discover_in_scope(dirs: &[PathBuf], integration_runtime: &str) -> Result<Vec<CaseConfig>, GenericError> {
-    let mut cases = discover_cases(dirs)?;
+pub(crate) fn discover_in_scope(dirs: &[PathBuf], integration_runtime: &str) -> Result<Vec<LoadedCase>, GenericError> {
+    let mut cases = crate::CASE_LOADER.discover_cases(dirs)?;
     cases.retain(|case| case.is_eligible_for(integration_runtime));
     Ok(cases)
 }
@@ -801,7 +722,7 @@ pub(crate) fn discover_in_scope(dirs: &[PathBuf], integration_runtime: &str) -> 
 /// Reports every case that cannot build a runner, in input order, before validating image overrides.
 /// Returns an error if an image override is duplicate or unmatched.
 pub(crate) fn build_runners<'a>(
-    cases: impl IntoIterator<Item = &'a CaseConfig>, integration_runtime: &str, image_overrides: &[ImageOverride],
+    cases: impl IntoIterator<Item = &'a LoadedCase>, integration_runtime: &str, image_overrides: &[ImageOverride],
 ) -> Result<Vec<Box<dyn Test>>, GenericError> {
     let overrides = ImageOverrides::new(image_overrides);
     let settings = IntegrationSettings::new(integration_runtime, &overrides);
@@ -867,6 +788,7 @@ mod integration_bridge;
 mod participant_check;
 mod step_check;
 mod template;
+pub(crate) mod typed_case;
 
 #[cfg(test)]
 mod coverage_inventory;
@@ -1114,21 +1036,22 @@ timeout: 30s
             "matrix",
             "type: correctness_matrix\nruntime: docker\nanalysis_mode: metrics\nbaseline: {image: base}\ncomparison: {image: comp}\nvariants: [{name: second}, {name: first}]\n",
         );
-        let cases = discover_cases(&[
-            windows.path().to_path_buf(),
-            matrix.path().to_path_buf(),
-            disabled.path().to_path_buf(),
-        ])
-        .unwrap();
+        let cases = crate::CASE_LOADER
+            .discover_cases(&[
+                windows.path().to_path_buf(),
+                matrix.path().to_path_buf(),
+                disabled.path().to_path_buf(),
+            ])
+            .unwrap();
         assert_eq!(
-            cases.iter().map(CaseConfig::name).collect::<Vec<_>>(),
+            cases.iter().map(LoadedCase::name).collect::<Vec<_>>(),
             ["disabled", "matrix/first", "matrix/second", "windows-only"]
         );
         assert_eq!(
             cases
                 .iter()
                 .filter(|case| case.is_eligible_for(LINUX_RUNTIME))
-                .map(CaseConfig::name)
+                .map(LoadedCase::name)
                 .collect::<Vec<_>>(),
             ["matrix/first", "matrix/second"]
         );
@@ -1145,7 +1068,8 @@ timeout: 30s
             "type: integration\nname: good\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n",
         );
 
-        let error = discover_cases(&[dir.path().to_path_buf()])
+        let error = crate::CASE_LOADER
+            .discover_cases(&[dir.path().to_path_buf()])
             .err()
             .expect("malformed files must fail discovery");
         let message = format!("{error:#}");
@@ -1187,7 +1111,8 @@ timeout: 30s
                 "type: integration\nname: good\ntimeout: 1s\nprocedure: []\n",
             );
 
-            let error = discover_cases(&[dir.path().to_path_buf()])
+            let error = crate::CASE_LOADER
+                .discover_cases(&[dir.path().to_path_buf()])
                 .err()
                 .expect("config.yml must fail discovery");
             let message = format!("{error:#}");
@@ -1211,7 +1136,8 @@ timeout: 30s
         let stray_path = case_dir.join("config.yml");
         std::os::unix::fs::symlink("missing.yaml", &stray_path).unwrap();
 
-        let error = discover_cases(&[dir.path().to_path_buf()])
+        let error = crate::CASE_LOADER
+            .discover_cases(&[dir.path().to_path_buf()])
             .err()
             .expect("a dangling config.yml symlink must fail discovery");
         assert_eq!(
@@ -1238,7 +1164,8 @@ timeout: 30s
             "type: integration\nname: good\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n",
         );
 
-        let error = discover_cases(&[dir.path().to_path_buf()])
+        let error = crate::CASE_LOADER
+            .discover_cases(&[dir.path().to_path_buf()])
             .err()
             .expect("a dangling config.yaml symlink must fail discovery");
         let message = format!("{error:#}");
@@ -1268,8 +1195,8 @@ timeout: 30s
             "type: integration\nname: good\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n",
         );
 
-        let cases = discover_cases(&[dir.path().to_path_buf()]).unwrap();
-        assert_eq!(cases.iter().map(CaseConfig::name).collect::<Vec<_>>(), ["good"]);
+        let cases = crate::CASE_LOADER.discover_cases(&[dir.path().to_path_buf()]).unwrap();
+        assert_eq!(cases.iter().map(LoadedCase::name).collect::<Vec<_>>(), ["good"]);
         assert_eq!(cases[0].source(), good.canonicalize().unwrap());
     }
 
@@ -1280,7 +1207,8 @@ timeout: 30s
         let yml = yaml.with_extension("yml");
         std::fs::write(&yml, "type: correctness\n").unwrap();
 
-        let error = discover_cases(&[dir.path().to_path_buf()])
+        let error = crate::CASE_LOADER
+            .discover_cases(&[dir.path().to_path_buf()])
             .err()
             .expect("both case file problems must fail discovery");
         let message = format!("{error:#}");
@@ -1326,7 +1254,8 @@ timeout: 30s
             sources[1].display()
         );
         for _ in 0..2 {
-            let error = discover_cases(&roots)
+            let error = crate::CASE_LOADER
+                .discover_cases(&roots)
                 .err()
                 .expect("duplicate names must fail discovery");
             assert_eq!(format!("{error:#}"), expected);
@@ -1344,7 +1273,8 @@ timeout: 30s
             "matrix",
             "type: correctness_matrix\nruntime: docker\nanalysis_mode: metrics\nbaseline: {image: base}\ncomparison: {image: comp}\nvariants: [{name: x}, {name: x}]\n",
         );
-        let error = discover_cases(&[dir.path().to_path_buf()])
+        let error = crate::CASE_LOADER
+            .discover_cases(&[dir.path().to_path_buf()])
             .err()
             .expect("duplicate variant names must fail discovery");
         let source = dir.path().join("matrix/config.yaml").canonicalize().unwrap();
@@ -1371,7 +1301,10 @@ timeout: 30s
                 );
             }
         }
-        let error = discover_cases(&roots).err().expect("all problems must fail discovery");
+        let error = crate::CASE_LOADER
+            .discover_cases(&roots)
+            .err()
+            .expect("all problems must fail discovery");
         let message = format!("{error:#}");
         let malformed_position = message
             .find(&malformed.canonicalize().unwrap().display().to_string())
@@ -1405,7 +1338,7 @@ timeout: 30s
             ),
         ] {
             let path = write_case(dir.path(), name, &yaml);
-            cases.extend(CaseConfig::load_file(&path).unwrap());
+            cases.extend(crate::CASE_LOADER.load_file(&path).unwrap());
             if let Some(field) = field {
                 errors.push(format!(
                     "Cannot run case '{name}' from {}: participant 'adp' sets '{field}', which the integration runner does not support",
@@ -1468,7 +1401,8 @@ timeout: 30s
         ] {
             sources.push((write_case(dir.path(), name, &yaml).canonicalize().unwrap(), expected));
         }
-        let error = discover_cases(&[dir.path().to_path_buf()])
+        let error = crate::CASE_LOADER
+            .discover_cases(&[dir.path().to_path_buf()])
             .err()
             .expect("invalid cases must fail discovery");
         let message = format!("{error:#}");
@@ -1491,13 +1425,15 @@ timeout: 30s
             "correctness",
             "type: correctness\nruntime: docker\nanalysis_mode: metrics\nbaseline: {image: base}\ncomparison: {image: comp}\n",
         );
-        let mut cases = discover_cases(&[integration.path().to_path_buf(), correctness.path().to_path_buf()]).unwrap();
+        let mut cases = crate::CASE_LOADER
+            .discover_cases(&[integration.path().to_path_buf(), correctness.path().to_path_buf()])
+            .unwrap();
         cases.reverse();
         let entries = ["baseline=base:override".parse().unwrap()];
         let runners = build_runners(&cases, LINUX_RUNTIME, &entries).unwrap();
         assert_eq!(runners.len(), cases.len());
         assert_eq!(
-            cases.iter().map(CaseConfig::name).collect::<Vec<_>>(),
+            cases.iter().map(LoadedCase::name).collect::<Vec<_>>(),
             ["integration", "correctness"]
         );
         for (case, runner) in cases.iter().zip(&runners) {
@@ -2336,7 +2272,8 @@ variants:
                 );
                 let dir = create_test_case_dir("strict", &yaml);
                 let case_dir = dir.path().join("strict");
-                let error = CaseConfig::load_file(&case_dir.join("config.yaml"))
+                let error = crate::CASE_LOADER
+                    .load_file(&case_dir.join("config.yaml"))
                     .err()
                     .expect("non-string env value must fail");
                 let error = format!("{error:?}");
@@ -2405,7 +2342,8 @@ comparison: {image: comp}
             let yaml = format!("type: integration\nname: invalid\ntimeout: 1s\nruntimes: {runtimes}\nprocedure: []\n");
             let dir = create_test_case_dir("invalid", &yaml);
             let case_dir = dir.path().join("invalid");
-            let error = CaseConfig::load_file(&case_dir.join("config.yaml"))
+            let error = crate::CASE_LOADER
+                .load_file(&case_dir.join("config.yaml"))
                 .err()
                 .expect("invalid declared runtime");
             assert!(error.to_string().contains(expected), "{error}");
@@ -2436,7 +2374,7 @@ comparison: {{image: comp}}
                 let config: CorrectnessConfig = load_case(dir.path().join("case/config.yaml")).unwrap();
                 assert_eq!(config.disabled, disabled, "{kind} with {setting}");
 
-                let cases = discover_cases(&[dir.path().to_path_buf()]).unwrap();
+                let cases = crate::CASE_LOADER.discover_cases(&[dir.path().to_path_buf()]).unwrap();
                 assert_eq!(cases.len(), case_count, "{kind} with {setting}");
                 assert_eq!(
                     cases.iter().filter(|case| case.is_eligible_for(LINUX_RUNTIME)).count(),

@@ -20,9 +20,9 @@ use serde_json::{json, Value};
 
 use super::{
     build_runners,
-    case::{CaseConfig, CaseSchema, Os},
-    discover_cases,
+    case::{CaseSchema, Os},
     tests::{write_case, LOGGING_INTEGRATION, LOGGING_PARTICIPANT, PARTICIPANT_FIELDS},
+    typed_case::{LoadedCase, RunnableCase, TypedConfig},
     AssertionStep, IntegrationConfig, LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME,
 };
 use crate::{
@@ -139,7 +139,7 @@ impl Steps {
 
 impl Row {
     fn from_case(
-        root: &Path, case: &CaseConfig, runner: &dyn Test, subject_os: &str, status: &'static str,
+        root: &Path, case: &LoadedCase, runner: &dyn Test, subject_os: &str, status: &'static str,
         schemas: &BTreeMap<String, String>,
     ) -> Self {
         let source = relative_path(root, case.source());
@@ -227,8 +227,9 @@ impl Inventory {
             }
         }
         // Discover all directories together to reject duplicate names across suites and statuses.
-        let cases =
-            discover_cases(&CASE_DIRS.map(|(dir, ..)| root.join(dir))).unwrap_or_else(|error| panic!("{error:#}"));
+        let cases = crate::CASE_LOADER
+            .discover_cases(&CASE_DIRS.map(|(dir, ..)| root.join(dir)))
+            .unwrap_or_else(|error| panic!("{error:#}"));
         let (integration_cases, correctness_cases): (Vec<_>, Vec<_>) =
             cases.iter().partition(|case| case.suite() == TestSuite::Integration);
         for (runtime, os) in [
@@ -415,7 +416,9 @@ fn suite_label(suite: TestSuite) -> &'static str {
 }
 
 fn load_cases(path: &Path) -> Vec<(String, Case)> {
-    let loaded = CaseConfig::load_file(path).unwrap_or_else(|error| panic!("{}: {error:#}", path.display()));
+    let loaded = crate::CASE_LOADER
+        .load_file(path)
+        .unwrap_or_else(|error| panic!("{}: {error:#}", path.display()));
     let mut cases = record_cases(&loaded).unwrap_or_else(|error| panic!("{}: {error:#}", path.display()));
     let doc: Value = serde_saphyr::from_str(&read_text(path)).unwrap();
     let directory = path.parent().unwrap().file_name().unwrap().to_str().unwrap();
@@ -436,17 +439,17 @@ fn load_cases(path: &Path) -> Vec<(String, Case)> {
 }
 
 /// Records each case under `<suite>/<name>`: its runner configuration and step or comparison coverage.
-fn record_cases(cases: &[CaseConfig]) -> Result<Vec<(String, Case)>, GenericError> {
+fn record_cases(cases: &[LoadedCase]) -> Result<Vec<(String, Case)>, GenericError> {
     let mut recorded = Vec::new();
     for case in cases {
         let effective = match case.schema() {
-            CaseSchema::Integration(config) => Case {
+            CaseSchema::Typed(TypedConfig::Integration(config)) => Case {
                 config: serde_json::to_value(config)?,
                 steps: Some(Steps::from_config(config)),
                 comparison: None,
                 ignored_fields: Vec::new(),
             },
-            CaseSchema::Correctness(config) => Case {
+            CaseSchema::Typed(TypedConfig::Correctness(config)) => Case {
                 config: serde_json::to_value(config)?,
                 steps: None,
                 comparison: Some(Comparison {
@@ -489,7 +492,7 @@ fn record_cases(cases: &[CaseConfig]) -> Result<Vec<(String, Case)>, GenericErro
 /// JSON text is valid YAML and preserves strings as strings. `load_cases` checks it against the original YAML.
 fn loaded_view(doc: &Value, directory: &str, source: &Path) -> Result<Value, GenericError> {
     let content = serde_json::to_string(doc)?;
-    let cases = CaseConfig::load_content(&content, directory, source)?;
+    let cases = crate::CASE_LOADER.load_content(&content, directory, source)?;
     let recorded = record_cases(&cases)?;
     let configs: Vec<_> = recorded.iter().map(|(key, case)| (key, &case.config)).collect();
     Ok(serde_json::to_value(configs)?)
