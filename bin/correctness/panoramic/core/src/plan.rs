@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use saluki_error::{generic_error, GenericError};
 
 use crate::{
+    backend,
     case::{declared_names, CaseConfig, CaseFile, CaseSchema, ProcedureNode, Registries},
     layout::{describe_participant, describe_realizations, lay_out, Layout, Os, Realization},
     participant::{find_type, CaseValues, EffectiveConfig, FactDeclaration, ParticipantType},
@@ -41,7 +42,7 @@ impl<C> CasePlan<C> {
     /// configuration, endpoint derivation and overrides per participant in name order;
     /// connections per consumer in name order (per `connect` key in name order: consumed, served,
     /// accepted kind, route, delivered env keys; then required endpoints in name order);
-    /// facts in procedure order with step labels.
+    /// fact and late-fact references in procedure order with step labels.
     pub fn compile(
         case: CaseConfig<C>, subject_os: Os, registries: &Registries<'_>,
     ) -> Result<Option<Self>, GenericError> {
@@ -61,7 +62,7 @@ impl<C> CasePlan<C> {
                 let candidate = lay_out(&file.participants, registries.participant_types, os).map_err(&error)?;
                 let candidate_participants =
                     plan_participants(file, &candidate, registries.participant_types).map_err(&error)?;
-                check_fact_needs(
+                check_reference_needs(
                     file,
                     procedure,
                     &candidate,
@@ -172,8 +173,8 @@ fn plan_participants(
     Ok(participants)
 }
 
-/// Rejects the first step needing an unavailable fact.
-fn check_fact_needs(
+/// Rejects the first step needing an unavailable fact or late fact.
+fn check_reference_needs(
     file: &CaseFile, procedure: &[ProcedureNode<Box<dyn Step>>], layout: &Layout, types: &[&dyn ParticipantType],
     participants: &BTreeMap<String, PlannedParticipant>,
 ) -> Result<(), String> {
@@ -184,8 +185,23 @@ fn check_fact_needs(
         };
         for (member, step) in steps.iter().enumerate() {
             for need in step.needs() {
-                let Need::Fact(participant, fact) = need else {
-                    continue;
+                let (participant, fact) = match need {
+                    Need::Fact(participant, fact) => (participant, fact),
+                    Need::Late(participant, fact) => {
+                        let realization = layout.get(&participant).expect("step needs name laid-out participants");
+                        let facts = backend::provided_late_facts(realization.kind);
+                        if !facts.contains(&fact) {
+                            let kind = realization.kind.name();
+                            return Err(format!(
+                                "step {} references late fact '{}' of participant '{participant}', which a {kind} does not have; a {kind} has {}",
+                                step_label(index, parallel.then_some(member)),
+                                fact.name(),
+                                declared_names(&facts.iter().map(|fact| fact.name()).collect::<Vec<_>>()),
+                            ));
+                        }
+                        continue;
+                    }
+                    Need::Handle(_) | Need::Process(_, _) => continue,
                 };
                 if participants[&participant]
                     .facts
@@ -950,6 +966,107 @@ procedure: []
         assert!(compile(&FACT_CASE.replace("[linux]", "[linux, windows]"), Os::Linux)
             .unwrap()
             .is_some());
+    }
+
+    #[test]
+    fn late_facts_must_be_provided_by_the_participants_realization_on_every_declared_subject_os() {
+        let yaml = FACT_CASE
+            .replace("[linux]", "[linux, macos]")
+            .replace("subject.facts.file", "subject.late.container_id");
+        for os in [Os::Linux, Os::MacOs, Os::Windows] {
+            assert_eq!(compile(&yaml, os).err().unwrap().to_string(),
+                "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', step 1 references late fact 'container_id' of participant 'subject', which a host-process-group does not have; a host-process-group has ip"
+            );
+        }
+        assert!(compile(&yaml.replace("[linux, macos]", "[linux, windows]"), Os::Linux)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn a_late_fact_every_realization_has_compiles_on_every_declared_subject_os() {
+        let yaml = FACT_CASE
+            .replace("[linux]", "[linux, macos, windows]")
+            .replace("subject.facts.file", "subject.late.ip");
+        for os in [Os::Linux, Os::MacOs, Os::Windows] {
+            let plan = compile(&yaml, os).unwrap().unwrap();
+            assert_eq!(plan.subject_os(), os);
+            let CaseSchema::Participants { procedure, .. } = plan.case().schema() else {
+                panic!("expected participant data");
+            };
+            let [ProcedureNode::Step(step)] = procedure.as_slice() else {
+                panic!("expected one step");
+            };
+            assert_eq!(
+                step.needs(),
+                [
+                    Need::Handle("subject".into()),
+                    Need::Late("subject".into(), backend::LateFact::Ip)
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn pod_uid_is_available_only_to_a_kubernetes_pod() {
+        let registries = Registries {
+            participant_types: &[&PodServer],
+            steps: STEPS,
+        };
+        let loader = CaseLoader::new(registries, FixtureTypes, "fixture-participants");
+        let yaml = FACT_CASE
+            .replace("type: server", "type: pod-server, realization: {kind: kubernetes-pod}")
+            .replace("subject.facts.file", "subject.late.pod_uid");
+        let case = loader
+            .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
+            .unwrap()
+            .remove(0);
+        let plan = CasePlan::compile(case, Os::Linux, &registries).unwrap().unwrap();
+        assert_eq!(
+            plan.layout().unwrap().get("subject").unwrap().kind,
+            RealizationKind::KubernetesPod
+        );
+        let case = loader
+            .load_content(
+                &yaml.replace("kubernetes-pod", "linux-container"),
+                "alpha",
+                Path::new("cases/alpha/config.yaml"),
+            )
+            .unwrap()
+            .remove(0);
+        assert_eq!(CasePlan::compile(case, Os::Linux, &registries).err().unwrap().to_string(),
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 1 references late fact 'pod_uid' of participant 'subject', which a linux-container does not have; a linux-container has container_id, ip"
+        );
+    }
+
+    #[test]
+    fn fact_and_late_fact_errors_follow_procedure_order_including_parallel_members() {
+        let mut yaml = PARTICIPANT_FIELDS.replace("[linux]", "[macos]").replace(
+            "procedure: []",
+            r#"procedure:
+  - {step: probe, on: subject, path: '{{ subject.late.container_id }}{{ subject.facts.file }}'}
+  - parallel:
+    - {step: probe, on: subject, path: '{{ subject.late.ip }}'}
+    - {step: probe, on: subject, path: '{{ subject.facts.file }}{{ subject.late.pod_uid }}'}
+  - {step: probe, on: subject, path: '{{ subject.late.container_id }}'}"#,
+        );
+        for (reference, label, kind, fact) in [
+            ("{{ subject.late.container_id }}", "1", "late fact", "container_id"),
+            ("{{ subject.facts.file }}", "1", "fact", "file"),
+            ("{{ subject.facts.file }}", "2.2", "fact", "file"),
+            ("{{ subject.late.pod_uid }}", "2.2", "late fact", "pod_uid"),
+            ("{{ subject.late.container_id }}", "3", "late fact", "container_id"),
+        ] {
+            let message = compile(&yaml, Os::MacOs).err().unwrap().to_string();
+            assert!(
+                message.contains(&format!(
+                    "on subject OS 'macos', step {label} references {kind} '{fact}' of participant 'subject'"
+                )),
+                "{message}"
+            );
+            yaml = yaml.replacen(reference, "literal", 1);
+        }
+        assert!(compile(&yaml, Os::MacOs).unwrap().is_some());
     }
 
     #[test]

@@ -16,11 +16,44 @@ use crate::layout::{Os, Realization, RealizationKind};
 
 const PROVIDABILITY_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// A value known once a participant exists or runs.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum LateFact {
+    /// Runtime container identifier, known after create for containers or after start for pods.
+    ContainerId,
+    /// Network address, known after start for containers and pods; loopback for host process groups.
+    Ip,
+    /// Kubernetes pod identifier, known after start.
+    PodUid,
+}
+
+impl LateFact {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::ContainerId => "container_id",
+            Self::Ip => "ip",
+            Self::PodUid => "pod_uid",
+        }
+    }
+
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "container_id" => Some(Self::ContainerId),
+            "ip" => Some(Self::Ip),
+            "pod_uid" => Some(Self::PodUid),
+            _ => None,
+        }
+    }
+}
+
 /// An execution mechanism's link to the runner host.
 #[async_trait]
 pub(crate) trait Backend: Send + Sync {
     /// The realization kind this backend creates.
     fn kind(&self) -> RealizationKind;
+
+    /// Late facts provided by this realization kind, sorted by name.
+    fn provided_late_facts(&self) -> &'static [LateFact];
 
     /// Checks that this host can create this kind for participants on `os`.
     async fn providable(&self, os: Os) -> Result<(), String>;
@@ -32,6 +65,14 @@ pub(crate) const BACKENDS: &[&dyn Backend] = &[
     &HostProcessGroups,
     &KubernetesPods,
 ];
+
+pub(crate) fn provided_late_facts(kind: RealizationKind) -> &'static [LateFact] {
+    BACKENDS
+        .iter()
+        .find(|backend| backend.kind() == kind)
+        .expect("every realization kind has a backend")
+        .provided_late_facts()
+}
 
 /// Returns each realization this runner host cannot provide, with the reason.
 ///
@@ -68,6 +109,10 @@ impl Backend for LinuxContainers {
         RealizationKind::LinuxContainer
     }
 
+    fn provided_late_facts(&self) -> &'static [LateFact] {
+        &[LateFact::ContainerId, LateFact::Ip]
+    }
+
     async fn providable(&self, os: Os) -> Result<(), String> {
         if os != Os::Linux {
             return Err(format!("{} runs only on linux", self.kind().name()));
@@ -80,6 +125,10 @@ impl Backend for LinuxContainers {
 impl Backend for WindowsContainers {
     fn kind(&self) -> RealizationKind {
         RealizationKind::WindowsContainer
+    }
+
+    fn provided_late_facts(&self) -> &'static [LateFact] {
+        &[LateFact::ContainerId, LateFact::Ip]
     }
 
     async fn providable(&self, os: Os) -> Result<(), String> {
@@ -96,6 +145,10 @@ impl Backend for HostProcessGroups {
         RealizationKind::HostProcessGroup
     }
 
+    fn provided_late_facts(&self) -> &'static [LateFact] {
+        &[LateFact::Ip]
+    }
+
     async fn providable(&self, os: Os) -> Result<(), String> {
         if os == Os::host() {
             Ok(())
@@ -109,6 +162,10 @@ impl Backend for HostProcessGroups {
 impl Backend for KubernetesPods {
     fn kind(&self) -> RealizationKind {
         RealizationKind::KubernetesPod
+    }
+
+    fn provided_late_facts(&self) -> &'static [LateFact] {
+        &[LateFact::ContainerId, LateFact::Ip, LateFact::PodUid]
     }
 
     async fn providable(&self, os: Os) -> Result<(), String> {
@@ -166,6 +223,38 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+
+    #[test]
+    fn each_realization_kind_has_one_backend_declaring_its_late_facts() {
+        assert_eq!(BACKENDS.len(), 4);
+        for (kind, expected) in [
+            (RealizationKind::LinuxContainer, &["container_id", "ip"][..]),
+            (RealizationKind::WindowsContainer, &["container_id", "ip"][..]),
+            (RealizationKind::HostProcessGroup, &["ip"][..]),
+            (RealizationKind::KubernetesPod, &["container_id", "ip", "pod_uid"][..]),
+        ] {
+            match kind {
+                RealizationKind::HostProcessGroup
+                | RealizationKind::LinuxContainer
+                | RealizationKind::WindowsContainer
+                | RealizationKind::KubernetesPod => {}
+            }
+            assert_eq!(BACKENDS.iter().filter(|backend| backend.kind() == kind).count(), 1);
+            let facts = provided_late_facts(kind);
+            assert!(facts.windows(2).all(|pair| pair[0] < pair[1]));
+            assert_eq!(facts.iter().map(|fact| fact.name()).collect::<Vec<_>>(), expected);
+        }
+    }
+
+    #[test]
+    fn late_fact_names_round_trip() {
+        for fact in [LateFact::ContainerId, LateFact::Ip, LateFact::PodUid] {
+            assert_eq!(LateFact::from_name(fact.name()), Some(fact));
+        }
+        for name in ["", "unknown", "IP", "ContainerId"] {
+            assert_eq!(LateFact::from_name(name), None);
+        }
+    }
 
     #[tokio::test]
     async fn host_process_groups_are_provided_only_on_the_runner_host_os() {
@@ -271,6 +360,10 @@ mod tests {
     impl Backend for FakeBackend {
         fn kind(&self) -> RealizationKind {
             self.kind
+        }
+
+        fn provided_late_facts(&self) -> &'static [LateFact] {
+            &[]
         }
 
         async fn providable(&self, os: Os) -> Result<(), String> {

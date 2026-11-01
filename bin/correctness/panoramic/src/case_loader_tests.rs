@@ -50,6 +50,25 @@ fn default_log_file_references_plan_on_linux_and_windows_but_not_macos() {
 }
 
 #[test]
+fn agent_adp_cases_cannot_reference_pod_uid() {
+    let dir = tempfile::tempdir().unwrap();
+    let yaml = PARTICIPANT_FIELDS.replace(
+        "procedure: []",
+        "procedure: [{step: file_contains, on: adp, path: '{{ adp.late.pod_uid }}', pattern: ready, timeout: 1s}]",
+    );
+    let path = write_case(dir.path(), "alpha", &yaml);
+    assert_eq!(crate::CASE_LOADER.load_file(&path).unwrap().len(), 1);
+    let message = discover_in_scope(&[dir.path().to_path_buf()], Os::Linux)
+        .err()
+        .unwrap()
+        .to_string();
+    assert_eq!(message, format!(
+        "Failed to plan test cases:\n  - case 'alpha' in {}: on subject OS 'linux', step 1 references late fact 'pod_uid' of participant 'adp', which a linux-container does not have; a linux-container has container_id, ip",
+        path.canonicalize().unwrap().display()
+    ));
+}
+
+#[test]
 fn agent_adp_log_steps_may_name_the_adp_and_agent_processes_only() {
     let dir = tempfile::tempdir().unwrap();
     for (step, duration) in [("log_contains", "timeout"), ("log_not_contains", "during")] {
@@ -276,11 +295,11 @@ fn participant_step_errors_name_the_canonical_file_and_step() {
         ),
         (
             "step: file_contains, on: adp, path: '{{ adp.endpoints.api.url }}', pattern: ready, timeout: 1s",
-            "'file_contains': path: '{{ adp.endpoints.api.url }}' is not a fact reference",
+            "'file_contains': path: '{{ adp.endpoints.api.url }}': step fields accept only fact and late fact references",
         ),
         (
             "step: file_contains, on: adp, path: '{{PANORAMIC_DYNAMIC_PATH}}', pattern: ready, timeout: 1s",
-            "'file_contains': path: '{{PANORAMIC_DYNAMIC_PATH}}' is not a fact reference",
+            "'file_contains': path: '{{PANORAMIC_DYNAMIC_PATH}}' is not a template reference",
         ),
         (
             "step: log_contains, on: missing, pattern: ready, timeout: 1s",

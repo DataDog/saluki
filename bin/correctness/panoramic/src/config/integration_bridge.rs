@@ -3,7 +3,8 @@
 //! Reads step fields from the case file and environment from the plan. Supports one `agent-adp` participant
 //! configured through `config.env` and `config.os` env overlays, with `log_contains` and `log_not_contains`
 //! (`process` omitted), translated to `stream: both`, and `file_contains`.
-//! File paths may reference the participant's facts, resolved from the participant's planned realization.
+//! File paths may reference the participant's facts, resolved from the participant's planned realization;
+//! late-fact references are rejected.
 //! Log steps search captured output: Linux container logs (Agent and ADP under s6),
 //! macOS stdout and stderr of the spawned Agent and ADP processes, or Windows container console output only.
 //! The translated configuration has default container settings, with empty `container.exposed_ports`;
@@ -671,6 +672,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn translation_rejects_late_fact_references_in_file_paths() {
+        let yaml = PARTICIPANT_FIELDS.replace(
+            "procedure: []",
+            "procedure: [{step: file_contains, on: adp, path: '{{ adp.late.ip }}', pattern: ready, timeout: 1s}]",
+        );
+        let case = crate::CASE_LOADER
+            .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
+            .unwrap()
+            .remove(0);
+        let plan = CasePlan::compile(case, Os::Linux, &crate::REGISTRIES).unwrap().unwrap();
+        let CaseSchema::Participants { file, .. } = plan.case().schema() else {
+            panic!("expected participant data");
+        };
+        let error = integration_config(
+            file,
+            "alpha",
+            Path::new("alpha/config.yaml"),
+            |participant, fact| plan.fact(participant, fact),
+            |participant| plan.effective_config(participant),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            "step 1 'file_contains' path: cannot resolve late fact reference '{{ adp.late.ip }}' \
+             before the participant runs"
+        );
     }
 
     #[test]

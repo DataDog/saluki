@@ -34,17 +34,13 @@ pub(crate) struct Probe {
 
 impl Step for Probe {
     fn needs(&self) -> Vec<Need> {
-        let mut needs = match &self.process {
-            Some(process) => vec![Need::Process(self.on.clone(), process.clone())],
-            None => vec![Need::Handle(self.on.clone())],
+        let participant = match &self.process {
+            Some(process) => Need::Process(self.on.clone(), process.clone()),
+            None => Need::Handle(self.on.clone()),
         };
-        if let Some(path) = &self.path {
-            needs.extend(
-                path.references()
-                    .map(|(participant, fact)| Need::Fact(participant.into(), fact.into())),
-            );
-        }
-        needs
+        std::iter::once(participant)
+            .chain(self.path.iter().flat_map(Template::needs))
+            .collect()
     }
 }
 

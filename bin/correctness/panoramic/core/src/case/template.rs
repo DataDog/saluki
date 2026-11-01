@@ -1,10 +1,15 @@
-//! Parses step templates and resolves their participant fact references.
+//! Parses template references and resolves early participant facts.
 
-use std::str::FromStr;
+use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Deserializer};
 
-/// Text containing literal segments and named participant facts.
+use crate::{backend::LateFact, step::Need};
+
+/// Text containing literals and participant fact, late-fact, endpoint or connection references.
+///
+/// [`FromStr`] parses every reference form. Deserializing reads a step field, which accepts only
+/// facts and late facts of named participants.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Template {
     segments: Vec<Segment>,
@@ -13,33 +18,220 @@ pub struct Template {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Segment {
     Literal(String),
-    Fact { participant: String, fact: String },
+    Reference { written: String, reference: Reference },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Reference {
+    Fact {
+        participant: ParticipantRef,
+        fact: String,
+    },
+    Late {
+        participant: ParticipantRef,
+        fact: LateFact,
+    },
+    Endpoint {
+        participant: ParticipantRef,
+        endpoint: String,
+        part: AddressPart,
+    },
+    Connection {
+        consumed: String,
+        part: AddressPart,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ParticipantRef {
+    Holder,
+    Named(String),
+}
+
+impl fmt::Display for ParticipantRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Holder => f.write_str("self"),
+            Self::Named(name) => f.write_str(name),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AddressPart {
+    Url,
+    Host,
+    Port,
+    Path,
+}
+
+impl fmt::Display for AddressPart {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Url => "url",
+            Self::Host => "host",
+            Self::Port => "port",
+            Self::Path => "path",
+        })
+    }
+}
+
+impl Reference {
+    fn parse(reference: &str) -> Result<Self, String> {
+        let body = reference[2..reference.len() - 2].trim_matches(' ');
+        let parts: Vec<_> = body.split('.').collect();
+        let invalid = || {
+            format!(
+                "'{reference}' is not a template reference; write '{{{{ <participant>.facts.<fact> }}}}', \
+                 '{{{{ <participant>.late.<fact> }}}}', '{{{{ <participant>.endpoints.<endpoint>.<part> }}}}' \
+                 or '{{{{ self.connections.<endpoint>.<part> }}}}'"
+            )
+        };
+        if parts
+            .iter()
+            .any(|part| part.is_empty() || part.chars().any(|c| c.is_whitespace() || matches!(c, '{' | '}')))
+        {
+            return Err(invalid());
+        }
+        let participant = |name: &str| match name {
+            "self" => ParticipantRef::Holder,
+            name => ParticipantRef::Named(name.into()),
+        };
+        let address_part = |name: &str| match name {
+            "url" => Ok(AddressPart::Url),
+            "host" => Ok(AddressPart::Host),
+            "port" => Ok(AddressPart::Port),
+            "path" => Ok(AddressPart::Path),
+            _ => Err(format!("'{reference}': an address part is url, host, port or path")),
+        };
+        match parts.as_slice() {
+            [name, "facts", fact] => Ok(Self::Fact {
+                participant: participant(name),
+                fact: (*fact).into(),
+            }),
+            [name, "late", fact] => Ok(Self::Late {
+                participant: participant(name),
+                fact: LateFact::from_name(fact)
+                    .ok_or_else(|| format!("'{reference}': a late fact is container_id, ip or pod_uid"))?,
+            }),
+            [name, "endpoints", endpoint, part] => Ok(Self::Endpoint {
+                participant: participant(name),
+                endpoint: (*endpoint).into(),
+                part: address_part(part)?,
+            }),
+            ["self", "connections", consumed, part] => Ok(Self::Connection {
+                consumed: (*consumed).into(),
+                part: address_part(part)?,
+            }),
+            [_, "connections", _, _] => Err(format!(
+                "'{reference}': connections are referenced by their consumer, \
+                 as '{{{{ self.connections.<endpoint>.<part> }}}}'"
+            )),
+            _ => Err(invalid()),
+        }
+    }
+}
+
+impl fmt::Display for Reference {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Fact { participant, fact } => write!(f, "{{{{ {participant}.facts.{fact} }}}}"),
+            Self::Late { participant, fact } => write!(f, "{{{{ {participant}.late.{} }}}}", fact.name()),
+            Self::Endpoint {
+                participant,
+                endpoint,
+                part,
+            } => write!(f, "{{{{ {participant}.endpoints.{endpoint}.{part} }}}}"),
+            Self::Connection { consumed, part } => write!(f, "{{{{ self.connections.{consumed}.{part} }}}}"),
+        }
+    }
 }
 
 impl Template {
-    /// Returns referenced participant and fact names in text order, including duplicates.
-    pub fn references(&self) -> impl Iterator<Item = (&str, &str)> {
+    /// Returns references in text order, including duplicates.
+    pub(crate) fn references(&self) -> impl Iterator<Item = &Reference> {
         self.segments.iter().filter_map(|segment| match segment {
-            Segment::Fact { participant, fact } => Some((participant.as_str(), fact.as_str())),
+            Segment::Reference { reference, .. } => Some(reference),
             Segment::Literal(_) => None,
         })
     }
 
-    /// Substitutes facts, failing on the first missing value or if the result contains `{{`.
+    /// Reports named fact and late-fact needs for templates read from step fields.
+    /// Preserves text order and duplicates.
+    ///
+    /// # Panics
+    ///
+    /// Panics during iteration if a reference is not a fact or late fact of a named participant.
+    pub fn needs(&self) -> impl Iterator<Item = Need> + '_ {
+        self.references().map(|reference| match reference {
+            Reference::Fact {
+                participant: ParticipantRef::Named(participant),
+                fact,
+            } => Need::Fact(participant.clone(), fact.clone()),
+            Reference::Late {
+                participant: ParticipantRef::Named(participant),
+                fact,
+            } => Need::Late(participant.clone(), *fact),
+            _ => unreachable!("step templates reference facts and late facts of named participants"),
+        })
+    }
+
+    fn check_step_field(&self) -> Result<(), String> {
+        let allowed = "step fields accept only fact and late fact references to named participants";
+        let name_participant = "a step has no 'self'; name the participant, as in";
+        for segment in &self.segments {
+            let Segment::Reference { written, reference } = segment else {
+                continue;
+            };
+            match reference {
+                Reference::Endpoint { .. } | Reference::Connection { .. } => {
+                    return Err(format!("'{written}': {allowed}"));
+                }
+                Reference::Fact {
+                    participant: ParticipantRef::Holder,
+                    ..
+                } => {
+                    return Err(format!(
+                        "'{written}': {name_participant} '{{{{ <participant>.facts.<fact> }}}}'"
+                    ));
+                }
+                Reference::Late {
+                    participant: ParticipantRef::Holder,
+                    fact,
+                } => {
+                    return Err(format!(
+                        "'{written}': {name_participant} '{{{{ <participant>.late.{} }}}}'",
+                        fact.name()
+                    ));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Substitutes early facts, failing on the first unavailable reference or if the result contains `{{`.
     pub fn resolve<'a>(&self, fact: impl Fn(&str, &str) -> Option<&'a str>) -> Result<String, String> {
         let mut resolved = String::new();
         for segment in &self.segments {
             match segment {
                 Segment::Literal(text) => resolved.push_str(text),
-                Segment::Fact {
-                    participant,
-                    fact: name,
-                } => {
-                    let value = fact(participant, name).ok_or_else(|| {
-                        format!("cannot resolve fact reference '{{{{ {participant}.facts.{name} }}}}'")
-                    })?;
-                    resolved.push_str(value);
-                }
+                Segment::Reference { written, reference } => match reference {
+                    Reference::Fact {
+                        participant: ParticipantRef::Named(participant),
+                        fact: name,
+                    } => {
+                        let value = fact(participant, name)
+                            .ok_or_else(|| format!("cannot resolve fact reference '{written}'"))?;
+                        resolved.push_str(value);
+                    }
+                    Reference::Late { .. } => {
+                        return Err(format!(
+                            "cannot resolve late fact reference '{written}' before the participant runs"
+                        ))
+                    }
+                    _ => return Err(format!("cannot resolve '{written}'")),
+                },
             }
         }
         if resolved.contains("{{") {
@@ -62,27 +254,10 @@ impl FromStr for Template {
             let end = text
                 .find("}}")
                 .ok_or_else(|| format!("unterminated template reference '{text}': expected '}}}}'"))?;
-            let reference = &text[..end + 2];
-            let body = text[2..end].trim_matches(' ');
-            if body.starts_with("self.") {
-                return Err(format!(
-                    "'{reference}': a step has no 'self'; name the participant, as in '{{{{ <participant>.facts.<fact> }}}}'"
-                ));
-            }
-            let parts: Vec<_> = body.split('.').collect();
-            if parts.len() != 3
-                || parts[1] != "facts"
-                || parts
-                    .iter()
-                    .any(|part| part.is_empty() || part.chars().any(|c| c.is_whitespace() || matches!(c, '{' | '}')))
-            {
-                return Err(format!(
-                    "'{reference}' is not a fact reference of the form '{{{{ <participant>.facts.<fact> }}}}', the only reference step fields support"
-                ));
-            }
-            segments.push(Segment::Fact {
-                participant: parts[0].into(),
-                fact: parts[2].into(),
+            let written = &text[..end + 2];
+            segments.push(Segment::Reference {
+                written: written.into(),
+                reference: Reference::parse(written)?,
             });
             text = &text[end + 2..];
         }
@@ -93,14 +268,17 @@ impl FromStr for Template {
     }
 }
 
+/// Reads a step field, accepting only facts and late facts of named participants.
 impl<'de> Deserialize<'de> for Template {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        String::deserialize(deserializer)?
+        let template: Self = String::deserialize(deserializer)?
             .parse()
-            .map_err(serde::de::Error::custom)
+            .map_err(serde::de::Error::custom)?;
+        template.check_step_field().map_err(serde::de::Error::custom)?;
+        Ok(template)
     }
 }
 
@@ -109,25 +287,84 @@ mod tests {
     use super::*;
     use crate::step::{decode_fields, StepFields};
 
+    #[derive(Debug, Deserialize)]
+    struct Fields {
+        path: Template,
+    }
+
     #[test]
     fn literal_templates_resolve_verbatim_including_backslashes_and_single_braces() {
         for text in ["", "/logs/output.log", r"C:\logs\{output}.log", "}text{", "text }}"] {
             let template: Template = text.parse().unwrap();
-            assert_eq!(template.references().collect::<Vec<_>>(), []);
+            assert!(template.references().next().is_none());
             assert_eq!(template.resolve(|_, _| None).unwrap(), text);
         }
     }
 
     #[test]
-    fn fact_references_parse_with_or_without_inner_spaces() {
-        for text in [
-            "{{subject.facts.file}}",
-            "{{ subject.facts.file }}",
-            "{{  subject.facts.file  }}",
+    fn every_reference_form_parses_with_or_without_inner_spaces() {
+        let mut cases = Vec::new();
+        for (name, participant) in [
+            ("subject", ParticipantRef::Named("subject".into())),
+            ("self", ParticipantRef::Holder),
         ] {
-            let template: Template = text.parse().unwrap();
-            assert_eq!(template.references().collect::<Vec<_>>(), [("subject", "file")]);
-            assert_eq!(template.resolve(|_, _| Some("value")).unwrap(), "value");
+            cases.push((
+                format!("{name}.facts.file"),
+                Reference::Fact {
+                    participant: participant.clone(),
+                    fact: "file".into(),
+                },
+            ));
+            for (fact, spelling) in [
+                (LateFact::ContainerId, "container_id"),
+                (LateFact::Ip, "ip"),
+                (LateFact::PodUid, "pod_uid"),
+            ] {
+                cases.push((
+                    format!("{name}.late.{spelling}"),
+                    Reference::Late {
+                        participant: participant.clone(),
+                        fact,
+                    },
+                ));
+            }
+            for (part, spelling) in [
+                (AddressPart::Url, "url"),
+                (AddressPart::Host, "host"),
+                (AddressPart::Port, "port"),
+                (AddressPart::Path, "path"),
+            ] {
+                cases.push((
+                    format!("{name}.endpoints.api.{spelling}"),
+                    Reference::Endpoint {
+                        participant: participant.clone(),
+                        endpoint: "api".into(),
+                        part,
+                    },
+                ));
+            }
+        }
+        for (part, spelling) in [
+            (AddressPart::Url, "url"),
+            (AddressPart::Host, "host"),
+            (AddressPart::Port, "port"),
+            (AddressPart::Path, "path"),
+        ] {
+            cases.push((
+                format!("self.connections.api.{spelling}"),
+                Reference::Connection {
+                    consumed: "api".into(),
+                    part,
+                },
+            ));
+        }
+        for (body, expected) in cases {
+            for spaces in ["", " ", "  "] {
+                let template: Template = format!("{{{{{spaces}{body}{spaces}}}}}").parse().unwrap();
+                let references = template.references().collect::<Vec<_>>();
+                assert_eq!(references, [&expected]);
+                assert_eq!(references[0].to_string(), format!("{{{{ {body} }}}}"));
+            }
         }
     }
 
@@ -137,8 +374,12 @@ mod tests {
             .parse()
             .unwrap();
         assert_eq!(
-            template.references().collect::<Vec<_>>(),
-            [("other", "dir"), ("subject", "file"), ("other", "dir")]
+            template.needs().collect::<Vec<_>>(),
+            [
+                Need::Fact("other".into(), "dir".into()),
+                Need::Fact("subject".into(), "file".into()),
+                Need::Fact("other".into(), "dir".into())
+            ]
         );
         assert_eq!(
             template
@@ -161,18 +402,45 @@ mod tests {
     }
 
     #[test]
-    fn self_references_ask_for_the_participant_name() {
-        let reference = "{{ self.facts.file }}";
-        assert_eq!(reference.parse::<Template>().unwrap_err(),
-            "'{{ self.facts.file }}': a step has no 'self'; name the participant, as in '{{ <participant>.facts.<fact> }}'");
+    fn named_connection_references_fail_to_parse() {
+        for reference in [
+            "{{subject.connections.api.url}}",
+            "{{  subject.connections.api.port  }}",
+        ] {
+            assert_eq!(reference.parse::<Template>().unwrap_err(), format!(
+                "'{reference}': connections are referenced by their consumer, as '{{{{ self.connections.<endpoint>.<part> }}}}'"
+            ));
+        }
     }
 
     #[test]
-    fn only_fact_references_are_accepted() {
+    fn unknown_late_facts_and_address_parts_fail_to_parse_naming_the_choices() {
+        for (reference, expected) in [
+            ("{{subject.late.unknown}}", "a late fact is container_id, ip or pod_uid"),
+            ("{{ self.late.IP }}", "a late fact is container_id, ip or pod_uid"),
+            (
+                "{{  subject.endpoints.api.unknown  }}",
+                "an address part is url, host, port or path",
+            ),
+            (
+                "{{self.endpoints.api.URL}}",
+                "an address part is url, host, port or path",
+            ),
+            (
+                "{{ self.connections.api.unknown }}",
+                "an address part is url, host, port or path",
+            ),
+        ] {
+            assert_eq!(
+                reference.parse::<Template>().unwrap_err(),
+                format!("'{reference}': {expected}")
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_references_fail_to_parse() {
         for body in [
-            "subject.endpoints.api.url",
-            "subject.connections.api.url",
-            "subject.late.ip",
             "subject.facts",
             "subject.facts.a.b",
             ".facts.file",
@@ -184,21 +452,110 @@ mod tests {
             "subject.facts.{file",
             "subject.facts.file}",
             "\tsubject.facts.file\n",
+            "subject.unknown.file",
+            "subject.late",
+            "subject.late.ip.extra",
+            "subject.endpoints.api",
+            "subject.endpoints.api.url.extra",
+            "subject.endpoints..url",
+            "self.connections.api",
+            "self.connections.api.url.extra",
+            "self.connections.api.",
         ] {
             let reference = format!("{{{{ {body} }}}}");
             assert_eq!(reference.parse::<Template>().unwrap_err(), format!(
-                "'{reference}' is not a fact reference of the form '{{{{ <participant>.facts.<fact> }}}}', the only reference step fields support"
+                "'{reference}' is not a template reference; write '{{{{ <participant>.facts.<fact> }}}}', '{{{{ <participant>.late.<fact> }}}}', '{{{{ <participant>.endpoints.<endpoint>.<part> }}}}' or '{{{{ self.connections.<endpoint>.<part> }}}}'"
             ));
         }
     }
 
     #[test]
-    fn template_fields_require_yaml_strings_and_name_parse_errors() {
-        #[derive(Debug, Deserialize)]
-        struct Fields {
-            path: Template,
+    fn step_fields_reject_endpoint_connection_and_self_references() {
+        // Step-field checks retain the written spacing so errors identify the text in the case file.
+        for (reference, expected) in [
+            (
+                "{{ self.facts.file }}",
+                "a step has no 'self'; name the participant, as in '{{ <participant>.facts.<fact> }}'",
+            ),
+            (
+                "{{self.facts.file}}",
+                "a step has no 'self'; name the participant, as in '{{ <participant>.facts.<fact> }}'",
+            ),
+            (
+                "{{ self.late.ip }}",
+                "a step has no 'self'; name the participant, as in '{{ <participant>.late.ip }}'",
+            ),
+            (
+                "{{self.late.container_id}}",
+                "a step has no 'self'; name the participant, as in '{{ <participant>.late.container_id }}'",
+            ),
+            (
+                "{{  self.late.pod_uid  }}",
+                "a step has no 'self'; name the participant, as in '{{ <participant>.late.pod_uid }}'",
+            ),
+            (
+                "{{ self.endpoints.api.url }}",
+                "step fields accept only fact and late fact references to named participants",
+            ),
+            (
+                "{{subject.endpoints.api.url}}",
+                "step fields accept only fact and late fact references to named participants",
+            ),
+            (
+                "{{  self.connections.api.url  }}",
+                "step fields accept only fact and late fact references to named participants",
+            ),
+        ] {
+            let fields: StepFields = serde_saphyr::from_str(&format!(
+                "path: '{{{{ subject.facts.file }}}}/{reference}/{{{{ self.facts.other }}}}'"
+            ))
+            .unwrap();
+            assert_eq!(
+                decode_fields::<Fields>(&fields).unwrap_err(),
+                format!("path: '{reference}': {expected}")
+            );
         }
+    }
 
+    #[test]
+    fn needs_report_fact_and_late_references_in_text_order_including_duplicates() {
+        let fields: StepFields = serde_saphyr::from_str(
+            "path: '{{ other.facts.dir }}/{{ subject.late.ip }}/{{ subject.facts.file }}/{{ other.late.container_id }}/{{ subject.late.ip }}/{{ other.facts.dir }}'"
+        ).unwrap();
+        let template = decode_fields::<Fields>(&fields).unwrap().path;
+        assert_eq!(
+            template.needs().collect::<Vec<_>>(),
+            [
+                Need::Fact("other".into(), "dir".into()),
+                Need::Late("subject".into(), LateFact::Ip),
+                Need::Fact("subject".into(), "file".into()),
+                Need::Late("other".into(), LateFact::ContainerId),
+                Need::Late("subject".into(), LateFact::Ip),
+                Need::Fact("other".into(), "dir".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn needs_panics_for_references_outside_step_fields() {
+        for reference in [
+            "self.facts.file",
+            "self.late.ip",
+            "self.endpoints.api.url",
+            "subject.endpoints.api.url",
+            "self.connections.api.url",
+        ] {
+            let template: Template = format!("{{{{ {reference} }}}}").parse().unwrap();
+            let panic = std::panic::catch_unwind(|| template.needs().collect::<Vec<_>>()).unwrap_err();
+            assert_eq!(
+                panic.downcast_ref::<&str>().copied(),
+                Some("internal error: entered unreachable code: step templates reference facts and late facts of named participants")
+            );
+        }
+    }
+
+    #[test]
+    fn template_fields_require_yaml_strings_and_name_parse_errors() {
         for (yaml, expected) in [
             ("path: true", "path: invalid type: boolean `true`, expected a string"),
             ("path: 3", "path: invalid type: integer `3`, expected a string"),
@@ -215,16 +572,59 @@ mod tests {
     }
 
     #[test]
+    fn resolution_substitutes_facts_and_rejects_late_facts_by_name() {
+        for reference in [
+            "subject.late.ip",
+            "other.late.container_id",
+            "other.late.pod_uid",
+            "self.late.ip",
+        ] {
+            let template: Template =
+                format!("{{{{ subject.facts.file }}}}/{{{{{reference}}}}}/{{{{ other.late.ip }}}}")
+                    .parse()
+                    .unwrap();
+            assert_eq!(
+                template.resolve(|_, _| None).unwrap_err(),
+                "cannot resolve fact reference '{{ subject.facts.file }}'"
+            );
+            assert_eq!(
+                template.resolve(|_, _| Some("logs")).unwrap_err(),
+                format!("cannot resolve late fact reference '{{{{{reference}}}}}' before the participant runs")
+            );
+        }
+        let template: Template = "{{subject.facts.file}}".parse().unwrap();
+        assert_eq!(template.resolve(|_, _| Some("logs")).unwrap(), "logs");
+    }
+
+    #[test]
+    fn resolution_rejects_holder_facts_and_addresses() {
+        for body in [
+            "self.facts.file",
+            "self.endpoints.api.url",
+            "subject.endpoints.api.port",
+            "self.connections.api.path",
+        ] {
+            let template: Template = format!("{{{{{body}}}}}").parse().unwrap();
+            assert_eq!(
+                template.resolve(|_, _| Some("unused")).unwrap_err(),
+                format!("cannot resolve '{{{{{body}}}}}'")
+            );
+        }
+    }
+
+    #[test]
     fn resolution_names_the_first_missing_reference() {
-        let template: Template = "{{ subject.facts.a }}{{ other.facts.b }}{{ subject.facts.c }}"
-            .parse()
-            .unwrap();
-        assert_eq!(
-            template
-                .resolve(|_, name| (name == "a").then_some("found"))
-                .unwrap_err(),
-            "cannot resolve fact reference '{{ other.facts.b }}'"
-        );
+        for reference in ["{{ other.facts.b }}", "{{other.facts.b}}", "{{  other.facts.b  }}"] {
+            let template: Template = format!("{{{{ subject.facts.a }}}}{reference}{{{{ subject.facts.c }}}}")
+                .parse()
+                .unwrap();
+            assert_eq!(
+                template
+                    .resolve(|_, name| (name == "a").then_some("found"))
+                    .unwrap_err(),
+                format!("cannot resolve fact reference '{reference}'")
+            );
+        }
     }
 
     #[test]

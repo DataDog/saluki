@@ -15,7 +15,7 @@ use super::check_pattern;
 pub struct FileContains {
     /// Required participant whose file is searched; has no default.
     pub on: String,
-    /// Required path inside the participant; may reference participant facts. Has no default.
+    /// Required path inside the participant; may reference facts and late facts of named participants. Has no default.
     pub path: Template,
     /// Required text or regex to find; has no default.
     pub pattern: String,
@@ -34,11 +34,7 @@ impl FileContains {
 impl Step for FileContains {
     fn needs(&self) -> Vec<Need> {
         std::iter::once(Need::Handle(self.on.clone()))
-            .chain(
-                self.path
-                    .references()
-                    .map(|(participant, fact)| Need::Fact(participant.into(), fact.into())),
-            )
+            .chain(self.path.needs())
             .collect()
     }
 }
@@ -66,6 +62,7 @@ impl StepFactory for FileContainsFactory {
 mod tests {
     use std::time::Duration;
 
+    use panoramic_core::step::LateFact;
     use serde_json::Value;
 
     use super::*;
@@ -106,17 +103,52 @@ mod tests {
     }
 
     #[test]
+    fn file_contains_rejects_self_and_endpoint_references_in_its_path() {
+        for (path, expected) in [
+            (
+                "{{ self.facts.file }}",
+                "a step has no 'self'; name the participant, as in '{{ <participant>.facts.<fact> }}'",
+            ),
+            (
+                "{{ self.late.ip }}",
+                "a step has no 'self'; name the participant, as in '{{ <participant>.late.ip }}'",
+            ),
+            (
+                "{{ subject.endpoints.api.url }}",
+                "step fields accept only fact and late fact references to named participants",
+            ),
+            (
+                "{{ self.endpoints.api.url }}",
+                "step fields accept only fact and late fact references to named participants",
+            ),
+            (
+                "{{ self.connections.api.url }}",
+                "step fields accept only fact and late fact references to named participants",
+            ),
+        ] {
+            let mut fields = valid_fields("file_contains");
+            fields.insert("path".into(), Value::String(path.into()));
+            assert_eq!(
+                FileContainsFactory.build(&fields).unwrap_err(),
+                format!("path: '{path}': {expected}")
+            );
+        }
+    }
+
+    #[test]
     fn file_contains_needs_only_its_participant() {
         let step = FileContainsFactory.build(&valid_fields("file_contains")).unwrap();
         assert_eq!(step.needs(), vec![Need::Handle("subject".into())]);
     }
 
     #[test]
-    fn file_contains_reports_facts_in_path_order_after_its_participant() {
+    fn file_contains_reports_fact_and_late_fact_needs_for_its_path() {
         let mut fields = valid_fields("file_contains");
         fields.insert(
             "path".into(),
-            Value::String("{{ other.facts.dir }}/{{ subject.facts.file }}/{{ other.facts.dir }}".into()),
+            Value::String(
+                "{{ other.facts.dir }}/{{ subject.late.ip }}/{{ subject.facts.file }}/{{ other.facts.dir }}".into(),
+            ),
         );
         let step = FileContainsFactory.build(&fields).unwrap();
         assert_eq!(
@@ -124,6 +156,7 @@ mod tests {
             [
                 Need::Handle("subject".into()),
                 Need::Fact("other".into(), "dir".into()),
+                Need::Late("subject".into(), LateFact::Ip),
                 Need::Fact("subject".into(), "file".into()),
                 Need::Fact("other".into(), "dir".into()),
             ]

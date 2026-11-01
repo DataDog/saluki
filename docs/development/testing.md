@@ -149,6 +149,10 @@ supports this subset of the schema:
   the path out.
 - `parallel` blocks of these steps.
 
+Step fields can also reference a participant's late facts as `<participant>.late.<fact>`: `ip` on every realization,
+`container_id` on containers and pods, and `pod_uid` on pods only. They exist once the participant is created or running,
+so the integration runner rejects them. Step fields accept only facts and late facts of explicitly named participants.
+
 Durations in a participant case need a unit: write `30s`, not `30`.
 
 Every step names the participant it acts on with `on`. Step fields differ from the integration schema: steps use

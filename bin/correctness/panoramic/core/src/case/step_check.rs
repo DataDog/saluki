@@ -72,11 +72,15 @@ fn build_step(
     }
     for need in step.needs() {
         let participant = match &need {
-            Need::Handle(participant) | Need::Process(participant, _) | Need::Fact(participant, _) => participant,
+            Need::Handle(participant)
+            | Need::Process(participant, _)
+            | Need::Fact(participant, _)
+            | Need::Late(participant, _) => participant,
         };
         let Some(entry) = file.participants.get(participant) else {
             let usage = match &need {
                 Need::Fact(_, fact) => format!("references fact '{fact}' of"),
+                Need::Late(_, fact) => format!("references late fact '{}' of", fact.name()),
                 Need::Handle(_) | Need::Process(_, _) => "runs on".into(),
             };
             return Err(error(format!(
@@ -149,6 +153,7 @@ mod tests {
     use super::super::fixtures::{Probe, Server, STEPS, TYPES};
     use super::*;
     use crate::{
+        backend::LateFact,
         layout::{Os, RealizationKind},
         participant::FactDeclaration,
         step::{decode_fields, StepFields},
@@ -249,6 +254,7 @@ mod tests {
             ("on: '{{ subject }}'", "on"),
             ("on: subject, process: '{{ process }}'", "process"),
             ("on: subject, values: ['prefix {{ value }} suffix']", "values"),
+            ("on: subject, values: ['{{ subject.late.ip }}']", "values"),
             ("on: subject, values: [{'{{ x }}': 1}]", "values"),
             (
                 "on: subject, values: [{nested: [false, 3, null, '{{ value }}']}]",
@@ -286,6 +292,32 @@ mod tests {
                 Need::Handle("subject".into()),
                 Need::Fact("subject".into(), "file".into())
             ]
+        );
+    }
+
+    #[test]
+    fn late_fact_references_in_declared_template_fields_build_and_report_needs() {
+        for fact in [LateFact::ContainerId, LateFact::Ip, LateFact::PodUid] {
+            let procedure = build(&format!(
+                "- {{step: probe, on: subject, path: '{{{{ other.late.{} }}}}'}}",
+                fact.name()
+            ))
+            .unwrap();
+            let [ProcedureNode::Step(step)] = procedure.as_slice() else {
+                panic!("expected one step");
+            };
+            assert_eq!(
+                step.needs(),
+                [Need::Handle("subject".into()), Need::Late("other".into(), fact)]
+            );
+        }
+    }
+
+    #[test]
+    fn late_fact_references_require_a_known_participant() {
+        let message = build_error("- {step: probe, on: subject, path: '{{ missing.late.ip }}'}");
+        assert_eq!(message,
+            "case 'alpha' in cases/alpha/config.yaml: step 1 'probe' references late fact 'ip' of unknown participant 'missing'; participants: other, subject"
         );
     }
 
