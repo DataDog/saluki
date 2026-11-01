@@ -459,15 +459,16 @@ mod tests {
             alpine_image: Some("other:alpine"),
         };
         let error = check_inputs(&plans, Os::Linux, &inputs).unwrap_err().to_string();
-        assert_eq!(error, concat!(
+        let main_binary = Path::new("build/install").join("bin/agent/agent");
+        assert_eq!(error, format!(concat!(
             "Legacy artifact inputs disagree with the --artifacts bindings:\n",
             "  - --adp-binary-path (PANORAMIC_ADP_BINARY_PATH) names 'other/adp' for role 'adp-host-binary', bound to 'build/adp' (manifest)\n",
-            "  - --core-agent-binary-path (PANORAMIC_CORE_AGENT_BINARY_PATH) names 'other/bin/agent/agent' for role 'agent-host-install', bound to 'build/install' (manifest), whose main binary is 'build/install/bin/agent/agent'\n",
+            "  - --core-agent-binary-path (PANORAMIC_CORE_AGENT_BINARY_PATH) names 'other/bin/agent/agent' for role 'agent-host-install', bound to 'build/install' (manifest), whose main binary is '{}'\n",
             "  - --alpine-image (PANORAMIC_ALPINE_IMAGE) names 'other:alpine' for role 'fixup-image', bound to 'alpine:latest' (local default)\n",
             "  - --image-override comparison (PANORAMIC_IMAGE_OVERRIDES) names 'x' for role 'agent-adp-linux-image', bound to 'saluki-images/datadog-agent:testing-devel' (local default)\n",
             "  - --image-override millstone (PANORAMIC_IMAGE_OVERRIDES) names 'y' for role 'tools-linux-image', bound to 'saluki-images/correctness-tools:latest' (local default)\n",
             "  - --image-override baseline (PANORAMIC_IMAGE_OVERRIDES) names 'z' for role 'agent-adp-linux-image', bound to 'saluki-images/datadog-agent:testing-devel' (local default)"
-        ));
+        ), main_binary.display()));
     }
 
     #[test]
@@ -501,9 +502,11 @@ mod tests {
         };
         check_inputs(&plans, Os::MacOs, &inputs).unwrap();
         inputs.core_agent_binary_path = Some(Path::new("build/install"));
-        assert_eq!(check_inputs(&plans, Os::MacOs, &inputs).unwrap_err().to_string(),
-            "Legacy artifact inputs disagree with the --artifacts bindings:\n  - --core-agent-binary-path (PANORAMIC_CORE_AGENT_BINARY_PATH) names 'build/install' for role 'agent-host-install', bound to 'build/install' (manifest), whose main binary is 'build/install/bin/agent/agent'"
-        );
+        let main_binary = Path::new("build/install").join("bin/agent/agent");
+        assert_eq!(check_inputs(&plans, Os::MacOs, &inputs).unwrap_err().to_string(), format!(
+            "Legacy artifact inputs disagree with the --artifacts bindings:\n  - --core-agent-binary-path (PANORAMIC_CORE_AGENT_BINARY_PATH) names 'build/install' for role 'agent-host-install', bound to 'build/install' (manifest), whose main binary is '{}'",
+            main_binary.display()
+        ));
     }
 
     #[test]

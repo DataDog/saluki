@@ -270,21 +270,30 @@ mod tests {
         let cases = [
             (
                 binding("missing", ArtifactKind::Binary, "missing"),
-                "missing",
+                dir.path().join("missing"),
                 "cannot inspect",
             ),
             (
                 binding("directory", ArtifactKind::Binary, "install"),
-                "install",
+                dir.path().join("install"),
                 "is not a file",
             ),
             (
                 binding("incomplete", INSTALL, "install"),
-                "install/bin/tool",
+                // Joined the way verification joins an install with its main binary.
+                dir.path().join("install").join("bin/tool"),
                 "cannot inspect",
             ),
-            (binding("file", INSTALL, "tool"), "tool", "is not a directory"),
-            (binding("absent-install", INSTALL, "absent"), "absent", "cannot inspect"),
+            (
+                binding("file", INSTALL, "tool"),
+                dir.path().join("tool"),
+                "is not a directory",
+            ),
+            (
+                binding("absent-install", INSTALL, "absent"),
+                dir.path().join("absent"),
+                "cannot inspect",
+            ),
         ];
         let bindings: Vec<_> = cases.iter().map(|(binding, _, _)| binding.clone()).collect();
         let results = verify(&bindings, dir.path()).await;
@@ -292,7 +301,7 @@ mod tests {
         for (result, (binding, path, problem)) in results.iter().zip(&cases) {
             assert_eq!(&result.binding, binding);
             let message = result.identity.as_ref().unwrap_err();
-            assert!(message.contains(dir.path().join(path).to_str().unwrap()), "{message}");
+            assert!(message.contains(path.to_str().unwrap()), "{message}");
             assert!(message.contains(problem), "{message}");
         }
     }
