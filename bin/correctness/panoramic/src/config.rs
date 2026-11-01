@@ -7,16 +7,15 @@ use std::{
 };
 
 use panoramic_core::case::{deserialize_case, deserialize_env_map, CaseDuration};
-use panoramic_core::{case::CaseSchema, layout::Os, plan::Planner};
-use panoramic_participants::AgentAdp;
+use panoramic_core::{artifact::ArtifactManifest, case::CaseSchema, layout::Os, plan::Planner};
 use saluki_error::{generic_error, GenericError};
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value;
 
+use self::runner_artifacts::RunnerArtifacts;
 use self::typed_case::{LoadedPlan, RunnableCase, TypedConfig};
 use crate::correctness::config::Config as CorrectnessConfig;
-use crate::image_override::{ImageOverride, ImageOverrides};
-use crate::integration::IntegrationSettings;
+use crate::image_override::ImageOverrides;
 use crate::test::Test;
 
 /// A duration that can be parsed from human-readable strings like `10s`, `1m`, `500ms`.
@@ -195,18 +194,6 @@ pub(crate) fn os_for_runtime(runtime: &str) -> Option<Os> {
         LINUX_RUNTIME => Some(Os::Linux),
         MAC_RUNTIME => Some(Os::MacOs),
         WINDOWS_RUNTIME => Some(Os::Windows),
-        _ => None,
-    }
-}
-
-/// Returns the integration-test target image for the given runtime, if the runtime uses one.
-///
-/// `mac` runs ADP as a host process and has no target image. All other runtimes resolve to a
-/// fixed, harness-owned image; tests do not select images per case.
-pub fn target_image_for_runtime(runtime: &str) -> Option<&'static str> {
-    match runtime {
-        LINUX_RUNTIME => Some(AgentAdp::LINUX_IMAGE.local_default),
-        WINDOWS_RUNTIME => Some(AgentAdp::WINDOWS_IMAGE.local_default),
         _ => None,
     }
 }
@@ -671,6 +658,20 @@ where
     Ok(case)
 }
 
+/// Message shown when a command is given no `-d` directories.
+pub(crate) const NO_TEST_DIRECTORIES: &str =
+    "No test directories specified. Use -d <path> to specify one or more directories.";
+
+/// Loads the manifest and validates its roles, returning error messages for the caller to report.
+pub(crate) fn load_planner(artifacts: Option<&Path>) -> Result<Planner<'static>, String> {
+    let manifest = artifacts
+        .map(ArtifactManifest::load)
+        .transpose()
+        .map_err(|error| format!("{error:#}"))?
+        .unwrap_or_default();
+    Planner::new(crate::REGISTRIES, manifest).map_err(|error| format!("Invalid artifact roles: {error:#}"))
+}
+
 /// Discovers and compiles enabled cases, sorted by name, using the caller's run planner.
 pub(crate) fn discover_in_scope(
     planner: &mut Planner<'_>, dirs: &[PathBuf], subject_os: Os,
@@ -707,7 +708,7 @@ pub(crate) fn discover_in_scope(
 pub(crate) struct BuiltCase<P = LoadedPlan> {
     /// The plan supplying the case metadata and selected subject OS.
     pub(crate) plan: P,
-    /// The runner built for the selected runtime and image overrides.
+    /// The runner built for the selected runtime and artifact choices.
     pub(crate) runner: Box<dyn Test>,
 }
 
@@ -718,18 +719,17 @@ pub(crate) struct BuiltCase<P = LoadedPlan> {
 /// Reports every case that cannot build a runner, in input order, before validating image overrides.
 /// Returns an error if an image override is duplicate or unmatched.
 pub(crate) fn build_runners<P>(
-    plans: impl IntoIterator<Item = P>, selected: Os, image_overrides: &[ImageOverride],
+    plans: impl IntoIterator<Item = P>, selected: Os, artifacts: &RunnerArtifacts<'_>,
 ) -> Result<Vec<BuiltCase<P>>, GenericError>
 where
     P: Borrow<LoadedPlan>,
 {
-    let overrides = ImageOverrides::new(image_overrides);
-    let settings = IntegrationSettings::new(runtime_for_os(selected), &overrides);
+    let settings = artifacts.integration_settings(runtime_for_os(selected));
     let mut built = Vec::new();
     let mut errors = Vec::new();
     for plan in plans {
         let borrowed = plan.borrow();
-        match borrowed.build_test(&settings, &overrides) {
+        match borrowed.build_test(&settings, artifacts) {
             Ok(runner) => built.push(BuiltCase { plan, runner }),
             Err(error) => errors.push(format!("{error:#}").replace('\n', "\n    ")),
         }
@@ -740,8 +740,10 @@ where
             errors.join("\n  - ")
         ));
     }
-    let runners: Vec<_> = built.iter().map(|b| b.runner.as_ref()).collect();
-    overrides.validate(&runners)?;
+    if let RunnerArtifacts::Overrides(entries) = artifacts {
+        let runners: Vec<_> = built.iter().map(|b| b.runner.as_ref()).collect();
+        ImageOverrides::new(entries).validate(&runners)?;
+    }
     Ok(built)
 }
 
@@ -784,6 +786,7 @@ pub fn parse_file_spec(spec: &str) -> Result<(&str, &str), GenericError> {
 }
 
 mod integration_bridge;
+pub(crate) mod runner_artifacts;
 pub(crate) mod typed_case;
 
 #[cfg(test)]
@@ -794,6 +797,37 @@ pub(crate) mod tests {
     use super::typed_case::LoadedCase;
     use super::*;
     use crate::correctness::case::CorrectnessTestCase;
+    use crate::image_override::ImageOverride;
+
+    #[test]
+    fn load_planner_returns_manifest_and_role_errors_without_logging_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = tempfile::NamedTempFile::new().unwrap();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(std::sync::Mutex::new(log.reopen().unwrap()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            assert!(load_planner(None).is_ok());
+            for (file, content, expected) in [
+                ("missing.toml", None, "failed to read artifact manifest"),
+                ("malformed.toml", Some("not toml"), "TOML parse error"),
+                (
+                    "unknown.toml",
+                    Some("schema = 1\n[roles]\nunknown = 'x'"),
+                    "Invalid artifact roles:",
+                ),
+            ] {
+                let path = dir.path().join(file);
+                if let Some(content) = content {
+                    std::fs::write(&path, content).unwrap();
+                }
+                let error = load_planner(Some(&path)).err().expect("invalid manifest must fail");
+                assert!(error.contains(expected), "{error}");
+                assert!(error.contains(path.to_str().unwrap()), "{error}");
+            }
+        });
+        assert!(std::fs::read_to_string(log.path()).unwrap().is_empty());
+    }
 
     pub(crate) const CORRECTNESS_FIELDS: &str =
         "runtime: docker\nanalysis_mode: metrics\nbaseline: {image: 'base:file'}\ncomparison: {image: 'comp:file'}\n";
@@ -1079,7 +1113,7 @@ timeout: 30s
             .into_iter()
             .map(|plan| plan.expect("the test case declares the selected subject OS"))
             .collect::<Vec<_>>();
-        build_runners(plans, os, overrides)
+        build_runners(plans, os, &RunnerArtifacts::Overrides(overrides))
     }
 
     fn discover_runners(
@@ -1087,7 +1121,7 @@ timeout: 30s
     ) -> Result<Vec<BuiltCase>, GenericError> {
         let os = os_for_runtime(runtime).unwrap();
         let plans = discover_in_scope(&mut planner(), dirs, os)?;
-        build_runners(plans, os, image_overrides)
+        build_runners(plans, os, &RunnerArtifacts::Overrides(image_overrides))
     }
 
     #[test]
@@ -1515,7 +1549,7 @@ timeout: 30s
             .into_iter()
             .map(|case| planner().compile(case, Os::Linux).unwrap().unwrap())
             .collect();
-        let runners = build_runners(&plans, Os::Linux, &entries).unwrap();
+        let runners = build_runners(&plans, Os::Linux, &RunnerArtifacts::Overrides(&entries)).unwrap();
         assert_eq!(runners.len(), plans.len());
         assert_eq!(
             plans.iter().map(|plan| plan.case().name()).collect::<Vec<_>>(),

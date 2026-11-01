@@ -275,6 +275,7 @@ mod tests {
     use panoramic_steps::{test_support::valid_fields, REGISTERED_STEPS};
 
     use super::*;
+    use crate::config::runner_artifacts::RunnerArtifacts;
     use crate::{
         config::{
             build_runners,
@@ -324,7 +325,7 @@ mod tests {
             );
             assert_eq!(config.loaded_from, participant_path.canonicalize().unwrap());
             assert_eq!(integration.loaded_from, integration_path.canonicalize().unwrap());
-            assert_eq!(build_runners(plans, Os::Linux, &[]).unwrap().len(), 1);
+            assert_eq!(build_runners(plans, Os::Linux, &RunnerArtifacts::Overrides(&[])).unwrap().len(), 1);
             assert_eq!(build_case_runners(integration_cases, Os::Linux, &[]).unwrap().len(), 1);
         }
     }
@@ -347,7 +348,7 @@ mod tests {
             });
             let overrides = if runtime == MAC_RUNTIME {
                 let errors = [&participant_plans, &integration_plans].map(|plans| {
-                    build_runners(plans, os, &overrides)
+                    build_runners(plans, os, &RunnerArtifacts::Overrides(&overrides))
                         .err()
                         .expect("host processes have no container image to override")
                         .to_string()
@@ -357,8 +358,10 @@ mod tests {
             } else {
                 &overrides[..]
             };
-            let participant_runners = build_runners(&participant_plans, os, overrides).unwrap();
-            let integration_runners = build_runners(&integration_plans, os, overrides).unwrap();
+            let participant_runners =
+                build_runners(&participant_plans, os, &RunnerArtifacts::Overrides(overrides)).unwrap();
+            let integration_runners =
+                build_runners(&integration_plans, os, &RunnerArtifacts::Overrides(overrides)).unwrap();
             assert_eq!(participant_runners.len(), 1);
             assert_eq!(integration_runners.len(), 1);
             let participant = &participant_runners[0];

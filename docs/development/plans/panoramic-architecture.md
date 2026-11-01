@@ -62,7 +62,8 @@ equivalence, and migration proofs: their rows, CI links and comparison commit.
   correctness job extends `.test-correctness-adp-baseline`; CI supplies the same `bundled-agent-adp` image to both sides.
 - Correctness baseline and comparison both bind to `agent-adp-linux-image`, matching CI's shared image. Its local
   default is `saluki-images/datadog-agent:testing-devel` (debug), while correctness files declare `:testing-release`
-  (release). Artifact commands and text listings use the role binding; runners use the files' images.
+  (release). Artifact commands, text listings and `run --artifacts` use the role binding; without that flag,
+  runners use the files' images, subject to image overrides.
 - Integration uses `saluki-images/datadog-agent:testing-devel` on Linux and
   `saluki-images/agent-data-plane:testing-windows` on Windows (overridden in CI by `--image-override container=$ImageTag`).
   macOS uses host processes. The intake uses `saluki-images/correctness-tools:latest` and is enabled only in

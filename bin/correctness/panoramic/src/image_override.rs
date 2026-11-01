@@ -131,7 +131,8 @@ procedure: []
 "#,
         )
         .expect("integration case should parse");
-        let settings = crate::integration::IntegrationSettings::new(crate::config::LINUX_RUNTIME, overrides);
+        let settings = crate::config::runner_artifacts::RunnerArtifacts::Overrides(overrides.entries)
+            .integration_settings(crate::config::LINUX_RUNTIME);
         Box::new(crate::integration::IntegrationTestCase::new(case, &settings))
     }
 

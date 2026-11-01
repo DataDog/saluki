@@ -22,6 +22,7 @@ use serde_json::{json, Value};
 
 use super::{
     build_runners,
+    runner_artifacts::RunnerArtifacts,
     tests::{planner, write_case, LOGGING_INTEGRATION, LOGGING_PARTICIPANT, PARTICIPANT_FIELDS},
     typed_case::{LoadedCase, RunnableCase, TypedConfig},
     AssertionStep, IntegrationConfig,
@@ -237,7 +238,7 @@ impl Inventory {
                 .filter(|case| case.suite() == INTEGRATION || os == Os::Linux)
                 .filter_map(|case| planner().compile(case, os).unwrap())
                 .collect();
-            for built in build_runners(plans, os, &[]).unwrap() {
+            for built in build_runners(plans, os, &RunnerArtifacts::Overrides(&[])).unwrap() {
                 let case = built.plan.case();
                 let status = if case.is_disabled() { DISABLED } else { SELECTED };
                 rows.push(Row::from_case(

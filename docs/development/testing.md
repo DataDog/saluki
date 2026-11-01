@@ -212,8 +212,9 @@ fixup-image = "registry.example/alpine:3"
 Omitted roles use their local defaults: for example, `agent-adp-linux-image` defaults to
 `saluki-images/datadog-agent:testing-devel`. A role no participant type, backend or typed schema declares fails the listing;
 a declared role the selected cases don't need is ignored. Relative binary and install paths resolve against the
-working directory, whether supplied by a manifest or a local default. Runners choose images and binaries from their
-settings.
+working directory, whether supplied by a manifest or a local default. With `run --artifacts <file>`, runners take
+images and binaries from these bindings. Verification during a run requires this flag; other runs use case files,
+harness defaults and the image and binary flags or their environment variables.
 
 Typed integration and correctness cases map their containers and host processes to these roles:
 
@@ -228,12 +229,39 @@ Typed integration and correctness cases map their containers and host processes 
 
 Each case also needs the roles its backend declares, such as `fixup-image` for Linux containers. Integration cases need the
 intake role only on Linux, where the sidecar runs. Correctness cases are compiled for Linux under every subject OS;
-their roles appear in text listings, verification and pulling only when you select Linux.
+their roles appear in text listings and `artifacts verify`/`pull` only when you select Linux.
+`run --artifacts` verifies their Linux roles even under another subject OS, because these cases still run.
 
 Both correctness targets bind to `agent-adp-linux-image`, as CI supplies the same bundled image to both sides.
 Locally, correctness files declare `saluki-images/datadog-agent:testing-release`, while that role defaults to the
 integration image, `saluki-images/datadog-agent:testing-devel`. These are release and debug builds, respectively.
-The role binding applies to artifact commands and text listings; runs use the images the files declare.
+With `run --artifacts`, both targets use the role binding: locally, `:testing-devel` unless the manifest binds it.
+Without the flag, runners keep the images the files declare, subject to image overrides.
+
+Use `panoramic run --artifacts <file> -d <cases>` to verify artifacts before any case starts. Verification follows
+`-t` selection and the check that the host can provide the cases. Unavailable cases stay `errored`/`setup` rows and
+contribute no artifacts to verification. Any verification failure exits 2 before creating the log directory or
+`run.json`, starting kind setup or running a case. The report goes to stderr, including in TUI mode, leaving stdout
+for `-o json`.
+
+The flag has no environment fallback. It rejects these flags and their environment variables, even when the
+value comes only from the environment:
+
+| Flag | Environment variable |
+| --- | --- |
+| `--image-override` | `PANORAMIC_IMAGE_OVERRIDES` |
+| `--adp-binary-path` | `PANORAMIC_ADP_BINARY_PATH` |
+| `--core-agent-binary-path` | `PANORAMIC_CORE_AGENT_BINARY_PATH` |
+| `--alpine-image` | `PANORAMIC_ALPINE_IMAGE` |
+
+Before using `--artifacts`, unset these variables in your shell or remove them from the CI job. In CI, bind
+`fixup-image` in the manifest instead of setting `PANORAMIC_ALPINE_IMAGE`.
+
+The image roles feed the containers in the table above. `adp-host-binary` supplies the host ADP executable;
+`agent-host-install` supplies the Core Agent executable at `bin/agent/agent` beneath that directory. `fixup-image`
+supplies the shared-volume permission fix-up container. Kind loads the runners' bound images into its cluster.
+`--mounts-dir`, kind options, `-l` and TUI options remain available. `list --json` keeps reporting the original images,
+including when combined with `--artifacts`.
 
 Use `panoramic artifacts render --set <role>=<reference> … -o <file>` to write a manifest, replacing an existing
 file. Repeat `--set` to bind more roles; omitting it writes a manifest binding nothing. Rendering checks bindings

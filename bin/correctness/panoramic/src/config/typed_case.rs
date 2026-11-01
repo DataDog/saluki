@@ -21,11 +21,11 @@ use super::{
     WINDOWS_RUNTIME,
 };
 use crate::{
+    config::runner_artifacts::RunnerArtifacts,
     correctness::{
         case::CorrectnessTestCase,
         config::{Config as CorrectnessConfig, Runtime},
     },
-    image_override::ImageOverrides,
     integration::{IntegrationSettings, IntegrationTestCase},
     test::{Test, TestSuite},
 };
@@ -229,7 +229,7 @@ pub(crate) trait RunnableCase {
     ///
     /// Participant cases propagate [`Self::integration_config`] errors.
     fn build_test(
-        &self, settings: &IntegrationSettings, overrides: &ImageOverrides<'_>,
+        &self, settings: &IntegrationSettings, artifacts: &RunnerArtifacts<'_>,
     ) -> Result<Box<dyn Test>, GenericError>;
 }
 
@@ -268,7 +268,7 @@ impl RunnableCase for LoadedPlan {
     }
 
     fn build_test(
-        &self, settings: &IntegrationSettings, overrides: &ImageOverrides<'_>,
+        &self, settings: &IntegrationSettings, artifacts: &RunnerArtifacts<'_>,
     ) -> Result<Box<dyn Test>, GenericError> {
         match self.case().schema() {
             CaseSchema::Typed(TypedConfig::Integration(config)) => {
@@ -276,7 +276,7 @@ impl RunnableCase for LoadedPlan {
             }
             CaseSchema::Typed(TypedConfig::Correctness(config)) => {
                 let mut config = config.clone();
-                overrides.apply_correctness(&mut config);
+                artifacts.apply_correctness(&mut config);
                 Ok(Box::new(CorrectnessTestCase::new(
                     self.case().name().to_string(),
                     config,
@@ -648,7 +648,7 @@ mod tests {
                 assert_eq!(plan.subject_os(), Os::Linux);
                 assert!(plan.layout().is_none());
             }
-            let runners = build_runners(plans, os, &[]).unwrap();
+            let runners = build_runners(plans, os, &RunnerArtifacts::Overrides(&[])).unwrap();
             assert!(runners.iter().all(|built| built.runner.runtime() == "docker"));
         }
     }
@@ -714,8 +714,8 @@ mod tests {
             .into_iter()
             .map(|case| planner().compile(case, Os::Linux).unwrap().unwrap())
             .collect();
-        let overridden = build_runners(&plans, Os::Linux, &entries).unwrap();
-        let declared = build_runners(&plans, Os::Linux, &[]).unwrap();
+        let overridden = build_runners(&plans, Os::Linux, &RunnerArtifacts::Overrides(&entries)).unwrap();
+        let declared = build_runners(&plans, Os::Linux, &RunnerArtifacts::Overrides(&[])).unwrap();
         assert_eq!(overridden[0].runner.images()["baseline"], "base:override");
         assert_eq!(declared[0].runner.images()["baseline"], "base:file");
     }

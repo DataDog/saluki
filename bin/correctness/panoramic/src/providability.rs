@@ -14,7 +14,8 @@ use crate::{
 };
 
 /// Checks all selected plans together, replacing cases the host cannot provide with setup errors.
-pub(crate) async fn check(built: &mut [BuiltCase]) {
+/// Returns each realization the host cannot provide, with the reason.
+pub(crate) async fn check(built: &mut [BuiltCase]) -> BTreeMap<Realization, String> {
     let needed = built.iter().flat_map(|built| {
         realizations(&built.plan)
             .into_iter()
@@ -22,6 +23,7 @@ pub(crate) async fn check(built: &mut [BuiltCase]) {
     });
     let unprovidable = panoramic_core::backend::unprovidable(needed).await;
     apply(built, &unprovidable);
+    unprovidable
 }
 
 fn apply(built: &mut [BuiltCase], unprovidable: &BTreeMap<Realization, String>) {
@@ -89,6 +91,31 @@ mod tests {
 
         async fn run(&self, tctx: TestContext) -> TestResult {
             ScriptedTest::new("case", Behavior::Pass).run(tctx).await
+        }
+    }
+
+    #[tokio::test]
+    async fn check_returns_the_realizations_it_could_not_provide() {
+        let mut built = [BuiltCase {
+            plan: plan(&PARTICIPANT_FIELDS.replace("[linux]", "[macos]"), Os::MacOs),
+            runner: Box::new(ImageTest),
+        }];
+        let unprovidable = check(&mut built).await;
+        if Os::host() == Os::MacOs {
+            assert!(unprovidable.is_empty());
+            assert_eq!(built[0].runner.images(), ImageTest.images());
+        } else {
+            assert_eq!(
+                unprovidable,
+                BTreeMap::from([(
+                    Realization {
+                        os: Os::MacOs,
+                        kind: RealizationKind::HostProcessGroup
+                    },
+                    format!("this host runs {}, not macos", Os::host().name()),
+                )])
+            );
+            assert!(built[0].runner.images().is_empty());
         }
     }
 

@@ -7,13 +7,13 @@ use std::{borrow::Borrow, collections::BTreeMap, fmt::Write as _};
 use std::{io::IsTerminal, process::ExitCode};
 
 use clap::Parser as _;
-use panoramic_core::artifact::ArtifactManifest;
+use panoramic_core::artifact::ArtifactBinding;
 use panoramic_core::case::{CaseLoader, Registries};
 use panoramic_core::events::create_event_channel;
 use panoramic_core::interrupts::Interrupts;
-use panoramic_core::layout::Os;
+use panoramic_core::layout::{Os, Realization};
 use panoramic_core::machine_output::{revision, RunReport};
-use panoramic_core::plan::Planner;
+use panoramic_core::plan::needed_artifacts;
 use saluki_common::logging::{filter_from_env, parse_filter_directives};
 use tokio::sync::{watch, Mutex};
 use tokio_util::sync::CancellationToken;
@@ -42,9 +42,11 @@ mod dynamic_vars;
 mod integration;
 mod mounts;
 use self::config::{
-    build_runners, discover_in_scope, runtime_for_os,
-    typed_case::{needs_pod, LoadedPlan, TypedConfigLoader},
-    BuiltCase,
+    build_runners, discover_in_scope, load_planner,
+    runner_artifacts::{BoundArtifacts, RunnerArtifacts},
+    runtime_for_os,
+    typed_case::{needs_pod, realizations, LoadedPlan, TypedConfigLoader},
+    BuiltCase, NO_TEST_DIRECTORIES,
 };
 
 mod image_override;
@@ -173,22 +175,17 @@ fn resolve_selection(requested: &str, discovered: &[&str]) -> (Vec<String>, Vec<
     (selected, unmatched)
 }
 
-async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
-    let settings = cmd.runner_settings();
-    debug!(
-        adp_binary_path = %settings.adp_binary_path.display(),
-        core_agent_binary_path = %settings.core_agent_binary_path.display(),
-        mounts_dir = %settings.mounts_dir.display(),
-        alpine_image = %settings.alpine_image,
-        "Resolved runner settings."
-    );
+/// Keeps the named cases, or every case when no selection was given.
+fn retain_selected(built: &mut Vec<BuiltCase>, selected: Option<&[String]>) {
+    built.retain(|built| selected.is_none_or(|names| names.iter().any(|name| name == built.plan.case().name())));
+}
 
+async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     if cmd.test_dirs.is_empty() {
-        let msg = "No test directories specified. Use -d <path> to specify one or more directories.";
         if use_tui {
-            eprintln!("{}", msg);
+            eprintln!("{NO_TEST_DIRECTORIES}");
         } else {
-            error!("{}", msg);
+            error!("{NO_TEST_DIRECTORIES}");
         }
         return ExitCode::from(2);
     }
@@ -204,21 +201,38 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let mut planner = match Planner::new(crate::REGISTRIES, ArtifactManifest::default()) {
+    let mut planner = match load_planner(cmd.artifacts.as_deref()) {
         Ok(planner) => planner,
         Err(e) => {
             if use_tui {
-                eprintln!("Invalid artifact roles: {e:#}");
+                eprintln!("{e}");
             } else {
-                error!("Invalid artifact roles: {e:#}");
+                error!("{e}");
             }
             return ExitCode::from(EXIT_HARNESS_ERROR);
         }
     };
     let integration_runtime = runtime_for_os(subject_os);
-    let mut built = match discover_in_scope(&mut planner, &cmd.test_dirs, subject_os)
-        .and_then(|plans| build_runners(plans, subject_os, &cmd.image_overrides))
-    {
+    let plans = match discover_in_scope(&mut planner, &cmd.test_dirs, subject_os) {
+        Ok(plans) => plans,
+        Err(e) => {
+            if use_tui {
+                eprintln!("Failed to discover tests: {:#}", e);
+            } else {
+                error!("Failed to discover tests: {:#}", e);
+            }
+            return ExitCode::from(EXIT_HARNESS_ERROR);
+        }
+    };
+    let mut settings = cmd.runner_settings();
+    let artifacts = if cmd.artifacts.is_some() {
+        let bound = BoundArtifacts::new(needed_artifacts(&plans));
+        bound.apply_runner_settings(&mut settings);
+        RunnerArtifacts::Bound(bound)
+    } else {
+        RunnerArtifacts::Overrides(&cmd.image_overrides)
+    };
+    let mut built = match build_runners(plans, subject_os, &artifacts) {
         Ok(built) => built,
         Err(e) => {
             if use_tui {
@@ -229,6 +243,14 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
             return ExitCode::from(EXIT_HARNESS_ERROR);
         }
     };
+
+    debug!(
+        adp_binary_path = %settings.adp_binary_path.display(),
+        core_agent_binary_path = %settings.core_agent_binary_path.display(),
+        mounts_dir = %settings.mounts_dir.display(),
+        alpine_image = %settings.alpine_image,
+        "Resolved runner settings."
+    );
 
     if built.is_empty() {
         let dirs_str: Vec<_> = cmd.test_dirs.iter().map(|d| d.display().to_string()).collect();
@@ -274,18 +296,51 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         None => None,
     };
     // Register only the selected tests so the runner and `run.json` share one selection.
-    built.retain(|built| {
-        selected_tests
-            .as_ref()
-            .is_none_or(|names| names.iter().any(|name| name == built.plan.case().name()))
-    });
+    retain_selected(&mut built, selected_tests.as_deref());
 
     if use_tui {
         eprintln!("Checking that this host can provide the selected cases...");
     } else {
         info!("Checking that this host can provide the selected cases...");
     }
-    providability::check(&mut built).await;
+    let unprovidable = providability::check(&mut built).await;
+    if cmd.artifacts.is_some() {
+        let bindings = run_artifacts(&built, &unprovidable);
+        let base = match std::env::current_dir() {
+            Ok(base) => base,
+            Err(error) => {
+                if use_tui {
+                    eprintln!("Cannot read the current directory: {error}");
+                } else {
+                    error!("Cannot read the current directory: {error}");
+                }
+                return ExitCode::from(EXIT_HARNESS_ERROR);
+            }
+        };
+        if use_tui {
+            eprintln!("Verifying the artifacts the selected cases need…");
+        } else {
+            info!("Verifying the artifacts the selected cases need…");
+        }
+        let (report, failed) = artifact_commands::verify_bindings(subject_os, &bindings, &base).await;
+        let report = report.trim_end();
+        if use_tui {
+            eprintln!("{report}");
+        } else if failed == 0 {
+            info!("{report}");
+        } else {
+            error!("{report}");
+        }
+        if failed != 0 {
+            let n = bindings.len();
+            if use_tui {
+                eprintln!("{failed} of {n} artifact(s) failed verification.");
+            } else {
+                error!("{failed} of {n} artifact(s) failed verification.");
+            }
+            return ExitCode::from(EXIT_HARNESS_ERROR);
+        }
+    }
 
     // Create log directory.
     let log_dir = match std::path::absolute(cmd.log_dir()) {
@@ -459,6 +514,16 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     collector::exit_code(collector.report())
 }
 
+/// Selects artifacts only from cases this host can run, after test-name selection.
+fn run_artifacts(built: &[BuiltCase], unprovidable: &BTreeMap<Realization, String>) -> Vec<ArtifactBinding> {
+    needed_artifacts(built.iter().filter_map(|built| {
+        realizations(&built.plan)
+            .iter()
+            .all(|(_, realization)| !unprovidable.contains_key(realization))
+            .then_some(&built.plan)
+    }))
+}
+
 /// Collects the unique images of cases that need Kubernetes pods.
 fn collect_kind_images(built: &[BuiltCase]) -> Vec<String> {
     use std::collections::BTreeSet;
@@ -474,11 +539,24 @@ fn collect_kind_images(built: &[BuiltCase]) -> Vec<String> {
 }
 
 async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
-    let (mut planner, subject_os) =
-        match artifact_commands::artifact_planner(&cmd.test_dirs, cmd.subject_os.resolve(), cmd.artifacts.as_deref()) {
-            Ok(selection) => selection,
-            Err(exit) => return exit,
-        };
+    if cmd.test_dirs.is_empty() {
+        error!("{NO_TEST_DIRECTORIES}");
+        return ExitCode::from(EXIT_HARNESS_ERROR);
+    }
+    let subject_os = match cmd.subject_os.resolve() {
+        Ok(os) => os,
+        Err(message) => {
+            error!("{message}");
+            return ExitCode::from(EXIT_HARNESS_ERROR);
+        }
+    };
+    let mut planner = match load_planner(cmd.artifacts.as_deref()) {
+        Ok(planner) => planner,
+        Err(message) => {
+            error!("{message}");
+            return ExitCode::from(EXIT_HARNESS_ERROR);
+        }
+    };
 
     if !cmd.json {
         let dirs_str: Vec<_> = cmd.test_dirs.iter().map(|d| d.display().to_string()).collect();
@@ -494,7 +572,7 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
     };
 
     if cmd.json {
-        let runners = match build_runners(&plans, subject_os, &[]) {
+        let runners = match build_runners(&plans, subject_os, &RunnerArtifacts::Overrides(&[])) {
             Ok(runners) => runners,
             Err(e) => {
                 error!("Failed to discover tests: {:#}", e);
@@ -595,8 +673,363 @@ fn build_revision() -> String {
 
 #[cfg(test)]
 mod tests {
+    use panoramic_core::{artifact::ArtifactManifest, plan::Planner};
+
     use super::*;
     use crate::config::tests::{build_case_runners, planner, write_case, CORRECTNESS_FIELDS, PARTICIPANT_FIELDS};
+
+    #[tokio::test]
+    async fn run_validates_directories_then_subject_os_then_manifest() {
+        use tracing::instrument::WithSubscriber as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = dir.path().join("missing.toml");
+        let logs = dir.path().join("logs");
+        for (has_dirs, conflicts, expected) in [
+            (false, true, NO_TEST_DIRECTORIES.to_string()),
+            (
+                true,
+                true,
+                "--runtime linux selects subject OS 'linux', which conflicts with --subject-os windows".into(),
+            ),
+            (
+                true,
+                false,
+                format!("failed to read artifact manifest {}:", manifest.display()),
+            ),
+        ] {
+            let mut args = vec![
+                "panoramic",
+                "run",
+                "--artifacts",
+                manifest.to_str().unwrap(),
+                "--no-tui",
+                "-l",
+                logs.to_str().unwrap(),
+            ];
+            if has_dirs {
+                args.extend(["-d", dir.path().to_str().unwrap()]);
+            }
+            if conflicts {
+                args.extend(["--runtime", "linux", "--subject-os", "windows"]);
+            }
+            let Command::Run(cmd) = Cli::try_parse_from(args).unwrap().command else {
+                panic!("expected run")
+            };
+            let output = tempfile::NamedTempFile::new().unwrap();
+            let subscriber = tracing_subscriber::fmt()
+                .with_ansi(false)
+                .without_time()
+                .with_writer(std::sync::Mutex::new(output.reopen().unwrap()))
+                .finish();
+            assert_eq!(
+                run_tests(cmd, false).with_subscriber(subscriber).await,
+                ExitCode::from(2)
+            );
+            let diagnostic = std::fs::read_to_string(output.path()).unwrap();
+            assert_eq!(diagnostic.lines().count(), 1, "{diagnostic}");
+            assert!(diagnostic.contains(&expected), "{diagnostic}");
+            assert!(!logs.exists());
+        }
+    }
+
+    #[test]
+    fn run_artifacts_verify_the_selected_providable_cases_including_correctness_off_linux() {
+        use panoramic_core::layout::RealizationKind;
+
+        let dir = tempfile::tempdir().unwrap();
+        write_case(
+            dir.path(),
+            "correctness",
+            &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
+        );
+        write_case(
+            dir.path(),
+            "host",
+            "type: integration\nname: host\ntimeout: 1s\nruntimes: [mac]\nprocedure: []\n",
+        );
+        let host = Realization {
+            os: Os::MacOs,
+            kind: RealizationKind::HostProcessGroup,
+        };
+        let linux = Realization {
+            os: Os::Linux,
+            kind: RealizationKind::LinuxContainer,
+        };
+        for (selected, unavailable, expected) in [
+            (
+                None,
+                vec![],
+                vec![
+                    "adp-host-binary",
+                    "agent-adp-linux-image",
+                    "agent-host-install",
+                    "fixup-image",
+                    "tools-linux-image",
+                ],
+            ),
+            (
+                Some("correctness"),
+                vec![],
+                vec!["agent-adp-linux-image", "fixup-image", "tools-linux-image"],
+            ),
+            (
+                Some("correctness,host"),
+                vec![host],
+                vec!["agent-adp-linux-image", "fixup-image", "tools-linux-image"],
+            ),
+            (Some("host"), vec![host], vec![]),
+            (
+                Some("correctness,host"),
+                vec![linux],
+                vec!["adp-host-binary", "agent-host-install"],
+            ),
+        ] {
+            let plans = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::MacOs).unwrap();
+            let mut built = build_runners(plans, Os::MacOs, &RunnerArtifacts::Overrides(&[])).unwrap();
+            let names: Vec<_> = built.iter().map(|built| built.plan.case().name()).collect();
+            let selected = selected.map(|requested| {
+                let (selected, unmatched) = resolve_selection(requested, &names);
+                assert!(unmatched.is_empty());
+                selected
+            });
+            retain_selected(&mut built, selected.as_deref());
+            let unprovidable = unavailable
+                .into_iter()
+                .map(|realization| (realization, "unavailable".into()))
+                .collect();
+            let bindings = run_artifacts(&built, &unprovidable);
+            assert_eq!(
+                bindings.iter().map(|binding| binding.role.name).collect::<Vec<_>>(),
+                expected
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn run_artifacts_report_every_failed_binding_and_count_failures() {
+        use panoramic_core::artifact::{test_util::write_executable, ArtifactKind, ArtifactRole, BindingSource};
+
+        let dir = tempfile::tempdir().unwrap();
+        write_executable(&dir.path().join("present"));
+        write_executable(&dir.path().join("install/bin/main"));
+        let bindings: Vec<_> = [
+            ("missing-binary", ArtifactKind::Binary, "missing"),
+            ("present-binary", ArtifactKind::Binary, "present"),
+            (
+                "missing-install",
+                ArtifactKind::Install {
+                    main_binary: "bin/main",
+                },
+                "missing-install",
+            ),
+            (
+                "present-install",
+                ArtifactKind::Install {
+                    main_binary: "bin/main",
+                },
+                "install",
+            ),
+        ]
+        .into_iter()
+        .map(|(name, kind, reference)| ArtifactBinding {
+            role: ArtifactRole {
+                name,
+                kind,
+                local_default: "unused",
+            },
+            reference: reference.into(),
+            source: BindingSource::Manifest,
+        })
+        .collect();
+        let (report, failed) = artifact_commands::verify_bindings(Os::MacOs, &bindings, dir.path()).await;
+        assert_eq!(failed, 2, "{report}");
+        assert_eq!(report.matches("FAILED:").count(), 2, "{report}");
+        assert_eq!(
+            report
+                .matches("sha256:7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d")
+                .count(),
+            2,
+            "{report}"
+        );
+        assert_eq!(report.lines().count(), bindings.len() + 1, "{report}");
+        for (line, binding) in report.lines().skip(1).zip(&bindings) {
+            assert!(
+                line.starts_with(&format!(
+                    "  {} = {} (manifest): {} ",
+                    binding.role.name,
+                    binding.reference,
+                    binding.role.kind.name()
+                )),
+                "{line}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_run_whose_artifacts_fail_verification_exits_2_before_creating_any_log_directory() {
+        use tracing::instrument::WithSubscriber as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cases = dir.path().join("cases");
+        write_case(
+            &cases,
+            "host",
+            "type: integration\nname: host\ntimeout: 1s\nruntimes: [mac]\nprocedure: []\n",
+        );
+        let manifest = dir.path().join("artifacts.toml");
+        let missing = dir.path().join("missing");
+        std::fs::write(
+            &manifest,
+            format!(
+                "schema = 1\n[roles]\nadp-host-binary = '{}'\nagent-host-install = '{}'\n",
+                missing.display(),
+                missing.display()
+            ),
+        )
+        .unwrap();
+        let logs = dir.path().join("logs");
+        let Command::Run(cmd) = Cli::try_parse_from([
+            "panoramic",
+            "run",
+            "-d",
+            cases.to_str().unwrap(),
+            "--subject-os",
+            "macos",
+            "--artifacts",
+            manifest.to_str().unwrap(),
+            "--no-tui",
+            "-l",
+            logs.to_str().unwrap(),
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("expected run")
+        };
+        let output = tempfile::NamedTempFile::new().unwrap();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(std::sync::Mutex::new(output.reopen().unwrap()))
+            .finish();
+        assert_eq!(
+            run_tests(cmd, false).with_subscriber(subscriber).await,
+            ExitCode::from(2)
+        );
+        let diagnostic = std::fs::read_to_string(output.path()).unwrap();
+        assert!(
+            diagnostic.contains("Verifying the artifacts the selected cases need…"),
+            "{diagnostic}"
+        );
+        if Os::host() == Os::MacOs {
+            assert!(!logs.exists());
+            assert!(!diagnostic.contains("\n\n"), "{diagnostic}");
+            assert!(
+                diagnostic.contains("2 of 2 artifact(s) failed verification."),
+                "{diagnostic}"
+            );
+            assert!(diagnostic.contains("adp-host-binary ="), "{diagnostic}");
+            assert!(diagnostic.contains("agent-host-install ="), "{diagnostic}");
+            assert!(!diagnostic.contains("Starting test run"), "{diagnostic}");
+        } else {
+            let run_dir = std::fs::read_dir(&logs).unwrap().next().unwrap().unwrap().path();
+            let report: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(run_dir.join("run.json")).unwrap()).unwrap();
+            let tests = report["tests"].as_array().unwrap();
+            assert_eq!(tests.len(), 1);
+            assert_eq!(tests[0]["name"], "host");
+            assert_eq!(tests[0]["outcome"], "errored");
+            assert_eq!(tests[0]["error"]["kind"], "setup");
+            assert!(diagnostic.contains("No artifacts needed on macos."), "{diagnostic}");
+            assert!(!diagnostic.contains("failed verification"), "{diagnostic}");
+        }
+    }
+
+    #[test]
+    fn runners_built_from_bindings_report_bound_images_to_kind_and_listing() {
+        let dir = tempfile::tempdir().unwrap();
+        write_case(
+            dir.path(),
+            "integration",
+            "type: integration\nname: integration\ntimeout: 1s\nruntimes: [linux, windows]\nprocedure: []\n",
+        );
+        for (name, runtime) in [("docker", "docker"), ("kind", "kubernetes_in_docker")] {
+            write_case(
+                dir.path(),
+                name,
+                &format!(
+                    "type: correctness\n{}",
+                    CORRECTNESS_FIELDS.replace("runtime: docker", &format!("runtime: {runtime}"))
+                ),
+            );
+        }
+        for (os, target) in [(Os::Linux, "linux:bound"), (Os::Windows, "windows:bound")] {
+            let manifest = ArtifactManifest::new(
+                "test",
+                BTreeMap::from([
+                    ("agent-adp-linux-image".into(), "linux:bound".into()),
+                    ("agent-adp-windows-image".into(), "windows:bound".into()),
+                    ("tools-linux-image".into(), "tools:bound".into()),
+                ]),
+            )
+            .unwrap();
+            let plans = discover_in_scope(
+                &mut Planner::new(REGISTRIES, manifest).unwrap(),
+                &[dir.path().to_path_buf()],
+                os,
+            )
+            .unwrap();
+            let artifacts = RunnerArtifacts::Bound(BoundArtifacts::new(needed_artifacts(&plans)));
+            let built = build_runners(plans, os, &artifacts).unwrap();
+            let listing = listing(&built);
+            assert_eq!(
+                listing["integration"]["images"],
+                serde_json::json!({"container": target})
+            );
+            for name in ["docker", "kind"] {
+                assert_eq!(
+                    listing[name]["images"],
+                    serde_json::json!({
+                        "baseline": "linux:bound", "comparison": "linux:bound", "datadog-intake": "tools:bound", "millstone": "tools:bound",
+                    })
+                );
+            }
+            assert_eq!(collect_kind_images(&built), ["linux:bound", "tools:bound"]);
+        }
+    }
+
+    #[test]
+    fn listing_json_ignores_artifact_bindings() {
+        let dir = tempfile::tempdir().unwrap();
+        write_case(
+            dir.path(),
+            "integration",
+            "type: integration\nname: integration\ntimeout: 1s\nruntimes: [linux, windows, mac]\nprocedure: []\n",
+        );
+        write_case(
+            dir.path(),
+            "correctness",
+            &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
+        );
+        let manifest = dir.path().join("artifacts.toml");
+        std::fs::write(&manifest, "schema = 1\n[roles]\nagent-adp-linux-image = 'changed:linux'\nagent-adp-windows-image = 'changed:windows'\ntools-linux-image = 'changed:tools'\n").unwrap();
+        for os in [Os::Linux, Os::Windows, Os::MacOs] {
+            let listings: Vec<_> = [None, Some(manifest.as_path())]
+                .into_iter()
+                .map(|manifest| {
+                    let plans =
+                        discover_in_scope(&mut load_planner(manifest).unwrap(), &[dir.path().to_path_buf()], os)
+                            .unwrap();
+                    let built = build_runners(plans, os, &RunnerArtifacts::Overrides(&[])).unwrap();
+                    serde_json::to_string_pretty(&listing(&built)).unwrap()
+                })
+                .collect();
+            assert_eq!(listings[0], listings[1]);
+            assert!(listings[0].contains("base:file"));
+            assert!(!listings[0].contains("changed:"));
+        }
+    }
 
     #[tokio::test]
     async fn conflicting_runtime_and_subject_os_exit_2_for_run_list_and_list_json_before_discovery_or_logs() {
@@ -745,7 +1178,7 @@ mod tests {
             ),
         );
         let plans = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::Linux).unwrap();
-        let built: Vec<_> = build_runners(plans, Os::Linux, &[])
+        let built: Vec<_> = build_runners(plans, Os::Linux, &RunnerArtifacts::Overrides(&[]))
             .unwrap()
             .into_iter()
             .map(|BuiltCase { plan, runner }| BuiltCase {

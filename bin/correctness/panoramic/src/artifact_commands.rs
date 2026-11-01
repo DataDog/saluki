@@ -11,14 +11,14 @@ use std::{
 use panoramic_core::{
     artifact::{self, ArtifactBinding, ArtifactManifest, ArtifactVerification},
     layout::Os,
-    plan::{check_artifact_manifest, needed_artifacts, Planner},
+    plan::{check_artifact_manifest, needed_artifacts},
 };
 use tracing::{error, info};
 
 use crate::{
     cli::{ArtifactCasesCommand, RenderCommand},
     collector::EXIT_HARNESS_ERROR,
-    config::{discover_in_scope, typed_case::LoadedPlan},
+    config::{discover_in_scope, load_planner, typed_case::LoadedPlan, NO_TEST_DIRECTORIES},
 };
 
 pub(crate) fn render(cmd: RenderCommand) -> ExitCode {
@@ -56,35 +56,16 @@ pub(crate) fn render(cmd: RenderCommand) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Checks directory selection, subject OS, manifest and role declarations before discovery, in that order.
-pub(crate) fn artifact_planner(
-    test_dirs: &[PathBuf], subject_os: Result<Os, String>, artifacts: Option<&Path>,
-) -> Result<(Planner<'static>, Os), ExitCode> {
-    if test_dirs.is_empty() {
-        error!("No test directories specified. Use -d <path> to specify one or more directories.");
+fn needed_bindings(cmd: &ArtifactCasesCommand) -> Result<(Os, Vec<ArtifactBinding>, PathBuf), ExitCode> {
+    if cmd.test_dirs.is_empty() {
+        error!("{NO_TEST_DIRECTORIES}");
         return Err(ExitCode::from(EXIT_HARNESS_ERROR));
     }
-    let subject_os = subject_os.map_err(|message| {
+    let subject_os = cmd.subject_os;
+    let mut planner = load_planner(cmd.artifacts.as_deref()).map_err(|message| {
         error!("{message}");
         ExitCode::from(EXIT_HARNESS_ERROR)
     })?;
-    let manifest = artifacts
-        .map(ArtifactManifest::load)
-        .transpose()
-        .map_err(|error| {
-            error!("{error:#}");
-            ExitCode::from(EXIT_HARNESS_ERROR)
-        })?
-        .unwrap_or_default();
-    let planner = Planner::new(crate::REGISTRIES, manifest).map_err(|error| {
-        error!("Invalid artifact roles: {error:#}");
-        ExitCode::from(EXIT_HARNESS_ERROR)
-    })?;
-    Ok((planner, subject_os))
-}
-
-fn needed_bindings(cmd: &ArtifactCasesCommand) -> Result<(Os, Vec<ArtifactBinding>, PathBuf), ExitCode> {
-    let (mut planner, subject_os) = artifact_planner(&cmd.test_dirs, Ok(cmd.subject_os), cmd.artifacts.as_deref())?;
     let base = std::env::current_dir().map_err(|error| {
         error!("Cannot read the current directory: {error}");
         ExitCode::from(EXIT_HARNESS_ERROR)
@@ -112,14 +93,12 @@ pub(crate) async fn verify(cmd: ArtifactCasesCommand, output: &mut impl Write) -
         Ok(selection) => selection,
         Err(exit) => return exit,
     };
-    let results = artifact::verify(&bindings, &base).await;
-    if let Err(error) = output.write_all(verification_text(subject_os, &results, ("Artifacts", "artifacts")).as_bytes())
-    {
+    let (report, failed) = verify_bindings(subject_os, &bindings, &base).await;
+    if let Err(error) = output.write_all(report.as_bytes()) {
         error!("Cannot write artifact verification report: {error}");
         return ExitCode::from(EXIT_HARNESS_ERROR);
     }
-    let n = results.len();
-    let failed = results.iter().filter(|result| result.identity.is_err()).count();
+    let n = bindings.len();
     if failed == 0 {
         info!("Verified {n} artifact(s).");
         ExitCode::SUCCESS
@@ -127,6 +106,16 @@ pub(crate) async fn verify(cmd: ArtifactCasesCommand, output: &mut impl Write) -
         error!("{failed} of {n} artifact(s) failed verification.");
         ExitCode::from(EXIT_HARNESS_ERROR)
     }
+}
+
+/// Verifies bindings and returns a formatted report and failure count.
+pub(crate) async fn verify_bindings(subject_os: Os, bindings: &[ArtifactBinding], base: &Path) -> (String, usize) {
+    let results = artifact::verify(bindings, base).await;
+    let failed = results.iter().filter(|result| result.identity.is_err()).count();
+    (
+        verification_text(subject_os, &results, ("Artifacts", "artifacts")),
+        failed,
+    )
 }
 
 pub(crate) async fn pull(cmd: ArtifactCasesCommand, output: &mut impl Write) -> ExitCode {

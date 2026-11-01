@@ -19,7 +19,7 @@ use crate::{
 };
 
 /// Image that makes the shared volume writable before Linux containers start.
-const FIXUP_IMAGE: ArtifactRole = ArtifactRole {
+pub const FIXUP_IMAGE: ArtifactRole = ArtifactRole {
     name: "fixup-image",
     kind: ArtifactKind::Image,
     local_default: airlock::driver::DEFAULT_ALPINE_IMAGE,

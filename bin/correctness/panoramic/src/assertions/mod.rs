@@ -569,9 +569,8 @@ async fn run_step(record: &CaseRecord, member: &Member, case: Deadline, ctx: &As
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
+    use crate::config::runner_artifacts::RunnerArtifacts;
     use crate::config::LINUX_RUNTIME;
-    use crate::image_override::ImageOverrides;
-    use crate::integration::IntegrationSettings;
 
     /// Returns a host-process context using `cancel`, with empty logs and target commands.
     pub(crate) fn host_context(cancel: CancellationToken) -> AssertionContext {
@@ -599,7 +598,7 @@ pub(crate) mod test_support {
             .expect("procedure should parse");
         IntegrationTestCase::new(
             config,
-            &IntegrationSettings::new(LINUX_RUNTIME, &ImageOverrides::new(&[])),
+            &RunnerArtifacts::Overrides(&[]).integration_settings(LINUX_RUNTIME),
         )
     }
 }

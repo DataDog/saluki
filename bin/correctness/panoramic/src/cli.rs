@@ -9,7 +9,7 @@ use clap::{
     builder::{PossibleValuesParser, TypedValueParser},
     Args, Parser, Subcommand, ValueEnum,
 };
-use panoramic_core::{artifact::ArtifactKind, layout::Os};
+use panoramic_core::layout::Os;
 use panoramic_participants::AgentAdp;
 
 use crate::config::{os_for_runtime, runtime_for_os, LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME};
@@ -29,10 +29,7 @@ Environment variables:
                  --log-level and applies to every crate, including external dependencies.";
 
 fn default_core_agent_binary_path() -> PathBuf {
-    let ArtifactKind::Install { main_binary } = AgentAdp::AGENT_HOST_INSTALL.kind else {
-        unreachable!("the Core Agent role declares an install");
-    };
-    Path::new(AgentAdp::AGENT_HOST_INSTALL.local_default).join(main_binary)
+    crate::config::runner_artifacts::core_agent_binary_path(Path::new(AgentAdp::AGENT_HOST_INSTALL.local_default))
 }
 
 /// Crates that `--log-level` applies to: Panoramic itself and the first-party libraries it links.
@@ -272,6 +269,15 @@ pub struct RunCommand {
     #[command(flatten)]
     pub subject_os: SubjectOsArgs,
 
+    /// Artifact manifest (TOML) binding artifact roles to image references and paths.
+    /// Roles it omits use their local defaults; a role no participant type, backend or
+    /// typed case schema declares is an error. Every needed artifact is verified
+    /// before any case starts. Cannot be combined with these flags
+    /// (--image-override, --adp-binary-path, --core-agent-binary-path, --alpine-image)
+    /// or their PANORAMIC_* environment variables.
+    #[arg(long, value_name = "FILE", verbatim_doc_comment)]
+    pub artifacts: Option<PathBuf>,
+
     /// Number of tests to run in parallel.
     #[arg(short = 'p', long, default_value = "4")]
     pub parallelism: NonZeroUsize,
@@ -316,18 +322,18 @@ pub struct RunCommand {
 
     /// `agent-data-plane` binary that host-process (`runtime: mac`) tests spawn. A
     /// relative path resolves against the current directory
-    #[arg(long, env = "PANORAMIC_ADP_BINARY_PATH", default_value = AgentAdp::ADP_HOST_BINARY.local_default, verbatim_doc_comment)]
+    #[arg(long, env = "PANORAMIC_ADP_BINARY_PATH", conflicts_with = "artifacts", default_value = AgentAdp::ADP_HOST_BINARY.local_default, verbatim_doc_comment)]
     adp_binary_path: PathBuf,
 
     /// Datadog Agent binary that converged host-process tests spawn. Point this at
     /// another install (a system-wide /opt/datadog-agent, for example) to test
     /// against it
-    #[arg(long, env = "PANORAMIC_CORE_AGENT_BINARY_PATH", default_value_os_t = default_core_agent_binary_path(), verbatim_doc_comment)]
+    #[arg(long, env = "PANORAMIC_CORE_AGENT_BINARY_PATH", conflicts_with = "artifacts", default_value_os_t = default_core_agent_binary_path(), verbatim_doc_comment)]
     core_agent_binary_path: PathBuf,
 
     /// Alpine image for the short-lived container that fixes up shared-volume
     /// permissions. CI points this at an internal registry
-    #[arg(long, env = "PANORAMIC_ALPINE_IMAGE", default_value = DEFAULT_ALPINE_IMAGE, verbatim_doc_comment)]
+    #[arg(long, env = "PANORAMIC_ALPINE_IMAGE", conflicts_with = "artifacts", default_value = DEFAULT_ALPINE_IMAGE, verbatim_doc_comment)]
     alpine_image: String,
 
     /// Image to run for one of a test's containers, as `<name>=<image>`, replacing
@@ -340,6 +346,7 @@ pub struct RunCommand {
         long = "image-override",
         value_name = "NAME=IMAGE",
         env = "PANORAMIC_IMAGE_OVERRIDES",
+        conflicts_with = "artifacts",
         value_delimiter = ',',
         verbatim_doc_comment
     )]
@@ -403,6 +410,7 @@ mod tests {
     use std::ffi::OsStr;
 
     use clap::CommandFactory as _;
+    use panoramic_core::artifact::ArtifactKind;
 
     use super::*;
 
@@ -883,28 +891,97 @@ mod tests {
     }
 
     #[test]
-    fn list_accepts_an_artifacts_file_without_an_environment_fallback_and_run_rejects_it() {
-        let Command::List(cmd) = Cli::try_parse_from(["panoramic", "list", "--artifacts", "artifacts.toml"])
-            .unwrap()
-            .command
-        else {
-            panic!("expected list");
-        };
-        assert_eq!(cmd.artifacts, Some(PathBuf::from("artifacts.toml")));
-        let command = Cli::command();
-        let argument = command
-            .find_subcommand("list")
-            .unwrap()
-            .get_arguments()
-            .find(|argument| argument.get_id() == "artifacts")
-            .unwrap();
-        assert_eq!(argument.get_env(), None);
-        assert!(Cli::try_parse_from(["panoramic", "run", "--artifacts", "artifacts.toml"]).is_err());
+    fn list_and_run_accept_an_artifacts_file_without_an_environment_fallback() {
+        for name in ["list", "run"] {
+            let command = Cli::try_parse_from(["panoramic", name, "--artifacts", "artifacts.toml"])
+                .unwrap()
+                .command;
+            let artifacts = match command {
+                Command::List(cmd) => cmd.artifacts,
+                Command::Run(cmd) => cmd.artifacts,
+                _ => panic!("expected list or run"),
+            };
+            assert_eq!(artifacts, Some(PathBuf::from("artifacts.toml")));
+            let command = Cli::command();
+            let argument = command
+                .find_subcommand(name)
+                .unwrap()
+                .get_arguments()
+                .find(|argument| argument.get_id() == "artifacts")
+                .unwrap();
+            assert_eq!(argument.get_env(), None);
+        }
+    }
+
+    #[test]
+    fn run_artifacts_conflicts_with_each_legacy_artifact_flag() {
+        for (flag, value) in [
+            ("--image-override", "container=image"),
+            ("--adp-binary-path", "adp"),
+            ("--core-agent-binary-path", "agent"),
+            ("--alpine-image", "alpine"),
+        ] {
+            let error = Cli::try_parse_from(["panoramic", "run", "--artifacts", "artifacts.toml", flag, value])
+                .err()
+                .unwrap();
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{flag}: {error}"
+            );
+            assert_eq!(error.exit_code(), 2);
+        }
+    }
+
+    #[test]
+    fn legacy_artifact_flags_with_environment_fallbacks_conflict_with_run_artifacts() {
+        let mut command = Cli::command();
+        command.build();
+        let run = command.find_subcommand("run").unwrap();
+        for (id, env) in PANORAMIC_ENV_FALLBACKS.iter().filter(|(id, _)| *id != "log_dir") {
+            let arg = run.get_arguments().find(|arg| arg.get_id() == id).unwrap();
+            assert_eq!(arg.get_env(), Some(OsStr::new(env)));
+            assert!(
+                run.get_arg_conflicts_with(arg)
+                    .iter()
+                    .any(|arg| arg.get_id() == "artifacts"),
+                "{id}"
+            );
+        }
+    }
+
+    #[test]
+    fn run_artifacts_combines_with_non_artifact_run_flags() {
+        let cli = Cli::try_parse_from([
+            "panoramic",
+            "run",
+            "--artifacts",
+            "artifacts.toml",
+            "--mounts-dir",
+            "mounts",
+            "--kind-cluster-name",
+            "cluster",
+            "-l",
+            "logs",
+            "--no-tui",
+        ])
+        .unwrap();
+        let cmd = run_command_of(&cli);
+        assert_eq!(cmd.artifacts.as_deref(), Some(Path::new("artifacts.toml")));
+        assert_eq!(cmd.mounts_dir, Path::new("mounts"));
+        assert_eq!(cmd.kind_cluster_name, "cluster");
+        assert_eq!(cmd.log_dir.as_deref(), Some(Path::new("logs")));
+        assert!(cmd.no_tui);
     }
 
     #[test]
     fn artifact_help_names_typed_case_schemas_as_role_declarers() {
-        for path in [vec!["list"], vec!["artifacts", "verify"], vec!["artifacts", "pull"]] {
+        for path in [
+            vec!["list"],
+            vec!["run"],
+            vec!["artifacts", "verify"],
+            vec!["artifacts", "pull"],
+        ] {
             let mut command = Cli::command();
             command.build();
             let mut subcommand = &mut command;

@@ -6,31 +6,18 @@ use async_trait::async_trait;
 use panoramic_core::result::TestResult;
 
 use crate::{
-    config::{
-        target_image_for_runtime, AssertionStep, IntegrationConfig, INTAKE_IMAGE_NAME, MAC_RUNTIME, TARGET_IMAGE_NAME,
-    },
-    image_override::ImageOverrides,
+    config::{AssertionStep, IntegrationConfig, INTAKE_IMAGE_NAME, MAC_RUNTIME, TARGET_IMAGE_NAME},
     test::{Test, TestContext},
 };
 
 /// Image and runtime choices shared by integration cases in a run.
 pub(crate) struct IntegrationSettings {
-    runtime: String,
-    target_image: Option<String>,
-    intake_image: String,
-}
-
-impl IntegrationSettings {
-    pub(crate) fn new(runtime: &str, overrides: &ImageOverrides<'_>) -> Self {
-        Self {
-            runtime: runtime.to_string(),
-            target_image: target_image_for_runtime(runtime).map(|image| overrides.image(TARGET_IMAGE_NAME, image)),
-            intake_image: overrides.image(
-                INTAKE_IMAGE_NAME,
-                panoramic_participants::TOOLS_LINUX_IMAGE.local_default,
-            ),
-        }
-    }
+    /// Integration runtime name: `linux`, `windows` or `mac`.
+    pub(crate) runtime: String,
+    /// Target container image; host processes use `None`.
+    pub(crate) target_image: Option<String>,
+    /// Image for an enabled intake sidecar.
+    pub(crate) intake_image: String,
 }
 
 /// An integration case with selected images and a separate execution procedure.
@@ -125,6 +112,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::config::runner_artifacts::RunnerArtifacts;
     use crate::config::{ActionConfig, AssertionConfig, LINUX_RUNTIME};
 
     #[test]
@@ -148,7 +136,7 @@ procedure:
 "#,
         )
         .unwrap();
-        let settings = IntegrationSettings::new(LINUX_RUNTIME, &ImageOverrides::new(&[]));
+        let settings = RunnerArtifacts::Overrides(&[]).integration_settings(LINUX_RUNTIME);
         let mut case = IntegrationTestCase::new(config.clone(), &settings);
         let other = IntegrationTestCase::new(config, &settings);
         assert_eq!(case.total_assertion_count(), 3);
@@ -236,7 +224,7 @@ procedure:
             "container=target:custom".parse().unwrap(),
             "intake=intake:custom".parse().unwrap(),
         ];
-        let settings = IntegrationSettings::new(LINUX_RUNTIME, &ImageOverrides::new(&entries));
+        let settings = RunnerArtifacts::Overrides(&entries).integration_settings(LINUX_RUNTIME);
         for enabled in [false, true] {
             let config = serde_saphyr::from_str(&format!(
                 "name: images\ntimeout: 1s\nprocedure: []\nintake: {{enabled: {enabled}}}\n"
