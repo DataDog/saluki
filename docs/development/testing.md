@@ -211,8 +211,23 @@ fixup-image = "registry.example/alpine:3"
 
 Omitted roles use their local defaults: for example, `agent-adp-linux-image` defaults to
 `saluki-images/datadog-agent:testing-devel`. A role no participant type or backend declares fails the listing;
-a declared role the selected cases don't need is ignored. References are used as written. Runners choose
-images and binaries from their settings.
+a declared role the selected cases don't need is ignored. Relative binary and install paths resolve against the
+working directory, whether supplied by a manifest or a local default. Runners choose images and binaries from their
+settings.
+
+Use `panoramic artifacts verify -d <cases> [--subject-os linux|macos|windows] [--artifacts <file>]` to check every
+artifact the selected participant cases need. The subject OS defaults to the host's OS. Verification prints each
+role once, sorted by name, with its reference, source and identity or failure:
+
+- An image must exist on the Docker daemon Panoramic connects to. Its identity is the daemon's image ID.
+- A binary must be a file, executable on Unix. Its identity is the SHA-256 of its contents.
+- An install must be a directory containing the role's main binary, a file executable on Unix. Its identity is the
+  SHA-256 of that binary. For `agent-host-install`, the main binary is `bin/agent/agent` inside the install.
+
+File checks follow symlinks. Verification never pulls images or creates containers, and contacts the Docker daemon
+only when an image is needed. It reports every verification failure and exits 2 if any fails, or if no test directory
+is given, the manifest is invalid or cases fail discovery or planning. It exits 0 when all artifacts verify, including
+when none are needed. Only participant cases contribute artifact roles.
 
 Connections and endpoint overrides are checked the same way: on every OS in `subject_os`, each `connect` key
 must be an endpoint the participant consumes, the target must serve the named endpoint with its configuration,
@@ -271,6 +286,7 @@ The source documents each part:
 
 - `bin/correctness/panoramic/core/src/case/file.rs`: the case file's fields and their defaults.
 - `bin/correctness/panoramic/core/src/artifact.rs`: artifact roles and the manifest.
+- `bin/correctness/panoramic/core/src/artifact/verify.rs`: artifact verification and identities.
 - `bin/correctness/panoramic/core/src/layout.rs`: how participants are placed on an OS and realization.
 - `bin/correctness/panoramic/participants/src/agent_adp.rs`: what `agent-adp` declares, including its facts and artifact roles.
 - `bin/correctness/panoramic/steps/src/`: each step's fields.

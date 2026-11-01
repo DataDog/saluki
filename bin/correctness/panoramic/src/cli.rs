@@ -191,6 +191,39 @@ pub enum Command {
 
     /// List available integration tests.
     List(ListCommand),
+
+    /// Manage the artifacts participant cases need.
+    Artifacts(ArtifactsCommand),
+}
+
+#[derive(Args)]
+pub struct ArtifactsCommand {
+    #[command(subcommand)]
+    pub command: ArtifactsSubcommand,
+}
+
+#[derive(Subcommand)]
+pub enum ArtifactsSubcommand {
+    /// Verify needed artifacts and print their identities without pulling images.
+    Verify(VerifyCommand),
+}
+
+#[derive(Args)]
+#[command(args_override_self = true)]
+pub struct VerifyCommand {
+    /// Path to a test cases directory (can be specified multiple times).
+    #[arg(short = 'd', long)]
+    pub test_dirs: Vec<PathBuf>,
+
+    /// Subject OS to select cases for: `linux`, `macos` or `windows`. Defaults to the host's OS.
+    #[arg(long, value_parser = subject_os_parser(), default_value = Os::host().name())]
+    pub subject_os: Os,
+
+    /// Artifact manifest (TOML) binding artifact roles to image references and paths.
+    /// Roles it omits use their local defaults; a role no participant type or backend
+    /// declares is an error. Verification prints the reference each role resolves to.
+    #[arg(long, value_name = "FILE", verbatim_doc_comment)]
+    pub artifacts: Option<PathBuf>,
 }
 
 // We build clap without its `wrap_help` feature, so help text is never reflowed. Descriptions that
@@ -360,7 +393,7 @@ mod tests {
     fn run_command_of(cli: &Cli) -> &RunCommand {
         match &cli.command {
             Command::Run(cmd) => cmd,
-            Command::List(_) => panic!("expected a `run` invocation"),
+            Command::List(_) | Command::Artifacts(_) => panic!("expected a `run` invocation"),
         }
     }
 
@@ -379,6 +412,7 @@ mod tests {
                 let os = match cli.command {
                     Command::Run(cmd) => cmd.subject_os.runtime,
                     Command::List(cmd) => cmd.subject_os.runtime,
+                    Command::Artifacts(_) => panic!("expected run or list"),
                 };
                 assert_eq!(os, Some(expected));
             }
@@ -392,6 +426,7 @@ mod tests {
         match cli.command {
             Command::Run(cmd) => cmd.subject_os,
             Command::List(cmd) => cmd.subject_os,
+            Command::Artifacts(_) => panic!("expected run or list"),
         }
     }
 
@@ -801,7 +836,7 @@ mod tests {
     }
 
     #[test]
-    fn only_list_accepts_an_artifacts_file_without_an_environment_fallback() {
+    fn list_accepts_an_artifacts_file_without_an_environment_fallback_and_run_rejects_it() {
         let Command::List(cmd) = Cli::try_parse_from(["panoramic", "list", "--artifacts", "artifacts.toml"])
             .unwrap()
             .command
@@ -821,6 +856,74 @@ mod tests {
     }
 
     #[test]
+    fn artifacts_verify_accepts_directories_subject_os_and_manifest_but_not_runtime() {
+        for os in [Os::Linux, Os::MacOs, Os::Windows] {
+            let Command::Artifacts(ArtifactsCommand {
+                command: ArtifactsSubcommand::Verify(cmd),
+            }) = Cli::try_parse_from([
+                "panoramic",
+                "artifacts",
+                "verify",
+                "-d",
+                "cases",
+                "--test-dirs",
+                "other",
+                "--subject-os",
+                os.name(),
+                "--artifacts",
+                "artifacts.toml",
+            ])
+            .unwrap()
+            .command
+            else {
+                panic!("expected artifacts verify")
+            };
+            assert_eq!(cmd.test_dirs, vec![PathBuf::from("cases"), PathBuf::from("other")]);
+            assert_eq!(cmd.subject_os, os);
+            assert_eq!(cmd.artifacts, Some(PathBuf::from("artifacts.toml")));
+        }
+        let command = Cli::command();
+        let verify = command
+            .find_subcommand("artifacts")
+            .unwrap()
+            .find_subcommand("verify")
+            .unwrap();
+        assert_eq!(
+            verify
+                .get_arguments()
+                .find(|argument| argument.get_id() == "artifacts")
+                .unwrap()
+                .get_env(),
+            None
+        );
+        for (flag, value) in [
+            ("--runtime", "linux"),
+            ("--subject-os", "mac"),
+            ("--subject-os", "Linux"),
+        ] {
+            let error = Cli::try_parse_from(["panoramic", "artifacts", "verify", flag, value])
+                .err()
+                .unwrap();
+            assert_eq!(error.exit_code(), 2);
+        }
+    }
+
+    #[test]
+    fn artifacts_verify_defaults_to_the_host_subject_os() {
+        let Command::Artifacts(ArtifactsCommand {
+            command: ArtifactsSubcommand::Verify(cmd),
+        }) = Cli::try_parse_from(["panoramic", "artifacts", "verify"])
+            .unwrap()
+            .command
+        else {
+            panic!("expected artifacts verify")
+        };
+        assert_eq!(cmd.subject_os, Os::host());
+        assert!(cmd.test_dirs.is_empty());
+        assert!(cmd.artifacts.is_none());
+    }
+
+    #[test]
     fn known_list_invocations_parse() {
         let cli = Cli::try_parse_from(["panoramic", "list", "-d", "test/integration/cases", "--json"])
             .expect("list --json should parse");
@@ -829,7 +932,7 @@ mod tests {
                 assert_eq!(cmd.test_dirs, vec![PathBuf::from("test/integration/cases")]);
                 assert!(cmd.json);
             }
-            Command::Run(_) => panic!("expected a `list` invocation"),
+            Command::Run(_) | Command::Artifacts(_) => panic!("expected a `list` invocation"),
         }
     }
 

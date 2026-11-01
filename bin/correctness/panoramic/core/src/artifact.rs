@@ -1,6 +1,7 @@
 //! Artifact roles name the images, binaries and installs that participants and backends run.
 //! Manifests bind roles to references for a run; omitted roles use their local defaults.
 //! Plans carry resolved bindings with the source of each reference.
+//! Verification checks availability and records identities.
 
 use std::{
     collections::BTreeMap,
@@ -10,6 +11,12 @@ use std::{
 use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 
+mod verify;
+pub use verify::{verify, ArtifactVerification};
+
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_util;
+
 /// What kind of artifact a role names.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ArtifactKind {
@@ -18,15 +25,19 @@ pub enum ArtifactKind {
     /// A path to an executable file.
     Binary,
     /// A path to an installed directory tree.
-    Install,
+    Install {
+        /// Executable path relative to the install directory, used to identify the install.
+        main_binary: &'static str,
+    },
 }
 
 impl ArtifactKind {
-    pub(crate) fn name(self) -> &'static str {
+    /// Returns the kind's display name.
+    pub fn name(self) -> &'static str {
         match self {
             Self::Image => "image",
             Self::Binary => "binary",
-            Self::Install => "install",
+            Self::Install { .. } => "install",
         }
     }
 }
@@ -40,6 +51,16 @@ pub struct ArtifactRole {
     pub kind: ArtifactKind,
     /// Reference used when a run binds nothing to this role.
     pub local_default: &'static str,
+}
+
+impl ArtifactRole {
+    pub(crate) fn describe(self) -> String {
+        let description = format!("{} '{}'", self.kind.name(), self.local_default);
+        match self.kind {
+            ArtifactKind::Install { main_binary } => format!("{description} with main binary '{main_binary}'"),
+            _ => description,
+        }
+    }
 }
 
 /// Role bindings for one run, read from an artifact manifest. The default binds nothing.
@@ -134,6 +155,28 @@ pub struct ArtifactBinding {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn roles_describe_their_kind_local_default_and_main_binary() {
+        for (kind, local_default, expected) in [
+            (ArtifactKind::Image, "tool:latest", "image 'tool:latest'"),
+            (ArtifactKind::Binary, "bin/tool", "binary 'bin/tool'"),
+            (
+                ArtifactKind::Install {
+                    main_binary: "bin/tool",
+                },
+                "share/tool",
+                "install 'share/tool' with main binary 'bin/tool'",
+            ),
+        ] {
+            let role = ArtifactRole {
+                name: "tool",
+                kind,
+                local_default,
+            };
+            assert_eq!(role.describe(), expected);
+        }
+    }
 
     #[test]
     fn a_manifest_binds_each_role_to_its_reference_as_written() {

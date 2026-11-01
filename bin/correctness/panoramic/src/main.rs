@@ -25,6 +25,7 @@ mod kind;
 use self::kind::KindLifecycle;
 
 mod actions;
+mod artifact_commands;
 mod assertions;
 mod cli;
 mod collector;
@@ -103,7 +104,7 @@ async fn main() -> ExitCode {
             !cmd.no_tui && matches!(cmd.output, OutputFormat::Text) && std::io::stdout().is_terminal(),
             true,
         ),
-        Command::List(_) => (false, false),
+        Command::List(_) | Command::Artifacts(_) => (false, false),
     };
 
     if !use_tui {
@@ -116,6 +117,9 @@ async fn main() -> ExitCode {
     let result = match cli.command {
         Command::Run(cmd) => run_tests(cmd, use_tui).await,
         Command::List(cmd) => list_tests(cmd).await,
+        Command::Artifacts(cmd) => match cmd.command {
+            cli::ArtifactsSubcommand::Verify(cmd) => artifact_commands::verify(cmd, &mut std::io::stdout()).await,
+        },
     };
 
     if !use_tui {
@@ -466,33 +470,11 @@ fn collect_kind_images(built: &[BuiltCase]) -> Vec<String> {
 }
 
 async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
-    if cmd.test_dirs.is_empty() {
-        error!("No test directories specified. Use -d <path> to specify one or more directories.");
-        return ExitCode::from(2);
-    }
-
-    let subject_os = match cmd.subject_os.resolve() {
-        Ok(os) => os,
-        Err(message) => {
-            error!("{message}");
-            return ExitCode::from(2);
-        }
-    };
-
-    let manifest = match cmd.artifacts.as_deref().map(ArtifactManifest::load).transpose() {
-        Ok(manifest) => manifest.unwrap_or_default(),
-        Err(e) => {
-            error!("{e:#}");
-            return ExitCode::from(EXIT_HARNESS_ERROR);
-        }
-    };
-    let mut planner = match Planner::new(crate::REGISTRIES, manifest) {
-        Ok(planner) => planner,
-        Err(e) => {
-            error!("Invalid artifact roles: {e:#}");
-            return ExitCode::from(EXIT_HARNESS_ERROR);
-        }
-    };
+    let (mut planner, subject_os) =
+        match artifact_commands::artifact_planner(&cmd.test_dirs, cmd.subject_os.resolve(), cmd.artifacts.as_deref()) {
+            Ok(selection) => selection,
+            Err(exit) => return exit,
+        };
 
     if !cmd.json {
         let dirs_str: Vec<_> = cmd.test_dirs.iter().map(|d| d.display().to_string()).collect();
@@ -652,6 +634,7 @@ mod tests {
                 match Cli::try_parse_from(args).unwrap().command {
                     Command::Run(cmd) => run_tests(cmd, use_tui).await,
                     Command::List(cmd) => list_tests(cmd).await,
+                    Command::Artifacts(_) => panic!("expected run or list"),
                 }
             }
             .with_subscriber(subscriber)
@@ -1093,9 +1076,61 @@ comparison: {image: comp}
                 let exit = match cli.command {
                     Command::Run(cmd) => run_tests(cmd, false).await,
                     Command::List(cmd) => list_tests(cmd).await,
+                    Command::Artifacts(_) => panic!("expected run or list"),
                 };
                 assert_eq!(exit, ExitCode::from(2), "{command} under {os:?}");
                 assert!(!logs.exists(), "layout errors must precede log directory creation");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn list_and_list_json_validate_directories_then_subject_os_then_manifest() {
+        use tracing::instrument::WithSubscriber as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = dir.path().join("missing.toml");
+        for json in [false, true] {
+            for (has_dirs, conflicts, expected) in [
+                (
+                    false,
+                    true,
+                    "No test directories specified. Use -d <path> to specify one or more directories.".to_string(),
+                ),
+                (
+                    true,
+                    true,
+                    "--runtime linux selects subject OS 'linux', which conflicts with --subject-os windows".to_string(),
+                ),
+                (
+                    true,
+                    false,
+                    format!("failed to read artifact manifest {}:", manifest.display()),
+                ),
+            ] {
+                let mut args = vec!["panoramic", "list", "--artifacts", manifest.to_str().unwrap()];
+                if has_dirs {
+                    args.extend(["-d", dir.path().to_str().unwrap()]);
+                }
+                if conflicts {
+                    args.extend(["--runtime", "linux", "--subject-os", "windows"]);
+                }
+                if json {
+                    args.push("--json");
+                }
+                let Command::List(cmd) = Cli::try_parse_from(args).unwrap().command else {
+                    panic!("expected list")
+                };
+                let output = tempfile::NamedTempFile::new().unwrap();
+                let subscriber = tracing_subscriber::fmt()
+                    .with_ansi(false)
+                    .without_time()
+                    .with_writer(std::sync::Mutex::new(output.reopen().unwrap()))
+                    .finish();
+                assert_eq!(list_tests(cmd).with_subscriber(subscriber).await, ExitCode::from(2));
+                let diagnostic = std::fs::read_to_string(output.path()).unwrap();
+                assert_eq!(diagnostic.lines().count(), 1, "{diagnostic}");
+                assert!(diagnostic.contains(&expected), "{diagnostic}");
             }
         }
     }

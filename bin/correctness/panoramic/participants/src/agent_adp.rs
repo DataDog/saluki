@@ -28,10 +28,12 @@ const ADP_HOST_BINARY: ArtifactRole = ArtifactRole {
     local_default: "target/release/agent-data-plane",
 };
 
-/// Core Agent install `agent-adp` runs on macOS. Defaults to the macOS runner's Core Agent install directory.
+/// Core Agent install and main binary `agent-adp` runs on macOS, matching the macOS runner's defaults.
 const AGENT_HOST_INSTALL: ArtifactRole = ArtifactRole {
     name: "agent-host-install",
-    kind: ArtifactKind::Install,
+    kind: ArtifactKind::Install {
+        main_binary: "bin/agent/agent",
+    },
     local_default: "/tmp/saluki-dda/datadog-agent",
 };
 
@@ -124,7 +126,9 @@ mod tests {
                     },
                     ArtifactRole {
                         name: "agent-host-install",
-                        kind: ArtifactKind::Install,
+                        kind: ArtifactKind::Install {
+                            main_binary: "bin/agent/agent",
+                        },
                         local_default: "/tmp/saluki-dda/datadog-agent",
                     },
                 ],

@@ -1,9 +1,13 @@
 //! Validates the registered role catalog and resolves each layout's artifact bindings.
 
-use std::collections::{btree_map::Entry, BTreeMap};
+use std::{
+    collections::{btree_map::Entry, BTreeMap},
+    path::{Component, Path},
+};
 
+use super::CasePlan;
 use crate::{
-    artifact::{ArtifactBinding, ArtifactManifest, ArtifactRole, BindingSource},
+    artifact::{ArtifactBinding, ArtifactKind, ArtifactManifest, ArtifactRole, BindingSource},
     backend,
     case::CaseFile,
     layout::{Layout, Realization},
@@ -13,18 +17,29 @@ use crate::{
 pub(super) fn role_catalog(types: &[&dyn ParticipantType]) -> Result<BTreeMap<&'static str, ArtifactRole>, String> {
     let mut roles: BTreeMap<_, (ArtifactRole, String)> = BTreeMap::new();
     let mut declare = |role: ArtifactRole, declarer: String| {
+        if let ArtifactKind::Install { main_binary } = role.kind {
+            if main_binary.is_empty()
+                || !Path::new(main_binary).components().all(|part| matches!(part, Component::Normal(_)))
+                // Path components normalize interior dots; check the original spelling too.
+                || main_binary.split(std::path::is_separator).any(|part| part == ".")
+            {
+                return Err(format!(
+                    "artifact role '{}' declared by {declarer} has invalid main binary '{main_binary}': \
+                     expected a nonempty relative path containing only normal names",
+                    role.name
+                ));
+            }
+        }
         match roles.entry(role.name) {
             Entry::Occupied(earlier) => {
                 let (previous, previous_declarer) = earlier.get();
                 if role != *previous {
                     return Err(format!(
-                        "artifact role '{}' is declared as {} '{}' by {declarer}, \
-                         but as {} '{}' by {previous_declarer}",
+                        "artifact role '{}' is declared as {} by {declarer}, \
+                         but as {} by {previous_declarer}",
                         role.name,
-                        role.kind.name(),
-                        role.local_default,
-                        previous.kind.name(),
-                        previous.local_default,
+                        role.describe(),
+                        previous.describe(),
                     ));
                 }
             }
@@ -109,6 +124,18 @@ pub(super) fn bind(
         .collect()
 }
 
+/// Collects one participant-case binding per role, sorted by name.
+/// Plans must come from one planner, which binds each role identically.
+pub fn needed_artifacts<'p, C: 'p>(plans: impl IntoIterator<Item = &'p CasePlan<C>>) -> Vec<ArtifactBinding> {
+    let mut bindings = BTreeMap::new();
+    for plan in plans {
+        for binding in plan.artifacts().unwrap_or_default() {
+            bindings.entry(binding.role.name).or_insert_with(|| binding.clone());
+        }
+    }
+    bindings.into_values().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -123,7 +150,7 @@ mod tests {
         participant::ParticipantType,
         plan::{
             fixtures::{compile_with, planner, CONFIG_REGISTRIES},
-            Planner,
+            needed_artifacts, Planner,
         },
     };
 
@@ -134,7 +161,9 @@ mod tests {
     };
     const RESOURCES: ArtifactRole = ArtifactRole {
         name: "resources",
-        kind: ArtifactKind::Install,
+        kind: ArtifactKind::Install {
+            main_binary: "bin/tool",
+        },
         local_default: "share/tool",
     };
     const WINDOWS_TOOL: ArtifactRole = ArtifactRole {
@@ -243,6 +272,23 @@ mod tests {
     }
 
     #[test]
+    fn needed_artifacts_deduplicates_and_sorts_roles_across_plans_and_skips_typed_cases() {
+        let mut planner = role_planner(&[&SERVER]);
+        let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[linux, windows]");
+        let windows = compile_with(&mut planner, &yaml, Os::Windows).unwrap().unwrap();
+        let linux = compile_with(&mut planner, &yaml, Os::Linux).unwrap().unwrap();
+        let another = compile_with(&mut planner, &yaml, Os::Linux).unwrap().unwrap();
+        let typed = compile_with(&mut planner, r#"type: fixture"#, Os::MacOs)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            needed_artifacts([&windows, &typed, &linux, &another]),
+            local_bindings(&[FIXUP, RESOURCES, TOOL, WINDOWS_TOOL])
+        );
+        assert_eq!(needed_artifacts([&typed]), vec![]);
+    }
+
+    #[test]
     fn a_typed_case_plan_has_no_artifacts() {
         let plan = compile_with(&mut planner(), "type: fixture", Os::MacOs)
             .unwrap()
@@ -293,10 +339,87 @@ mod tests {
         ]);
         assert_eq!(
             message,
-            "artifact role 'resources' is declared as install 'share/other' by participant type 'configured' \
-             as linux-container on linux, but as install 'share/tool' by participant type 'server' \
-             as linux-container on linux"
+            "artifact role 'resources' is declared as install 'share/other' with main binary 'bin/tool' \
+             by participant type 'configured' as linux-container on linux, but as install 'share/tool' \
+             with main binary 'bin/tool' by participant type 'server' as linux-container on linux"
         );
+    }
+
+    #[test]
+    fn a_planner_rejects_install_roles_with_different_main_binaries() {
+        let message = catalog_error(&[
+            &SERVER,
+            &Type {
+                name: "configured",
+                roles: &[ArtifactRole {
+                    kind: ArtifactKind::Install {
+                        main_binary: "bin/other",
+                    },
+                    ..RESOURCES
+                }],
+                windows_roles: &[],
+            },
+        ]);
+        assert_eq!(
+            message,
+            "artifact role 'resources' is declared as install 'share/tool' with main binary 'bin/other' \
+             by participant type 'configured' as linux-container on linux, but as install 'share/tool' \
+             with main binary 'bin/tool' by participant type 'server' as linux-container on linux"
+        );
+    }
+
+    #[test]
+    fn a_planner_rejects_main_binaries_outside_the_install_or_with_non_normal_components() {
+        const INVALID_ROLES: &[&[ArtifactRole]] = &[
+            &[ArtifactRole {
+                kind: ArtifactKind::Install { main_binary: "" },
+                ..RESOURCES
+            }],
+            &[ArtifactRole {
+                kind: ArtifactKind::Install {
+                    main_binary: "/bin/tool",
+                },
+                ..RESOURCES
+            }],
+            &[ArtifactRole {
+                kind: ArtifactKind::Install { main_binary: "../tool" },
+                ..RESOURCES
+            }],
+            &[ArtifactRole {
+                kind: ArtifactKind::Install { main_binary: "./tool" },
+                ..RESOURCES
+            }],
+            &[ArtifactRole {
+                kind: ArtifactKind::Install {
+                    main_binary: "bin/../tool",
+                },
+                ..RESOURCES
+            }],
+            &[ArtifactRole {
+                kind: ArtifactKind::Install {
+                    main_binary: "bin/./tool",
+                },
+                ..RESOURCES
+            }],
+        ];
+        for &roles in INVALID_ROLES {
+            let message = catalog_error(&[&Type {
+                name: "server",
+                roles,
+                windows_roles: &[],
+            }]);
+            let ArtifactKind::Install { main_binary } = roles[0].kind else {
+                unreachable!()
+            };
+            assert_eq!(
+                message,
+                format!(
+                    "artifact role 'resources' declared by participant type 'server' as linux-container on linux \
+                     has invalid main binary '{main_binary}': expected a nonempty relative path \
+                     containing only normal names"
+                )
+            );
+        }
     }
 
     #[test]

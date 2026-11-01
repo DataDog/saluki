@@ -6,9 +6,9 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsStr,
-    time::Duration,
 };
 
+use airlock::docker::DOCKER_DAEMON_TIMEOUT;
 use async_trait::async_trait;
 use saluki_error::GenericError;
 
@@ -24,8 +24,6 @@ const FIXUP_IMAGE: ArtifactRole = ArtifactRole {
     kind: ArtifactKind::Image,
     local_default: airlock::driver::DEFAULT_ALPINE_IMAGE,
 };
-
-const PROVIDABILITY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A value known once a participant exists or runs.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -285,12 +283,12 @@ impl KubernetesPods {
 
 async fn daemon_reports(expected: &str) -> Result<(), String> {
     let docker = airlock::docker::connect().map_err(|error| format!("cannot connect to a Docker daemon: {error:#}"))?;
-    let info = tokio::time::timeout(PROVIDABILITY_TIMEOUT, docker.info())
+    let info = tokio::time::timeout(DOCKER_DAEMON_TIMEOUT, docker.info())
         .await
         .map_err(|_| {
             format!(
                 "the Docker daemon did not answer within {}s",
-                PROVIDABILITY_TIMEOUT.as_secs()
+                DOCKER_DAEMON_TIMEOUT.as_secs()
             )
         })?
         .map_err(|error| format!("the Docker daemon did not answer: {:#}", GenericError::new(error)))?;

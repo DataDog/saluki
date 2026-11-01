@@ -22,6 +22,7 @@ mod references;
 mod routes;
 mod scope;
 
+pub use self::artifacts::needed_artifacts;
 pub(crate) use self::scope::ScopeLayout;
 use self::{
     connections::check_connections,
@@ -82,8 +83,8 @@ impl<'a> Planner<'a> {
     ///
     /// # Errors
     ///
-    /// Returns an error for conflicting role kinds or local defaults across registered participant types and backends,
-    /// then for unknown manifest roles.
+    /// Returns an error for invalid install main-binary paths or conflicting role declarations across registered
+    /// participant types and backends, then for unknown manifest roles.
     pub fn new(registries: Registries<'a>, manifest: ArtifactManifest) -> Result<Self, GenericError> {
         let catalog = artifacts::role_catalog(registries.participant_types).map_err(|error| generic_error!(error))?;
         let bindings = artifacts::check_manifest(&catalog, manifest).map_err(|error| generic_error!(error))?;

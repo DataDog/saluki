@@ -1,18 +1,23 @@
-//! Docker daemon connection helpers.
+//! Docker daemon connection and image inspection helpers.
 
+use std::time::Duration;
 #[cfg(unix)]
 use std::{env, path::PathBuf};
 
-use bollard::Docker;
+pub use bollard::Docker;
 #[cfg(unix)]
 use bollard::API_DEFAULT_VERSION;
+use bollard::{errors::Error, models::ImageInspect};
 #[cfg(unix)]
 use home::home_dir;
 #[cfg(unix)]
 use saluki_error::ErrorContext as _;
-use saluki_error::GenericError;
+use saluki_error::{generic_error, GenericError};
 #[cfg(unix)]
 use tracing::debug;
+
+/// Response deadline for daemon availability and artifact checks.
+pub const DOCKER_DAEMON_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Default connection timeout, in seconds, matching bollard.
 #[cfg(unix)]
@@ -57,6 +62,26 @@ pub fn connect() -> Result<Docker, GenericError> {
     connect_inner()
 }
 
+/// Inspects a local image, returning its ID or `None` if the daemon has no such image.
+///
+/// # Errors
+///
+/// Returns an error if inspection fails or the daemon's response has no image ID.
+pub async fn image_id(docker: &Docker, reference: &str) -> Result<Option<String>, GenericError> {
+    inspected_image_id(reference, docker.inspect_image(reference).await)
+}
+
+fn inspected_image_id(reference: &str, response: Result<ImageInspect, Error>) -> Result<Option<String>, GenericError> {
+    match response {
+        Ok(image) => image
+            .id
+            .map(Some)
+            .ok_or_else(|| generic_error!("image '{reference}' has no ID")),
+        Err(Error::DockerResponseServerError { status_code: 404, .. }) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
 #[cfg(windows)]
 fn connect_inner() -> Result<Docker, GenericError> {
     Ok(Docker::connect_with_defaults()?)
@@ -94,4 +119,58 @@ fn connect_inner() -> Result<Docker, GenericError> {
 
     // Nothing found: let bollard try (and fail with its own error message).
     Ok(Docker::connect_with_defaults()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn image_inspection_treats_only_a_404_as_missing() {
+        assert_eq!(
+            inspected_image_id(
+                "tool:latest",
+                Err(Error::DockerResponseServerError {
+                    status_code: 404,
+                    message: "image missing".into()
+                }),
+            )
+            .unwrap(),
+            None
+        );
+        for status_code in [401, 403, 500] {
+            let message = inspected_image_id(
+                "tool:latest",
+                Err(Error::DockerResponseServerError {
+                    status_code,
+                    message: "inspection failed".into(),
+                }),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(message.contains("inspection failed"), "{message}");
+            assert!(message.contains(&status_code.to_string()), "{message}");
+        }
+    }
+
+    #[test]
+    fn image_inspection_requires_an_id_and_preserves_it() {
+        assert_eq!(
+            inspected_image_id(
+                "tool:latest",
+                Ok(ImageInspect {
+                    id: Some("sha256:abc".into()),
+                    ..Default::default()
+                })
+            )
+            .unwrap(),
+            Some("sha256:abc".into())
+        );
+        assert_eq!(
+            inspected_image_id("tool:latest", Ok(ImageInspect::default()))
+                .unwrap_err()
+                .to_string(),
+            "image 'tool:latest' has no ID"
+        );
+    }
 }
