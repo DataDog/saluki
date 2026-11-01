@@ -240,11 +240,14 @@ mod tests {
     use super::*;
     use crate::{
         case::{
-            fixtures::{minimal_procedure, Client, FixtureTypes, Server, PARTICIPANT_FIELDS, STEPS},
-            CaseLoader, Registries,
+            fixtures::{minimal_procedure, write_case, Client, FixtureTypes, Server, PARTICIPANT_FIELDS, STEPS},
+            CaseLoader, FileSource, Registries,
         },
         plan::{
-            tests::{assigned_server_case, compile, compile_files, compile_with_ports, CONNECTION_CASE},
+            fixtures::{
+                assigned_server_case, compile, compile_files, compile_with_ports, CONFIG_LOADER, CONFIG_REGISTRIES,
+                CONNECTION_CASE,
+            },
             CasePlan, ScopeRegistry,
         },
     };
@@ -697,5 +700,163 @@ participants:
         assert!(compile(&yaml.replace("PORT: x", "PORT: '80'"), Os::Linux)
             .unwrap()
             .is_some());
+    }
+
+    #[test]
+    fn a_plan_holds_each_participants_effective_config_for_the_selected_subject_os() {
+        let yaml = concat!(
+            r#"timeout: 1s
+subject_os: [windows, linux]
+participants:
+  subject:
+    type: configured
+    subject: true
+    config:
+      env: {LEVEL: debug, EXTRA: base}
+      os: {windows: {env: {LEVEL: trace, EXTRA: windows}}}
+  other: {type: configured, config: {env: {PORT: "2"}}}
+"#,
+            minimal_procedure!(),
+            "\n"
+        );
+        for (os, level, extra) in [(Os::Linux, "debug", "base"), (Os::Windows, "trace", "windows")] {
+            let plan = compile(yaml, os).unwrap().unwrap();
+            assert_eq!(
+                plan.effective_config("subject"),
+                Some(&EffectiveConfig {
+                    env: BTreeMap::from([
+                        ("LEVEL".into(), level.into()),
+                        ("PORT".into(), "1".into()),
+                        ("EXTRA".into(), extra.into()),
+                    ]),
+                    ..EffectiveConfig::default()
+                })
+            );
+            assert_eq!(
+                plan.effective_config("other"),
+                Some(&EffectiveConfig {
+                    env: BTreeMap::from([("LEVEL".into(), "info".into()), ("PORT".into(), "2".into())]),
+                    ..EffectiveConfig::default()
+                })
+            );
+            assert_eq!(plan.effective_config("unknown"), None);
+        }
+    }
+
+    #[test]
+    fn a_participant_with_its_own_os_gets_the_overlay_for_that_os() {
+        let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[macos]").replace(
+            "participants:",
+            "participants:\n  other: {type: configured, os: linux, config: {env: {LEVEL: debug}, os: {linux: {env: {LEVEL: trace}}}}}",
+        );
+        let plan = compile(&yaml, Os::MacOs).unwrap().unwrap();
+        assert_eq!(
+            plan.effective_config("other").unwrap().env,
+            BTreeMap::from([("LEVEL".into(), "trace".into()), ("PORT".into(), "1".into()),])
+        );
+        assert_eq!(plan.effective_config("subject"), Some(&EffectiveConfig::default()));
+    }
+
+    #[test]
+    fn type_defaults_see_the_overlaid_case_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[linux, windows]").replace(
+            "type: server, subject: true",
+            "type: configured, subject: true, config: {os: {windows: {files: {settings.yaml: {from: windows.yaml, template: true}}}}}",
+        );
+        let source = write_case(dir.path(), "alpha", &yaml);
+        std::fs::write(source.parent().unwrap().join("windows.yaml"), "port: 7").unwrap();
+        for os in [Os::Linux, Os::Windows] {
+            let case = CONFIG_LOADER.load_file(&source).unwrap().remove(0);
+            let plan = CasePlan::compile(
+                case,
+                os,
+                &CONFIG_REGISTRIES,
+                &mut PortRegistry::new(),
+                &mut ScopeRegistry::with_run("testrun0"),
+            )
+            .unwrap()
+            .unwrap();
+            let effective = plan.effective_config("subject").unwrap();
+            assert_eq!(effective.env["LEVEL"], "info");
+            if os == Os::Windows {
+                assert_eq!(effective.env.get("PORT"), None);
+                assert_eq!(
+                    effective.files,
+                    BTreeMap::from([(
+                        "settings.yaml".into(),
+                        FileSource {
+                            from: "windows.yaml".into(),
+                            template: true,
+                        }
+                    )])
+                );
+            } else {
+                assert_eq!(effective.env.get("PORT").map(String::as_str), Some("1"));
+                assert!(effective.files.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn a_config_its_type_rejects_on_any_declared_subject_os_fails_compile_whatever_os_is_selected() {
+        for config in [
+            "{params: {mode: broken}}",
+            "{params: {mode: working}, os: {windows: {params: {mode: broken}}}}",
+        ] {
+            let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[windows, linux]").replace(
+                "type: server, subject: true",
+                &format!("type: configured, subject: true, config: {config}"),
+            );
+            for os in [Os::Linux, Os::MacOs, Os::Windows] {
+                assert_eq!(compile(&yaml, os).err().unwrap().to_string(),
+                    "case 'alpha' in cases/alpha/config.yaml: on subject OS 'windows', participant 'subject' of type 'configured' as windows-container on windows has invalid configuration: mode 'broken' is unavailable on windows"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_participant_type_that_declares_no_endpoints_serves_and_consumes_nothing() {
+        struct Minimal;
+
+        impl ParticipantType for Minimal {
+            fn name(&self) -> &'static str {
+                "minimal"
+            }
+
+            fn supports(&self) -> &'static [(Os, RealizationKind)] {
+                &[(Os::Linux, RealizationKind::LinuxContainer)]
+            }
+
+            fn processes(&self) -> &'static [&'static str] {
+                &["main"]
+            }
+        }
+
+        let registries = Registries {
+            participant_types: &[&Minimal, &Client],
+            steps: STEPS,
+        };
+        let loader = CaseLoader::new(registries, FixtureTypes, "fixture-participants");
+        for (participants, expected) in [
+            (
+                "  subject: {type: minimal, subject: true, config: {endpoints: {api: {port: 80}}}}",
+                "participant 'subject' of type 'minimal' as linux-container on linux overrides endpoint 'api', which it does not serve; it serves none",
+            ),
+            (
+                "  subject: {type: minimal, subject: true, connect: {upstream: other.api}}\n  other: {type: minimal}",
+                "participant 'subject' of type 'minimal' as linux-container on linux connects 'upstream', which it does not consume; it consumes none",
+            ),
+            (
+                "  subject: {type: minimal, subject: true}\n  client: {type: client, connect: {upstream: subject.api}}",
+                "participant 'client' connects 'upstream' to 'subject.api', which participant 'subject' of type 'minimal' as linux-container on linux does not serve; it serves none",
+            ),
+        ] {
+            let yaml = format!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n{participants}\n{}\n", minimal_procedure!());
+            let case = loader.load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml")).unwrap().remove(0);
+            let message = CasePlan::compile(case, Os::Linux, &registries, &mut PortRegistry::new(), &mut ScopeRegistry::with_run("testrun0")).err().unwrap().to_string();
+            assert_eq!(message, format!("case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', {expected}"));
+        }
     }
 }

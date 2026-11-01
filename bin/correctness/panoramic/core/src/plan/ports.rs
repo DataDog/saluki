@@ -142,6 +142,11 @@ pub(super) fn check_host_listeners(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        case::fixtures::minimal_procedure,
+        layout::Os,
+        plan::fixtures::{assigned_server_case, compile, compile_with_ports, CONNECTION_CASE},
+    };
 
     #[test]
     fn network_endpoint_kinds_map_to_their_runner_host_transport() {
@@ -183,5 +188,116 @@ mod tests {
         for _ in 0..2 {
             assert_eq!(registry.allocate(), Err("all 2 runner-host ports are allocated".into()));
         }
+    }
+
+    #[test]
+    fn a_fixed_case_supplied_or_pinned_host_port_inside_the_runner_host_range_fails() {
+        for (participant_type, config, endpoint, port) in [
+            ("server", "{env: {PORT: '20000'}}", "api", 20000),
+            ("server", "{endpoints: {extra: {port: 25000}}}", "extra", 25000),
+            ("assigned-server", "{env: {API_PORT: '29999'}}", "api", 29999),
+        ] {
+            let yaml =
+                assigned_server_case(config).replace("type: assigned-server", &format!("type: {participant_type}"));
+            // A custom registry must not change the reserved runner-host range.
+            let mut ports = PortRegistry::over(21000..=21010);
+            assert_eq!(compile_with_ports(&yaml, Os::MacOs, &mut ports).err().unwrap().to_string(), format!(
+                "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'server' of type '{participant_type}' as host-process-group on macos serves endpoint '{endpoint}' on runner-host tcp port {port}, inside 20000-29999, where panoramic assigns ports; use a port outside that range"));
+            for boundary in [19999, 30000] {
+                let plan = compile(&yaml.replace(&port.to_string(), &boundary.to_string()), Os::MacOs)
+                    .unwrap()
+                    .unwrap();
+                if endpoint == "api" {
+                    assert_eq!(
+                        plan.effective_config("client").unwrap().env["UPSTREAM_URL"],
+                        format!("http://127.0.0.1:{boundary}")
+                    );
+                } else {
+                    assert_eq!(
+                        plan.effective_config("server").unwrap().endpoints["extra"].port,
+                        boundary
+                    );
+                }
+            }
+        }
+        let yaml = assigned_server_case("{env: {METRICS_PORT: '25000'}}");
+        assert!(compile(&yaml, Os::MacOs)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("endpoint 'metrics' on runner-host udp port 25000, inside 20000-29999"));
+    }
+
+    #[test]
+    fn container_ports_inside_the_runner_host_range_are_accepted() {
+        let yaml = CONNECTION_CASE.replace(
+            "type: server}",
+            "type: server, config: {env: {PORT: '20000'}, endpoints: {extra: {port: 25000}}}}",
+        );
+        let mut ports = PortRegistry::new();
+        let plan = compile_with_ports(&yaml, Os::Linux, &mut ports).unwrap().unwrap();
+        assert_eq!(
+            plan.effective_config("client").unwrap().env["UPSTREAM_URL"],
+            "http://server:20000"
+        );
+        assert_eq!(plan.effective_config("server").unwrap().endpoints["extra"].port, 25000);
+        assert_eq!(ports.allocate(), Ok(20000));
+    }
+
+    #[test]
+    fn two_host_process_groups_serving_one_tcp_port_fail_naming_both() {
+        for (other, config, port, earlier) in [
+            ("server", "{}", 8080, "api"),
+            ("every-kind-server", "{env: {PORT: '1004'}}", 1004, "grpc"),
+        ] {
+            let yaml = format!("timeout: 1s\nsubject_os: [macos]\nparticipants:\n  z: {{type: server, subject: true, config: {config}}}\n  a: {{type: {other}}}\n{}\n", minimal_procedure!());
+            assert_eq!(compile(&yaml, Os::MacOs).err().unwrap().to_string(), format!(
+                "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'z' of type 'server' as host-process-group on macos serves endpoint 'api' on runner-host tcp port {port}, which participant 'a' already serves as endpoint '{earlier}'"));
+        }
+    }
+
+    #[test]
+    fn two_endpoints_of_one_host_process_group_on_one_port_and_transport_fail() {
+        let yaml = CONNECTION_CASE.replace("[linux]", "[macos]").replace(
+            "type: server}",
+            "type: server, config: {endpoints: {extra: {port: 8080}}}}",
+        );
+        assert_eq!(compile(&yaml, Os::MacOs).err().unwrap().to_string(),
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'server' of type 'server' as host-process-group on macos serves endpoint 'extra' on runner-host tcp port 8080, which participant 'server' already serves as endpoint 'api'");
+    }
+
+    #[test]
+    fn a_tcp_and_a_udp_host_listener_may_share_a_port_number() {
+        let yaml = CONNECTION_CASE
+            .replace("[linux]", "[macos]")
+            .replace("type: server}", "type: server, config: {env: {PORT: '9000'}}}")
+            .replace("upstream: server.api", "upstream: server.api, side: server.metrics");
+        let mut ports = PortRegistry::new();
+        let plan = compile_with_ports(&yaml, Os::MacOs, &mut ports).unwrap().unwrap();
+        assert_eq!(
+            plan.effective_config("client").unwrap().env,
+            BTreeMap::from([
+                ("UPSTREAM_URL".into(), "http://127.0.0.1:9000".into()),
+                ("SIDE_HOST".into(), "127.0.0.1".into()),
+                ("SIDE_PORT".into(), "9000".into()),
+            ])
+        );
+        assert_eq!(ports.allocate(), Ok(20000));
+    }
+
+    #[test]
+    fn host_port_conflicts_fail_on_an_unselected_subject_os() {
+        let yaml = concat!(
+            r#"timeout: 1s
+subject_os: [linux, macos]
+participants:
+  a: {type: server, subject: true}
+  z: {type: server, config: {env: {PORT: '8081', METRICS: 'off'}, os: {macos: {env: {PORT: '8080'}}}}}
+"#,
+            minimal_procedure!(),
+            "\n"
+        );
+        assert_eq!(compile(yaml, Os::Linux).err().unwrap().to_string(),
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'z' of type 'server' as host-process-group on macos serves endpoint 'api' on runner-host tcp port 8080, which participant 'a' already serves as endpoint 'api'");
     }
 }

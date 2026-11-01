@@ -117,7 +117,22 @@ pub(super) fn check_consumed_socket(path: &str, shared_dir: &str, os: Os) -> Res
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
+    use crate::{
+        case::{
+            fixtures::{minimal_procedure, FixtureTypes, PARTICIPANT_FIELDS, STEPS},
+            CaseLoader, CaseSchema, ProcedureNode, Registries,
+        },
+        layout::{Realization, RealizationKind},
+        participant::{FactDeclaration, ParticipantType, SHARED_DIR_FACT},
+        plan::{
+            fixtures::{compile, compile_files, compile_with_scopes, socket_case, EveryKindServer, FILE_CONFIG},
+            CasePlan, PortRegistry,
+        },
+        step::Need,
+    };
 
     #[test]
     fn scopes_are_numbered_in_allocation_order_under_one_run_directory() {
@@ -250,5 +265,308 @@ mod tests {
         assert!(check_consumed_socket(&path, "/shared", Os::Linux)
             .unwrap_err()
             .contains("outside its shared_dir"));
+    }
+
+    #[test]
+    fn every_participant_has_a_shared_dir_fact_for_its_realization() {
+        for (os, kind, expected) in [
+            (Os::Linux, "linux-container", "/airlock/subject/shared"),
+            (Os::Windows, "windows-container", r"C:\airlock\subject\shared"),
+            (
+                Os::MacOs,
+                "host-process-group",
+                "/tmp/panoramic-testrun0/0000/subject/shared",
+            ),
+            (
+                Os::Linux,
+                "host-process-group",
+                "/tmp/panoramic-testrun0/0000/subject/shared",
+            ),
+            (Os::Linux, "kubernetes-pod", "/airlock/subject/shared"),
+        ] {
+            let yaml = format!("timeout: 1s\nsubject_os: [{}]\nparticipants:\n  subject: {{type: every-kind-server, subject: true, realization: {{kind: {kind}}}}}\n  other: {{type: every-kind-client}}\n{}", os.name(), minimal_procedure!());
+            let plan = compile(&yaml, os).unwrap().unwrap();
+            assert_eq!(plan.fact("subject", SHARED_DIR_FACT), Some(expected));
+            assert_eq!(
+                plan.fact("other", SHARED_DIR_FACT),
+                Some(
+                    expected
+                        .replace("/subject/", "/other/")
+                        .replace(r"\subject\", r"\other\")
+                        .as_str()
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn a_type_declaring_shared_dir_fails_compile_naming_the_type_and_realization() {
+        struct ReservedFact;
+        impl ParticipantType for ReservedFact {
+            fn name(&self) -> &'static str {
+                "reserved"
+            }
+            fn supports(&self) -> &'static [(Os, RealizationKind)] {
+                EveryKindServer.supports()
+            }
+            fn facts(&self, _: Realization) -> &'static [FactDeclaration] {
+                &[FactDeclaration {
+                    name: SHARED_DIR_FACT,
+                    value: "/wrong",
+                }]
+            }
+            fn processes(&self) -> &'static [&'static str] {
+                &[]
+            }
+        }
+        let registries = Registries {
+            participant_types: &[&ReservedFact, &EveryKindServer],
+            steps: STEPS,
+        };
+        let loader = CaseLoader::new(registries, FixtureTypes, "fixture");
+        for (os, kind) in [
+            (Os::Linux, "linux-container"),
+            (Os::MacOs, "host-process-group"),
+            (Os::Windows, "windows-container"),
+        ] {
+            let yaml = format!("timeout: 1s\nsubject_os: [{}]\nparticipants:\n  a: {{type: every-kind-server, subject: true, config: {{env: {{KEY: '{{{{ self.facts.missing }}}}'}}}}}}\n  z: {{type: reserved}}\n{}", os.name(), minimal_procedure!());
+            let case = loader
+                .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
+                .unwrap()
+                .remove(0);
+            let error = CasePlan::compile(
+                case,
+                os,
+                &registries,
+                &mut PortRegistry::new(),
+                &mut ScopeRegistry::with_run("testrun0"),
+            )
+            .err()
+            .unwrap()
+            .to_string();
+            assert_eq!(error, format!("case 'alpha' in cases/alpha/config.yaml: on subject OS '{}', participant 'z' of type 'reserved' as {kind} on {} declares fact 'shared_dir', which panoramic provides for every participant", os.name(), os.name()));
+        }
+    }
+
+    #[test]
+    fn shared_dir_substitutes_into_env_params_and_served_socket_paths() {
+        let yaml = concat!("timeout: 1s\nsubject_os: [linux, macos]\nparticipants:\n  client: {type: file-server, subject: true, connect: {target: server.stream}, config: {env: {COPY: '{{ server.facts.shared_dir }}', PORT_OFFSET: '100'}, params: {mode: [{nested: '{{ server.facts.shared_dir }}'}]}}}\n  server: {type: file-server, config: {env: {SOCKET_PATH: '{{ self.facts.shared_dir }}/stream.sock'}}}\n", minimal_procedure!());
+        for (os, dir) in [
+            (Os::Linux, "/airlock/server/shared"),
+            (Os::MacOs, "/tmp/panoramic-testrun0/0000/server/shared"),
+        ] {
+            let plan = compile(yaml, os).unwrap().unwrap();
+            let config = plan.effective_config("client").unwrap();
+            assert_eq!(config.env["COPY"], dir);
+            assert_eq!(config.params["mode"][0]["nested"], dir);
+            assert_eq!(config.env["TARGET"], format!("unix://{dir}/stream.sock"));
+            assert_eq!(
+                plan.effective_config("server").unwrap().env["SOCKET_PATH"],
+                format!("{dir}/stream.sock")
+            );
+        }
+        let yaml = format!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {{type: file-server, subject: true, config: {FILE_CONFIG}}}\n  other: {{type: server}}\n{}", minimal_procedure!());
+        let plan = compile_files(
+            &yaml,
+            &[(
+                "source.yaml",
+                "self: {{ self.facts.shared_dir }}\nother: {{ other.facts.shared_dir }}",
+            )],
+            Os::Linux,
+        )
+        .unwrap();
+        assert_eq!(plan.fact("other", SHARED_DIR_FACT), Some("/airlock/other/shared"));
+    }
+
+    #[test]
+    fn a_step_may_reference_any_participants_shared_dir() {
+        let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[linux, macos, windows]")
+            .replace("participants:", "participants:\n  other: {type: every-kind-client}")
+            .replace(minimal_procedure!(), "procedure: [{step: probe, on: subject, path: '{{ subject.facts.shared_dir }}/{{ other.facts.shared_dir }}'}]");
+        for os in [Os::Linux, Os::MacOs, Os::Windows] {
+            let plan = compile(&yaml, os).unwrap().unwrap();
+            let CaseSchema::Participants { procedure, .. } = plan.case().schema() else {
+                panic!("participant case")
+            };
+            let ProcedureNode::Step(step) = &procedure[0] else {
+                panic!("single step")
+            };
+            assert_eq!(
+                step.needs(),
+                [
+                    Need::Handle("subject".into()),
+                    Need::Fact("subject".into(), SHARED_DIR_FACT.into()),
+                    Need::Fact("other".into(), SHARED_DIR_FACT.into())
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn a_connected_socket_outside_the_servers_shared_dir_fails_naming_both_participants() {
+        for (endpoint, kind) in [("stream", "unix-stream"), ("datagram", "unix-datagram")] {
+            let yaml = socket_case("{}").replace("server.stream", &format!("server.{endpoint}"));
+            assert_eq!(compile(&yaml, Os::Linux).err().unwrap().to_string(), format!(
+                "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'client' connects 'target' to 'server.{endpoint}', a {kind} socket that participant 'server' of type 'every-kind-server' as linux-container on linux serves at '/run/every/{endpoint}.sock', outside its shared_dir '/airlock/server/shared'; consumed sockets must lie under their server's shared_dir"
+            ));
+        }
+    }
+
+    #[test]
+    fn a_socket_referenced_by_another_participant_outside_its_shared_dir_fails() {
+        let yaml = socket_case("{}").replace(
+            "connect: {target: server.stream}",
+            "config: {env: {SOCKET: '{{ server.endpoints.stream.path }}'}}",
+        );
+        let expected = "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'client' of type 'every-kind-client' as linux-container on linux environment variable 'SOCKET' '{{ server.endpoints.stream.path }}' references endpoint 'stream' of participant 'server', a unix-stream socket served at '/run/every/stream.sock', outside its shared_dir '/airlock/server/shared'; consumed sockets must lie under their server's shared_dir";
+        assert_eq!(compile(&yaml, Os::Linux).err().unwrap().to_string(), expected);
+        let yaml = format!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {{type: file-server, subject: true, config: {FILE_CONFIG}}}\n  server: {{type: file-server}}\n{}", minimal_procedure!());
+        let expected = expected
+            .replace(
+                "'client' of type 'every-kind-client'",
+                "'subject' of type 'file-server'",
+            )
+            .replace("environment variable 'SOCKET'", "configuration file 'settings.yaml'");
+        assert_eq!(
+            compile_files(
+                &yaml,
+                &[("source.yaml", "{{ server.endpoints.stream.path }}")],
+                Os::Linux
+            )
+            .err()
+            .unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn a_participant_may_reference_its_own_socket_anywhere() {
+        for participant in ["self", "subject"] {
+            let yaml = PARTICIPANT_FIELDS.replace("type: server", &format!("type: every-kind-server, config: {{env: {{SOCKET_DIR: '/dev/null/{}', COPY: '{{{{ {participant}.endpoints.stream.path }}}}'}}}}", "x".repeat(108)));
+            let plan = compile(&yaml, Os::Linux).unwrap().unwrap();
+            assert_eq!(
+                plan.effective_config("subject").unwrap().env["COPY"],
+                format!("{{{{ {participant}.endpoints.stream.path }}}}")
+            );
+        }
+    }
+
+    #[test]
+    fn an_unconsumed_socket_may_lie_anywhere() {
+        let yaml = PARTICIPANT_FIELDS
+            .replace(
+                "type: server",
+                "type: every-kind-server, config: {env: {SOCKET_DIR: '/dev/null'}}",
+            )
+            .replace(
+                "participants:",
+                "participants:\n  other: {type: every-kind-client, connect: {target: subject.tcp}}",
+            );
+        let plan = compile(&yaml, Os::Linux).unwrap().unwrap();
+        assert_eq!(plan.effective_config("subject").unwrap().env["SOCKET_DIR"], "/dev/null");
+        assert_eq!(
+            plan.effective_config("other").unwrap().env["TARGET"],
+            "tcp://subject:1001"
+        );
+    }
+
+    #[test]
+    fn a_consumed_socket_path_over_the_os_limit_fails_and_one_at_the_limit_passes() {
+        for (os, dir, limit) in [
+            (Os::MacOs, "/tmp/panoramic-testrun0/0000/server/shared", 103),
+            (Os::Linux, "/airlock/server/shared", 107),
+        ] {
+            for reference in [false, true] {
+                for length in [limit, limit + 1] {
+                    let path = format!("{dir}/{}", "x".repeat(length - dir.len() - 1));
+                    let mut yaml = socket_case(&format!("{{env: {{SOCKET_PATH: '{path}'}}}}"))
+                        .replace("type: every-kind-server", "type: file-server")
+                        .replace("[linux]", &format!("[{}]", os.name()));
+                    if reference {
+                        yaml = yaml.replace(
+                            "connect: {target: server.stream}",
+                            "config: {env: {SOCKET: '{{ server.endpoints.stream.path }}'}}",
+                        );
+                    }
+                    let result = compile(&yaml, os);
+                    if length == limit {
+                        let plan = result.unwrap().unwrap();
+                        assert_eq!(plan.effective_config("server").unwrap().env["SOCKET_PATH"], path);
+                    } else {
+                        let message = result.err().unwrap().to_string();
+                        assert!(
+                            message.ends_with(&format!(
+                                "at '{path}' ({length} bytes); a socket path on {} holds at most {limit} bytes",
+                                os.name()
+                            )),
+                            "{message}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn socket_location_errors_fail_on_an_unselected_subject_os() {
+        let yaml = socket_case(
+            "{env: {SOCKET_DIR: '{{ self.facts.shared_dir }}'}, os: {macos: {env: {SOCKET_DIR: /elsewhere}}}}",
+        )
+        .replace("[linux]", "[linux, macos]");
+        for reference in [false, true] {
+            let yaml = if reference {
+                yaml.replace(
+                    "connect: {target: server.stream}",
+                    "config: {env: {SOCKET: '{{ server.endpoints.stream.path }}'}}",
+                )
+            } else {
+                yaml.clone()
+            };
+            for os in [Os::Linux, Os::MacOs, Os::Windows] {
+                let mut scopes = ScopeRegistry::with_run("testrun0");
+                for _ in 0..3 {
+                    scopes.allocate().unwrap();
+                }
+                let message = compile_with_scopes(&yaml, os, &mut scopes).err().unwrap().to_string();
+                let index = if os == Os::Windows { 0 } else { 3 };
+                assert!(message.contains("on subject OS 'macos'"), "{message}");
+                assert!(
+                    message.contains(&format!(
+                        "outside its shared_dir '/tmp/panoramic-testrun0/{index:04}/server/shared'"
+                    )),
+                    "{message}"
+                );
+                assert_eq!(scopes.allocate().unwrap().index, if os == Os::Windows { 3 } else { 4 });
+            }
+        }
+    }
+
+    #[test]
+    fn socket_length_errors_fail_on_an_unselected_subject_os() {
+        let path = format!(
+            "{{{{ self.facts.shared_dir }}}}/{}",
+            "x".repeat(104 - "/tmp/panoramic-testrun0/0000/server/shared/".len())
+        );
+        let yaml = socket_case(&format!("{{env: {{SOCKET_PATH: '{path}'}}}}"))
+            .replace("type: every-kind-server", "type: file-server")
+            .replace("[linux]", "[linux, macos]");
+        for reference in [false, true] {
+            let yaml = if reference {
+                yaml.replace(
+                    "connect: {target: server.stream}",
+                    "config: {env: {SOCKET: '{{ server.endpoints.stream.path }}'}}",
+                )
+            } else {
+                yaml.clone()
+            };
+            for os in [Os::Linux, Os::MacOs, Os::Windows] {
+                let message = compile(&yaml, os).err().unwrap().to_string();
+                assert!(message.contains("on subject OS 'macos'"), "{message}");
+                assert!(
+                    message.ends_with("(104 bytes); a socket path on macos holds at most 103 bytes"),
+                    "{message}"
+                );
+            }
+        }
     }
 }

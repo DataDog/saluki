@@ -289,7 +289,7 @@ mod tests {
         layout::{Os, RealizationKind},
         participant::{EffectiveConfig, FactDeclaration},
         plan::{
-            tests::{compile, compile_files, FILE_CONFIG},
+            fixtures::{compile, compile_files, FILE_CONFIG},
             CasePlan,
         },
     };

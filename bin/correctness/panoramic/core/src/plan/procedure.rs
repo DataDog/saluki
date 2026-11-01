@@ -72,7 +72,7 @@ mod tests {
         },
         layout::{Os, RealizationKind},
         plan::{
-            tests::{compile, FACT_CASE},
+            fixtures::{compile, FACT_CASE},
             CasePlan, PortRegistry, ScopeRegistry,
         },
     };

@@ -170,7 +170,7 @@ mod tests {
         case::fixtures::{minimal_procedure, FixtureConfig},
         layout::Os,
         plan::{
-            tests::{compile, compile_files},
+            fixtures::{compile, compile_files},
             CasePlan,
         },
     };
