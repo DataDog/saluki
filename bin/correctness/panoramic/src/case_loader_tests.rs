@@ -8,16 +8,22 @@ use panoramic_core::step::Need;
 use panoramic_steps::{test_support::valid_fields, REGISTERED_STEPS};
 use serde_json::Value;
 
-use crate::config::tests::{write_case, PARTICIPANT_FIELDS};
+use crate::config::{
+    discover_in_scope,
+    tests::{write_case, PARTICIPANT_FIELDS},
+};
 
 #[test]
-fn default_log_file_references_load_on_linux_and_windows_but_not_macos() {
+fn default_log_file_references_plan_on_linux_and_windows_but_not_macos() {
     let dir = tempfile::tempdir().unwrap();
     let yaml = PARTICIPANT_FIELDS.replace("procedure: []", "procedure: [{step: file_contains, on: adp, path: '{{ adp.facts.default_log_file }}', pattern: ready, timeout: 1s}]");
     for oses in ["linux", "windows", "linux, windows"] {
         let path = write_case(dir.path(), "alpha", &yaml.replace("[linux]", &format!("[{oses}]")));
         let cases = crate::CASE_LOADER.load_file(&path).unwrap();
-        let CaseSchema::Participants { procedure, .. } = cases[0].schema() else {
+        let os = *cases[0].subject_os().first().unwrap();
+        let plans = discover_in_scope(&[dir.path().to_path_buf()], os).unwrap();
+        assert_eq!(plans.len(), 1);
+        let CaseSchema::Participants { procedure, .. } = plans[0].case().schema() else {
             panic!("expected participant data")
         };
         let [ProcedureNode::Step(step)] = procedure.as_slice() else {
@@ -32,13 +38,13 @@ fn default_log_file_references_load_on_linux_and_windows_but_not_macos() {
         );
     }
     let path = write_case(dir.path(), "alpha", &yaml.replace("[linux]", "[linux, macos, windows]"));
-    let message = crate::CASE_LOADER
-        .load_file(&path)
+    assert_eq!(crate::CASE_LOADER.load_file(&path).unwrap().len(), 1);
+    let message = discover_in_scope(&[dir.path().to_path_buf()], Os::Linux)
         .err()
         .expect("macOS has no declared default log file")
         .to_string();
     assert_eq!(message, format!(
-        "case 'alpha' in {}: step 1 'file_contains' references fact 'default_log_file' of participant 'adp', which type 'agent-adp' does not provide on macos; it provides it on linux, windows",
+        "Failed to plan test cases:\n  - case 'alpha' in {}: on subject OS 'macos', step 1 references fact 'default_log_file' of participant 'adp', which type 'agent-adp' does not provide as host-process-group on macos; it provides it as linux-container on linux, windows-container on windows",
         path.canonicalize().unwrap().display()
     ));
 }

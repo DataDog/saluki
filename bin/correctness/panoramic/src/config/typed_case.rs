@@ -1,4 +1,4 @@
-//! Typed case schemas and the runners built from loaded cases.
+//! Typed case schemas and the runners built from case plans.
 
 use std::{collections::BTreeSet, path::Path, time::Duration};
 
@@ -176,16 +176,16 @@ fn from_correctness(name: String, config: CorrectnessConfig) -> TypedCase<TypedC
     }
 }
 
-/// Participant translation and runner construction for loaded cases.
+/// Participant translation and runner construction for case plans.
 pub(crate) trait RunnableCase {
     /// Translates a participant case into the configuration its integration runner receives.
     ///
     /// # Errors
     ///
     /// Returns an error naming the case and source if it uses another schema or suite, has unsupported
-    /// participant settings or steps, or omits the requested subject OS.
+    /// participant settings or steps.
     /// See [`integration_bridge::integration_config`].
-    fn integration_config(&self, os: Os) -> Result<IntegrationConfig, GenericError>;
+    fn integration_config(&self) -> Result<IntegrationConfig, GenericError>;
 
     /// Builds a runner from a copy of the case data, applying image choices to that copy.
     ///
@@ -193,60 +193,58 @@ pub(crate) trait RunnableCase {
     ///
     /// Participant cases propagate [`Self::integration_config`] errors.
     fn build_test(
-        &self, subject_os: Os, settings: &IntegrationSettings, overrides: &ImageOverrides<'_>,
+        &self, settings: &IntegrationSettings, overrides: &ImageOverrides<'_>,
     ) -> Result<Box<dyn Test>, GenericError>;
 }
 
-impl RunnableCase for LoadedCase {
-    fn integration_config(&self, os: Os) -> Result<IntegrationConfig, GenericError> {
-        let CaseSchema::Participants { file, .. } = self.schema() else {
+impl RunnableCase for LoadedPlan {
+    fn integration_config(&self) -> Result<IntegrationConfig, GenericError> {
+        let case = self.case();
+        let CaseSchema::Participants { file, .. } = case.schema() else {
             return Err(generic_error!(
                 "Cannot run case '{}' from {}: integration translation requires a case that declares participants",
-                self.name(),
-                self.source().display()
+                case.name(),
+                case.source().display()
             ));
         };
-        if self.suite() != TestSuite::Integration.name() {
+        if case.suite() != TestSuite::Integration.name() {
             return Err(generic_error!(
                 "Cannot run case '{}' from {}: the integration runner runs only integration-suite cases",
-                self.name(),
-                self.source().display()
+                case.name(),
+                case.source().display()
             ));
         }
-        if !self.subject_os().contains(&os) {
-            return Err(generic_error!(
-                "Cannot run case '{}' from {}: it does not declare subject OS '{}'",
-                self.name(),
-                self.source().display(),
-                os.name()
-            ));
-        }
-        integration_bridge::integration_config(file, self.name(), self.source(), os).map_err(|reason| {
+        integration_bridge::integration_config(file, case.name(), case.source(), |participant, fact| {
+            self.fact(participant, fact)
+        })
+        .map_err(|reason| {
             generic_error!(
                 "Cannot run case '{}' from {}: {}",
-                self.name(),
-                self.source().display(),
+                case.name(),
+                case.source().display(),
                 reason
             )
         })
     }
 
     fn build_test(
-        &self, subject_os: Os, settings: &IntegrationSettings, overrides: &ImageOverrides<'_>,
+        &self, settings: &IntegrationSettings, overrides: &ImageOverrides<'_>,
     ) -> Result<Box<dyn Test>, GenericError> {
-        match self.schema() {
+        match self.case().schema() {
             CaseSchema::Typed(TypedConfig::Integration(config)) => {
                 Ok(Box::new(IntegrationTestCase::new(config.clone(), settings)))
             }
             CaseSchema::Typed(TypedConfig::Correctness(config)) => {
                 let mut config = config.clone();
                 overrides.apply_correctness(&mut config);
-                Ok(Box::new(CorrectnessTestCase::new(self.name().to_string(), config)))
+                Ok(Box::new(CorrectnessTestCase::new(
+                    self.case().name().to_string(),
+                    config,
+                )))
             }
-            CaseSchema::Participants { .. } => Ok(Box::new(IntegrationTestCase::new(
-                self.integration_config(subject_os)?,
-                settings,
-            ))),
+            CaseSchema::Participants { .. } => {
+                Ok(Box::new(IntegrationTestCase::new(self.integration_config()?, settings)))
+            }
         }
     }
 }
@@ -359,8 +357,11 @@ mod tests {
                 .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
                 .unwrap();
             assert_eq!(cases.len(), 1);
+            let plan = CasePlan::compile(cases.into_iter().next().unwrap(), Os::Linux, &crate::REGISTRIES)
+                .unwrap()
+                .unwrap();
             assert_eq!(
-                cases[0].integration_config(Os::Linux).unwrap_err().to_string(),
+                plan.integration_config().unwrap_err().to_string(),
                 "Cannot run case 'alpha' from alpha/config.yaml: \
                  integration translation requires a case that declares participants"
             );
@@ -390,17 +391,6 @@ mod tests {
                  the integration runner runs only integration-suite cases",
                 path.canonicalize().unwrap().display()
             )
-        );
-    }
-
-    #[test]
-    fn participant_translation_requires_a_declared_subject_os() {
-        let cases = crate::CASE_LOADER
-            .load_content(PARTICIPANT_FIELDS, "alpha", Path::new("alpha/config.yaml"))
-            .unwrap();
-        assert_eq!(
-            cases[0].integration_config(Os::Windows).unwrap_err().to_string(),
-            "Cannot run case 'alpha' from alpha/config.yaml: it does not declare subject OS 'windows'"
         );
     }
 

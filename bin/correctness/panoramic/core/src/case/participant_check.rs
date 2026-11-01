@@ -15,8 +15,8 @@ use crate::{
 /// # Errors
 ///
 /// Returns the first error in this order: participant names, subject count, subject OS override;
-/// then, per participant in name order, registered type, file names, endpoint overrides, parameters,
-/// OS overlays (reachable OS, files, parameters), and connections (consumed name, target, endpoint).
+/// then, per participant in name order, registered type, realization options, file names, endpoint overrides,
+/// parameters, OS overlays (reachable OS, files, parameters), and connections (consumed name, target, endpoint).
 /// Map keys and overlay OSes are checked in sorted order. Every error names the case and source.
 pub(super) fn check_participants(
     file: &CaseFile, subject_os: &BTreeSet<Os>, types: &[&dyn ParticipantType], name: &str, source: &Path,
@@ -61,6 +61,15 @@ pub(super) fn check_participants(
         };
         let holder = format!("participant '{participant}'");
         let type_name = participant_type.name();
+        if let Some(realization) = &entry.realization {
+            check_keys(realization.options.keys(), &[], "accepts", |key| {
+                format!(
+                    "{holder} sets realization option '{key}', which {} does not accept",
+                    realization.kind.name()
+                )
+            })
+            .map_err(&error)?;
+        }
         check_keys(
             entry.config.files.keys(),
             participant_type.config_files(),
@@ -157,7 +166,7 @@ fn is_dns_label(name: &str) -> bool {
         && !name.ends_with('-')
 }
 
-pub(super) fn possible_os(entry: &ParticipantEntry, subject_os: &BTreeSet<Os>) -> BTreeSet<Os> {
+fn possible_os(entry: &ParticipantEntry, subject_os: &BTreeSet<Os>) -> BTreeSet<Os> {
     match entry.os {
         Some(os) => BTreeSet::from([os]),
         None => subject_os.clone(),
@@ -332,6 +341,37 @@ mod tests {
             "{message}"
         );
         check(&yaml.replace("type: unknown", "type: server")).unwrap();
+    }
+
+    #[test]
+    fn any_realization_option_is_a_load_error_naming_the_participant_kind_and_option() {
+        for kind in [
+            "linux-container",
+            "windows-container",
+            "host-process-group",
+            "kubernetes-pod",
+        ] {
+            let yaml = case_yaml(
+                &format!("  subject: {{type: server, subject: true, realization: {{kind: {kind}, options: {{z_option: false, host_pid: true}}}}}}"),
+                "linux",
+            );
+            assert_eq!(check_error(&yaml), format!(
+                "case 'alpha' in config.yaml: participant 'subject' sets realization option 'host_pid', which {kind} does not accept; it accepts none"
+            ));
+        }
+    }
+
+    #[test]
+    fn an_empty_realization_options_map_loads() {
+        let yaml = super::super::fixtures::PARTICIPANT_FIELDS.replace(
+            "subject: true",
+            "subject: true, realization: {kind: linux-container, options: {}}",
+        );
+        let cases = super::super::fixtures::LOADER
+            .load_content(&yaml, "alpha", Path::new("config.yaml"))
+            .unwrap();
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].name(), "alpha");
     }
 
     #[test]
@@ -521,6 +561,7 @@ mod tests {
     type: unknown
     subject: true
     os: linux
+    realization: {kind: linux-container, options: {z-option: true, a-option: true}}
     config:
       files: {z-file: z, a-file: a}
       endpoints: {z-endpoint: {port: 80}, a-endpoint: {port: 80}}
@@ -547,6 +588,8 @@ mod tests {
                 "    type: server",
                 "participant 'a' has unknown type",
             ),
+            (", a-option: true", "", "sets realization option 'a-option'"),
+            ("z-option: true", "", "sets realization option 'z-option'"),
             (", a-file: a", "", "configuration file 'a-file'"),
             ("z-file: z", "", "configuration file 'z-file'"),
             (", a-endpoint: {port: 80}", "", "overrides endpoint 'a-endpoint'"),

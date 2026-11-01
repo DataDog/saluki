@@ -145,7 +145,8 @@ supports this subset of the schema:
   together, and what is captured differs by OS.
 - The step `file_contains`. Its `path` may reference a participant fact, written as in the example above with the
   participant's name and the fact's name.
-  `agent-adp` declares `default_log_file` on Linux and Windows only, so a case that runs on macOS writes the path out.
+  `agent-adp` declares `default_log_file` for its Linux and Windows containers only, so a case that runs on macOS writes
+  the path out.
 - `parallel` blocks of these steps.
 
 Durations in a participant case need a unit: write `30s`, not `30`.
@@ -153,9 +154,11 @@ Durations in a participant case need a unit: write `30s`, not `30`.
 Every step names the participant it acts on with `on`. Step fields differ from the integration schema: steps use
 `step:` instead of `assertion:`, and `file_contains` requires `pattern`. The loader accepts other participant and
 configuration fields, but the integration runner rejects a case that sets them, with an error naming the field.
+The loader rejects keys in `realization.options` because no realization accepts options.
 
 `panoramic list` shows each participant case's layout. A case whose layout is invalid on any OS it lists in
 `subject_os` fails discovery for `list` and `run`, whatever runtime is selected.
+A referenced fact missing for a participant's realization on any OS in `subject_os` also fails discovery.
 
 `--subject-os linux|macos|windows` selects which cases run. It defaults to the OS selected by `--runtime`, then the
 host's OS. Conflicting values exit 2 before discovery. Correctness cases keep their configured runtime.

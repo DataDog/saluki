@@ -89,11 +89,28 @@ pub struct Layout {
 }
 
 impl Layout {
+    pub(crate) fn get(&self, name: &str) -> Option<Realization> {
+        self.participants.get(name).copied()
+    }
+
     /// Visits participants and their realizations in name order.
     pub fn iter(&self) -> impl Iterator<Item = (&str, Realization)> {
         self.participants
             .iter()
             .map(|(name, realization)| (name.as_str(), *realization))
+    }
+}
+
+/// Formats realizations for diagnostics, preserving their order.
+pub(crate) fn describe_realizations(realizations: impl IntoIterator<Item = (Os, RealizationKind)>) -> String {
+    let descriptions: Vec<_> = realizations
+        .into_iter()
+        .map(|(os, kind)| format!("{} on {}", kind.name(), os.name()))
+        .collect();
+    if descriptions.is_empty() {
+        "none".to_string()
+    } else {
+        descriptions.join(", ")
     }
 }
 
@@ -152,16 +169,7 @@ pub(crate) fn lay_out(
             |realization| realization.kind,
         );
         if !participant_type.supports().contains(&(os, kind)) {
-            let supported = participant_type
-                .supports()
-                .iter()
-                .map(|(os, kind)| format!("{} on {}", kind.name(), os.name()))
-                .collect::<Vec<_>>();
-            let supported = if supported.is_empty() {
-                "none".to_string()
-            } else {
-                supported.join(", ")
-            };
+            let supported = describe_realizations(participant_type.supports().iter().copied());
             let reason = if follows_subject {
                 format!(
                     "cannot follow the subject's {} on {}; set its 'os' or 'realization'",

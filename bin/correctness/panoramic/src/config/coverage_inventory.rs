@@ -392,9 +392,11 @@ fn load_cases(path: &Path) -> Vec<(String, Case)> {
     let loaded = crate::CASE_LOADER
         .load_file(path)
         .unwrap_or_else(|error| panic!("{}: {error:#}", path.display()));
-    let mut cases = record_cases(&loaded).unwrap_or_else(|error| panic!("{}: {error:#}", path.display()));
-    let doc: Value = serde_saphyr::from_str(&read_text(path)).unwrap();
+    let content = read_text(path);
     let directory = path.parent().unwrap().file_name().unwrap().to_str().unwrap();
+    let mut cases =
+        record_cases(&loaded, &content, directory).unwrap_or_else(|error| panic!("{}: {error:#}", path.display()));
+    let doc: Value = serde_saphyr::from_str(&content).unwrap();
     let canonical = path.canonicalize().unwrap();
     let view = |doc| loaded_view(&doc, directory, &canonical);
     let configs: Vec<_> = cases.iter().map(|(key, case)| (key, &case.config)).collect();
@@ -412,7 +414,7 @@ fn load_cases(path: &Path) -> Vec<(String, Case)> {
 }
 
 /// Records each case under `<suite>/<name>`: its runner configuration and step or comparison coverage.
-fn record_cases(cases: &[LoadedCase]) -> Result<Vec<(String, Case)>, GenericError> {
+fn record_cases(cases: &[LoadedCase], content: &str, directory: &str) -> Result<Vec<(String, Case)>, GenericError> {
     let mut recorded = Vec::new();
     for case in cases {
         let effective = match case.schema() {
@@ -434,12 +436,22 @@ fn record_cases(cases: &[LoadedCase]) -> Result<Vec<(String, Case)>, GenericErro
                 ignored_fields: Vec::new(),
             },
             CaseSchema::Participants { .. } => {
+                let translate = |os| -> Result<IntegrationConfig, GenericError> {
+                    let loaded = crate::CASE_LOADER
+                        .load_content(content, directory, case.source())?
+                        .into_iter()
+                        .find(|loaded| loaded.name() == case.name())
+                        .expect("reloading yields the same case");
+                    let plan =
+                        CasePlan::compile(loaded, os, &crate::REGISTRIES)?.expect("the case declares this subject OS");
+                    plan.integration_config()
+                };
                 let mut subject_os = case.subject_os().iter();
                 let first_os = *subject_os.next().expect("loaded cases declare at least one subject OS");
-                let translated = case.integration_config(first_os)?;
+                let translated = translate(first_os)?;
                 let config = serde_json::to_value(&translated)?;
                 for os in subject_os {
-                    if serde_json::to_value(case.integration_config(*os)?)? != config {
+                    if serde_json::to_value(translate(*os)?)? != config {
                         return Err(generic_error!(
                             "case '{}' translates to different integration configurations on {} and {}; the coverage inventory records one configuration per case",
                             case.name(), first_os.name(), os.name()
@@ -466,7 +478,7 @@ fn record_cases(cases: &[LoadedCase]) -> Result<Vec<(String, Case)>, GenericErro
 fn loaded_view(doc: &Value, directory: &str, source: &Path) -> Result<Value, GenericError> {
     let content = serde_json::to_string(doc)?;
     let cases = crate::CASE_LOADER.load_content(&content, directory, source)?;
-    let recorded = record_cases(&cases)?;
+    let recorded = record_cases(&cases, &content, directory)?;
     let configs: Vec<_> = recorded.iter().map(|(key, case)| (key, &case.config)).collect();
     Ok(serde_json::to_value(configs)?)
 }

@@ -7,10 +7,10 @@ use serde_json::Value;
 
 use super::{
     file::{CaseFile, ProcedureNode, StepNode},
-    participant_check::{declared_names, possible_os},
+    participant_check::declared_names,
 };
 use crate::{
-    layout::Os,
+    layout::Realization,
     participant::{find_type, ParticipantType},
     record::step_label,
     step::{Need, Step, StepFactory},
@@ -23,38 +23,20 @@ use crate::{
 /// Returns the first error in procedure order, naming the case, source, step label and step.
 /// Checks registration, field decoding, template references, then needs in their declared order.
 pub(super) fn build_steps(
-    file: &CaseFile, subject_os: &BTreeSet<Os>, steps: &[&dyn StepFactory], types: &[&dyn ParticipantType], name: &str,
-    source: &Path,
+    file: &CaseFile, steps: &[&dyn StepFactory], types: &[&dyn ParticipantType], name: &str, source: &Path,
 ) -> Result<Vec<ProcedureNode<Box<dyn Step>>>, GenericError> {
     file.procedure
         .iter()
         .enumerate()
         .map(|(index, node)| match node {
-            ProcedureNode::Step(node) => build_step(
-                node,
-                &step_label(index, None),
-                file,
-                subject_os,
-                steps,
-                types,
-                name,
-                source,
-            )
-            .map(ProcedureNode::Step),
+            ProcedureNode::Step(node) => {
+                build_step(node, &step_label(index, None), file, steps, types, name, source).map(ProcedureNode::Step)
+            }
             ProcedureNode::Parallel(nodes) => nodes
                 .iter()
                 .enumerate()
                 .map(|(member, node)| {
-                    build_step(
-                        node,
-                        &step_label(index, Some(member)),
-                        file,
-                        subject_os,
-                        steps,
-                        types,
-                        name,
-                        source,
-                    )
+                    build_step(node, &step_label(index, Some(member)), file, steps, types, name, source)
                 })
                 .collect::<Result<Vec<_>, _>>()
                 .map(ProcedureNode::Parallel),
@@ -63,8 +45,8 @@ pub(super) fn build_steps(
 }
 
 fn build_step(
-    node: &StepNode, label: &str, file: &CaseFile, subject_os: &BTreeSet<Os>, steps: &[&dyn StepFactory],
-    types: &[&dyn ParticipantType], name: &str, source: &Path,
+    node: &StepNode, label: &str, file: &CaseFile, steps: &[&dyn StepFactory], types: &[&dyn ParticipantType],
+    name: &str, source: &Path,
 ) -> Result<Box<dyn Step>, GenericError> {
     let error = |message: String| generic_error!("case '{}' in {}: step {} {}", name, source.display(), label, message);
     let Some(factory) = steps.iter().find(|factory| factory.name() == node.name) else {
@@ -121,28 +103,19 @@ fn build_step(
             )));
         };
         if let Need::Fact(_, fact) = &need {
-            let Some(declaration) = participant_type
-                .facts()
+            let declared: BTreeSet<_> = participant_type
+                .supports()
                 .iter()
-                .find(|declaration| declaration.name == fact)
-            else {
+                .flat_map(|&(os, kind)| participant_type.facts(Realization { os, kind }))
+                .map(|declaration| declaration.name)
+                .collect();
+            if !declared.contains(fact.as_str()) {
                 return Err(error(format!(
                     "'{}' references fact '{fact}' of participant '{participant}', which type '{}' does not declare; it declares {}",
                     node.name,
                     participant_type.name(),
-                    declared_names(&participant_type.facts().iter().map(|fact| fact.name).collect::<Vec<_>>())
+                    declared_names(&declared.into_iter().collect::<Vec<_>>())
                 )));
-            };
-            for os in possible_os(entry, subject_os) {
-                if !declaration.values.iter().any(|(provided, _)| *provided == os) {
-                    return Err(error(format!(
-                        "'{}' references fact '{fact}' of participant '{participant}', which type '{}' does not provide on {}; it provides it on {}",
-                        node.name,
-                        participant_type.name(),
-                        os.name(),
-                        declared_names(&declaration.values.iter().map(|(os, _)| os.name()).collect::<Vec<_>>())
-                    )));
-                }
             }
         }
         if let Need::Process(_, process) = &need {
@@ -175,7 +148,11 @@ fn contains_template_reference(value: &Value) -> bool {
 mod tests {
     use super::super::fixtures::{Probe, Server, STEPS, TYPES};
     use super::*;
-    use crate::step::{decode_fields, StepFields};
+    use crate::{
+        layout::{Os, RealizationKind},
+        participant::FactDeclaration,
+        step::{decode_fields, StepFields},
+    };
 
     fn case(procedure: &str) -> CaseFile {
         serde_saphyr::from_str(&format!(
@@ -187,7 +164,6 @@ mod tests {
     fn build(procedure: &str) -> Result<Vec<ProcedureNode<Box<dyn Step>>>, GenericError> {
         build_steps(
             &case(procedure),
-            &BTreeSet::from([Os::Linux]),
             STEPS,
             TYPES,
             "alpha",
@@ -326,57 +302,100 @@ mod tests {
     }
 
     #[test]
-    fn facts_must_exist_on_every_possible_participant_os() {
-        let file = case("- {step: probe, on: subject, path: '{{ subject.facts.file }}'}");
-        let message = build_steps(
-            &file,
-            &BTreeSet::from([Os::Linux, Os::MacOs, Os::Windows]),
-            STEPS,
-            TYPES,
-            "alpha",
-            Path::new("config.yaml"),
-        )
-        .unwrap_err()
-        .to_string();
-        assert_eq!(message, "case 'alpha' in config.yaml: step 1 'probe' references fact 'file' of participant 'subject', which type 'server' does not provide on macos; it provides it on linux, windows");
-        assert_eq!(
-            build_steps(
+    fn declared_fact_names_are_the_sorted_union_of_supported_realizations() {
+        struct Declarations {
+            supported: bool,
+        }
+
+        impl ParticipantType for Declarations {
+            fn name(&self) -> &'static str {
+                "server"
+            }
+
+            fn supports(&self) -> &'static [(Os, RealizationKind)] {
+                if self.supported {
+                    &[
+                        (Os::Linux, RealizationKind::LinuxContainer),
+                        (Os::Windows, RealizationKind::WindowsContainer),
+                    ]
+                } else {
+                    &[]
+                }
+            }
+
+            fn facts(&self, realization: Realization) -> &'static [FactDeclaration] {
+                match (realization.os, realization.kind) {
+                    (Os::Linux, RealizationKind::LinuxContainer) => &[
+                        FactDeclaration {
+                            name: "common",
+                            value: "shared",
+                        },
+                        FactDeclaration {
+                            name: "zeta",
+                            value: "last",
+                        },
+                    ],
+                    (Os::Windows, RealizationKind::WindowsContainer) => &[
+                        FactDeclaration {
+                            name: "alpha",
+                            value: "first",
+                        },
+                        FactDeclaration {
+                            name: "common",
+                            value: "shared",
+                        },
+                    ],
+                    _ => &[],
+                }
+            }
+
+            fn processes(&self) -> &'static [&'static str] {
+                &[]
+            }
+        }
+
+        let file = case("- {step: probe, on: subject, path: '{{ subject.facts.missing }}'}");
+        for (supported, expected) in [(true, "alpha, common, zeta"), (false, "none")] {
+            let message = build_steps(
                 &file,
-                &BTreeSet::from([Os::Linux, Os::Windows]),
                 STEPS,
-                TYPES,
+                &[&Declarations { supported }],
                 "alpha",
-                Path::new("config.yaml")
+                Path::new("config.yaml"),
             )
-            .unwrap()
-            .len(),
-            1
-        );
+            .unwrap_err()
+            .to_string();
+            assert_eq!(message, format!(
+                "case 'alpha' in config.yaml: step 1 'probe' references fact 'missing' of participant 'subject', which type 'server' does not declare; it declares {expected}"
+            ));
+        }
     }
 
     #[test]
-    fn a_participant_with_its_own_os_needs_facts_only_on_that_os() {
-        let mut file = case("- {step: probe, on: subject, path: '{{ other.facts.file }}'}");
-        let other = file.participants.get_mut("other").unwrap();
-        other.participant_type = "server".into();
-        other.os = Some(Os::Linux);
-        let subject_os = BTreeSet::from([Os::MacOs]);
-        let built = build_steps(&file, &subject_os, STEPS, TYPES, "alpha", Path::new("config.yaml")).unwrap();
-        let [ProcedureNode::Step(step)] = built.as_slice() else {
-            panic!("expected one step")
+    fn a_fact_declared_for_any_supported_realization_passes_the_load_check() {
+        let yaml = super::super::fixtures::PARTICIPANT_FIELDS
+            .replace("[linux]", "[macos]")
+            .replace(
+                "procedure: []",
+                "procedure: [{step: probe, on: subject, path: '{{ subject.facts.file }}'}]",
+            );
+        let cases = super::super::fixtures::LOADER
+            .load_content(&yaml, "alpha", Path::new("config.yaml"))
+            .unwrap();
+        assert_eq!(cases.len(), 1);
+        let crate::case::CaseSchema::Participants { procedure, .. } = cases[0].schema() else {
+            panic!("expected participant data");
+        };
+        let [ProcedureNode::Step(step)] = procedure.as_slice() else {
+            panic!("expected one step");
         };
         assert_eq!(
             step.needs(),
             [
                 Need::Handle("subject".into()),
-                Need::Fact("other".into(), "file".into())
+                Need::Fact("subject".into(), "file".into())
             ]
         );
-        file.participants.get_mut("other").unwrap().os = None;
-        let message = build_steps(&file, &subject_os, STEPS, TYPES, "alpha", Path::new("config.yaml"))
-            .unwrap_err()
-            .to_string();
-        assert_eq!(message, "case 'alpha' in config.yaml: step 1 'probe' references fact 'file' of participant 'other', which type 'server' does not provide on macos; it provides it on linux, windows");
     }
 
     #[test]
@@ -463,16 +482,9 @@ mod tests {
         ] {
             let mut file = case(&format!("- {{step: probe, {fields}}}"));
             file.participants.get_mut("subject").unwrap().participant_type = "unknown".into();
-            let message = build_steps(
-                &file,
-                &BTreeSet::from([Os::Linux]),
-                STEPS,
-                TYPES,
-                "alpha",
-                Path::new("config.yaml"),
-            )
-            .unwrap_err()
-            .to_string();
+            let message = build_steps(&file, STEPS, TYPES, "alpha", Path::new("config.yaml"))
+                .unwrap_err()
+                .to_string();
             assert_eq!(
                 message,
                 "case 'alpha' in config.yaml: step 1 'probe': participant 'subject' has unknown type 'unknown'; registered types: client, server"

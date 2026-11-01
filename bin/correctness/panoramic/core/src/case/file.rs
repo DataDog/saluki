@@ -99,12 +99,7 @@ pub struct ParticipantEntry {
 pub struct RequestedRealization {
     /// Required execution mechanism; has no default.
     pub kind: RealizationKind,
-    /// Backend-specific options. Defaults to empty.
-    // TODO: remove once a backend reads realization options.
-    #[allow(
-        dead_code,
-        reason = "Only tests read this field until a backend consumes realization options."
-    )]
+    /// Options for the realization kind; each kind defines which it accepts, and none defines any. Defaults to empty.
     #[serde(default)]
     pub(super) options: BTreeMap<String, Value>,
 }

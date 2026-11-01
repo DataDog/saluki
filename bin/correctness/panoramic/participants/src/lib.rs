@@ -15,6 +15,8 @@ pub const REGISTERED_TYPES: &[&dyn ParticipantType] = &[&AgentAdp];
 
 #[cfg(test)]
 mod tests {
+    use panoramic_core::layout::{Os, Realization, RealizationKind};
+
     use super::*;
 
     #[test]
@@ -30,22 +32,47 @@ mod tests {
     }
 
     #[test]
-    fn registered_facts_have_unique_sorted_names_and_literal_values() {
+    fn registered_facts_have_unique_sorted_names_and_literal_values_for_every_supported_realization() {
         for participant_type in REGISTERED_TYPES {
-            let names: Vec<_> = participant_type.facts().iter().map(|fact| fact.name).collect();
-            assert!(
-                names.windows(2).all(|pair| pair[0] < pair[1]),
-                "{}: {names:?}",
-                participant_type.name()
-            );
-            for fact in participant_type.facts() {
-                for (_, value) in fact.values {
+            for &(os, kind) in participant_type.supports() {
+                let facts = participant_type.facts(Realization { os, kind });
+                let names: Vec<_> = facts.iter().map(|fact| fact.name).collect();
+                assert!(
+                    names.windows(2).all(|pair| pair[0] < pair[1]),
+                    "{} on {os:?} as {kind:?}: {names:?}",
+                    participant_type.name()
+                );
+                for fact in facts {
                     assert!(
-                        !value.contains("{{"),
-                        "{}: {}: {value}",
+                        !fact.value.contains("{{"),
+                        "{} on {os:?} as {kind:?}: {}: {}",
                         participant_type.name(),
-                        fact.name
+                        fact.name,
+                        fact.value
                     );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn registered_types_provide_no_facts_for_realizations_they_do_not_support() {
+        for participant_type in REGISTERED_TYPES {
+            // Keep both variant lists in sync with Os and RealizationKind.
+            for os in [Os::Linux, Os::MacOs, Os::Windows] {
+                for kind in [
+                    RealizationKind::LinuxContainer,
+                    RealizationKind::HostProcessGroup,
+                    RealizationKind::WindowsContainer,
+                    RealizationKind::KubernetesPod,
+                ] {
+                    if !participant_type.supports().contains(&(os, kind)) {
+                        assert!(
+                            participant_type.facts(Realization { os, kind }).is_empty(),
+                            "{} on {os:?} as {kind:?}",
+                            participant_type.name()
+                        );
+                    }
                 }
             }
         }

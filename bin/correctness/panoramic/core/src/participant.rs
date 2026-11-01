@@ -1,13 +1,13 @@
-//! Participant type declarations and early facts.
+//! Participant type declarations and realization-specific early facts.
 
-use crate::layout::{Os, RealizationKind};
+use crate::layout::{Os, Realization, RealizationKind};
 
-/// A participant fact available before execution, with values by OS.
+/// A participant fact available before execution for one realization.
 pub struct FactDeclaration {
     /// Name used in participant fact references.
     pub name: &'static str,
-    /// Fact values for each supported participant OS.
-    pub values: &'static [(Os, &'static str)],
+    /// Literal value for the realization.
+    pub value: &'static str,
 }
 
 /// A participant type a case may name, and what it accepts and provides.
@@ -41,25 +41,14 @@ pub trait ParticipantType: Send + Sync {
         &[]
     }
 
-    /// Early facts steps may reference, sorted by name. Defaults to none.
-    fn facts(&self) -> &'static [FactDeclaration] {
+    /// Early facts steps may reference for this realization, sorted by name. Defaults to none.
+    /// Called only with realizations from [`Self::supports`].
+    fn facts(&self, _realization: Realization) -> &'static [FactDeclaration] {
         &[]
     }
 
     /// Named processes steps may address with `process`, in sorted order.
     fn processes(&self) -> &'static [&'static str];
-
-    /// Looks up a declared fact's value for a participant OS.
-    ///
-    /// Implementations must keep this default: the loader checks [`Self::facts`] directly.
-    fn fact_value(&self, fact: &str, os: Os) -> Option<&'static str> {
-        self.facts()
-            .iter()
-            .find(|declaration| declaration.name == fact)?
-            .values
-            .iter()
-            .find_map(|(provided_os, value)| (*provided_os == os).then_some(*value))
-    }
 }
 
 /// Finds a registered participant type by its case-file name.

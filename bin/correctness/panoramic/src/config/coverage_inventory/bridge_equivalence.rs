@@ -12,7 +12,7 @@ use std::{
     path::Path,
 };
 
-use panoramic_core::participant::ParticipantType;
+use panoramic_core::{layout::Realization, participant::ParticipantType, plan::CasePlan};
 use panoramic_participants::AgentAdp;
 use serde_json::{json, Value};
 
@@ -114,10 +114,23 @@ fn participant_twin(config: &Value) -> Result<(String, bool), String> {
                 .get("path")
                 .and_then(Value::as_str)
                 .ok_or("file path must be a string")?;
-            if subject_os
-                .iter()
-                .all(|os| AgentAdp.fact_value("default_log_file", *os) == Some(path))
-            {
+            if subject_os.iter().all(|os| {
+                let supported: Vec<_> = AgentAdp
+                    .supports()
+                    .iter()
+                    .filter(|(supported_os, _)| supported_os == os)
+                    .collect();
+                assert_eq!(
+                    supported.len(),
+                    1,
+                    "the converter requires exactly one realization on {os:?}"
+                );
+                let &(os, kind) = supported[0];
+                AgentAdp
+                    .facts(Realization { os, kind })
+                    .iter()
+                    .any(|fact| fact.name == "default_log_file" && fact.value == path)
+            }) {
                 fields.insert("path".into(), json!("{{ adp.facts.default_log_file }}"));
                 used_fact = true;
             }
@@ -371,7 +384,12 @@ fn only_the_logging_cases_and_the_log_parsed_exit_cases_fit_the_integration_runn
                 panic!("{name}: expected one participant case");
             };
             for os in case.subject_os() {
-                case.integration_config(*os)
+                let loaded = crate::CASE_LOADER
+                    .load_content(&twin, name, Path::new("config.yaml"))
+                    .unwrap()
+                    .remove(0);
+                let plan = CasePlan::compile(loaded, *os, &crate::REGISTRIES).unwrap().unwrap();
+                plan.integration_config()
                     .unwrap_or_else(|error| panic!("{name} on {os:?}: {error:#}"));
             }
             Some(name.as_str())

@@ -1,6 +1,6 @@
 //! The `agent-adp` participant type: the Core Agent and ADP running together.
 
-use panoramic_core::layout::{Os, RealizationKind};
+use panoramic_core::layout::{Os, Realization, RealizationKind};
 use panoramic_core::participant::{FactDeclaration, ParticipantType};
 
 /// The Core Agent and ADP running together.
@@ -26,14 +26,18 @@ impl ParticipantType for AgentAdp {
 
     /// `default_log_file` follows ADP's `PlatformSettings::get_default_log_file_path()` in
     /// Linux and Windows containers.
-    fn facts(&self) -> &'static [FactDeclaration] {
-        &[FactDeclaration {
-            name: "default_log_file",
-            values: &[
-                (Os::Linux, "/var/log/datadog/agent-data-plane.log"),
-                (Os::Windows, r"C:\ProgramData\Datadog\logs\agent-data-plane.log"),
-            ],
-        }]
+    fn facts(&self, realization: Realization) -> &'static [FactDeclaration] {
+        match (realization.os, realization.kind) {
+            (Os::Linux, RealizationKind::LinuxContainer) => &[FactDeclaration {
+                name: "default_log_file",
+                value: "/var/log/datadog/agent-data-plane.log",
+            }],
+            (Os::Windows, RealizationKind::WindowsContainer) => &[FactDeclaration {
+                name: "default_log_file",
+                value: r"C:\ProgramData\Datadog\logs\agent-data-plane.log",
+            }],
+            _ => &[],
+        }
     }
 
     fn processes(&self) -> &'static [&'static str] {
@@ -58,20 +62,30 @@ mod tests {
     }
 
     #[test]
-    fn agent_adp_declares_its_default_log_file_on_linux_and_windows_only() {
-        assert_eq!(
-            AgentAdp.facts().iter().map(|fact| fact.name).collect::<Vec<_>>(),
-            ["default_log_file"]
-        );
-        assert_eq!(
-            AgentAdp.fact_value("default_log_file", Os::Linux),
-            Some("/var/log/datadog/agent-data-plane.log")
-        );
-        assert_eq!(
-            AgentAdp.fact_value("default_log_file", Os::Windows),
-            Some(r"C:\ProgramData\Datadog\logs\agent-data-plane.log")
-        );
-        assert_eq!(AgentAdp.fact_value("default_log_file", Os::MacOs), None);
-        assert_eq!(AgentAdp.fact_value("unknown", Os::Linux), None);
+    fn agent_adp_provides_default_log_file_for_its_linux_and_windows_containers_only() {
+        for (os, kind, expected) in [
+            (
+                Os::Linux,
+                RealizationKind::LinuxContainer,
+                vec![("default_log_file", "/var/log/datadog/agent-data-plane.log")],
+            ),
+            (
+                Os::Windows,
+                RealizationKind::WindowsContainer,
+                vec![("default_log_file", r"C:\ProgramData\Datadog\logs\agent-data-plane.log")],
+            ),
+            (Os::MacOs, RealizationKind::HostProcessGroup, vec![]),
+            (Os::Linux, RealizationKind::KubernetesPod, vec![]),
+        ] {
+            assert_eq!(
+                AgentAdp
+                    .facts(Realization { os, kind })
+                    .iter()
+                    .map(|fact| (fact.name, fact.value))
+                    .collect::<Vec<_>>(),
+                expected,
+                "{os:?} {kind:?}"
+            );
+        }
     }
 }

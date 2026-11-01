@@ -2,7 +2,7 @@
 //!
 //! Reads step fields from the case file. Supports one `agent-adp` participant configured only by `config.env`,
 //! with `log_contains` and `log_not_contains` (`process` omitted), translated to `stream: both`, and `file_contains`.
-//! File paths may reference the participant's facts, resolved per subject OS.
+//! File paths may reference the participant's facts, resolved from the participant's planned realization.
 //! Log steps search captured output: Linux container logs (Agent and ADP under s6),
 //! macOS stdout and stderr of the spawned Agent and ADP processes, or Windows container console output only.
 //! The translated configuration has default container settings, with empty `container.exposed_ports`;
@@ -11,8 +11,6 @@
 use std::path::Path;
 
 use panoramic_core::case::{CaseFile, ParticipantConfig, ParticipantEntry, ProcedureNode, StepNode};
-use panoramic_core::layout::Os;
-use panoramic_core::participant::ParticipantType;
 use panoramic_core::record::step_label;
 use panoramic_core::step::decode_fields;
 use panoramic_participants::AgentAdp;
@@ -30,8 +28,8 @@ use crate::dynamic_vars::ENV_PREFIX;
 ///
 /// Returns the first unsupported participant setting, unsupported or invalid step, or unresolvable file-path fact.
 /// Checks participants before steps. The caller supplies the case name and source in its error context.
-pub(super) fn integration_config(
-    file: &CaseFile, name: &str, source: &Path, os: Os,
+pub(super) fn integration_config<'a>(
+    file: &CaseFile, name: &str, source: &Path, fact: impl Fn(&str, &str) -> Option<&'a str>,
 ) -> Result<IntegrationConfig, String> {
     let CaseFile {
         // Use the name resolved by the case loader.
@@ -167,13 +165,7 @@ pub(super) fn integration_config(
                 check_on(&on)?;
                 Ok(AssertionConfig::FileContains {
                     path: path
-                        .resolve(|name, fact| {
-                            if name == participant {
-                                AgentAdp.fact_value(fact, os)
-                            } else {
-                                None
-                            }
-                        })
+                        .resolve(&fact)
                         .map_err(|reason| error(&format!("path: {reason}")))?,
                     pattern: Some(pattern),
                     regex,
@@ -229,7 +221,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use panoramic_core::{case::CaseSchema, plan::CasePlan};
+    use panoramic_core::{case::CaseSchema, layout::Os, plan::CasePlan};
     use panoramic_steps::{test_support::valid_fields, REGISTERED_STEPS};
 
     use super::*;
@@ -260,11 +252,11 @@ mod tests {
             let integration_cases = crate::CASE_LOADER.load_file(&integration_path).unwrap();
             assert_eq!(participant_cases.len(), 1);
             assert_eq!(integration_cases.len(), 1);
-            let participant = &participant_cases[0];
-            let CaseSchema::Participants { file, .. } = participant.schema() else {
-                panic!("expected participant data");
-            };
-            let config = integration_config(file, participant.name(), participant.source(), Os::Linux).unwrap();
+            let plans: Vec<_> = participant_cases
+                .into_iter()
+                .map(|case| CasePlan::compile(case, Os::Linux, &crate::REGISTRIES).unwrap().unwrap())
+                .collect();
+            let config = plans[0].integration_config().unwrap();
             let CaseSchema::Typed(TypedConfig::Integration(integration)) = integration_cases[0].schema() else {
                 panic!("expected integration data");
             };
@@ -274,7 +266,7 @@ mod tests {
             );
             assert_eq!(config.loaded_from, participant_path.canonicalize().unwrap());
             assert_eq!(integration.loaded_from, integration_path.canonicalize().unwrap());
-            assert_eq!(build_case_runners(participant_cases, Os::Linux, &[]).unwrap().len(), 1);
+            assert_eq!(build_runners(plans, Os::Linux, &[]).unwrap().len(), 1);
             assert_eq!(build_case_runners(integration_cases, Os::Linux, &[]).unwrap().len(), 1);
         }
     }
@@ -338,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn default_log_file_references_translate_to_each_os_literal_path() {
+    fn translation_resolves_file_paths_through_the_plan_on_every_subject_os() {
         let dir = tempfile::tempdir().unwrap();
         for (oses, runtimes) in [
             ("linux, windows", "linux, windows"),
@@ -348,7 +340,6 @@ mod tests {
                 .replace("linux, macos, windows", oses)
                 .replace(r"C:\adp\adp.log", "{{ adp.facts.default_log_file }}");
             let path = write_case(dir.path(), "alpha", &participant_yaml);
-            let participant_cases = crate::CASE_LOADER.load_file(&path).unwrap();
             for (os, literal) in [
                 (Os::Linux, "/var/log/datadog/agent-data-plane.log"),
                 (Os::Windows, r"C:\ProgramData\Datadog\logs\agent-data-plane.log"),
@@ -361,7 +352,12 @@ mod tests {
                 let CaseSchema::Typed(TypedConfig::Integration(integration)) = integration_cases[0].schema() else {
                     panic!("expected integration data")
                 };
-                let translated = participant_cases[0].integration_config(os).unwrap();
+                let case = crate::CASE_LOADER
+                    .load_content(&participant_yaml, "alpha", &path)
+                    .unwrap()
+                    .remove(0);
+                let plan = CasePlan::compile(case, os, &crate::REGISTRIES).unwrap().unwrap();
+                let translated = plan.integration_config().unwrap();
                 let Some(AssertionStep::Single(AssertionConfig::FileContains { path, .. })) =
                     translated.procedure.last()
                 else {
@@ -395,7 +391,7 @@ mod tests {
                     vec![ProcedureNode::Step(node)]
                 };
                 assert_eq!(
-                    integration_config(&file, "alpha", Path::new("alpha/config.yaml"), Os::Linux).unwrap_err(),
+                    integration_config(&file, "alpha", Path::new("alpha/config.yaml"), |_, _| None).unwrap_err(),
                     format!(
                         "step {label} '{}' runs on 'other'; the integration runner runs only participant 'adp'",
                         factory.name()
@@ -419,7 +415,7 @@ mod tests {
                 fields,
             })];
             for os in &file.subject_os {
-                let config = integration_config(&file, "alpha", Path::new("alpha/config.yaml"), *os).unwrap();
+                let config = integration_config(&file, "alpha", Path::new("alpha/config.yaml"), |_, _| None).unwrap();
                 let [AssertionStep::Single(assertion)] = config.procedure.as_slice() else {
                     panic!("expected one assertion for '{}' on {os:?}", factory.name());
                 };
@@ -443,18 +439,30 @@ mod tests {
     }
 
     #[test]
-    fn translation_reports_a_fact_that_cannot_resolve_for_the_single_participant() {
-        for (reference, os) in [
-            ("other.facts.default_log_file", Os::Linux),
-            ("adp.facts.unknown", Os::Linux),
-            ("adp.facts.default_log_file", Os::MacOs),
+    fn translation_resolves_file_path_facts_only_through_the_resolver() {
+        for (reference, expected) in [
+            ("other.facts.default_log_file", None),
+            ("adp.facts.unknown", None),
+            ("adp.facts.default_log_file", Some("/x")),
         ] {
             let yaml = PARTICIPANT_FIELDS.replace("procedure: []", &format!("procedure: [{{step: file_contains, on: adp, path: '{{{{ {reference} }}}}', pattern: ready, timeout: 1s}}]"));
             let file: CaseFile = serde_saphyr::from_str(&yaml).unwrap();
-            assert_eq!(
-                integration_config(&file, "alpha", Path::new("alpha/config.yaml"), os).unwrap_err(),
-                format!("step 1 'file_contains' path: cannot resolve fact reference '{{{{ {reference} }}}}'")
-            );
+            let translated = integration_config(&file, "alpha", Path::new("alpha/config.yaml"), |participant, fact| {
+                (participant == "adp" && fact == "default_log_file").then_some("/x")
+            });
+            if let Some(expected) = expected {
+                let config = translated.unwrap();
+                let [AssertionStep::Single(AssertionConfig::FileContains { path, .. })] = config.procedure.as_slice()
+                else {
+                    panic!("expected one file assertion");
+                };
+                assert_eq!(path, expected);
+            } else {
+                assert_eq!(
+                    translated.unwrap_err(),
+                    format!("step 1 'file_contains' path: cannot resolve fact reference '{{{{ {reference} }}}}'")
+                );
+            }
         }
     }
 
@@ -554,7 +562,7 @@ mod tests {
         ] {
             let file: CaseFile = serde_saphyr::from_str(&PARTICIPANT_FIELDS.replace(old, new)).unwrap();
             assert_eq!(
-                integration_config(&file, "alpha", Path::new("alpha/config.yaml"), Os::Linux).unwrap_err(),
+                integration_config(&file, "alpha", Path::new("alpha/config.yaml"), |_, _| None).unwrap_err(),
                 reason
             );
         }
@@ -570,7 +578,7 @@ mod tests {
                 serde_saphyr::from_str(&PARTICIPANT_FIELDS.replace("procedure: []", &format!("procedure: {nodes}")))
                     .unwrap();
             assert_eq!(
-                integration_config(&file, "alpha", Path::new("alpha/config.yaml"), Os::Linux).unwrap_err(),
+                integration_config(&file, "alpha", Path::new("alpha/config.yaml"), |_, _| None).unwrap_err(),
                 format!("step {label} 'log_contains' has fields the integration runner cannot read: missing field `pattern`")
             );
         }
@@ -585,7 +593,10 @@ mod tests {
         let cases = crate::CASE_LOADER
             .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
             .unwrap();
-        let config = cases[0].integration_config(Os::Linux).unwrap();
+        let plan = CasePlan::compile(cases.into_iter().next().unwrap(), Os::Linux, &crate::REGISTRIES)
+            .unwrap()
+            .unwrap();
+        let config = plan.integration_config().unwrap();
         let [AssertionStep::Single(AssertionConfig::LogContains { pattern: first, .. }), AssertionStep::Parallel { parallel }] =
             config.procedure.as_slice()
         else {
@@ -605,7 +616,7 @@ mod tests {
         let file: CaseFile =
             serde_saphyr::from_str(&PARTICIPANT_FIELDS.replace("procedure: []", "procedure: [{step: probe}]")).unwrap();
         assert_eq!(
-            integration_config(&file, "alpha", Path::new("alpha/config.yaml"), Os::Linux).unwrap_err(),
+            integration_config(&file, "alpha", Path::new("alpha/config.yaml"), |_, _| None).unwrap_err(),
             "step 1 'probe' has no integration runner equivalent"
         );
     }

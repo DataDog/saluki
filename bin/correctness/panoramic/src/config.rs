@@ -735,7 +735,7 @@ where
     let mut errors = Vec::new();
     for plan in plans {
         let borrowed = plan.borrow();
-        match borrowed.case().build_test(borrowed.subject_os(), &settings, &overrides) {
+        match borrowed.build_test(&settings, &overrides) {
             Ok(runner) => built.push(BuiltCase { plan, runner }),
             Err(error) => errors.push(format!("{error:#}").replace('\n', "\n    ")),
         }

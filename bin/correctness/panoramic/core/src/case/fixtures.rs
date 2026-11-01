@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use super::{case_name, CaseLoader, Registries, Template, TypedCase, TypedCaseLoader};
 use crate::{
-    layout::{Os, RealizationKind},
+    layout::{Os, Realization, RealizationKind},
     participant::{FactDeclaration, ParticipantType},
     step::{decode_fields, Need, Step, StepFactory, StepFields},
 };
@@ -103,15 +103,51 @@ impl ParticipantType for Server {
         ]
     }
 
-    fn facts(&self) -> &'static [FactDeclaration] {
-        &[FactDeclaration {
-            name: "file",
-            values: &[(Os::Linux, "/logs/output.log"), (Os::Windows, r"C:\logs\output.log")],
-        }]
+    fn facts(&self, realization: Realization) -> &'static [FactDeclaration] {
+        match (realization.os, realization.kind) {
+            (Os::Linux, RealizationKind::LinuxContainer) => &[FactDeclaration {
+                name: "file",
+                value: "/logs/output.log",
+            }],
+            (Os::Windows, RealizationKind::WindowsContainer) => &[FactDeclaration {
+                name: "file",
+                value: r"C:\logs\output.log",
+            }],
+            _ => &[],
+        }
     }
 
     fn processes(&self) -> &'static [&'static str] {
         &["server", "worker"]
+    }
+}
+
+pub(crate) struct PodServer;
+
+impl ParticipantType for PodServer {
+    fn name(&self) -> &'static str {
+        "pod-server"
+    }
+
+    fn supports(&self) -> &'static [(Os, RealizationKind)] {
+        &[
+            (Os::Linux, RealizationKind::LinuxContainer),
+            (Os::Linux, RealizationKind::KubernetesPod),
+        ]
+    }
+
+    fn facts(&self, realization: Realization) -> &'static [FactDeclaration] {
+        match (realization.os, realization.kind) {
+            (Os::Linux, RealizationKind::LinuxContainer) => &[FactDeclaration {
+                name: "file",
+                value: "/logs/output.log",
+            }],
+            _ => &[],
+        }
+    }
+
+    fn processes(&self) -> &'static [&'static str] {
+        &["server"]
     }
 }
 
