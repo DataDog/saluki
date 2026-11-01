@@ -1,4 +1,4 @@
-//! Participant and typed-case declarations for loader tests.
+//! Participant types and typed-case declarations for loader tests.
 
 use std::{
     collections::BTreeSet,
@@ -11,8 +11,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::{
-    case_name, decode_fields, CaseLoader, FactDeclaration, Need, Os, ParticipantDeclaration, Registries, Step,
-    StepFactory, StepFields, Template, TypedCase, TypedCaseLoader,
+    case_name, decode_fields, CaseLoader, FactDeclaration, Need, Os, ParticipantType, Registries, Step, StepFactory,
+    StepFields, Template, TypedCase, TypedCaseLoader,
 };
 
 #[derive(Debug, Deserialize)]
@@ -86,25 +86,38 @@ impl StepFactory for MarkerFactory {
 }
 
 pub(crate) const STEPS: &[&dyn StepFactory] = &[&MarkerFactory, &ProbeFactory];
-pub(crate) const SERVER: ParticipantDeclaration = ParticipantDeclaration {
-    name: "server",
-    config_files: &[],
-    endpoints: &[],
-    consumes: &[],
-    params: &[],
-    processes: &["server", "worker"],
-    facts: &[FactDeclaration {
-        name: "file",
-        values: &[(Os::Linux, "/logs/output.log"), (Os::Windows, r"C:\logs\output.log")],
-    }],
-};
-const CLIENT: ParticipantDeclaration = ParticipantDeclaration {
-    name: "client",
-    facts: &[],
-    processes: &[],
-    ..SERVER
-};
-pub(crate) const TYPES: &[&ParticipantDeclaration] = &[&CLIENT, &SERVER];
+pub(crate) struct Server;
+
+impl ParticipantType for Server {
+    fn name(&self) -> &'static str {
+        "server"
+    }
+
+    fn facts(&self) -> &'static [FactDeclaration] {
+        &[FactDeclaration {
+            name: "file",
+            values: &[(Os::Linux, "/logs/output.log"), (Os::Windows, r"C:\logs\output.log")],
+        }]
+    }
+
+    fn processes(&self) -> &'static [&'static str] {
+        &["server", "worker"]
+    }
+}
+
+struct Client;
+
+impl ParticipantType for Client {
+    fn name(&self) -> &'static str {
+        "client"
+    }
+
+    fn processes(&self) -> &'static [&'static str] {
+        &[]
+    }
+}
+
+pub(crate) const TYPES: &[&dyn ParticipantType] = &[&Client, &Server];
 
 pub(crate) const REGISTRIES: Registries<'static> = Registries {
     participant_types: TYPES,

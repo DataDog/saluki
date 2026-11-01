@@ -23,7 +23,7 @@ mod fixtures;
 pub use self::{
     duration::CaseDuration,
     file::{deserialize_env_map, CaseFile, ParticipantConfig, ParticipantEntry, ProcedureNode, StepNode},
-    participant_check::{FactDeclaration, ParticipantDeclaration},
+    participant_check::{FactDeclaration, ParticipantType},
     step_check::{decode_fields, Need, Step, StepFactory, StepFields},
     template::Template,
 };
@@ -59,8 +59,8 @@ impl Os {
 /// The participant types and steps a case file may name.
 #[derive(Clone, Copy)]
 pub struct Registries<'a> {
-    /// Participant types available to case files.
-    pub participant_types: &'a [&'a ParticipantDeclaration],
+    /// Participant types registered as [`ParticipantType`] values, available to case files.
+    pub participant_types: &'a [&'a dyn ParticipantType],
     /// Steps available to case procedures.
     pub steps: &'a [&'a dyn StepFactory],
 }

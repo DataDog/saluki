@@ -12,7 +12,8 @@ use std::{
     path::Path,
 };
 
-use panoramic_participants::AGENT_ADP;
+use panoramic_core::case::ParticipantType;
+use panoramic_participants::AgentAdp;
 use serde_json::{json, Value};
 
 use super::{create_case_dirs, read_text, repository_root, Inventory, INTEGRATION, JSON_PATH, OLD, PARTICIPANTS};
@@ -115,7 +116,7 @@ fn participant_twin(config: &Value) -> Result<(String, bool), String> {
                 .ok_or("file path must be a string")?;
             if subject_os
                 .iter()
-                .all(|os| AGENT_ADP.fact_value("default_log_file", *os) == Some(path))
+                .all(|os| AgentAdp.fact_value("default_log_file", *os) == Some(path))
             {
                 fields.insert("path".into(), json!("{{ adp.facts.default_log_file }}"));
                 used_fact = true;

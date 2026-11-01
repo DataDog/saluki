@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use super::{
     file::{CaseFile, ProcedureNode, StepNode},
-    participant_check::{declared_names, find_type, possible_os, ParticipantDeclaration},
+    participant_check::{declared_names, find_type, possible_os, ParticipantType},
     Os,
 };
 use crate::record::step_label;
@@ -77,8 +77,8 @@ where
 /// Returns the first error in procedure order, naming the case, source, step label and step.
 /// Checks registration, field decoding, template references, then needs in their declared order.
 pub(super) fn build_steps(
-    file: &CaseFile, subject_os: &BTreeSet<Os>, steps: &[&dyn StepFactory], types: &[&ParticipantDeclaration],
-    name: &str, source: &Path,
+    file: &CaseFile, subject_os: &BTreeSet<Os>, steps: &[&dyn StepFactory], types: &[&dyn ParticipantType], name: &str,
+    source: &Path,
 ) -> Result<Vec<ProcedureNode<Box<dyn Step>>>, GenericError> {
     file.procedure
         .iter()
@@ -118,7 +118,7 @@ pub(super) fn build_steps(
 
 fn build_step(
     node: &StepNode, label: &str, file: &CaseFile, subject_os: &BTreeSet<Os>, steps: &[&dyn StepFactory],
-    types: &[&ParticipantDeclaration], name: &str, source: &Path,
+    types: &[&dyn ParticipantType], name: &str, source: &Path,
 ) -> Result<Box<dyn Step>, GenericError> {
     let error = |message: String| generic_error!("case '{}' in {}: step {} {}", name, source.display(), label, message);
     let Some(factory) = steps.iter().find(|factory| factory.name() == node.name) else {
@@ -166,20 +166,25 @@ fn build_step(
                 "'{}': participant '{participant}' has unknown type '{}'; registered types: {}",
                 node.name,
                 entry.participant_type,
-                declared_names(&types.iter().map(|declaration| declaration.name).collect::<Vec<_>>())
+                declared_names(
+                    &types
+                        .iter()
+                        .map(|participant_type| participant_type.name())
+                        .collect::<Vec<_>>()
+                )
             )));
         };
         if let Need::Fact(_, fact) = &need {
             let Some(declaration) = participant_type
-                .facts
+                .facts()
                 .iter()
                 .find(|declaration| declaration.name == fact)
             else {
                 return Err(error(format!(
                     "'{}' references fact '{fact}' of participant '{participant}', which type '{}' does not declare; it declares {}",
                     node.name,
-                    participant_type.name,
-                    declared_names(&participant_type.facts.iter().map(|fact| fact.name).collect::<Vec<_>>())
+                    participant_type.name(),
+                    declared_names(&participant_type.facts().iter().map(|fact| fact.name).collect::<Vec<_>>())
                 )));
             };
             for os in possible_os(entry, subject_os) {
@@ -187,7 +192,7 @@ fn build_step(
                     return Err(error(format!(
                         "'{}' references fact '{fact}' of participant '{participant}', which type '{}' does not provide on {}; it provides it on {}",
                         node.name,
-                        participant_type.name,
+                        participant_type.name(),
                         os.name(),
                         declared_names(&declaration.values.iter().map(|(os, _)| os.name()).collect::<Vec<_>>())
                     )));
@@ -195,13 +200,13 @@ fn build_step(
             }
         }
         if let Need::Process(_, process) = &need {
-            if !participant_type.processes.contains(&process.as_str()) {
+            if !participant_type.processes().contains(&process.as_str()) {
                 return Err(error(format!(
                     "'{}' names process '{process}' of participant '{participant}', \
                      which type '{}' does not run; it runs {}",
                     node.name,
-                    participant_type.name,
-                    declared_names(participant_type.processes)
+                    participant_type.name(),
+                    declared_names(participant_type.processes())
                 )));
             }
         }
@@ -222,7 +227,7 @@ fn contains_template_reference(value: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::super::fixtures::{Probe, SERVER, STEPS, TYPES};
+    use super::super::fixtures::{Probe, Server, STEPS, TYPES};
     use super::*;
 
     fn case(procedure: &str) -> CaseFile {
@@ -306,7 +311,7 @@ mod tests {
                 "{message}"
             );
         }
-        for process in SERVER.processes {
+        for process in Server.processes() {
             let procedure = build(&format!("- {{step: probe, on: subject, process: {process}}}")).unwrap();
             let [ProcedureNode::Step(step)] = procedure.as_slice() else {
                 panic!("expected one built step");

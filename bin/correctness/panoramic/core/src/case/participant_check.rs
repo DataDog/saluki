@@ -1,4 +1,4 @@
-//! Checks case participants against their type declarations.
+//! Participant types, and the load-time checks of case participants against them.
 
 use std::{collections::BTreeSet, path::Path};
 
@@ -17,28 +17,44 @@ pub struct FactDeclaration {
     pub values: &'static [(Os, &'static str)],
 }
 
-/// The names a case may use for one participant type, checked when the case loads.
-pub struct ParticipantDeclaration {
+/// A participant type a case may name, and what it accepts and provides at load time.
+pub trait ParticipantType: Send + Sync {
     /// Registry name, as written in a participant's `type`.
-    pub name: &'static str,
-    /// Names a case may supply under `config.files`.
-    pub config_files: &'static [&'static str],
-    /// Served endpoints: connection targets and keys of `config.endpoints`.
-    pub endpoints: &'static [&'static str],
-    /// Consumed endpoints: keys of `connect`.
-    pub consumes: &'static [&'static str],
-    /// Names a case may set under `config.params`.
-    pub params: &'static [&'static str],
-    /// Early facts steps may reference, sorted by name.
-    pub facts: &'static [FactDeclaration],
-    /// Named processes steps may address with `process`, in sorted order.
-    pub processes: &'static [&'static str],
-}
+    fn name(&self) -> &'static str;
 
-impl ParticipantDeclaration {
+    /// Names a case may supply under `config.files`. Defaults to none.
+    fn config_files(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// Served endpoints: connection targets and keys of `config.endpoints`. Defaults to none.
+    fn serves(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// Consumed endpoints: keys of `connect`. Defaults to none.
+    fn consumes(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// Names a case may set under `config.params`. Defaults to none.
+    fn params(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// Early facts steps may reference, sorted by name. Defaults to none.
+    fn facts(&self) -> &'static [FactDeclaration] {
+        &[]
+    }
+
+    /// Named processes steps may address with `process`, in sorted order.
+    fn processes(&self) -> &'static [&'static str];
+
     /// Looks up a declared fact's value for a participant OS.
-    pub fn fact_value(&self, fact: &str, os: Os) -> Option<&'static str> {
-        self.facts
+    ///
+    /// Implementations must keep this default: the loader checks [`Self::facts`] directly.
+    fn fact_value(&self, fact: &str, os: Os) -> Option<&'static str> {
+        self.facts()
             .iter()
             .find(|declaration| declaration.name == fact)?
             .values
@@ -56,7 +72,7 @@ impl ParticipantDeclaration {
 /// OS overlays (reachable OS, files, parameters), and connections (consumed name, target, endpoint).
 /// Map keys and overlay OSes are checked in sorted order. Every error names the case and source.
 pub(super) fn check_participants(
-    file: &CaseFile, subject_os: &BTreeSet<Os>, types: &[&ParticipantDeclaration], name: &str, source: &Path,
+    file: &CaseFile, subject_os: &BTreeSet<Os>, types: &[&dyn ParticipantType], name: &str, source: &Path,
 ) -> Result<(), GenericError> {
     let error = |message: String| generic_error!("case '{}' in {}: {}", name, source.display(), message);
     for participant in file.participants.keys() {
@@ -93,30 +109,39 @@ pub(super) fn check_participants(
     }
 
     for (participant, entry) in &file.participants {
-        let Some(declaration) = find_type(types, &entry.participant_type) else {
+        let Some(participant_type) = find_type(types, &entry.participant_type) else {
             return Err(error(format!(
                 "participant '{participant}' has unknown type '{}'; registered types: {}",
                 entry.participant_type,
                 types
                     .iter()
-                    .map(|declaration| declaration.name)
+                    .map(|participant_type| participant_type.name())
                     .collect::<Vec<_>>()
                     .join(", ")
             )));
         };
         let holder = format!("participant '{participant}'");
-        let participant_type = declaration.name;
-        check_keys(entry.config.files.keys(), declaration.config_files, "declares", |key| {
-            format!("{holder} supplies configuration file '{key}', which type '{participant_type}' does not declare")
-        })
+        let type_name = participant_type.name();
+        check_keys(
+            entry.config.files.keys(),
+            participant_type.config_files(),
+            "declares",
+            |key| format!("{holder} supplies configuration file '{key}', which type '{type_name}' does not declare"),
+        )
         .map_err(&error)?;
-        check_keys(entry.config.endpoints.keys(), declaration.endpoints, "serves", |key| {
-            format!("{holder} overrides endpoint '{key}', which type '{participant_type}' does not serve")
-        })
+        check_keys(
+            entry.config.endpoints.keys(),
+            participant_type.serves(),
+            "serves",
+            |key| format!("{holder} overrides endpoint '{key}', which type '{type_name}' does not serve"),
+        )
         .map_err(&error)?;
-        check_keys(entry.config.params.keys(), declaration.params, "accepts", |key| {
-            format!("{holder} sets parameter '{key}', which type '{participant_type}' does not accept")
-        })
+        check_keys(
+            entry.config.params.keys(),
+            participant_type.params(),
+            "accepts",
+            |key| format!("{holder} sets parameter '{key}', which type '{type_name}' does not accept"),
+        )
         .map_err(&error)?;
 
         let possible_os = possible_os(entry, subject_os);
@@ -129,16 +154,21 @@ pub(super) fn check_participants(
                 )));
             }
             let os = os.name();
-            check_keys(overlay.files.keys(), declaration.config_files, "declares", |key| {
-                format!(
-                    "{holder} supplies configuration file '{key}', which type '{participant_type}' does not declare \
+            check_keys(
+                overlay.files.keys(),
+                participant_type.config_files(),
+                "declares",
+                |key| {
+                    format!(
+                        "{holder} supplies configuration file '{key}', which type '{type_name}' does not declare \
                      in its '{os}' overlay"
-                )
-            })
+                    )
+                },
+            )
             .map_err(&error)?;
-            check_keys(overlay.params.keys(), declaration.params, "accepts", |key| {
+            check_keys(overlay.params.keys(), participant_type.params(), "accepts", |key| {
                 format!(
-                    "{holder} sets parameter '{key}', which type '{participant_type}' does not accept \
+                    "{holder} sets parameter '{key}', which type '{type_name}' does not accept \
                      in its '{os}' overlay"
                 )
             })
@@ -146,10 +176,10 @@ pub(super) fn check_participants(
         }
 
         for (consumed, target) in &entry.connect {
-            if !declaration.consumes.contains(&consumed.as_str()) {
+            if !participant_type.consumes().contains(&consumed.as_str()) {
                 return Err(error(format!(
-                    "{holder} connects '{consumed}', which type '{participant_type}' does not consume; it consumes {}",
-                    declared_names(declaration.consumes)
+                    "{holder} connects '{consumed}', which type '{type_name}' does not consume; it consumes {}",
+                    declared_names(participant_type.consumes())
                 )));
             }
             let Some(target_entry) = file.participants.get(&target.participant) else {
@@ -165,13 +195,13 @@ pub(super) fn check_participants(
                 // The target's own turn reports its unknown type; checking it here would break name order.
                 continue;
             };
-            if !target_type.endpoints.contains(&target.endpoint.as_str()) {
+            if !target_type.serves().contains(&target.endpoint.as_str()) {
                 return Err(error(format!(
                     "{holder} connects '{consumed}' to '{}.{}', which type '{}' does not serve; it serves {}",
                     target.participant,
                     target.endpoint,
-                    target_type.name,
-                    declared_names(target_type.endpoints)
+                    target_type.name(),
+                    declared_names(target_type.serves())
                 )));
             }
         }
@@ -179,8 +209,11 @@ pub(super) fn check_participants(
     Ok(())
 }
 
-pub(super) fn find_type<'a>(types: &[&'a ParticipantDeclaration], name: &str) -> Option<&'a ParticipantDeclaration> {
-    types.iter().copied().find(|declaration| declaration.name == name)
+pub(super) fn find_type<'a>(types: &[&'a dyn ParticipantType], name: &str) -> Option<&'a dyn ParticipantType> {
+    types
+        .iter()
+        .copied()
+        .find(|participant_type| participant_type.name() == name)
 }
 
 fn is_dns_label(name: &str) -> bool {
@@ -220,25 +253,47 @@ pub(super) fn declared_names(names: &[&str]) -> String {
 mod tests {
     use super::*;
 
-    const SERVER: ParticipantDeclaration = ParticipantDeclaration {
-        name: "server",
-        config_files: &["settings.yaml"],
-        endpoints: &["api"],
-        consumes: &[],
-        params: &["mode"],
-        facts: &[],
-        processes: &["server"],
-    };
-    const CLIENT: ParticipantDeclaration = ParticipantDeclaration {
-        name: "client",
-        config_files: &[],
-        endpoints: &[],
-        consumes: &["upstream"],
-        params: &[],
-        facts: &[],
-        processes: &[],
-    };
-    const TYPES: &[&ParticipantDeclaration] = &[&SERVER, &CLIENT];
+    struct Server;
+
+    impl ParticipantType for Server {
+        fn name(&self) -> &'static str {
+            "server"
+        }
+
+        fn config_files(&self) -> &'static [&'static str] {
+            &["settings.yaml"]
+        }
+
+        fn serves(&self) -> &'static [&'static str] {
+            &["api"]
+        }
+
+        fn params(&self) -> &'static [&'static str] {
+            &["mode"]
+        }
+
+        fn processes(&self) -> &'static [&'static str] {
+            &["server"]
+        }
+    }
+
+    struct Client;
+
+    impl ParticipantType for Client {
+        fn name(&self) -> &'static str {
+            "client"
+        }
+
+        fn consumes(&self) -> &'static [&'static str] {
+            &["upstream"]
+        }
+
+        fn processes(&self) -> &'static [&'static str] {
+            &[]
+        }
+    }
+
+    const TYPES: &[&dyn ParticipantType] = &[&Server, &Client];
 
     fn case_yaml(participants: &str, subject_os: &str) -> String {
         format!("timeout: 1s\nsubject_os: [{subject_os}]\nparticipants:\n{participants}\nprocedure: []\n")
@@ -398,6 +453,53 @@ mod tests {
             assert!(message.contains("which type 'client' does not"), "{message}");
             assert!(message.ends_with(expected), "{message}");
             check(&yaml.replace(config, "{}")).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_participant_type_that_declares_only_its_name_and_processes_accepts_no_configuration_or_connections() {
+        struct Minimal;
+
+        impl ParticipantType for Minimal {
+            fn name(&self) -> &'static str {
+                "minimal"
+            }
+
+            fn processes(&self) -> &'static [&'static str] {
+                &["main"]
+            }
+        }
+
+        let types: &[&dyn ParticipantType] = &[&Minimal, &Client];
+        let source = Path::new("config.yaml");
+        for (participants, expected) in [
+            (
+                "  subject: {type: minimal, subject: true, config: {files: {settings.yaml: missing.yaml}}}",
+                "participant 'subject' supplies configuration file 'settings.yaml', which type 'minimal' does not declare; it declares none",
+            ),
+            (
+                "  subject: {type: minimal, subject: true, config: {endpoints: {api: {port: 80}}}}",
+                "participant 'subject' overrides endpoint 'api', which type 'minimal' does not serve; it serves none",
+            ),
+            (
+                "  subject: {type: minimal, subject: true, config: {params: {mode: fast}}}",
+                "participant 'subject' sets parameter 'mode', which type 'minimal' does not accept; it accepts none",
+            ),
+            (
+                "  subject: {type: minimal, subject: true, connect: {upstream: other.api}}\n  other: {type: minimal}",
+                "participant 'subject' connects 'upstream', which type 'minimal' does not consume; it consumes none",
+            ),
+            (
+                "  subject: {type: minimal, subject: true}\n  client: {type: client, connect: {upstream: subject.api}}",
+                "participant 'client' connects 'upstream' to 'subject.api', which type 'minimal' does not serve; it serves none",
+            ),
+        ] {
+            let file: CaseFile = serde_saphyr::from_str(&case_yaml(participants, "linux")).unwrap();
+            let subject_os = file.check("alpha", source).unwrap();
+            let message = check_participants(&file, &subject_os, types, "alpha", source)
+                .unwrap_err()
+                .to_string();
+            assert_eq!(message, format!("case 'alpha' in config.yaml: {expected}"));
         }
     }
 

@@ -10,9 +10,11 @@
 
 use std::path::Path;
 
-use panoramic_core::case::{decode_fields, CaseFile, Os, ParticipantConfig, ParticipantEntry, ProcedureNode, StepNode};
+use panoramic_core::case::{
+    decode_fields, CaseFile, Os, ParticipantConfig, ParticipantEntry, ParticipantType, ProcedureNode, StepNode,
+};
 use panoramic_core::record::step_label;
-use panoramic_participants::AGENT_ADP;
+use panoramic_participants::AgentAdp;
 use panoramic_steps::{FileContains, LogContains, LogNotContains};
 use serde::de::DeserializeOwned;
 
@@ -61,10 +63,10 @@ pub(super) fn integration_config(
         params,
         os: overlays,
     } = config;
-    if participant_type != AGENT_ADP.name {
+    if participant_type != AgentAdp::NAME {
         return Err(format!(
             "participant '{participant}' has type '{participant_type}'; the integration runner runs only '{}'",
-            AGENT_ADP.name
+            AgentAdp::NAME
         ));
     }
     for (field, is_set) in [
@@ -166,7 +168,7 @@ pub(super) fn integration_config(
                     path: path
                         .resolve(|name, fact| {
                             if name == participant {
-                                AGENT_ADP.fact_value(fact, os)
+                                AgentAdp.fact_value(fact, os)
                             } else {
                                 None
                             }
