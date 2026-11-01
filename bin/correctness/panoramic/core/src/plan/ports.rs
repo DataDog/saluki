@@ -5,7 +5,7 @@ use std::{
     ops::RangeInclusive,
 };
 
-use super::ParticipantEndpoints;
+use super::endpoints::ParticipantEndpoints;
 use crate::{
     case::CaseFile,
     endpoint::{EndpointKind, Listener, Port},

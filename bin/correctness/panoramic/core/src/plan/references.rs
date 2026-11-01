@@ -3,10 +3,10 @@
 use std::collections::BTreeMap;
 
 use super::{
+    endpoints::ParticipantEndpoints,
     ports::RunnerHostPorts,
     routes::{route, Route},
     scope::check_consumed_socket,
-    ParticipantEndpoints,
 };
 use crate::{
     backend::{late_facts, writes_late_files, LateFact, LateFactTiming},

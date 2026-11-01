@@ -4,10 +4,10 @@
 use std::collections::BTreeMap;
 
 use super::{
+    endpoints::ParticipantEndpoints,
     ports::RunnerHostPorts,
     routes::{address, route, Route},
     scope::check_consumed_socket,
-    ParticipantEndpoints,
 };
 use crate::{
     case::{declared_names, CaseFile},

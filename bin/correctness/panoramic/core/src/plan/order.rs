@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use super::ParticipantEndpoints;
+use super::endpoints::ParticipantEndpoints;
 use crate::{
     backend::{late_facts, LateFactTiming},
     case::{
