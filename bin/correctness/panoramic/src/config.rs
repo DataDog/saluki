@@ -810,10 +810,25 @@ pub(crate) mod tests {
     pub(crate) const CORRECTNESS_FIELDS: &str =
         "runtime: docker\nanalysis_mode: metrics\nbaseline: {image: 'base:file'}\ncomparison: {image: 'comp:file'}\n";
 
-    pub(crate) const PARTICIPANT_FIELDS: &str =
-        "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  adp: {type: agent-adp, subject: true}\nprocedure: []\n";
-    pub(crate) const NO_PARTICIPANT_FIELDS: &str =
-        "timeout: 1s\nsubject_os: [linux]\nparticipants: {}\nprocedure: []\n";
+    /// Expands to a one-step procedure the integration runner can translate,
+    /// for participant cases whose procedure isn't under test.
+    macro_rules! minimal_procedure {
+        () => {
+            "procedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]"
+        };
+    }
+    pub(crate) use minimal_procedure;
+
+    pub(crate) const PARTICIPANT_FIELDS: &str = concat!(
+        "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  adp: {type: agent-adp, subject: true}\n",
+        minimal_procedure!(),
+        "\n"
+    );
+    pub(crate) const NO_PARTICIPANT_FIELDS: &str = concat!(
+        "timeout: 1s\nsubject_os: [linux]\nparticipants: {}\n",
+        minimal_procedure!(),
+        "\n"
+    );
 
     pub(crate) const LOGGING_PARTICIPANT: &str = r#"description: Portable logging assertions
 timeout: 120s
@@ -1465,8 +1480,13 @@ timeout: 30s
             ),
             (
                 "e-procedure",
-                PARTICIPANT_FIELDS.replace("procedure: []", "procedure: [{parallel: []}]"),
+                PARTICIPANT_FIELDS.replace(minimal_procedure!(), "procedure: [{parallel: []}]"),
                 "at least one step",
+            ),
+            (
+                "e-procedure-empty",
+                PARTICIPANT_FIELDS.replace(minimal_procedure!(), "procedure: []"),
+                "a procedure must contain at least one step",
             ),
             (
                 "f-subject",
@@ -1478,7 +1498,7 @@ timeout: 30s
             ),
             (
                 "g-step",
-                PARTICIPANT_FIELDS.replace("procedure: []", "procedure: [{step: wait_ready}]"),
+                PARTICIPANT_FIELDS.replace(minimal_procedure!(), "procedure: [{step: wait_ready}]"),
                 "unknown step 'wait_ready'",
             ),
         ] {

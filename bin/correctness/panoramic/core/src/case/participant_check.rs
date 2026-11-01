@@ -261,7 +261,7 @@ pub(crate) fn declared_names(names: &[&str]) -> String {
 mod tests {
     use super::*;
     use crate::case::{
-        fixtures::{write_case, FixtureTypes},
+        fixtures::{minimal_procedure, write_case, FixtureTypes, STEPS},
         CaseLoader, Registries,
     };
 
@@ -300,7 +300,10 @@ mod tests {
     const TYPES: &[&dyn ParticipantType] = &[&Server, &Client];
 
     fn case_yaml(participants: &str, subject_os: &str) -> String {
-        format!("timeout: 1s\nsubject_os: [{subject_os}]\nparticipants:\n{participants}\nprocedure: []\n")
+        format!(
+            "timeout: 1s\nsubject_os: [{subject_os}]\nparticipants:\n{participants}\n{}\n",
+            minimal_procedure!()
+        )
     }
 
     fn check(yaml: &str) -> Result<(), GenericError> {
@@ -496,7 +499,7 @@ mod tests {
     const FILE_LOADER: CaseLoader<'static, FixtureTypes> = CaseLoader::new(
         Registries {
             participant_types: TYPES,
-            steps: &[],
+            steps: STEPS,
         },
         FixtureTypes,
         "fixture-participants",
@@ -818,7 +821,7 @@ mod tests {
         CaseLoader::new(
             Registries {
                 participant_types: TYPES,
-                steps: &[],
+                steps: STEPS,
             },
             FixtureTypes,
             "fixture",

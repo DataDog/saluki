@@ -123,7 +123,7 @@ participants:
         DD_API_KEY: "00000000000000000000000000000000"
         DD_DATA_PLANE_ENABLED: "true"
 
-procedure:
+procedure:   # Required; at least one step.
   - step: log_contains
     on: adp
     pattern: "Initial configuration received."

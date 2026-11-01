@@ -240,7 +240,7 @@ mod tests {
     use super::*;
     use crate::{
         case::{
-            fixtures::{Client, FixtureTypes, Server, PARTICIPANT_FIELDS},
+            fixtures::{minimal_procedure, Client, FixtureTypes, Server, PARTICIPANT_FIELDS, STEPS},
             CaseLoader, Registries,
         },
         plan::{
@@ -314,15 +314,18 @@ mod tests {
 
     #[test]
     fn assigned_ports_are_drawn_per_participant_and_endpoint_in_name_order_before_connection_ports() {
-        let yaml = r#"timeout: 1s
+        let yaml = concat!(
+            r#"timeout: 1s
 subject_os: [macos]
 participants:
   z: {type: assigned-server}
   client: {type: client, subject: true, connect: {upstream: container.api}, config: {env: {REF: '{{container.endpoints.metrics.port}}'}}}
   a: {type: assigned-server}
   container: {type: server, os: linux}
-procedure: []
-"#;
+"#,
+            minimal_procedure!(),
+            "\n"
+        );
         let mut ports = PortRegistry::new();
         let plan = compile_with_ports(yaml, Os::MacOs, &mut ports).unwrap().unwrap();
         for (name, api, metrics) in [("a", "20000", "20001"), ("z", "20002", "20003")] {
@@ -433,7 +436,10 @@ procedure: []
                 "type: assigned-server,",
                 "type: assigned-server, connect: {upstream: other.api},",
             )
-            .replace("procedure: []", "  other: {type: server}\nprocedure: []");
+            .replace(
+                minimal_procedure!(),
+                concat!("  other: {type: server}\n", minimal_procedure!()),
+            );
         let mut ports = PortRegistry::new();
         let plan = compile_with_ports(&yaml, Os::MacOs, &mut ports).unwrap().unwrap();
         let config = plan.effective_config("server").unwrap();
@@ -534,7 +540,7 @@ procedure: []
         let hooks = Hooks(std::sync::Mutex::new(Vec::new()));
         let registries = Registries {
             participant_types: &[&hooks, &Server],
-            steps: &[],
+            steps: STEPS,
         };
         let loader = CaseLoader::new(registries, FixtureTypes, "fixture-participants");
         let yaml = CONNECTION_CASE.replace("type: client", "type: hooks, config: {env: {CASE: value}}");
@@ -656,7 +662,7 @@ procedure: []
             assert_eq!(compile_files(&yaml, &[], Os::Linux).err().unwrap(), format!(
                 "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'subject' of type 'file-server' as linux-container on linux serves endpoint 'stream' at '{path}', which holds a reference resolved only after planning"));
         }
-        let yaml = "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  client: {type: file-server, subject: true, connect: {target: server.stream}}\n  server: {type: file-server, config: {env: {SOCKET_PATH: '{{self.facts.shared_dir}}/stream.sock'}}}\nprocedure: []\n";
+        let yaml = concat!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n  client: {type: file-server, subject: true, connect: {target: server.stream}}\n  server: {type: file-server, config: {env: {SOCKET_PATH: '{{self.facts.shared_dir}}/stream.sock'}}}\n", minimal_procedure!(), "\n");
         let plan = compile_files(yaml, &[], Os::Linux).unwrap();
         assert_eq!(
             plan.effective_config("client").unwrap().env["TARGET"],

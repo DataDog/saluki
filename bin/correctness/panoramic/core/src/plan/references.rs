@@ -282,7 +282,7 @@ mod tests {
     use super::*;
     use crate::{
         case::{
-            fixtures::{FixtureTypes, Server},
+            fixtures::{minimal_procedure, FixtureTypes, Server, STEPS},
             CaseLoader, Registries,
         },
         endpoint::{ConsumedEndpoint, Endpoint},
@@ -295,7 +295,7 @@ mod tests {
     };
 
     fn case(config: &str, os: &str) -> String {
-        format!("timeout: 1s\nsubject_os: [{os}]\nparticipants:\n  subject: {{type: server, subject: true, config: {config}}}\nprocedure: []\n")
+        format!("timeout: 1s\nsubject_os: [{os}]\nparticipants:\n  subject: {{type: server, subject: true, config: {config}}}\n{}\n", minimal_procedure!())
     }
 
     #[track_caller]
@@ -365,10 +365,10 @@ mod tests {
     fn fact_references_in_env_and_params_are_substituted_before_participant_type_hooks_see_them() {
         let registries = Registries {
             participant_types: &[&Observer, &Server],
-            steps: &[],
+            steps: STEPS,
         };
         let loader = CaseLoader::new(registries, FixtureTypes, "fixture");
-        let yaml = "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {type: observer, subject: true, config: {env: {PORT: '{{ self.facts.port }}'}, params: {mode: [{nested: ['{{z-other.facts.file}}', false, 7]}]}}}\n  z-other: {type: server}\nprocedure: []\n";
+        let yaml = concat!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {type: observer, subject: true, config: {env: {PORT: '{{ self.facts.port }}'}, params: {mode: [{nested: ['{{z-other.facts.file}}', false, 7]}]}}}\n  z-other: {type: server}\n", minimal_procedure!(), "\n");
         let case = loader
             .load_content(yaml, "alpha", Path::new("alpha/config.yaml"))
             .unwrap()
@@ -438,7 +438,7 @@ mod tests {
     fn a_host_process_groups_ip_resolves_to_loopback_in_env_and_params() {
         for name in ["self", "subject", "other"] {
             let yaml = case(&format!("{{env: {{KEY: 'prefix/{{{{ {name}.late.ip }}}}'}}, params: {{mode: [{{nested: '{{{{{name}.late.ip}}}}'}}]}}}}"), "macos")
-                .replace("procedure: []", "  other: {type: server, config: {env: {PORT: '8081', METRICS: 'off'}}}\nprocedure: []");
+                .replace(minimal_procedure!(), concat!("  other: {type: server, config: {env: {PORT: '8081', METRICS: 'off'}}}\n", minimal_procedure!()));
             let plan = compile(&yaml, Os::MacOs).unwrap().unwrap();
             let config = plan.effective_config("subject").unwrap();
             assert_eq!(config.env["KEY"], "prefix/127.0.0.1");
@@ -461,7 +461,10 @@ mod tests {
                         "subject: true",
                         &format!("subject: true, realization: {{kind: {kind}}}"),
                     )
-                    .replace("procedure: []", "  other: {type: server, os: macos}\nprocedure: []");
+                    .replace(
+                        minimal_procedure!(),
+                        concat!("  other: {type: server, os: macos}\n", minimal_procedure!()),
+                    );
                 error(&yaml, os, &format!("participant 'subject' of type 'every-kind-server' as {kind} on {os} {field} '{{{{other.late.ip}}}}' references late fact 'ip' of participant 'other', which a host-process-group on macos reports only to participants on its own host"));
             }
         }
@@ -558,9 +561,10 @@ mod tests {
                 ),
             ] {
                 let yaml = case(config, "linux").replace(
-                    "procedure: []",
+                    minimal_procedure!(),
                     &format!(
-                        "  other: {{type: every-kind-server, os: {os}, realization: {{kind: {kind}}}}}\nprocedure: []"
+                        "  other: {{type: every-kind-server, os: {os}, realization: {{kind: {kind}}}}}\n{}",
+                        minimal_procedure!()
                     ),
                 );
                 if let Some(reason) = reason {
@@ -595,8 +599,11 @@ mod tests {
                     ),
                 ] {
                     let yaml = case(&config, "linux").replace(
-                        "procedure: []",
-                        &format!("  other: {{type: every-kind-server, realization: {{kind: {kind}}}}}\nprocedure: []"),
+                        minimal_procedure!(),
+                        &format!(
+                            "  other: {{type: every-kind-server, realization: {{kind: {kind}}}}}\n{}",
+                            minimal_procedure!()
+                        ),
                     );
                     let reason = if kind == "linux-container" && fact == "pod_uid" {
                         "references late fact 'pod_uid' of participant 'other', which a linux-container does not have; a linux-container has container_id, ip"
@@ -632,8 +639,11 @@ mod tests {
     #[test]
     fn endpoint_references_need_a_served_endpoint_and_a_route_from_the_holder() {
         let yaml = case("{env: {KEY: '{{ other.endpoints.metrics.url }}'}}", "linux").replace(
-            "procedure: []",
-            "  other: {type: server, config: {env: {METRICS: 'off'}}}\nprocedure: []",
+            minimal_procedure!(),
+            concat!(
+                "  other: {type: server, config: {env: {METRICS: 'off'}}}\n",
+                minimal_procedure!()
+            ),
         );
         error(&yaml, "linux", "participant 'subject' of type 'server' as linux-container on linux environment variable 'KEY' '{{ other.endpoints.metrics.url }}' references endpoint 'metrics' of participant 'other', which it does not serve; it serves api");
         let yaml = yaml.replace("metrics.url", "api.url").replace(
@@ -711,7 +721,7 @@ mod tests {
                                 "subject: true",
                                 &format!("subject: true, connect: {{target: other.{endpoint}}}"),
                             )
-                            .replace("procedure: []", "  other: {type: every-kind-server, config: {env: {SOCKET_DIR: '{{ self.facts.shared_dir }}'}}}\nprocedure: []");
+                            .replace(minimal_procedure!(), concat!("  other: {type: every-kind-server, config: {env: {SOCKET_DIR: '{{ self.facts.shared_dir }}'}}}\n", minimal_procedure!()));
                     }
                     let valid = part == "url" || (network && part != "path") || (!network && part == "path");
                     if valid {
@@ -763,8 +773,8 @@ mod tests {
 
     #[test]
     fn a_non_subject_participants_overlay_uses_its_own_os() {
-        let yaml = case("{env: {KEY: '{{other.late.ip}}'}}", "linux").replace("procedure: []",
-            "  other: {type: server, os: macos, config: {env: {KEY: '{{self.facts.file}}'}, params: {mode: '{{self.facts.file}}'}, os: {macos: {env: {KEY: '{{self.late.ip}}'}, params: {mode: '{{self.late.ip}}'}}}}}\nprocedure: []");
+        let yaml = case("{env: {KEY: '{{other.late.ip}}'}}", "linux").replace(minimal_procedure!(),
+            concat!("  other: {type: server, os: macos, config: {env: {KEY: '{{self.facts.file}}'}, params: {mode: '{{self.facts.file}}'}, os: {macos: {env: {KEY: '{{self.late.ip}}'}, params: {mode: '{{self.late.ip}}'}}}}}\n", minimal_procedure!()));
         error(&yaml, "linux", "participant 'subject' of type 'server' as linux-container on linux environment variable 'KEY' '{{other.late.ip}}' references late fact 'ip' of participant 'other', which a host-process-group on macos reports only to participants on its own host");
         let yaml = yaml.replace("{{other.late.ip}}", "literal");
         let plan = compile(&yaml, Os::Linux).unwrap().unwrap();
@@ -822,7 +832,7 @@ mod tests {
         )
         .replace("subject: true", "subject: true, connect: {typo: other.api}")
         .replace(
-            "procedure: []",
+            minimal_procedure!(),
             "  other: {type: server}\nprocedure: [{step: probe, on: subject, path: '{{ subject.late.pod_uid }}'}]",
         );
         error(&yaml, "linux", "participant 'subject' of type 'server' as linux-container on linux connects 'typo', which it does not consume; it consumes none");
@@ -870,8 +880,11 @@ mod tests {
     #[test]
     fn shared_template_self_references_are_checked_for_each_holder() {
         let yaml = file_case("macos").replace(
-            "procedure: []",
-            &format!("  other: {{type: file-server, os: linux, config: {FILE_CONFIG}}}\nprocedure: []"),
+            minimal_procedure!(),
+            &format!(
+                "  other: {{type: file-server, os: linux, config: {FILE_CONFIG}}}\n{}",
+                minimal_procedure!()
+            ),
         );
         file_error(&yaml, "{{ self.facts.file }}", "macos",
             "participant 'subject' of type 'file-server' as host-process-group on macos configuration file 'settings.yaml' '{{ self.facts.file }}' references fact 'file' of participant 'subject', which type 'file-server' does not provide as host-process-group on macos; it provides it as linux-container on linux, windows-container on windows");
@@ -900,8 +913,11 @@ mod tests {
                 assert_eq!(source.template, os != Os::MacOs || replacement.contains("true"));
             }
             let yaml = file_case("linux").replace(
-                "procedure: []",
-                &format!("  other: {{type: file-server, os: macos, config: {config}}}\nprocedure: []"),
+                minimal_procedure!(),
+                &format!(
+                    "  other: {{type: file-server, os: macos, config: {config}}}\n{}",
+                    minimal_procedure!()
+                ),
             );
             let plan = compile_files(
                 &yaml,
@@ -925,8 +941,11 @@ mod tests {
             let yaml = file_case("linux")
                 .replace("subject: true", "subject: true, realization: {kind: kubernetes-pod}")
                 .replace(
-                    "procedure: []",
-                    &format!("  other: {{type: file-server, realization: {{kind: {target_kind}}}}}\nprocedure: []"),
+                    minimal_procedure!(),
+                    &format!(
+                        "  other: {{type: file-server, realization: {{kind: {target_kind}}}}}\n{}",
+                        minimal_procedure!()
+                    ),
                 );
             let text = format!("{{{{self.late.ip}}}} {{{{subject.late.container_id}}}} {{{{self.late.pod_uid}}}} {{{{other.late.ip}}}} {{{{other.late.container_id}}}} {}", if target_kind == "kubernetes-pod" { "{{other.late.pod_uid}}" } else { "" });
             let plan = compile_files(&yaml, &[("source.yaml", &text)], Os::Linux).unwrap();
@@ -972,8 +991,11 @@ mod tests {
             ("linux", "kubernetes-pod"),
         ] {
             let yaml = file_case("linux").replace(
-                "procedure: []",
-                &format!("  other: {{type: file-server, os: {os}, realization: {{kind: {kind}}}}}\nprocedure: []"),
+                minimal_procedure!(),
+                &format!(
+                    "  other: {{type: file-server, os: {os}, realization: {{kind: {kind}}}}}\n{}",
+                    minimal_procedure!()
+                ),
             );
             for fact in ["container_id", "ip", "pod_uid"] {
                 let text = format!("{{{{other.late.{fact}}}}}");
@@ -997,8 +1019,11 @@ mod tests {
     #[test]
     fn a_host_process_groups_ip_in_a_template_file_requires_the_same_realization() {
         let yaml = file_case("macos").replace(
-            "procedure: []",
-            "  other: {type: file-server, config: {env: {PORT_OFFSET: '100'}}}\nprocedure: []",
+            minimal_procedure!(),
+            concat!(
+                "  other: {type: file-server, config: {env: {PORT_OFFSET: '100'}}}\n",
+                minimal_procedure!()
+            ),
         );
         let text = "{{self.late.ip}} {{subject.late.ip}} {{other.late.ip}}";
         let plan = compile_files(&yaml, &[("source.yaml", text)], Os::MacOs).unwrap();
@@ -1018,8 +1043,8 @@ mod tests {
                     &format!("subject: true, realization: {{kind: {kind}}}"),
                 )
                 .replace(
-                    "procedure: []",
-                    "  other: {type: file-server, os: macos}\nprocedure: []",
+                    minimal_procedure!(),
+                    concat!("  other: {type: file-server, os: macos}\n", minimal_procedure!()),
                 );
             file_error(&yaml, "{{other.late.ip}}", os, &format!("participant 'subject' of type 'file-server' as {kind} on {os} configuration file 'settings.yaml' '{{{{other.late.ip}}}}' references late fact 'ip' of participant 'other', which a host-process-group on macos reports only to participants on its own host"));
         }
@@ -1028,8 +1053,11 @@ mod tests {
     #[test]
     fn template_endpoint_references_need_a_served_endpoint_and_a_route() {
         let yaml = file_case("linux").replace(
-            "procedure: []",
-            "  other: {type: file-server, config: {env: {TCP: 'off'}}}\nprocedure: []",
+            minimal_procedure!(),
+            concat!(
+                "  other: {type: file-server, config: {env: {TCP: 'off'}}}\n",
+                minimal_procedure!()
+            ),
         );
         file_error(&yaml, "{{other.endpoints.tcp.url}}", "linux", "participant 'subject' of type 'file-server' as linux-container on linux configuration file 'settings.yaml' '{{other.endpoints.tcp.url}}' references endpoint 'tcp' of participant 'other', which it does not serve; it serves datagram, grpc, http, pipe, stream, udp");
         let yaml = yaml.replace("TCP: 'off'", "TCP: 'on'");
@@ -1051,8 +1079,11 @@ mod tests {
         let yaml = file_case("linux")
             .replace("subject: true", "subject: true, connect: {target: other.tcp}")
             .replace(
-                "procedure: []",
-                "  other: {type: file-server, config: {env: {TCP: 'off'}}}\nprocedure: []",
+                minimal_procedure!(),
+                concat!(
+                    "  other: {type: file-server, config: {env: {TCP: 'off'}}}\n",
+                    minimal_procedure!()
+                ),
             );
         let text = "{{self.connections.target.path}}";
         file_error(&yaml, text, "linux", "participant 'subject' connects 'target' to 'other.tcp', which participant 'other' of type 'file-server' as linux-container on linux does not serve; it serves datagram, grpc, http, pipe, stream, udp");
@@ -1111,7 +1142,7 @@ mod tests {
                                 "subject: true",
                                 &format!("subject: true, connect: {{target: other.{endpoint}}}"),
                             )
-                            .replace("procedure: []", "  other: {type: file-server, config: {env: {SOCKET_DIR: '{{ self.facts.shared_dir }}'}}}\nprocedure: []");
+                            .replace(minimal_procedure!(), concat!("  other: {type: file-server, config: {env: {SOCKET_DIR: '{{ self.facts.shared_dir }}'}}}\n", minimal_procedure!()));
                         format!("{{{{self.connections.target.{part}}}}}")
                     } else {
                         format!("{{{{self.endpoints.{endpoint}.{part}}}}}")

@@ -167,7 +167,7 @@ impl DependencyGraph {
 #[cfg(test)]
 mod tests {
     use crate::{
-        case::fixtures::FixtureConfig,
+        case::fixtures::{minimal_procedure, FixtureConfig},
         layout::Os,
         plan::{
             tests::{compile, compile_files},
@@ -175,15 +175,19 @@ mod tests {
         },
     };
 
-    const SERVERS: &str = r#"timeout: 1s
+    const SERVERS: &str = concat!(
+        r#"timeout: 1s
 subject_os: [linux]
 participants:
   subject: {type: server, subject: true}
   fixture: {type: server}
-procedure: []
-"#;
+"#,
+        minimal_procedure!(),
+        "\n"
+    );
 
-    const FILE_CASE: &str = r#"timeout: 1s
+    const FILE_CASE: &str = concat!(
+        r#"timeout: 1s
 subject_os: [linux]
 participants:
   subject:
@@ -191,8 +195,10 @@ participants:
     subject: true
     config: {files: {settings.yaml: {from: source.yaml, template: true}}}
   fixture: {type: file-server}
-procedure: []
-"#;
+"#,
+        minimal_procedure!(),
+        "\n"
+    );
 
     #[track_caller]
     fn assert_orders(plan: &CasePlan<FixtureConfig>, create: &[&[&str]], start: &[&[&str]]) {
@@ -427,8 +433,12 @@ procedure: []
                         _ => unreachable!(),
                     };
                     let yaml = format!(
-                        "timeout: 1s\nsubject_os: [{}]\nparticipants:\n  holder: {{type: file-server, subject: true, realization: {{kind: {}}}, config: {config}}}\n  target: {{type: file-server, os: {}, realization: {{kind: {}}}, config: {{env: {{PORT_OFFSET: '100'}}}}}}\nprocedure: []\n",
-                        holder_os.name(), holder_kind.name(), target_os.name(), target_kind.name(),
+                        "timeout: 1s\nsubject_os: [{}]\nparticipants:\n  holder: {{type: file-server, subject: true, realization: {{kind: {}}}, config: {config}}}\n  target: {{type: file-server, os: {}, realization: {{kind: {}}}, config: {{env: {{PORT_OFFSET: '100'}}}}}}\n{}\n",
+                        holder_os.name(),
+                        holder_kind.name(),
+                        target_os.name(),
+                        target_kind.name(),
+                        minimal_procedure!(),
                     );
                     match (
                         expected,
@@ -533,7 +543,8 @@ procedure: []
 
     #[test]
     fn a_pods_file_needing_another_participants_after_start_fact_orders_startup_only() {
-        let yaml = r#"timeout: 1s
+        let yaml = concat!(
+            r#"timeout: 1s
 subject_os: [linux]
 participants:
   load-a:
@@ -545,8 +556,10 @@ participants:
     type: file-server
     realization: {kind: kubernetes-pod}
     config: {files: {settings.yaml: {from: other.yaml, template: true}}}
-procedure: []
-"#;
+"#,
+            minimal_procedure!(),
+            "\n"
+        );
         for fact in ["ip", "container_id", "pod_uid"] {
             let text = format!("{{{{load-a.late.{fact}}}}}");
             let plan = compile_files(
@@ -638,7 +651,7 @@ procedure: []
     #[test]
     fn step_late_fact_references_add_no_dependencies() {
         let yaml = SERVERS.replace(
-            "procedure: []",
+            minimal_procedure!(),
             "procedure: [{step: probe, on: subject, path: '{{fixture.late.container_id}}/{{fixture.late.ip}}'}]",
         );
         let plan = compile(&yaml, Os::Linux).unwrap().unwrap();
@@ -647,7 +660,8 @@ procedure: []
 
     #[test]
     fn levels_are_sorted_and_wait_for_every_predecessor() {
-        let yaml = r#"timeout: 1s
+        let yaml = concat!(
+            r#"timeout: 1s
 subject_os: [linux]
 participants:
   subject:
@@ -658,8 +672,10 @@ participants:
   right: {type: file-server, config: {files: {settings.yaml: {from: root.yaml, template: true}}}}
   root: {type: file-server}
   left: {type: file-server, config: {files: {settings.yaml: {from: root.yaml, template: true}}}}
-procedure: []
-"#;
+"#,
+            minimal_procedure!(),
+            "\n"
+        );
         let all: &[&[&str]] = &[&["left", "right", "root", "spare", "subject"]];
         let layered: &[&[&str]] = &[&["root", "spare"], &["left", "right"], &["subject"]];
         for pod in [false, true] {
@@ -700,7 +716,8 @@ procedure: []
 
     #[test]
     fn a_start_cycle_skips_acyclic_edges_and_starts_at_its_smallest_name_in_edge_direction() {
-        let yaml = r#"timeout: 1s
+        let yaml = concat!(
+            r#"timeout: 1s
 subject_os: [linux]
 participants:
   a: {type: file-server, subject: true, connect: {target: b.tcp}}
@@ -709,8 +726,11 @@ participants:
   d: {type: file-server, connect: {target: b.tcp}, config: {files: {settings.yaml: {from: source.yaml, template: true}}}}
   e: {type: file-server, connect: {target: b.tcp}}
   z: {type: file-server}
-procedure: []
-"#.replace("type: file-server", "type: file-server, realization: {kind: kubernetes-pod}");
+"#,
+            minimal_procedure!(),
+            "\n"
+        )
+        .replace("type: file-server", "type: file-server, realization: {kind: kubernetes-pod}");
         let message = compile_files(
             &yaml,
             &[("source.yaml", "{{z.late.pod_uid}}"), ("e.yaml", "{{e.late.pod_uid}}")],
@@ -724,13 +744,17 @@ procedure: []
 
     #[test]
     fn duplicate_start_edges_report_connections_before_references() {
-        let yaml = r#"timeout: 1s
+        let yaml = concat!(
+            r#"timeout: 1s
 subject_os: [linux]
 participants:
   subject: {type: file-server, subject: true, connect: {target: fixture.tcp}, config: {files: {settings.yaml: {from: source.yaml, template: true}}}}
   fixture: {type: file-server, connect: {target: subject.tcp}}
-procedure: []
-"#.replace("type: file-server", "type: file-server, realization: {kind: kubernetes-pod}");
+"#,
+            minimal_procedure!(),
+            "\n"
+        )
+        .replace("type: file-server", "type: file-server, realization: {kind: kubernetes-pod}");
         let message = compile_files(
             &yaml,
             &[("source.yaml", "{{fixture.late.pod_uid}} {{fixture.late.ip}}")],
@@ -744,7 +768,8 @@ procedure: []
 
     #[test]
     fn duplicate_reference_edges_keep_the_first_in_field_and_reference_order() {
-        let mut yaml = r#"timeout: 1s
+        let mut yaml = concat!(
+            r#"timeout: 1s
 subject_os: [linux]
 participants:
   subject:
@@ -757,8 +782,11 @@ participants:
         z.yaml: {from: z.yaml, template: true}
         settings.yaml: {from: source.yaml, template: true}
   fixture: {type: file-server, config: {params: {mode: '{{subject.late.container_id}}'}}}
-procedure: []
-"#.to_string();
+"#,
+            minimal_procedure!(),
+            "\n"
+        )
+        .to_string();
         let mut sources = [
             (
                 "source.yaml",

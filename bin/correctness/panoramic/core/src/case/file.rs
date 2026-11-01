@@ -30,7 +30,8 @@ pub struct CaseFile {
     pub subject_os: Vec<Os>,
     /// Required participant instances keyed by name. Must contain at least one; has no default.
     pub participants: BTreeMap<String, ParticipantEntry>,
-    /// Required ordered steps and parallel blocks. May be empty; has no default.
+    /// Required, nonempty list of ordered steps and parallel blocks; has no default.
+    #[serde(deserialize_with = "deserialize_procedure")]
     pub procedure: Vec<ProcedureNode>,
 }
 
@@ -303,6 +304,17 @@ impl<'de> Deserialize<'de> for ProcedureNode<StepNode> {
     }
 }
 
+fn deserialize_procedure<'de, D>(deserializer: D) -> Result<Vec<ProcedureNode>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let procedure = Vec::<ProcedureNode>::deserialize(deserializer)?;
+    if procedure.is_empty() {
+        return Err(D::Error::custom("a procedure must contain at least one step"));
+    }
+    Ok(procedure)
+}
+
 /// A step name and the YAML fields its declaration decodes.
 #[derive(Debug)]
 pub struct StepNode {
@@ -385,7 +397,7 @@ mod tests {
 
     use serde_json::json;
 
-    use super::super::fixtures::{self, write_case, NO_PARTICIPANT_FIELDS, PARTICIPANT_FIELDS};
+    use super::super::fixtures::{self, minimal_procedure, write_case, NO_PARTICIPANT_FIELDS, PARTICIPANT_FIELDS};
     use super::*;
 
     fn load_error(yaml: &str) -> String {
@@ -579,7 +591,7 @@ procedure:
             ),
             (
                 PARTICIPANT_FIELDS.replace(
-                    "procedure: []",
+                    minimal_procedure!(),
                     "procedure: [{parallel: [{step: wait_ready}], timout: 1s}]",
                 ),
                 "timout",
@@ -652,6 +664,16 @@ procedure:
     }
 
     #[test]
+    fn an_empty_procedure_is_a_load_error() {
+        let message = load_error(&PARTICIPANT_FIELDS.replace(minimal_procedure!(), "procedure: []"));
+        assert!(
+            message.contains("a procedure must contain at least one step"),
+            "{message}"
+        );
+        assert!(message.contains("line "), "expected a YAML location: {message}");
+    }
+
+    #[test]
     fn procedure_nodes_are_one_step_or_one_parallel_block_of_steps() {
         for (node, expected) in [
             (
@@ -678,7 +700,7 @@ procedure:
             ("null", "a procedure node mapping"),
             ("{parallel: [wait_ready]}", "a procedure node mapping"),
         ] {
-            let yaml = PARTICIPANT_FIELDS.replace("procedure: []", &format!("procedure:\n  - {node}"));
+            let yaml = PARTICIPANT_FIELDS.replace(minimal_procedure!(), &format!("procedure:\n  - {node}"));
             let message = load_error(&yaml);
             assert!(message.contains(expected), "{message}");
             if node == "{on: subject}" {

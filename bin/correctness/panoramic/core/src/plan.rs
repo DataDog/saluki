@@ -307,8 +307,8 @@ mod tests {
     use crate::{
         case::{
             fixtures::{
-                write_case, Client, Configured, FixtureConfig, FixtureTypes, Server, LOADER, PARTICIPANT_FIELDS,
-                REGISTRIES, STEPS,
+                minimal_procedure, write_case, Client, Configured, FixtureConfig, FixtureTypes, Server, LOADER,
+                PARTICIPANT_FIELDS, REGISTRIES, STEPS,
             },
             CaseLoader, FileSource, ProcedureNode,
         },
@@ -489,7 +489,7 @@ mod tests {
 
     pub(super) const FILE_REGISTRIES: Registries<'_> = Registries {
         participant_types: &[&FileServer, &Server],
-        steps: &[],
+        steps: STEPS,
     };
     pub(super) const FILE_CONFIG: &str = "{files: {settings.yaml: {from: source.yaml, template: true}}}";
 
@@ -747,7 +747,7 @@ mod tests {
             ),
             (Os::Linux, "kubernetes-pod", "/airlock/subject/shared"),
         ] {
-            let yaml = format!("timeout: 1s\nsubject_os: [{}]\nparticipants:\n  subject: {{type: every-kind-server, subject: true, realization: {{kind: {kind}}}}}\n  other: {{type: every-kind-client}}\nprocedure: []", os.name());
+            let yaml = format!("timeout: 1s\nsubject_os: [{}]\nparticipants:\n  subject: {{type: every-kind-server, subject: true, realization: {{kind: {kind}}}}}\n  other: {{type: every-kind-client}}\n{}", os.name(), minimal_procedure!());
             let plan = compile(&yaml, os).unwrap().unwrap();
             assert_eq!(plan.fact("subject", SHARED_DIR_FACT), Some(expected));
             assert_eq!(
@@ -846,7 +846,7 @@ mod tests {
         }
         let registries = Registries {
             participant_types: &[&ReservedFact, &EveryKindServer],
-            steps: &[],
+            steps: STEPS,
         };
         let loader = CaseLoader::new(registries, FixtureTypes, "fixture");
         for (os, kind) in [
@@ -854,7 +854,7 @@ mod tests {
             (Os::MacOs, "host-process-group"),
             (Os::Windows, "windows-container"),
         ] {
-            let yaml = format!("timeout: 1s\nsubject_os: [{}]\nparticipants:\n  a: {{type: every-kind-server, subject: true, config: {{env: {{KEY: '{{{{ self.facts.missing }}}}'}}}}}}\n  z: {{type: reserved}}\nprocedure: []", os.name());
+            let yaml = format!("timeout: 1s\nsubject_os: [{}]\nparticipants:\n  a: {{type: every-kind-server, subject: true, config: {{env: {{KEY: '{{{{ self.facts.missing }}}}'}}}}}}\n  z: {{type: reserved}}\n{}", os.name(), minimal_procedure!());
             let case = loader
                 .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
                 .unwrap()
@@ -875,7 +875,7 @@ mod tests {
 
     #[test]
     fn shared_dir_substitutes_into_env_params_and_served_socket_paths() {
-        let yaml = "timeout: 1s\nsubject_os: [linux, macos]\nparticipants:\n  client: {type: file-server, subject: true, connect: {target: server.stream}, config: {env: {COPY: '{{ server.facts.shared_dir }}', PORT_OFFSET: '100'}, params: {mode: [{nested: '{{ server.facts.shared_dir }}'}]}}}\n  server: {type: file-server, config: {env: {SOCKET_PATH: '{{ self.facts.shared_dir }}/stream.sock'}}}\nprocedure: []";
+        let yaml = concat!("timeout: 1s\nsubject_os: [linux, macos]\nparticipants:\n  client: {type: file-server, subject: true, connect: {target: server.stream}, config: {env: {COPY: '{{ server.facts.shared_dir }}', PORT_OFFSET: '100'}, params: {mode: [{nested: '{{ server.facts.shared_dir }}'}]}}}\n  server: {type: file-server, config: {env: {SOCKET_PATH: '{{ self.facts.shared_dir }}/stream.sock'}}}\n", minimal_procedure!());
         for (os, dir) in [
             (Os::Linux, "/airlock/server/shared"),
             (Os::MacOs, "/tmp/panoramic-testrun0/0000/server/shared"),
@@ -890,7 +890,7 @@ mod tests {
                 format!("{dir}/stream.sock")
             );
         }
-        let yaml = format!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {{type: file-server, subject: true, config: {FILE_CONFIG}}}\n  other: {{type: server}}\nprocedure: []");
+        let yaml = format!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {{type: file-server, subject: true, config: {FILE_CONFIG}}}\n  other: {{type: server}}\n{}", minimal_procedure!());
         let plan = compile_files(
             &yaml,
             &[(
@@ -907,7 +907,7 @@ mod tests {
     fn a_step_may_reference_any_participants_shared_dir() {
         let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[linux, macos, windows]")
             .replace("participants:", "participants:\n  other: {type: every-kind-client}")
-            .replace("procedure: []", "procedure: [{step: probe, on: subject, path: '{{ subject.facts.shared_dir }}/{{ other.facts.shared_dir }}'}]");
+            .replace(minimal_procedure!(), "procedure: [{step: probe, on: subject, path: '{{ subject.facts.shared_dir }}/{{ other.facts.shared_dir }}'}]");
         for os in [Os::Linux, Os::MacOs, Os::Windows] {
             let plan = compile(&yaml, os).unwrap().unwrap();
             let CaseSchema::Participants { procedure, .. } = plan.case().schema() else {
@@ -928,7 +928,7 @@ mod tests {
     }
 
     fn socket_case(config: &str) -> String {
-        format!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n  client: {{type: every-kind-client, subject: true, connect: {{target: server.stream}}}}\n  server: {{type: every-kind-server, config: {config}}}\nprocedure: []")
+        format!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n  client: {{type: every-kind-client, subject: true, connect: {{target: server.stream}}}}\n  server: {{type: every-kind-server, config: {config}}}\n{}", minimal_procedure!())
     }
 
     #[test]
@@ -949,7 +949,7 @@ mod tests {
         );
         let expected = "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'client' of type 'every-kind-client' as linux-container on linux environment variable 'SOCKET' '{{ server.endpoints.stream.path }}' references endpoint 'stream' of participant 'server', a unix-stream socket served at '/run/every/stream.sock', outside its shared_dir '/airlock/server/shared'; consumed sockets must lie under their server's shared_dir";
         assert_eq!(compile(&yaml, Os::Linux).err().unwrap().to_string(), expected);
-        let yaml = format!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {{type: file-server, subject: true, config: {FILE_CONFIG}}}\n  server: {{type: file-server}}\nprocedure: []");
+        let yaml = format!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {{type: file-server, subject: true, config: {FILE_CONFIG}}}\n  server: {{type: file-server}}\n{}", minimal_procedure!());
         let expected = expected
             .replace(
                 "'client' of type 'every-kind-client'",
@@ -1101,7 +1101,8 @@ mod tests {
 
     #[test]
     fn a_plan_holds_each_participants_effective_config_for_the_selected_subject_os() {
-        let yaml = r#"timeout: 1s
+        let yaml = concat!(
+            r#"timeout: 1s
 subject_os: [windows, linux]
 participants:
   subject:
@@ -1111,8 +1112,10 @@ participants:
       env: {LEVEL: debug, EXTRA: base}
       os: {windows: {env: {LEVEL: trace, EXTRA: windows}}}
   other: {type: configured, config: {env: {PORT: "2"}}}
-procedure: []
-"#;
+"#,
+            minimal_procedure!(),
+            "\n"
+        );
         for (os, level, extra) in [(Os::Linux, "debug", "base"), (Os::Windows, "trace", "windows")] {
             let plan = compile(yaml, os).unwrap().unwrap();
             assert_eq!(
@@ -1487,13 +1490,16 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
         assert_eq!(plan.start_order(), None);
     }
 
-    pub(super) const CONNECTION_CASE: &str = r#"timeout: 1s
+    pub(super) const CONNECTION_CASE: &str = concat!(
+        r#"timeout: 1s
 subject_os: [linux]
 participants:
   client: {type: client, subject: true, connect: {upstream: server.api}}
   server: {type: server}
-procedure: []
-"#;
+"#,
+        minimal_procedure!(),
+        "\n"
+    );
 
     pub(super) fn assigned_server_case(config: &str) -> String {
         CONNECTION_CASE
@@ -1508,7 +1514,10 @@ procedure: []
                 "type: assigned-server,",
                 "type: assigned-server, connect: {upstream: other.api},",
             )
-            .replace("procedure: []", "  other: {type: server}\nprocedure: []");
+            .replace(
+                minimal_procedure!(),
+                concat!("  other: {type: server}\n", minimal_procedure!()),
+            );
         assert_eq!(compile(&yaml, Os::MacOs).err().unwrap().to_string(),
             "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'server' of type 'assigned-server' as host-process-group on macos delivers env 'API_PORT' through connection 'upstream', which also carries the assigned port of its endpoint 'api'");
         let yaml = yaml.replace(
@@ -1582,7 +1591,7 @@ procedure: []
             ("server", "{}", 8080, "api"),
             ("every-kind-server", "{env: {PORT: '1004'}}", 1004, "grpc"),
         ] {
-            let yaml = format!("timeout: 1s\nsubject_os: [macos]\nparticipants:\n  z: {{type: server, subject: true, config: {config}}}\n  a: {{type: {other}}}\nprocedure: []\n");
+            let yaml = format!("timeout: 1s\nsubject_os: [macos]\nparticipants:\n  z: {{type: server, subject: true, config: {config}}}\n  a: {{type: {other}}}\n{}\n", minimal_procedure!());
             assert_eq!(compile(&yaml, Os::MacOs).err().unwrap().to_string(), format!(
                 "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'z' of type 'server' as host-process-group on macos serves endpoint 'api' on runner-host tcp port {port}, which participant 'a' already serves as endpoint '{earlier}'"));
         }
@@ -1619,13 +1628,16 @@ procedure: []
 
     #[test]
     fn host_port_conflicts_fail_on_an_unselected_subject_os() {
-        let yaml = r#"timeout: 1s
+        let yaml = concat!(
+            r#"timeout: 1s
 subject_os: [linux, macos]
 participants:
   a: {type: server, subject: true}
   z: {type: server, config: {env: {PORT: '8081', METRICS: 'off'}, os: {macos: {env: {PORT: '8080'}}}}}
-procedure: []
-"#;
+"#,
+            minimal_procedure!(),
+            "\n"
+        );
         assert_eq!(compile(yaml, Os::Linux).err().unwrap().to_string(),
             "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'z' of type 'server' as host-process-group on macos serves endpoint 'api' on runner-host tcp port 8080, which participant 'a' already serves as endpoint 'api'");
     }
@@ -1703,7 +1715,7 @@ procedure: []
 
     #[test]
     fn tcp_and_udp_endpoints_on_one_port_get_their_own_schemes_and_runner_host_ports() {
-        let yaml = "timeout: 1s\nsubject_os: [macos]\nparticipants:\n  z: {type: every-kind-client, connect: {target: server.udp}}\n  a: {type: every-kind-client, subject: true, connect: {target: server.tcp}}\n  server: {type: every-kind-server, os: linux}\nprocedure: []\n";
+        let yaml = concat!("timeout: 1s\nsubject_os: [macos]\nparticipants:\n  z: {type: every-kind-client, connect: {target: server.udp}}\n  a: {type: every-kind-client, subject: true, connect: {target: server.tcp}}\n  server: {type: every-kind-server, os: linux}\n", minimal_procedure!(), "\n");
         let plan = compile(yaml, Os::MacOs).unwrap().unwrap();
         assert_eq!(
             plan.effective_config("a").unwrap().env["TARGET"],
@@ -1738,7 +1750,7 @@ procedure: []
 
     #[test]
     fn only_the_selected_subject_os_draws_from_the_run_wide_registry() {
-        let yaml = "timeout: 1s\nsubject_os: [linux, macos, windows]\nparticipants:\n  subject: {type: every-kind-server, subject: true}\n  client: {type: client, os: macos, connect: {upstream: server.api}}\n  server: {type: server, os: linux}\nprocedure: []\n";
+        let yaml = concat!("timeout: 1s\nsubject_os: [linux, macos, windows]\nparticipants:\n  subject: {type: every-kind-server, subject: true}\n  client: {type: client, os: macos, connect: {upstream: server.api}}\n  server: {type: server, os: linux}\n", minimal_procedure!(), "\n");
         for selected in [Os::Linux, Os::MacOs, Os::Windows] {
             let mut ports = PortRegistry::new();
             let plan = compile_with_ports(yaml, selected, &mut ports).unwrap().unwrap();
@@ -1764,7 +1776,7 @@ procedure: []
     }
 
     fn host_to_container_reference_case(config: &str) -> String {
-        format!("timeout: 1s\nsubject_os: [macos]\nparticipants:\n  subject: {{type: file-server, subject: true, config: {config}}}\n  server: {{type: server, os: linux}}\nprocedure: []\n")
+        format!("timeout: 1s\nsubject_os: [macos]\nparticipants:\n  subject: {{type: file-server, subject: true, config: {config}}}\n  server: {{type: server, os: linux}}\n{}\n", minimal_procedure!())
     }
 
     #[test]
@@ -1791,7 +1803,7 @@ procedure: []
     fn a_connection_and_a_reference_to_one_container_endpoint_share_its_runner_host_port() {
         let yaml = host_to_container_case()
             .replace("subject: true", "subject: true, config: {env: {KEY: '{{ server.endpoints.api.url }} {{ self.connections.upstream.port }}'}}")
-            .replace("procedure: []", "  other: {type: server, config: {params: {mode: ['{{server.endpoints.api.host}}']}}}\nprocedure: []");
+            .replace(minimal_procedure!(), concat!("  other: {type: server, config: {params: {mode: ['{{server.endpoints.api.host}}']}}}\n", minimal_procedure!()));
         let mut ports = PortRegistry::new();
         let plan = compile_with_ports(&yaml, Os::MacOs, &mut ports).unwrap().unwrap();
         assert_eq!(
@@ -1833,15 +1845,18 @@ procedure: []
 
     #[test]
     fn runner_host_ports_are_drawn_for_connections_then_references_in_participant_name_order() {
-        let yaml = r#"timeout: 1s
+        let yaml = concat!(
+            r#"timeout: 1s
 subject_os: [macos]
 participants:
   z: {type: client, subject: true, connect: {upstream: server.api}}
   b: {type: server, config: {env: {PORT: '8081', METRICS: 'off', KEY: '{{ server.endpoints.extra.url }}'}}}
   a: {type: server, config: {env: {KEY: '{{ server.endpoints.metrics.url }}'}}}
   server: {type: server, os: linux, config: {endpoints: {extra: {port: 8123}}}}
-procedure: []
-"#;
+"#,
+            minimal_procedure!(),
+            "\n"
+        );
         let plan = compile(yaml, Os::MacOs).unwrap().unwrap();
         assert_eq!(
             plan.runner_host_ports,
@@ -2235,7 +2250,7 @@ procedure: []
 
         let registries = Registries {
             participant_types: &[&Minimal, &Client],
-            steps: &[],
+            steps: STEPS,
         };
         let loader = CaseLoader::new(registries, FixtureTypes, "fixture-participants");
         for (participants, expected) in [
@@ -2252,7 +2267,7 @@ procedure: []
                 "participant 'client' connects 'upstream' to 'subject.api', which participant 'subject' of type 'minimal' as linux-container on linux does not serve; it serves none",
             ),
         ] {
-            let yaml = format!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n{participants}\nprocedure: []\n");
+            let yaml = format!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n{participants}\n{}\n", minimal_procedure!());
             let case = loader.load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml")).unwrap().remove(0);
             let message = CasePlan::compile(case, Os::Linux, &registries, &mut PortRegistry::new(), &mut ScopeRegistry::with_run("testrun0")).err().unwrap().to_string();
             assert_eq!(message, format!("case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', {expected}"));

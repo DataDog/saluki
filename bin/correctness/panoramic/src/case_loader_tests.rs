@@ -10,13 +10,13 @@ use serde_json::Value;
 
 use crate::config::{
     discover_in_scope,
-    tests::{write_case, PARTICIPANT_FIELDS},
+    tests::{minimal_procedure, write_case, PARTICIPANT_FIELDS},
 };
 
 #[test]
 fn default_log_file_references_plan_on_linux_and_windows_but_not_macos() {
     let dir = tempfile::tempdir().unwrap();
-    let yaml = PARTICIPANT_FIELDS.replace("procedure: []", "procedure: [{step: file_contains, on: adp, path: '{{ adp.facts.default_log_file }}', pattern: ready, timeout: 1s}]");
+    let yaml = PARTICIPANT_FIELDS.replace(minimal_procedure!(), "procedure: [{step: file_contains, on: adp, path: '{{ adp.facts.default_log_file }}', pattern: ready, timeout: 1s}]");
     for oses in ["linux", "windows", "linux, windows"] {
         let path = write_case(dir.path(), "alpha", &yaml.replace("[linux]", &format!("[{oses}]")));
         let cases = crate::CASE_LOADER.load_file(&path).unwrap();
@@ -53,7 +53,7 @@ fn default_log_file_references_plan_on_linux_and_windows_but_not_macos() {
 fn agent_adp_cases_cannot_reference_pod_uid() {
     let dir = tempfile::tempdir().unwrap();
     let yaml = PARTICIPANT_FIELDS.replace(
-        "procedure: []",
+        minimal_procedure!(),
         "procedure: [{step: file_contains, on: adp, path: '{{ adp.late.pod_uid }}', pattern: ready, timeout: 1s}]",
     );
     let path = write_case(dir.path(), "alpha", &yaml);
@@ -74,7 +74,7 @@ fn agent_adp_log_steps_may_name_the_adp_and_agent_processes_only() {
     for (step, duration) in [("log_contains", "timeout"), ("log_not_contains", "during")] {
         for process in ["adp", "agent", "core"] {
             let yaml = PARTICIPANT_FIELDS.replace(
-                "procedure: []",
+                minimal_procedure!(),
                 &format!("procedure: [{{step: {step}, on: adp, process: {process}, pattern: ready, {duration}: 1s}}]"),
             );
             let path = write_case(dir.path(), "alpha", &yaml);
@@ -321,7 +321,7 @@ fn participant_step_errors_name_the_canonical_file_and_step() {
         let path = write_case(
             dir.path(),
             "alpha",
-            &PARTICIPANT_FIELDS.replace("procedure: []", &format!("procedure: [{{{fields}}}]")),
+            &PARTICIPANT_FIELDS.replace(minimal_procedure!(), &format!("procedure: [{{{fields}}}]")),
         );
         let error = crate::CASE_LOADER.load_file(&path).err().expect("invalid step must fail");
         let message = error.to_string();

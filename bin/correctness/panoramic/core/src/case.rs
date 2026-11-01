@@ -213,8 +213,8 @@ where
     /// # Errors
     ///
     /// Returns an error for invalid YAML or a typed file that declares no cases. Propagates typed-loader errors unchanged.
-    /// A declared name must match the directory. Participant cases require at least one participant
-    /// and a nonempty, unique `subject_os` list using `linux`, `macos` or `windows`.
+    /// A declared name must match the directory. Participant cases require at least one participant,
+    /// a nonempty, unique `subject_os` list using `linux`, `macos` or `windows`, and a nonempty procedure.
     /// Participant names must be DNS labels starting with a letter, other than `self`;
     /// exactly one subject is required, without an `os` override.
     /// Types and steps must be registered, their fields valid, and their references declared.
@@ -375,7 +375,7 @@ pub fn case_name(declared: Option<&str>, directory: &str, source: &Path) -> Resu
 mod tests {
     use std::fs;
 
-    use super::fixtures::{write_case, NO_PARTICIPANT_FIELDS, PARTICIPANT_FIELDS};
+    use super::fixtures::{minimal_procedure, write_case, NO_PARTICIPANT_FIELDS, PARTICIPANT_FIELDS};
     use super::*;
 
     #[test]
@@ -461,7 +461,7 @@ mod tests {
             .expect("only the supplied participant types are accepted");
         assert_eq!(error.to_string(), "case 'alpha' in alpha/config.yaml: participant 'subject' has unknown type 'unregistered'; registered types: client, server");
 
-        let content = PARTICIPANT_FIELDS.replace("procedure: []", "procedure: [{step: probe, on: subject}]");
+        let content = PARTICIPANT_FIELDS.replace(minimal_procedure!(), "procedure: [{step: probe, on: subject}]");
         let cases = fixtures::LOADER.load_content(&content, "alpha", source).unwrap();
         let CaseSchema::Participants { procedure, .. } = cases[0].schema() else {
             panic!("expected participant data");
@@ -555,7 +555,11 @@ mod tests {
             panic!("expected participant data");
         };
         assert_eq!(file.participants["subject"].participant_type, "server");
-        assert!(file.procedure.is_empty());
+        let [ProcedureNode::Step(step)] = file.procedure.as_slice() else {
+            panic!("expected one step");
+        };
+        assert_eq!(step.name, "noop");
+        assert!(step.fields.is_empty());
     }
 
     #[test]
@@ -649,7 +653,7 @@ procedure:
     fn an_unknown_field_in_a_parallel_step_fails_to_load() {
         let dir = tempfile::tempdir().unwrap();
         let yaml = PARTICIPANT_FIELDS.replace(
-            "procedure: []",
+            minimal_procedure!(),
             "procedure: [{parallel: [{step: probe, on: subject, unknown: x}]}]",
         );
         let path = write_case(dir.path(), "alpha", &yaml);
@@ -698,7 +702,7 @@ procedure:
                 "unknown field `unknown`",
             ),
             (
-                PARTICIPANT_FIELDS.replace("procedure: []", "procedure: [{action: probe}]"),
+                PARTICIPANT_FIELDS.replace(minimal_procedure!(), "procedure: [{action: probe}]"),
                 "a procedure node must have 'step' or 'parallel'",
             ),
             (PARTICIPANT_FIELDS.replace("1s", "1nope"), "unknown duration unit"),

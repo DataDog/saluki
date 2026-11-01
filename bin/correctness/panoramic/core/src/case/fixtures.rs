@@ -85,7 +85,30 @@ impl StepFactory for MarkerFactory {
     }
 }
 
-pub(crate) const STEPS: &[&dyn StepFactory] = &[&MarkerFactory, &ProbeFactory];
+/// A step without fields or needs, for procedures whose steps aren't under test.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Noop {}
+
+impl Step for Noop {
+    fn needs(&self) -> Vec<Need> {
+        Vec::new()
+    }
+}
+
+struct NoopFactory;
+
+impl StepFactory for NoopFactory {
+    fn name(&self) -> &'static str {
+        "noop"
+    }
+
+    fn build(&self, fields: &StepFields) -> Result<Box<dyn Step>, String> {
+        Ok(Box::new(decode_fields::<Noop>(fields)?))
+    }
+}
+
+pub(crate) const STEPS: &[&dyn StepFactory] = &[&MarkerFactory, &ProbeFactory, &NoopFactory];
 pub(crate) struct Server;
 
 impl ParticipantType for Server {
@@ -338,9 +361,27 @@ impl TypedCaseLoader for FixtureTypes {
 pub(crate) const LOADER: CaseLoader<'static, FixtureTypes> =
     CaseLoader::new(REGISTRIES, FixtureTypes, "fixture-participants");
 
-pub(crate) const PARTICIPANT_FIELDS: &str =
-    "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {type: server, subject: true}\nprocedure: []\n";
-pub(crate) const NO_PARTICIPANT_FIELDS: &str = "timeout: 1s\nsubject_os: [linux]\nparticipants: {}\nprocedure: []\n";
+/// Expands to a one-step procedure line for participant cases whose procedure isn't under test.
+///
+/// A literal-producing macro lets `const` fixtures embed it with `concat!`. Tests replace this exact text
+/// to add participants or steps, so every fixture builds its procedure from it.
+macro_rules! minimal_procedure {
+    () => {
+        "procedure: [{step: noop}]"
+    };
+}
+pub(crate) use minimal_procedure;
+
+pub(crate) const PARTICIPANT_FIELDS: &str = concat!(
+    "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {type: server, subject: true}\n",
+    minimal_procedure!(),
+    "\n"
+);
+pub(crate) const NO_PARTICIPANT_FIELDS: &str = concat!(
+    "timeout: 1s\nsubject_os: [linux]\nparticipants: {}\n",
+    minimal_procedure!(),
+    "\n"
+);
 
 pub(crate) fn write_case(base: &Path, name: &str, content: &str) -> PathBuf {
     let directory = base.join(name);

@@ -67,7 +67,7 @@ mod tests {
     use crate::{
         backend,
         case::{
-            fixtures::{FixtureTypes, PodServer, PARTICIPANT_FIELDS, STEPS},
+            fixtures::{minimal_procedure, FixtureTypes, PodServer, PARTICIPANT_FIELDS, STEPS},
             CaseLoader, CaseSchema, Registries,
         },
         layout::{Os, RealizationKind},
@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn fact_and_late_fact_errors_follow_procedure_order_including_parallel_members() {
         let mut yaml = PARTICIPANT_FIELDS.replace("[linux]", "[macos]").replace(
-            "procedure: []",
+            minimal_procedure!(),
             r#"procedure:
   - {step: probe, on: subject, path: '{{ subject.late.container_id }}{{ subject.facts.file }}'}
   - parallel:
@@ -314,7 +314,7 @@ mod tests {
         let yaml = PARTICIPANT_FIELDS
             .replace("[linux]", "[macos, linux]")
             .replace("participants:", "participants:\n  other: {type: server, os: macos, config: {env: {PORT: '8081', METRICS: 'off'}}}")
-            .replace("procedure: []", "procedure:\n  - {step: probe, on: subject, path: '{{ subject.facts.file }}'}\n  - parallel:\n    - {step: probe, on: subject}\n    - {step: probe, on: subject, path: '{{ other.facts.file }}'}\n  - {step: probe, on: subject, path: '{{ other.facts.file }}'}");
+            .replace(minimal_procedure!(), "procedure:\n  - {step: probe, on: subject, path: '{{ subject.facts.file }}'}\n  - parallel:\n    - {step: probe, on: subject}\n    - {step: probe, on: subject, path: '{{ other.facts.file }}'}\n  - {step: probe, on: subject, path: '{{ other.facts.file }}'}");
         let message = compile(&yaml, Os::MacOs).err().unwrap().to_string();
         assert!(
             message.contains("on subject OS 'linux', step 2.2 references fact 'file' of participant 'other'"),

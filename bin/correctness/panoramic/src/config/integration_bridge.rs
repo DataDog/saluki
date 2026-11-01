@@ -278,7 +278,8 @@ mod tests {
         config::{
             build_runners,
             tests::{
-                build_case_runners, plan, write_case, LOGGING_INTEGRATION, LOGGING_PARTICIPANT, PARTICIPANT_FIELDS,
+                build_case_runners, minimal_procedure, plan, write_case, LOGGING_INTEGRATION, LOGGING_PARTICIPANT,
+                PARTICIPANT_FIELDS,
             },
             typed_case::{RunnableCase, TypedConfig, TypedConfigLoader},
             LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME,
@@ -291,7 +292,7 @@ mod tests {
         for (participant_yaml, integration_yaml) in [
             (
                 PARTICIPANT_FIELDS,
-                "type: integration\nname: alpha\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n",
+                "type: integration\nname: alpha\ntimeout: 1s\nruntimes: [linux]\nprocedure: [{assertion: log_contains, pattern: ready, timeout: 5s}]\n",
             ),
             (LOGGING_PARTICIPANT, LOGGING_INTEGRATION),
         ] {
@@ -718,7 +719,7 @@ mod tests {
             ("adp.facts.unknown", None),
             ("adp.facts.default_log_file", Some("/x")),
         ] {
-            let yaml = PARTICIPANT_FIELDS.replace("procedure: []", &format!("procedure: [{{step: file_contains, on: adp, path: '{{{{ {reference} }}}}', pattern: ready, timeout: 1s}}]"));
+            let yaml = PARTICIPANT_FIELDS.replace(minimal_procedure!(), &format!("procedure: [{{step: file_contains, on: adp, path: '{{{{ {reference} }}}}', pattern: ready, timeout: 1s}}]"));
             let file: CaseFile = serde_saphyr::from_str(&yaml).unwrap();
             let translated = integration_config(
                 &file,
@@ -750,7 +751,7 @@ mod tests {
             "{{ adp.facts.default_log_file }}/{{ adp.facts.shared_dir }}/socket",
         ] {
             let yaml = PARTICIPANT_FIELDS.replace(
-                "procedure: []",
+                minimal_procedure!(),
                 &format!("procedure: [{{step: file_contains, on: adp, path: '{path}', pattern: ready, timeout: 1s}}]"),
             );
             let case = crate::CASE_LOADER
@@ -787,7 +788,7 @@ mod tests {
     #[test]
     fn translation_rejects_late_fact_references_in_file_paths() {
         let yaml = PARTICIPANT_FIELDS.replace(
-            "procedure: []",
+            minimal_procedure!(),
             "procedure: [{step: file_contains, on: adp, path: '{{ adp.late.ip }}', pattern: ready, timeout: 1s}]",
         );
         let case = crate::CASE_LOADER
@@ -825,8 +826,8 @@ mod tests {
     fn the_integration_runner_rejects_participant_cases_it_cannot_run() {
         for (old, new, reason) in [
             (
-                "procedure: []",
-                "  other: {type: agent-adp}\nprocedure: []",
+                minimal_procedure!(),
+                concat!("  other: {type: agent-adp}\n", minimal_procedure!()),
                 "it declares 2 participants; the integration runner runs exactly one",
             ),
             (
@@ -840,12 +841,12 @@ mod tests {
                 "participant 'adp' sets config.env 'PANORAMIC_DYNAMIC_IP'; names starting with PANORAMIC_DYNAMIC_ are reserved for cases with 'type: integration'",
             ),
             (
-                "procedure: []",
+                minimal_procedure!(),
                 "procedure: [{step: log_contains, on: adp, process: adp, pattern: ready, timeout: 1s}]",
                 "step 1 'log_contains' sets 'process', which the integration runner does not support: it searches the output of every process together",
             ),
             (
-                "procedure: []",
+                minimal_procedure!(),
                 "procedure:\n  - {step: log_contains, on: adp, pattern: ready, timeout: 1s}\n  - parallel:\n      - {step: log_not_contains, on: adp, process: agent, pattern: panic, during: 1s}",
                 "step 2.1 'log_not_contains' sets 'process', which the integration runner does not support: it searches the output of every process together",
             ),
@@ -919,9 +920,10 @@ mod tests {
             ("[{step: log_contains, on: adp}]", "1"),
             ("[{parallel: [{step: log_contains, on: adp}]}]", "1.1"),
         ] {
-            let file: CaseFile =
-                serde_saphyr::from_str(&PARTICIPANT_FIELDS.replace("procedure: []", &format!("procedure: {nodes}")))
-                    .unwrap();
+            let file: CaseFile = serde_saphyr::from_str(
+                &PARTICIPANT_FIELDS.replace(minimal_procedure!(), &format!("procedure: {nodes}")),
+            )
+            .unwrap();
             assert_eq!(
                 integration_config(&file, "alpha", Path::new("alpha/config.yaml"), |_, _| None, |_| Some(&planned_config)).unwrap_err(),
                 format!("step {label} 'log_contains' has fields the integration runner cannot read: missing field `pattern`")
@@ -932,7 +934,7 @@ mod tests {
     #[test]
     fn translation_reads_parallel_members_from_the_case_file() {
         let yaml = PARTICIPANT_FIELDS.replace(
-            "procedure: []",
+            minimal_procedure!(),
             "procedure:\n  - {step: log_contains, on: adp, pattern: first, timeout: 1s}\n  - parallel:\n      - {step: log_not_contains, on: adp, pattern: second, during: 2s}\n      - {step: file_contains, on: adp, path: /logs/output.log, pattern: third, timeout: 3s}",
         );
         let cases = crate::CASE_LOADER
@@ -966,7 +968,8 @@ mod tests {
     fn a_step_without_an_integration_runner_equivalent_fails_translation() {
         let planned_config = EffectiveConfig::default();
         let file: CaseFile =
-            serde_saphyr::from_str(&PARTICIPANT_FIELDS.replace("procedure: []", "procedure: [{step: probe}]")).unwrap();
+            serde_saphyr::from_str(&PARTICIPANT_FIELDS.replace(minimal_procedure!(), "procedure: [{step: probe}]"))
+                .unwrap();
         assert_eq!(
             integration_config(
                 &file,

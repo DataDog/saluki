@@ -150,7 +150,7 @@ fn contains_template_reference(value: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::super::fixtures::{Probe, Server, STEPS, TYPES};
+    use super::super::fixtures::{minimal_procedure, Probe, Server, STEPS, TYPES};
     use super::*;
     use crate::{
         backend::LateFact,
@@ -191,7 +191,7 @@ mod tests {
         let message = build_error("- {step: missing, on: subject}");
         assert_eq!(
             message,
-            "case 'alpha' in cases/alpha/config.yaml: step 1 names unknown step 'missing'; registered steps: marker, probe"
+            "case 'alpha' in cases/alpha/config.yaml: step 1 names unknown step 'missing'; registered steps: marker, probe, noop"
         );
     }
 
@@ -427,7 +427,7 @@ mod tests {
         let yaml = super::super::fixtures::PARTICIPANT_FIELDS
             .replace("[linux]", "[macos]")
             .replace(
-                "procedure: []",
+                minimal_procedure!(),
                 "procedure: [{step: probe, on: subject, path: '{{ subject.facts.file }}'}]",
             );
         let cases = super::super::fixtures::LOADER

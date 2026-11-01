@@ -237,10 +237,13 @@ pub(super) fn check_param_keys(params: &BTreeMap<String, Value>, field: &str) ->
 mod tests {
     use std::path::Path;
 
-    use crate::case::{fixtures::LOADER, CaseSchema};
+    use crate::case::{
+        fixtures::{minimal_procedure, LOADER},
+        CaseSchema,
+    };
 
     fn case(config: &str) -> String {
-        format!("timeout: 1s\nsubject_os: [linux, macos, windows]\nparticipants:\n  subject: {{type: server, subject: true, config: {config}, connect: {{link: other.api}}}}\n  other: {{type: server}}\nprocedure: []\n")
+        format!("timeout: 1s\nsubject_os: [linux, macos, windows]\nparticipants:\n  subject: {{type: server, subject: true, config: {config}, connect: {{link: other.api}}}}\n  other: {{type: server}}\n{}\n", minimal_procedure!())
     }
 
     #[track_caller]
