@@ -13,7 +13,7 @@ use serde_json::Value;
 use super::{case_name, CaseLoader, Registries, Template, TypedCase, TypedCaseLoader};
 use crate::{
     backend::LateFact,
-    endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind},
+    endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind, Port},
     layout::{Os, Realization, RealizationKind},
     participant::{CaseValues, EffectiveConfig, FactDeclaration, ParticipantType},
     step::{decode_fields, Need, Step, StepFactory, StepFields},
@@ -121,27 +121,17 @@ impl ParticipantType for Server {
                 return Err(format!("PORT '{port}' is not a number"));
             }
         }
-        let mut endpoints = BTreeMap::from([(
-            "api".into(),
-            Endpoint {
-                kind: EndpointKind::Http,
-            },
-        )]);
+        let port = config
+            .env
+            .get("PORT")
+            .and_then(|port| port.parse().ok())
+            .unwrap_or(8080);
+        let mut endpoints = BTreeMap::from([("api".into(), Endpoint::http(Port::Fixed(port)))]);
         if config.env.get("METRICS").map(String::as_str) != Some("off") {
-            endpoints.insert(
-                "metrics".into(),
-                Endpoint {
-                    kind: EndpointKind::Udp,
-                },
-            );
+            endpoints.insert("metrics".into(), Endpoint::udp(Port::Fixed(9000)));
         }
         if config.endpoints.contains_key("extra") {
-            endpoints.insert(
-                "extra".into(),
-                Endpoint {
-                    kind: EndpointKind::Tcp,
-                },
-            );
+            endpoints.insert("extra".into(), Endpoint::tcp(Port::FromCase));
         }
         Ok(endpoints)
     }
@@ -270,7 +260,10 @@ impl ParticipantType for Client {
                 ConsumedEndpoint {
                     accepts: vec![EndpointKind::Http],
                     required: true,
-                    delivery: Delivery::Env(BTreeSet::from(["UPSTREAM_URL".into()])),
+                    delivery: Delivery::Env {
+                        keys: BTreeSet::from(["UPSTREAM_URL".into()]),
+                        value: |address| BTreeMap::from([("UPSTREAM_URL".into(), address.url.clone())]),
+                    },
                 },
             ),
             (
@@ -278,7 +271,15 @@ impl ParticipantType for Client {
                 ConsumedEndpoint {
                     accepts: vec![EndpointKind::Udp, EndpointKind::Tcp],
                     required: false,
-                    delivery: Delivery::Env(BTreeSet::from(["SIDE_HOST".into(), "SIDE_PORT".into()])),
+                    delivery: Delivery::Env {
+                        keys: BTreeSet::from(["SIDE_HOST".into(), "SIDE_PORT".into()]),
+                        value: |address| {
+                            BTreeMap::from([
+                                ("SIDE_HOST".into(), address.host.clone().unwrap()),
+                                ("SIDE_PORT".into(), address.port.unwrap().to_string()),
+                            ])
+                        },
+                    },
                 },
             ),
         ])

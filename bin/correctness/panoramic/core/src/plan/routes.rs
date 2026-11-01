@@ -1,35 +1,83 @@
-//! Checks which consumer and server realizations a connection can join for each endpoint kind.
+//! The route table for endpoint kinds and consumer/server realizations.
 //!
-//! Network endpoints join equal realizations, or a host process group to a Linux container.
-//! Unix sockets need equal realizations other than Windows containers to share a filesystem.
-//! Named pipes are reachable only inside their own container.
+//! Each supported cell selects one route. Filesystem routes require a shared namespace.
 
 use crate::{
-    endpoint::EndpointKind,
+    endpoint::{Endpoint, EndpointKind, Listener, Port, ResolvedAddress},
     layout::{Realization, RealizationKind},
 };
 
-/// Returns the constraint preventing a connection, if its realizations have no route.
-pub(super) fn check_route(kind: EndpointKind, consumer: Realization, server: Realization) -> Result<(), &'static str> {
-    match kind {
-        EndpointKind::Tcp | EndpointKind::Udp | EndpointKind::Http | EndpointKind::Grpc => {
-            if consumer == server
-                || (consumer.kind == RealizationKind::HostProcessGroup
-                    && server.kind == RealizationKind::LinuxContainer)
-            {
-                Ok(())
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Route {
+    ByName,
+    Loopback,
+    RunnerHostPort,
+    SharedFilesystem,
+}
+
+/// Returns the cell's route, or the constraint preventing the connection.
+pub(super) fn route(kind: EndpointKind, consumer: Realization, server: Realization) -> Result<Route, &'static str> {
+    use EndpointKind::{Grpc, Http, NamedPipe, Tcp, Udp, UnixDatagram, UnixStream};
+    use RealizationKind::{HostProcessGroup, KubernetesPod, LinuxContainer, WindowsContainer};
+
+    match (kind, consumer.kind, server.kind) {
+        (Tcp | Udp | Http | Grpc, LinuxContainer, LinuxContainer)
+        | (Tcp | Udp | Http | Grpc, WindowsContainer, WindowsContainer)
+        | (Tcp | Udp | Http | Grpc, KubernetesPod, KubernetesPod) if consumer == server => Ok(Route::ByName),
+        (Tcp | Udp | Http | Grpc, HostProcessGroup, HostProcessGroup) if consumer == server => Ok(Route::Loopback),
+        (Tcp | Udp | Http | Grpc, HostProcessGroup, LinuxContainer) => Ok(Route::RunnerHostPort),
+        (UnixDatagram | UnixStream, LinuxContainer, LinuxContainer)
+        | (UnixDatagram | UnixStream, HostProcessGroup, HostProcessGroup)
+        | (UnixDatagram | UnixStream, KubernetesPod, KubernetesPod) if consumer == server => Ok(Route::SharedFilesystem),
+        (Tcp | Udp | Http | Grpc, _, _) => Err("network endpoints connect only participants with the same realization, or a host-process-group to a linux-container"),
+        (UnixDatagram | UnixStream, _, _) => Err("unix sockets connect only participants with the same realization, other than windows-container, because they need one shared filesystem"),
+        (NamedPipe, _, _) => Err("a named pipe is reachable only inside its own container"),
+    }
+}
+
+/// Renders a checked route using the server's resolved listener and any allocated runner-host port.
+pub(super) fn address(
+    route: Route, server_name: &str, endpoint: &Endpoint, runner_host_port: Option<u16>,
+) -> ResolvedAddress {
+    let scheme = match endpoint.kind {
+        EndpointKind::Tcp => "tcp",
+        EndpointKind::Udp => "udp",
+        EndpointKind::Http => "http",
+        EndpointKind::Grpc => "grpc",
+        EndpointKind::UnixDatagram => "unixgram",
+        EndpointKind::UnixStream => "unix",
+        EndpointKind::NamedPipe => unreachable!("named pipes have no route between participants"),
+    };
+    let (url, host, port, path) = match route {
+        Route::ByName | Route::Loopback | Route::RunnerHostPort => {
+            let Listener::Port(Port::Fixed(server_port)) = endpoint.listener else {
+                unreachable!("network routes use ports resolved during endpoint planning");
+            };
+            let host = if route == Route::ByName {
+                server_name
             } else {
-                Err("network endpoints connect only participants with the same realization, or a host-process-group to a linux-container")
-            }
-        }
-        EndpointKind::UnixDatagram | EndpointKind::UnixStream => {
-            if consumer == server && consumer.kind != RealizationKind::WindowsContainer {
-                Ok(())
+                "127.0.0.1"
+            };
+            let port = if route == Route::RunnerHostPort {
+                runner_host_port.expect("runner-host routes have an allocated port")
             } else {
-                Err("unix sockets connect only participants with the same realization, other than windows-container, because they need one shared filesystem")
-            }
+                server_port
+            };
+            (format!("{scheme}://{host}:{port}"), Some(host.into()), Some(port), None)
         }
-        EndpointKind::NamedPipe => Err("a named pipe is reachable only inside its own container"),
+        Route::SharedFilesystem => {
+            let Listener::Path(path) = &endpoint.listener else {
+                unreachable!("shared-filesystem routes use socket paths");
+            };
+            (format!("{scheme}://{path}"), None, None, Some(path.clone()))
+        }
+    };
+    ResolvedAddress {
+        kind: endpoint.kind,
+        url,
+        host,
+        port,
+        path,
     }
 }
 
@@ -61,63 +109,43 @@ mod tests {
     const REALIZATIONS: [Realization; 5] = [LINUX_CONTAINER, LINUX_HOST, MACOS_HOST, WINDOWS_CONTAINER, LINUX_POD];
 
     #[test]
-    fn network_endpoints_connect_only_the_same_realization_or_a_host_process_group_to_a_linux_container() {
-        let supported = [
-            (LINUX_CONTAINER, LINUX_CONTAINER),
-            (LINUX_HOST, LINUX_HOST),
-            (MACOS_HOST, MACOS_HOST),
-            (WINDOWS_CONTAINER, WINDOWS_CONTAINER),
-            (LINUX_POD, LINUX_POD),
-            (LINUX_HOST, LINUX_CONTAINER),
-            (MACOS_HOST, LINUX_CONTAINER),
+    fn every_kind_and_realization_pair_has_exactly_the_route_the_table_names() {
+        let network = [
+            (LINUX_CONTAINER, LINUX_CONTAINER, Route::ByName),
+            (LINUX_HOST, LINUX_HOST, Route::Loopback),
+            (MACOS_HOST, MACOS_HOST, Route::Loopback),
+            (WINDOWS_CONTAINER, WINDOWS_CONTAINER, Route::ByName),
+            (LINUX_POD, LINUX_POD, Route::ByName),
+            (LINUX_HOST, LINUX_CONTAINER, Route::RunnerHostPort),
+            (MACOS_HOST, LINUX_CONTAINER, Route::RunnerHostPort),
         ];
-        for kind in [
-            EndpointKind::Tcp,
-            EndpointKind::Udp,
-            EndpointKind::Http,
-            EndpointKind::Grpc,
+        let sockets = [
+            (LINUX_CONTAINER, LINUX_CONTAINER, Route::SharedFilesystem),
+            (LINUX_HOST, LINUX_HOST, Route::SharedFilesystem),
+            (MACOS_HOST, MACOS_HOST, Route::SharedFilesystem),
+            (LINUX_POD, LINUX_POD, Route::SharedFilesystem),
+        ];
+        for (kind, supported) in [
+            (EndpointKind::Tcp, network.as_slice()),
+            (EndpointKind::Udp, network.as_slice()),
+            (EndpointKind::Http, network.as_slice()),
+            (EndpointKind::Grpc, network.as_slice()),
+            (EndpointKind::UnixDatagram, sockets.as_slice()),
+            (EndpointKind::UnixStream, sockets.as_slice()),
+            (EndpointKind::NamedPipe, &[]),
         ] {
             for consumer in REALIZATIONS {
                 for server in REALIZATIONS {
+                    let expected = supported
+                        .iter()
+                        .find(|&&(c, s, _)| c == consumer && s == server)
+                        .map(|&(_, _, route)| route);
                     assert_eq!(
-                        check_route(kind, consumer, server).is_ok(),
-                        supported.contains(&(consumer, server)),
-                        "{kind:?}: {consumer:?} -> {server:?}",
+                        route(kind, consumer, server).ok(),
+                        expected,
+                        "{kind:?}: {consumer:?} -> {server:?}"
                     );
                 }
-            }
-        }
-    }
-
-    #[test]
-    fn unix_sockets_connect_only_the_same_realization_other_than_a_windows_container() {
-        let supported = [
-            (LINUX_CONTAINER, LINUX_CONTAINER),
-            (LINUX_HOST, LINUX_HOST),
-            (MACOS_HOST, MACOS_HOST),
-            (LINUX_POD, LINUX_POD),
-        ];
-        for kind in [EndpointKind::UnixDatagram, EndpointKind::UnixStream] {
-            for consumer in REALIZATIONS {
-                for server in REALIZATIONS {
-                    assert_eq!(
-                        check_route(kind, consumer, server).is_ok(),
-                        supported.contains(&(consumer, server)),
-                        "{kind:?}: {consumer:?} -> {server:?}",
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn named_pipes_connect_no_two_participants() {
-        for consumer in REALIZATIONS {
-            for server in REALIZATIONS {
-                assert!(
-                    check_route(EndpointKind::NamedPipe, consumer, server).is_err(),
-                    "{consumer:?} -> {server:?}",
-                );
             }
         }
     }
@@ -125,16 +153,106 @@ mod tests {
     #[test]
     fn route_errors_name_the_constraint() {
         assert_eq!(
-            check_route(EndpointKind::Tcp, LINUX_CONTAINER, MACOS_HOST),
+            route(EndpointKind::Tcp, LINUX_CONTAINER, MACOS_HOST),
             Err("network endpoints connect only participants with the same realization, or a host-process-group to a linux-container"),
         );
         assert_eq!(
-            check_route(EndpointKind::UnixStream, MACOS_HOST, LINUX_CONTAINER),
+            route(EndpointKind::UnixStream, MACOS_HOST, LINUX_CONTAINER),
             Err("unix sockets connect only participants with the same realization, other than windows-container, because they need one shared filesystem"),
         );
         assert_eq!(
-            check_route(EndpointKind::NamedPipe, WINDOWS_CONTAINER, WINDOWS_CONTAINER),
+            route(EndpointKind::NamedPipe, WINDOWS_CONTAINER, WINDOWS_CONTAINER),
             Err("a named pipe is reachable only inside its own container"),
+        );
+    }
+
+    #[test]
+    fn addresses_use_their_endpoint_kinds_url_scheme() {
+        for (endpoint, route, expected) in [
+            (Endpoint::tcp(Port::Fixed(80)), Route::ByName, "tcp://server:80"),
+            (Endpoint::udp(Port::Fixed(80)), Route::ByName, "udp://server:80"),
+            (Endpoint::http(Port::Fixed(80)), Route::ByName, "http://server:80"),
+            (Endpoint::grpc(Port::Fixed(80)), Route::ByName, "grpc://server:80"),
+            (
+                Endpoint::unix_datagram("/run/x.sock"),
+                Route::SharedFilesystem,
+                "unixgram:///run/x.sock",
+            ),
+            (
+                Endpoint::unix_stream("/run/x.sock"),
+                Route::SharedFilesystem,
+                "unix:///run/x.sock",
+            ),
+        ] {
+            let resolved = address(route, "server", &endpoint, None);
+            assert_eq!(resolved.kind, endpoint.kind);
+            assert_eq!(resolved.url, expected);
+        }
+    }
+
+    #[test]
+    fn a_by_name_address_uses_the_server_name_and_its_port() {
+        assert_eq!(
+            address(Route::ByName, "server", &Endpoint::http(Port::Fixed(8080)), None),
+            ResolvedAddress {
+                kind: EndpointKind::Http,
+                url: "http://server:8080".into(),
+                host: Some("server".into()),
+                port: Some(8080),
+                path: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_loopback_address_uses_127_0_0_1_and_the_servers_port() {
+        assert_eq!(
+            address(Route::Loopback, "server", &Endpoint::tcp(Port::Fixed(8080)), None),
+            ResolvedAddress {
+                kind: EndpointKind::Tcp,
+                url: "tcp://127.0.0.1:8080".into(),
+                host: Some("127.0.0.1".into()),
+                port: Some(8080),
+                path: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_runner_host_port_address_uses_127_0_0_1_and_the_allocated_port() {
+        assert_eq!(
+            address(
+                Route::RunnerHostPort,
+                "server",
+                &Endpoint::grpc(Port::Fixed(8080)),
+                Some(20000)
+            ),
+            ResolvedAddress {
+                kind: EndpointKind::Grpc,
+                url: "grpc://127.0.0.1:20000".into(),
+                host: Some("127.0.0.1".into()),
+                port: Some(20000),
+                path: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_socket_address_is_the_servers_path_with_no_host_or_port() {
+        assert_eq!(
+            address(
+                Route::SharedFilesystem,
+                "server",
+                &Endpoint::unix_stream("/run/server.sock"),
+                None
+            ),
+            ResolvedAddress {
+                kind: EndpointKind::UnixStream,
+                url: "unix:///run/server.sock".into(),
+                host: None,
+                port: None,
+                path: Some("/run/server.sock".into()),
+            }
         );
     }
 }

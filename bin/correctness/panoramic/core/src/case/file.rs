@@ -204,9 +204,7 @@ impl<'de> Deserialize<'de> for FileSource {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EndpointOverride {
-    /// Required listener port; has no default.
-    // TODO: remove once endpoint addresses use the override's port.
-    #[allow(dead_code, reason = "Retained for endpoint address resolution.")]
+    /// Required nonzero listener port, checked during planning; has no default.
     pub(crate) port: u16,
 }
 

@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use super::{connections::ParticipantEndpoints, routes::check_route};
+use super::{connections::ParticipantEndpoints, routes::route};
 use crate::{
     backend::{late_facts, writes_late_files, LateFact, LateFactTiming},
     case::{
@@ -195,7 +195,7 @@ fn check_template_addresses(
                 };
                 if target != name {
                     let target_realization = layout.get(target).expect("referenced participants have a layout");
-                    check_route(served_endpoint.kind, realization, target_realization).map_err(|constraint| format!(
+                    route(served_endpoint.kind, realization, target_realization).map_err(|constraint| format!(
                         "{context} references endpoint '{endpoint}' of participant '{target}', which it cannot reach: {constraint}"
                     ))?;
                 }
@@ -326,7 +326,9 @@ mod tests {
             .load_content(yaml, "alpha", Path::new("alpha/config.yaml"))
             .unwrap()
             .remove(0);
-        let plan = CasePlan::compile(case, Os::Linux, &registries).unwrap().unwrap();
+        let plan = CasePlan::compile(case, Os::Linux, &registries, &mut crate::plan::PortRegistry::new())
+            .unwrap()
+            .unwrap();
         let config = plan.effective_config("subject").unwrap();
         assert_eq!(
             config.env,

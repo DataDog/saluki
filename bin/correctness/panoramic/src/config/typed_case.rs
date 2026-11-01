@@ -361,9 +361,14 @@ mod tests {
                 .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
                 .unwrap();
             assert_eq!(cases.len(), 1);
-            let plan = CasePlan::compile(cases.into_iter().next().unwrap(), Os::Linux, &crate::REGISTRIES)
-                .unwrap()
-                .unwrap();
+            let plan = CasePlan::compile(
+                cases.into_iter().next().unwrap(),
+                Os::Linux,
+                &crate::REGISTRIES,
+                &mut panoramic_core::plan::PortRegistry::new(),
+            )
+            .unwrap()
+            .unwrap();
             assert_eq!(
                 plan.integration_config().unwrap_err().to_string(),
                 "Cannot run case 'alpha' from alpha/config.yaml: \
@@ -602,7 +607,16 @@ mod tests {
         let entries = ["baseline=base:override".parse().unwrap()];
         let plans: Vec<_> = cases
             .into_iter()
-            .map(|case| CasePlan::compile(case, Os::Linux, &crate::REGISTRIES).unwrap().unwrap())
+            .map(|case| {
+                CasePlan::compile(
+                    case,
+                    Os::Linux,
+                    &crate::REGISTRIES,
+                    &mut panoramic_core::plan::PortRegistry::new(),
+                )
+                .unwrap()
+                .unwrap()
+            })
             .collect();
         let overridden = build_runners(&plans, Os::Linux, &entries).unwrap();
         let declared = build_runners(&plans, Os::Linux, &[]).unwrap();

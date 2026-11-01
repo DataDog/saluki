@@ -202,6 +202,16 @@ realizations have no route for the endpoint's kind. Network endpoints connect pa
 realization, or a host process group to a Linux container. Unix sockets need the same realization and can't use
 Windows containers. Named pipes don't connect participants.
 
+On every OS in `subject_os`, panoramic resolves each connection to an address as the consumer sees it and sets
+its type's delivered environment variables, replacing the type's defaults. Containers of one kind reach each
+other, and pods reach each other, by participant name and the server's port. Host process groups use
+`127.0.0.1` and the server's port. A host process group reaches a Linux container on `127.0.0.1` and a runner-host
+port, allocated while planning from one pool per invocation below the OS's default ephemeral port range.
+A Unix socket is reached at the path its server listens on. A served socket path may use fact references,
+but not references resolved later, such as late facts. `config.endpoints` gives the nonzero port of a listener
+whose port the type can't derive from configuration. Overriding any other endpoint fails, as does leaving
+such a port out.
+
 A case must not set, in `config.env` or the overlay for that OS, an environment variable that one of its
 connections delivers. Two connections of one participant must not deliver the same variable.
 Every required consumed endpoint must be connected, and each `config.endpoints` key must name an endpoint

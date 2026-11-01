@@ -1,8 +1,12 @@
-//! Validates connections against each participant's configured endpoints.
+//! Validates connections, resolves each one to the address its consumer sees and computes
+//! the consumer's delivered environment.
 
-use std::collections::BTreeMap;
+use std::collections::{btree_map::Entry, BTreeMap};
 
-use super::routes::check_route;
+use super::{
+    ports::PortRegistry,
+    routes::{address, route, Route},
+};
 use crate::{
     case::{declared_names, CaseFile},
     endpoint::{ConsumedEndpoint, Delivery, Endpoint},
@@ -21,15 +25,23 @@ pub(super) struct ParticipantEndpoints {
 }
 
 /// Checks each consumer's connections, then its required endpoints, all in name order.
+/// Resolves each connection's address, drawing runner-host ports from `registry` in check order,
+/// and returns each consumer's delivered environment variables by participant name.
 pub(super) fn check_connections(
-    file: &CaseFile, layout: &Layout, endpoints: &BTreeMap<String, ParticipantEndpoints>,
-) -> Result<(), String> {
+    file: &CaseFile, layout: &Layout, endpoints: &BTreeMap<String, ParticipantEndpoints>, registry: &mut PortRegistry,
+) -> Result<BTreeMap<String, BTreeMap<String, String>>, String> {
+    let mut runner_host_ports = RunnerHostPorts {
+        registry,
+        ports: BTreeMap::new(),
+    };
+    let mut deliveries = BTreeMap::new();
     for (name, entry) in &file.participants {
         let realization = layout.get(name).expect("loaded participants have a layout");
         let type_name = &entry.participant_type;
         let holder = describe_participant(name, type_name, realization);
         let consumer_endpoints = &endpoints[name];
         let consumes = &consumer_endpoints.consumed;
+        let mut delivered_keys = BTreeMap::new();
         let mut delivered_env = BTreeMap::new();
         for (connection, target) in &entry.connect {
             let Some(endpoint) = consumes.get(connection) else {
@@ -57,25 +69,42 @@ pub(super) fn check_connections(
                     declared_names(&endpoint.accepts.iter().map(|kind| kind.name()).collect::<Vec<_>>()),
                 ));
             }
-            if let Err(constraint) = check_route(served_endpoint.kind, realization, target_realization) {
-                return Err(format!(
+            let route = route(served_endpoint.kind, realization, target_realization).map_err(|constraint| {
+                format!(
                     "participant '{name}' connects '{connection}' to '{target_name}.{target_endpoint}', an endpoint of kind {}; {holder} cannot reach {target_holder}: {constraint}",
                     served_endpoint.kind.name(),
-                ));
-            }
-            let Delivery::Env(keys) = &endpoint.delivery;
+                )
+            })?;
+            let Delivery::Env { keys, value } = &endpoint.delivery;
             for key in keys {
                 if consumer_endpoints.values.env.contains_key(key) {
                     return Err(format!(
                         "{holder} sets env '{key}', which its connection '{connection}' delivers; remove one of them"
                     ));
                 }
-                if let Some(earlier) = delivered_env.insert(key, connection) {
+                if let Some(earlier) = delivered_keys.insert(key, connection) {
                     return Err(format!(
                         "{holder} delivers env '{key}' through both '{earlier}' and '{connection}'"
                     ));
                 }
             }
+            let runner_host_port = if route == Route::RunnerHostPort {
+                Some(runner_host_ports.for_endpoint(target_name, target_endpoint).map_err(|error| {
+                    format!("{holder} cannot resolve connection '{connection}' to '{target_name}.{target_endpoint}': {error}")
+                })?)
+            } else {
+                None
+            };
+            let resolved = address(route, target_name, served_endpoint, runner_host_port);
+            let env = value(&resolved);
+            if !env.keys().eq(keys.iter()) {
+                return Err(format!(
+                    "{holder} delivers connection '{connection}' as env {}, but its type declares {}",
+                    declared_names(&env.keys().map(String::as_str).collect::<Vec<_>>()),
+                    declared_names(&keys.iter().map(String::as_str).collect::<Vec<_>>()),
+                ));
+            }
+            delivered_env.extend(env);
         }
         for (connection, endpoint) in consumes {
             if endpoint.required && !entry.connect.contains_key(connection) {
@@ -84,6 +113,23 @@ pub(super) fn check_connections(
                 ));
             }
         }
+        deliveries.insert(name.clone(), delivered_env);
     }
-    Ok(())
+    Ok(deliveries)
+}
+
+/// All host-process consumers of one listener share its published port within this case and OS.
+struct RunnerHostPorts<'a> {
+    registry: &'a mut PortRegistry,
+    ports: BTreeMap<(String, String), u16>,
+}
+
+impl RunnerHostPorts<'_> {
+    fn for_endpoint(&mut self, server: &str, endpoint: &str) -> Result<u16, String> {
+        let entry = self.ports.entry((server.into(), endpoint.into()));
+        match entry {
+            Entry::Occupied(entry) => Ok(*entry.get()),
+            Entry::Vacant(entry) => Ok(*entry.insert(self.registry.allocate()?)),
+        }
+    }
 }

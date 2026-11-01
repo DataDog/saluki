@@ -1072,7 +1072,14 @@ comparison: {image: comp}
             .load_content(&yaml, "participant", std::path::Path::new("config.yaml"))
             .unwrap()
             .remove(0);
-        let plan = LoadedPlan::compile(case, Os::MacOs, &REGISTRIES).unwrap().unwrap();
+        let plan = LoadedPlan::compile(
+            case,
+            Os::MacOs,
+            &REGISTRIES,
+            &mut panoramic_core::plan::PortRegistry::new(),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(
             listing_text(&plan),
             "  participant\n    Timeout: 1s\n    \
@@ -1096,7 +1103,14 @@ comparison: {image: comp}
                 .load_content(&yaml, "typed", std::path::Path::new("config.yaml"))
                 .unwrap()
                 .remove(0);
-            let plan = LoadedPlan::compile(case, Os::Linux, &REGISTRIES).unwrap().unwrap();
+            let plan = LoadedPlan::compile(
+                case,
+                Os::Linux,
+                &REGISTRIES,
+                &mut panoramic_core::plan::PortRegistry::new(),
+            )
+            .unwrap()
+            .unwrap();
             assert_eq!(listing_text(&plan), expected);
         }
     }

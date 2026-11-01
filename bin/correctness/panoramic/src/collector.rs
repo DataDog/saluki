@@ -324,7 +324,7 @@ mod tests {
     use panoramic_core::events::create_event_channel;
     use panoramic_core::layout::Os;
     use panoramic_core::machine_output::RUN_REPORT_FILE_NAME;
-    use panoramic_core::plan::CasePlan;
+    use panoramic_core::plan::{CasePlan, PortRegistry};
     use panoramic_core::record::{AssertionResult, AssertionStatus};
     use panoramic_core::result::{ErrorKind, TestResult};
     use serde_json::{json, Value};
@@ -369,7 +369,7 @@ mod tests {
             for test in tests {
                 runner
                     .register(BuiltCase {
-                        plan: CasePlan::compile(test.case(), Os::Linux, &crate::REGISTRIES)
+                        plan: CasePlan::compile(test.case(), Os::Linux, &crate::REGISTRIES, &mut PortRegistry::new())
                             .unwrap()
                             .unwrap(),
                         runner: Box::new(test),

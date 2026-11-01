@@ -11,6 +11,8 @@ use crate::{
 
 /// One participant's case configuration for its participant OS, after applying that OS's overlay.
 ///
+/// Contains only case values, before type defaults and connection deliveries.
+///
 /// In `env` and `params`, fact references and fixed late facts (a host process group's `ip`) are already substituted.
 /// Other references stay exactly as written: another participant's `container_id` and endpoint and connection
 /// addresses resolve at creation; the participant's own late facts listed by
@@ -48,19 +50,22 @@ impl CaseValues {
     }
 }
 
-/// A participant's configuration: its type's defaults with the case's values applied over them.
+/// A participant's configuration: type defaults, connection deliveries, then case values, with later layers winning.
 ///
+/// The `validate_config`, `default_env`, `endpoints` and `consumes` hooks see configuration before deliveries.
+/// A type must derive what it serves and consumes independently of where it connects.
 /// Case references follow the substitution and checking rules of [`CaseValues`].
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EffectiveConfig {
-    /// Type defaults with case environment variables replacing matching keys. Defaults to empty.
+    /// Type defaults, then delivered values, then case environment variables. Defaults to empty.
+    /// Case values must not set a key delivered by a connection.
     pub env: BTreeMap<String, String>,
     /// Case-supplied file sources, relative to the case directory. Defaults to empty.
     /// Files marked `template: true` keep their references as written, checked for this OS.
     pub files: BTreeMap<String, FileSource>,
     /// Case parameters after the OS overlay, interpreted by the participant type. Defaults to empty.
     pub params: BTreeMap<String, serde_json::Value>,
-    /// Case endpoint overrides, whose values the participant type interprets. Defaults to empty.
+    /// Case-supplied ports for listeners whose port the type cannot derive. Defaults to empty.
     pub endpoints: BTreeMap<String, EndpointOverride>,
 }
 
@@ -132,7 +137,8 @@ pub trait ParticipantType: Send + Sync {
     /// Endpoints this participant serves with its configuration, by name. Defaults to none.
     /// Called after [`Self::validate_config`], only with realizations from [`Self::supports`].
     ///
-    /// `config` holds substituted values; see [`CaseValues`].
+    /// `config` holds substituted values before connection deliveries; see [`EffectiveConfig`].
+    /// Derive these endpoints independently of where the participant connects.
     ///
     /// # Errors
     ///
@@ -146,7 +152,8 @@ pub trait ParticipantType: Send + Sync {
     /// Endpoints this participant consumes with its configuration, by name: the keys a case may `connect`.
     /// Defaults to none. Called after [`Self::validate_config`], only with realizations from [`Self::supports`].
     ///
-    /// `config` holds substituted values; see [`CaseValues`].
+    /// `config` holds substituted values before connection deliveries; see [`EffectiveConfig`].
+    /// Derive these endpoints independently of where the participant connects.
     fn consumes(&self, _realization: Realization, _config: &EffectiveConfig) -> BTreeMap<String, ConsumedEndpoint> {
         BTreeMap::new()
     }

@@ -1,6 +1,6 @@
-//! Configuration-dependent served and consumed endpoint declarations.
+//! Served listeners, consumer-visible addresses and connection delivery declarations.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// How a served endpoint is reached.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -39,12 +39,107 @@ impl EndpointKind {
 /// An endpoint a participant serves.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Endpoint {
-    /// How a consumer reaches this endpoint.
-    pub kind: EndpointKind,
+    pub(crate) kind: EndpointKind,
+    pub(crate) listener: Listener,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Listener {
+    Port(Port),
+    Path(String),
+    Pipe(String),
+}
+
+/// Where a network listener's port comes from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Case-supplied ports are declared by core's test participant types."
+    )
+)]
+pub(crate) enum Port {
+    /// A port the participant type derives from its configuration.
+    Fixed(u16),
+    /// A port only the case knows, supplied as `config.endpoints.<name>.port`.
+    FromCase,
+}
+
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Endpoints are constructed by core's test participant types.")
+)]
+impl Endpoint {
+    /// Declares a TCP listener at the given port.
+    pub(crate) fn tcp(port: Port) -> Self {
+        Self {
+            kind: EndpointKind::Tcp,
+            listener: Listener::Port(port),
+        }
+    }
+
+    /// Declares a UDP listener at the given port.
+    pub(crate) fn udp(port: Port) -> Self {
+        Self {
+            kind: EndpointKind::Udp,
+            listener: Listener::Port(port),
+        }
+    }
+
+    /// Declares an HTTP listener at the given port.
+    pub(crate) fn http(port: Port) -> Self {
+        Self {
+            kind: EndpointKind::Http,
+            listener: Listener::Port(port),
+        }
+    }
+
+    /// Declares a gRPC listener at the given port.
+    pub(crate) fn grpc(port: Port) -> Self {
+        Self {
+            kind: EndpointKind::Grpc,
+            listener: Listener::Port(port),
+        }
+    }
+
+    /// Declares a Unix datagram socket at the given path.
+    pub(crate) fn unix_datagram(path: impl Into<String>) -> Self {
+        Self {
+            kind: EndpointKind::UnixDatagram,
+            listener: Listener::Path(path.into()),
+        }
+    }
+
+    /// Declares a Unix stream socket at the given path.
+    pub(crate) fn unix_stream(path: impl Into<String>) -> Self {
+        Self {
+            kind: EndpointKind::UnixStream,
+            listener: Listener::Path(path.into()),
+        }
+    }
+
+    /// Declares a named pipe with the given name.
+    pub(crate) fn named_pipe(name: impl Into<String>) -> Self {
+        Self {
+            kind: EndpointKind::NamedPipe,
+            listener: Listener::Pipe(name.into()),
+        }
+    }
+}
+
+/// An endpoint address as seen by the consuming participant.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedAddress {
+    pub(crate) kind: EndpointKind,
+    pub(crate) url: String,
+    pub(crate) host: Option<String>,
+    pub(crate) port: Option<u16>,
+    pub(crate) path: Option<String>,
 }
 
 /// An endpoint a participant consumes: a key it accepts in `connect`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct ConsumedEndpoint {
     /// Endpoint kinds accepted as connection targets.
     pub accepts: Vec<EndpointKind>,
@@ -55,10 +150,15 @@ pub struct ConsumedEndpoint {
 }
 
 /// How a connection's resolved address reaches the consuming participant's processes.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum Delivery {
-    /// Sets these environment variables. A case that connects the endpoint must not set them in `env`.
-    Env(BTreeSet<String>),
+    /// Sets environment variables from the address seen by the consumer.
+    Env {
+        /// Keys the delivery writes; a case that connects this endpoint must not set them in `env`.
+        keys: BTreeSet<String>,
+        /// Computes exactly the declared keys from the consumer-visible address.
+        value: fn(&ResolvedAddress) -> BTreeMap<String, String>,
+    },
 }
 
 #[cfg(test)]

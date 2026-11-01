@@ -7,7 +7,11 @@ use std::{
 };
 
 use panoramic_core::case::{deserialize_case, deserialize_env_map, CaseDuration};
-use panoramic_core::{case::CaseSchema, layout::Os, plan::CasePlan};
+use panoramic_core::{
+    case::CaseSchema,
+    layout::Os,
+    plan::{CasePlan, PortRegistry},
+};
 use saluki_error::{generic_error, GenericError};
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value;
@@ -684,6 +688,7 @@ pub(crate) fn discover_in_scope(dirs: &[PathBuf], subject_os: Os) -> Result<Vec<
     let cases = crate::CASE_LOADER.discover_cases(dirs)?;
     let mut plans = Vec::new();
     let mut errors = Vec::new();
+    let mut ports = PortRegistry::new();
     for case in cases.into_iter().filter(|case| !case.is_disabled()) {
         // The correctness runner always uses Linux containers, so its cases are selected under every runtime.
         // TODO: report correctness cases as skipped off Linux once skipped outcomes exist.
@@ -692,7 +697,7 @@ pub(crate) fn discover_in_scope(dirs: &[PathBuf], subject_os: Os) -> Result<Vec<
         } else {
             subject_os
         };
-        match CasePlan::compile(case, os, &crate::REGISTRIES) {
+        match CasePlan::compile(case, os, &crate::REGISTRIES, &mut ports) {
             Ok(Some(plan)) => plans.push(plan),
             Ok(None) => {}
             Err(error) => errors.push(format!("{error:#}").replace('\n', "\n    ")),
@@ -878,7 +883,9 @@ procedure:
             .load_content(yaml, "case", Path::new("/cases/case/config.yaml"))
             .unwrap()
             .remove(0);
-        LoadedPlan::compile(case, os, &crate::REGISTRIES).unwrap().unwrap()
+        LoadedPlan::compile(case, os, &crate::REGISTRIES, &mut PortRegistry::new())
+            .unwrap()
+            .unwrap()
     }
 
     fn load_case<T, P>(path: P) -> Result<T, GenericError>
@@ -1060,7 +1067,7 @@ timeout: 30s
     ) -> Result<Vec<BuiltCase>, GenericError> {
         let plans = cases
             .into_iter()
-            .map(|case| CasePlan::compile(case, os, &crate::REGISTRIES))
+            .map(|case| CasePlan::compile(case, os, &crate::REGISTRIES, &mut PortRegistry::new()))
             .collect::<Result<Vec<_>, _>>()?
             .into_iter()
             .map(|plan| plan.expect("the test case declares the selected subject OS"))
@@ -1493,7 +1500,11 @@ timeout: 30s
         let entries = ["baseline=base:override".parse().unwrap()];
         let plans: Vec<_> = cases
             .into_iter()
-            .map(|case| CasePlan::compile(case, Os::Linux, &crate::REGISTRIES).unwrap().unwrap())
+            .map(|case| {
+                CasePlan::compile(case, Os::Linux, &crate::REGISTRIES, &mut PortRegistry::new())
+                    .unwrap()
+                    .unwrap()
+            })
             .collect();
         let runners = build_runners(&plans, Os::Linux, &entries).unwrap();
         assert_eq!(runners.len(), plans.len());

@@ -8,7 +8,9 @@ use crate::{
     backend,
     case::{
         config_references::FileTemplates, declared_names, CaseConfig, CaseFile, CaseSchema, ProcedureNode, Registries,
+        Template,
     },
+    endpoint::{Endpoint, Listener, Port},
     layout::{describe_participant, describe_realizations, lay_out, Layout, Os, Realization},
     participant::{find_type, CaseValues, EffectiveConfig, FactDeclaration, ParticipantType},
     record::step_label,
@@ -17,9 +19,11 @@ use crate::{
 
 mod connections;
 mod order;
+mod ports;
 mod references;
 mod routes;
 
+pub use self::ports::PortRegistry;
 use self::{
     connections::{check_connections, ParticipantEndpoints},
     order::{dependency_order, DependencyOrder},
@@ -42,22 +46,24 @@ struct PlannedParticipant {
 impl<C> CasePlan<C> {
     /// Validates every declared subject OS, returning a plan only for a declared selection.
     /// Participant cases carry a layout; typed cases retain their loader-supplied data.
+    /// Only the selected OS draws runner-host ports from `ports`; other OSes use separate registries.
     ///
     /// # Errors
     ///
     /// Returns the first error on any declared subject OS, naming the case, source and failing OS,
     /// even when the selected OS is excluded. On each OS, checks run in this order: layout;
     /// configuration fact and late-fact references (`env`, `params`, then template files), configuration,
-    /// endpoint derivation and overrides
-    /// per participant in name order;
+    /// endpoint derivation and overrides, then case-port and socket-path checks in endpoint name order,
+    /// all per participant in name order;
     /// connections per consumer in name order (per `connect` key in name order: consumed, served,
-    /// accepted kind, route, delivered env keys; then required endpoints in name order);
+    /// accepted kind, route, delivered env keys, address allocation and delivery values;
+    /// then required endpoints in name order);
     /// configuration endpoint and connection references per participant in name order (`env`, then `params`,
     /// then template files);
     /// create order, then start order;
     /// step fact and late-fact references in procedure order with step labels.
     pub fn compile(
-        case: CaseConfig<C>, subject_os: Os, registries: &Registries<'_>,
+        case: CaseConfig<C>, subject_os: Os, registries: &Registries<'_>, ports: &mut PortRegistry,
     ) -> Result<Option<Self>, GenericError> {
         let mut layout = None;
         let mut order = None;
@@ -74,9 +80,20 @@ impl<C> CasePlan<C> {
                     )
                 };
                 let candidate = lay_out(&file.participants, registries.participant_types, os).map_err(&error)?;
-                let (candidate_participants, candidate_order) =
-                    plan_participants(file, case.file_templates(), &candidate, registries.participant_types)
-                        .map_err(&error)?;
+                let mut scratch_ports = PortRegistry::new();
+                let os_ports = if os == subject_os {
+                    &mut *ports
+                } else {
+                    &mut scratch_ports
+                };
+                let (candidate_participants, candidate_order) = plan_participants(
+                    file,
+                    case.file_templates(),
+                    &candidate,
+                    registries.participant_types,
+                    os_ports,
+                )
+                .map_err(&error)?;
                 check_reference_needs(
                     file,
                     procedure,
@@ -156,10 +173,12 @@ impl<C> CasePlan<C> {
     }
 }
 
-/// Builds effective configurations, checks endpoints, connections and configuration address references
-/// in participant name order, then computes create and start orders.
+/// Builds effective configurations, checks endpoints and connections, merges connection deliveries into each
+/// consumer's environment and checks configuration address references, all in participant name order.
+/// Then computes create and start orders.
 fn plan_participants(
     file: &CaseFile, templates: &FileTemplates, layout: &Layout, types: &[&dyn ParticipantType],
+    ports: &mut PortRegistry,
 ) -> Result<(BTreeMap<String, PlannedParticipant>, DependencyOrder), String> {
     let mut participants = BTreeMap::new();
     let mut participant_endpoints = BTreeMap::new();
@@ -177,18 +196,11 @@ fn plan_participants(
             .map_err(&invalid_config)?;
         let defaults = participant_type.default_env(realization, &values);
         let config = EffectiveConfig::assemble(defaults, values.clone());
-        let endpoints = participant_type
+        let mut endpoints = participant_type
             .endpoints(realization, &config)
             .map_err(invalid_config)?;
+        resolve_listeners(&holder, &config, &mut endpoints)?;
         let consumed = participant_type.consumes(realization, &config);
-        for endpoint in config.endpoints.keys() {
-            if !endpoints.contains_key(endpoint) {
-                return Err(format!(
-                    "{holder} overrides endpoint '{endpoint}', which it does not serve; it serves {}",
-                    declared_names(&endpoints.keys().map(String::as_str).collect::<Vec<_>>()),
-                ));
-            }
-        }
         participant_endpoints.insert(
             name.to_string(),
             ParticipantEndpoints {
@@ -205,10 +217,70 @@ fn plan_participants(
             },
         );
     }
-    check_connections(file, layout, &participant_endpoints)?;
+    let deliveries = check_connections(file, layout, &participant_endpoints, ports)?;
+    for (name, env) in deliveries {
+        participants
+            .get_mut(&name)
+            .expect("consumers are planned participants")
+            .config
+            .env
+            .extend(env);
+    }
     references::check_address_references(file, templates, layout, &participant_endpoints)?;
     let order = dependency_order(file, templates, layout, &participant_endpoints)?;
     Ok((participants, order))
+}
+
+/// Checks overrides, then fills case-supplied ports and validates socket paths in endpoint name order.
+fn resolve_listeners(
+    holder: &str, config: &EffectiveConfig, endpoints: &mut BTreeMap<String, Endpoint>,
+) -> Result<(), String> {
+    for (name, overridden) in &config.endpoints {
+        let Some(endpoint) = endpoints.get(name) else {
+            return Err(format!(
+                "{holder} overrides endpoint '{name}', which it does not serve; it serves {}",
+                declared_names(&endpoints.keys().map(String::as_str).collect::<Vec<_>>()),
+            ));
+        };
+        let derived = match endpoint.listener {
+            Listener::Port(Port::FromCase) => {
+                if overridden.port == 0 {
+                    return Err(format!("{holder} overrides endpoint '{name}' with port 0"));
+                }
+                continue;
+            }
+            Listener::Port(Port::Fixed(_)) => "port",
+            Listener::Path(_) => "path",
+            Listener::Pipe(_) => "pipe name",
+        };
+        return Err(format!(
+            "{holder} overrides endpoint '{name}', whose {derived} its type derives from its configuration"
+        ));
+    }
+    for (name, endpoint) in endpoints {
+        match &endpoint.listener {
+            Listener::Port(Port::FromCase) => {
+                let Some(overridden) = config.endpoints.get(name) else {
+                    return Err(format!(
+                        "{holder} serves endpoint '{name}', whose port the case must give as config.endpoints.{name}.port"
+                    ));
+                };
+                endpoint.listener = Listener::Port(Port::Fixed(overridden.port));
+            }
+            Listener::Path(path) => {
+                if !path
+                    .parse::<Template>()
+                    .is_ok_and(|template| template.references().next().is_none())
+                {
+                    return Err(format!(
+                        "{holder} serves endpoint '{name}' at '{path}', which holds a reference resolved only after planning"
+                    ));
+                }
+            }
+            Listener::Port(Port::Fixed(_)) | Listener::Pipe(_) => {}
+        }
+    }
+    Ok(())
 }
 
 /// Rejects the first step needing an unavailable fact or late fact.
@@ -313,16 +385,16 @@ mod tests {
             &self, _realization: Realization, _config: &EffectiveConfig,
         ) -> Result<BTreeMap<String, Endpoint>, String> {
             Ok([
-                ("tcp", EndpointKind::Tcp),
-                ("udp", EndpointKind::Udp),
-                ("http", EndpointKind::Http),
-                ("grpc", EndpointKind::Grpc),
-                ("datagram", EndpointKind::UnixDatagram),
-                ("stream", EndpointKind::UnixStream),
-                ("pipe", EndpointKind::NamedPipe),
+                ("tcp", Endpoint::tcp(Port::Fixed(1001))),
+                ("udp", Endpoint::udp(Port::Fixed(1001))),
+                ("http", Endpoint::http(Port::Fixed(1003))),
+                ("grpc", Endpoint::grpc(Port::Fixed(1004))),
+                ("datagram", Endpoint::unix_datagram("/run/every/datagram.sock")),
+                ("stream", Endpoint::unix_stream("/run/every/stream.sock")),
+                ("pipe", Endpoint::named_pipe("every-pipe")),
             ]
             .into_iter()
-            .map(|(name, kind)| (name.into(), Endpoint { kind }))
+            .map(|(name, endpoint)| (name.into(), endpoint))
             .collect())
         }
 
@@ -342,7 +414,7 @@ mod tests {
             EveryKindServer.supports()
         }
 
-        fn consumes(&self, _realization: Realization, _config: &EffectiveConfig) -> BTreeMap<String, ConsumedEndpoint> {
+        fn consumes(&self, _realization: Realization, config: &EffectiveConfig) -> BTreeMap<String, ConsumedEndpoint> {
             BTreeMap::from([(
                 "target".into(),
                 ConsumedEndpoint {
@@ -356,7 +428,20 @@ mod tests {
                         EndpointKind::NamedPipe,
                     ],
                     required: false,
-                    delivery: Delivery::Env(BTreeSet::from(["TARGET".into()])),
+                    delivery: Delivery::Env {
+                        keys: BTreeSet::from(["TARGET".into()]),
+                        value: match config.env.get("DELIVERY").map(String::as_str) {
+                            Some("wrong") => |address| BTreeMap::from([("OTHER".into(), address.url.clone())]),
+                            Some("missing") => |_| BTreeMap::new(),
+                            Some("extra") => |address| {
+                                BTreeMap::from([
+                                    ("TARGET".into(), address.url.clone()),
+                                    ("OTHER".into(), address.url.clone()),
+                                ])
+                            },
+                            _ => |address| BTreeMap::from([("TARGET".into(), address.url.clone())]),
+                        },
+                    },
                 },
             )])
         }
@@ -398,6 +483,22 @@ mod tests {
             let mut endpoints = EveryKindServer.endpoints(realization, config)?;
             if config.env.get("TCP").is_some_and(|value| value == "off") {
                 endpoints.remove("tcp");
+            }
+            if config.env.get("CASE_PORT").is_some_and(|value| value == "required") {
+                endpoints.insert("tcp".into(), Endpoint::tcp(Port::FromCase));
+            }
+            if let Some(path) = config.env.get("SOCKET_PATH") {
+                endpoints.insert("stream".into(), Endpoint::unix_stream(path));
+            }
+            if let Some(mode) = config.params.get("mode").and_then(serde_json::Value::as_str) {
+                let path = match mode {
+                    "late-path" => Some("{{self.late.ip}}/stream.sock"),
+                    "malformed-path" => Some("{{unfinished"),
+                    _ => None,
+                };
+                if let Some(path) = path {
+                    endpoints.insert("stream".into(), Endpoint::unix_stream(path));
+                }
             }
             Ok(endpoints)
         }
@@ -447,7 +548,7 @@ mod tests {
         for (from, _) in sources {
             std::fs::remove_file(source.parent().unwrap().join(from)).unwrap();
         }
-        CasePlan::compile(case, os, &FILE_REGISTRIES)
+        CasePlan::compile(case, os, &FILE_REGISTRIES, &mut PortRegistry::new())
             .map_err(normalize)
             .map(Option::unwrap)
     }
@@ -476,7 +577,10 @@ mod tests {
                         ConsumedEndpoint {
                             accepts: vec![EndpointKind::Http],
                             required: false,
-                            delivery: Delivery::Env(BTreeSet::from(["SHARED".into()])),
+                            delivery: Delivery::Env {
+                                keys: BTreeSet::from(["SHARED".into()]),
+                                value: |address| BTreeMap::from([("SHARED".into(), address.url.clone())]),
+                            },
                         },
                     )
                 })
@@ -497,6 +601,7 @@ mod tests {
             &Server,
             &EveryKindClient,
             &EveryKindServer,
+            &FileServer,
             &SharedDeliveryClient,
         ],
         steps: STEPS,
@@ -505,11 +610,17 @@ mod tests {
         CaseLoader::new(CONFIG_REGISTRIES, FixtureTypes, "fixture-participants");
 
     pub(super) fn compile(yaml: &str, os: Os) -> Result<Option<CasePlan<FixtureConfig>>, GenericError> {
+        compile_with_ports(yaml, os, &mut PortRegistry::new())
+    }
+
+    fn compile_with_ports(
+        yaml: &str, os: Os, ports: &mut PortRegistry,
+    ) -> Result<Option<CasePlan<FixtureConfig>>, GenericError> {
         let case = CONFIG_LOADER
             .load_content(yaml, "alpha", Path::new("cases/alpha/config.yaml"))
             .unwrap()
             .remove(0);
-        CasePlan::compile(case, os, &CONFIG_REGISTRIES)
+        CasePlan::compile(case, os, &CONFIG_REGISTRIES, ports)
     }
 
     #[test]
@@ -575,7 +686,9 @@ procedure: []
         std::fs::write(source.parent().unwrap().join("windows.yaml"), "port: 7").unwrap();
         for os in [Os::Linux, Os::Windows] {
             let case = CONFIG_LOADER.load_file(&source).unwrap().remove(0);
-            let plan = CasePlan::compile(case, os, &CONFIG_REGISTRIES).unwrap().unwrap();
+            let plan = CasePlan::compile(case, os, &CONFIG_REGISTRIES, &mut PortRegistry::new())
+                .unwrap()
+                .unwrap();
             let effective = plan.effective_config("subject").unwrap();
             assert_eq!(effective.env["LEVEL"], "info");
             if os == Os::Windows {
@@ -627,8 +740,10 @@ procedure: []
   b: {type: configured, config: {params: {mode: broken}}}
   a: {type: configured, config: {params: {mode: broken}}}
   c: {type: server, config: {env: {PORT: x}}}
-  d: {type: server, config: {endpoints: {z-typo: {port: 80}, a-typo: {port: 80}}}}
+  d: {type: server, config: {endpoints: {z-typo: {port: 80}, api: {port: 80}, a-typo: {port: 80}}}}
+  d1: {type: file-server, config: {env: {CASE_PORT: required}, params: {mode: late-path}, endpoints: {pipe: {port: 80}, tcp: {port: 0}}}}
   e: {type: client, config: {env: {SIDE_PORT: '80', SIDE_HOST: literal}}, connect: {z-typo: subject.typo, a-typo: subject.typo}}
+  e1: {type: every-kind-client, config: {env: {DELIVERY: wrong, TARGET: literal}}, connect: {target: subject.api}}
   f: {type: client, connect: {typo: subject.api}}
   g: {type: server, config: {endpoints: {typo: {port: 80}}}}
   other: {type: server, os: macos}"#,
@@ -661,9 +776,34 @@ procedure: []
                 "participant 'd' of type 'server' as windows-container on windows overrides endpoint 'a-typo'",
             ),
             (
+                ", api: {port: 80}",
+                "",
+                "participant 'd' of type 'server' as windows-container on windows overrides endpoint 'api', whose port its type derives from its configuration",
+            ),
+            (
                 "z-typo: {port: 80}",
                 "",
                 "participant 'd' of type 'server' as windows-container on windows overrides endpoint 'z-typo'",
+            ),
+            (
+                "pipe: {port: 80}, ",
+                "",
+                "participant 'd1' of type 'file-server' as windows-container on windows overrides endpoint 'pipe', whose pipe name its type derives from its configuration",
+            ),
+            (
+                "tcp: {port: 0}",
+                "",
+                "participant 'd1' of type 'file-server' as windows-container on windows overrides endpoint 'tcp' with port 0",
+            ),
+            (
+                "mode: late-path",
+                "mode: working",
+                "participant 'd1' of type 'file-server' as windows-container on windows serves endpoint 'stream' at '{{self.late.ip}}/stream.sock', which holds a reference resolved only after planning",
+            ),
+            (
+                "CASE_PORT: required",
+                "",
+                "participant 'd1' of type 'file-server' as windows-container on windows serves endpoint 'tcp', whose port the case must give as config.endpoints.tcp.port",
             ),
             (
                 "g: {type: server, config: {endpoints: {typo: {port: 80}}}}",
@@ -711,6 +851,16 @@ procedure: []
                 "participant 'e' of type 'client' as windows-container on windows does not connect required endpoint 'upstream'",
             ),
             (
+                ", TARGET: literal",
+                "",
+                "participant 'e1' of type 'every-kind-client' as windows-container on windows sets env 'TARGET', which its connection 'target' delivers",
+            ),
+            (
+                "DELIVERY: wrong",
+                "",
+                "participant 'e1' of type 'every-kind-client' as windows-container on windows delivers connection 'target' as env OTHER, but its type declares TARGET",
+            ),
+            (
                 "f: {type: client, connect: {typo: subject.api}}",
                 "f: {type: client}",
                 "participant 'f' of type 'client' as windows-container on windows connects 'typo', which it does not consume",
@@ -750,7 +900,7 @@ participants:
   subject:
     type: file-server
     subject: true
-    config: {env: {ADDRESS: '{{fixture.endpoints.missing.url}}', ID: '{{fixture.late.container_id}}'}}
+    config: {env: {ADDRESS: '{{fixture.endpoints.missing.url}}', ID: '{{fixture.late.container_id}}', CASE_PORT: required, TARGET: literal, DELIVERY: wrong}, params: {mode: late-path}, endpoints: {pipe: {port: 80}}}
     connect: {target: fixture.tcp}
   fixture:
     type: file-server
@@ -761,6 +911,31 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
 "#
         .to_string();
         for (bad, fix, expected) in [
+            (
+                ", endpoints: {pipe: {port: 80}}",
+                "",
+                "overrides endpoint 'pipe', whose pipe name its type derives",
+            ),
+            (
+                "mode: late-path",
+                "mode: working",
+                "serves endpoint 'stream' at '{{self.late.ip}}/stream.sock'",
+            ),
+            (
+                ", CASE_PORT: required",
+                "",
+                "serves endpoint 'tcp', whose port the case must give",
+            ),
+            (
+                ", TARGET: literal",
+                "",
+                "sets env 'TARGET', which its connection 'target' delivers",
+            ),
+            (
+                ", DELIVERY: wrong",
+                "",
+                "delivers connection 'target' as env OTHER, but its type declares TARGET",
+            ),
             (
                 "{{fixture.endpoints.missing.url}}",
                 "literal",
@@ -786,7 +961,7 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
                 .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
                 .unwrap()
                 .remove(0);
-            let message = CasePlan::compile(case, Os::Linux, &registries)
+            let message = CasePlan::compile(case, Os::Linux, &registries, &mut PortRegistry::new())
                 .err()
                 .unwrap()
                 .to_string();
@@ -798,7 +973,9 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
             .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
             .unwrap()
             .remove(0);
-        let plan = CasePlan::compile(case, Os::Linux, &registries).unwrap().unwrap();
+        let plan = CasePlan::compile(case, Os::Linux, &registries, &mut PortRegistry::new())
+            .unwrap()
+            .unwrap();
         assert_eq!(
             plan.create_order().unwrap(),
             [vec!["observer", "subject"], vec!["fixture"]]
@@ -823,6 +1000,335 @@ participants:
   server: {type: server}
 procedure: []
 "#;
+
+    fn host_to_container_case() -> String {
+        CONNECTION_CASE
+            .replace("[linux]", "[macos]")
+            .replace("type: server}", "type: server, os: linux}")
+    }
+
+    #[test]
+    fn a_connection_between_linux_containers_delivers_the_servers_name_and_port() {
+        for port in [8080, 8123] {
+            let yaml = CONNECTION_CASE.replace(
+                "type: server}",
+                &format!("type: server, config: {{env: {{PORT: '{port}'}}}}}}"),
+            );
+            let plan = compile(&yaml, Os::Linux).unwrap().unwrap();
+            assert_eq!(
+                plan.effective_config("client").unwrap().env["UPSTREAM_URL"],
+                format!("http://server:{port}")
+            );
+        }
+    }
+
+    #[test]
+    fn a_connection_between_host_process_groups_delivers_a_loopback_address() {
+        let plan = compile(&CONNECTION_CASE.replace("[linux]", "[macos]"), Os::MacOs)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            plan.effective_config("client").unwrap().env["UPSTREAM_URL"],
+            "http://127.0.0.1:8080"
+        );
+    }
+
+    #[test]
+    fn a_host_process_group_reaches_a_linux_container_only_through_an_allocated_runner_host_port() {
+        let plan = compile(&host_to_container_case(), Os::MacOs).unwrap().unwrap();
+        assert_eq!(
+            plan.effective_config("client").unwrap().env["UPSTREAM_URL"],
+            "http://127.0.0.1:20000"
+        );
+    }
+
+    #[test]
+    fn a_linux_container_cannot_reach_a_host_process_group_and_no_other_route_is_tried() {
+        let yaml = CONNECTION_CASE.replace("type: server}", "type: server, os: macos}");
+        let mut ports = PortRegistry::new();
+        assert_eq!(compile_with_ports(&yaml, Os::Linux, &mut ports).err().unwrap().to_string(),
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'client' connects 'upstream' to 'server.api', an endpoint of kind http; participant 'client' of type 'client' as linux-container on linux cannot reach participant 'server' of type 'server' as host-process-group on macos: network endpoints connect only participants with the same realization, or a host-process-group to a linux-container");
+        assert_eq!(ports.allocate(), Ok(20000));
+    }
+
+    #[test]
+    fn consumers_of_one_container_endpoint_share_its_runner_host_port() {
+        let yaml = host_to_container_case().replace(
+            "participants:",
+            "participants:\n  other: {type: client, connect: {upstream: server.api}}",
+        );
+        let mut ports = PortRegistry::new();
+        let plan = compile_with_ports(&yaml, Os::MacOs, &mut ports).unwrap().unwrap();
+        for name in ["client", "other"] {
+            assert_eq!(
+                plan.effective_config(name).unwrap().env["UPSTREAM_URL"],
+                "http://127.0.0.1:20000"
+            );
+        }
+        assert_eq!(ports.allocate(), Ok(20001));
+    }
+
+    #[test]
+    fn tcp_and_udp_endpoints_on_one_port_get_their_own_schemes_and_runner_host_ports() {
+        let yaml = "timeout: 1s\nsubject_os: [macos]\nparticipants:\n  z: {type: every-kind-client, connect: {target: server.udp}}\n  a: {type: every-kind-client, subject: true, connect: {target: server.tcp}}\n  server: {type: every-kind-server, os: linux}\nprocedure: []\n";
+        let plan = compile(yaml, Os::MacOs).unwrap().unwrap();
+        assert_eq!(
+            plan.effective_config("a").unwrap().env["TARGET"],
+            "tcp://127.0.0.1:20000"
+        );
+        assert_eq!(
+            plan.effective_config("z").unwrap().env["TARGET"],
+            "udp://127.0.0.1:20001"
+        );
+    }
+
+    #[test]
+    fn cases_planned_with_one_registry_get_distinct_runner_host_ports() {
+        let mut ports = PortRegistry::new();
+        for port in [20000, 20001] {
+            let plan = compile_with_ports(&host_to_container_case(), Os::MacOs, &mut ports)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                plan.effective_config("client").unwrap().env["UPSTREAM_URL"],
+                format!("http://127.0.0.1:{port}")
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_selected_subject_os_draws_from_the_run_wide_registry() {
+        let yaml = "timeout: 1s\nsubject_os: [linux, macos, windows]\nparticipants:\n  subject: {type: every-kind-server, subject: true}\n  client: {type: client, os: macos, connect: {upstream: server.api}}\n  server: {type: server, os: linux}\nprocedure: []\n";
+        for selected in [Os::Linux, Os::MacOs, Os::Windows] {
+            let mut ports = PortRegistry::new();
+            let plan = compile_with_ports(yaml, selected, &mut ports).unwrap().unwrap();
+            assert_eq!(
+                plan.effective_config("client").unwrap().env["UPSTREAM_URL"],
+                "http://127.0.0.1:20000"
+            );
+            assert_eq!(ports.allocate(), Ok(20001));
+        }
+        let mut ports = PortRegistry::new();
+        assert!(compile_with_ports(
+            &yaml.replace("[linux, macos, windows]", "[linux, macos]"),
+            Os::Windows,
+            &mut ports
+        )
+        .unwrap()
+        .is_none());
+        assert_eq!(ports.allocate(), Ok(20000));
+    }
+
+    #[test]
+    fn runner_host_port_exhaustion_names_the_connection_in_allocation_order() {
+        let yaml =
+            host_to_container_case().replace("upstream: server.api", "upstream: server.api, side: server.metrics");
+        let mut ports = PortRegistry::over(21000..=21000);
+        assert_eq!(compile_with_ports(&yaml, Os::MacOs, &mut ports).err().unwrap().to_string(),
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'client' of type 'client' as host-process-group on macos cannot resolve connection 'upstream' to 'server.api': all 1 runner-host ports are allocated");
+    }
+
+    #[test]
+    fn a_unix_socket_connection_delivers_the_servers_socket_path() {
+        for (endpoint, expected) in [
+            ("stream", "unix:///run/every/stream.sock"),
+            ("datagram", "unixgram:///run/every/datagram.sock"),
+        ] {
+            let yaml = CONNECTION_CASE
+                .replace("type: client", "type: every-kind-client")
+                .replace("type: server", "type: every-kind-server")
+                .replace("upstream: server.api", &format!("target: server.{endpoint}"));
+            let plan = compile(&yaml, Os::Linux).unwrap().unwrap();
+            assert_eq!(plan.effective_config("client").unwrap().env["TARGET"], expected);
+        }
+    }
+
+    #[test]
+    fn a_delivery_writing_other_keys_than_it_declares_fails_compile_on_any_declared_subject_os() {
+        for (mode, got) in [("wrong", "OTHER"), ("missing", "none"), ("extra", "OTHER, TARGET")] {
+            let yaml = CONNECTION_CASE
+                .replace("[linux]", "[linux, windows]")
+                .replace(
+                    "type: client",
+                    &format!("type: every-kind-client, config: {{os: {{windows: {{env: {{DELIVERY: {mode}}}}}}}}}"),
+                )
+                .replace("upstream:", "target:");
+            for os in [Os::Linux, Os::MacOs, Os::Windows] {
+                assert_eq!(compile(&yaml, os).err().unwrap().to_string(), format!(
+                    "case 'alpha' in cases/alpha/config.yaml: on subject OS 'windows', participant 'client' of type 'every-kind-client' as windows-container on windows delivers connection 'target' as env {got}, but its type declares TARGET"));
+            }
+        }
+    }
+
+    #[test]
+    fn participant_type_hooks_see_configuration_without_connection_deliveries() {
+        struct Hooks(std::sync::Mutex<Vec<&'static str>>);
+        impl ParticipantType for Hooks {
+            fn name(&self) -> &'static str {
+                "hooks"
+            }
+            fn supports(&self) -> &'static [(Os, RealizationKind)] {
+                Client.supports()
+            }
+            fn validate_config(&self, _realization: Realization, config: &CaseValues) -> Result<(), String> {
+                assert_eq!(config.env, BTreeMap::from([("CASE".into(), "value".into())]));
+                self.0.lock().unwrap().push("validate");
+                Ok(())
+            }
+            fn default_env(&self, _realization: Realization, config: &CaseValues) -> BTreeMap<String, String> {
+                assert_eq!(config.env, BTreeMap::from([("CASE".into(), "value".into())]));
+                self.0.lock().unwrap().push("defaults");
+                BTreeMap::from([
+                    ("UPSTREAM_URL".into(), "default".into()),
+                    ("CASE".into(), "default".into()),
+                ])
+            }
+            fn endpoints(
+                &self, _realization: Realization, config: &EffectiveConfig,
+            ) -> Result<BTreeMap<String, Endpoint>, String> {
+                assert_eq!(config.env["UPSTREAM_URL"], "default");
+                assert_eq!(config.env["CASE"], "value");
+                self.0.lock().unwrap().push("endpoints");
+                Ok(BTreeMap::new())
+            }
+            fn consumes(
+                &self, realization: Realization, config: &EffectiveConfig,
+            ) -> BTreeMap<String, ConsumedEndpoint> {
+                assert_eq!(config.env["UPSTREAM_URL"], "default");
+                assert_eq!(config.env["CASE"], "value");
+                self.0.lock().unwrap().push("consumes");
+                Client.consumes(realization, config)
+            }
+            fn processes(&self) -> &'static [&'static str] {
+                &[]
+            }
+        }
+        let hooks = Hooks(std::sync::Mutex::new(Vec::new()));
+        let registries = Registries {
+            participant_types: &[&hooks, &Server],
+            steps: &[],
+        };
+        let loader = CaseLoader::new(registries, FixtureTypes, "fixture-participants");
+        let yaml = CONNECTION_CASE.replace("type: client", "type: hooks, config: {env: {CASE: value}}");
+        let case = loader
+            .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
+            .unwrap()
+            .remove(0);
+        let plan = CasePlan::compile(case, Os::Linux, &registries, &mut PortRegistry::new())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            *hooks.0.lock().unwrap(),
+            ["validate", "defaults", "endpoints", "consumes"]
+        );
+        assert_eq!(
+            plan.effective_config("client").unwrap().env,
+            BTreeMap::from([
+                ("UPSTREAM_URL".into(), "http://server:8080".into()),
+                ("CASE".into(), "value".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn an_endpoint_override_supplies_a_port_only_the_case_knows() {
+        let yaml = CONNECTION_CASE
+            .replace("upstream: server.api", "upstream: server.api, side: server.extra")
+            .replace(
+                "type: server}",
+                "type: server, config: {endpoints: {extra: {port: 90}}}}",
+            );
+        let plan = compile(&yaml, Os::Linux).unwrap().unwrap();
+        assert_eq!(
+            plan.effective_config("client").unwrap().env,
+            BTreeMap::from([
+                ("SIDE_HOST".into(), "server".into()),
+                ("SIDE_PORT".into(), "90".into()),
+                ("UPSTREAM_URL".into(), "http://server:8080".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn an_endpoint_override_with_port_zero_fails_compile_on_every_declared_subject_os() {
+        for (declared, kind) in [
+            (Os::Linux, "linux-container"),
+            (Os::MacOs, "host-process-group"),
+            (Os::Windows, "windows-container"),
+        ] {
+            let yaml = CONNECTION_CASE
+                .replace("[linux]", &format!("[{}]", declared.name()))
+                .replace("upstream: server.api", "upstream: server.api, side: server.extra")
+                .replace(
+                    "type: server}",
+                    "type: server, config: {endpoints: {extra: {port: 0}}}}",
+                );
+            for selected in [Os::Linux, Os::MacOs, Os::Windows] {
+                assert_eq!(compile(&yaml, selected).err().unwrap().to_string(), format!(
+                    "case 'alpha' in cases/alpha/config.yaml: on subject OS '{os}', participant 'server' of type 'server' as {kind} on {os} overrides endpoint 'extra' with port 0",
+                    os = declared.name(),
+                ));
+            }
+            for port in [1, u16::MAX] {
+                let plan = compile(&yaml.replace("port: 0", &format!("port: {port}")), declared)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    plan.effective_config("client").unwrap().env["SIDE_PORT"],
+                    port.to_string()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_endpoint_whose_port_only_the_case_knows_needs_an_override() {
+        let yaml = PARTICIPANT_FIELDS.replace(
+            "type: server",
+            "type: file-server, config: {env: {CASE_PORT: required}}",
+        );
+        assert_eq!(compile_files(&yaml, &[], Os::Linux).err().unwrap(),
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'subject' of type 'file-server' as linux-container on linux serves endpoint 'tcp', whose port the case must give as config.endpoints.tcp.port");
+        let yaml = yaml.replace(
+            "env: {CASE_PORT: required}",
+            "env: {CASE_PORT: required}, endpoints: {tcp: {port: 90}}",
+        );
+        let plan = compile_files(&yaml, &[], Os::Linux).unwrap();
+        assert_eq!(plan.effective_config("subject").unwrap().endpoints["tcp"].port, 90);
+    }
+
+    #[test]
+    fn overriding_an_endpoint_whose_port_the_type_derives_fails_compile() {
+        for (endpoint, derived) in [("tcp", "port"), ("stream", "path"), ("pipe", "pipe name")] {
+            let yaml = PARTICIPANT_FIELDS.replace(
+                "type: server",
+                &format!("type: every-kind-server, config: {{endpoints: {{{endpoint}: {{port: 80}}}}}}"),
+            );
+            assert_eq!(compile(&yaml, Os::Linux).err().unwrap().to_string(), format!(
+                "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'subject' of type 'every-kind-server' as linux-container on linux overrides endpoint '{endpoint}', whose {derived} its type derives from its configuration"));
+        }
+    }
+
+    #[test]
+    fn a_served_socket_path_holding_a_late_reference_fails_compile() {
+        for (mode, path) in [
+            ("late-path", "{{self.late.ip}}/stream.sock"),
+            ("malformed-path", "{{unfinished"),
+        ] {
+            let yaml = PARTICIPANT_FIELDS.replace(
+                "type: server",
+                &format!("type: file-server, config: {{params: {{mode: {mode}}}}}"),
+            );
+            assert_eq!(compile_files(&yaml, &[], Os::Linux).err().unwrap(), format!(
+                "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'subject' of type 'file-server' as linux-container on linux serves endpoint 'stream' at '{path}', which holds a reference resolved only after planning"));
+        }
+        let yaml = "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  client: {type: file-server, subject: true, connect: {target: server.stream}}\n  server: {type: file-server, config: {env: {SOCKET_PATH: '{{self.facts.file}}.sock'}}}\nprocedure: []\n";
+        let plan = compile_files(yaml, &[], Os::Linux).unwrap();
+        assert_eq!(
+            plan.effective_config("client").unwrap().env["TARGET"],
+            "unix:///logs/output.log.sock"
+        );
+    }
 
     #[test]
     fn a_connection_must_name_an_endpoint_its_consumer_consumes() {
@@ -985,7 +1491,8 @@ procedure: []
             plan.effective_config("client").unwrap().env,
             BTreeMap::from([
                 ("SIDE_HOST".into(), "literal".into()),
-                ("SIDE_PORT".into(), "80".into())
+                ("SIDE_PORT".into(), "80".into()),
+                ("UPSTREAM_URL".into(), "http://server:8080".into()),
             ])
         );
     }
@@ -998,7 +1505,7 @@ procedure: []
         let plan = compile(&yaml, Os::Linux).unwrap().unwrap();
         assert_eq!(
             plan.effective_config("client").unwrap().env,
-            BTreeMap::from([("SHARED".into(), "default".into())])
+            BTreeMap::from([("SHARED".into(), "http://server:8080".into())])
         );
         let message = compile(
             &yaml.replace("subject: true", "subject: true, config: {env: {SHARED: literal}}"),
@@ -1149,7 +1656,7 @@ procedure: []
         ] {
             let yaml = format!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n{participants}\nprocedure: []\n");
             let case = loader.load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml")).unwrap().remove(0);
-            let message = CasePlan::compile(case, Os::Linux, &registries).err().unwrap().to_string();
+            let message = CasePlan::compile(case, Os::Linux, &registries, &mut PortRegistry::new()).err().unwrap().to_string();
             assert_eq!(message, format!("case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', {expected}"));
         }
     }
@@ -1231,7 +1738,9 @@ procedure: []
             .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
             .unwrap()
             .remove(0);
-        let plan = CasePlan::compile(case, Os::Linux, &registries).unwrap().unwrap();
+        let plan = CasePlan::compile(case, Os::Linux, &registries, &mut PortRegistry::new())
+            .unwrap()
+            .unwrap();
         assert_eq!(
             plan.layout().unwrap().get("subject").unwrap().kind,
             RealizationKind::KubernetesPod
@@ -1244,7 +1753,7 @@ procedure: []
             )
             .unwrap()
             .remove(0);
-        assert_eq!(CasePlan::compile(case, Os::Linux, &registries).err().unwrap().to_string(),
+        assert_eq!(CasePlan::compile(case, Os::Linux, &registries, &mut PortRegistry::new()).err().unwrap().to_string(),
             "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 1 references late fact 'pod_uid' of participant 'subject', which a linux-container does not have; a linux-container has container_id, ip"
         );
     }
@@ -1291,7 +1800,7 @@ procedure: []
             .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
             .unwrap()
             .remove(0);
-        let message = CasePlan::compile(case, Os::Linux, &registries)
+        let message = CasePlan::compile(case, Os::Linux, &registries, &mut PortRegistry::new())
             .err()
             .unwrap()
             .to_string();
@@ -1306,7 +1815,9 @@ procedure: []
             )
             .unwrap()
             .remove(0);
-        let plan = CasePlan::compile(case, Os::Linux, &registries).unwrap().unwrap();
+        let plan = CasePlan::compile(case, Os::Linux, &registries, &mut PortRegistry::new())
+            .unwrap()
+            .unwrap();
         assert_eq!(plan.fact("subject", "file"), Some("/logs/output.log"));
     }
 
@@ -1400,7 +1911,7 @@ procedure: []
                 .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
                 .unwrap()
                 .remove(0);
-            let plan = CasePlan::compile(case, os, &REGISTRIES).unwrap();
+            let plan = CasePlan::compile(case, os, &REGISTRIES, &mut PortRegistry::new()).unwrap();
             if let Some(kind) = kind {
                 let plan = plan.unwrap();
                 assert_eq!(plan.case().name(), "alpha");
@@ -1425,7 +1936,10 @@ procedure: []
                 .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
                 .unwrap()
                 .remove(0);
-            let message = CasePlan::compile(case, os, &REGISTRIES).err().unwrap().to_string();
+            let message = CasePlan::compile(case, os, &REGISTRIES, &mut PortRegistry::new())
+                .err()
+                .unwrap()
+                .to_string();
             assert!(
                 message.contains(
                     "on subject OS 'windows', participant 'subject' of type 'server' \
@@ -1443,7 +1957,7 @@ procedure: []
                 .load_content("type: fixture", "alpha", Path::new("config.yaml"))
                 .unwrap()
                 .remove(0);
-            let plan = CasePlan::compile(case, os, &REGISTRIES).unwrap();
+            let plan = CasePlan::compile(case, os, &REGISTRIES, &mut PortRegistry::new()).unwrap();
             if os == Os::Linux {
                 assert!(plan.is_none());
             } else {
@@ -1462,7 +1976,7 @@ procedure: []
             .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
             .unwrap()
             .remove(0);
-        let message = CasePlan::compile(case, Os::Linux, &REGISTRIES)
+        let message = CasePlan::compile(case, Os::Linux, &REGISTRIES, &mut PortRegistry::new())
             .err()
             .unwrap()
             .to_string();

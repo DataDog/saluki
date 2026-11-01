@@ -261,7 +261,7 @@ mod tests {
         case::{CaseLoader, CaseSchema, Registries},
         layout::{Os, RealizationKind},
         participant::ParticipantType,
-        plan::CasePlan,
+        plan::{CasePlan, PortRegistry},
     };
     use panoramic_steps::{test_support::valid_fields, REGISTERED_STEPS};
 
@@ -297,7 +297,11 @@ mod tests {
             assert_eq!(integration_cases.len(), 1);
             let plans: Vec<_> = participant_cases
                 .into_iter()
-                .map(|case| CasePlan::compile(case, Os::Linux, &crate::REGISTRIES).unwrap().unwrap())
+                .map(|case| {
+                    CasePlan::compile(case, Os::Linux, &crate::REGISTRIES, &mut PortRegistry::new())
+                        .unwrap()
+                        .unwrap()
+                })
                 .collect();
             let config = plans[0].integration_config().unwrap();
             let CaseSchema::Typed(TypedConfig::Integration(integration)) = integration_cases[0].schema() else {
@@ -327,7 +331,11 @@ mod tests {
                     .load_file(&path)
                     .unwrap()
                     .into_iter()
-                    .map(|case| CasePlan::compile(case, os, &crate::REGISTRIES).unwrap().unwrap())
+                    .map(|case| {
+                        CasePlan::compile(case, os, &crate::REGISTRIES, &mut PortRegistry::new())
+                            .unwrap()
+                            .unwrap()
+                    })
                     .collect::<Vec<_>>()
             });
             let overrides = if runtime == MAC_RUNTIME {
@@ -495,7 +503,9 @@ mod tests {
             std::fs::write(path.parent().unwrap().join("windows.yaml"), "").unwrap();
             for os in [Os::Linux, Os::Windows] {
                 let case = loader.load_file(&path).unwrap().remove(0);
-                let plan = CasePlan::compile(case, os, &registries).unwrap().unwrap();
+                let plan = CasePlan::compile(case, os, &registries, &mut PortRegistry::new())
+                    .unwrap()
+                    .unwrap();
                 assert_eq!(
                     plan.effective_config("adp").unwrap().files.is_empty(),
                     os == Os::Linux || !config.contains("files:")
@@ -568,7 +578,9 @@ mod tests {
                     .load_content(&participant_yaml, "alpha", &path)
                     .unwrap()
                     .remove(0);
-                let plan = CasePlan::compile(case, os, &crate::REGISTRIES).unwrap().unwrap();
+                let plan = CasePlan::compile(case, os, &crate::REGISTRIES, &mut PortRegistry::new())
+                    .unwrap()
+                    .unwrap();
                 let translated = plan.integration_config().unwrap();
                 let Some(AssertionStep::Single(AssertionConfig::FileContains { path, .. })) =
                     translated.procedure.last()
@@ -709,7 +721,9 @@ mod tests {
             .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
             .unwrap()
             .remove(0);
-        let plan = CasePlan::compile(case, Os::Linux, &crate::REGISTRIES).unwrap().unwrap();
+        let plan = CasePlan::compile(case, Os::Linux, &crate::REGISTRIES, &mut PortRegistry::new())
+            .unwrap()
+            .unwrap();
         let CaseSchema::Participants { file, .. } = plan.case().schema() else {
             panic!("expected participant data");
         };
@@ -845,9 +859,14 @@ mod tests {
         let cases = crate::CASE_LOADER
             .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
             .unwrap();
-        let plan = CasePlan::compile(cases.into_iter().next().unwrap(), Os::Linux, &crate::REGISTRIES)
-            .unwrap()
-            .unwrap();
+        let plan = CasePlan::compile(
+            cases.into_iter().next().unwrap(),
+            Os::Linux,
+            &crate::REGISTRIES,
+            &mut PortRegistry::new(),
+        )
+        .unwrap()
+        .unwrap();
         let config = plan.integration_config().unwrap();
         let [AssertionStep::Single(AssertionConfig::LogContains { pattern: first, .. }), AssertionStep::Parallel { parallel }] =
             config.procedure.as_slice()
