@@ -8,6 +8,7 @@
 pub mod deadline;
 pub mod events;
 pub mod interrupts;
+pub mod ledger;
 pub mod machine_output;
 pub mod probe;
 pub mod record;

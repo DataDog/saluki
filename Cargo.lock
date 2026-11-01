@@ -4512,7 +4512,15 @@ dependencies = [
 name = "panoramic-core"
 version = "0.1.0"
 dependencies = [
+ "airlock",
  "chrono",
+ "futures",
+ "k8s-openapi",
+ "kube",
+ "rand 0.10.3",
+ "rustls",
+ "rustls-cng-crypto",
+ "saluki-error",
  "serde",
  "serde_json",
  "snafu",

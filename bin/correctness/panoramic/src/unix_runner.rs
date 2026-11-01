@@ -37,6 +37,7 @@ use std::{
 };
 
 use airlock::unix::{LogSink, UnixProcess, UnixProcessConfig};
+use panoramic_core::ledger::random_id;
 use panoramic_core::probe::{probe, ProbeError};
 use panoramic_core::record::Verdict;
 use panoramic_core::result::{ErrorKind, PhaseTiming, TestResult};
@@ -49,7 +50,6 @@ use crate::{
     assertions::{AssertionContext, LogBuffer, TargetCommand},
     config::parse_port_spec,
     integration::IntegrationTestCase,
-    ledger::random_id,
     test::{Test, TestContext},
 };
 

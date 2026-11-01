@@ -16,6 +16,7 @@ use kube::{
     api::{Api, AttachParams, LogParams, PostParams},
     Client,
 };
+use panoramic_core::ledger::{random_id, ResourceLedger};
 use panoramic_core::result::{TestResult, UNKNOWN_PHASE};
 use panoramic_core::tasks::CaseTasks;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -31,7 +32,6 @@ use crate::{
         runner::make_error_result,
     },
     intake::{CollectedData, IntakeClient},
-    ledger::{random_id, ResourceLedger},
     test::TestContext,
     traffic::{self, Side},
 };

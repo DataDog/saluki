@@ -12,20 +12,21 @@ use futures::future::join_all;
 use k8s_openapi::api::core::v1::Namespace;
 use kube::api::{Api, DeleteParams};
 use kube::Client;
-use panoramic_core::result::{Issue, IssueKind, ReclaimEntry, ReclaimResult};
 use rand::RngExt as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::time::{sleep, timeout_at, Instant};
 use tokio_util::sync::CancellationToken;
 
+use crate::result::{Issue, IssueKind, ReclaimEntry, ReclaimResult};
+
 /// Shared budget for stopping a case's tracked tasks and removing its resources.
-pub(crate) const RECLAIM_TIME: Duration = Duration::from_secs(30);
+pub const RECLAIM_TIME: Duration = Duration::from_secs(30);
 
 /// How often reclaim checks whether a deleted namespace is gone.
 const NAMESPACE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Returns a random lowercase alphanumeric ID suitable for Docker and Kubernetes names.
-pub(crate) fn random_id() -> String {
+pub fn random_id() -> String {
     const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
     let mut rng = rand::rng();
     (0..8)
@@ -39,7 +40,7 @@ pub(crate) fn random_id() -> String {
 /// removal in reverse registration order. Dropping the last ledger handle sends SIGKILL to registered process groups;
 /// directories, Docker resources, and namespaces require explicit reclaim.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ResourceLedger {
+pub struct ResourceLedger {
     entries: Arc<Mutex<Vec<Entry>>>,
 }
 
@@ -172,24 +173,24 @@ impl ResourceLedger {
     }
 
     /// Registers a new isolation group and returns its ID. Call it before creating anything in the group.
-    pub(crate) fn isolation_group(&self) -> String {
+    pub fn isolation_group(&self) -> String {
         let id = random_id();
         self.register(Resource::IsolationGroup(id.clone()));
         id
     }
 
     /// Takes ownership of a spawned process.
-    pub(crate) fn process(&self, process: UnixProcess) {
+    pub fn process(&self, process: UnixProcess) {
         self.register(Resource::Process(process));
     }
 
     /// Registers a namespace, which reclaim deletes through `client`. Call it before creating the namespace.
-    pub(crate) fn namespace(&self, client: Client, name: String) {
+    pub fn namespace(&self, client: Client, name: String) {
         self.register(Resource::Namespace { name, client });
     }
 
     /// Registers a directory the case created.
-    pub(crate) fn directory(&self, path: PathBuf) {
+    pub fn directory(&self, path: PathBuf) {
         self.register(Resource::Directory(path));
     }
 
@@ -210,7 +211,7 @@ impl ResourceLedger {
     /// Runs a creation request for the registered isolation group or namespace `name`.
     ///
     /// If cancellation drops the request, returns `None` and marks the resource unsettled.
-    pub(crate) async fn create<F>(&self, name: &str, cancel: &CancellationToken, request: F) -> Option<F::Output>
+    pub async fn create<F>(&self, name: &str, cancel: &CancellationToken, request: F) -> Option<F::Output>
     where
         F: Future,
     {
@@ -225,7 +226,7 @@ impl ResourceLedger {
     ///
     /// An interrupted creation marks the group unsettled. Starting uses the existing container, so an interrupted start
     /// preserves the group's current mark.
-    pub(crate) async fn start_container(
+    pub async fn start_container(
         &self, driver: &Driver, isolation_group: &str, cancel: &CancellationToken,
     ) -> Result<DriverDetails, GenericError> {
         self.create(isolation_group, cancel, driver.create())
@@ -252,7 +253,7 @@ impl ResourceLedger {
     /// Namespace deletions start during the walk; confirmation polls run concurrently afterward. Returns results in
     /// reverse registration order and an issue for each failed or unconfirmed removal. Expiry drops pending removal
     /// futures; dropping a process sends SIGKILL if needed.
-    pub(crate) async fn reclaim(&self, deadline: Instant) -> (Vec<ReclaimEntry>, Vec<Issue>) {
+    pub async fn reclaim(&self, deadline: Instant) -> (Vec<ReclaimEntry>, Vec<Issue>) {
         let entries = std::mem::take(&mut *self.lock());
         let mut removals = Vec::with_capacity(entries.len());
         // Preserve directories that a failed or unconfirmed removal may still need. Pending namespace deletions use
@@ -331,14 +332,13 @@ impl ResourceLedger {
 mod tests {
     use std::collections::HashMap;
 
-    use panoramic_core::tasks::{CaseTasks, TASK_STOP_TIME};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::TcpListener;
     use tokio::sync::Notify;
     use tokio::task::JoinHandle;
 
     use super::*;
-    use crate::intake::test_server::install_crypto_provider;
+    use crate::tasks::{CaseTasks, TASK_STOP_TIME};
 
     /// Bounds every reclaim in these tests.
     const BOUND: Duration = Duration::from_secs(10);
@@ -361,6 +361,17 @@ mod tests {
 
     /// Maps the method, path, and prior matching request count to an HTTP status and JSON body.
     type Respond = fn(&str, &str, usize) -> (u16, String);
+
+    // A kube client can need a process-wide rustls provider, normally installed by the binary's main.
+    #[cfg(not(windows))]
+    fn install_crypto_provider() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    }
+
+    #[cfg(windows)]
+    fn install_crypto_provider() {
+        let _ = rustls_cng_crypto::default_provider().install_default();
+    }
 
     impl FakeApi {
         async fn start(respond: Respond) -> Self {

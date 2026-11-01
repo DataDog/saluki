@@ -8,6 +8,7 @@ use airlock::{
     config::{DatadogIntakeConfig, MillstoneConfig},
     driver::{Driver, DriverConfig, DriverDetails, ExitStatus},
 };
+use panoramic_core::ledger::ResourceLedger;
 use panoramic_core::record::{AssertionResult, AssertionStatus};
 use panoramic_core::result::{ErrorKind, PhaseTiming, TestResult};
 use panoramic_core::tasks::CaseTasks;
@@ -23,7 +24,6 @@ use crate::correctness::{
 };
 use crate::{
     intake::{CollectedData, IntakeClient},
-    ledger::ResourceLedger,
     test::TestContext,
     traffic::{self, Side},
 };

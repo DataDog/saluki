@@ -17,6 +17,7 @@ use bollard::{container::LogOutput, errors::Error as DockerError};
 use futures::stream::{self, StreamExt as _};
 use panoramic_core::deadline::{Budget, Deadline};
 use panoramic_core::events::{EventSender, TestEvent};
+use panoramic_core::ledger::RECLAIM_TIME;
 use panoramic_core::machine_output::RESULT_LOG_FILE_NAME;
 use panoramic_core::probe::probe;
 use panoramic_core::record::{ActiveStep, CaseRecord, StepStatus, Verdict};
@@ -31,7 +32,6 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use crate::ledger::RECLAIM_TIME;
 use crate::test::{RunnerSettings, Test, TestContext};
 use crate::{
     assertions::{AssertionContext, LogBuffer, TargetCommand},
