@@ -12,7 +12,9 @@ use clap::{
 use panoramic_core::layout::Os;
 use panoramic_participants::AgentAdp;
 
-use crate::config::{os_for_runtime, runtime_for_os, LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME};
+use crate::config::{
+    os_for_runtime, runner_artifacts::LegacyArtifactInputs, runtime_for_os, LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME,
+};
 use crate::text_output::OutputFormat;
 use crate::{image_override::ImageOverride, test::RunnerSettings};
 
@@ -274,9 +276,10 @@ pub struct RunCommand {
     /// Artifact manifest (TOML) binding artifact roles to image references and paths.
     /// Roles it omits use their local defaults; a role no participant type, backend or
     /// typed case schema declares is an error. Every needed artifact is verified
-    /// before any case starts. Cannot be combined with these flags
-    /// (--image-override, --adp-binary-path, --core-agent-binary-path, --alpine-image)
-    /// or their PANORAMIC_* environment variables.
+    /// before any case starts. Explicit --image-override, --adp-binary-path,
+    /// --core-agent-binary-path and --alpine-image values, including their PANORAMIC_*
+    /// environment variables, must name the same reference as the role they feed,
+    /// or the run exits 2.
     #[arg(long, value_name = "FILE", verbatim_doc_comment)]
     pub artifacts: Option<PathBuf>,
 
@@ -322,21 +325,23 @@ pub struct RunCommand {
     #[arg(long, verbatim_doc_comment)]
     pub no_delete_kind_cluster: bool,
 
-    /// `agent-data-plane` binary that host-process (`runtime: mac`) tests spawn. A
-    /// relative path resolves against the current directory
-    #[arg(long, env = "PANORAMIC_ADP_BINARY_PATH", conflicts_with = "artifacts", default_value = AgentAdp::ADP_HOST_BINARY.local_default, verbatim_doc_comment)]
-    adp_binary_path: PathBuf,
+    #[arg(long, env = "PANORAMIC_ADP_BINARY_PATH", help = format!(
+        "`agent-data-plane` binary that host-process (`runtime: mac`) tests spawn. A\nrelative path resolves against the current directory [default: {}]",
+        AgentAdp::ADP_HOST_BINARY.local_default
+    ))]
+    adp_binary_path: Option<PathBuf>,
 
-    /// Datadog Agent binary that converged host-process tests spawn. Point this at
-    /// another install (a system-wide /opt/datadog-agent, for example) to test
-    /// against it
-    #[arg(long, env = "PANORAMIC_CORE_AGENT_BINARY_PATH", conflicts_with = "artifacts", default_value_os_t = default_core_agent_binary_path(), verbatim_doc_comment)]
-    core_agent_binary_path: PathBuf,
+    #[arg(long, env = "PANORAMIC_CORE_AGENT_BINARY_PATH", help = format!(
+        "Datadog Agent binary that converged host-process tests spawn. Point this at\nanother install (a system-wide /opt/datadog-agent, for example) to test\nagainst it [default: {}]",
+        default_core_agent_binary_path().display()
+    ))]
+    core_agent_binary_path: Option<PathBuf>,
 
-    /// Alpine image for the short-lived container that fixes up shared-volume
-    /// permissions. CI points this at an internal registry
-    #[arg(long, env = "PANORAMIC_ALPINE_IMAGE", conflicts_with = "artifacts", default_value = DEFAULT_ALPINE_IMAGE, verbatim_doc_comment)]
-    alpine_image: String,
+    #[arg(long, env = "PANORAMIC_ALPINE_IMAGE", help = format!(
+        "Alpine image for the short-lived container that fixes up shared-volume\npermissions. CI points this at an internal registry [default: {}]",
+        DEFAULT_ALPINE_IMAGE
+    ))]
+    alpine_image: Option<String>,
 
     /// Image to run for one of a test's containers, as `<name>=<image>`, replacing
     /// what the test case declares. Repeat the flag to name more than one container; the
@@ -348,7 +353,6 @@ pub struct RunCommand {
         long = "image-override",
         value_name = "NAME=IMAGE",
         env = "PANORAMIC_IMAGE_OVERRIDES",
-        conflicts_with = "artifacts",
         value_delimiter = ',',
         verbatim_doc_comment
     )]
@@ -360,9 +364,25 @@ impl RunCommand {
     pub(crate) fn runner_settings(&self) -> RunnerSettings {
         RunnerSettings {
             mounts_dir: self.mounts_dir.clone(),
-            adp_binary_path: self.adp_binary_path.clone(),
-            core_agent_binary_path: self.core_agent_binary_path.clone(),
-            alpine_image: self.alpine_image.clone(),
+            adp_binary_path: self
+                .adp_binary_path
+                .clone()
+                .unwrap_or_else(|| AgentAdp::ADP_HOST_BINARY.local_default.into()),
+            core_agent_binary_path: self
+                .core_agent_binary_path
+                .clone()
+                .unwrap_or_else(default_core_agent_binary_path),
+            alpine_image: self.alpine_image.clone().unwrap_or_else(|| DEFAULT_ALPINE_IMAGE.into()),
+        }
+    }
+
+    /// Collects artifact inputs explicitly given by flags or environment variables.
+    pub(crate) fn legacy_artifact_inputs(&self) -> LegacyArtifactInputs<'_> {
+        LegacyArtifactInputs {
+            image_overrides: &self.image_overrides,
+            adp_binary_path: self.adp_binary_path.as_deref(),
+            core_agent_binary_path: self.core_agent_binary_path.as_deref(),
+            alpine_image: self.alpine_image.as_deref(),
         }
     }
 
@@ -916,27 +936,39 @@ mod tests {
     }
 
     #[test]
-    fn run_artifacts_conflicts_with_each_legacy_artifact_flag() {
-        for (flag, value) in [
-            ("--image-override", "container=image"),
-            ("--adp-binary-path", "adp"),
-            ("--core-agent-binary-path", "agent"),
-            ("--alpine-image", "alpine"),
-        ] {
-            let error = Cli::try_parse_from(["panoramic", "run", "--artifacts", "artifacts.toml", flag, value])
-                .err()
-                .unwrap();
-            assert_eq!(
-                error.kind(),
-                clap::error::ErrorKind::ArgumentConflict,
-                "{flag}: {error}"
-            );
-            assert_eq!(error.exit_code(), 2);
-        }
-    }
+    fn legacy_artifact_flags_combine_with_run_artifacts() {
+        use panoramic_core::{
+            artifact::{ArtifactBinding, BindingSource},
+            backend::FIXUP_IMAGE,
+        };
 
-    #[test]
-    fn legacy_artifact_flags_with_environment_fallbacks_conflict_with_run_artifacts() {
+        use crate::{
+            config::{
+                runner_artifacts::{BoundArtifacts, RunnerArtifacts},
+                IntegrationConfig,
+            },
+            integration::IntegrationTestCase,
+        };
+
+        let bound = BoundArtifacts::new(
+            [
+                AgentAdp::ADP_HOST_BINARY,
+                AgentAdp::AGENT_HOST_INSTALL,
+                FIXUP_IMAGE,
+                AgentAdp::LINUX_IMAGE,
+            ]
+            .map(|role| ArtifactBinding {
+                role,
+                reference: role.local_default.into(),
+                source: BindingSource::LocalDefault,
+            })
+            .into(),
+        );
+        let config: IntegrationConfig = serde_saphyr::from_str("name: case\ntimeout: 1s\nprocedure: []\n").unwrap();
+        let runner = IntegrationTestCase::new(
+            config,
+            &RunnerArtifacts::Overrides(&[]).integration_settings(LINUX_RUNTIME),
+        );
         let mut command = Cli::command();
         command.build();
         let run = command.find_subcommand("run").unwrap();
@@ -944,12 +976,82 @@ mod tests {
             let arg = run.get_arguments().find(|arg| arg.get_id() == id).unwrap();
             assert_eq!(arg.get_env(), Some(OsStr::new(env)));
             assert!(
-                run.get_arg_conflicts_with(arg)
+                !run.get_arg_conflicts_with(arg)
                     .iter()
                     .any(|arg| arg.get_id() == "artifacts"),
                 "{id}"
             );
+            assert!(arg.get_default_values().is_empty(), "{id}");
+
+            let long = arg.get_long().unwrap();
+            let env = arg.get_env().unwrap().to_str().unwrap();
+            let (name, value) = if *id == "image_overrides" {
+                (" container", "container=different")
+            } else {
+                ("", "different")
+            };
+            let Command::Run(cmd) = Cli::try_parse_from([
+                "panoramic",
+                "run",
+                "--artifacts",
+                "artifacts.toml",
+                &format!("--{long}"),
+                value,
+            ])
+            .unwrap()
+            .command
+            else {
+                panic!("expected run")
+            };
+            let error = bound
+                .check_legacy_inputs(&cmd.legacy_artifact_inputs(), Os::Linux, &[&runner])
+                .unwrap_err()
+                .to_string();
+            let label = format!("--{long}{name} ({env})");
+            assert!(
+                error.contains(&format!("\n  - {label} names 'different' for role '")),
+                "{error}"
+            );
         }
+    }
+
+    #[test]
+    fn legacy_artifact_inputs_contain_only_explicitly_given_values() {
+        let cli = Cli::try_parse_from(["panoramic", "run"]).unwrap();
+        let inputs = run_command_of(&cli).legacy_artifact_inputs();
+        assert!(inputs.image_overrides.is_empty());
+        assert_eq!(inputs.adp_binary_path, None);
+        assert_eq!(inputs.core_agent_binary_path, None);
+        assert_eq!(inputs.alpine_image, None);
+
+        let cli = Cli::try_parse_from([
+            "panoramic",
+            "run",
+            "--adp-binary-path",
+            "./adp",
+            "--core-agent-binary-path",
+            "install/bin/agent/agent",
+            "--alpine-image",
+            "registry.example/alpine:latest",
+            "--image-override",
+            "container=agent:bound,intake=tools:bound",
+        ])
+        .unwrap();
+        let inputs = run_command_of(&cli).legacy_artifact_inputs();
+        assert_eq!(inputs.adp_binary_path, Some(Path::new("./adp")));
+        assert_eq!(
+            inputs.core_agent_binary_path,
+            Some(Path::new("install/bin/agent/agent"))
+        );
+        assert_eq!(inputs.alpine_image, Some("registry.example/alpine:latest"));
+        assert_eq!(
+            inputs
+                .image_overrides
+                .iter()
+                .map(|entry| (entry.name.as_str(), entry.image.as_str()))
+                .collect::<Vec<_>>(),
+            [("container", "agent:bound"), ("intake", "tools:bound")]
+        );
     }
 
     #[test]

@@ -250,20 +250,34 @@ main binary for installs. `reference` is preserved as written. Roles needed only
 can't provide aren't verified and don't appear. With `--artifacts`, the list is empty (`[]`) when no bindings need
 verification; without the flag, `artifacts` is `null`.
 
-The flag has no environment fallback. It rejects these flags and their environment variables, even when the
-value comes only from the environment:
+The flag has no environment fallback. Legacy flags and their environment variables can accompany `--artifacts`,
+but each explicit value must name the same reference as the binding of the role it feeds:
 
-| Flag | Environment variable |
-| --- | --- |
-| `--image-override` | `PANORAMIC_IMAGE_OVERRIDES` |
-| `--adp-binary-path` | `PANORAMIC_ADP_BINARY_PATH` |
-| `--core-agent-binary-path` | `PANORAMIC_CORE_AGENT_BINARY_PATH` |
-| `--alpine-image` | `PANORAMIC_ALPINE_IMAGE` |
+| Flag | Environment variable | Artifact role |
+| --- | --- | --- |
+| `--image-override container=IMAGE` | `PANORAMIC_IMAGE_OVERRIDES` | `agent-adp-linux-image` on Linux, `agent-adp-windows-image` on Windows; no role on macOS |
+| `--image-override intake=IMAGE` | `PANORAMIC_IMAGE_OVERRIDES` | `tools-linux-image` |
+| `--image-override datadog-intake=IMAGE` | `PANORAMIC_IMAGE_OVERRIDES` | `tools-linux-image` |
+| `--image-override millstone=IMAGE` | `PANORAMIC_IMAGE_OVERRIDES` | `tools-linux-image` |
+| `--image-override baseline=IMAGE` | `PANORAMIC_IMAGE_OVERRIDES` | `agent-adp-linux-image` |
+| `--image-override comparison=IMAGE` | `PANORAMIC_IMAGE_OVERRIDES` | `agent-adp-linux-image` |
+| `--adp-binary-path` | `PANORAMIC_ADP_BINARY_PATH` | `adp-host-binary` |
+| `--core-agent-binary-path` | `PANORAMIC_CORE_AGENT_BINARY_PATH` | `agent-host-install`, joined with `bin/agent/agent` |
+| `--alpine-image` | `PANORAMIC_ALPINE_IMAGE` | `fixup-image` |
 
-Before using `--artifacts`, unset these variables in your shell or remove them from the CI job. In CI, bind
-`fixup-image` in the manifest instead of setting `PANORAMIC_ALPINE_IMAGE`.
+Only values explicitly supplied by a flag or environment variable are compared; defaults don't count as inputs.
+Images are compared as strings and paths as paths, without canonicalization (trailing and repeated separators and
+non-leading `.` components are ignored): `alpine` differs from `alpine:latest`, and `./x` differs from `x`.
+The comparison uses every planned case in scope, before `-t` selection, and ignores inputs for roles no case needs.
+Image override names must be unique and match a container in scope; for example, `container` is unmatched on macOS.
+Several names feeding one role must all agree with its binding.
 
-The image roles feed the containers in the table above. `adp-host-binary` supplies the host ADP executable;
+Panoramic reports every disagreement, including the role, bound reference and whether it came from the manifest or
+a local default. Any disagreement exits 2 before verification, log directory creation or `run.json`. Agreeing
+inputs leave the binding as the only effective input. CI can keep its legacy variables alongside a manifest that
+binds the same references, including `fixup-image` for `PANORAMIC_ALPINE_IMAGE`.
+
+The image roles feed the containers listed in the case table above. `adp-host-binary` supplies the host ADP executable;
 `agent-host-install` supplies the Core Agent executable at `bin/agent/agent` beneath that directory. `fixup-image`
 supplies the shared-volume permission fix-up container. Kind loads the runners' bound images into its cluster.
 `--mounts-dir`, kind options, `-l` and TUI options remain available. In `list --json`, `images` and `runtime` report

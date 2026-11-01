@@ -244,6 +244,18 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         }
     };
 
+    if let RunnerArtifacts::Bound(bound) = &artifacts {
+        let runners: Vec<_> = built.iter().map(|built| built.runner.as_ref()).collect();
+        if let Err(e) = bound.check_legacy_inputs(&cmd.legacy_artifact_inputs(), subject_os, &runners) {
+            if use_tui {
+                eprintln!("Failed to discover tests: {:#}", e);
+            } else {
+                error!("Failed to discover tests: {:#}", e);
+            }
+            return ExitCode::from(EXIT_HARNESS_ERROR);
+        }
+    }
+
     debug!(
         adp_binary_path = %settings.adp_binary_path.display(),
         core_agent_binary_path = %settings.core_agent_binary_path.display(),
@@ -815,6 +827,8 @@ fn build_revision() -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use panoramic_core::{artifact::ArtifactManifest, layout::Os, plan::Planner};
 
     use super::*;
@@ -1308,6 +1322,143 @@ mod tests {
             assert_eq!(report["artifacts"], serde_json::json!([]));
             assert!(diagnostic.contains("No artifacts needed on macos."), "{diagnostic}");
             assert!(!diagnostic.contains("failed verification"), "{diagnostic}");
+        }
+    }
+
+    async fn run_with_legacy_host_path(dir: &Path, agrees: bool) -> (ExitCode, String, PathBuf) {
+        let cases = dir.join("cases");
+        write_case(
+            &cases,
+            "host",
+            "type: integration\nname: host\ntimeout: 1s\nruntimes: [mac]\nprocedure: []\n",
+        );
+        let manifest = dir.join("artifacts.toml");
+        let missing = dir.join("missing");
+        std::fs::write(
+            &manifest,
+            format!(
+                "schema = 1\n[roles]\nadp-host-binary = '{}'\nagent-host-install = '{}'\n",
+                missing.display(),
+                missing.display()
+            ),
+        )
+        .unwrap();
+        let legacy = if agrees { missing } else { dir.join("different") };
+        let logs = dir.join("logs");
+        let Command::Run(cmd) = Cli::try_parse_from([
+            "panoramic",
+            "run",
+            "-d",
+            cases.to_str().unwrap(),
+            "--subject-os",
+            "macos",
+            "--artifacts",
+            manifest.to_str().unwrap(),
+            "--adp-binary-path",
+            legacy.to_str().unwrap(),
+            "--no-tui",
+            "-l",
+            logs.to_str().unwrap(),
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("expected run")
+        };
+        let run_json = cmd.log_dir().join("run.json");
+        let (exit, diagnostic) = run_with_diagnostics(cmd, dir).await;
+        (exit, diagnostic, run_json)
+    }
+
+    async fn run_with_diagnostics(cmd: cli::RunCommand, dir: &Path) -> (ExitCode, String) {
+        use tracing::instrument::WithSubscriber as _;
+
+        let output = std::fs::File::create(dir.join("diagnostic.log")).unwrap();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(std::sync::Mutex::new(output))
+            .finish();
+        let exit = run_tests(cmd, false).with_subscriber(subscriber).await;
+        (exit, std::fs::read_to_string(dir.join("diagnostic.log")).unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_run_whose_legacy_inputs_disagree_with_its_artifacts_exits_2_before_verifying_or_creating_any_log_directory(
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (exit, diagnostic, run_json) = run_with_legacy_host_path(dir.path(), false).await;
+        assert_eq!(exit, ExitCode::from(2));
+        assert!(!dir.path().join("logs").exists());
+        assert!(!run_json.exists());
+        assert!(
+            diagnostic.contains("Legacy artifact inputs disagree with the --artifacts bindings:"),
+            "{diagnostic}"
+        );
+        assert!(diagnostic.contains(&format!(
+            "--adp-binary-path (PANORAMIC_ADP_BINARY_PATH) names '{}' for role 'adp-host-binary', bound to '{}' (manifest)",
+            dir.path().join("different").display(), dir.path().join("missing").display()
+        )), "{diagnostic}");
+        assert!(!diagnostic.contains("Verifying the artifacts"), "{diagnostic}");
+        assert!(!diagnostic.contains("Checking that this host"), "{diagnostic}");
+    }
+
+    #[tokio::test]
+    async fn a_run_whose_legacy_inputs_agree_with_its_artifacts_proceeds_to_verification() {
+        let dir = tempfile::tempdir().unwrap();
+        let (exit, diagnostic, run_json) = run_with_legacy_host_path(dir.path(), true).await;
+        assert_eq!(exit, ExitCode::from(2));
+        assert!(diagnostic.contains("Verifying the artifacts"), "{diagnostic}");
+        assert!(!diagnostic.contains("Legacy artifact inputs disagree"), "{diagnostic}");
+        if Os::host() == Os::MacOs {
+            assert!(
+                diagnostic.contains("2 of 2 artifact(s) failed verification."),
+                "{diagnostic}"
+            );
+            assert!(!dir.path().join("logs").exists());
+            assert!(!run_json.exists());
+        } else {
+            let report: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(run_json).unwrap()).unwrap();
+            assert_eq!(report["artifacts"], serde_json::json!([]));
+            assert_eq!(report["tests"][0]["outcome"], "errored");
+            assert_eq!(report["tests"][0]["error"]["kind"], "setup");
+            assert!(diagnostic.contains("No artifacts needed on macos."), "{diagnostic}");
+        }
+    }
+
+    #[tokio::test]
+    async fn image_override_name_errors_have_the_same_prefix_with_or_without_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let cases = dir.path().join("cases");
+        write_case(
+            &cases,
+            "linux",
+            "type: integration\nname: linux\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n",
+        );
+        let manifest = dir.path().join("artifacts.toml");
+        std::fs::write(&manifest, "schema = 1\n[roles]\n").unwrap();
+        let logs = dir.path().join("logs");
+        for (overrides, expected) in [
+            ("container=x,container=y", "Failed to discover tests: Image override 'container' is given more than once. Name each container at most once."),
+            ("unknown=x", "Failed to discover tests: No test in this run uses a container named 'unknown'. Available: container."),
+        ] {
+            for use_artifacts in [false, true] {
+                let mut args = vec![
+                    "panoramic", "run", "-d", cases.to_str().unwrap(),
+                    "--subject-os", "linux", "--image-override", overrides,
+                    "-l", logs.to_str().unwrap(),
+                ];
+                if use_artifacts {
+                    args.extend(["--artifacts", manifest.to_str().unwrap()]);
+                }
+                let Command::Run(cmd) = Cli::try_parse_from(args).unwrap().command else {
+                    panic!("expected run")
+                };
+                let (exit, diagnostic) = run_with_diagnostics(cmd, dir.path()).await;
+                assert_eq!(exit, ExitCode::from(2));
+                assert!(diagnostic.contains(expected), "{diagnostic}");
+                assert!(!logs.exists());
+            }
         }
     }
 

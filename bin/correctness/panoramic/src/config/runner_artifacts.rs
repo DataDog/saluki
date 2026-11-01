@@ -8,15 +8,23 @@ use std::{
 use panoramic_core::{
     artifact::{ArtifactBinding, ArtifactKind, ArtifactRole},
     backend::FIXUP_IMAGE,
+    layout::Os,
 };
 use panoramic_participants::{AgentAdp, TOOLS_LINUX_IMAGE};
+use saluki_error::{generic_error, GenericError};
 
-use super::{INTAKE_IMAGE_NAME, LINUX_RUNTIME, TARGET_IMAGE_NAME, WINDOWS_RUNTIME};
+use super::{runtime_for_os, INTAKE_IMAGE_NAME, LINUX_RUNTIME, TARGET_IMAGE_NAME, WINDOWS_RUNTIME};
 use crate::{
-    correctness::config::Config as CorrectnessConfig,
+    correctness::{
+        case::{
+            BASELINE_IMAGE_NAME, COMPARISON_IMAGE_NAME, INTAKE_IMAGE_NAME as DATADOG_INTAKE_IMAGE_NAME,
+            MILLSTONE_IMAGE_NAME,
+        },
+        config::Config as CorrectnessConfig,
+    },
     image_override::{ImageOverride, ImageOverrides},
     integration::IntegrationSettings,
-    test::RunnerSettings,
+    test::{RunnerSettings, Test},
 };
 
 /// Where the integration and correctness runners take their images and binaries from.
@@ -27,24 +35,115 @@ pub(crate) enum RunnerArtifacts<'a> {
     Bound(BoundArtifacts),
 }
 
-/// Needed artifact references, keyed by role name.
+/// Artifact inputs given explicitly through legacy flags or their environment variables.
+#[cfg_attr(test, derive(Default))]
+pub(crate) struct LegacyArtifactInputs<'a> {
+    pub(crate) image_overrides: &'a [ImageOverride],
+    pub(crate) adp_binary_path: Option<&'a Path>,
+    pub(crate) core_agent_binary_path: Option<&'a Path>,
+    pub(crate) alpine_image: Option<&'a str>,
+}
+
+/// Needed artifact bindings, keyed by role name.
 pub(crate) struct BoundArtifacts {
-    references: BTreeMap<&'static str, String>,
+    bindings: BTreeMap<&'static str, ArtifactBinding>,
 }
 
 impl BoundArtifacts {
     /// Indexes bindings collected from every case in scope.
     pub(crate) fn new(bindings: Vec<ArtifactBinding>) -> Self {
         Self {
-            references: bindings
+            bindings: bindings
                 .into_iter()
-                .map(|binding| (binding.role.name, binding.reference))
+                .map(|binding| (binding.role.name, binding))
                 .collect(),
         }
     }
 
     fn reference(&self, role: ArtifactRole) -> Option<&str> {
-        self.references.get(role.name).map(String::as_str)
+        self.bindings.get(role.name).map(|binding| binding.reference.as_str())
+    }
+
+    /// Checks override names, then compares explicit inputs with the bindings of needed roles.
+    pub(crate) fn check_legacy_inputs(
+        &self, inputs: &LegacyArtifactInputs<'_>, subject_os: Os, runners: &[&dyn Test],
+    ) -> Result<(), GenericError> {
+        ImageOverrides::new(inputs.image_overrides).validate(runners)?;
+
+        let mut disagreements = Vec::new();
+        for (flag, path, role, expected_path) in [
+            (
+                "--adp-binary-path (PANORAMIC_ADP_BINARY_PATH)",
+                inputs.adp_binary_path,
+                AgentAdp::ADP_HOST_BINARY,
+                (|reference: &str| PathBuf::from(reference)) as fn(&str) -> PathBuf,
+            ),
+            (
+                "--core-agent-binary-path (PANORAMIC_CORE_AGENT_BINARY_PATH)",
+                inputs.core_agent_binary_path,
+                AgentAdp::AGENT_HOST_INSTALL,
+                |reference| core_agent_binary_path(Path::new(reference)),
+            ),
+        ] {
+            let (Some(path), Some(binding)) = (path, self.bindings.get(role.name)) else {
+                continue;
+            };
+            let expected = expected_path(&binding.reference);
+            if path != expected {
+                let mut message = format!(
+                    "{flag} names '{}' for role '{}', bound to '{}' ({})",
+                    path.display(),
+                    role.name,
+                    binding.reference,
+                    binding.source.name()
+                );
+                if role == AgentAdp::AGENT_HOST_INSTALL {
+                    message.push_str(&format!(", whose main binary is '{}'", expected.display()));
+                }
+                disagreements.push(message);
+            }
+        }
+
+        let mut check_image = |flag: &str, image: &str, role: Option<ArtifactRole>| {
+            let Some(role) = role else {
+                disagreements.push(format!("{flag} names no artifact role on {}", subject_os.name()));
+                return;
+            };
+            if let Some(binding) = self.bindings.get(role.name) {
+                if image != binding.reference {
+                    disagreements.push(format!(
+                        "{flag} names '{image}' for role '{}', bound to '{}' ({})",
+                        role.name,
+                        binding.reference,
+                        binding.source.name()
+                    ));
+                }
+            }
+        };
+        if let Some(image) = inputs.alpine_image {
+            check_image("--alpine-image (PANORAMIC_ALPINE_IMAGE)", image, Some(FIXUP_IMAGE));
+        }
+        for entry in inputs.image_overrides {
+            let role = match entry.name.as_str() {
+                TARGET_IMAGE_NAME => target_role_for_runtime(runtime_for_os(subject_os)),
+                INTAKE_IMAGE_NAME | DATADOG_INTAKE_IMAGE_NAME | MILLSTONE_IMAGE_NAME => Some(TOOLS_LINUX_IMAGE),
+                BASELINE_IMAGE_NAME | COMPARISON_IMAGE_NAME => Some(AgentAdp::LINUX_IMAGE),
+                _ => None,
+            };
+            check_image(
+                &format!("--image-override {} (PANORAMIC_IMAGE_OVERRIDES)", entry.name),
+                &entry.image,
+                role,
+            );
+        }
+        if disagreements.is_empty() {
+            Ok(())
+        } else {
+            Err(generic_error!(
+                "Legacy artifact inputs disagree with the --artifacts bindings:\n  - {}",
+                disagreements.join("\n  - ")
+            ))
+        }
     }
 
     /// Applies bound host binaries and the fix-up image, preserving settings for unneeded roles.
@@ -174,6 +273,383 @@ mod tests {
             panic!("expected run")
         };
         cmd.runner_settings()
+    }
+
+    const INTEGRATION_CASE: &str = "type: integration\nname: case\ntimeout: 1s\nruntimes: [linux, windows, mac]\nintake: {enabled: true}\nprocedure: []\n";
+
+    fn check_inputs(plans: &[LoadedPlan], os: Os, inputs: &LegacyArtifactInputs<'_>) -> Result<(), GenericError> {
+        let artifacts = RunnerArtifacts::Bound(BoundArtifacts::new(needed_artifacts(plans)));
+        let built = build_runners(plans, os, &artifacts).unwrap();
+        let RunnerArtifacts::Bound(bound) = artifacts else {
+            unreachable!()
+        };
+        let runners: Vec<_> = built.iter().map(|built| built.runner.as_ref()).collect();
+        bound.check_legacy_inputs(inputs, os, &runners)
+    }
+
+    #[test]
+    fn each_legacy_input_that_names_its_roles_binding_agrees() {
+        let correctness = format!("type: correctness\n{CORRECTNESS_FIELDS}");
+        for (os, yaml, flag, name, role, reference) in [
+            (
+                Os::Linux,
+                INTEGRATION_CASE,
+                "--image-override",
+                "container=",
+                AgentAdp::LINUX_IMAGE,
+                "target:linux",
+            ),
+            (
+                Os::Windows,
+                INTEGRATION_CASE,
+                "--image-override",
+                "container=",
+                AgentAdp::WINDOWS_IMAGE,
+                "target:windows",
+            ),
+            (
+                Os::Linux,
+                INTEGRATION_CASE,
+                "--image-override",
+                "intake=",
+                TOOLS_LINUX_IMAGE,
+                "tools:bound",
+            ),
+            (
+                Os::Linux,
+                correctness.as_str(),
+                "--image-override",
+                "datadog-intake=",
+                TOOLS_LINUX_IMAGE,
+                "tools:bound",
+            ),
+            (
+                Os::Linux,
+                correctness.as_str(),
+                "--image-override",
+                "millstone=",
+                TOOLS_LINUX_IMAGE,
+                "tools:bound",
+            ),
+            (
+                Os::Linux,
+                correctness.as_str(),
+                "--image-override",
+                "baseline=",
+                AgentAdp::LINUX_IMAGE,
+                "target:linux",
+            ),
+            (
+                Os::Linux,
+                correctness.as_str(),
+                "--image-override",
+                "comparison=",
+                AgentAdp::LINUX_IMAGE,
+                "target:linux",
+            ),
+            (
+                Os::Linux,
+                INTEGRATION_CASE,
+                "--alpine-image",
+                "",
+                FIXUP_IMAGE,
+                "fixup:bound",
+            ),
+            (
+                Os::MacOs,
+                INTEGRATION_CASE,
+                "--adp-binary-path",
+                "",
+                AgentAdp::ADP_HOST_BINARY,
+                "build/adp",
+            ),
+            (
+                Os::MacOs,
+                INTEGRATION_CASE,
+                "--core-agent-binary-path",
+                "",
+                AgentAdp::AGENT_HOST_INSTALL,
+                "build/install",
+            ),
+        ] {
+            for manifest in [false, true] {
+                let plans = plans(yaml, os, manifest);
+                let bound_reference = if manifest { reference } else { role.local_default };
+                let reference = if matches!(role.kind, ArtifactKind::Install { .. }) {
+                    core_agent_binary_path(Path::new(bound_reference)).display().to_string()
+                } else {
+                    bound_reference.to_string()
+                };
+                let Command::Run(cmd) = Cli::try_parse_from(["panoramic", "run", flag, &format!("{name}{reference}")])
+                    .unwrap()
+                    .command
+                else {
+                    panic!("expected run")
+                };
+                check_inputs(&plans, os, &cmd.legacy_artifact_inputs()).unwrap();
+
+                let Command::Run(cmd) = Cli::try_parse_from(["panoramic", "run", flag, &format!("{name}different")])
+                    .unwrap()
+                    .command
+                else {
+                    panic!("expected run")
+                };
+                let label = match flag {
+                    "--adp-binary-path" => "--adp-binary-path (PANORAMIC_ADP_BINARY_PATH)".to_string(),
+                    "--core-agent-binary-path" => {
+                        "--core-agent-binary-path (PANORAMIC_CORE_AGENT_BINARY_PATH)".to_string()
+                    }
+                    "--alpine-image" => "--alpine-image (PANORAMIC_ALPINE_IMAGE)".to_string(),
+                    _ => format!(
+                        "--image-override {} (PANORAMIC_IMAGE_OVERRIDES)",
+                        name.trim_end_matches('=')
+                    ),
+                };
+                let source = if manifest { "manifest" } else { "local default" };
+                let suffix = if matches!(role.kind, ArtifactKind::Install { .. }) {
+                    format!(", whose main binary is '{reference}'")
+                } else {
+                    String::new()
+                };
+                assert_eq!(check_inputs(&plans, os, &cmd.legacy_artifact_inputs()).unwrap_err().to_string(), format!(
+                    "Legacy artifact inputs disagree with the --artifacts bindings:\n  - {label} names 'different' for role '{}', bound to '{bound_reference}' ({source}){suffix}", role.name
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn a_legacy_input_that_names_another_reference_is_reported_with_its_flag_role_binding_and_source() {
+        for manifest in [false, true] {
+            let plans = plans(INTEGRATION_CASE, Os::Linux, manifest);
+            let inputs = LegacyArtifactInputs {
+                alpine_image: Some("other:alpine"),
+                ..Default::default()
+            };
+            let error = check_inputs(&plans, Os::Linux, &inputs).unwrap_err().to_string();
+            let reference = if manifest {
+                "fixup:bound"
+            } else {
+                FIXUP_IMAGE.local_default
+            };
+            let source = if manifest { "manifest" } else { "local default" };
+            assert_eq!(error, format!(
+                "Legacy artifact inputs disagree with the --artifacts bindings:\n  - --alpine-image (PANORAMIC_ALPINE_IMAGE) names 'other:alpine' for role 'fixup-image', bound to '{reference}' ({source})"
+            ));
+        }
+    }
+
+    #[test]
+    fn every_disagreement_is_reported_at_once_in_flag_then_override_order() {
+        let mut plans = plans(INTEGRATION_CASE, Os::MacOs, true);
+        plans.extend(self::plans(
+            &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
+            Os::Linux,
+            false,
+        ));
+        let overrides = [
+            "comparison=x".parse().unwrap(),
+            "millstone=y".parse().unwrap(),
+            "baseline=z".parse().unwrap(),
+        ];
+        let inputs = LegacyArtifactInputs {
+            image_overrides: &overrides,
+            adp_binary_path: Some(Path::new("other/adp")),
+            core_agent_binary_path: Some(Path::new("other/bin/agent/agent")),
+            alpine_image: Some("other:alpine"),
+        };
+        let error = check_inputs(&plans, Os::Linux, &inputs).unwrap_err().to_string();
+        assert_eq!(error, concat!(
+            "Legacy artifact inputs disagree with the --artifacts bindings:\n",
+            "  - --adp-binary-path (PANORAMIC_ADP_BINARY_PATH) names 'other/adp' for role 'adp-host-binary', bound to 'build/adp' (manifest)\n",
+            "  - --core-agent-binary-path (PANORAMIC_CORE_AGENT_BINARY_PATH) names 'other/bin/agent/agent' for role 'agent-host-install', bound to 'build/install' (manifest), whose main binary is 'build/install/bin/agent/agent'\n",
+            "  - --alpine-image (PANORAMIC_ALPINE_IMAGE) names 'other:alpine' for role 'fixup-image', bound to 'alpine:latest' (local default)\n",
+            "  - --image-override comparison (PANORAMIC_IMAGE_OVERRIDES) names 'x' for role 'agent-adp-linux-image', bound to 'saluki-images/datadog-agent:testing-devel' (local default)\n",
+            "  - --image-override millstone (PANORAMIC_IMAGE_OVERRIDES) names 'y' for role 'tools-linux-image', bound to 'saluki-images/correctness-tools:latest' (local default)\n",
+            "  - --image-override baseline (PANORAMIC_IMAGE_OVERRIDES) names 'z' for role 'agent-adp-linux-image', bound to 'saluki-images/datadog-agent:testing-devel' (local default)"
+        ));
+    }
+
+    #[test]
+    fn two_overrides_for_one_role_with_different_images_cannot_both_agree() {
+        let plans = plans(&format!("type: correctness\n{CORRECTNESS_FIELDS}"), Os::Linux, true);
+        for (intake, millstone, name) in [
+            ("tools:bound", "other:tools", "millstone"),
+            ("other:tools", "tools:bound", "datadog-intake"),
+        ] {
+            let overrides = [
+                format!("datadog-intake={intake}").parse().unwrap(),
+                format!("millstone={millstone}").parse().unwrap(),
+            ];
+            let inputs = LegacyArtifactInputs {
+                image_overrides: &overrides,
+                ..Default::default()
+            };
+            let error = check_inputs(&plans, Os::Linux, &inputs).unwrap_err().to_string();
+            assert_eq!(error, format!(
+                "Legacy artifact inputs disagree with the --artifacts bindings:\n  - --image-override {name} (PANORAMIC_IMAGE_OVERRIDES) names 'other:tools' for role 'tools-linux-image', bound to 'tools:bound' (manifest)"
+            ));
+        }
+    }
+
+    #[test]
+    fn the_core_agent_path_agrees_when_it_is_the_bound_install_joined_with_its_main_binary() {
+        let plans = plans(INTEGRATION_CASE, Os::MacOs, true);
+        let mut inputs = LegacyArtifactInputs {
+            core_agent_binary_path: Some(Path::new("build/install/bin/agent/agent")),
+            ..Default::default()
+        };
+        check_inputs(&plans, Os::MacOs, &inputs).unwrap();
+        inputs.core_agent_binary_path = Some(Path::new("build/install"));
+        assert_eq!(check_inputs(&plans, Os::MacOs, &inputs).unwrap_err().to_string(),
+            "Legacy artifact inputs disagree with the --artifacts bindings:\n  - --core-agent-binary-path (PANORAMIC_CORE_AGENT_BINARY_PATH) names 'build/install' for role 'agent-host-install', bound to 'build/install' (manifest), whose main binary is 'build/install/bin/agent/agent'"
+        );
+    }
+
+    #[test]
+    fn references_are_compared_without_resolving_paths_or_image_tags() {
+        let linux = plans(INTEGRATION_CASE, Os::Linux, false);
+        let inputs = LegacyArtifactInputs {
+            alpine_image: Some("alpine"),
+            ..Default::default()
+        };
+        assert!(check_inputs(&linux, Os::Linux, &inputs).is_err());
+        let macos = plans(INTEGRATION_CASE, Os::MacOs, true);
+        let inputs = LegacyArtifactInputs {
+            adp_binary_path: Some(Path::new("./build/adp")),
+            ..Default::default()
+        };
+        assert!(check_inputs(&macos, Os::MacOs, &inputs).is_err());
+        for path in ["build/adp/", "build//adp", "build/./adp"] {
+            let inputs = LegacyArtifactInputs {
+                adp_binary_path: Some(Path::new(path)),
+                ..Default::default()
+            };
+            check_inputs(&macos, Os::MacOs, &inputs).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_legacy_input_for_a_role_no_case_needs_is_ignored() {
+        let overrides = ["intake=other:tools".parse().unwrap()];
+        for (os, inputs) in [
+            (
+                Os::Linux,
+                LegacyArtifactInputs {
+                    adp_binary_path: Some(Path::new("other/adp")),
+                    core_agent_binary_path: Some(Path::new("other/agent")),
+                    ..Default::default()
+                },
+            ),
+            (
+                Os::Windows,
+                LegacyArtifactInputs {
+                    alpine_image: Some("other:alpine"),
+                    ..Default::default()
+                },
+            ),
+            (
+                Os::MacOs,
+                LegacyArtifactInputs {
+                    image_overrides: &overrides,
+                    ..Default::default()
+                },
+            ),
+        ] {
+            check_inputs(&plans(INTEGRATION_CASE, os, true), os, &inputs).unwrap();
+        }
+    }
+
+    #[test]
+    fn image_override_names_are_still_validated_under_run_artifacts() {
+        let plans = plans(&format!("type: correctness\n{CORRECTNESS_FIELDS}"), Os::Linux, true);
+        for entries in [
+            vec!["baseline=x", "baseline=y"],
+            vec!["unknown=x"],
+            vec!["unknown=x", "unknown=y"],
+            vec!["baseline=x", "unknown=y", "baseline=z"],
+            vec!["baseline=x", "baseline=y", "unknown=z"],
+        ] {
+            let overrides: Vec<_> = entries.into_iter().map(|entry| entry.parse().unwrap()).collect();
+            let expected = build_runners(&plans, Os::Linux, &RunnerArtifacts::Overrides(&overrides))
+                .err()
+                .unwrap()
+                .to_string();
+            let inputs = LegacyArtifactInputs {
+                image_overrides: &overrides,
+                alpine_image: Some("other:alpine"),
+                ..Default::default()
+            };
+            assert_eq!(
+                check_inputs(&plans, Os::Linux, &inputs).unwrap_err().to_string(),
+                expected
+            );
+        }
+        let macos = self::plans(INTEGRATION_CASE, Os::MacOs, true);
+        let overrides = ["container=x".parse().unwrap()];
+        let inputs = LegacyArtifactInputs {
+            image_overrides: &overrides,
+            ..Default::default()
+        };
+        assert_eq!(
+            check_inputs(&macos, Os::MacOs, &inputs).unwrap_err().to_string(),
+            "No test in this run uses a container named 'container'. Available: intake."
+        );
+    }
+
+    #[test]
+    fn an_override_that_passes_name_validation_but_has_no_role_is_a_disagreement() {
+        let plans = plans(INTEGRATION_CASE, Os::Linux, true);
+        let artifacts = RunnerArtifacts::Bound(BoundArtifacts::new(needed_artifacts(&plans)));
+        let built = build_runners(&plans, Os::Linux, &artifacts).unwrap();
+        let RunnerArtifacts::Bound(bound) = artifacts else {
+            unreachable!()
+        };
+        let overrides = ["container=x".parse().unwrap()];
+        let inputs = LegacyArtifactInputs {
+            image_overrides: &overrides,
+            ..Default::default()
+        };
+        assert_eq!(bound.check_legacy_inputs(&inputs, Os::MacOs, &[built[0].runner.as_ref()]).unwrap_err().to_string(),
+            "Legacy artifact inputs disagree with the --artifacts bindings:\n  - --image-override container (PANORAMIC_IMAGE_OVERRIDES) names no artifact role on macos"
+        );
+    }
+
+    #[test]
+    fn ci_correctness_overrides_agree_with_a_manifest_binding_the_same_images() {
+        let plans = plans(&format!("type: correctness\n{CORRECTNESS_FIELDS}"), Os::Linux, true);
+        let overrides = [
+            "millstone=tools:bound",
+            "datadog-intake=tools:bound",
+            "comparison=target:linux",
+            "baseline=target:linux",
+        ]
+        .map(|entry| entry.parse().unwrap());
+        let inputs = LegacyArtifactInputs {
+            image_overrides: &overrides,
+            alpine_image: Some("fixup:bound"),
+            ..Default::default()
+        };
+        let artifacts = RunnerArtifacts::Bound(BoundArtifacts::new(needed_artifacts(&plans)));
+        let built = build_runners(&plans, Os::Linux, &artifacts).unwrap();
+        let RunnerArtifacts::Bound(bound) = artifacts else {
+            unreachable!()
+        };
+        bound
+            .check_legacy_inputs(&inputs, Os::Linux, &[built[0].runner.as_ref()])
+            .unwrap();
+        assert_eq!(
+            built[0].runner.images(),
+            BTreeMap::from([
+                ("millstone", "tools:bound".into()),
+                ("datadog-intake", "tools:bound".into()),
+                ("comparison", "target:linux".into()),
+                ("baseline", "target:linux".into()),
+            ])
+        );
+        let mut settings = default_settings();
+        bound.apply_runner_settings(&mut settings);
+        assert_eq!(settings.alpine_image, "fixup:bound");
     }
 
     #[test]
