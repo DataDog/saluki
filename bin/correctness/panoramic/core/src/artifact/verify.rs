@@ -3,18 +3,19 @@
 
 use std::{fs::File, path::Path};
 
-use airlock::docker::DOCKER_DAEMON_TIMEOUT;
-use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 
-use super::{ArtifactBinding, ArtifactKind};
+use super::{
+    image_store::{connect, image_id_within_deadline, ImageStore},
+    ArtifactBinding, ArtifactKind,
+};
 
-/// One binding's verification outcome.
+/// One binding's verification or pull outcome.
 #[derive(Debug)]
 pub struct ArtifactVerification {
-    /// The verified role, reference and source.
+    /// The role, reference and source checked or pulled.
     pub binding: ArtifactBinding,
-    /// The artifact's identity, or why verification failed.
+    /// The artifact's identity, or why verification or pulling failed.
     pub identity: Result<String, String>,
 }
 
@@ -22,28 +23,7 @@ pub struct ArtifactVerification {
 /// Images use the same Docker daemon as backends; files are identified by their SHA-256 digest.
 /// A daemon timeout fails the remaining image bindings; file checks continue.
 pub async fn verify(bindings: &[ArtifactBinding], base: &Path) -> Vec<ArtifactVerification> {
-    verify_with(bindings, base, || {
-        airlock::docker::connect()
-            .map(|docker| Box::new(DockerStore(docker)) as Box<dyn ImageStore>)
-            .map_err(|error| format!("{error:#}"))
-    })
-    .await
-}
-
-#[async_trait]
-pub(crate) trait ImageStore: Send + Sync {
-    async fn image_id(&self, reference: &str) -> Result<Option<String>, String>;
-}
-
-struct DockerStore(airlock::docker::Docker);
-
-#[async_trait]
-impl ImageStore for DockerStore {
-    async fn image_id(&self, reference: &str) -> Result<Option<String>, String> {
-        airlock::docker::image_id(&self.0, reference)
-            .await
-            .map_err(|error| format!("cannot inspect image '{reference}': {error:#}"))
-    }
+    verify_with(bindings, base, connect).await
 }
 
 async fn verify_with(
@@ -57,18 +37,11 @@ async fn verify_with(
     for binding in bindings {
         let identity = match binding.role.kind {
             ArtifactKind::Image => match store.as_ref().expect("image bindings initialize the store") {
-                Ok(images) => match tokio::time::timeout(DOCKER_DAEMON_TIMEOUT, images.image_id(&binding.reference))
-                    .await
-                {
+                Ok(images) => match image_id_within_deadline(images.as_ref(), &binding.reference).await {
                     Ok(result) => result.and_then(|id| {
                         id.ok_or_else(|| format!("image '{}' was not found on the Docker daemon", binding.reference))
                     }),
-                    Err(_) => {
-                        let error = format!(
-                            "the Docker daemon did not answer within {}s inspecting image '{}'",
-                            DOCKER_DAEMON_TIMEOUT.as_secs(),
-                            binding.reference
-                        );
+                    Err(error) => {
                         store = Some(Err(error.clone()));
                         Err(error)
                     }
@@ -128,6 +101,9 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
     };
+
+    use airlock::docker::DOCKER_DAEMON_TIMEOUT;
+    use async_trait::async_trait;
 
     use super::*;
     use crate::artifact::{test_util::write_executable, ArtifactRole, BindingSource};
@@ -262,6 +238,10 @@ mod tests {
                 _ => panic!("unexpected reference {reference}"),
             }
         }
+
+        async fn pull(&self, _reference: &str) -> Result<(), String> {
+            panic!("verification must not pull")
+        }
     }
 
     #[tokio::test]
@@ -309,6 +289,10 @@ mod tests {
         async fn image_id(&self, _reference: &str) -> Result<Option<String>, String> {
             self.0.fetch_add(1, Ordering::Relaxed);
             std::future::pending().await
+        }
+
+        async fn pull(&self, _reference: &str) -> Result<(), String> {
+            panic!("verification must not pull")
         }
     }
 

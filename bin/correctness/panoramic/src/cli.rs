@@ -208,7 +208,10 @@ pub enum ArtifactsSubcommand {
     Render(RenderCommand),
 
     /// Verify needed artifacts and print their identities without pulling images.
-    Verify(VerifyCommand),
+    Verify(ArtifactCasesCommand),
+
+    /// Pull needed images and print their identities.
+    Pull(ArtifactCasesCommand),
 }
 
 #[derive(Args)]
@@ -233,7 +236,7 @@ fn artifact_binding_parser(value: &str) -> Result<(String, String), String> {
 
 #[derive(Args)]
 #[command(args_override_self = true)]
-pub struct VerifyCommand {
+pub struct ArtifactCasesCommand {
     /// Path to a test cases directory (can be specified multiple times).
     #[arg(short = 'd', long)]
     pub test_dirs: Vec<PathBuf>,
@@ -244,7 +247,7 @@ pub struct VerifyCommand {
 
     /// Artifact manifest (TOML) binding artifact roles to image references and paths.
     /// Roles it omits use their local defaults; a role no participant type or backend
-    /// declares is an error. Verification prints the reference each role resolves to.
+    /// declares is an error. Each needed role is printed with the reference it resolves to.
     #[arg(long, value_name = "FILE", verbatim_doc_comment)]
     pub artifacts: Option<PathBuf>,
 }
@@ -957,71 +960,80 @@ mod tests {
     }
 
     #[test]
-    fn artifacts_verify_accepts_directories_subject_os_and_manifest_but_not_runtime() {
-        for os in [Os::Linux, Os::MacOs, Os::Windows] {
-            let Command::Artifacts(ArtifactsCommand {
-                command: ArtifactsSubcommand::Verify(cmd),
-            }) = Cli::try_parse_from([
-                "panoramic",
-                "artifacts",
-                "verify",
-                "-d",
-                "cases",
-                "--test-dirs",
-                "other",
-                "--subject-os",
-                os.name(),
-                "--artifacts",
-                "artifacts.toml",
-            ])
-            .unwrap()
-            .command
-            else {
-                panic!("expected artifacts verify")
-            };
-            assert_eq!(cmd.test_dirs, vec![PathBuf::from("cases"), PathBuf::from("other")]);
-            assert_eq!(cmd.subject_os, os);
-            assert_eq!(cmd.artifacts, Some(PathBuf::from("artifacts.toml")));
-        }
-        let command = Cli::command();
-        let verify = command
-            .find_subcommand("artifacts")
-            .unwrap()
-            .find_subcommand("verify")
-            .unwrap();
-        assert_eq!(
-            verify
-                .get_arguments()
-                .find(|argument| argument.get_id() == "artifacts")
+    fn artifacts_verify_and_pull_accept_directories_subject_os_and_manifest_but_not_runtime() {
+        for subcommand in ["verify", "pull"] {
+            for os in [Os::Linux, Os::MacOs, Os::Windows] {
+                let Command::Artifacts(ArtifactsCommand { command }) = Cli::try_parse_from([
+                    "panoramic",
+                    "artifacts",
+                    subcommand,
+                    "-d",
+                    "cases",
+                    "--test-dirs",
+                    "other",
+                    "--subject-os",
+                    os.name(),
+                    "--artifacts",
+                    "artifacts.toml",
+                ])
                 .unwrap()
-                .get_env(),
-            None
-        );
-        for (flag, value) in [
-            ("--runtime", "linux"),
-            ("--subject-os", "mac"),
-            ("--subject-os", "Linux"),
-        ] {
-            let error = Cli::try_parse_from(["panoramic", "artifacts", "verify", flag, value])
-                .err()
+                .command
+                else {
+                    panic!("expected artifacts {subcommand}")
+                };
+                let cmd = match (subcommand, command) {
+                    ("verify", ArtifactsSubcommand::Verify(cmd)) | ("pull", ArtifactsSubcommand::Pull(cmd)) => cmd,
+                    _ => panic!("expected artifacts {subcommand}"),
+                };
+                assert_eq!(cmd.test_dirs, vec![PathBuf::from("cases"), PathBuf::from("other")]);
+                assert_eq!(cmd.subject_os, os);
+                assert_eq!(cmd.artifacts, Some(PathBuf::from("artifacts.toml")));
+            }
+            let command = Cli::command();
+            let cases_command = command
+                .find_subcommand("artifacts")
+                .unwrap()
+                .find_subcommand(subcommand)
                 .unwrap();
-            assert_eq!(error.exit_code(), 2);
+            assert_eq!(
+                cases_command
+                    .get_arguments()
+                    .find(|argument| argument.get_id() == "artifacts")
+                    .unwrap()
+                    .get_env(),
+                None
+            );
+            for (flag, value) in [
+                ("--runtime", "linux"),
+                ("--subject-os", "mac"),
+                ("--subject-os", "Linux"),
+            ] {
+                let error = Cli::try_parse_from(["panoramic", "artifacts", subcommand, flag, value])
+                    .err()
+                    .unwrap();
+                assert_eq!(error.exit_code(), 2);
+            }
         }
     }
 
     #[test]
-    fn artifacts_verify_defaults_to_the_host_subject_os() {
-        let Command::Artifacts(ArtifactsCommand {
-            command: ArtifactsSubcommand::Verify(cmd),
-        }) = Cli::try_parse_from(["panoramic", "artifacts", "verify"])
-            .unwrap()
-            .command
-        else {
-            panic!("expected artifacts verify")
-        };
-        assert_eq!(cmd.subject_os, Os::host());
-        assert!(cmd.test_dirs.is_empty());
-        assert!(cmd.artifacts.is_none());
+    fn artifacts_verify_and_pull_default_to_the_host_subject_os() {
+        for subcommand in ["verify", "pull"] {
+            let Command::Artifacts(ArtifactsCommand { command }) =
+                Cli::try_parse_from(["panoramic", "artifacts", subcommand])
+                    .unwrap()
+                    .command
+            else {
+                panic!("expected artifacts {subcommand}")
+            };
+            let cmd = match (subcommand, command) {
+                ("verify", ArtifactsSubcommand::Verify(cmd)) | ("pull", ArtifactsSubcommand::Pull(cmd)) => cmd,
+                _ => panic!("expected artifacts {subcommand}"),
+            };
+            assert_eq!(cmd.subject_os, Os::host());
+            assert!(cmd.test_dirs.is_empty());
+            assert!(cmd.artifacts.is_none());
+        }
     }
 
     #[test]

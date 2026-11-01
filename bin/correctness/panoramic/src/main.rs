@@ -120,6 +120,7 @@ async fn main() -> ExitCode {
         Command::Artifacts(cmd) => match cmd.command {
             cli::ArtifactsSubcommand::Render(cmd) => artifact_commands::render(cmd),
             cli::ArtifactsSubcommand::Verify(cmd) => artifact_commands::verify(cmd, &mut std::io::stdout()).await,
+            cli::ArtifactsSubcommand::Pull(cmd) => artifact_commands::pull(cmd, &mut std::io::stdout()).await,
         },
     };
 

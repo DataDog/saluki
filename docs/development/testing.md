@@ -235,6 +235,18 @@ only when an image is needed. It reports every verification failure and exits 2 
 is given, the manifest is invalid or cases fail discovery or planning. It exits 0 when all artifacts verify, including
 when none are needed. Only participant cases contribute artifact roles.
 
+Use `panoramic artifacts pull -d <cases> [--subject-os linux|macos|windows] [--artifacts <file>]` to fetch only the
+images those participant cases need, in role-name order. Check binary and install roles with `verify`;
+`pull` reports only images. Images are always pulled again, even if present, so moving tags are refreshed. A failed
+pull fails even if a local copy exists: use `verify` for locally built images. An untagged reference pulls `latest`.
+Each pull has a five-minute limit; the inspection afterwards has a 30-second limit. Either timeout fails that image
+and all remaining images without contacting the daemon again; other failures affect only that image. Pulling logs
+each reference and role before starting, and prints each role's reference, source and image ID or failure under
+`Images needed on <os>:`. When no images are needed, it prints `No images needed on <os>.` and exits 0.
+Successful pulls exit 0; any failed pull or inspection, invalid selection or manifest, or discovery or planning
+error exits 2. Registry access is unauthenticated, and platform selection follows the daemon rather than
+`--subject-os`. Test runs also pull images during container creation.
+
 Connections and endpoint overrides are checked the same way: on every OS in `subject_os`, each `connect` key
 must be an endpoint the participant consumes, the target must serve the named endpoint with its configuration,
 and the endpoint's kind must be one the consumer accepts. A connection also fails when its participants'
@@ -293,6 +305,7 @@ The source documents each part:
 - `bin/correctness/panoramic/core/src/case/file.rs`: the case file's fields and their defaults.
 - `bin/correctness/panoramic/core/src/artifact.rs`: artifact roles and the manifest.
 - `bin/correctness/panoramic/core/src/artifact/verify.rs`: artifact verification and identities.
+- `bin/correctness/panoramic/core/src/artifact/pull.rs`: image pulling and identities.
 - `bin/correctness/panoramic/core/src/layout.rs`: how participants are placed on an OS and realization.
 - `bin/correctness/panoramic/participants/src/agent_adp.rs`: what `agent-adp` declares, including its facts and artifact roles.
 - `bin/correctness/panoramic/steps/src/`: each step's fields.

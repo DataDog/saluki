@@ -1,4 +1,4 @@
-//! Commands for writing artifact manifests and checking the artifacts selected participant cases need.
+//! Commands for writing manifests, verifying artifacts and pulling images selected participant cases need.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -9,14 +9,14 @@ use std::{
 };
 
 use panoramic_core::{
-    artifact::{self, ArtifactManifest, ArtifactVerification},
+    artifact::{self, ArtifactBinding, ArtifactManifest, ArtifactVerification},
     layout::Os,
     plan::{check_artifact_manifest, needed_artifacts, Planner},
 };
 use tracing::{error, info};
 
 use crate::{
-    cli::{RenderCommand, VerifyCommand},
+    cli::{ArtifactCasesCommand, RenderCommand},
     collector::EXIT_HARNESS_ERROR,
     config::discover_in_scope,
 };
@@ -83,30 +83,29 @@ pub(crate) fn artifact_planner(
     Ok((planner, subject_os))
 }
 
-pub(crate) async fn verify(cmd: VerifyCommand, output: &mut impl Write) -> ExitCode {
-    let (mut planner, subject_os) = match artifact_planner(&cmd.test_dirs, Ok(cmd.subject_os), cmd.artifacts.as_deref())
-    {
+fn needed_bindings(cmd: &ArtifactCasesCommand) -> Result<(Os, Vec<ArtifactBinding>, PathBuf), ExitCode> {
+    let (mut planner, subject_os) = artifact_planner(&cmd.test_dirs, Ok(cmd.subject_os), cmd.artifacts.as_deref())?;
+    let base = std::env::current_dir().map_err(|error| {
+        error!("Cannot read the current directory: {error}");
+        ExitCode::from(EXIT_HARNESS_ERROR)
+    })?;
+    let directories: Vec<_> = cmd.test_dirs.iter().map(|dir| dir.display().to_string()).collect();
+    info!("Discovering test cases from: {}...", directories.join(", "));
+    let plans = discover_in_scope(&mut planner, &cmd.test_dirs, subject_os).map_err(|error| {
+        error!("Failed to discover tests: {error:#}");
+        ExitCode::from(EXIT_HARNESS_ERROR)
+    })?;
+    Ok((subject_os, needed_artifacts(&plans), base))
+}
+
+pub(crate) async fn verify(cmd: ArtifactCasesCommand, output: &mut impl Write) -> ExitCode {
+    let (subject_os, bindings, base) = match needed_bindings(&cmd) {
         Ok(selection) => selection,
         Err(exit) => return exit,
     };
-    let base = match std::env::current_dir() {
-        Ok(base) => base,
-        Err(error) => {
-            error!("Cannot read the current directory: {error}");
-            return ExitCode::from(EXIT_HARNESS_ERROR);
-        }
-    };
-    let directories: Vec<_> = cmd.test_dirs.iter().map(|dir| dir.display().to_string()).collect();
-    info!("Discovering test cases from: {}...", directories.join(", "));
-    let plans = match discover_in_scope(&mut planner, &cmd.test_dirs, subject_os) {
-        Ok(plans) => plans,
-        Err(error) => {
-            error!("Failed to discover tests: {error:#}");
-            return ExitCode::from(EXIT_HARNESS_ERROR);
-        }
-    };
-    let results = artifact::verify(&needed_artifacts(&plans), &base).await;
-    if let Err(error) = output.write_all(verification_text(subject_os, &results).as_bytes()) {
+    let results = artifact::verify(&bindings, &base).await;
+    if let Err(error) = output.write_all(verification_text(subject_os, &results, ("Artifacts", "artifacts")).as_bytes())
+    {
         error!("Cannot write artifact verification report: {error}");
         return ExitCode::from(EXIT_HARNESS_ERROR);
     }
@@ -121,11 +120,33 @@ pub(crate) async fn verify(cmd: VerifyCommand, output: &mut impl Write) -> ExitC
     }
 }
 
-fn verification_text(subject_os: Os, results: &[ArtifactVerification]) -> String {
-    if results.is_empty() {
-        return format!("No artifacts needed on {}.\n", subject_os.name());
+pub(crate) async fn pull(cmd: ArtifactCasesCommand, output: &mut impl Write) -> ExitCode {
+    let (subject_os, bindings, _) = match needed_bindings(&cmd) {
+        Ok(selection) => selection,
+        Err(exit) => return exit,
+    };
+    let results = artifact::pull(&bindings).await;
+    if let Err(error) = output.write_all(verification_text(subject_os, &results, ("Images", "images")).as_bytes()) {
+        error!("Cannot write image pull report: {error}");
+        return ExitCode::from(EXIT_HARNESS_ERROR);
     }
-    let mut text = format!("Artifacts needed on {}:\n", subject_os.name());
+    let n = results.len();
+    let failed = results.iter().filter(|result| result.identity.is_err()).count();
+    if failed == 0 {
+        info!("Pulled {n} image(s).");
+        ExitCode::SUCCESS
+    } else {
+        error!("{failed} of {n} image(s) failed to pull.");
+        ExitCode::from(EXIT_HARNESS_ERROR)
+    }
+}
+
+fn verification_text(subject_os: Os, results: &[ArtifactVerification], nouns: (&str, &str)) -> String {
+    let (heading, noun) = nouns;
+    if results.is_empty() {
+        return format!("No {noun} needed on {}.\n", subject_os.name());
+    }
+    let mut text = format!("{heading} needed on {}:\n", subject_os.name());
     for result in results {
         let binding = &result.binding;
         let identity = match &result.identity {
@@ -155,7 +176,15 @@ mod tests {
     use super::*;
     use crate::config::tests::{write_case, PARTICIPANT_FIELDS};
 
-    async fn verify_with_logs(dirs: Vec<PathBuf>, artifacts: Option<PathBuf>) -> (ExitCode, String, String) {
+    #[derive(Clone, Copy)]
+    enum Subcommand {
+        Verify,
+        Pull,
+    }
+
+    async fn artifact_command_with_logs(
+        dirs: Vec<PathBuf>, artifacts: Option<PathBuf>, subcommand: Subcommand,
+    ) -> (ExitCode, String, String) {
         let output = tempfile::NamedTempFile::new().unwrap();
         let subscriber = tracing_subscriber::fmt()
             .with_ansi(false)
@@ -163,14 +192,17 @@ mod tests {
             .with_writer(std::sync::Mutex::new(output.reopen().unwrap()))
             .finish();
         let mut report = Vec::new();
-        let exit = verify(
-            VerifyCommand {
-                test_dirs: dirs,
-                subject_os: Os::MacOs,
-                artifacts,
-            },
-            &mut report,
-        )
+        let cmd = ArtifactCasesCommand {
+            test_dirs: dirs,
+            subject_os: Os::MacOs,
+            artifacts,
+        };
+        let exit = async {
+            match subcommand {
+                Subcommand::Verify => verify(cmd, &mut report).await,
+                Subcommand::Pull => pull(cmd, &mut report).await,
+            }
+        }
         .with_subscriber(subscriber)
         .await;
         (
@@ -242,7 +274,7 @@ mod tests {
             )),
             "{log}"
         );
-        let (exit, report, log) = verify_with_logs(vec![cases], Some(manifest)).await;
+        let (exit, report, log) = artifact_command_with_logs(vec![cases], Some(manifest), Subcommand::Verify).await;
         assert_eq!(exit, ExitCode::SUCCESS, "{log}");
         assert_eq!(
             report,
@@ -367,7 +399,8 @@ mod tests {
                 2 => std::fs::remove_file(install.join("bin/agent/agent")).unwrap(),
                 _ => {}
             }
-            let (exit, report, log) = verify_with_logs(vec![cases.clone()], Some(manifest.clone())).await;
+            let (exit, report, log) =
+                artifact_command_with_logs(vec![cases.clone()], Some(manifest.clone()), Subcommand::Verify).await;
             let expected_exit = if missing == 0 {
                 ExitCode::SUCCESS
             } else {
@@ -424,7 +457,8 @@ mod tests {
                 if let Some(content) = content {
                     std::fs::write(&manifest, content).unwrap();
                 }
-                let (exit, report, log) = verify_with_logs(vec![cases.clone()], Some(manifest.clone())).await;
+                let (exit, report, log) =
+                    artifact_command_with_logs(vec![cases.clone()], Some(manifest.clone()), Subcommand::Verify).await;
                 assert_eq!(exit, ExitCode::from(2));
                 assert!(report.is_empty(), "{report}");
                 assert!(log.contains(problem), "{log}");
@@ -436,7 +470,7 @@ mod tests {
 
     #[tokio::test]
     async fn artifacts_verify_requires_test_directories() {
-        let (exit, report, log) = verify_with_logs(vec![], None).await;
+        let (exit, report, log) = artifact_command_with_logs(vec![], None, Subcommand::Verify).await;
         assert_eq!(exit, ExitCode::from(2));
         assert!(report.is_empty(), "{report}");
         assert!(log.contains("No test directories specified."), "{log}");
@@ -460,7 +494,8 @@ procedure: []
 "#,
                 );
             }
-            let (exit, report, log) = verify_with_logs(vec![dir.path().to_path_buf()], None).await;
+            let (exit, report, log) =
+                artifact_command_with_logs(vec![dir.path().to_path_buf()], None, Subcommand::Verify).await;
             assert_eq!(exit, ExitCode::SUCCESS, "{log}");
             assert_eq!(report, "No artifacts needed on macos.\n");
             assert!(log.contains("Verified 0 artifact(s)."), "{log}");
@@ -475,7 +510,8 @@ procedure: []
             PARTICIPANT_FIELDS.replace("subject: true", "subject: true, realization: {kind: kubernetes-pod}"),
         ] {
             write_case(dir.path(), "invalid", &yaml);
-            let (exit, report, log) = verify_with_logs(vec![dir.path().to_path_buf()], None).await;
+            let (exit, report, log) =
+                artifact_command_with_logs(vec![dir.path().to_path_buf()], None, Subcommand::Verify).await;
             assert_eq!(exit, ExitCode::from(2));
             assert!(report.is_empty(), "{report}");
             assert!(log.contains("Failed to discover tests:"), "{log}");
@@ -489,7 +525,7 @@ procedure: []
         let mut output = std::io::Cursor::new(&mut [] as &mut [u8]);
         assert_eq!(
             verify(
-                VerifyCommand {
+                ArtifactCasesCommand {
                     test_dirs: vec![dir.path().to_path_buf()],
                     subject_os: Os::MacOs,
                     artifacts: None,
@@ -498,6 +534,115 @@ procedure: []
             )
             .await,
             ExitCode::from(2)
+        );
+    }
+
+    #[tokio::test]
+    async fn artifacts_pull_reports_no_images_needed_for_cases_needing_only_files() {
+        let dir = tempfile::tempdir().unwrap();
+        write_case(dir.path(), "host", &PARTICIPANT_FIELDS.replace("[linux]", "[macos]"));
+        let (_, report, _) = artifact_command_with_logs(vec![dir.path().to_path_buf()], None, Subcommand::Verify).await;
+        assert!(report.contains("adp-host-binary"), "{report}");
+        assert!(report.contains("agent-host-install"), "{report}");
+        let (exit, report, log) =
+            artifact_command_with_logs(vec![dir.path().to_path_buf()], None, Subcommand::Pull).await;
+        assert_eq!(exit, ExitCode::SUCCESS, "{log}");
+        assert_eq!(report, "No images needed on macos.\n");
+        assert!(log.contains("Pulled 0 image(s)."), "{log}");
+    }
+
+    #[tokio::test]
+    async fn artifacts_pull_fails_like_verify_before_discovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let cases = dir.path().join("cases");
+        write_case(
+            &cases,
+            "invalid",
+            &PARTICIPANT_FIELDS.replace("subject: true", "subject: true, realization: {kind: kubernetes-pod}"),
+        );
+        let unknown = dir.path().join("unknown.toml");
+        std::fs::write(&unknown, "schema = 1\n[roles]\nbogus = 'x'").unwrap();
+        let malformed = dir.path().join("malformed.toml");
+        std::fs::write(&malformed, "not toml").unwrap();
+        for (dirs, manifest, problem, discovers) in [
+            (vec![], None, "No test directories specified.", false),
+            (
+                vec![cases.clone()],
+                Some(unknown),
+                "no participant type or backend declares role 'bogus'",
+                false,
+            ),
+            (vec![cases.clone()], Some(malformed), "TOML parse error", false),
+            (vec![cases], None, "Failed to discover tests:", true),
+        ] {
+            let (verify_exit, verify_report, verify_log) =
+                artifact_command_with_logs(dirs.clone(), manifest.clone(), Subcommand::Verify).await;
+            let (exit, report, log) = artifact_command_with_logs(dirs, manifest, Subcommand::Pull).await;
+            assert_eq!(exit, ExitCode::from(2));
+            assert_eq!(exit, verify_exit);
+            assert!(report.is_empty(), "{report}");
+            assert_eq!(report, verify_report);
+            assert_eq!(log, verify_log);
+            assert!(log.contains(problem), "{log}");
+            assert_eq!(log.contains("Discovering"), discovers, "{log}");
+            assert!(!log.contains("Pulled"), "{log}");
+        }
+    }
+
+    #[tokio::test]
+    async fn artifacts_pull_exits_2_if_the_report_cannot_be_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut output = std::io::Cursor::new(&mut [] as &mut [u8]);
+        assert_eq!(
+            pull(
+                ArtifactCasesCommand {
+                    test_dirs: vec![dir.path().to_path_buf()],
+                    subject_os: Os::MacOs,
+                    artifacts: None,
+                },
+                &mut output
+            )
+            .await,
+            ExitCode::from(2)
+        );
+    }
+
+    #[test]
+    fn pull_text_lists_each_image_with_its_identity_or_failure() {
+        let results = [
+            ArtifactVerification {
+                binding: ArtifactBinding {
+                    role: ArtifactRole {
+                        name: "agent-adp-linux-image",
+                        kind: ArtifactKind::Image,
+                        local_default: "unused",
+                    },
+                    reference: "busybox:1.36.1".into(),
+                    source: BindingSource::Manifest,
+                },
+                identity: Ok("sha256:73aa".into()),
+            },
+            ArtifactVerification {
+                binding: ArtifactBinding {
+                    role: ArtifactRole {
+                        name: "fixup-image",
+                        kind: ArtifactKind::Image,
+                        local_default: "unused",
+                    },
+                    reference: "busybox:nope".into(),
+                    source: BindingSource::Manifest,
+                },
+                identity: Err("cannot pull image 'busybox:nope': pull access denied".into()),
+            },
+        ];
+        assert_eq!(verification_text(Os::Linux, &results, ("Images", "images")), concat!(
+            "Images needed on linux:\n",
+            "  agent-adp-linux-image = busybox:1.36.1 (manifest): image sha256:73aa\n",
+            "  fixup-image = busybox:nope (manifest): image FAILED: cannot pull image 'busybox:nope': pull access denied\n",
+        ));
+        assert_eq!(
+            verification_text(Os::Linux, &[], ("Images", "images")),
+            "No images needed on linux.\n"
         );
     }
 
@@ -544,7 +689,7 @@ procedure: []
             },
         ];
         assert_eq!(
-            verification_text(Os::MacOs, &results),
+            verification_text(Os::MacOs, &results, ("Artifacts", "artifacts")),
             concat!(
                 "Artifacts needed on macos:\n",
                 "  adp-host-binary = target/release/agent-data-plane (local default): binary sha256:3b1f\n",
@@ -552,6 +697,9 @@ procedure: []
                 "  fixup-image = alpine:latest (local default): image sha256:123\n",
             )
         );
-        assert_eq!(verification_text(Os::Linux, &[]), "No artifacts needed on linux.\n");
+        assert_eq!(
+            verification_text(Os::Linux, &[], ("Artifacts", "artifacts")),
+            "No artifacts needed on linux.\n"
+        );
     }
 }

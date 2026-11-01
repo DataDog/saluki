@@ -1,4 +1,4 @@
-//! Docker daemon connection and image inspection helpers.
+//! Docker daemon connection, image inspection and pull helpers.
 
 use std::time::Duration;
 #[cfg(unix)]
@@ -7,7 +7,12 @@ use std::{env, path::PathBuf};
 pub use bollard::Docker;
 #[cfg(unix)]
 use bollard::API_DEFAULT_VERSION;
-use bollard::{errors::Error, models::ImageInspect};
+use bollard::{
+    errors::Error,
+    models::{CreateImageInfo, ImageInspect},
+    query_parameters::CreateImageOptions,
+};
+use futures::{Stream, StreamExt as _};
 #[cfg(unix)]
 use home::home_dir;
 #[cfg(unix)]
@@ -15,6 +20,7 @@ use saluki_error::ErrorContext as _;
 use saluki_error::{generic_error, GenericError};
 #[cfg(unix)]
 use tracing::debug;
+use tracing::trace;
 
 /// Response deadline for daemon availability and artifact checks.
 pub const DOCKER_DAEMON_TIMEOUT: Duration = Duration::from_secs(30);
@@ -71,6 +77,37 @@ pub async fn image_id(docker: &Docker, reference: &str) -> Result<Option<String>
     inspected_image_id(reference, docker.inspect_image(reference).await)
 }
 
+/// Pulls an image, reading progress until completion or the first error.
+///
+/// A name without a tag or digest pulls `latest`, rather than every tag as the Engine API would.
+/// Registry access is unauthenticated. Callers must set a deadline.
+///
+/// # Errors
+///
+/// Returns an error if the daemon rejects the pull or reports an error in the progress stream.
+pub async fn pull_image(docker: &Docker, reference: &str) -> Result<(), GenericError> {
+    finish_pull(docker.create_image(Some(pull_options(reference)), None, None)).await
+}
+
+fn pull_options(reference: &str) -> CreateImageOptions {
+    let last = reference.rsplit_once('/').map_or(reference, |(_, last)| last);
+    let name_only = !reference.contains('@') && !last.contains(':');
+    CreateImageOptions {
+        from_image: Some(reference.to_string()),
+        tag: name_only.then(|| "latest".to_string()),
+        ..Default::default()
+    }
+}
+
+async fn finish_pull(stream: impl Stream<Item = Result<CreateImageInfo, Error>>) -> Result<(), GenericError> {
+    futures::pin_mut!(stream);
+    while let Some(progress) = stream.next().await {
+        trace!(?progress, "Image pull progress.");
+        progress?;
+    }
+    Ok(())
+}
+
 fn inspected_image_id(reference: &str, response: Result<ImageInspect, Error>) -> Result<Option<String>, GenericError> {
     match response {
         Ok(image) => image
@@ -124,6 +161,65 @@ fn connect_inner() -> Result<Docker, GenericError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reference_without_a_tag_or_digest_pulls_latest() {
+        for (reference, tag) in [
+            ("alpine", Some("latest")),
+            ("library/alpine", Some("latest")),
+            ("localhost:5000/tool", Some("latest")),
+            ("registry.example/a/b", Some("latest")),
+            ("alpine:3", None),
+            ("localhost:5000/tool:1", None),
+            ("tool@sha256:abc", None),
+            ("registry.example/a/b:1", None),
+        ] {
+            let options = pull_options(reference);
+            assert_eq!(options.from_image.as_deref(), Some(reference));
+            assert_eq!(options.tag.as_deref(), tag, "{reference}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pull_stream_that_ends_without_an_error_succeeds() {
+        let progress = ["Pulling", "Downloading", "Complete"].map(|status| {
+            Ok(CreateImageInfo {
+                status: Some(status.into()),
+                ..Default::default()
+            })
+        });
+        assert!(finish_pull(futures::stream::iter(progress)).await.is_ok());
+        assert!(finish_pull(futures::stream::empty()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_pull_fails_on_the_first_stream_error_and_reads_no_further() {
+        let mut consumed = 0;
+        let stream = futures::stream::iter([
+            Ok(CreateImageInfo::default()),
+            Err(Error::DockerStreamError {
+                error: "layer download failed".into(),
+            }),
+            Ok(CreateImageInfo::default()),
+        ])
+        .inspect(|_| consumed += 1);
+        let error = finish_pull(stream).await.unwrap_err().to_string();
+        assert!(error.contains("layer download failed"), "{error}");
+        assert_eq!(consumed, 2);
+    }
+
+    #[tokio::test]
+    async fn a_pull_the_daemon_rejects_reports_its_status_and_message() {
+        let error = finish_pull(futures::stream::iter([Err(Error::DockerResponseServerError {
+            status_code: 404,
+            message: "pull access denied for local/tool".into(),
+        })]))
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("404"), "{error}");
+        assert!(error.contains("pull access denied for local/tool"), "{error}");
+    }
 
     #[test]
     fn image_inspection_treats_only_a_404_as_missing() {

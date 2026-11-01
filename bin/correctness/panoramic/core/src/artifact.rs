@@ -1,14 +1,17 @@
 //! Artifact roles name the images, binaries and installs that participants and backends run.
 //! Manifests bind roles to references for a run and can be rendered from bindings; omitted roles use their local defaults.
 //! Plans carry resolved bindings with the source of each reference.
-//! Verification checks availability and records identities.
+//! Verification checks availability and records identities; pulling fetches images and records their IDs.
 
 use std::{collections::BTreeMap, path::Path};
 
 use saluki_error::{generic_error, GenericError};
 use serde::{Deserialize, Serialize};
 
+mod image_store;
+mod pull;
 mod verify;
+pub use pull::pull;
 pub use verify::{verify, ArtifactVerification};
 
 #[cfg(any(test, feature = "test-util"))]
