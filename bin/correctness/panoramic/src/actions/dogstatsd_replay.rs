@@ -256,12 +256,12 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn cancelling_during_the_replay_capture_wait_interrupts_the_replay() {
+        use panoramic_core::deadline::{Budget, Deadline};
         use tokio::time::Instant;
         use tokio_util::sync::CancellationToken;
 
         use crate::assertions::test_support::{host_context, procedure};
         use crate::assertions::{run_assertion_steps, TargetCommand};
-        use crate::deadline::{Budget, Deadline};
         use crate::record::{CaseRecord, StepStatus};
 
         let marker_dir = tempfile::tempdir().expect("temp dir should be creatable");

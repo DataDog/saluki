@@ -6,7 +6,7 @@ use tokio::time::Instant;
 
 /// The budget that set a [`Deadline`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Budget {
+pub enum Budget {
     /// The test case's `timeout`, enforced by `Runner::run_one`.
     Case,
     /// One procedure step's own budget.
@@ -15,16 +15,16 @@ pub(crate) enum Budget {
 
 /// An instant on Tokio's clock, tagged with the budget that set it.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Deadline {
+pub struct Deadline {
     /// When the deadline passes.
-    pub(crate) at: Instant,
+    pub at: Instant,
     /// The budget that set `at`.
-    pub(crate) budget: Budget,
+    pub budget: Budget,
 }
 
 impl Deadline {
     /// Starts `budget`, lasting `duration` from now.
-    pub(crate) fn after(budget: Budget, duration: Duration) -> Self {
+    pub fn after(budget: Budget, duration: Duration) -> Self {
         Self {
             at: Instant::now() + duration,
             budget,
@@ -34,7 +34,7 @@ impl Deadline {
     /// Returns the earlier of this deadline and a new `budget` lasting `duration`.
     ///
     /// On a tie, the new budget wins: a step receiving its full allowance is limited by its own budget.
-    pub(crate) fn narrow(self, budget: Budget, duration: Duration) -> Self {
+    pub fn narrow(self, budget: Budget, duration: Duration) -> Self {
         let narrowed = Self::after(budget, duration);
         if self.at < narrowed.at {
             self

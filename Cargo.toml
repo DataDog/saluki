@@ -5,6 +5,7 @@ members = [
   "bin/correctness/datadog-intake",
   "bin/correctness/millstone",
   "bin/correctness/panoramic",
+  "bin/correctness/panoramic/core",
   "bin/correctness/stele",
   "lib/agent-data-plane-config",
   "lib/agent-data-plane-config-system",
@@ -67,6 +68,7 @@ datadog-protos = { path = "lib/protos/datadog" }
 containerd-protos = { path = "lib/protos/containerd" }
 ddsketch = { path = "lib/ddsketch" }
 go-duration = { path = "lib/go-duration" }
+panoramic-core = { path = "bin/correctness/panoramic/core" }
 process-memory = { path = "lib/process-memory" }
 prometheus-exposition = { path = "lib/prometheus-exposition" }
 saluki-antithesis = { path = "lib/saluki-antithesis" }

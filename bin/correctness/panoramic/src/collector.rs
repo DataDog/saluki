@@ -8,6 +8,7 @@ use std::io;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+use panoramic_core::interrupts::Interrupts;
 use tokio::sync::mpsc;
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::MissedTickBehavior;
@@ -15,7 +16,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::events::TestEvent;
-use crate::interrupts::Interrupts;
 use crate::machine_output::{self, InterruptReason, RunReport, RunState, RunTotals, TestReport};
 use crate::reporter::{run_counts, DurationMs, Reporter};
 use crate::tui::Tui;

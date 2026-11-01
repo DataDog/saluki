@@ -27,7 +27,7 @@ macro_rules! forward {
 /// Receives SIGINT and SIGTERM on Unix, or Ctrl-C and Ctrl-Break on Windows.
 ///
 /// Requests follow channel send order; signal streams may coalesce deliveries.
-pub(crate) struct Interrupts {
+pub struct Interrupts {
     rx: mpsc::UnboundedReceiver<&'static str>,
 }
 
@@ -35,7 +35,7 @@ impl Interrupts {
     /// Installs signal handlers and forwarding tasks, logging and skipping installation failures.
     ///
     /// Installed handlers replace default termination. Forwarded requests stay queued until [`Interrupts::recv`].
-    pub(crate) fn install() -> Self {
+    pub fn install() -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
 
         #[cfg(unix)]
@@ -58,13 +58,13 @@ impl Interrupts {
     /// Returns the next request's source, or `None` after all senders close and queued requests are drained.
     ///
     /// Dropping the returned future leaves pending requests queued.
-    pub(crate) async fn recv(&mut self) -> Option<&'static str> {
+    pub async fn recv(&mut self) -> Option<&'static str> {
         self.rx.recv().await
     }
 
     /// Creates an interrupt channel for tests to drive directly.
-    #[cfg(test)]
-    pub(crate) fn manual() -> (mpsc::UnboundedSender<&'static str>, Self) {
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn manual() -> (mpsc::UnboundedSender<&'static str>, Self) {
         let (tx, rx) = mpsc::unbounded_channel();
         (tx, Self { rx })
     }

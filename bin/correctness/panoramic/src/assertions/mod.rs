@@ -12,6 +12,8 @@ use std::time::Duration;
 pub type DockerExitCodeCell = Arc<OnceLock<i64>>;
 
 use futures::future;
+use panoramic_core::deadline::{Budget, Deadline};
+use panoramic_core::probe::PROBE_TIMEOUT;
 use saluki_error::GenericError;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -19,9 +21,7 @@ use tracing::{debug, error};
 
 use crate::actions::Action;
 use crate::config::{AssertionConfig, AssertionStep, LogStream};
-use crate::deadline::{Budget, Deadline};
 use crate::integration::IntegrationTestCase;
-use crate::probe::PROBE_TIMEOUT;
 use crate::record::{
     step_label, AssertionResult, AssertionStatus, CaseRecord, RunningStep, StepResult, StepStatus, Verdict,
 };

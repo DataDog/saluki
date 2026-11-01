@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::time::Duration;
 
+use panoramic_core::probe::{probe, ProbeError, POLL_INTERVAL, PROBE_TIMEOUT};
 use saluki_error::{generic_error, GenericError};
 use stele::{Metric, MetricValue};
 use tokio::time::Instant;
@@ -14,7 +15,6 @@ use crate::intake::metrics::{
     NormalizedMetrics,
 };
 use crate::intake::IntakeClient;
-use crate::probe::{probe, ProbeError, POLL_INTERVAL, PROBE_TIMEOUT};
 use crate::record::{AssertionResult, AssertionStatus};
 
 /// Names the intake request in probe messages.

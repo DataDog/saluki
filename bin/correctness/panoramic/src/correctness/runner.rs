@@ -8,6 +8,7 @@ use airlock::{
     config::{DatadogIntakeConfig, MillstoneConfig},
     driver::{Driver, DriverConfig, DriverDetails, ExitStatus},
 };
+use panoramic_core::tasks::CaseTasks;
 use saluki_error::{generic_error, GenericError};
 use tokio::{select, time::sleep};
 use tokio_util::sync::CancellationToken;
@@ -23,7 +24,6 @@ use crate::{
     ledger::ResourceLedger,
     record::{AssertionResult, AssertionStatus},
     reporter::{ErrorKind, PhaseTiming, TestResult},
-    tasks::CaseTasks,
     test::TestContext,
     traffic::{self, Side},
 };

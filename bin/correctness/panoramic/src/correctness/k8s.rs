@@ -16,6 +16,7 @@ use kube::{
     api::{Api, AttachParams, LogParams, PostParams},
     Client,
 };
+use panoramic_core::tasks::CaseTasks;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::{io::AsyncWriteExt as _, net::TcpListener, time::sleep};
 use tokio_util::sync::CancellationToken;
@@ -31,7 +32,6 @@ use crate::{
     intake::{CollectedData, IntakeClient},
     ledger::{random_id, ResourceLedger},
     reporter::{TestResult, UNKNOWN_PHASE},
-    tasks::CaseTasks,
     test::TestContext,
     traffic::{self, Side},
 };

@@ -3,10 +3,10 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use panoramic_core::deadline::{Budget, Deadline};
 use serde::Serialize;
 use tokio::time::Instant;
 
-use crate::deadline::{Budget, Deadline};
 use crate::reporter::{DurationMs, PhaseTiming, TestResult};
 
 /// Shared step states and verdict, retained by the runner when it drops the test future.

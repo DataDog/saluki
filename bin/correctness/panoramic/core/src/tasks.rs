@@ -8,23 +8,24 @@ use tokio::time::{timeout_at, Instant};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-/// How long the runner waits for a case's tasks to stop. Taken out of [`RECLAIM_TIME`](crate::ledger::RECLAIM_TIME).
-pub(crate) const TASK_STOP_TIME: Duration = Duration::from_secs(5);
+/// How long the runner waits for a case's tasks to stop. Taken out of the resource ledger's reclaim time.
+pub const TASK_STOP_TIME: Duration = Duration::from_secs(5);
 
 /// Tracks tasks spawned through [`Self::spawn`], shared by the test body and runner.
 ///
 /// Cancellation is cooperative: synchronous work can outlive [`Self::stop_all`]'s deadline. Register resources that
 /// need asynchronous cleanup in the ledger.
 #[derive(Clone, Debug)]
-pub(crate) struct CaseTasks {
+pub struct CaseTasks {
     tracker: TaskTracker,
 
     /// Child of the test token. Creation requests also watch it to mark interrupted resources before task shutdown.
-    pub(crate) stop: CancellationToken,
+    pub stop: CancellationToken,
 }
 
 impl CaseTasks {
-    pub(crate) fn new(test_token: &CancellationToken) -> Self {
+    /// Creates a task tracker with a child of the test's cancellation token.
+    pub fn new(test_token: &CancellationToken) -> Self {
         Self {
             tracker: TaskTracker::new(),
             stop: test_token.child_token(),
@@ -36,7 +37,7 @@ impl CaseTasks {
     /// If `stop` is already cancelled at the first poll, the wrapper drops `task` unpolled. Otherwise, each poll tries
     /// `task` first; cancellation drops it only on `Pending`. Creation requests can therefore observe `stop` before
     /// their task is dropped.
-    pub(crate) fn spawn<F>(&self, task: F) -> JoinHandle<Option<F::Output>>
+    pub fn spawn<F>(&self, task: F) -> JoinHandle<Option<F::Output>>
     where
         F: Future + Send + 'static,
         F::Output: Send + 'static,
@@ -47,7 +48,7 @@ impl CaseTasks {
     /// Requests cancellation and waits for tracked tasks to finish until `deadline`.
     ///
     /// Returns the number still tracked. Cancels only the child token, preserving the test token's state.
-    pub(crate) async fn stop_all(&self, deadline: Instant) -> usize {
+    pub async fn stop_all(&self, deadline: Instant) -> usize {
         self.stop.cancel();
         self.tracker.close();
         let _ = timeout_at(deadline, self.tracker.wait()).await;

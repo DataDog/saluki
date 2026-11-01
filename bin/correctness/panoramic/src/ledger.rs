@@ -332,6 +332,7 @@ impl ResourceLedger {
 mod tests {
     use std::collections::HashMap;
 
+    use panoramic_core::tasks::{CaseTasks, TASK_STOP_TIME};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::TcpListener;
     use tokio::sync::Notify;
@@ -339,7 +340,6 @@ mod tests {
 
     use super::*;
     use crate::intake::test_server::install_crypto_provider;
-    use crate::tasks::{CaseTasks, TASK_STOP_TIME};
 
     /// Bounds every reclaim in these tests.
     const BOUND: Duration = Duration::from_secs(10);

@@ -37,6 +37,7 @@ use std::{
 };
 
 use airlock::unix::{LogSink, UnixProcess, UnixProcessConfig};
+use panoramic_core::probe::{probe, ProbeError};
 use saluki_error::{ErrorContext as _, GenericError};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -47,7 +48,6 @@ use crate::{
     config::parse_port_spec,
     integration::IntegrationTestCase,
     ledger::random_id,
-    probe::{probe, ProbeError},
     record::Verdict,
     reporter::{ErrorKind, PhaseTiming, TestResult},
     test::{Test, TestContext},

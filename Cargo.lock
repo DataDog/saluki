@@ -4485,6 +4485,7 @@ dependencies = [
  "futures",
  "k8s-openapi",
  "kube",
+ "panoramic-core",
  "rand 0.10.3",
  "regex",
  "reqwest",
@@ -4496,7 +4497,6 @@ dependencies = [
  "serde-saphyr 1.3.0",
  "serde_json",
  "serde_path_to_error",
- "snafu",
  "stele",
  "tempfile",
  "tokio",
@@ -4506,6 +4506,16 @@ dependencies = [
  "treediff",
  "vergen-gix",
  "zstd",
+]
+
+[[package]]
+name = "panoramic-core"
+version = "0.1.0"
+dependencies = [
+ "snafu",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]

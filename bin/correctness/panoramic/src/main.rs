@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::{io::IsTerminal, process::ExitCode};
 
 use clap::Parser as _;
+use panoramic_core::interrupts::Interrupts;
 use saluki_common::logging::{filter_from_env, parse_filter_directives};
 use tokio::sync::{watch, Mutex};
 use tokio_util::sync::CancellationToken;
@@ -30,7 +31,6 @@ mod correctness;
 use self::cli::{Cli, Command, LogLevel};
 
 mod config;
-mod deadline;
 mod dynamic_vars;
 mod integration;
 mod mounts;
@@ -41,22 +41,18 @@ use self::events::create_event_channel;
 
 mod image_override;
 mod intake;
-mod interrupts;
-use self::interrupts::Interrupts;
 
 mod machine_output;
 use self::machine_output::RunReport;
 
 mod ledger;
 mod participants;
-mod probe;
 mod record;
 mod reporter;
 mod steps;
 use self::reporter::{OutputFormat, Reporter};
 
 mod runner;
-mod tasks;
 mod test;
 mod test_env;
 mod traffic;
