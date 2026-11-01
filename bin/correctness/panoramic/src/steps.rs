@@ -226,6 +226,18 @@ pub(crate) mod tests {
                 "'log_contains': timeout: invalid type: integer `30`, expected a string",
             ),
             (
+                "step: log_contains, on: adp, pattern: ready, timeout: '30'",
+                "'log_contains': timeout: duration '30' ends with",
+            ),
+            (
+                "step: log_not_contains, on: adp, pattern: panic, during: '30'",
+                "'log_not_contains': during: duration '30' ends with",
+            ),
+            (
+                "step: file_contains, on: adp, path: /logs/output.log, pattern: ready, timeout: '30'",
+                "'file_contains': timeout: duration '30' ends with",
+            ),
+            (
                 "step: log_contains, on: adp, pattern: '(', regex: true, timeout: 1s",
                 "'log_contains': pattern '(' is not a valid regex",
             ),

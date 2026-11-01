@@ -3,7 +3,7 @@
 use serde::Deserialize;
 
 use super::check_pattern;
-use crate::config::{decode_fields, HumanDuration, Need, Step, StepDeclaration, StepFields, Template};
+use crate::config::{decode_fields, CaseDuration, Need, Step, StepDeclaration, StepFields, Template};
 
 /// Waits until a file inside a participant contains a pattern.
 #[derive(Debug, Deserialize)]
@@ -19,7 +19,7 @@ pub(crate) struct FileContains {
     #[serde(default)]
     pub(crate) regex: bool,
     /// Required, positive time to wait for a match; has no default.
-    pub(crate) timeout: HumanDuration,
+    pub(crate) timeout: CaseDuration,
 }
 
 impl Step for FileContains {
@@ -84,7 +84,7 @@ mod tests {
             assert_eq!(step.path, path.parse().unwrap());
             assert_eq!(step.pattern, "ready");
             assert!(!step.regex);
-            assert_eq!(step.timeout.0, Duration::from_secs(30));
+            assert_eq!(Duration::from(step.timeout), Duration::from_secs(30));
         }
     }
 

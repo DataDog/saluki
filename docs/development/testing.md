@@ -148,6 +148,8 @@ supports this subset of the schema:
   `agent-adp` declares `default_log_file` on Linux and Windows only, so a case that runs on macOS writes the path out.
 - `parallel` blocks of these steps.
 
+Durations in a participant case need a unit: write `30s`, not `30`.
+
 Every step names the participant it acts on with `on`. Step fields differ from the integration schema: steps use
 `step:` instead of `assertion:`, and `file_contains` requires `pattern`. The loader accepts other participant and
 configuration fields, but the integration runner rejects a case that sets them, with an error naming the field.

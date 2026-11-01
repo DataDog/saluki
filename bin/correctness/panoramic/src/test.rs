@@ -27,6 +27,16 @@ pub(crate) enum TestSuite {
     Correctness,
 }
 
+impl TestSuite {
+    /// Returns the suite's name, the spelling `list --json` reports as a case's `type`.
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Integration => "integration",
+            Self::Correctness => "correctness",
+        }
+    }
+}
+
 /// Settings shared by every test in a run.
 #[derive(Debug, Clone)]
 pub(crate) struct RunnerSettings {
@@ -157,5 +167,17 @@ pub(crate) fn resolve_case_path(loaded_from: &Path, path: impl AsRef<Path>) -> P
         path.to_path_buf()
     } else {
         loaded_from.parent().unwrap_or(Path::new("")).join(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TestSuite;
+
+    #[test]
+    fn listing_suite_names_match_their_serialized_spellings() {
+        for suite in [TestSuite::Integration, TestSuite::Correctness] {
+            assert_eq!(serde_json::to_value(suite).unwrap(), suite.name());
+        }
     }
 }

@@ -14,7 +14,7 @@ use panoramic_core::record::step_label;
 use super::{
     case::Os,
     case_file::{CaseFile, ParticipantConfig, ParticipantEntry, ProcedureNode, StepNode},
-    AssertionConfig, AssertionStep, ContainerConfig, IntakeConfig, IntegrationConfig, LogStream, Step,
+    runtime_for_os, AssertionConfig, AssertionStep, ContainerConfig, IntakeConfig, IntegrationConfig, LogStream, Step,
 };
 use crate::{
     dynamic_vars::ENV_PREFIX,
@@ -25,211 +25,209 @@ use crate::{
     },
 };
 
-impl CaseFile {
-    /// Translates the file and its built procedure, preserving step order and time budgets.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first unsupported participant setting or step, checking participants before steps,
-    /// or a file path's first unresolvable fact. The caller supplies the case name and source in its error context.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the built procedure differs in shape from the file's procedure.
-    pub(super) fn integration_config(
-        &self, name: &str, source: &Path, procedure: &[ProcedureNode<Box<dyn Step>>], os: Os,
-    ) -> Result<IntegrationConfig, String> {
-        let CaseFile {
-            // The facade's canonical name is used instead.
-            name: _,
-            description,
-            timeout,
-            subject_os,
-            participants,
-            procedure: nodes,
-        } = self;
-        if participants.len() != 1 {
+/// Translates the file and its built procedure, preserving step order and time budgets.
+///
+/// # Errors
+///
+/// Returns the first unsupported participant setting or step, checking participants before steps,
+/// or a file path's first unresolvable fact. The caller supplies the case name and source in its error context.
+///
+/// # Panics
+///
+/// Panics if the built procedure differs in shape from the file's procedure.
+pub(super) fn integration_config(
+    file: &CaseFile, name: &str, source: &Path, procedure: &[ProcedureNode<Box<dyn Step>>], os: Os,
+) -> Result<IntegrationConfig, String> {
+    let CaseFile {
+        // Use the name resolved by the case loader.
+        name: _,
+        description,
+        timeout,
+        subject_os,
+        participants,
+        procedure: nodes,
+    } = file;
+    if participants.len() != 1 {
+        return Err(format!(
+            "it declares {} participants; the integration runner runs exactly one",
+            participants.len()
+        ));
+    }
+    let (participant, entry) = participants.first_key_value().unwrap();
+    let ParticipantEntry {
+        participant_type,
+        subject: _,
+        os: participant_os,
+        realization,
+        config,
+        connect,
+    } = entry;
+    let ParticipantConfig {
+        env,
+        files,
+        endpoints,
+        params,
+        os: overlays,
+    } = config;
+    if participant_type != AGENT_ADP.name {
+        return Err(format!(
+            "participant '{participant}' has type '{participant_type}'; the integration runner runs only '{}'",
+            AGENT_ADP.name
+        ));
+    }
+    for (field, is_set) in [
+        ("os", participant_os.is_some()),
+        ("realization", realization.is_some()),
+        ("connect", !connect.is_empty()),
+        ("config.files", !files.is_empty()),
+        ("config.endpoints", !endpoints.is_empty()),
+        ("config.params", !params.is_empty()),
+        ("config.os", !overlays.is_empty()),
+    ] {
+        if is_set {
             return Err(format!(
-                "it declares {} participants; the integration runner runs exactly one",
-                participants.len()
+                "participant '{participant}' sets '{field}', which the integration runner does not support"
             ));
         }
-        let (participant, entry) = participants.first_key_value().unwrap();
-        let ParticipantEntry {
-            participant_type,
-            subject: _,
-            os: participant_os,
-            realization,
-            config,
-            connect,
-        } = entry;
-        let ParticipantConfig {
-            env,
-            files,
-            endpoints,
-            params,
-            os: overlays,
-        } = config;
-        if participant_type != AGENT_ADP.name {
+    }
+    for (key, value) in env {
+        if key.contains("{{") || value.contains("{{") {
             return Err(format!(
-                "participant '{participant}' has type '{participant_type}'; the integration runner runs only '{}'",
-                AGENT_ADP.name
+                "participant '{participant}' sets config.env '{key}' with a template reference ('{{{{'); \
+                 panoramic does not resolve references in environment variables"
             ));
         }
-        for (field, is_set) in [
-            ("os", participant_os.is_some()),
-            ("realization", realization.is_some()),
-            ("connect", !connect.is_empty()),
-            ("config.files", !files.is_empty()),
-            ("config.endpoints", !endpoints.is_empty()),
-            ("config.params", !params.is_empty()),
-            ("config.os", !overlays.is_empty()),
-        ] {
-            if is_set {
-                return Err(format!(
-                    "participant '{participant}' sets '{field}', which the integration runner does not support"
-                ));
-            }
+        if key.starts_with(ENV_PREFIX) {
+            return Err(format!(
+                "participant '{participant}' sets config.env '{key}'; names starting with {ENV_PREFIX} \
+                 are reserved for cases with 'type: integration'"
+            ));
         }
-        for (key, value) in env {
-            if key.contains("{{") || value.contains("{{") {
-                return Err(format!(
-                    "participant '{participant}' sets config.env '{key}' with a template reference ('{{{{'); \
-                     panoramic does not resolve references in environment variables"
-                ));
-            }
-            if key.starts_with(ENV_PREFIX) {
-                return Err(format!(
-                    "participant '{participant}' sets config.env '{key}'; names starting with {ENV_PREFIX} \
-                     are reserved for cases with 'type: integration'"
-                ));
-            }
-        }
+    }
 
-        let translate = |node: &StepNode, step: &dyn Step, label: String| {
-            let error = |reason: &str| format!("step {label} '{}' {reason}", node.name);
-            let process_error = || {
-                error(
-                    "sets 'process', which the integration runner does not support: \
-                       it searches the output of every process together",
-                )
-            };
-            let check_on = |on: &str| {
-                if on == participant {
-                    Ok(())
-                } else {
-                    Err(error(&format!(
-                        "runs on '{on}'; the integration runner runs only participant '{participant}'"
-                    )))
-                }
-            };
-            let step = step as &dyn Any;
-            if let Some(step) = step.downcast_ref::<LogContains>() {
-                let LogContains {
-                    on,
-                    process,
-                    pattern,
-                    regex,
-                    timeout,
-                } = step;
-                check_on(on)?;
-                if process.is_some() {
-                    return Err(process_error());
-                }
-                Ok(AssertionConfig::LogContains {
-                    pattern: pattern.clone(),
-                    regex: *regex,
-                    timeout: timeout.clone(),
-                    stream: LogStream::Both,
-                })
-            } else if let Some(step) = step.downcast_ref::<LogNotContains>() {
-                let LogNotContains {
-                    on,
-                    process,
-                    pattern,
-                    regex,
-                    during,
-                } = step;
-                check_on(on)?;
-                if process.is_some() {
-                    return Err(process_error());
-                }
-                Ok(AssertionConfig::LogNotContains {
-                    pattern: pattern.clone(),
-                    regex: *regex,
-                    during: during.clone(),
-                    stream: LogStream::Both,
-                })
-            } else if let Some(step) = step.downcast_ref::<FileContains>() {
-                let FileContains {
-                    on,
-                    path,
-                    pattern,
-                    regex,
-                    timeout,
-                } = step;
-                check_on(on)?;
-                Ok(AssertionConfig::FileContains {
-                    path: path
-                        .resolve(|name, fact| {
-                            if name == participant {
-                                AGENT_ADP.fact_value(fact, os)
-                            } else {
-                                None
-                            }
-                        })
-                        .map_err(|reason| error(&format!("path: {reason}")))?,
-                    pattern: Some(pattern.clone()),
-                    regex: *regex,
-                    timeout: timeout.clone(),
-                })
+    let translate = |node: &StepNode, step: &dyn Step, label: String| {
+        let error = |reason: &str| format!("step {label} '{}' {reason}", node.name);
+        let process_error = || {
+            error(
+                "sets 'process', which the integration runner does not support: \
+                   it searches the output of every process together",
+            )
+        };
+        let check_on = |on: &str| {
+            if on == participant {
+                Ok(())
             } else {
-                Err(error("has no integration runner equivalent"))
+                Err(error(&format!(
+                    "runs on '{on}'; the integration runner runs only participant '{participant}'"
+                )))
             }
         };
-        assert_eq!(
-            nodes.len(),
-            procedure.len(),
-            "the built procedure must have the same shape as the case file"
-        );
-        let procedure = nodes
-            .iter()
-            .zip(procedure)
-            .enumerate()
-            .map(|(index, (node, built))| match (node, built) {
-                (ProcedureNode::Step(node), ProcedureNode::Step(step)) => {
-                    translate(node, step.as_ref(), step_label(index, None)).map(AssertionStep::Single)
-                }
-                (ProcedureNode::Parallel(nodes), ProcedureNode::Parallel(steps)) => {
-                    assert_eq!(
-                        nodes.len(),
-                        steps.len(),
-                        "the built procedure must have the same shape as the case file"
-                    );
-                    let parallel = nodes
-                        .iter()
-                        .zip(steps)
-                        .enumerate()
-                        .map(|(member, (node, step))| translate(node, step.as_ref(), step_label(index, Some(member))))
-                        .collect::<Result<_, _>>()?;
-                    Ok(AssertionStep::Parallel { parallel })
-                }
-                _ => unreachable!("the built procedure must have the same shape as the case file"),
+        let step = step as &dyn Any;
+        if let Some(step) = step.downcast_ref::<LogContains>() {
+            let LogContains {
+                on,
+                process,
+                pattern,
+                regex,
+                timeout,
+            } = step;
+            check_on(on)?;
+            if process.is_some() {
+                return Err(process_error());
+            }
+            Ok(AssertionConfig::LogContains {
+                pattern: pattern.clone(),
+                regex: *regex,
+                timeout: (*timeout).into(),
+                stream: LogStream::Both,
             })
-            .collect::<Result<_, _>>()?;
-
-        Ok(IntegrationConfig {
-            name: name.to_string(),
-            description: description.clone(),
-            timeout: timeout.clone(),
-            container: ContainerConfig::default(),
-            intake: IntakeConfig::default(),
-            env: env.iter().map(|(key, value)| (key.clone(), value.clone())).collect(),
-            procedure,
-            runtimes: subject_os.iter().map(|os| os.runtime().to_string()).collect(),
-            loaded_from: source.to_path_buf(),
+        } else if let Some(step) = step.downcast_ref::<LogNotContains>() {
+            let LogNotContains {
+                on,
+                process,
+                pattern,
+                regex,
+                during,
+            } = step;
+            check_on(on)?;
+            if process.is_some() {
+                return Err(process_error());
+            }
+            Ok(AssertionConfig::LogNotContains {
+                pattern: pattern.clone(),
+                regex: *regex,
+                during: (*during).into(),
+                stream: LogStream::Both,
+            })
+        } else if let Some(step) = step.downcast_ref::<FileContains>() {
+            let FileContains {
+                on,
+                path,
+                pattern,
+                regex,
+                timeout,
+            } = step;
+            check_on(on)?;
+            Ok(AssertionConfig::FileContains {
+                path: path
+                    .resolve(|name, fact| {
+                        if name == participant {
+                            AGENT_ADP.fact_value(fact, os)
+                        } else {
+                            None
+                        }
+                    })
+                    .map_err(|reason| error(&format!("path: {reason}")))?,
+                pattern: Some(pattern.clone()),
+                regex: *regex,
+                timeout: (*timeout).into(),
+            })
+        } else {
+            Err(error("has no integration runner equivalent"))
+        }
+    };
+    assert_eq!(
+        nodes.len(),
+        procedure.len(),
+        "the built procedure must have the same shape as the case file"
+    );
+    let procedure = nodes
+        .iter()
+        .zip(procedure)
+        .enumerate()
+        .map(|(index, (node, built))| match (node, built) {
+            (ProcedureNode::Step(node), ProcedureNode::Step(step)) => {
+                translate(node, step.as_ref(), step_label(index, None)).map(AssertionStep::Single)
+            }
+            (ProcedureNode::Parallel(nodes), ProcedureNode::Parallel(steps)) => {
+                assert_eq!(
+                    nodes.len(),
+                    steps.len(),
+                    "the built procedure must have the same shape as the case file"
+                );
+                let parallel = nodes
+                    .iter()
+                    .zip(steps)
+                    .enumerate()
+                    .map(|(member, (node, step))| translate(node, step.as_ref(), step_label(index, Some(member))))
+                    .collect::<Result<_, _>>()?;
+                Ok(AssertionStep::Parallel { parallel })
+            }
+            _ => unreachable!("the built procedure must have the same shape as the case file"),
         })
-    }
+        .collect::<Result<_, _>>()?;
+
+    Ok(IntegrationConfig {
+        name: name.to_string(),
+        description: description.clone(),
+        timeout: (*timeout).into(),
+        container: ContainerConfig::default(),
+        intake: IntakeConfig::default(),
+        env: env.iter().map(|(key, value)| (key.clone(), value.clone())).collect(),
+        procedure,
+        runtimes: subject_os.iter().map(|os| runtime_for_os(*os).to_string()).collect(),
+        loaded_from: source.to_path_buf(),
+    })
 }
 
 #[cfg(test)]
@@ -270,9 +268,8 @@ mod tests {
             let CaseSchema::Participants { file, procedure } = participant.schema() else {
                 panic!("expected participant data");
             };
-            let config = file
-                .integration_config(participant.name(), participant.source(), procedure, Os::Linux)
-                .unwrap();
+            let config =
+                integration_config(file, participant.name(), participant.source(), procedure, Os::Linux).unwrap();
             let CaseSchema::Typed(TypedConfig::Integration(integration)) = integration_cases[0].schema() else {
                 panic!("expected integration data");
             };
@@ -391,7 +388,7 @@ mod tests {
                     vec![ProcedureNode::Step(step)]
                 };
                 assert_eq!(
-                    file.integration_config("alpha", Path::new("alpha/config.yaml"), &procedure, Os::Linux)
+                    integration_config(&file, "alpha", Path::new("alpha/config.yaml"), &procedure, Os::Linux)
                         .unwrap_err(),
                     format!(
                         "step {label} '{}' runs on 'other'; the integration runner runs only participant 'adp'",
@@ -417,9 +414,8 @@ mod tests {
                 fields,
             })];
             for os in &file.subject_os {
-                let config = file
-                    .integration_config("alpha", Path::new("alpha/config.yaml"), &procedure, *os)
-                    .unwrap();
+                let config =
+                    integration_config(&file, "alpha", Path::new("alpha/config.yaml"), &procedure, *os).unwrap();
                 let [AssertionStep::Single(assertion)] = config.procedure.as_slice() else {
                     panic!("expected one assertion for '{}' on {os:?}", declaration.name);
                 };
@@ -458,8 +454,7 @@ mod tests {
                 (crate::steps::file_contains::FILE_CONTAINS.build)(&node.fields).unwrap(),
             )];
             assert_eq!(
-                file.integration_config("alpha", Path::new("alpha/config.yaml"), &procedure, os)
-                    .unwrap_err(),
+                integration_config(&file, "alpha", Path::new("alpha/config.yaml"), &procedure, os).unwrap_err(),
                 format!("step 1 'file_contains' path: cannot resolve fact reference '{{{{ {reference} }}}}'")
             );
         }
@@ -561,8 +556,7 @@ mod tests {
         ] {
             let file: CaseFile = serde_saphyr::from_str(&PARTICIPANT_FIELDS.replace(old, new)).unwrap();
             assert_eq!(
-                file.integration_config("alpha", Path::new("alpha/config.yaml"), &[], Os::Linux)
-                    .unwrap_err(),
+                integration_config(&file, "alpha", Path::new("alpha/config.yaml"), &[], Os::Linux).unwrap_err(),
                 reason
             );
         }
@@ -576,7 +570,7 @@ mod tests {
                     .unwrap();
             let procedure = [ProcedureNode::Parallel(vec![])];
             let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                file.integration_config("alpha", Path::new("alpha/config.yaml"), &procedure, Os::Linux)
+                integration_config(&file, "alpha", Path::new("alpha/config.yaml"), &procedure, Os::Linux)
             }))
             .expect_err("a shape mismatch must panic before zip can truncate assertions");
             let message = panic
@@ -606,8 +600,7 @@ mod tests {
             serde_saphyr::from_str(&PARTICIPANT_FIELDS.replace("procedure: []", "procedure: [{step: probe}]")).unwrap();
         let procedure = [ProcedureNode::Step(Box::new(Probe) as Box<dyn Step>)];
         assert_eq!(
-            file.integration_config("alpha", Path::new("alpha/config.yaml"), &procedure, Os::Linux)
-                .unwrap_err(),
+            integration_config(&file, "alpha", Path::new("alpha/config.yaml"), &procedure, Os::Linux).unwrap_err(),
             "step 1 'probe' has no integration runner equivalent"
         );
     }

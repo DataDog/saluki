@@ -13,7 +13,7 @@ use serde::{
 };
 use serde_json::Value;
 
-use super::{case::Os, deserialize_env_map, HumanDuration};
+use super::{case::Os, duration::CaseDuration};
 
 /// A case's identity, participants and procedure.
 #[derive(Debug, Deserialize)]
@@ -24,7 +24,7 @@ pub(crate) struct CaseFile {
     /// Reporting description. Defaults to none.
     pub(super) description: Option<String>,
     /// Required case deadline, greater than zero; has no default.
-    pub(super) timeout: HumanDuration,
+    pub(super) timeout: CaseDuration,
     /// Required, nonempty list of supported subject operating systems, without duplicates; has no default.
     pub(super) subject_os: Vec<Os>,
     /// Required participant instances keyed by name. Must contain at least one; has no default.
@@ -384,6 +384,31 @@ impl<'de> Deserialize<'de> for StepNode {
     }
 }
 
+/// Deserializes environment variables as YAML strings.
+///
+/// Checks scalar types before string conversion; quote values such as `"true"` and `"8125"`.
+///
+/// # Errors
+///
+/// Returns an error naming the first variable whose value is not a YAML string.
+pub(crate) fn deserialize_env_map<'de, D, M>(deserializer: D) -> Result<M, D::Error>
+where
+    D: Deserializer<'de>,
+    M: FromIterator<(String, String)>,
+{
+    BTreeMap::<String, serde_json::Value>::deserialize(deserializer)?
+        .into_iter()
+        .map(|(name, value)| match value {
+            serde_json::Value::String(value) => Ok((name, value)),
+            _ => Err(D::Error::custom(format!(
+                "environment variable '{}' must be a YAML string: quote any value that would otherwise \
+                 parse as a boolean or a number (\"true\", \"8125\")",
+                name
+            ))),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -450,7 +475,7 @@ procedure:
         .unwrap();
         assert_eq!(file.name.as_deref(), Some("alpha"));
         assert_eq!(file.description.as_deref(), Some("A portable case"));
-        assert_eq!(file.timeout.0, Duration::from_secs(60));
+        assert_eq!(Duration::from(file.timeout), Duration::from_secs(60));
         assert_eq!(file.subject_os, [Os::Linux, Os::MacOs, Os::Windows]);
         assert_eq!(
             file.check("alpha", Path::new("config.yaml")).unwrap(),

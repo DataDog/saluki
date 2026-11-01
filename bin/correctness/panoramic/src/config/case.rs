@@ -9,16 +9,13 @@ use std::{
 };
 
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize};
 
 use super::{
     case_file::{CaseFile, ProcedureNode},
-    deserialize_case,
     participant_check::{check_participants, ParticipantDeclaration},
     step_check::{build_steps, Step, StepDeclaration},
-    LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME,
 };
-use crate::test::TestSuite;
 
 #[cfg(test)]
 pub(crate) mod fixtures;
@@ -43,25 +40,6 @@ impl Os {
             Self::Linux => "linux",
             Self::MacOs => "macos",
             Self::Windows => "windows",
-        }
-    }
-
-    /// Returns the runtime identifier for the OS.
-    pub(crate) fn runtime(self) -> &'static str {
-        match self {
-            Self::Linux => LINUX_RUNTIME,
-            Self::MacOs => MAC_RUNTIME,
-            Self::Windows => WINDOWS_RUNTIME,
-        }
-    }
-
-    /// Maps a runtime identifier to its OS.
-    pub(crate) fn from_runtime(runtime: &str) -> Option<Self> {
-        match runtime {
-            LINUX_RUNTIME => Some(Self::Linux),
-            MAC_RUNTIME => Some(Self::MacOs),
-            WINDOWS_RUNTIME => Some(Self::Windows),
-            _ => None,
         }
     }
 }
@@ -89,7 +67,7 @@ pub(crate) trait TypedCaseLoader {
 pub(crate) struct TypedCase<C> {
     pub(super) name: String,
     pub(super) description: Option<String>,
-    pub(super) suite: TestSuite,
+    pub(super) suite: String,
     pub(super) timeout: Duration,
     pub(super) subject_os: BTreeSet<Os>,
     pub(super) disabled: bool,
@@ -100,11 +78,16 @@ pub(crate) struct TypedCase<C> {
 pub(crate) struct CaseLoader<'a, L> {
     registries: Registries<'a>,
     typed: L,
+    participant_suite: &'a str,
 }
 
 impl<'a, L> CaseLoader<'a, L> {
-    pub(crate) const fn new(registries: Registries<'a>, typed: L) -> Self {
-        Self { registries, typed }
+    pub(crate) const fn new(registries: Registries<'a>, typed: L, participant_suite: &'a str) -> Self {
+        Self {
+            registries,
+            typed,
+            participant_suite,
+        }
     }
 }
 
@@ -255,9 +238,9 @@ where
                 name,
                 description: file.description.clone(),
                 // TODO: derive the suite from the case's directory.
-                suite: TestSuite::Integration,
+                suite: self.participant_suite.to_string(),
                 source: source.to_path_buf(),
-                timeout: file.timeout.0,
+                timeout: file.timeout.into(),
                 subject_os,
                 disabled: false,
                 schema: CaseSchema::Participants { file, procedure },
@@ -287,7 +270,7 @@ where
 pub(crate) struct CaseConfig<C> {
     name: String,
     description: Option<String>,
-    suite: TestSuite,
+    suite: String,
     source: PathBuf,
     timeout: Duration,
     subject_os: BTreeSet<Os>,
@@ -313,8 +296,8 @@ impl<C> CaseConfig<C> {
         self.description.as_deref()
     }
 
-    pub(crate) fn suite(&self) -> TestSuite {
-        self.suite
+    pub(crate) fn suite(&self) -> &str {
+        &self.suite
     }
 
     pub(crate) fn source(&self) -> &Path {
@@ -336,13 +319,14 @@ impl<C> CaseConfig<C> {
     pub(crate) fn schema(&self) -> &CaseSchema<C> {
         &self.schema
     }
+}
 
-    // TODO: remove once the loader derives a participant case's suite from its directory.
-    #[cfg(test)]
-    pub(super) fn with_suite(mut self, suite: TestSuite) -> Self {
-        self.suite = suite;
-        self
-    }
+/// Deserializes case data and includes its source path in parse errors.
+pub(crate) fn deserialize_case<T>(content: &str, source: &Path) -> Result<T, GenericError>
+where
+    T: DeserializeOwned,
+{
+    serde_saphyr::from_str(content).error_context(format!("Failed to parse configuration file: {}", source.display()))
 }
 
 /// Names a case after its directory. A declared name must equal the directory name.
@@ -375,7 +359,7 @@ mod tests {
         let case = &cases[0];
         assert_eq!(case.name(), "alias");
         assert_eq!(case.description(), Some("alias fixture"));
-        assert_eq!(case.suite(), TestSuite::Correctness);
+        assert_eq!(case.suite(), "fixture-typed");
         assert_eq!(case.source(), source);
         assert_eq!(case.timeout(), Duration::from_secs(3));
         assert_eq!(*case.subject_os(), BTreeSet::from([Os::MacOs, Os::Windows]));
@@ -465,6 +449,7 @@ mod tests {
                 ..fixtures::REGISTRIES
             },
             fixtures::FixtureTypes,
+            "fixture-participants",
         );
         let error = loader
             .load_content(&content, "alpha", source)
@@ -529,7 +514,7 @@ mod tests {
         assert_eq!(case.description(), Some("A portable case"));
         assert_eq!(case.timeout(), Duration::from_secs(7));
         assert_eq!(*case.subject_os(), BTreeSet::from([Os::Linux, Os::MacOs]));
-        assert_eq!(case.suite(), TestSuite::Integration);
+        assert_eq!(case.suite(), "fixture-participants");
         assert!(!case.is_disabled());
         assert_eq!(case.source(), path.canonicalize().unwrap());
         let CaseSchema::Participants { file, .. } = case.schema() else {
@@ -537,6 +522,19 @@ mod tests {
         };
         assert_eq!(file.participants["subject"].participant_type, "server");
         assert!(file.procedure.is_empty());
+    }
+
+    #[test]
+    fn a_participant_case_reports_the_suite_its_loader_names() {
+        let suite = String::from("another-suite");
+        let other = CaseLoader::new(fixtures::REGISTRIES, fixtures::FixtureTypes, &suite);
+        for (loader, suite) in [(&fixtures::LOADER, "fixture-participants"), (&other, "another-suite")] {
+            let cases = loader
+                .load_content(PARTICIPANT_FIELDS, "alpha", Path::new("alpha/config.yaml"))
+                .unwrap();
+            assert_eq!(cases.len(), 1);
+            assert_eq!(cases[0].suite(), suite);
+        }
     }
 
     #[test]
@@ -670,6 +668,7 @@ procedure:
                 "a procedure node must have 'step' or 'parallel'",
             ),
             (PARTICIPANT_FIELDS.replace("1s", "1nope"), "unknown duration unit"),
+            (PARTICIPANT_FIELDS.replace("1s", "'1'"), "has no unit"),
             (PARTICIPANT_FIELDS.replace("[linux]", "[]"), "empty subject_os list"),
             (
                 PARTICIPANT_FIELDS.replace("[linux]", "[linux, linux]"),

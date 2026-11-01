@@ -5,15 +5,15 @@ use std::{
     time::Duration,
 };
 
-use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use serde::{
-    de::{DeserializeOwned, Error as _},
-    Deserialize, Deserializer,
-};
+use saluki_error::{generic_error, GenericError};
+use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value;
 
+use self::case::Os;
+pub(crate) use self::case_file::deserialize_env_map;
 #[cfg(test)]
 pub(crate) use self::case_file::ProcedureNode;
+pub(crate) use self::duration::CaseDuration;
 pub(crate) use self::participant_check::{FactDeclaration, ParticipantDeclaration};
 pub(crate) use self::step_check::{decode_fields, Need, Step, StepDeclaration, StepFields};
 pub(crate) use self::template::Template;
@@ -26,6 +26,12 @@ use crate::test::Test;
 /// A duration that can be parsed from human-readable strings like `10s`, `1m`, `500ms`.
 #[derive(Clone, Debug)]
 pub struct HumanDuration(pub Duration);
+
+impl From<CaseDuration> for HumanDuration {
+    fn from(duration: CaseDuration) -> Self {
+        Self(duration.into())
+    }
+}
 
 impl<'de> Deserialize<'de> for HumanDuration {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -177,6 +183,25 @@ pub const LINUX_RUNTIME: &str = "linux";
 
 /// Runtime identifier for integration tests that run inside a Windows container.
 pub const WINDOWS_RUNTIME: &str = "windows";
+
+/// Returns the integration runtime identifier that runs cases for `os`.
+pub(crate) fn runtime_for_os(os: Os) -> &'static str {
+    match os {
+        Os::Linux => LINUX_RUNTIME,
+        Os::MacOs => MAC_RUNTIME,
+        Os::Windows => WINDOWS_RUNTIME,
+    }
+}
+
+/// Maps an integration runtime identifier to its subject OS, or `None` for other identifiers, such as `docker`.
+pub(crate) fn os_for_runtime(runtime: &str) -> Option<Os> {
+    match runtime {
+        LINUX_RUNTIME => Some(Os::Linux),
+        MAC_RUNTIME => Some(Os::MacOs),
+        WINDOWS_RUNTIME => Some(Os::Windows),
+        _ => None,
+    }
+}
 
 /// Default container image used by `linux`-runtime integration tests.
 pub const DEFAULT_LINUX_TARGET_IMAGE: &str = "saluki-images/datadog-agent:testing-devel";
@@ -643,34 +668,6 @@ impl MatrixVariants {
     }
 }
 
-/// Deserializes a map of environment variables, requiring every value to be a YAML string.
-///
-/// A bare `true` or `8125` is a YAML boolean or number rather than the text a process receives, so a
-/// case that writes one is rejected by name instead of being handed a value it did not ask for. YAML
-/// scalars are otherwise loosely typed enough that the same file would load differently depending on
-/// whether a field happens to be typed as a `String`.
-///
-/// # Errors
-///
-/// Returns an error naming the first variable whose value is not a YAML string.
-pub(crate) fn deserialize_env_map<'de, D, M>(deserializer: D) -> Result<M, D::Error>
-where
-    D: Deserializer<'de>,
-    M: FromIterator<(String, String)>,
-{
-    BTreeMap::<String, serde_json::Value>::deserialize(deserializer)?
-        .into_iter()
-        .map(|(name, value)| match value {
-            serde_json::Value::String(value) => Ok((name, value)),
-            _ => Err(D::Error::custom(format!(
-                "environment variable '{}' must be a YAML string: quote any value that would otherwise \
-                 parse as a boolean or a number (\"true\", \"8125\")",
-                name
-            ))),
-        })
-        .collect()
-}
-
 /// A deserialized case that records its source file.
 pub(crate) trait LoadedFrom {
     /// Records the canonical configuration file path after deserialization.
@@ -690,19 +687,11 @@ fn parse_case<T>(content: &str, source: &Path) -> Result<T, GenericError>
 where
     T: LoadedFrom + DeserializeOwned,
 {
-    let mut case: T = deserialize_case(content, source)?;
+    let mut case: T = case::deserialize_case(content, source)?;
 
     case.set_loaded_from(source.to_path_buf());
 
     Ok(case)
-}
-
-/// Deserializes case data and includes its source path in parse errors.
-fn deserialize_case<T>(content: &str, source: &Path) -> Result<T, GenericError>
-where
-    T: DeserializeOwned,
-{
-    serde_saphyr::from_str(content).error_context(format!("Failed to parse configuration file: {}", source.display()))
 }
 
 /// Discovers enabled cases eligible for `integration_runtime`, sorted by name.
@@ -784,6 +773,7 @@ pub fn parse_file_spec(spec: &str) -> Result<(&str, &str), GenericError> {
 
 pub(crate) mod case;
 mod case_file;
+mod duration;
 mod integration_bridge;
 mod participant_check;
 mod step_check;
@@ -874,6 +864,30 @@ procedure:
         let source = path.as_ref().canonicalize()?;
         let content = std::fs::read_to_string(&source)?;
         parse_case(&content, &source)
+    }
+
+    #[test]
+    fn every_subject_os_maps_to_its_runtime_and_back() {
+        for (os, runtime) in [(Os::Linux, "linux"), (Os::MacOs, "mac"), (Os::Windows, "windows")] {
+            assert_eq!(runtime_for_os(os), runtime);
+            assert_eq!(os_for_runtime(runtime), Some(os));
+        }
+        for runtime in ["docker", "kubernetes_in_docker", "macos", ""] {
+            assert_eq!(os_for_runtime(runtime), None, "{runtime}");
+        }
+    }
+
+    #[test]
+    fn an_integration_case_still_accepts_a_unitless_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_case(
+            dir.path(),
+            "alpha",
+            "type: integration\nname: alpha\ntimeout: '30'\nprocedure: []\n",
+        );
+        let cases = crate::CASE_LOADER.load_file(&path).unwrap();
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].timeout(), Duration::from_secs(30));
     }
 
     #[test]

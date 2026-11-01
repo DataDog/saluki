@@ -5,8 +5,9 @@ use std::{collections::BTreeSet, path::Path, time::Duration};
 use saluki_error::{generic_error, GenericError};
 
 use super::{
-    case::{case_name, CaseConfig, CaseSchema, Os, TypedCase, TypedCaseLoader},
-    deserialize_case, parse_case, IntegrationConfig, MatrixVariants, LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME,
+    case::{case_name, deserialize_case, CaseConfig, CaseSchema, Os, TypedCase, TypedCaseLoader},
+    integration_bridge, os_for_runtime, parse_case, IntegrationConfig, MatrixVariants, LINUX_RUNTIME, MAC_RUNTIME,
+    WINDOWS_RUNTIME,
 };
 use crate::{
     correctness::{case::CorrectnessTestCase, config::Config as CorrectnessConfig},
@@ -58,7 +59,7 @@ impl TypedCaseLoader for TypedConfigLoader {
                     .runtimes
                     .iter()
                     .map(|runtime| {
-                        Os::from_runtime(runtime).ok_or_else(|| {
+                        os_for_runtime(runtime).ok_or_else(|| {
                             generic_error!(
                                 "integration test '{}' in {} declares unknown runtime '{}' (expected '{}', '{}', or '{}')",
                                 config.name,
@@ -74,7 +75,7 @@ impl TypedCaseLoader for TypedConfigLoader {
                 Ok(vec![TypedCase {
                     name,
                     description: config.description.clone(),
-                    suite: TestSuite::Integration,
+                    suite: TestSuite::Integration.name().to_string(),
                     timeout: config.timeout.0,
                     subject_os,
                     disabled: false,
@@ -118,7 +119,7 @@ fn from_correctness(name: String, config: CorrectnessConfig) -> TypedCase<TypedC
     TypedCase {
         name,
         description: None,
-        suite: TestSuite::Correctness,
+        suite: TestSuite::Correctness.name().to_string(),
         timeout: CORRECTNESS_TIMEOUT,
         subject_os: BTreeSet::from([Os::Linux]),
         disabled: config.disabled,
@@ -138,7 +139,7 @@ pub(crate) trait RunnableCase {
     ///
     /// Returns an error naming the case and source if it uses another schema or suite, has unsupported
     /// participant settings or steps, or omits the requested subject OS.
-    /// See [`CaseFile::integration_config`](super::case_file::CaseFile::integration_config).
+    /// See [`integration_bridge::integration_config`].
     fn integration_config(&self, os: Os) -> Result<IntegrationConfig, GenericError>;
 
     /// Builds a runner from a copy of the case data, applying image choices to that copy.
@@ -158,7 +159,7 @@ impl RunnableCase for LoadedCase {
         }
         match self.schema() {
             CaseSchema::Typed(TypedConfig::Integration(_)) | CaseSchema::Participants { .. } => {
-                Os::from_runtime(runtime).is_some_and(|os| self.subject_os().contains(&os))
+                os_for_runtime(runtime).is_some_and(|os| self.subject_os().contains(&os))
             }
             CaseSchema::Typed(TypedConfig::Correctness(_)) => true,
         }
@@ -172,7 +173,7 @@ impl RunnableCase for LoadedCase {
                 self.source().display()
             ));
         };
-        if self.suite() != TestSuite::Integration {
+        if self.suite() != TestSuite::Integration.name() {
             return Err(generic_error!(
                 "Cannot run case '{}' from {}: the integration runner runs only integration-suite cases",
                 self.name(),
@@ -187,15 +188,14 @@ impl RunnableCase for LoadedCase {
                 os.name()
             ));
         }
-        file.integration_config(self.name(), self.source(), procedure, os)
-            .map_err(|reason| {
-                generic_error!(
-                    "Cannot run case '{}' from {}: {}",
-                    self.name(),
-                    self.source().display(),
-                    reason
-                )
-            })
+        integration_bridge::integration_config(file, self.name(), self.source(), procedure, os).map_err(|reason| {
+            generic_error!(
+                "Cannot run case '{}' from {}: {}",
+                self.name(),
+                self.source().display(),
+                reason
+            )
+        })
     }
 
     fn build_test(
@@ -211,7 +211,7 @@ impl RunnableCase for LoadedCase {
                 Ok(Box::new(CorrectnessTestCase::new(self.name().to_string(), config)))
             }
             CaseSchema::Participants { .. } => {
-                let os = Os::from_runtime(integration_runtime).ok_or_else(|| {
+                let os = os_for_runtime(integration_runtime).ok_or_else(|| {
                     generic_error!(
                         "Cannot run case '{}' from {}: runtime '{}' is not a subject OS",
                         self.name(),
@@ -233,9 +233,14 @@ mod tests {
     use std::fs;
 
     use super::*;
-    use crate::config::{
-        build_runners, default_host_runtime,
-        tests::{write_case, PARTICIPANT_FIELDS},
+    use crate::{
+        config::{
+            build_runners,
+            case::{CaseLoader, Registries},
+            default_host_runtime,
+            tests::{write_case, PARTICIPANT_FIELDS},
+        },
+        participants, steps,
     };
 
     const CORRECTNESS_FIELDS: &str =
@@ -255,7 +260,7 @@ mod tests {
         assert_eq!(case.name(), "alpha");
         assert_eq!(case.description(), Some("A portable case"));
         assert_eq!(case.timeout(), Duration::from_secs(7));
-        assert_eq!(case.suite(), TestSuite::Integration);
+        assert_eq!(case.suite(), TestSuite::Integration.name());
         assert_eq!(*case.subject_os(), BTreeSet::from([Os::Linux, Os::MacOs]));
         assert!(!case.is_disabled());
         let canonical = path.canonicalize().unwrap();
@@ -285,12 +290,15 @@ mod tests {
     fn a_participant_case_in_another_suite_cannot_build_an_integration_runner() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_case(dir.path(), "alpha", PARTICIPANT_FIELDS);
-        let cases: Vec<_> = crate::CASE_LOADER
-            .load_file(&path)
-            .unwrap()
-            .into_iter()
-            .map(|case| case.with_suite(TestSuite::Correctness))
-            .collect();
+        let loader = CaseLoader::new(
+            Registries {
+                participant_types: participants::REGISTERED_TYPES,
+                steps: steps::REGISTERED_STEPS,
+            },
+            TypedConfigLoader,
+            TestSuite::Correctness.name(),
+        );
+        let cases = loader.load_file(&path).unwrap();
         let error = build_runners(&cases, LINUX_RUNTIME, &[])
             .err()
             .expect("the case and runner suites must agree");
@@ -365,7 +373,7 @@ mod tests {
         assert_eq!(case.description(), None);
         assert_eq!(case.timeout(), CORRECTNESS_TIMEOUT);
         assert_eq!(case.timeout(), Duration::from_mins(20));
-        assert_eq!(case.suite(), TestSuite::Correctness);
+        assert_eq!(case.suite(), TestSuite::Correctness.name());
         assert_eq!(*case.subject_os(), BTreeSet::from([Os::Linux]));
         assert!(!case.is_disabled());
     }
@@ -390,7 +398,7 @@ mod tests {
         for ((case, runner), variant) in cases.iter().zip(&runners).zip(["second", "first"]) {
             assert_eq!(case.source(), source);
             assert_eq!(case.timeout(), CORRECTNESS_TIMEOUT);
-            assert_eq!(case.suite(), TestSuite::Correctness);
+            assert_eq!(case.suite(), TestSuite::Correctness.name());
             assert_eq!(case.description(), None);
             assert_eq!(*case.subject_os(), BTreeSet::from([Os::Linux]));
             assert!(!case.is_disabled());
@@ -551,9 +559,9 @@ mod tests {
                                 .as_array()
                                 .unwrap()
                                 .iter()
-                                .map(|runtime| Os::from_runtime(runtime.as_str().unwrap()).unwrap())
+                                .map(|runtime| os_for_runtime(runtime.as_str().unwrap()).unwrap())
                                 .collect(),
-                            None => BTreeSet::from([Os::from_runtime(default_host_runtime()).unwrap()]),
+                            None => BTreeSet::from([os_for_runtime(default_host_runtime()).unwrap()]),
                         };
                         assert_eq!(*case.subject_os(), declared_os, "{}", path.display());
                     }
@@ -564,7 +572,12 @@ mod tests {
                         let runners = build_runners(std::slice::from_ref(&case), runtime, &[]).unwrap();
                         let runner = &runners[0];
                         assert_eq!(case.name(), runner.name(), "{} under {runtime}", path.display());
-                        assert_eq!(case.suite(), runner.suite(), "{} under {runtime}", path.display());
+                        assert_eq!(
+                            case.suite(),
+                            runner.suite().name(),
+                            "{} under {runtime}",
+                            path.display()
+                        );
                         assert_eq!(
                             case.source().parent().unwrap(),
                             runner.case_path(),

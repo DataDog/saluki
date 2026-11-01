@@ -16,7 +16,6 @@ use super::super::{
     template::Template,
 };
 use super::{case_name, CaseLoader, Os, Registries, TypedCase, TypedCaseLoader};
-use crate::test::TestSuite;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -116,7 +115,7 @@ impl TypedCaseLoader for FixtureTypes {
         Ok(vec![TypedCase {
             name: case_name(None, directory, source)?,
             description: Some(format!("{directory} fixture")),
-            suite: TestSuite::Correctness,
+            suite: "fixture-typed".to_string(),
             timeout: Duration::from_secs(3),
             subject_os: BTreeSet::from([Os::MacOs, Os::Windows]),
             disabled: true,
@@ -130,7 +129,8 @@ impl TypedCaseLoader for FixtureTypes {
     }
 }
 
-pub(crate) const LOADER: CaseLoader<'static, FixtureTypes> = CaseLoader::new(REGISTRIES, FixtureTypes);
+pub(crate) const LOADER: CaseLoader<'static, FixtureTypes> =
+    CaseLoader::new(REGISTRIES, FixtureTypes, "fixture-participants");
 
 pub(crate) const PARTICIPANT_FIELDS: &str =
     "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {type: server, subject: true}\nprocedure: []\n";

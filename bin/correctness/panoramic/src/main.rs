@@ -56,6 +56,7 @@ pub(crate) const CASE_LOADER: CaseLoader<'static, TypedConfigLoader> = CaseLoade
         steps: steps::REGISTERED_STEPS,
     },
     TypedConfigLoader,
+    test::TestSuite::Integration.name(),
 );
 
 mod text_output;

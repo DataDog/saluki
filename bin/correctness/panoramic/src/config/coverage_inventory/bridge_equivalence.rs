@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 
 use super::{create_case_dirs, read_text, repository_root, Inventory, INTEGRATION, JSON_PATH, OLD, PARTICIPANTS};
 use crate::{
-    config::{case::Os, tests::write_case, typed_case::RunnableCase, ContainerConfig, IntakeConfig},
+    config::{os_for_runtime, tests::write_case, typed_case::RunnableCase, ContainerConfig, IntakeConfig},
     participants::AGENT_ADP,
 };
 
@@ -76,7 +76,7 @@ fn participant_twin(config: &Value) -> Result<(String, bool), String> {
         .map(|runtime| {
             runtime
                 .as_str()
-                .and_then(Os::from_runtime)
+                .and_then(os_for_runtime)
                 .ok_or_else(|| format!("unsupported runtime {runtime}"))
         })
         .collect::<Result<Vec<_>, _>>()?;

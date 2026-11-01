@@ -40,8 +40,8 @@ const PROOF_PIPELINE_URL: &str = "https://gitlab.ddbuild.io/DataDog/saluki/-/pip
 const PROOF_JOB_URL: &str = "https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/";
 const PROOF_COMPARISON: &str = "Compared with the inventory at `";
 const REGENERATE: &str = "PANORAMIC_WRITE_COVERAGE_INVENTORY=1 cargo nextest run -p panoramic coverage_inventory";
-const INTEGRATION: &str = "integration";
-const CORRECTNESS: &str = "correctness";
+const INTEGRATION: &str = TestSuite::Integration.name();
+const CORRECTNESS: &str = TestSuite::Correctness.name();
 const PARTICIPANTS: &str = "participants";
 const SELECTED: &str = "selected";
 const DISABLED: &str = "disabled";
@@ -65,7 +65,7 @@ struct Inventory {
 #[derive(Serialize)]
 struct Row {
     name: String,
-    suite: &'static str,
+    suite: String,
     subject_os: String,
     runtime: String,
     source: String,
@@ -147,11 +147,11 @@ impl Row {
             CaseSchema::Participants { .. } => PARTICIPANTS.to_string(),
             _ => schemas[&source].clone(),
         };
-        let suite = suite_label(case.suite());
+        let suite = case.suite();
         let mut row = Self {
             case: format!("{suite}/{}", case.name()),
             name: case.name().to_string(),
-            suite,
+            suite: suite.to_string(),
             subject_os: subject_os.to_string(),
             runtime: runner.runtime(),
             source,
@@ -174,7 +174,7 @@ impl Row {
         }
         // Integration jobs: .gitlab/e2e.yml and .gitlab/windows.yml (windows-integration-tests.ps1).
         // Correctness jobs and mixins: ci/tooling/generate-correctness-pipeline.sh.
-        match (self.suite, self.subject_os.as_str()) {
+        match (self.suite.as_str(), self.subject_os.as_str()) {
             (INTEGRATION, "linux") => self.ci_jobs.push("test-integration".to_string()),
             (INTEGRATION, "macos") => self.ci_jobs.extend([
                 "test-integration-macos-arm64".to_string(),
@@ -231,7 +231,7 @@ impl Inventory {
             .discover_cases(&CASE_DIRS.map(|(dir, ..)| root.join(dir)))
             .unwrap_or_else(|error| panic!("{error:#}"));
         let (integration_cases, correctness_cases): (Vec<_>, Vec<_>) =
-            cases.iter().partition(|case| case.suite() == TestSuite::Integration);
+            cases.iter().partition(|case| case.suite() == INTEGRATION);
         for (runtime, os) in [
             (LINUX_RUNTIME, Os::Linux),
             (MAC_RUNTIME, Os::MacOs),
@@ -275,7 +275,7 @@ impl Inventory {
         let mut keys = BTreeSet::new();
         for row in &rows {
             let source = &row.source;
-            let suite = row.suite;
+            let suite = row.suite.as_str();
             let status = row.status;
             let Some((dir, ..)) = CASE_DIRS
                 .iter()
@@ -408,13 +408,6 @@ impl Inventory {
     }
 }
 
-fn suite_label(suite: TestSuite) -> &'static str {
-    match suite {
-        TestSuite::Integration => INTEGRATION,
-        TestSuite::Correctness => CORRECTNESS,
-    }
-}
-
 fn load_cases(path: &Path) -> Vec<(String, Case)> {
     let loaded = crate::CASE_LOADER
         .load_file(path)
@@ -481,7 +474,7 @@ fn record_cases(cases: &[LoadedCase]) -> Result<Vec<(String, Case)>, GenericErro
                 }
             }
         };
-        let suite = suite_label(case.suite());
+        let suite = case.suite();
         recorded.push((format!("{suite}/{}", case.name()), effective));
     }
     Ok(recorded)

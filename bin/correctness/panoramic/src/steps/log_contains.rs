@@ -3,7 +3,7 @@
 use serde::Deserialize;
 
 use super::check_pattern;
-use crate::config::{decode_fields, HumanDuration, Need, Step, StepDeclaration, StepFields};
+use crate::config::{decode_fields, CaseDuration, Need, Step, StepDeclaration, StepFields};
 
 /// Waits until a participant's output contains a pattern.
 #[derive(Debug, Deserialize)]
@@ -20,7 +20,7 @@ pub(crate) struct LogContains {
     #[serde(default)]
     pub(crate) regex: bool,
     /// Required, positive time to wait for a match; has no default.
-    pub(crate) timeout: HumanDuration,
+    pub(crate) timeout: CaseDuration,
 }
 
 impl Step for LogContains {
@@ -47,7 +47,7 @@ pub(crate) struct LogNotContains {
     #[serde(default)]
     pub(crate) regex: bool,
     /// Required, positive time the pattern must stay absent; has no default.
-    pub(crate) during: HumanDuration,
+    pub(crate) during: CaseDuration,
 }
 
 impl Step for LogNotContains {
@@ -108,7 +108,7 @@ mod tests {
         assert_eq!(step.process, None);
         assert_eq!(step.pattern, "ready");
         assert!(!step.regex);
-        assert_eq!(step.timeout.0, Duration::from_secs(30));
+        assert_eq!(Duration::from(step.timeout), Duration::from_secs(30));
     }
 
     #[test]
@@ -119,7 +119,7 @@ mod tests {
         assert_eq!(step.process, None);
         assert_eq!(step.pattern, "panic");
         assert!(!step.regex);
-        assert_eq!(step.during.0, Duration::from_secs(10));
+        assert_eq!(Duration::from(step.during), Duration::from_secs(10));
         let during = fields.remove("during").unwrap();
         let message = (LOG_NOT_CONTAINS.build)(&fields).unwrap_err();
         assert!(message.contains("missing field `during`"), "{message}");
