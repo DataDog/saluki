@@ -26,6 +26,17 @@ pub enum Os {
 }
 
 impl Os {
+    /// Returns the runner host's OS: macOS, Windows, or Linux on other hosts.
+    pub fn host() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::MacOs
+        } else if cfg!(target_os = "windows") {
+            Self::Windows
+        } else {
+            Self::Linux
+        }
+    }
+
     /// Returns the OS spelling used in case files.
     pub fn name(self) -> &'static str {
         match self {
@@ -63,7 +74,7 @@ impl RealizationKind {
 }
 
 /// One participant's operating system and execution mechanism.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Realization {
     /// Operating system of the participant's processes.
     pub os: Os,

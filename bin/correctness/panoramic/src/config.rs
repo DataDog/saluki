@@ -216,30 +216,9 @@ pub fn target_image_for_runtime(runtime: &str) -> Option<&'static str> {
     }
 }
 
-/// Returns the integration-test runtime that is native to the host OS.
-///
-/// `mac` on macOS hosts, `windows` on Windows hosts, and `linux` everywhere else. Used as the default when a panoramic
-/// subcommand is invoked without an explicit `--runtime` flag, so that callers on the most
-/// common host get the most common runtime without having to spell it out.
+/// Returns the host's integration runtime, used when a typed integration case omits `runtimes`.
 pub fn default_host_runtime() -> &'static str {
-    if cfg!(target_os = "macos") {
-        MAC_RUNTIME
-    } else if cfg!(target_os = "windows") {
-        WINDOWS_RUNTIME
-    } else {
-        LINUX_RUNTIME
-    }
-}
-
-/// Returns the default subject OS: macOS on macOS hosts, Windows on Windows hosts, and Linux elsewhere.
-pub(crate) fn default_host_os() -> Os {
-    if cfg!(target_os = "macos") {
-        Os::MacOs
-    } else if cfg!(target_os = "windows") {
-        Os::Windows
-    } else {
-        Os::Linux
-    }
+    runtime_for_os(Os::host())
 }
 
 /// Container name the integration-test target carries in [`Test::images`] and image overrides.
@@ -822,6 +801,9 @@ pub(crate) mod tests {
     use super::*;
     use crate::correctness::case::CorrectnessTestCase;
 
+    pub(crate) const CORRECTNESS_FIELDS: &str =
+        "runtime: docker\nanalysis_mode: metrics\nbaseline: {image: 'base:file'}\ncomparison: {image: 'comp:file'}\n";
+
     pub(crate) const PARTICIPANT_FIELDS: &str =
         "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  adp: {type: agent-adp, subject: true}\nprocedure: []\n";
     pub(crate) const NO_PARTICIPANT_FIELDS: &str =
@@ -890,6 +872,15 @@ procedure:
     timeout: 60s
 "#;
 
+    /// Loads and compiles one case for tests.
+    pub(crate) fn plan(yaml: &str, os: Os) -> LoadedPlan {
+        let case = crate::CASE_LOADER
+            .load_content(yaml, "case", Path::new("/cases/case/config.yaml"))
+            .unwrap()
+            .remove(0);
+        LoadedPlan::compile(case, os, &crate::REGISTRIES).unwrap().unwrap()
+    }
+
     fn load_case<T, P>(path: P) -> Result<T, GenericError>
     where
         T: LoadedFrom + DeserializeOwned,
@@ -902,7 +893,7 @@ procedure:
 
     #[test]
     fn every_subject_os_maps_to_its_runtime_and_back() {
-        assert_eq!(os_for_runtime(default_host_runtime()), Some(default_host_os()));
+        assert_eq!(os_for_runtime(default_host_runtime()), Some(Os::host()));
         for (os, runtime) in [(Os::Linux, "linux"), (Os::MacOs, "mac"), (Os::Windows, "windows")] {
             assert_eq!(runtime_for_os(os), runtime);
             assert_eq!(os_for_runtime(runtime), Some(os));

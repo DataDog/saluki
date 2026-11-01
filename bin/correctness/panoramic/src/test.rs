@@ -132,7 +132,7 @@ pub(crate) trait Test: Send + Sync {
 
     /// The runtime identifier for this test (for example, `"docker"`, `"kubernetes_in_docker"`).
     ///
-    /// Used by the CI pipeline generator to select the appropriate job template. Defaults to `"docker"`.
+    /// Reported by `list --json` for CI job selection. Defaults to `"docker"`.
     fn runtime(&self) -> String {
         "docker".to_string()
     }

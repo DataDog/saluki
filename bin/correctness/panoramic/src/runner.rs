@@ -32,6 +32,7 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+use crate::config::typed_case::needs_pod;
 use crate::test::{RunnerSettings, Test, TestContext};
 use crate::{
     assertions::{AssertionContext, LogBuffer, TargetCommand},
@@ -283,17 +284,20 @@ impl Runner {
                 break;
             }
 
+            let kind_ready = if needs_pod(&built.plan) {
+                self.kind_ready.clone()
+            } else {
+                None
+            };
             // Kind tests wait for cluster readiness before acquiring a concurrency slot.
-            if test.runtime() == "kubernetes_in_docker" {
-                if let Some(mut rx) = self.kind_ready.clone() {
-                    loop {
-                        if rx.borrow().is_some() {
-                            break;
-                        }
-                        tokio::select! {
-                            _ = cancel_all.cancelled() => break,
-                            result = rx.changed() => { if result.is_err() { break; } }
-                        }
+            if let Some(mut rx) = kind_ready.clone() {
+                loop {
+                    if rx.borrow().is_some() {
+                        break;
+                    }
+                    tokio::select! {
+                        _ = cancel_all.cancelled() => break,
+                        result = rx.changed() => { if result.is_err() { break; } }
                     }
                 }
             }
@@ -306,7 +310,7 @@ impl Runner {
                 cancel_all,
                 self.log_base_dir.clone(),
                 self.settings.clone(),
-                self.kind_ready.clone(),
+                kind_ready,
             )
             .await;
 
@@ -328,7 +332,11 @@ impl Runner {
             let cancel = cancel_all.clone();
             let log_base_dir = self.log_base_dir.clone();
             let settings = self.settings.clone();
-            let mut kind_ready = self.kind_ready.clone();
+            let mut kind_ready = if needs_pod(&built.plan) {
+                self.kind_ready.clone()
+            } else {
+                None
+            };
             futures.push(async move {
                 if cancel.is_cancelled() {
                     return;
@@ -336,16 +344,14 @@ impl Runner {
 
                 // Kind tests wait for cluster readiness before acquiring a concurrency slot
                 // so they don't starve Docker tests while the cluster is being set up.
-                if test.runtime() == "kubernetes_in_docker" {
-                    if let Some(ref mut rx) = kind_ready {
-                        loop {
-                            if rx.borrow().is_some() {
-                                break;
-                            }
-                            tokio::select! {
-                                _ = cancel.cancelled() => break,
-                                result = rx.changed() => { if result.is_err() { break; } }
-                            }
+                if let Some(ref mut rx) = kind_ready {
+                    loop {
+                        if rx.borrow().is_some() {
+                            break;
+                        }
+                        tokio::select! {
+                            _ = cancel.cancelled() => break,
+                            result = rx.changed() => { if result.is_err() { break; } }
                         }
                     }
                 }
@@ -419,10 +425,8 @@ impl Runner {
 
         let deadline = Deadline::after(Budget::Case, timeout);
         let mut tctx = TestContext::new(test_cancel.clone(), deadline, log_dir.clone(), settings);
-        if test.runtime() == "kubernetes_in_docker" {
-            if let Some(rx) = kind_ready {
-                tctx = tctx.with_kind_ready(rx);
-            }
+        if let Some(rx) = kind_ready {
+            tctx = tctx.with_kind_ready(rx);
         }
 
         let _ = event_sender.send(TestEvent::TestStarted { name: name.clone() });
@@ -1418,6 +1422,21 @@ pub(crate) mod test_support {
         }
     }
 
+    /// Runs a test with explicit settings and a timeout to catch hangs.
+    pub(crate) async fn run_with_settings(
+        case: &LoadedCase, test: &dyn Test, settings: RunnerSettings, log_base_dir: &Path,
+        cancel_all: &CancellationToken, bound: Duration,
+    ) -> TestResult {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        tokio::time::timeout(
+            bound,
+            Runner::run_one(case, test, &tx, cancel_all, log_base_dir.to_path_buf(), settings, None),
+        )
+        .await
+        .expect("the runner should finish the test within the bound")
+    }
+
     pub(crate) fn test_runner_settings(mounts_dir: &Path) -> RunnerSettings {
         RunnerSettings {
             mounts_dir: mounts_dir.to_path_buf(),
@@ -1435,8 +1454,91 @@ mod tests {
     use panoramic_core::result::{ReclaimResult, TestOutcome, TimeoutDeadline};
     use tokio::sync::mpsc;
 
-    use super::test_support::{test_runner_settings, Behavior, ScriptedTest, TaskProbe};
+    use super::test_support::{run_with_settings, test_runner_settings, Behavior, ScriptedTest, TaskProbe};
     use super::*;
+
+    #[tokio::test]
+    async fn only_cases_that_need_a_kubernetes_pod_wait_for_the_kind_cluster() {
+        use panoramic_core::{layout::Os, plan::CasePlan};
+
+        struct ChecksContext {
+            scripted: ScriptedTest,
+            needs_pod: bool,
+        }
+
+        #[async_trait::async_trait]
+        impl Test for ChecksContext {
+            fn images(&self) -> std::collections::BTreeMap<&str, String> {
+                self.scripted.images()
+            }
+
+            async fn run(&self, tctx: TestContext) -> TestResult {
+                assert_eq!(tctx.kind_ready.is_some(), self.needs_pod);
+                self.scripted.run(tctx).await
+            }
+        }
+
+        for fail_fast in [false, true] {
+            let logs = tempfile::tempdir().unwrap();
+            let (ready_tx, ready_rx) = tokio::sync::watch::channel(None);
+            let mut runner = Runner::new(logs.path(), test_runner_settings(logs.path())).with_kind_ready(ready_rx);
+            let linux = ScriptedTest::new("linux", Behavior::Pass);
+            let linux_case = linux.case();
+            let pod_case = crate::CASE_LOADER
+                .load_content(
+                    &format!(
+                        "type: correctness\n{}",
+                        crate::config::tests::CORRECTNESS_FIELDS
+                            .replace("runtime: docker", "runtime: kubernetes_in_docker")
+                    ),
+                    "pod",
+                    Path::new("/cases/pod/config.yaml"),
+                )
+                .unwrap()
+                .remove(0);
+            for (case, scripted, needs_pod) in [
+                (linux_case, linux, false),
+                (pod_case, ScriptedTest::new("pod", Behavior::Pass), true),
+            ] {
+                runner
+                    .register(BuiltCase {
+                        plan: CasePlan::compile(case, Os::Linux, &crate::REGISTRIES).unwrap().unwrap(),
+                        runner: Box::new(ChecksContext { scripted, needs_pod }),
+                    })
+                    .unwrap();
+            }
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let args = RunArgs::new(CancellationToken::new(), tx)
+                .with_parallelism(NonZeroUsize::new(2).unwrap())
+                .with_fail_fast(fail_fast);
+            let task = tokio::spawn(async move { runner.run_tests(args).await });
+            loop {
+                let event = tokio::time::timeout(BOUND, rx.recv()).await.unwrap().unwrap();
+                match event {
+                    TestEvent::TestStarted { name } => assert_eq!(name, "linux"),
+                    TestEvent::TestCompleted { result, .. } => {
+                        assert_eq!(result.name, "linux");
+                        assert_eq!(result.outcome, TestOutcome::Passed);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            assert!(tokio::time::timeout(Duration::from_millis(25), rx.recv())
+                .await
+                .is_err());
+            assert!(!task.is_finished());
+            ready_tx.send(Some(Ok(()))).unwrap();
+            tokio::time::timeout(BOUND, task).await.unwrap().unwrap();
+            assert!(matches!(rx.try_recv().unwrap(), TestEvent::TestStarted { name } if name == "pod"));
+            let TestEvent::TestCompleted { result, .. } = rx.try_recv().unwrap() else {
+                panic!("pod completion should follow readiness");
+            };
+            assert_eq!(result.name, "pod");
+            assert_eq!(result.outcome, TestOutcome::Passed);
+            assert!(rx.try_recv().is_err());
+        }
+    }
 
     /// A bound for real-time tests.
     const BOUND: Duration = Duration::from_secs(5);
@@ -1454,21 +1556,6 @@ mod tests {
         let mounts_dir = tempfile::tempdir().expect("temp dir should be creatable");
         let settings = test_runner_settings(mounts_dir.path());
         run_with_settings(&test.case(), test, settings, log_base_dir, cancel_all, bound).await
-    }
-
-    /// Runs a test with explicit settings and a timeout to catch hangs.
-    async fn run_with_settings(
-        case: &LoadedCase, test: &dyn Test, settings: RunnerSettings, log_base_dir: &Path,
-        cancel_all: &CancellationToken, bound: Duration,
-    ) -> TestResult {
-        let (tx, _rx) = mpsc::unbounded_channel();
-
-        tokio::time::timeout(
-            bound,
-            Runner::run_one(case, test, &tx, cancel_all, log_base_dir.to_path_buf(), settings, None),
-        )
-        .await
-        .expect("the runner should finish the test within the bound")
     }
 
     /// Returns a token that cancels the run after `after`.

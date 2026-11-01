@@ -4514,6 +4514,7 @@ name = "panoramic-core"
 version = "0.1.0"
 dependencies = [
  "airlock",
+ "async-trait",
  "chrono",
  "futures",
  "k8s-openapi",

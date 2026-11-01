@@ -38,8 +38,8 @@ mod dynamic_vars;
 mod integration;
 mod mounts;
 use self::config::{
-    build_runners, default_host_os, discover_in_scope, runtime_for_os,
-    typed_case::{LoadedPlan, TypedConfigLoader},
+    build_runners, discover_in_scope, runtime_for_os,
+    typed_case::{needs_pod, LoadedPlan, TypedConfigLoader},
     BuiltCase,
 };
 
@@ -66,6 +66,7 @@ pub(crate) const CASE_LOADER: CaseLoader<'static, TypedConfigLoader> =
 mod text_output;
 use self::text_output::{OutputFormat, Reporter};
 
+mod providability;
 mod runner;
 mod test;
 mod test_env;
@@ -182,7 +183,17 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let subject_os = cmd.runtime.unwrap_or_else(default_host_os);
+    let subject_os = match cmd.subject_os.resolve() {
+        Ok(os) => os,
+        Err(message) => {
+            if use_tui {
+                eprintln!("{message}");
+            } else {
+                error!("{message}");
+            }
+            return ExitCode::from(2);
+        }
+    };
     let integration_runtime = runtime_for_os(subject_os);
     let mut built = match discover_in_scope(&cmd.test_dirs, subject_os)
         .and_then(|plans| build_runners(plans, subject_os, &cmd.image_overrides))
@@ -247,6 +258,13 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
             .as_ref()
             .is_none_or(|names| names.iter().any(|name| name == built.plan.case().name()))
     });
+
+    if use_tui {
+        eprintln!("Checking that this host can provide the selected cases...");
+    } else {
+        info!("Checking that this host can provide the selected cases...");
+    }
+    providability::check(&mut built).await;
 
     // Create log directory.
     let log_dir = match std::path::absolute(cmd.log_dir()) {
@@ -420,12 +438,12 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     collector::exit_code(collector.report())
 }
 
-/// Collects the unique images of every kind-runtime runner in `built`.
+/// Collects the unique images of cases that need Kubernetes pods.
 fn collect_kind_images(built: &[BuiltCase]) -> Vec<String> {
     use std::collections::BTreeSet;
     let mut images = BTreeSet::new();
-    for BuiltCase { runner, .. } in built {
-        if runner.runtime() == "kubernetes_in_docker" {
+    for BuiltCase { plan, runner } in built {
+        if needs_pod(plan) {
             for (_, image) in runner.images() {
                 images.insert(image);
             }
@@ -440,12 +458,19 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
         return ExitCode::from(2);
     }
 
+    let subject_os = match cmd.subject_os.resolve() {
+        Ok(os) => os,
+        Err(message) => {
+            error!("{message}");
+            return ExitCode::from(2);
+        }
+    };
+
     if !cmd.json {
         let dirs_str: Vec<_> = cmd.test_dirs.iter().map(|d| d.display().to_string()).collect();
         info!("Discovering test cases from: {}...", dirs_str.join(", "));
     }
 
-    let subject_os = cmd.runtime.unwrap_or_else(default_host_os);
     let plans = match discover_in_scope(&cmd.test_dirs, subject_os) {
         Ok(plans) => plans,
         Err(e) => {
@@ -537,12 +562,179 @@ mod tests {
 
     use super::*;
     use crate::config::{
-        tests::{build_case_runners, write_case, PARTICIPANT_FIELDS},
+        tests::{build_case_runners, write_case, CORRECTNESS_FIELDS, PARTICIPANT_FIELDS},
         DEFAULT_LINUX_TARGET_IMAGE, DEFAULT_WINDOWS_TARGET_IMAGE,
     };
 
-    const CORRECTNESS_FIELDS: &str =
-        "runtime: docker\nanalysis_mode: metrics\nbaseline: {image: 'base:declared'}\ncomparison: {image: 'comp:declared'}\n";
+    #[tokio::test]
+    async fn conflicting_runtime_and_subject_os_exit_2_for_run_list_and_list_json_before_discovery_or_logs() {
+        use tracing::instrument::WithSubscriber as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cases = dir.path().join("cases");
+        write_case(
+            &cases,
+            "case",
+            "type: integration\nname: case\ntimeout: 1s\nruntimes: [linux, windows]\nprocedure: []\n",
+        );
+        write_case(&cases, "bad", "type: bogus\n");
+        let logs = dir.path().join("logs");
+        for (command, extra, use_tui) in [
+            ("run", vec!["-t", "not-selected", "-l", logs.to_str().unwrap()], false),
+            ("run", vec!["-t", "not-selected", "-l", logs.to_str().unwrap()], true),
+            ("list", vec![], false),
+            ("list", vec!["--json"], false),
+        ] {
+            let mut args = vec![
+                "panoramic",
+                command,
+                "-d",
+                cases.to_str().unwrap(),
+                "--runtime",
+                "linux",
+                "--subject-os",
+                "windows",
+            ];
+            args.extend(extra);
+            let output = tempfile::NamedTempFile::new().unwrap();
+            let subscriber = tracing_subscriber::fmt()
+                .with_ansi(false)
+                .without_time()
+                .with_writer(std::sync::Mutex::new(output.reopen().unwrap()))
+                .finish();
+            let exit = async {
+                match Cli::try_parse_from(args).unwrap().command {
+                    Command::Run(cmd) => run_tests(cmd, use_tui).await,
+                    Command::List(cmd) => list_tests(cmd).await,
+                }
+            }
+            .with_subscriber(subscriber)
+            .await;
+            assert_eq!(exit, ExitCode::from(2));
+            assert!(!logs.exists());
+            if !use_tui {
+                let diagnostic = std::fs::read_to_string(output.path()).unwrap();
+                assert!(
+                    diagnostic.contains(
+                        "--runtime linux selects subject OS 'linux', which conflicts with --subject-os windows"
+                    ),
+                    "{diagnostic}"
+                );
+                assert!(!diagnostic.contains("Failed to discover"), "{diagnostic}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_case_this_host_cannot_provide_is_an_errored_setup_row_and_the_run_exits_2() {
+        let (os, kind) = if Os::host() == Os::MacOs {
+            (Os::Windows, "windows-container")
+        } else {
+            (Os::MacOs, "host-process-group")
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let cases = dir.path().join("cases");
+        write_case(
+            &cases,
+            "unprovidable",
+            &PARTICIPANT_FIELDS.replace("[linux]", &format!("[{}]", os.name())),
+        );
+        let logs = dir.path().join("logs");
+        let cli = Cli::try_parse_from([
+            "panoramic",
+            "run",
+            "-d",
+            cases.to_str().unwrap(),
+            "--subject-os",
+            os.name(),
+            "-t",
+            "unprovidable",
+            "--no-tui",
+            "-o",
+            "json",
+            "-l",
+            logs.to_str().unwrap(),
+        ])
+        .unwrap();
+        let Command::Run(cmd) = cli.command else {
+            panic!("expected run")
+        };
+        assert_eq!(run_tests(cmd, false).await, ExitCode::from(2));
+        let run_dir = std::fs::read_dir(&logs).unwrap().next().unwrap().unwrap().path();
+        let report: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(run_dir.join("run.json")).unwrap()).unwrap();
+        let tests = report["tests"].as_array().unwrap();
+        assert_eq!(tests.len(), 1);
+        let result = &tests[0];
+        assert_eq!(result["name"], "unprovidable");
+        assert_eq!(result["outcome"], "errored");
+        assert_eq!(result["error"]["kind"], "setup");
+        assert!(result["error"]["message"].as_str().unwrap().starts_with(&format!(
+            "realization {kind} on {} for participant 'adp' cannot be provided on this host: ",
+            os.name()
+        )));
+        assert!(std::path::Path::new(result["log_dir"].as_str().unwrap())
+            .join("result.json")
+            .is_file());
+    }
+
+    #[test]
+    fn kind_images_come_only_from_cases_that_need_a_kubernetes_pod() {
+        // Reporting the default runtime makes image collection rely on the plan's realization.
+        struct DefaultRuntime(Box<dyn test::Test>);
+
+        #[async_trait::async_trait]
+        impl test::Test for DefaultRuntime {
+            fn images(&self) -> BTreeMap<&str, String> {
+                self.0.images()
+            }
+
+            async fn run(&self, _tctx: test::TestContext) -> panoramic_core::result::TestResult {
+                panic!("collecting images must not run a case")
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        write_case(
+            dir.path(),
+            "docker",
+            &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
+        );
+        write_case(
+            dir.path(),
+            "pod",
+            &format!(
+                "type: correctness\n{}",
+                CORRECTNESS_FIELDS
+                    .replace("runtime: docker", "runtime: kubernetes_in_docker")
+                    .replace("base:file", "base:pod")
+                    .replace("comp:file", "comp:pod")
+            ),
+        );
+        let plans = discover_in_scope(&[dir.path().to_path_buf()], Os::Linux).unwrap();
+        let built: Vec<_> = build_runners(plans, Os::Linux, &[])
+            .unwrap()
+            .into_iter()
+            .map(|BuiltCase { plan, runner }| BuiltCase {
+                plan,
+                runner: Box::new(DefaultRuntime(runner)),
+            })
+            .collect();
+        let expected: std::collections::BTreeSet<_> = built
+            .iter()
+            .find(|built| built.plan.case().name() == "pod")
+            .unwrap()
+            .runner
+            .images()
+            .into_values()
+            .collect();
+        let images = collect_kind_images(&built);
+        assert_eq!(images, expected.into_iter().collect::<Vec<_>>());
+        assert!(images.contains(&"base:pod".to_string()));
+        assert!(images.contains(&"comp:pod".to_string()));
+        assert!(!images.contains(&"base:file".to_string()));
+        assert!(!images.contains(&"comp:file".to_string()));
+    }
 
     #[test]
     fn build_revision_is_a_commit_sha_or_unknown() {
@@ -916,7 +1108,7 @@ comparison: {image: comp}
         assert_eq!(entry["type"], "correctness");
         assert_eq!(entry["runtime"], "docker");
         assert_eq!(entry["timeout"], serde_json::json!({"secs": 1200, "nanos": 0}));
-        assert_eq!(entry["images"]["baseline"], "base:declared");
+        assert_eq!(entry["images"]["baseline"], "base:file");
 
         let path = write_case(
             dir.path(),

@@ -3,7 +3,10 @@
 use std::{collections::BTreeSet, path::Path, time::Duration};
 
 use panoramic_core::case::{case_name, deserialize_case, CaseConfig, CaseSchema, TypedCase, TypedCaseLoader};
-use panoramic_core::{layout::Os, plan::CasePlan};
+use panoramic_core::{
+    layout::{Os, Realization, RealizationKind},
+    plan::CasePlan,
+};
 use saluki_error::{generic_error, GenericError};
 
 use super::{
@@ -11,7 +14,10 @@ use super::{
     WINDOWS_RUNTIME,
 };
 use crate::{
-    correctness::{case::CorrectnessTestCase, config::Config as CorrectnessConfig},
+    correctness::{
+        case::CorrectnessTestCase,
+        config::{Config as CorrectnessConfig, Runtime},
+    },
     image_override::ImageOverrides,
     integration::{IntegrationSettings, IntegrationTestCase},
     test::{Test, TestSuite},
@@ -26,11 +32,50 @@ pub(crate) enum TypedConfig {
     Correctness(CorrectnessConfig),
 }
 
+impl TypedConfig {
+    /// Returns the realization this case's runner creates: integration cases follow the subject OS,
+    /// correctness cases their configured runtime.
+    pub(crate) fn realization(&self, subject_os: Os) -> Realization {
+        let (os, kind) = match self {
+            Self::Integration(_) => match subject_os {
+                Os::Linux => (Os::Linux, RealizationKind::LinuxContainer),
+                Os::MacOs => (Os::MacOs, RealizationKind::HostProcessGroup),
+                Os::Windows => (Os::Windows, RealizationKind::WindowsContainer),
+            },
+            Self::Correctness(config) => match config.runtime {
+                Runtime::Docker => (Os::Linux, RealizationKind::LinuxContainer),
+                Runtime::KubernetesInDocker => (Os::Linux, RealizationKind::KubernetesPod),
+            },
+        };
+        Realization { os, kind }
+    }
+}
+
 /// A case loaded with this binary's typed schemas.
 pub(crate) type LoadedCase = CaseConfig<TypedConfig>;
 
 /// A case compiled for its selected subject OS.
 pub(crate) type LoadedPlan = CasePlan<TypedConfig>;
+
+/// Returns each participant's realization, or the single realization used by a typed case's runner.
+pub(crate) fn realizations(plan: &LoadedPlan) -> Vec<(Option<&str>, Realization)> {
+    match plan.case().schema() {
+        CaseSchema::Participants { .. } => plan
+            .layout()
+            .expect("a participant plan always has a layout")
+            .iter()
+            .map(|(name, realization)| (Some(name), realization))
+            .collect(),
+        CaseSchema::Typed(config) => vec![(None, config.realization(plan.subject_os()))],
+    }
+}
+
+/// Whether the case needs Kubernetes pods and their cluster.
+pub(crate) fn needs_pod(plan: &LoadedPlan) -> bool {
+    realizations(plan)
+        .iter()
+        .any(|(_, realization)| realization.kind == RealizationKind::KubernetesPod)
+}
 
 /// Loads integration, correctness and correctness-matrix files.
 pub(crate) struct TypedConfigLoader;
@@ -213,11 +258,74 @@ mod tests {
     use super::*;
     use crate::config::{
         build_runners, discover_in_scope,
-        tests::{build_case_runners, write_case, PARTICIPANT_FIELDS},
+        tests::{build_case_runners, plan, write_case, CORRECTNESS_FIELDS, PARTICIPANT_FIELDS},
     };
 
-    const CORRECTNESS_FIELDS: &str =
-        "runtime: docker\nanalysis_mode: metrics\nbaseline: {image: 'base:file'}\ncomparison: {image: 'comp:file'}\n";
+    #[test]
+    fn a_participant_case_needs_the_realization_of_every_participant_in_its_layout() {
+        let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[macos]").replace(
+            "  adp:",
+            "  zebra: {type: agent-adp}\n  alpha: {type: agent-adp, os: linux}\n  adp:",
+        );
+        let plan = plan(&yaml, Os::MacOs);
+        assert_eq!(
+            realizations(&plan),
+            vec![
+                (
+                    Some("adp"),
+                    Realization {
+                        os: Os::MacOs,
+                        kind: RealizationKind::HostProcessGroup
+                    }
+                ),
+                (
+                    Some("alpha"),
+                    Realization {
+                        os: Os::Linux,
+                        kind: RealizationKind::LinuxContainer
+                    }
+                ),
+                (
+                    Some("zebra"),
+                    Realization {
+                        os: Os::MacOs,
+                        kind: RealizationKind::HostProcessGroup
+                    }
+                ),
+            ]
+        );
+        assert!(!needs_pod(&plan));
+    }
+
+    #[test]
+    fn typed_cases_need_the_realization_their_runner_creates() {
+        for (os, kind) in [
+            (Os::Linux, RealizationKind::LinuxContainer),
+            (Os::MacOs, RealizationKind::HostProcessGroup),
+            (Os::Windows, RealizationKind::WindowsContainer),
+        ] {
+            let plan = plan(
+                "type: integration\nname: case\ntimeout: 1s\nruntimes: [linux, mac, windows]\nprocedure: []\n",
+                os,
+            );
+            assert_eq!(realizations(&plan), [(None, Realization { os, kind })]);
+            assert!(!needs_pod(&plan));
+        }
+        for (runtime, kind) in [
+            ("docker", RealizationKind::LinuxContainer),
+            ("kubernetes_in_docker", RealizationKind::KubernetesPod),
+        ] {
+            let plan = plan(
+                &format!(
+                    "type: correctness\n{}",
+                    CORRECTNESS_FIELDS.replace("runtime: docker", &format!("runtime: {runtime}"))
+                ),
+                Os::Linux,
+            );
+            assert_eq!(realizations(&plan), [(None, Realization { os: Os::Linux, kind })]);
+            assert_eq!(needs_pod(&plan), kind == RealizationKind::KubernetesPod);
+        }
+    }
 
     #[test]
     fn integration_case_records_its_declared_name_description_timeout_and_subject_os() {

@@ -157,6 +157,22 @@ configuration fields, but the integration runner rejects a case that sets them, 
 `panoramic list` shows each participant case's layout. A case whose layout is invalid on any OS it lists in
 `subject_os` fails discovery for `list` and `run`, whatever runtime is selected.
 
+`--subject-os linux|macos|windows` selects which cases run. It defaults to the OS selected by `--runtime`, then the
+host's OS. Conflicting values exit 2 before discovery. Correctness cases keep their configured runtime.
+
+Before running, `run` checks each distinct realization needed by the selected cases once, without changing their
+layouts:
+
+| Realization | Host requirement |
+| --- | --- |
+| Linux container | A Docker daemon answers and reports Linux containers |
+| Windows container | A Docker daemon answers and reports Windows containers |
+| Host process group | The host runs the participant's OS |
+| Kubernetes pod | The participant runs Linux, `kind` and `docker` are on `PATH`, and a Docker daemon answers and reports Linux containers |
+
+A case whose realization the host can't provide is `errored` with error kind `setup`, appears in `run.json`, and
+makes the run exit 2. `list` never checks host availability.
+
 The source documents each part:
 
 - `bin/correctness/panoramic/core/src/case/file.rs`: the case file's fields and their defaults.
@@ -206,7 +222,7 @@ Exit codes distinguish the run-level result:
 |------|---------|
 | 0 | Every test passed; run completed |
 | 1 | Assertion failure, unless code 2 applies |
-| 2 | Harness error, including a case that fails to load or a case name declared more than once (reported before any test runs, with no `run.json`), a `timed_out` test, or an interrupted run |
+| 2 | Harness error, including a case that fails to load or a case name declared more than once (reported before any test runs, with no `run.json`), a case whose realization this host can't provide, a `timed_out` test, or an interrupted run |
 | 3 | Empty selection or unmatched test name |
 
 An `errored` step couldn't be evaluated. Inspect test `error`, `timeout`, `cause`, and step `message` fields.
