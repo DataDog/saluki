@@ -1,59 +1,36 @@
 use std::{borrow::Borrow, collections::BTreeMap, fmt::Write as _, process::ExitCode};
 
 use panoramic_core::{layout::Os, machine_output::skip_reason};
-use tracing::{error, info};
+use tracing::info;
 
 use crate::{
     cli,
-    collector::EXIT_HARNESS_ERROR,
     config::{
-        build_runners, discover_in_scope, load_planner,
+        build_runners,
         runner_artifacts::RunnerArtifacts,
         typed_case::{layout_entries, LoadedCase, LoadedPlan},
-        BuiltCase, Discovered, NO_TEST_DIRECTORIES,
+        BuiltCase, Discovered,
     },
+    console::{Console, SetupFailure},
+    discovery::{prepare_discovery, Selection},
 };
 
 pub(crate) async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
-    if cmd.test_dirs.is_empty() {
-        error!("{NO_TEST_DIRECTORIES}");
-        return ExitCode::from(EXIT_HARNESS_ERROR);
-    }
-    let subject_os = match cmd.subject_os.resolve() {
-        Ok(os) => os,
-        Err(message) => {
-            error!("{message}");
-            return ExitCode::from(EXIT_HARNESS_ERROR);
-        }
-    };
-    let mut planner = match load_planner(cmd.artifacts.as_deref()) {
-        Ok(planner) => planner,
-        Err(message) => {
-            error!("{message}");
-            return ExitCode::from(EXIT_HARNESS_ERROR);
-        }
-    };
-
-    if !cmd.json {
-        let dirs_str: Vec<_> = cmd.test_dirs.iter().map(|d| d.display().to_string()).collect();
-        info!("Discovering test cases from: {}...", dirs_str.join(", "));
-    }
-
-    let Discovered { plans, excluded } = match discover_in_scope(&mut planner, &cmd.test_dirs, subject_os) {
-        Ok(discovered) => discovered,
-        Err(e) => {
-            error!("Failed to discover tests: {:#}", e);
-            return ExitCode::from(EXIT_HARNESS_ERROR);
-        }
+    let console = Console { use_tui: false };
+    let Selection {
+        subject_os,
+        discovered: Discovered { plans, excluded },
+    } = match prepare_discovery(&cmd.test_dirs, cmd.subject_os.resolve(), cmd.artifacts.as_deref())
+        .and_then(|prepared| prepared.discover_selection(&console, !cmd.json))
+    {
+        Ok(selection) => selection,
+        Err(failure) => return failure.report(&console),
     };
 
     if cmd.json {
         let runners = match build_runners(&plans, subject_os, &RunnerArtifacts::Overrides(&[])) {
             Ok(runners) => runners,
-            Err(e) => {
-                error!("Failed to discover tests: {:#}", e);
-                return ExitCode::from(EXIT_HARNESS_ERROR);
-            }
+            Err(error) => return SetupFailure::discovery(error).report(&console),
         };
         println!(
             "{}",
@@ -211,7 +188,11 @@ mod tests {
     use super::*;
     use crate::{
         cli::{Cli, Command},
-        config::tests::{build_case_runners, planner, write_case, CORRECTNESS_FIELDS, PARTICIPANT_FIELDS},
+        collector::EXIT_HARNESS_ERROR,
+        config::{
+            discover_in_scope, load_planner,
+            tests::{build_case_runners, planner, write_case, CORRECTNESS_FIELDS, PARTICIPANT_FIELDS},
+        },
         REGISTRIES,
     };
 

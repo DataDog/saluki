@@ -2,7 +2,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::Path,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
@@ -80,6 +80,11 @@ impl TypedConfig {
 
 /// A case loaded with this binary's typed schemas.
 pub(crate) type LoadedCase = CaseConfig<TypedConfig>;
+
+/// Directory holding a case's file, reported as `case_path` in `run.json` and `result.json`.
+pub(crate) fn case_dir(case: &LoadedCase) -> PathBuf {
+    case.source().parent().unwrap_or(Path::new("")).to_path_buf()
+}
 
 /// A case compiled for its selected subject OS.
 pub(crate) type LoadedPlan = CasePlan<TypedConfig>;
@@ -859,6 +864,17 @@ mod tests {
         assert_eq!(cases.len(), 1);
         assert_eq!(cases[0].name(), "alias");
         assert_eq!(cases[0].source(), path.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn case_dir_is_the_directory_holding_the_case_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_case(dir.path(), "case", PARTICIPANT_FIELDS);
+        let cases = crate::CASE_LOADER
+            .load_file(&dir.path().join("case/config.yaml"))
+            .unwrap();
+        assert_eq!(cases.len(), 1);
+        assert_eq!(case_dir(&cases[0]), path.parent().unwrap().canonicalize().unwrap());
     }
 
     #[test]

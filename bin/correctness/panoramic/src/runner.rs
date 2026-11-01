@@ -32,7 +32,7 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use crate::config::typed_case::{layout_entries, needs_pod};
+use crate::config::typed_case::{case_dir, layout_entries, needs_pod};
 use crate::test::{RunnerSettings, Test, TestContext};
 use crate::{
     assertions::{AssertionContext, LogBuffer, TargetCommand},
@@ -393,7 +393,7 @@ impl Runner {
         let case = plan.case();
         let name = case.name().to_string();
         let timeout = case.timeout();
-        let case_dir = case.source().parent().unwrap_or(Path::new("")).to_path_buf();
+        let case_path = case_dir(case);
         let started = Instant::now();
 
         // A test-specific token lets a timeout cancel this test without cancelling the run.
@@ -412,7 +412,7 @@ impl Runner {
                 started.elapsed(),
                 vec![],
             );
-            result.case_path = Some(case_dir.clone());
+            result.case_path = Some(case_path.clone());
             result.layout = Some(layout_entries(plan));
 
             // Report setup failures through events so the collector accounts for the selected test.
@@ -491,7 +491,7 @@ impl Runner {
 
         // Stamp the case identity, layout and artifact provenance before reporting the result.
         result.name = case.name().to_string();
-        result.case_path = Some(case_dir.clone());
+        result.case_path = Some(case_path.clone());
         result.layout = Some(layout_entries(plan));
         result.log_dir = Some(log_dir.clone());
 

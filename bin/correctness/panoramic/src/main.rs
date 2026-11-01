@@ -25,6 +25,8 @@ mod correctness;
 use self::cli::{Cli, Command, LogLevel};
 
 mod config;
+mod console;
+mod discovery;
 mod dynamic_vars;
 mod integration;
 mod list_command;
@@ -154,6 +156,80 @@ mod tests {
             tests::{planner, write_case, PARTICIPANT_FIELDS},
         },
     };
+
+    #[tokio::test]
+    async fn run_list_and_artifact_commands_report_the_same_setup_errors_with_exit_2() {
+        use tracing::instrument::WithSubscriber as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cases = dir.path().join("cases");
+        write_case(&cases, "bad", "type: bogus\n");
+        let manifest = dir.path().join("missing.toml");
+        let logs = dir.path().join("logs");
+        for (has_dirs, has_manifest, expected) in [
+            (false, true, discovery::NO_TEST_DIRECTORIES.to_string()),
+            (
+                true,
+                true,
+                format!("failed to read artifact manifest {}:", manifest.display()),
+            ),
+            (true, false, "Failed to discover tests:".to_string()),
+        ] {
+            let mut first_error = None;
+            for command in [
+                vec!["run", "--no-tui", "-l", logs.to_str().unwrap()],
+                vec!["list"],
+                vec!["list", "--json"],
+                vec!["artifacts", "verify"],
+                vec!["artifacts", "pull"],
+            ] {
+                let mut args = vec!["panoramic"];
+                args.extend(command);
+                if has_dirs {
+                    args.extend(["-d", cases.to_str().unwrap()]);
+                }
+                if has_manifest {
+                    args.extend(["--artifacts", manifest.to_str().unwrap()]);
+                }
+                let output = tempfile::NamedTempFile::new().unwrap();
+                let subscriber = tracing_subscriber::fmt()
+                    .with_ansi(false)
+                    .without_time()
+                    .with_target(false)
+                    .with_writer(std::sync::Mutex::new(output.reopen().unwrap()))
+                    .finish();
+                let exit = async {
+                    match Cli::try_parse_from(args).unwrap().command {
+                        Command::Run(cmd) => run_tests(cmd, false).await,
+                        Command::List(cmd) => list_tests(cmd).await,
+                        Command::Artifacts(cmd) => {
+                            let mut report = Vec::new();
+                            let exit = match cmd.command {
+                                cli::ArtifactsSubcommand::Verify(cmd) => {
+                                    artifact_commands::verify(cmd, &mut report).await
+                                }
+                                cli::ArtifactsSubcommand::Pull(cmd) => artifact_commands::pull(cmd, &mut report).await,
+                                cli::ArtifactsSubcommand::Render(_) => panic!("expected verify or pull"),
+                            };
+                            assert!(report.is_empty());
+                            exit
+                        }
+                    }
+                }
+                .with_subscriber(subscriber)
+                .await;
+                let diagnostic = std::fs::read_to_string(output.path()).unwrap();
+                assert_eq!(exit, ExitCode::from(2), "{diagnostic}");
+                assert!(!logs.exists(), "setup errors must precede log directory creation");
+                let error = &diagnostic[diagnostic.find("ERROR ").expect("setup error")..];
+                assert!(error.starts_with(&format!("ERROR {expected}")), "{diagnostic}");
+                match &first_error {
+                    Some(first) => assert_eq!(error, first),
+                    None => first_error = Some(error.to_string()),
+                }
+            }
+        }
+    }
 
     #[tokio::test]
     async fn conflicting_runtime_and_subject_os_exit_2_for_run_list_and_list_json_before_discovery_or_logs() {

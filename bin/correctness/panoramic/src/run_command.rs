@@ -8,20 +8,20 @@ use panoramic_core::machine_output::{revision, RunReport, TestReport, RUN_REPORT
 use panoramic_core::plan::needed_artifacts;
 use tokio::sync::{watch, Mutex};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 use crate::{
     artifact_commands, cli,
-    collector::{
-        self, consume_run, run_teardown, RunCollector, RunDisplay, RunEnd, EXIT_HARNESS_ERROR, EXIT_NO_TESTS_SELECTED,
-    },
+    collector::{self, consume_run, run_teardown, RunCollector, RunDisplay, RunEnd, EXIT_HARNESS_ERROR},
     config::{
-        build_runners, discover_in_scope, load_planner,
+        build_runners,
         runner_artifacts::{BoundArtifacts, RunnerArtifacts},
         runtime_for_os,
-        typed_case::{needs_pod, realizations, LoadedCase},
-        BuiltCase, Discovered, NO_TEST_DIRECTORIES,
+        typed_case::{case_dir, needs_pod, realizations, LoadedCase, LoadedPlan},
+        BuiltCase, Discovered,
     },
+    console::{Console, SetupFailure},
+    discovery::{prepare_discovery, Selection},
     kind::KindLifecycle,
     providability,
     runner::{self, Runner},
@@ -51,50 +51,48 @@ fn retain_selected<T>(cases: &mut Vec<T>, selected: Option<&[String]>, name: imp
     cases.retain(|case| selected.is_none_or(|names| names.iter().any(|selected| selected == name(case))));
 }
 
-pub(crate) async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
-    if cmd.test_dirs.is_empty() {
-        if use_tui {
-            eprintln!("{NO_TEST_DIRECTORIES}");
-        } else {
-            error!("{NO_TEST_DIRECTORIES}");
-        }
-        return ExitCode::from(2);
-    }
+/// Cases and settings ready for reporting and execution.
+struct PreparedRun {
+    subject_os: Os,
+    built: Vec<BuiltCase>,
+    excluded: Vec<LoadedCase>,
+    settings: RunnerSettings,
+    verified: Option<Vec<VerifiedArtifact>>,
+}
 
-    let subject_os = match cmd.subject_os.resolve() {
-        Ok(os) => os,
-        Err(message) => {
-            if use_tui {
-                eprintln!("{message}");
-            } else {
-                error!("{message}");
-            }
-            return ExitCode::from(2);
-        }
-    };
-    let mut planner = match load_planner(cmd.artifacts.as_deref()) {
-        Ok(planner) => planner,
-        Err(e) => {
-            if use_tui {
-                eprintln!("{e}");
-            } else {
-                error!("{e}");
-            }
-            return ExitCode::from(EXIT_HARNESS_ERROR);
-        }
-    };
-    let integration_runtime = runtime_for_os(subject_os);
-    let Discovered { plans, mut excluded } = match discover_in_scope(&mut planner, &cmd.test_dirs, subject_os) {
-        Ok(discovered) => discovered,
-        Err(e) => {
-            if use_tui {
-                eprintln!("Failed to discover tests: {:#}", e);
-            } else {
-                error!("Failed to discover tests: {:#}", e);
-            }
-            return ExitCode::from(EXIT_HARNESS_ERROR);
-        }
-    };
+pub(crate) async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
+    let console = Console { use_tui };
+    match prepare_run(&cmd, &console).await {
+        Ok(prepared) => report_run(prepared, &cmd, &console).await,
+        Err(failure) => failure.report(&console),
+    }
+}
+
+/// Discovers, builds, selects and verifies the cases before starting a run.
+async fn prepare_run(cmd: &cli::RunCommand, console: &Console) -> Result<PreparedRun, SetupFailure> {
+    let Selection {
+        subject_os,
+        discovered: Discovered { plans, mut excluded },
+    } = prepare_discovery(&cmd.test_dirs, cmd.subject_os.resolve(), cmd.artifacts.as_deref())?
+        .discover_selection(console, false)?;
+    let (mut built, settings, artifacts) = build_cases(cmd, subject_os, plans)?;
+    check_legacy_inputs(cmd, subject_os, &built, &settings, &artifacts)?;
+    select_cases(cmd, console, subject_os, &mut built, &mut excluded)?;
+    let unprovidable = check_providability(console, &mut built).await?;
+    let verified = verify_artifacts(cmd, console, subject_os, &built, &unprovidable).await?;
+    Ok(PreparedRun {
+        subject_os,
+        built,
+        excluded,
+        settings,
+        verified,
+    })
+}
+
+/// Builds runners with settings and artifacts resolved from the command.
+fn build_cases(
+    cmd: &cli::RunCommand, subject_os: Os, plans: Vec<LoadedPlan>,
+) -> Result<(Vec<BuiltCase>, RunnerSettings, RunnerArtifacts<'_>), SetupFailure> {
     let mut settings = cmd.runner_settings();
     let artifacts = if cmd.artifacts.is_some() {
         let bound = BoundArtifacts::new(needed_artifacts(&plans));
@@ -103,30 +101,21 @@ pub(crate) async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     } else {
         RunnerArtifacts::Overrides(&cmd.image_overrides)
     };
-    let mut built = match build_runners(plans, subject_os, &artifacts) {
-        Ok(built) => built,
-        Err(e) => {
-            if use_tui {
-                eprintln!("Failed to discover tests: {:#}", e);
-            } else {
-                error!("Failed to discover tests: {:#}", e);
-            }
-            return ExitCode::from(EXIT_HARNESS_ERROR);
-        }
-    };
+    let built = build_runners(plans, subject_os, &artifacts).map_err(SetupFailure::discovery)?;
+    Ok((built, settings, artifacts))
+}
 
-    if let RunnerArtifacts::Bound(bound) = &artifacts {
+/// Checks explicit image and binary inputs against artifact bindings and logs resolved settings.
+fn check_legacy_inputs(
+    cmd: &cli::RunCommand, subject_os: Os, built: &[BuiltCase], settings: &RunnerSettings,
+    artifacts: &RunnerArtifacts<'_>,
+) -> Result<(), SetupFailure> {
+    if let RunnerArtifacts::Bound(bound) = artifacts {
         let runners: Vec<_> = built.iter().map(|built| built.runner.as_ref()).collect();
-        if let Err(e) = bound.check_legacy_inputs(&cmd.legacy_artifact_inputs(), subject_os, &runners) {
-            if use_tui {
-                eprintln!("Failed to discover tests: {:#}", e);
-            } else {
-                error!("Failed to discover tests: {:#}", e);
-            }
-            return ExitCode::from(EXIT_HARNESS_ERROR);
-        }
+        bound
+            .check_legacy_inputs(&cmd.legacy_artifact_inputs(), subject_os, &runners)
+            .map_err(SetupFailure::discovery)?;
     }
-
     debug!(
         adp_binary_path = %settings.adp_binary_path.display(),
         core_agent_binary_path = %settings.core_agent_binary_path.display(),
@@ -134,16 +123,18 @@ pub(crate) async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         alpine_image = %settings.alpine_image,
         "Resolved runner settings."
     );
+    Ok(())
+}
 
+/// Resolves the requested test names and announces cases excluded by the subject OS.
+fn select_cases(
+    cmd: &cli::RunCommand, console: &Console, subject_os: Os, built: &mut Vec<BuiltCase>,
+    excluded: &mut Vec<LoadedCase>,
+) -> Result<(), SetupFailure> {
     if built.is_empty() && excluded.is_empty() {
         let dirs_str: Vec<_> = cmd.test_dirs.iter().map(|d| d.display().to_string()).collect();
         let msg = format!("No test cases found in: {}", dirs_str.join(", "));
-        if use_tui {
-            eprintln!("{}", msg);
-        } else {
-            error!("{}", msg);
-        }
-        return ExitCode::from(2);
+        return Err(SetupFailure::harness(msg));
     }
 
     // Resolve the `-t` selection before doing any work: a name that matches nothing, or a
@@ -163,29 +154,19 @@ pub(crate) async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
                     subject_os.name(),
                     subject_os.name()
                 );
-                if use_tui {
-                    eprintln!("{}", msg);
-                } else {
-                    error!("{}", msg);
-                }
-                return ExitCode::from(EXIT_NO_TESTS_SELECTED);
+                return Err(SetupFailure::no_tests_selected(msg));
             }
             if selected.is_empty() {
                 let msg = "No tests selected. Drop -t, or name at least one test.";
-                if use_tui {
-                    eprintln!("{}", msg);
-                } else {
-                    error!("{}", msg);
-                }
-                return ExitCode::from(EXIT_NO_TESTS_SELECTED);
+                return Err(SetupFailure::no_tests_selected(msg));
             }
             Some(selected)
         }
         None => None,
     };
     // Register only the selected tests so the runner and `run.json` share one selection.
-    retain_selected(&mut built, selected_tests.as_deref(), |built| built.plan.case().name());
-    retain_selected(&mut excluded, selected_tests.as_deref(), LoadedCase::name);
+    retain_selected(built, selected_tests.as_deref(), |built| built.plan.case().name());
+    retain_selected(excluded, selected_tests.as_deref(), LoadedCase::name);
 
     if !excluded.is_empty() {
         let names = excluded.iter().map(LoadedCase::name).collect::<Vec<_>>().join(", ");
@@ -194,44 +175,49 @@ pub(crate) async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
             excluded.len(),
             subject_os.name()
         );
-        if use_tui {
-            eprintln!("{message}");
-        } else {
-            info!("{message}");
-        }
+        console.info(message);
     }
 
+    Ok(())
+}
+
+/// Checks whether the host can provide each selected case's realizations.
+async fn check_providability(
+    console: &Console, built: &mut [BuiltCase],
+) -> Result<BTreeMap<Realization, String>, SetupFailure> {
     let unprovidable = if built.is_empty() {
         BTreeMap::new()
     } else {
-        if use_tui {
-            eprintln!("Checking that this host can provide the selected cases...");
-        } else {
-            info!("Checking that this host can provide the selected cases...");
-        }
-        providability::check(&mut built).await
+        console.info("Checking that this host can provide the selected cases...");
+        providability::check(built).await
     };
-    let verified = if cmd.artifacts.is_some() {
-        let bindings = run_artifacts(&built, &unprovidable);
-        let base = match std::env::current_dir() {
-            Ok(base) => base,
-            Err(error) => {
-                if use_tui {
-                    eprintln!("Cannot read the current directory: {error}");
-                } else {
-                    error!("Cannot read the current directory: {error}");
-                }
-                return ExitCode::from(EXIT_HARNESS_ERROR);
-            }
-        };
-        let Some(verified) = verify_run_artifacts(&bindings, subject_os, &base, use_tui).await else {
-            return ExitCode::from(EXIT_HARNESS_ERROR);
-        };
-        Some(verified)
-    } else {
-        None
-    };
+    Ok(unprovidable)
+}
 
+/// Verifies artifacts for selected cases the host can run when a manifest was supplied.
+async fn verify_artifacts(
+    cmd: &cli::RunCommand, console: &Console, subject_os: Os, built: &[BuiltCase],
+    unprovidable: &BTreeMap<Realization, String>,
+) -> Result<Option<Vec<VerifiedArtifact>>, SetupFailure> {
+    if cmd.artifacts.is_some() {
+        let bindings = run_artifacts(built, unprovidable);
+        let base = std::env::current_dir()
+            .map_err(|error| SetupFailure::harness(format!("Cannot read the current directory: {error}")))?;
+        Ok(Some(verify_run_artifacts(&bindings, subject_os, &base, console).await?))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Creates run reports, executes the cases and returns the run's exit code.
+async fn report_run(prepared: PreparedRun, cmd: &cli::RunCommand, console: &Console) -> ExitCode {
+    let PreparedRun {
+        subject_os,
+        built,
+        excluded,
+        settings,
+        verified,
+    } = prepared;
     // Create log directory.
     let log_dir = match std::path::absolute(cmd.log_dir()) {
         Ok(path) => path,
@@ -241,11 +227,7 @@ pub(crate) async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         }
     };
     if let Err(e) = std::fs::create_dir_all(&log_dir) {
-        if use_tui {
-            eprintln!("Failed to create log directory: {}", e);
-        } else {
-            error!("Failed to create log directory: {}", e);
-        }
+        console.error(format!("Failed to create log directory: {}", e));
         return ExitCode::from(2);
     }
 
@@ -254,20 +236,14 @@ pub(crate) async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     let report = RunReport::new(
         build_revision(),
         cmd.test_dirs.clone(),
-        integration_runtime.to_string(),
+        runtime_for_os(subject_os).to_string(),
         subject_os,
         cmd.parallelism.get(),
         log_dir.clone(),
         built.iter().map(|built| built.plan.case().name().to_string()).collect(),
         excluded
             .into_iter()
-            .map(|case| {
-                TestReport::skipped(
-                    case.name().to_string(),
-                    case.source().parent().unwrap_or(Path::new("")).to_path_buf(),
-                    subject_os,
-                )
-            })
+            .map(|case| TestReport::skipped(case.name().to_string(), case_dir(&case), subject_os))
             .collect(),
     );
     let report = match verified {
@@ -277,16 +253,7 @@ pub(crate) async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     let mut collector = RunCollector::start(report, cmd.fail_fast);
 
     let display_error = if !built.is_empty() {
-        execute(
-            built,
-            settings,
-            &cmd,
-            use_tui,
-            &log_dir,
-            &mut collector,
-            &mut interrupts,
-        )
-        .await
+        execute(built, settings, cmd, console, &log_dir, &mut collector, &mut interrupts).await
     } else {
         collector.finish(Ok(()));
         let message = format!(
@@ -294,11 +261,7 @@ pub(crate) async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
             subject_os.name(),
             log_dir.join(RUN_REPORT_FILE_NAME).display(),
         );
-        if use_tui {
-            eprintln!("{message}");
-        } else {
-            warn!("{message}");
-        }
+        console.warn(message);
         None
     };
 
@@ -324,7 +287,7 @@ pub(crate) async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
 
 /// Runs the selected cases, collects their results and handles kind cluster cleanup.
 async fn execute(
-    built: Vec<BuiltCase>, settings: RunnerSettings, cmd: &cli::RunCommand, use_tui: bool, log_dir: &Path,
+    built: Vec<BuiltCase>, settings: RunnerSettings, cmd: &cli::RunCommand, console: &Console, log_dir: &Path,
     collector: &mut RunCollector, interrupts: &mut Interrupts,
 ) -> Option<std::io::Error> {
     // Create the event channel early so the kind setup task can emit status messages.
@@ -373,7 +336,7 @@ async fn execute(
     let runner_handle = tokio::spawn(async move { registry.run_tests(args).await });
 
     let mut display_error = None;
-    let display = if use_tui {
+    let display = if console.use_tui {
         match tui::Tui::new(log_dir) {
             Ok(tui) => Some(RunDisplay::Tui(tui)),
             Err(e) => {
@@ -402,18 +365,10 @@ async fn execute(
 
     // Tear down the kind cluster unless the caller asked to keep it.
     if kind_rx.is_some() {
-        // The TUI has shut down by now, so its notices go to stderr directly.
-        let notice = |message: String| {
-            if use_tui {
-                eprintln!("{}", message);
-            } else {
-                warn!("{}", message);
-            }
-        };
         let cluster_name = &cmd.kind_cluster_name;
 
         if consumed.end == RunEnd::Abandoned {
-            notice(format!(
+            console.warn(format!(
                 "Skipping kind cluster teardown after a second interrupt. Cluster '{}' may still be running; \
                  delete it with 'kind delete cluster --name {}'.",
                 cluster_name, cluster_name
@@ -428,7 +383,7 @@ async fn execute(
                         cluster_name
                     );
                 } else if let Some(source) = run_teardown(lifecycle.teardown(), collector, interrupts).await {
-                    notice(format!(
+                    console.warn(format!(
                         "Received {}; abandoned kind cluster teardown. A 'kind delete' already started may still \
                          finish. If cluster '{}' is still running, delete it with 'kind delete cluster --name {}'.",
                         source, cluster_name, cluster_name
@@ -436,7 +391,7 @@ async fn execute(
                 }
             } else {
                 // Failed or unfinished setup can leave a cluster behind.
-                notice(format!(
+                console.warn(format!(
                     "Kind cluster setup did not complete successfully. \
                      A kind cluster named '{}' may still be running — run 'kind delete cluster --name {}' to clean it up.",
                     cluster_name, cluster_name
@@ -457,37 +412,24 @@ fn run_artifacts(built: &[BuiltCase], unprovidable: &BTreeMap<Realization, Strin
     }))
 }
 
+/// Reports artifact verification results and returns their verified identities.
 async fn verify_run_artifacts(
-    bindings: &[ArtifactBinding], subject_os: Os, base: &Path, use_tui: bool,
-) -> Option<Vec<VerifiedArtifact>> {
-    if use_tui {
-        eprintln!("Verifying the artifacts the selected cases need…");
-    } else {
-        info!("Verifying the artifacts the selected cases need…");
-    }
+    bindings: &[ArtifactBinding], subject_os: Os, base: &Path, console: &Console,
+) -> Result<Vec<VerifiedArtifact>, SetupFailure> {
+    console.info("Verifying the artifacts the selected cases need…");
     let results = artifact::verify(bindings, base).await;
     let verified = verified_artifacts(&results);
     let report = artifact_commands::verification_text(subject_os, &results, ("Artifacts", "artifacts"));
     let report = report.trim_end();
-    if use_tui {
-        eprintln!("{report}");
-    } else if verified.is_ok() {
-        info!("{report}");
+    if verified.is_ok() {
+        console.info(report);
     } else {
-        error!("{report}");
+        console.error(report);
     }
-    match verified {
-        Ok(verified) => Some(verified),
-        Err(failed) => {
-            let n = bindings.len();
-            if use_tui {
-                eprintln!("{failed} of {n} artifact(s) failed verification.");
-            } else {
-                error!("{failed} of {n} artifact(s) failed verification.");
-            }
-            None
-        }
-    }
+    verified.map_err(|failed| {
+        let n = bindings.len();
+        SetupFailure::harness(format!("{failed} of {n} artifact(s) failed verification."))
+    })
 }
 
 /// Collects the unique images of cases that need Kubernetes pods.
@@ -519,7 +461,12 @@ mod tests {
     use super::*;
     use crate::{
         cli::{Cli, Command},
-        config::tests::{planner, write_case, CORRECTNESS_FIELDS, PARTICIPANT_FIELDS},
+        collector::EXIT_NO_TESTS_SELECTED,
+        config::{
+            discover_in_scope,
+            tests::{planner, write_case, CORRECTNESS_FIELDS, PARTICIPANT_FIELDS},
+        },
+        discovery::NO_TEST_DIRECTORIES,
         list_command::listing,
         test, REGISTRIES,
     };
@@ -906,7 +853,7 @@ mod tests {
         write_executable(&dir.path().join("install/bin/main"));
         for use_tui in [false, true] {
             write_executable(&dir.path().join("present"));
-            let verified = verify_run_artifacts(&bindings, Os::MacOs, dir.path(), use_tui)
+            let verified = verify_run_artifacts(&bindings, Os::MacOs, dir.path(), &Console { use_tui })
                 .await
                 .unwrap();
             assert_eq!(
@@ -927,10 +874,11 @@ mod tests {
                 ])
             );
             std::fs::remove_file(dir.path().join("present")).unwrap();
-            assert_eq!(
-                verify_run_artifacts(&bindings, Os::MacOs, dir.path(), use_tui).await,
-                None
-            );
+            let failure = verify_run_artifacts(&bindings, Os::MacOs, dir.path(), &Console { use_tui })
+                .await
+                .unwrap_err();
+            assert_eq!(failure.exit, ExitCode::from(2));
+            assert_eq!(failure.message, "1 of 2 artifact(s) failed verification.");
         }
     }
 

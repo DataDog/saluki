@@ -662,10 +662,6 @@ where
     Ok(case)
 }
 
-/// Message shown when a command is given no `-d` directories.
-pub(crate) const NO_TEST_DIRECTORIES: &str =
-    "No test directories specified. Use -d <path> to specify one or more directories.";
-
 /// Loads the manifest and validates its roles, returning error messages for the caller to report.
 pub(crate) fn load_planner(artifacts: Option<&Path>) -> Result<Planner<'static>, String> {
     let manifest = artifacts

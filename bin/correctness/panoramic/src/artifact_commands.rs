@@ -18,7 +18,8 @@ use tracing::{error, info};
 use crate::{
     cli::{ArtifactCasesCommand, RenderCommand},
     collector::EXIT_HARNESS_ERROR,
-    config::{discover_in_scope, load_planner, NO_TEST_DIRECTORIES},
+    console::{Console, SetupFailure},
+    discovery::prepare_discovery,
 };
 
 pub(crate) fn render(cmd: RenderCommand) -> ExitCode {
@@ -56,33 +57,22 @@ pub(crate) fn render(cmd: RenderCommand) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn needed_bindings(cmd: &ArtifactCasesCommand) -> Result<(Os, Vec<ArtifactBinding>, PathBuf), ExitCode> {
-    if cmd.test_dirs.is_empty() {
-        error!("{NO_TEST_DIRECTORIES}");
-        return Err(ExitCode::from(EXIT_HARNESS_ERROR));
-    }
-    let subject_os = cmd.subject_os;
-    let mut planner = load_planner(cmd.artifacts.as_deref()).map_err(|message| {
-        error!("{message}");
-        ExitCode::from(EXIT_HARNESS_ERROR)
-    })?;
-    let base = std::env::current_dir().map_err(|error| {
-        error!("Cannot read the current directory: {error}");
-        ExitCode::from(EXIT_HARNESS_ERROR)
-    })?;
-    let directories: Vec<_> = cmd.test_dirs.iter().map(|dir| dir.display().to_string()).collect();
-    info!("Discovering test cases from: {}...", directories.join(", "));
-    let discovered = discover_in_scope(&mut planner, &cmd.test_dirs, subject_os).map_err(|error| {
-        error!("Failed to discover tests: {error:#}");
-        ExitCode::from(EXIT_HARNESS_ERROR)
-    })?;
-    Ok((subject_os, needed_artifacts(&discovered.plans), base))
+fn needed_bindings(cmd: &ArtifactCasesCommand) -> Result<(Os, Vec<ArtifactBinding>, PathBuf), SetupFailure> {
+    let prepared = prepare_discovery(&cmd.test_dirs, Ok(cmd.subject_os), cmd.artifacts.as_deref())?;
+    let base = std::env::current_dir()
+        .map_err(|error| SetupFailure::harness(format!("Cannot read the current directory: {error}")))?;
+    let selection = prepared.discover_selection(&Console { use_tui: false }, true)?;
+    Ok((
+        selection.subject_os,
+        needed_artifacts(&selection.discovered.plans),
+        base,
+    ))
 }
 
 pub(crate) async fn verify(cmd: ArtifactCasesCommand, output: &mut impl Write) -> ExitCode {
     let (subject_os, bindings, base) = match needed_bindings(&cmd) {
         Ok(selection) => selection,
-        Err(exit) => return exit,
+        Err(failure) => return failure.report(&Console { use_tui: false }),
     };
     let results = artifact::verify(&bindings, &base).await;
     if let Err(error) = output.write_all(verification_text(subject_os, &results, ("Artifacts", "artifacts")).as_bytes())
@@ -106,7 +96,7 @@ pub(crate) async fn verify(cmd: ArtifactCasesCommand, output: &mut impl Write) -
 pub(crate) async fn pull(cmd: ArtifactCasesCommand, output: &mut impl Write) -> ExitCode {
     let (subject_os, bindings, _) = match needed_bindings(&cmd) {
         Ok(selection) => selection,
-        Err(exit) => return exit,
+        Err(failure) => return failure.report(&Console { use_tui: false }),
     };
     let results = artifact::pull(&bindings).await;
     if let Err(error) = output.write_all(verification_text(subject_os, &results, ("Images", "images")).as_bytes()) {
@@ -157,7 +147,10 @@ mod tests {
     use tracing::instrument::WithSubscriber as _;
 
     use super::*;
-    use crate::config::tests::{planner, write_case, CORRECTNESS_FIELDS, PARTICIPANT_FIELDS};
+    use crate::config::{
+        discover_in_scope,
+        tests::{planner, write_case, CORRECTNESS_FIELDS, PARTICIPANT_FIELDS},
+    };
 
     #[derive(Clone, Copy)]
     enum Subcommand {
