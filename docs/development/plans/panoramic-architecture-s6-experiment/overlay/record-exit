@@ -1,0 +1,7 @@
+foreground {
+  importas -i P PANORAMIC_PARTICIPANT
+  backtick -n T { date +%s.%N }
+  importas -u T T
+  redirfd -a 1 /airlock/${P}/exit/@SERVICE@
+  echo ${1} ${2} ${T}
+}

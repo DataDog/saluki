@@ -1,0 +1,3 @@
+#!/usr/bin/execlineb -P
+importas -i P PANORAMIC_PARTICIPANT
+tee -a /airlock/${P}/log/@PROCESS@.log

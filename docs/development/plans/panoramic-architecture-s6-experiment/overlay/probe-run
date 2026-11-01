@@ -1,0 +1,4 @@
+#!/usr/bin/execlineb -P
+foreground { echo panoramic-probe-stdout }
+foreground { fdmove -c 1 2 echo panoramic-probe-stderr }
+sleep 3600

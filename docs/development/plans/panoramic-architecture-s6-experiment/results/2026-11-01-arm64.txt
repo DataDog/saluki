@@ -1,0 +1,211 @@
+S6 overlay experiment: 2026-11-01, Linux arm64 daemon, macOS client
+
+Manual command (not script output; provenance):
+$ DOCKER_HOST="unix://$HOME/.lima/docker/sock/docker.sock" ./s6-experiment.sh provenance
+Script output:
+PULL registry.datadoghq.com/agent:7.85.0-rc.5-full
+IMAGE pinned ref=registry.datadoghq.com/agent:7.85.0-rc.5-full id=sha256:8d1549cd677fb1709d2f2068941b209b581760265d8e48d42ccf0ee2dee20bfa digests=['registry.datadoghq.com/agent@sha256:8d1549cd677fb1709d2f2068941b209b581760265d8e48d42ccf0ee2dee20bfa']
+LABEL pinned org.opencontainers.image.version=7.85.0-rc.5
+LABEL pinned org.opencontainers.image.revision=91d6d45b852f3742eec574bbc722b1606dd96223
+SHA256 pinned /etc/services.d/agent/finish 821d7b4cde8cc4b671c64e5755e1d464579fc973eddcda76f7a6528a22d50968
+SHA256 pinned /etc/s6/init/init-stage2 272e091c9edbe4adea224eae4dd6a939ba7c078a0f0dc7df224fe17ea3c46316
+SHA256 pinned /etc/s6/init/init-stage3 ea2d995df5a28709b2a040d2a212ebaa1e351c8233cc26cd4803fdc6df52d2b3
+IMAGE subject ref=saluki-images/datadog-agent:testing-devel id=sha256:d414eb1d21a8a55c934f783a22a88ea45359cde555b084a28821e22adf1b0f3f digests=['saluki-images/datadog-agent@sha256:d414eb1d21a8a55c934f783a22a88ea45359cde555b084a28821e22adf1b0f3f', 'local.dev/saluki-images/datadog-agent@sha256:d414eb1d21a8a55c934f783a22a88ea45359cde555b084a28821e22adf1b0f3f']
+LABEL subject org.opencontainers.image.version=7.83.3
+LABEL subject org.opencontainers.image.revision=8c639c92581e6f5da73f90f1886b21b9a2441bca
+SHA256 subject /etc/services.d/agent/finish 821d7b4cde8cc4b671c64e5755e1d464579fc973eddcda76f7a6528a22d50968
+SHA256 subject /etc/s6/init/init-stage2 272e091c9edbe4adea224eae4dd6a939ba7c078a0f0dc7df224fe17ea3c46316
+SHA256 subject /etc/s6/init/init-stage3 ea2d995df5a28709b2a040d2a212ebaa1e351c8233cc26cd4803fdc6df52d2b3
+SHA256 subject /etc/services.d/data-plane/finish 31fcf575e37410af632678e695c670ea686f2c78691182b58d9e93467db82967
+PASS provenance hashes match for /etc/services.d/agent/finish
+PASS provenance hashes match for /etc/s6/init/init-stage2
+PASS provenance hashes match for /etc/s6/init/init-stage3
+COPY_DATE 2026-11-01
+PASS provenance removes the image it pulled
+PASS cleanup leaves no labelled containers or volumes
+  containers=[] volumes=[] errors=[]
+
+Manual command (not script output; first run):
+$ DOCKER_HOST="unix://$HOME/.lima/docker/sock/docker.sock" ./s6-experiment.sh run
+Script output:
+IMAGE saluki-images/datadog-agent:testing-devel sha256:d414eb1d21a8a55c934f783a22a88ea45359cde555b084a28821e22adf1b0f3f version=7.83.3
+IMAGE alpine:latest sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a version=None
+DAEMON {"Version": "29.4.2", "ApiVersion": "1.54", "Os": "linux", "Arch": "arm64", "KernelVersion": "6.8.0-147-generic"}
+SCENARIO S1
+PASS S1 image data-plane finish matches the repository body
+PASS S1 active data-plane finish has the record prefix and shipped body byte for byte
+PASS S1 active agent finish has the record prefix and shipped body byte for byte
+  exit file excerpt: 1 0 1793575399.986598661; 1 0 1793575402.218479995; 1 0 1793575404.449316954
+PASS S1 an ADP exit with code 1 appends a record before the shipped finish body runs
+  records=[(1, 0, 1793575399.9865987), (1, 0, 1793575402.21848), (1, 0, 1793575404.449317)]; finish_log_times=[1793575399.987547, 1793575402.219449, 1793575404.450362]
+PASS S1 ADP is restarted about two seconds after each nonzero exit
+  record_to_start=[2.0034892559051514, 2.004804849624634, 2.006535053253174, 2.0048656463623047, 2.003812789916992, 2.003366231918335, 2.013925075531006]
+MEASURE restart_interval_seconds_median 2.246960
+MEASURE shipped_finish_seconds_median 2.004805
+PASS S1 adp.log grows while the container log still shows the same ADP lines
+  bytes=2851->11916; shared_stdout=['2026-11-01 23:23:19 UTC | DATAPLANE | ERROR | (lib/agent-data-plane-config-system/src/compatibility.rs:59) | key:"heroku_dyno" | Unsupported configuration key with non-default value. ADP cannot run safely with this setting.']
+PASS S1 agent.log grows while the container log still shows the same Agent lines
+  bytes=20817->27909; shared_stdout=["2026-11-01 23:23:17 UTC | CORE | INFO | (pkg/util/log/log.go:739 in func1) | Using '/opt/datadog-agent/embedded' as Python home"]
+  container stderr lines=0
+SKIP S1 adp.log contains ADP's stdout and not container stderr (container stderr empty; see S4)
+PASS S1 adp.log also contains the run and finish scripts' own log lines
+  hold the crash-loop process alive until stop: paused_pid=138955
+PASS S1 stopping the container while ADP is running appends a signal record
+  before_stop=1793575423.210231066; last_record=(256, 15, 1793575423.8014927); container_exit=0
+MEASURE stop_seconds_crash_loop_held 2.621496
+PASS S1 exit records and process logs are readable from the stopped container
+SCENARIO S2
+PASS S2 image data-plane finish matches the repository body
+PASS S2 active data-plane finish has the record prefix and shipped body byte for byte
+PASS S2 active agent finish has the record prefix and shipped body byte for byte
+  healthy=up (pid 139678) 21 seconds
+  ADP version line: 2026-11-01 23:23:52 UTC | DATAPLANE | INFO | (bin/agent-data-plane/src/cli/run.rs:99) | version:"1.7.0",git_hash:"596b2d9302",target_arch:"aarch64-unknown-linux-gnu",build_time:"0000-00-00 00:00:00",process_id:139678 | Agent Data Plane starting...
+PASS S2 SIGKILL to ADP records 256 9 and s6 restarts it with a new pid
+  record=(256, 9, 1793575457.1773634); pid=139678->140858
+MEASURE kill_to_record_seconds 0.004039
+  restarted=up (pid 140858) 20 seconds
+PASS S2 SIGTERM to a started ADP records its exit code and the shipped finish disables the service when the code is 0
+  record=(0, 0, 1793575483.8452091); down (exitcode 0) 12 seconds, normally up, ready 12 seconds; up,wantedup=false false; records unchanged for 10 s
+  re-enabled for Agent-exit shutdown=up (pid 141475) 2 seconds
+  stopped data-plane records: 256 9 1793575457.177363434; 0 0 1793575483.845209187; 0 0 1793575504.977490309
+  stopped agent records: 256 9 1793575504.010368579
+PASS S2 SIGKILL to the Agent records 256 9 for agent and the container stops itself
+  agent=(256, 9, 1793575504.0103686); container_exit=0; data-plane=(0, 0, 1793575504.9774904)
+PASS S2 records are readable after the container stopped itself
+SCENARIO S3
+PASS S3 image data-plane finish matches the repository body
+INFO S3 data-plane finish replaced by timeout variant
+PASS S3 active agent finish has the record prefix and shipped body byte for byte
+PASS S3 a finish script that overruns is killed and ADP is restarted, and its record is kept
+  first_record=(1, 0, 1793575514.5076458); timeout-finish=absent; record_to_next_start=5.016939
+MEASURE finish_timeout_seconds 5.016939
+MEASURE finish_margin_seconds 3.012134
+  Exit-to-record is bounded above by S2 kill-to-record; no independent process-exit timestamp is available.
+SCENARIO S4
+PASS S4 image data-plane finish matches the repository body
+PASS S4 active data-plane finish has the record prefix and shipped body byte for byte
+PASS S4 active agent finish has the record prefix and shipped body byte for byte
+PASS S4 s6 pipes only stdout to a service logger
+  probe.log='panoramic-probe-stdout'; container stderr contains panoramic-probe-stderr
+PASS S4 redirecting stderr in the run script sends both streams to the logger
+  probe-merged.log='panoramic-probe-merged-stdout\npanoramic-probe-merged-stderr'
+SCENARIO S5
+PASS S5 image data-plane finish matches the repository body
+PASS S5 active data-plane finish has the record prefix and shipped body byte for byte
+PASS S5 active agent finish has the record prefix and shipped body byte for byte
+  healthy=up (pid 144702) 3 seconds
+PASS S5 a failed record write does not change restart behaviour
+  pid=144702->145297; kill_to_start=2.010318; stderr=['redirfd: fatal: unable to open /airlock/adp/exit/data-plane: No such file or directory']
+PASS S5 record-write errors reach container stderr only
+  adp.log excludes ['redirfd: fatal: unable to open /airlock/adp/exit/data-plane: No such file or directory']
+SCENARIO S6
+PASS S6 image data-plane finish matches the repository body
+PASS S6 active data-plane finish has the record prefix and shipped body byte for byte
+PASS S6 active agent finish has the record prefix and shipped body byte for byte
+  healthy before container stop=up (pid 146164) 21 seconds
+  healthy-stop data-plane records: 0 0 1793575580.715239971
+  healthy-stop agent records: 0 0 1793575579.803814218
+PASS S6 stopping a healthy container records clean exits for ADP and Agent
+  before_stop=1793575578.986683846; container_exit=0
+MEASURE stop_seconds_healthy 2.594804
+PASS cleanup leaves no labelled containers or volumes
+  containers=[] volumes=[] errors=[]
+
+Manual command (not script output; second consecutive run):
+$ DOCKER_HOST="unix://$HOME/.lima/docker/sock/docker.sock" ./s6-experiment.sh run
+Script output:
+IMAGE saluki-images/datadog-agent:testing-devel sha256:d414eb1d21a8a55c934f783a22a88ea45359cde555b084a28821e22adf1b0f3f version=7.83.3
+IMAGE alpine:latest sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a version=None
+DAEMON {"Version": "29.4.2", "ApiVersion": "1.54", "Os": "linux", "Arch": "arm64", "KernelVersion": "6.8.0-147-generic"}
+SCENARIO S1
+PASS S1 image data-plane finish matches the repository body
+PASS S1 active data-plane finish has the record prefix and shipped body byte for byte
+PASS S1 active agent finish has the record prefix and shipped body byte for byte
+  exit file excerpt: 1 0 1793575631.274329308; 1 0 1793575633.539525870; 1 0 1793575635.778228871
+PASS S1 an ADP exit with code 1 appends a record before the shipped finish body runs
+  records=[(1, 0, 1793575631.2743294), (1, 0, 1793575633.539526), (1, 0, 1793575635.7782288)]; finish_log_times=[1793575631.275404, 1793575633.540444, 1793575635.779224]
+PASS S1 ADP is restarted about two seconds after each nonzero exit
+  record_to_start=[2.0162546634674072, 2.003504991531372, 2.004855155944824, 2.0033674240112305, 2.0042929649353027, 2.014320135116577, 2.007796049118042]
+MEASURE restart_interval_seconds_median 2.238703
+MEASURE shipped_finish_seconds_median 2.004855
+PASS S1 adp.log grows while the container log still shows the same ADP lines
+  bytes=2851->11916; shared_stdout=['2026-11-01 23:27:11 UTC | DATAPLANE | ERROR | (lib/agent-data-plane-config-system/src/compatibility.rs:59) | key:"heroku_dyno" | Unsupported configuration key with non-default value. ADP cannot run safely with this setting.']
+PASS S1 agent.log grows while the container log still shows the same Agent lines
+  bytes=21841->29281; shared_stdout=["2026-11-01 23:27:09 UTC | CORE | INFO | (pkg/util/log/log.go:739 in func1) | Using '/opt/datadog-agent/embedded' as Python home"]
+  container stderr lines=0
+SKIP S1 adp.log contains ADP's stdout and not container stderr (container stderr empty; see S4)
+PASS S1 adp.log also contains the run and finish scripts' own log lines
+  hold the crash-loop process alive until stop: paused_pid=149166
+PASS S1 stopping the container while ADP is running appends a signal record
+  before_stop=1793575654.167342186; last_record=(256, 15, 1793575654.7075002); container_exit=0
+MEASURE stop_seconds_crash_loop_held 2.559292
+PASS S1 exit records and process logs are readable from the stopped container
+SCENARIO S2
+PASS S2 image data-plane finish matches the repository body
+PASS S2 active data-plane finish has the record prefix and shipped body byte for byte
+PASS S2 active agent finish has the record prefix and shipped body byte for byte
+  healthy=up (pid 149889) 20 seconds
+  ADP version line: 2026-11-01 23:27:42 UTC | DATAPLANE | INFO | (bin/agent-data-plane/src/cli/run.rs:99) | version:"1.7.0",git_hash:"596b2d9302",target_arch:"aarch64-unknown-linux-gnu",build_time:"0000-00-00 00:00:00",process_id:149889 | Agent Data Plane starting...
+PASS S2 SIGKILL to ADP records 256 9 and s6 restarts it with a new pid
+  record=(256, 9, 1793575686.2667146); pid=149889->151090
+MEASURE kill_to_record_seconds 0.003883
+  restarted=up (pid 151090) 20 seconds
+PASS S2 SIGTERM to a started ADP records its exit code and the shipped finish disables the service when the code is 0
+  record=(0, 0, 1793575712.851001); down (exitcode 0) 12 seconds, normally up, ready 12 seconds; up,wantedup=false false; records unchanged for 10 s
+  re-enabled for Agent-exit shutdown=up (pid 151708) 2 seconds
+  stopped data-plane records: 256 9 1793575686.266714567; 0 0 1793575712.851001104; 0 0 1793575733.995839864
+  stopped agent records: 256 9 1793575733.154521359
+PASS S2 SIGKILL to the Agent records 256 9 for agent and the container stops itself
+  agent=(256, 9, 1793575733.1545215); container_exit=0; data-plane=(0, 0, 1793575733.9958398)
+PASS S2 records are readable after the container stopped itself
+SCENARIO S3
+PASS S3 image data-plane finish matches the repository body
+INFO S3 data-plane finish replaced by timeout variant
+PASS S3 active agent finish has the record prefix and shipped body byte for byte
+PASS S3 a finish script that overruns is killed and ADP is restarted, and its record is kept
+  first_record=(1, 0, 1793575743.6411831); timeout-finish=absent; record_to_next_start=5.013507
+MEASURE finish_timeout_seconds 5.013507
+MEASURE finish_margin_seconds 3.008652
+  Exit-to-record is bounded above by S2 kill-to-record; no independent process-exit timestamp is available.
+SCENARIO S4
+PASS S4 image data-plane finish matches the repository body
+PASS S4 active data-plane finish has the record prefix and shipped body byte for byte
+PASS S4 active agent finish has the record prefix and shipped body byte for byte
+PASS S4 s6 pipes only stdout to a service logger
+  probe.log='panoramic-probe-stdout'; container stderr contains panoramic-probe-stderr
+PASS S4 redirecting stderr in the run script sends both streams to the logger
+  probe-merged.log='panoramic-probe-merged-stdout\npanoramic-probe-merged-stderr'
+SCENARIO S5
+PASS S5 image data-plane finish matches the repository body
+PASS S5 active data-plane finish has the record prefix and shipped body byte for byte
+PASS S5 active agent finish has the record prefix and shipped body byte for byte
+  healthy=up (pid 154929) 3 seconds
+PASS S5 a failed record write does not change restart behaviour
+  pid=154929->155539; kill_to_start=2.007652; stderr=['redirfd: fatal: unable to open /airlock/adp/exit/data-plane: No such file or directory']
+PASS S5 record-write errors reach container stderr only
+  adp.log excludes ['redirfd: fatal: unable to open /airlock/adp/exit/data-plane: No such file or directory']
+SCENARIO S6
+PASS S6 image data-plane finish matches the repository body
+PASS S6 active data-plane finish has the record prefix and shipped body byte for byte
+PASS S6 active agent finish has the record prefix and shipped body byte for byte
+  healthy before container stop=up (pid 156363) 21 seconds
+  healthy-stop data-plane records: 0 0 1793575808.932571363
+  healthy-stop agent records: 0 0 1793575808.232153144
+PASS S6 stopping a healthy container records clean exits for ADP and Agent
+  before_stop=1793575807.241737843; container_exit=0
+MEASURE stop_seconds_healthy 2.617291
+PASS cleanup leaves no labelled containers or volumes
+  containers=[] volumes=[] errors=[]
+
+Manual checks (not script output)
+$ export DOCKER_HOST="unix://$HOME/.lima/docker/sock/docker.sock"
+$ IMAGE=panoramic-s6-missing-image:must-not-pull ./s6-experiment.sh run
+Observed: exit 1; Missing image panoramic-s6-missing-image:must-not-pull; cleanup reports containers=[] volumes=[]
+$ FIXUP_IMAGE=panoramic-s6-missing-image:must-not-pull ./s6-experiment.sh run
+Observed: exit 1; Missing image panoramic-s6-missing-image:must-not-pull; cleanup reports containers=[] volumes=[]
+$ curl -fsS --unix-socket "${DOCKER_HOST#unix://}" -G --data-urlencode 'filters={"label":["panoramic.experiment=s6"]}' --data-urlencode all=1 http://d/containers/json
+Observed: []
+$ curl -fsS --unix-socket "${DOCKER_HOST#unix://}" -G --data-urlencode 'filters={"label":["panoramic.experiment=s6"]}' http://d/volumes
+Observed: {"Volumes": [], "Warnings": null}
+$ python3 -c 'import hashlib,pathlib; print(hashlib.sha256(pathlib.Path("upstream/agent-finish").read_bytes()).hexdigest())'
+Observed: 821d7b4cde8cc4b671c64e5755e1d464579fc973eddcda76f7a6528a22d50968
