@@ -41,8 +41,8 @@
     - target/release/panoramic artifacts pull -d $(pwd)/test/correctness/cases --subject-os linux --artifacts target/panoramic-artifacts.toml
     - target/release/panoramic run -d $(pwd)/test/correctness/cases -t ${CORRECTNESS_TEST_CASE} --subject-os linux --artifacts target/panoramic-artifacts.toml --no-tui
 
-# Added when the test's config.yaml names a saluki-images/ baseline (a
-# placeholder valid only locally). Replaces it with the CI-built image.
+# Added when the case needs agent-adp-linux-image. The manifest binds that role
+# for baseline and comparison; this override must agree with it.
 #
 # `extends` merges variables one key at a time, so this restates the whole
 # override list rather than adding the baseline to it.

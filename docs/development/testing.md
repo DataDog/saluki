@@ -395,10 +395,13 @@ instead. Each row also has:
 
 - `layout`: a list of `{participant, type, os, realization}` in participant-name order. `type` names the participant
   type, `os` is `linux`, `macos` or `windows`, and `realization` is `linux-container`, `windows-container`,
-  `host-process-group` or `kubernetes-pod`. Skipped cases, and cases with a top-level `type`, have `layout: null`.
+  `host-process-group` or `kubernetes-pod`. Cases with a top-level `type` have one entry with `participant` and
+  `type` set to `null`, giving the realization their runner uses. Only skipped cases have `layout: null`.
 - `roles`: a list of `{role, kind, reference, source}` in role-name order. `kind` is `image`, `binary` or `install`;
   `source` is `manifest` or `local_default`. A runnable case needing no roles has an empty list;
   a skipped case has `roles: null` because it wasn't planned for this OS.
+
+The correctness CI generator reads `status`, `layout[].realization` and `roles` to select jobs and their templates.
 
 Before running, `run` checks each distinct realization needed by the selected cases once, without changing their
 layouts:
@@ -484,8 +487,9 @@ each step. Check `issues` even on passes; they don't change `outcome`. Open repo
 
 Each `run.json` entry in `tests[]` and each `result.json` contains `layout`, using the same
 `{participant, type, os, realization}` entries as `list --json`. It records the planned layout even when setup
-fails, including when the host can't provide a realization. Skipped cases, and cases with a top-level `type`,
-have `layout: null`. Run-level `artifacts` in `run.json` records the bindings and identities verified before cases
+fails, including when the host can't provide a realization. Cases with a top-level `type` have one entry with
+`participant` and `type` set to `null`, giving the realization their runner uses. Only skipped cases have
+`layout: null`. Run-level `artifacts` in `run.json` records the bindings and identities verified before cases
 started, or `null` when the run didn't verify artifacts.
 
 Follow report types in `bin/correctness/panoramic/core/src/machine_output.rs` for semantics. For precedence rules, see

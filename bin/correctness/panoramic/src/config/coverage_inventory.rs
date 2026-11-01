@@ -17,6 +17,7 @@ use std::{
 use panoramic_core::case::CaseSchema;
 use panoramic_core::layout::Os;
 use panoramic_core::plan::Compiled;
+use panoramic_participants::AgentAdp;
 use saluki_error::{generic_error, GenericError};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -143,7 +144,7 @@ impl Steps {
 impl Row {
     fn from_case(
         root: &Path, case: &LoadedCase, runner: &dyn Test, subject_os: &str, status: &'static str,
-        schemas: &BTreeMap<String, String>,
+        schemas: &BTreeMap<String, String>, listed: &Value,
     ) -> Self {
         let source = relative_path(root, case.source());
         let schema = match case.schema() {
@@ -166,12 +167,12 @@ impl Row {
             ci_jobs: Vec::new(),
             ci_mixins: Vec::new(),
         };
-        row.assign_ci();
+        row.assign_ci(listed);
         row
     }
 
     /// Assigns the jobs and templates selected by the GitLab definitions and correctness pipeline generator.
-    fn assign_ci(&mut self) {
+    fn assign_ci(&mut self, listed: &Value) {
         if self.status == DISABLED {
             return;
         }
@@ -187,21 +188,31 @@ impl Row {
             (CORRECTNESS, "linux") => {
                 self.ci_jobs
                     .push(format!("test-correctness-{}", self.name.replace('/', "-")));
-                self.ci_mixins.push(
-                    if self.runtime == "kubernetes_in_docker" {
-                        ".test-correctness-kind-definition"
-                    } else {
-                        ".test-correctness-definition"
-                    }
-                    .to_string(),
-                );
-                if self.images["baseline"].starts_with("saluki-images/") {
-                    self.ci_mixins.push(".test-correctness-adp-baseline".to_string());
-                }
+                self.ci_mixins = correctness_ci_mixins(listed);
             }
             key => panic!("No CI mapping for {key:?}"),
         }
     }
+}
+
+/// Chooses correctness job templates from a `list --json` row, mirroring ci/tooling/generate-correctness-pipeline.sh.
+fn correctness_ci_mixins(listed: &Value) -> Vec<String> {
+    assert_eq!(listed["status"], "runnable", "a correctness CI row must be runnable");
+    let layout = listed["layout"]
+        .as_array()
+        .expect("a runnable row must have a layout array");
+    let roles = listed["roles"]
+        .as_array()
+        .expect("a runnable row must have a roles array");
+    let mut mixins = vec![if layout.iter().any(|entry| entry["realization"] == "kubernetes-pod") {
+        ".test-correctness-kind-definition".to_string()
+    } else {
+        ".test-correctness-definition".to_string()
+    }];
+    if roles.iter().any(|entry| entry["role"] == AgentAdp::LINUX_IMAGE.name) {
+        mixins.push(".test-correctness-adp-baseline".to_string());
+    }
+    mixins
 }
 
 impl Inventory {
@@ -241,7 +252,9 @@ impl Inventory {
                     Compiled::Excluded(_) => None,
                 })
                 .collect();
-            for built in build_runners(plans, os, &RunnerArtifacts::Overrides(&[])).unwrap() {
+            let built = build_runners(plans, os, &RunnerArtifacts::Overrides(&[])).unwrap();
+            let listed = crate::listing(&built, &[], os);
+            for built in built {
                 let case = built.plan.case();
                 let status = if case.is_disabled() { DISABLED } else { SELECTED };
                 rows.push(Row::from_case(
@@ -251,6 +264,7 @@ impl Inventory {
                     os.name(),
                     status,
                     &schemas,
+                    &listed[case.name()],
                 ));
             }
         }
@@ -934,7 +948,54 @@ fn missing_line_returns_the_first_pinned_line_absent_after_its_predecessor() {
 }
 
 #[test]
-fn every_selected_correctness_case_extends_the_ci_baseline_mixin() {
+fn correctness_ci_mixins_follow_the_listed_realization_and_roles() {
+    for (realization, roles, expected) in [
+        (
+            "linux-container",
+            json!([{"role": "agent-adp-linux-image"}]),
+            vec![".test-correctness-definition", ".test-correctness-adp-baseline"],
+        ),
+        (
+            "kubernetes-pod",
+            json!([{"role": "tools-linux-image"}, {"role": "agent-adp-linux-image"}]),
+            vec![".test-correctness-kind-definition", ".test-correctness-adp-baseline"],
+        ),
+        (
+            "linux-container",
+            json!([{"role": "tools-linux-image"}]),
+            vec![".test-correctness-definition"],
+        ),
+        ("kubernetes-pod", json!([]), vec![".test-correctness-kind-definition"]),
+    ] {
+        let listed = json!({
+            "status": "runnable",
+            "layout": [{"realization": "linux-container"}, {"realization": realization}],
+            "roles": roles,
+        });
+        assert_eq!(correctness_ci_mixins(&listed), expected, "{listed}");
+    }
+}
+
+#[test]
+#[should_panic(expected = "a runnable row must have a layout array")]
+fn correctness_ci_mixins_reject_a_listed_row_without_a_layout() {
+    correctness_ci_mixins(&json!({"status": "runnable", "layout": null, "roles": []}));
+}
+
+#[test]
+#[should_panic(expected = "a runnable row must have a roles array")]
+fn correctness_ci_mixins_reject_a_listed_row_without_roles() {
+    correctness_ci_mixins(&json!({"status": "runnable", "layout": [], "roles": null}));
+}
+
+#[test]
+#[should_panic(expected = "a correctness CI row must be runnable")]
+fn correctness_ci_mixins_reject_a_skipped_row() {
+    correctness_ci_mixins(&json!({"status": "skipped", "layout": null, "roles": null}));
+}
+
+#[test]
+fn every_selected_correctness_case_declares_a_local_baseline_image() {
     let inventory = Inventory::generate(&repository_root());
     for row in inventory
         .rows
@@ -942,8 +1003,15 @@ fn every_selected_correctness_case_extends_the_ci_baseline_mixin() {
         .filter(|row| row.suite == CORRECTNESS && row.status == SELECTED)
     {
         assert!(
-            row.ci_mixins.iter().any(|mixin| mixin == ".test-correctness-adp-baseline"),
-            "{}: CI's manifest binds both baseline and comparison to the bundled image, so a published baseline would be replaced; use a saluki-images/ baseline to extend .test-correctness-adp-baseline",
+            row.images["baseline"].starts_with("saluki-images/"),
+            "{}: CI's manifest binds both baseline and comparison to agent-adp-linux-image, so a published baseline would be silently replaced; declare a saluki-images/ baseline",
+            row.name,
+        );
+        assert!(
+            row.ci_mixins
+                .iter()
+                .any(|mixin| mixin == ".test-correctness-adp-baseline"),
+            "{} must extend .test-correctness-adp-baseline",
             row.name,
         );
     }
@@ -1107,10 +1175,12 @@ fn ci_jobs_in_the_inventory_are_defined() {
     for rule in [
         "set -euo pipefail",
         list_rule,
-        "if [[ \"${runtime}\" == \"kubernetes_in_docker\" ]]; then",
+        r#"| jq -r 'to_entries[] | select(if .value.status == "skipped" then false elif .value.status == "runnable" then true else error("unknown status for \(.key)") end) | "\(.key)\t\(any(.value.layout[]; .realization == "kubernetes-pod"))\t\(any(.value.roles[]; .role == "agent-adp-linux-image"))"'"#,
+        r#"| while IFS=$'\t' read -r case pod agent_adp_image; do"#,
+        r#"if [[ "${pod}" == "true" ]]; then"#,
         "base_mixin=\".test-correctness-kind-definition\"",
         "base_mixin=\".test-correctness-definition\"",
-        "if [[ \"${baseline}\" == saluki-images/* ]]; then",
+        r#"if [[ "${agent_adp_image}" == "true" ]]; then"#,
         "extends=\"[${base_mixin}, .test-correctness-adp-baseline]\"",
         "extends=\"[${base_mixin}]\"",
         r#"job_name="${case//\//-}""#,

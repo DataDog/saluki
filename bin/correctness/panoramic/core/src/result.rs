@@ -381,7 +381,8 @@ pub struct TestResult {
     pub issues: Vec<Issue>,
     /// Directory the test case was loaded from. Set by the runner.
     pub case_path: Option<PathBuf>,
-    /// Participant layout of the plan the test ran from. Set by the runner.
+    /// Planned layout, set by the runner even when setup fails. Cases with a top-level `type` have one entry
+    /// without a participant; only skipped cases are reported with a null layout.
     pub layout: Option<Vec<LayoutEntry>>,
     /// Directory this test's artifacts were written to. Set by the runner.
     pub log_dir: Option<PathBuf>,

@@ -274,7 +274,7 @@ impl<C> CasePlan<C> {
     }
 
     /// Reports each participant's type, OS and realization in name order.
-    /// Cases with a top-level `type` report `None`.
+    /// Returns `None` for cases with a top-level `type`, which declare no participants.
     pub fn layout_entries(&self) -> Option<Vec<LayoutEntry>> {
         let CaseSchema::Participants { file, .. } = self.case.schema() else {
             return None;
@@ -284,8 +284,8 @@ impl<C> CasePlan<C> {
                 .as_ref()?
                 .iter()
                 .map(|(name, realization)| LayoutEntry {
-                    participant: name.to_string(),
-                    participant_type: file.participants[name].participant_type.clone(),
+                    participant: Some(name.to_string()),
+                    participant_type: Some(file.participants[name].participant_type.clone()),
                     os: realization.os,
                     realization: realization.kind,
                 })
@@ -433,14 +433,14 @@ mod tests {
             plan.layout_entries(),
             Some(vec![
                 LayoutEntry {
-                    participant: "server".into(),
-                    participant_type: "server".into(),
+                    participant: Some("server".into()),
+                    participant_type: Some("server".into()),
                     os: Os::Linux,
                     realization: RealizationKind::LinuxContainer,
                 },
                 LayoutEntry {
-                    participant: "z-caller".into(),
-                    participant_type: "client".into(),
+                    participant: Some("z-caller".into()),
+                    participant_type: Some("client".into()),
                     os: Os::MacOs,
                     realization: RealizationKind::HostProcessGroup,
                 },

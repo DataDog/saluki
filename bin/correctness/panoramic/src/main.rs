@@ -45,7 +45,7 @@ use self::config::{
     build_runners, discover_in_scope, load_planner,
     runner_artifacts::{BoundArtifacts, RunnerArtifacts},
     runtime_for_os,
-    typed_case::{needs_pod, realizations, LoadedCase, LoadedPlan, TypedConfigLoader},
+    typed_case::{layout_entries, needs_pod, realizations, LoadedCase, LoadedPlan, TypedConfigLoader},
     BuiltCase, Discovered, NO_TEST_DIRECTORIES,
 };
 
@@ -799,7 +799,7 @@ where
                     "timeout": case.timeout(),
                     "images": runner.images(),
                     "status": "runnable",
-                    "layout": plan.layout_entries(),
+                    "layout": layout_entries(plan),
                     "roles": roles,
                 }),
             )
@@ -1541,7 +1541,12 @@ mod tests {
                     "participant": "adp", "type": "agent-adp", "os": "linux", "realization": "linux-container",
                 }]),
             ),
-            (typed, serde_json::Value::Null),
+            (
+                typed,
+                serde_json::json!([{
+                    "participant": null, "type": null, "os": "linux", "realization": "linux-container",
+                }]),
+            ),
         ] {
             let built = build_runners([&plan], Os::Linux, &RunnerArtifacts::Overrides(&[])).unwrap();
             let entries = listing(&built, &[], Os::Linux);

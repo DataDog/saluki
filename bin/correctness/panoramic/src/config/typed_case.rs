@@ -10,7 +10,7 @@ use panoramic_core::case::{case_name, deserialize_case, CaseConfig, CaseSchema, 
 use panoramic_core::{
     artifact::ArtifactRole,
     backend,
-    layout::{Os, Realization, RealizationKind},
+    layout::{LayoutEntry, Os, Realization, RealizationKind},
     plan::CasePlan,
 };
 use panoramic_participants::{AgentAdp, TOOLS_LINUX_IMAGE};
@@ -94,6 +94,22 @@ pub(crate) fn realizations(plan: &LoadedPlan) -> Vec<(Option<&str>, Realization)
             .map(|(name, realization)| (Some(name), realization))
             .collect(),
         CaseSchema::Typed(config) => vec![(None, config.realization(plan.subject_os()))],
+    }
+}
+
+/// Reports participant layouts, or one unnamed runner entry for a case with a top-level `type`.
+pub(crate) fn layout_entries(plan: &LoadedPlan) -> Vec<LayoutEntry> {
+    match plan.case().schema() {
+        CaseSchema::Participants { .. } => plan.layout_entries().expect("a participant plan always has a layout"),
+        CaseSchema::Typed(_) => realizations(plan)
+            .into_iter()
+            .map(|(_, realization)| LayoutEntry {
+                participant: None,
+                participant_type: None,
+                os: realization.os,
+                realization: realization.kind,
+            })
+            .collect(),
     }
 }
 
@@ -366,6 +382,65 @@ mod tests {
             assert_eq!(realizations(&plan), [(None, Realization { os: Os::Linux, kind })]);
             assert_eq!(needs_pod(&plan), kind == RealizationKind::KubernetesPod);
         }
+    }
+
+    #[test]
+    fn a_typed_case_reports_one_unnamed_layout_entry_with_its_runner_realization() {
+        let integration =
+            "type: integration\nname: case\ntimeout: 1s\nruntimes: [linux, mac, windows]\nprocedure: []\n";
+        let correctness = format!("type: correctness\n{CORRECTNESS_FIELDS}");
+        let pod = correctness.replace("runtime: docker", "runtime: kubernetes_in_docker");
+        for (yaml, os, realization) in [
+            (integration, Os::Linux, RealizationKind::LinuxContainer),
+            (integration, Os::MacOs, RealizationKind::HostProcessGroup),
+            (integration, Os::Windows, RealizationKind::WindowsContainer),
+            (correctness.as_str(), Os::Linux, RealizationKind::LinuxContainer),
+            (pod.as_str(), Os::Linux, RealizationKind::KubernetesPod),
+        ] {
+            let plan = plan(yaml, os);
+            assert_eq!(
+                layout_entries(&plan),
+                [LayoutEntry {
+                    participant: None,
+                    participant_type: None,
+                    os,
+                    realization,
+                }],
+                "{yaml} on {os:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn a_participant_case_reports_the_layout_entries_of_its_plan() {
+        let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[macos]").replace(
+            "  adp:",
+            "  zebra: {type: agent-adp}\n  alpha: {type: agent-adp, os: linux}\n  adp:",
+        );
+        let plan = plan(&yaml, Os::MacOs);
+        assert_eq!(
+            layout_entries(&plan),
+            [
+                LayoutEntry {
+                    participant: Some("adp".into()),
+                    participant_type: Some("agent-adp".into()),
+                    os: Os::MacOs,
+                    realization: RealizationKind::HostProcessGroup,
+                },
+                LayoutEntry {
+                    participant: Some("alpha".into()),
+                    participant_type: Some("agent-adp".into()),
+                    os: Os::Linux,
+                    realization: RealizationKind::LinuxContainer,
+                },
+                LayoutEntry {
+                    participant: Some("zebra".into()),
+                    participant_type: Some("agent-adp".into()),
+                    os: Os::MacOs,
+                    realization: RealizationKind::HostProcessGroup,
+                },
+            ]
+        );
     }
 
     #[test]

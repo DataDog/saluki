@@ -32,7 +32,7 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use crate::config::typed_case::needs_pod;
+use crate::config::typed_case::{layout_entries, needs_pod};
 use crate::test::{RunnerSettings, Test, TestContext};
 use crate::{
     assertions::{AssertionContext, LogBuffer, TargetCommand},
@@ -413,7 +413,7 @@ impl Runner {
                 vec![],
             );
             result.case_path = Some(case_dir.clone());
-            result.layout = plan.layout_entries();
+            result.layout = Some(layout_entries(plan));
 
             // Report setup failures through events so the collector accounts for the selected test.
             let _ = event_sender.send(TestEvent::TestStarted { name });
@@ -492,7 +492,7 @@ impl Runner {
         // Stamp the case identity, layout and artifact provenance before reporting the result.
         result.name = case.name().to_string();
         result.case_path = Some(case_dir.clone());
-        result.layout = plan.layout_entries();
+        result.layout = Some(layout_entries(plan));
         result.log_dir = Some(log_dir.clone());
 
         write_result_log(&result, &log_dir);
@@ -1639,12 +1639,18 @@ mod tests {
         let test = ScriptedTest::new("case", Behavior::Pass);
         let participant = crate::config::tests::plan(crate::config::tests::PARTICIPANT_FIELDS, Os::Linux);
         let expected = Some(vec![LayoutEntry {
-            participant: "adp".into(),
-            participant_type: "agent-adp".into(),
+            participant: Some("adp".into()),
+            participant_type: Some("agent-adp".into()),
             os: Os::Linux,
             realization: RealizationKind::LinuxContainer,
         }]);
-        for (plan, layout) in [(participant, expected), (test.plan(), None)] {
+        let typed_layout = Some(vec![LayoutEntry {
+            participant: None,
+            participant_type: None,
+            os: Os::Linux,
+            realization: RealizationKind::LinuxContainer,
+        }]);
+        for (plan, layout) in [(participant, expected), (test.plan(), typed_layout)] {
             let logs = tempfile::tempdir().unwrap();
             let result = run_with_settings(
                 &plan,
@@ -1689,7 +1695,7 @@ mod tests {
         assert_eq!(result.outcome, TestOutcome::Errored);
         assert_eq!(result.error.as_ref().map(|e| e.kind), Some(ErrorKind::Setup));
         assert_eq!(result.case_path, Some(PathBuf::from("/cases/case")));
-        assert_eq!(result.layout, plan.layout_entries());
+        assert_eq!(result.layout, Some(layout_entries(&plan)));
 
         let mut reported = None;
         while let Ok(event) = rx.try_recv() {
@@ -1700,7 +1706,7 @@ mod tests {
 
         let reported = reported.expect("a setup failure should be reported as a completed test");
         assert_eq!(reported.name, "case");
-        assert_eq!(reported.layout, plan.layout_entries());
+        assert_eq!(reported.layout, Some(layout_entries(&plan)));
         assert_eq!(reported.outcome, TestOutcome::Errored);
         assert_eq!(reported.error.as_ref().map(|e| e.kind), Some(ErrorKind::Setup));
     }
