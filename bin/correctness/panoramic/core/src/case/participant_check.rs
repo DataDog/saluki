@@ -315,16 +315,16 @@ mod tests {
 
     #[test]
     fn participant_names_must_be_dns_labels_that_start_with_a_letter() {
-        for name in ["a", "adp", "intake-adp", "load2", &"a".repeat(63)] {
+        for name in ["a", "web", "proxy-web", "load2", &"a".repeat(63)] {
             let yaml = case_yaml(&format!("  '{name}': {{type: server, subject: true}}"), "linux");
             check(&yaml).unwrap();
         }
         for name in [
             "",
-            "Adp",
-            "1adp",
-            "-adp",
-            "adp-",
+            "Web",
+            "1web",
+            "-web",
+            "web-",
             "ad_p",
             "ad.p",
             "äd p",

@@ -662,7 +662,7 @@ mod tests {
         let result = TestResult::errored(
             "dsd-plain",
             ErrorKind::Setup,
-            "Failed to spawn shared millstone container.",
+            "Failed to spawn shared load container.",
             Duration::from_secs(1),
             Vec::new(),
         );
@@ -671,7 +671,7 @@ mod tests {
 
         assert_eq!(json["outcome"], "errored");
         assert_eq!(json["error"]["kind"], "setup");
-        assert_eq!(json["error"]["message"], "Failed to spawn shared millstone container.");
+        assert_eq!(json["error"]["message"], "Failed to spawn shared load container.");
         assert!(json["assertions"]
             .as_array()
             .expect("assertions is an array")
@@ -803,7 +803,7 @@ mod tests {
         // A stderr line qualifies on its own, with no severity marker.
         std::fs::write(
             log_dir.path().join("stderr.log"),
-            "\n/bin/sh: 1: exec: /usr/bin/adp: not found\n",
+            "\n/bin/sh: 1: exec: /usr/bin/server: not found\n",
         )
         .expect("stderr log should be writable");
         // The harness's own files are not scanned, so its summaries never feed back as leads.
@@ -833,7 +833,7 @@ mod tests {
             selected,
             vec![
                 (
-                    "/bin/sh: 1: exec: /usr/bin/adp: not found",
+                    "/bin/sh: 1: exec: /usr/bin/server: not found",
                     DiagnosticReason::CapturedStderr
                 ),
                 ("ERROR failed to bind socket", DiagnosticReason::SeverityMarker),
@@ -858,10 +858,10 @@ mod tests {
         )
         .expect("target log should be writable");
         std::fs::write(
-            log_dir.path().join("millstone.log"),
+            log_dir.path().join("load.log"),
             "sending payloads\npanicked at src/main.rs:1:1\n",
         )
-        .expect("millstone log should be writable");
+        .expect("load log should be writable");
 
         let mut result = TestResult::from_assertions(
             "dsd-plain",
@@ -882,7 +882,7 @@ mod tests {
             selected,
             vec![
                 (
-                    log_dir.path().join("millstone.log").as_path(),
+                    log_dir.path().join("load.log").as_path(),
                     2,
                     "panicked at src/main.rs:1:1"
                 ),

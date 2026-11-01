@@ -712,7 +712,7 @@ mod tests {
             ));
         result.cause = Some(StopCause {
             by: StoppedBy::CaseDeadline,
-            active: vec![active(0, "intake_has_metric"), active(1, "log_contains")],
+            active: vec![active(0, "file_contains"), active(1, "log_contains")],
         });
         result.issues.push(Issue {
             kind: IssueKind::CleanupGraceExpired,
@@ -755,7 +755,7 @@ mod tests {
             (stopped_during_a_parallel_block(), {
                 vec![
                     "case budget 120s expired in assertions",
-                    "Running: step 3.1 intake_has_metric (4.9s of 30s), step 3.2 log_contains (4.9s of 30s)",
+                    "Running: step 3.1 file_contains (4.9s of 30s), step 3.2 log_contains (4.9s of 30s)",
                     "Issue: cleanup_grace_expired: cleanup grace 30s expired in cleanup",
                     "2 steps not run",
                 ]

@@ -653,7 +653,7 @@ mod tests {
         let names = [
             "airlock-ab12cd34-baseline",
             "airlock-ab12cd34-comparison",
-            "airlock-ab12cd34-millstone",
+            "airlock-ab12cd34-load",
         ];
         let ledger = api.ledger(&names);
 

@@ -92,7 +92,7 @@ mod tests {
 
     #[test]
     fn file_contains_decodes_its_fields_and_keeps_paths_verbatim() {
-        for path in ["/logs/output.log", r"C:\logs\output.log"] {
+        for path in ["/logs/output.log", r"logs\output.log"] {
             let mut fields = valid_fields("file_contains");
             fields.insert("path".into(), Value::String(path.into()));
             let step: FileContains = decode_fields(&fields).unwrap();

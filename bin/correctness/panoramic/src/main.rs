@@ -50,6 +50,8 @@ mod intake;
 mod case_loader_tests;
 #[cfg(test)]
 mod crate_dependencies_tests;
+#[cfg(test)]
+mod source_boundary_tests;
 
 /// Loads case files with the participant types and steps this binary registers.
 pub(crate) const CASE_LOADER: CaseLoader<'static, TypedConfigLoader> = CaseLoader::new(

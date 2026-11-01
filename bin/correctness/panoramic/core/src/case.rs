@@ -462,10 +462,10 @@ mod tests {
     fn participant_types_and_steps_come_from_the_supplied_registries() {
         let source = Path::new("alpha/config.yaml");
         let error = fixtures::LOADER
-            .load_content(&PARTICIPANT_FIELDS.replace("server", "agent-adp"), "alpha", source)
+            .load_content(&PARTICIPANT_FIELDS.replace("server", "unregistered"), "alpha", source)
             .err()
             .expect("only the supplied participant types are accepted");
-        assert_eq!(error.to_string(), "case 'alpha' in alpha/config.yaml: participant 'subject' has unknown type 'agent-adp'; registered types: client, server");
+        assert_eq!(error.to_string(), "case 'alpha' in alpha/config.yaml: participant 'subject' has unknown type 'unregistered'; registered types: client, server");
 
         let content = PARTICIPANT_FIELDS.replace("procedure: []", "procedure: [{step: probe, on: subject}]");
         let cases = fixtures::LOADER.load_content(&content, "alpha", source).unwrap();

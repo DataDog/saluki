@@ -450,7 +450,7 @@ participants:
       files:
         scripts: ./scripts/
         settings.yaml: {from: settings-base.yaml, template: true}
-      endpoints: {otlp_grpc: {port: 4317}}
+      endpoints: {grpc: {port: 4317}}
       params: {nested: {enabled: true, count: 3}}
       os:
         windows:
@@ -513,7 +513,7 @@ procedure:
             ])
         );
         assert_eq!(subject.config.endpoints.len(), 1);
-        assert_eq!(subject.config.endpoints["otlp_grpc"].port, 4317);
+        assert_eq!(subject.config.endpoints["grpc"].port, 4317);
         assert_eq!(
             subject.config.params,
             BTreeMap::from([("nested".into(), json!({"enabled": true, "count": 3}))])
