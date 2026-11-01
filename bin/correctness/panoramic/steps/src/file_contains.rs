@@ -1,13 +1,14 @@
 //! A step that searches a file inside a participant for a pattern.
 
-use panoramic_core::case::{decode_fields, CaseDuration, Need, Step, StepDeclaration, StepFields, Template};
+use panoramic_core::case::{decode_fields, CaseDuration, Need, Step, StepFactory, StepFields, Template};
 use serde::Deserialize;
 
 use super::check_pattern;
 
 /// Waits until a file inside a participant contains a pattern.
 ///
-/// Its fields are public so callers can read the decoded step.
+/// Callers can decode the public fields with [`decode_fields`]. The factory's only additional validation checks
+/// that regex patterns compile.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileContains {
@@ -24,6 +25,11 @@ pub struct FileContains {
     pub timeout: CaseDuration,
 }
 
+impl FileContains {
+    /// Registry name used in case procedures.
+    pub const NAME: &'static str = "file_contains";
+}
+
 impl Step for FileContains {
     fn needs(&self) -> Vec<Need> {
         std::iter::once(Need::Handle(self.on.clone()))
@@ -37,15 +43,23 @@ impl Step for FileContains {
 }
 
 /// Builds `file_contains` from its case-file fields.
-pub(crate) const FILE_CONTAINS: StepDeclaration = StepDeclaration {
-    name: "file_contains",
-    template_fields: &["path"],
-    build: |fields: &StepFields| {
+pub(crate) struct FileContainsFactory;
+
+impl StepFactory for FileContainsFactory {
+    fn name(&self) -> &'static str {
+        FileContains::NAME
+    }
+
+    fn template_fields(&self) -> &'static [&'static str] {
+        &["path"]
+    }
+
+    fn build(&self, fields: &StepFields) -> Result<Box<dyn Step>, String> {
         let step: FileContains = decode_fields(fields)?;
         check_pattern(&step.pattern, step.regex)?;
         Ok(Box::new(step))
-    },
-};
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -61,7 +75,7 @@ mod tests {
         for field in ["process", "stream"] {
             let mut fields = valid_fields("file_contains");
             fields.insert(field.into(), Value::String("worker".into()));
-            let message = (FILE_CONTAINS.build)(&fields).unwrap_err();
+            let message = FileContainsFactory.build(&fields).unwrap_err();
             assert!(message.contains(&format!("unknown field `{field}`")), "{message}");
         }
     }
@@ -71,7 +85,7 @@ mod tests {
         for field in ["on", "path", "pattern", "timeout"] {
             let mut fields = valid_fields("file_contains");
             fields.remove(field).unwrap();
-            let message = (FILE_CONTAINS.build)(&fields).unwrap_err();
+            let message = FileContainsFactory.build(&fields).unwrap_err();
             assert!(message.contains(&format!("missing field `{field}`")), "{message}");
         }
     }
@@ -92,7 +106,7 @@ mod tests {
 
     #[test]
     fn file_contains_needs_only_its_participant() {
-        let step = (FILE_CONTAINS.build)(&valid_fields("file_contains")).unwrap();
+        let step = FileContainsFactory.build(&valid_fields("file_contains")).unwrap();
         assert_eq!(step.needs(), vec![Need::Handle("subject".into())]);
     }
 
@@ -103,7 +117,7 @@ mod tests {
             "path".into(),
             Value::String("{{ other.facts.dir }}/{{ subject.facts.file }}/{{ other.facts.dir }}".into()),
         );
-        let step = (FILE_CONTAINS.build)(&fields).unwrap();
+        let step = FileContainsFactory.build(&fields).unwrap();
         assert_eq!(
             step.needs(),
             [

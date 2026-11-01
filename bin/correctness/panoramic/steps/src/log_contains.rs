@@ -1,13 +1,14 @@
 //! Steps that search a participant's output for a pattern.
 
-use panoramic_core::case::{decode_fields, CaseDuration, Need, Step, StepDeclaration, StepFields};
+use panoramic_core::case::{decode_fields, CaseDuration, Need, Step, StepFactory, StepFields};
 use serde::Deserialize;
 
 use super::check_pattern;
 
 /// Waits until a participant's output contains a pattern.
 ///
-/// Its fields are public so callers can read the decoded step.
+/// Callers can decode the public fields with [`decode_fields`]. The factory's only additional validation checks
+/// that regex patterns compile.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LogContains {
@@ -25,6 +26,11 @@ pub struct LogContains {
     pub timeout: CaseDuration,
 }
 
+impl LogContains {
+    /// Registry name used in case procedures.
+    pub const NAME: &'static str = "log_contains";
+}
+
 impl Step for LogContains {
     fn needs(&self) -> Vec<Need> {
         match &self.process {
@@ -36,7 +42,8 @@ impl Step for LogContains {
 
 /// Checks that a pattern stays absent from a participant's output.
 ///
-/// Its fields are public so callers can read the decoded step.
+/// Callers can decode the public fields with [`decode_fields`]. The factory's only additional validation checks
+/// that regex patterns compile.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LogNotContains {
@@ -54,6 +61,11 @@ pub struct LogNotContains {
     pub during: CaseDuration,
 }
 
+impl LogNotContains {
+    /// Registry name used in case procedures.
+    pub const NAME: &'static str = "log_not_contains";
+}
+
 impl Step for LogNotContains {
     fn needs(&self) -> Vec<Need> {
         match &self.process {
@@ -64,26 +76,34 @@ impl Step for LogNotContains {
 }
 
 /// Builds `log_contains` from its case-file fields.
-pub(crate) const LOG_CONTAINS: StepDeclaration = StepDeclaration {
-    name: "log_contains",
-    template_fields: &[],
-    build: |fields: &StepFields| {
+pub(crate) struct LogContainsFactory;
+
+impl StepFactory for LogContainsFactory {
+    fn name(&self) -> &'static str {
+        LogContains::NAME
+    }
+
+    fn build(&self, fields: &StepFields) -> Result<Box<dyn Step>, String> {
         let step: LogContains = decode_fields(fields)?;
         check_pattern(&step.pattern, step.regex)?;
         Ok(Box::new(step))
-    },
-};
+    }
+}
 
 /// Builds `log_not_contains` from its case-file fields.
-pub(crate) const LOG_NOT_CONTAINS: StepDeclaration = StepDeclaration {
-    name: "log_not_contains",
-    template_fields: &[],
-    build: |fields: &StepFields| {
+pub(crate) struct LogNotContainsFactory;
+
+impl StepFactory for LogNotContainsFactory {
+    fn name(&self) -> &'static str {
+        LogNotContains::NAME
+    }
+
+    fn build(&self, fields: &StepFields) -> Result<Box<dyn Step>, String> {
         let step: LogNotContains = decode_fields(fields)?;
         check_pattern(&step.pattern, step.regex)?;
         Ok(Box::new(step))
-    },
-};
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -96,10 +116,10 @@ mod tests {
 
     #[test]
     fn log_steps_reject_a_stream_field() {
-        for declaration in [&LOG_CONTAINS, &LOG_NOT_CONTAINS] {
-            let mut fields = valid_fields(declaration.name);
+        for factory in [&LogContainsFactory as &dyn StepFactory, &LogNotContainsFactory] {
+            let mut fields = valid_fields(factory.name());
             fields.insert("stream".into(), Value::String("stdout".into()));
-            let message = (declaration.build)(&fields).unwrap_err();
+            let message = factory.build(&fields).unwrap_err();
             assert!(message.contains("unknown field `stream`"), "{message}");
         }
     }
@@ -125,20 +145,23 @@ mod tests {
         assert!(!step.regex);
         assert_eq!(Duration::from(step.during), Duration::from_secs(10));
         let during = fields.remove("during").unwrap();
-        let message = (LOG_NOT_CONTAINS.build)(&fields).unwrap_err();
+        let message = LogNotContainsFactory.build(&fields).unwrap_err();
         assert!(message.contains("missing field `during`"), "{message}");
         fields.insert("timeout".into(), during);
-        let message = (LOG_NOT_CONTAINS.build)(&fields).unwrap_err();
+        let message = LogNotContainsFactory.build(&fields).unwrap_err();
         assert!(message.contains("unknown field `timeout`"), "{message}");
     }
 
     #[test]
     fn log_steps_require_their_participant_pattern_and_duration() {
-        for (declaration, duration) in [(&LOG_CONTAINS, "timeout"), (&LOG_NOT_CONTAINS, "during")] {
+        for (factory, duration) in [
+            (&LogContainsFactory as &dyn StepFactory, "timeout"),
+            (&LogNotContainsFactory, "during"),
+        ] {
             for field in ["on", "pattern", duration] {
-                let mut fields = valid_fields(declaration.name);
+                let mut fields = valid_fields(factory.name());
                 fields.remove(field).unwrap();
-                let message = (declaration.build)(&fields).unwrap_err();
+                let message = factory.build(&fields).unwrap_err();
                 assert!(message.contains(&format!("missing field `{field}`")), "{message}");
             }
         }
@@ -146,15 +169,15 @@ mod tests {
 
     #[test]
     fn a_log_step_with_a_process_needs_that_process_and_one_without_needs_its_participant() {
-        for declaration in [&LOG_CONTAINS, &LOG_NOT_CONTAINS] {
-            let mut fields = valid_fields(declaration.name);
-            let step = (declaration.build)(&fields).unwrap();
+        for factory in [&LogContainsFactory as &dyn StepFactory, &LogNotContainsFactory] {
+            let mut fields = valid_fields(factory.name());
+            let step = factory.build(&fields).unwrap();
             assert_eq!(step.needs(), vec![Need::Handle("subject".into())]);
             fields.insert("process".into(), Value::String("worker".into()));
-            let step = (declaration.build)(&fields).unwrap();
+            let step = factory.build(&fields).unwrap();
             assert_eq!(step.needs(), vec![Need::Process("subject".into(), "worker".into())]);
             fields.insert("process".into(), Value::Null);
-            let step = (declaration.build)(&fields).unwrap();
+            let step = factory.build(&fields).unwrap();
             assert_eq!(step.needs(), vec![Need::Handle("subject".into())]);
         }
     }

@@ -124,14 +124,14 @@ fn agent_adp_participants_accept_environment_variables_and_os_overlays_only() {
 
 #[test]
 fn registered_template_fields_match_step_types_and_other_fields_reject_references() {
-    for declaration in REGISTERED_STEPS {
-        let mut fields = valid_fields(declaration.name);
+    for factory in REGISTERED_STEPS {
+        let mut fields = valid_fields(factory.name());
         fields.insert("on".into(), Value::String("adp".into()));
-        if declaration.name != "file_contains" {
+        if factory.name() != "file_contains" {
             fields.insert("process".into(), Value::String("agent".into()));
         }
-        assert!(declaration
-            .template_fields
+        assert!(factory
+            .template_fields()
             .iter()
             .all(|field| fields.contains_key(*field)));
         for field in fields
@@ -140,21 +140,21 @@ fn registered_template_fields_match_step_types_and_other_fields_reject_reference
         {
             let mut referenced = fields.clone();
             referenced.insert(field.clone(), Value::String("{{ adp.facts.default_log_file }}".into()));
-            let step = (declaration.build)(&referenced).unwrap();
-            let declared = declaration.template_fields.contains(&field.as_str());
+            let step = factory.build(&referenced).unwrap();
+            let declared = factory.template_fields().contains(&field.as_str());
             assert_eq!(
                 step.needs()
                     .contains(&Need::Fact("adp".into(), "default_log_file".into())),
                 declared,
                 "{}: {field}",
-                declaration.name
+                factory.name()
             );
-            referenced.insert("step".into(), Value::String(declaration.name.into()));
+            referenced.insert("step".into(), Value::String(factory.name().into()));
             let mut file: Value = serde_saphyr::from_str(PARTICIPANT_FIELDS).unwrap();
             file["procedure"] = serde_json::json!([referenced]);
             let result = crate::CASE_LOADER.load_content(&file.to_string(), "alpha", Path::new("config.yaml"));
             if declared {
-                let cases = result.unwrap_or_else(|error| panic!("{}: {field}: {error}", declaration.name));
+                let cases = result.unwrap_or_else(|error| panic!("{}: {field}: {error}", factory.name()));
                 let CaseSchema::Participants { procedure, .. } = cases[0].schema() else {
                     panic!("expected participant data");
                 };
@@ -165,14 +165,14 @@ fn registered_template_fields_match_step_types_and_other_fields_reject_reference
                     .needs()
                     .contains(&Need::Fact("adp".into(), "default_log_file".into())));
             } else {
-                let accepted = if declaration.template_fields.is_empty() {
+                let accepted = if factory.template_fields().is_empty() {
                     "none".to_string()
                 } else {
-                    declaration.template_fields.join(", ")
+                    factory.template_fields().join(", ")
                 };
                 assert_eq!(result.err().expect("undeclared template field must fail").to_string(), format!(
                     "case 'alpha' in config.yaml: step 1 '{}': field '{field}' contains a template reference ('{{{{'); '{}' accepts references only in: {}",
-                    declaration.name, declaration.name, accepted
+                    factory.name(), factory.name(), accepted
                 ));
             }
         }

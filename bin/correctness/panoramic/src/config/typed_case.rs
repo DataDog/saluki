@@ -166,7 +166,7 @@ impl RunnableCase for LoadedCase {
     }
 
     fn integration_config(&self, os: Os) -> Result<IntegrationConfig, GenericError> {
-        let CaseSchema::Participants { file, procedure } = self.schema() else {
+        let CaseSchema::Participants { file, .. } = self.schema() else {
             return Err(generic_error!(
                 "Cannot run case '{}' from {}: integration translation requires a case that declares participants",
                 self.name(),
@@ -188,7 +188,7 @@ impl RunnableCase for LoadedCase {
                 os.name()
             ));
         }
-        integration_bridge::integration_config(file, self.name(), self.source(), procedure, os).map_err(|reason| {
+        integration_bridge::integration_config(file, self.name(), self.source(), os).map_err(|reason| {
             generic_error!(
                 "Cannot run case '{}' from {}: {}",
                 self.name(),

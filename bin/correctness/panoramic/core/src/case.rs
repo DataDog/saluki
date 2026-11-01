@@ -24,7 +24,7 @@ pub use self::{
     duration::CaseDuration,
     file::{deserialize_env_map, CaseFile, ParticipantConfig, ParticipantEntry, ProcedureNode, StepNode},
     participant_check::{FactDeclaration, ParticipantDeclaration},
-    step_check::{decode_fields, Need, Step, StepDeclaration, StepFields},
+    step_check::{decode_fields, Need, Step, StepFactory, StepFields},
     template::Template,
 };
 use self::{participant_check::check_participants, step_check::build_steps};
@@ -62,7 +62,7 @@ pub struct Registries<'a> {
     /// Participant types available to case files.
     pub participant_types: &'a [&'a ParticipantDeclaration],
     /// Steps available to case procedures.
-    pub steps: &'a [&'a StepDeclaration],
+    pub steps: &'a [&'a dyn StepFactory],
 }
 
 /// Loads case files that select their schema with a top-level `type` key.
@@ -379,7 +379,7 @@ pub fn case_name(declared: Option<&str>, directory: &str, source: &Path) -> Resu
 
 #[cfg(test)]
 mod tests {
-    use std::{any::Any, fs};
+    use std::fs;
 
     use super::fixtures::{write_case, NO_PARTICIPANT_FIELDS, PARTICIPANT_FIELDS};
     use super::*;
@@ -475,7 +475,13 @@ mod tests {
         let [ProcedureNode::Step(step)] = procedure.as_slice() else {
             panic!("expected one built step");
         };
-        assert!((step.as_ref() as &dyn Any).is::<fixtures::Probe>());
+        let expected = fixtures::Probe {
+            on: "subject".into(),
+            process: None,
+            values: vec![],
+            path: None,
+        };
+        assert_eq!(format!("{step:?}"), format!("{expected:?}"));
 
         let loader = CaseLoader::new(
             Registries {
@@ -629,19 +635,19 @@ procedure:
             panic!("expected step, parallel, step");
         };
         assert_eq!(members.len(), 1);
-        let marker = (members[0].as_ref() as &dyn Any)
-            .downcast_ref::<fixtures::Marker>()
-            .unwrap();
-        assert_eq!(marker.on, "subject");
+        let marker = fixtures::Marker { on: "subject".into() };
+        assert_eq!(format!("{:?}", members[0]), format!("{marker:?}"));
         for (step, marker, process, path) in [
             (first, "first", None, None),
             (last, "last", Some("worker"), Some("{{ subject.facts.file }}")),
         ] {
-            let step = (step.as_ref() as &dyn Any).downcast_ref::<fixtures::Probe>().unwrap();
-            assert_eq!(step.on, "subject");
-            assert_eq!(step.values, [serde_json::json!(marker)]);
-            assert_eq!(step.process.as_deref(), process);
-            assert_eq!(step.path, path.map(|path| path.parse().unwrap()));
+            let expected = fixtures::Probe {
+                on: "subject".into(),
+                process: process.map(String::from),
+                values: vec![serde_json::json!(marker)],
+                path: path.map(|path| path.parse().unwrap()),
+            };
+            assert_eq!(format!("{step:?}"), format!("{expected:?}"));
         }
     }
 

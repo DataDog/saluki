@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use super::{
     case_name, decode_fields, CaseLoader, FactDeclaration, Need, Os, ParticipantDeclaration, Registries, Step,
-    StepDeclaration, Template, TypedCase, TypedCaseLoader,
+    StepFactory, StepFields, Template, TypedCase, TypedCaseLoader,
 };
 
 #[derive(Debug, Deserialize)]
@@ -21,6 +21,10 @@ pub(crate) struct Probe {
     pub(crate) on: String,
     pub(crate) process: Option<String>,
     #[serde(default)]
+    #[expect(
+        dead_code,
+        reason = "Only read through derived Debug, which dead-code analysis ignores."
+    )]
     pub(crate) values: Vec<Value>,
     pub(crate) path: Option<Template>,
 }
@@ -41,11 +45,22 @@ impl Step for Probe {
     }
 }
 
-const PROBE: StepDeclaration = StepDeclaration {
-    name: "probe",
-    template_fields: &["path"],
-    build: |fields| Ok(Box::new(decode_fields::<Probe>(fields)?)),
-};
+struct ProbeFactory;
+
+impl StepFactory for ProbeFactory {
+    fn name(&self) -> &'static str {
+        "probe"
+    }
+
+    fn template_fields(&self) -> &'static [&'static str] {
+        &["path"]
+    }
+
+    fn build(&self, fields: &StepFields) -> Result<Box<dyn Step>, String> {
+        Ok(Box::new(decode_fields::<Probe>(fields)?))
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Marker {
@@ -58,12 +73,19 @@ impl Step for Marker {
     }
 }
 
-const MARKER: StepDeclaration = StepDeclaration {
-    name: "marker",
-    template_fields: &[],
-    build: |fields| Ok(Box::new(decode_fields::<Marker>(fields)?)),
-};
-pub(crate) const STEPS: &[&StepDeclaration] = &[&MARKER, &PROBE];
+struct MarkerFactory;
+
+impl StepFactory for MarkerFactory {
+    fn name(&self) -> &'static str {
+        "marker"
+    }
+
+    fn build(&self, fields: &StepFields) -> Result<Box<dyn Step>, String> {
+        Ok(Box::new(decode_fields::<Marker>(fields)?))
+    }
+}
+
+pub(crate) const STEPS: &[&dyn StepFactory] = &[&MarkerFactory, &ProbeFactory];
 pub(crate) const SERVER: ParticipantDeclaration = ParticipantDeclaration {
     name: "server",
     config_files: &[],

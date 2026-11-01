@@ -1,7 +1,6 @@
-//! Builds case procedure steps from their declarations and checks what each step references.
+//! Builds case procedure steps through their factories and checks what each step references.
 
 use std::{
-    any::Any,
     collections::{BTreeMap, BTreeSet},
     fmt,
     path::Path,
@@ -33,19 +32,34 @@ pub enum Need {
 }
 
 /// A step built from its case-file fields.
-pub trait Step: Any + fmt::Debug + Send + Sync {
+pub trait Step: fmt::Debug + Send + Sync {
     /// Participants, processes and facts the step uses.
     fn needs(&self) -> Vec<Need>;
 }
 
-/// A step a case may name, and how to build it from its fields.
-pub struct StepDeclaration {
+/// Builds a named step from its case-file fields at load time.
+///
+/// The step crate registers factories for steps such as log and file assertions; the case loader
+/// calls them before checking each built step's [`Need`]s against the case and participant types.
+pub trait StepFactory: Send + Sync {
     /// Registry name, as written in a node's `step`.
-    pub name: &'static str,
-    /// Fields decoded as templates, whose fact references the step reports as needs.
-    pub template_fields: &'static [&'static str],
-    /// Builds the step, or describes the first problem with its fields.
-    pub build: fn(&StepFields) -> Result<Box<dyn Step>, String>,
+    fn name(&self) -> &'static str;
+
+    /// The only fields in which the loader accepts `{{ … }}` template references; defaults to none.
+    ///
+    /// The built step must report their fact references as [`Need::Fact`].
+    fn template_fields(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// Decodes and validates fields without performing I/O or running the step.
+    ///
+    /// Report participant, process and fact dependencies through [`Step::needs`]; the loader validates them.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first problem with the step's fields.
+    fn build(&self, fields: &StepFields) -> Result<Box<dyn Step>, String>;
 }
 
 /// Decodes step fields into `T`; errors name the failing field.
@@ -63,7 +77,7 @@ where
 /// Returns the first error in procedure order, naming the case, source, step label and step.
 /// Checks registration, field decoding, template references, then needs in their declared order.
 pub(super) fn build_steps(
-    file: &CaseFile, subject_os: &BTreeSet<Os>, steps: &[&StepDeclaration], types: &[&ParticipantDeclaration],
+    file: &CaseFile, subject_os: &BTreeSet<Os>, steps: &[&dyn StepFactory], types: &[&ParticipantDeclaration],
     name: &str, source: &Path,
 ) -> Result<Vec<ProcedureNode<Box<dyn Step>>>, GenericError> {
     file.procedure
@@ -103,26 +117,28 @@ pub(super) fn build_steps(
 }
 
 fn build_step(
-    node: &StepNode, label: &str, file: &CaseFile, subject_os: &BTreeSet<Os>, steps: &[&StepDeclaration],
+    node: &StepNode, label: &str, file: &CaseFile, subject_os: &BTreeSet<Os>, steps: &[&dyn StepFactory],
     types: &[&ParticipantDeclaration], name: &str, source: &Path,
 ) -> Result<Box<dyn Step>, GenericError> {
     let error = |message: String| generic_error!("case '{}' in {}: step {} {}", name, source.display(), label, message);
-    let Some(declaration) = steps.iter().find(|declaration| declaration.name == node.name) else {
+    let Some(factory) = steps.iter().find(|factory| factory.name() == node.name) else {
         return Err(error(format!(
             "names unknown step '{}'; registered steps: {}",
             node.name,
-            declared_names(&steps.iter().map(|declaration| declaration.name).collect::<Vec<_>>())
+            declared_names(&steps.iter().map(|factory| factory.name()).collect::<Vec<_>>())
         )));
     };
-    let step = (declaration.build)(&node.fields).map_err(|message| error(format!("'{}': {message}", node.name)))?;
+    let step = factory
+        .build(&node.fields)
+        .map_err(|message| error(format!("'{}': {message}", node.name)))?;
     for (field, value) in &node.fields {
-        if !declaration.template_fields.contains(&field.as_str()) && contains_template_reference(value) {
+        if !factory.template_fields().contains(&field.as_str()) && contains_template_reference(value) {
             return Err(error(format!(
                 "'{}': field '{field}' contains a template reference ('{{{{'); \
                  '{}' accepts references only in: {}",
                 node.name,
                 node.name,
-                declared_names(declaration.template_fields)
+                declared_names(factory.template_fields())
             )));
         }
     }
@@ -322,6 +338,15 @@ mod tests {
     }
 
     #[test]
+    fn a_factory_without_template_fields_accepts_no_references() {
+        let message = build_error("- {step: marker, on: '{{ subject }}'}");
+        assert_eq!(
+            message,
+            "case 'alpha' in cases/alpha/config.yaml: step 1 'marker': field 'on' contains a template reference ('{{'); 'marker' accepts references only in: none"
+        );
+    }
+
+    #[test]
     fn fact_references_in_declared_template_fields_build_and_report_needs() {
         let procedure = build("- {step: probe, on: subject, path: '{{ subject.facts.file }}'}").unwrap();
         let [ProcedureNode::Step(step)] = procedure.as_slice() else {
@@ -446,15 +471,27 @@ mod tests {
             panic!("expected step, parallel, step");
         };
         assert_eq!(members.len(), 2);
-        for (step, participant, marker) in [
-            (first, "subject", "first"),
-            (&members[0], "other", "second"),
-            (&members[1], "subject", "third"),
-            (last, "other", "last"),
+        for (step, participant, process, values) in [
+            (first, "subject", None, vec![serde_json::json!("first")]),
+            (&members[0], "other", None, vec![serde_json::json!("second")]),
+            (&members[1], "subject", Some("worker"), vec![serde_json::json!("third")]),
+            (
+                last,
+                "other",
+                None,
+                vec![
+                    serde_json::json!("last"),
+                    serde_json::json!({"nested": [false, 3, null, "literal"]}),
+                ],
+            ),
         ] {
-            let step = (step.as_ref() as &dyn Any).downcast_ref::<Probe>().unwrap();
-            assert_eq!(step.on, participant);
-            assert_eq!(step.values[0], marker);
+            let expected = Probe {
+                on: participant.into(),
+                process: process.map(String::from),
+                values,
+                path: None,
+            };
+            assert_eq!(format!("{step:?}"), format!("{expected:?}"));
         }
     }
 
