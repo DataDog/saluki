@@ -207,6 +207,8 @@ its type's delivered environment variables, replacing the type's defaults. Conta
 other, and pods reach each other, by participant name and the server's port. Host process groups use
 `127.0.0.1` and the server's port. A host process group reaches a Linux container on `127.0.0.1` and a runner-host
 port, allocated while planning from one pool per invocation below the OS's default ephemeral port range.
+An endpoint reference in a host process group's configuration to a Linux container's network endpoint reserves a
+runner-host port the same way. Every connection and reference that reaches one endpoint shares its port.
 A Unix socket is reached at the path its server listens on. A served socket path may use fact references,
 but not references resolved later, such as late facts. `config.endpoints` gives the nonzero port of a listener
 whose port the type can't derive from configuration. Overriding any other endpoint fails, as does leaving

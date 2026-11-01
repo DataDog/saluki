@@ -1,10 +1,10 @@
 //! Validates connections, resolves each one to the address its consumer sees and computes
 //! the consumer's delivered environment.
 
-use std::collections::{btree_map::Entry, BTreeMap};
+use std::collections::BTreeMap;
 
 use super::{
-    ports::PortRegistry,
+    ports::RunnerHostPorts,
     routes::{address, route, Route},
 };
 use crate::{
@@ -25,15 +25,12 @@ pub(super) struct ParticipantEndpoints {
 }
 
 /// Checks each consumer's connections, then its required endpoints, all in name order.
-/// Resolves each connection's address, drawing runner-host ports from `registry` in check order,
+/// Resolves each connection's address, drawing runner-host ports from `ports` in check order,
 /// and returns each consumer's delivered environment variables by participant name.
 pub(super) fn check_connections(
-    file: &CaseFile, layout: &Layout, endpoints: &BTreeMap<String, ParticipantEndpoints>, registry: &mut PortRegistry,
+    file: &CaseFile, layout: &Layout, endpoints: &BTreeMap<String, ParticipantEndpoints>,
+    ports: &mut RunnerHostPorts<'_>,
 ) -> Result<BTreeMap<String, BTreeMap<String, String>>, String> {
-    let mut runner_host_ports = RunnerHostPorts {
-        registry,
-        ports: BTreeMap::new(),
-    };
     let mut deliveries = BTreeMap::new();
     for (name, entry) in &file.participants {
         let realization = layout.get(name).expect("loaded participants have a layout");
@@ -89,7 +86,7 @@ pub(super) fn check_connections(
                 }
             }
             let runner_host_port = if route == Route::RunnerHostPort {
-                Some(runner_host_ports.for_endpoint(target_name, target_endpoint).map_err(|error| {
+                Some(ports.for_endpoint(target_name, target_endpoint).map_err(|error| {
                     format!("{holder} cannot resolve connection '{connection}' to '{target_name}.{target_endpoint}': {error}")
                 })?)
             } else {
@@ -116,20 +113,4 @@ pub(super) fn check_connections(
         deliveries.insert(name.clone(), delivered_env);
     }
     Ok(deliveries)
-}
-
-/// All host-process consumers of one listener share its published port within this case and OS.
-struct RunnerHostPorts<'a> {
-    registry: &'a mut PortRegistry,
-    ports: BTreeMap<(String, String), u16>,
-}
-
-impl RunnerHostPorts<'_> {
-    fn for_endpoint(&mut self, server: &str, endpoint: &str) -> Result<u16, String> {
-        let entry = self.ports.entry((server.into(), endpoint.into()));
-        match entry {
-            Entry::Occupied(entry) => Ok(*entry.get()),
-            Entry::Vacant(entry) => Ok(*entry.insert(self.registry.allocate()?)),
-        }
-    }
 }

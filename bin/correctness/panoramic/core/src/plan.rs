@@ -27,6 +27,7 @@ pub use self::ports::PortRegistry;
 use self::{
     connections::{check_connections, ParticipantEndpoints},
     order::{dependency_order, DependencyOrder},
+    ports::RunnerHostPorts,
 };
 
 /// A loaded case with the layout selected for execution.
@@ -36,6 +37,22 @@ pub struct CasePlan<C> {
     layout: Option<Layout>,
     order: Option<DependencyOrder>,
     participants: BTreeMap<String, PlannedParticipant>,
+    /// Ports the runner host publishes for Linux container endpoints reached by host process groups,
+    /// one per endpoint for the selected subject OS, keyed by serving participant and endpoint.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Read when the Linux container backend publishes runner-host ports."
+        )
+    )]
+    runner_host_ports: BTreeMap<(String, String), u16>,
+}
+
+struct PlannedCase {
+    participants: BTreeMap<String, PlannedParticipant>,
+    order: DependencyOrder,
+    runner_host_ports: BTreeMap<(String, String), u16>,
 }
 
 struct PlannedParticipant {
@@ -47,6 +64,8 @@ impl<C> CasePlan<C> {
     /// Validates every declared subject OS, returning a plan only for a declared selection.
     /// Participant cases carry a layout; typed cases retain their loader-supplied data.
     /// Only the selected OS draws runner-host ports from `ports`; other OSes use separate registries.
+    /// Ports are drawn in check order: connections per consumer, then references per participant
+    /// (`env`, `params`, template files), each endpoint once.
     ///
     /// # Errors
     ///
@@ -59,7 +78,7 @@ impl<C> CasePlan<C> {
     /// accepted kind, route, delivered env keys, address allocation and delivery values;
     /// then required endpoints in name order);
     /// configuration endpoint and connection references per participant in name order (`env`, then `params`,
-    /// then template files);
+    /// then template files): address part, then runner-host port allocation;
     /// create order, then start order;
     /// step fact and late-fact references in procedure order with step labels.
     pub fn compile(
@@ -68,6 +87,7 @@ impl<C> CasePlan<C> {
         let mut layout = None;
         let mut order = None;
         let mut participants = BTreeMap::new();
+        let mut runner_host_ports = BTreeMap::new();
         if let CaseSchema::Participants { file, procedure } = case.schema() {
             for &os in case.subject_os() {
                 let error = |message: String| {
@@ -86,7 +106,7 @@ impl<C> CasePlan<C> {
                 } else {
                     &mut scratch_ports
                 };
-                let (candidate_participants, candidate_order) = plan_participants(
+                let planned = plan_participants(
                     file,
                     case.file_templates(),
                     &candidate,
@@ -99,13 +119,14 @@ impl<C> CasePlan<C> {
                     procedure,
                     &candidate,
                     registries.participant_types,
-                    &candidate_participants,
+                    &planned.participants,
                 )
                 .map_err(error)?;
                 if os == subject_os {
                     layout = Some(candidate);
-                    order = Some(candidate_order);
-                    participants = candidate_participants;
+                    order = Some(planned.order);
+                    participants = planned.participants;
+                    runner_host_ports = planned.runner_host_ports;
                 }
             }
         }
@@ -118,6 +139,7 @@ impl<C> CasePlan<C> {
             layout,
             order,
             participants,
+            runner_host_ports,
         }))
     }
 
@@ -179,7 +201,7 @@ impl<C> CasePlan<C> {
 fn plan_participants(
     file: &CaseFile, templates: &FileTemplates, layout: &Layout, types: &[&dyn ParticipantType],
     ports: &mut PortRegistry,
-) -> Result<(BTreeMap<String, PlannedParticipant>, DependencyOrder), String> {
+) -> Result<PlannedCase, String> {
     let mut participants = BTreeMap::new();
     let mut participant_endpoints = BTreeMap::new();
     for (name, realization) in layout.iter() {
@@ -217,7 +239,8 @@ fn plan_participants(
             },
         );
     }
-    let deliveries = check_connections(file, layout, &participant_endpoints, ports)?;
+    let mut runner_host_ports = RunnerHostPorts::new(ports);
+    let deliveries = check_connections(file, layout, &participant_endpoints, &mut runner_host_ports)?;
     for (name, env) in deliveries {
         participants
             .get_mut(&name)
@@ -226,9 +249,13 @@ fn plan_participants(
             .env
             .extend(env);
     }
-    references::check_address_references(file, templates, layout, &participant_endpoints)?;
+    references::check_address_references(file, templates, layout, &participant_endpoints, &mut runner_host_ports)?;
     let order = dependency_order(file, templates, layout, &participant_endpoints)?;
-    Ok((participants, order))
+    Ok(PlannedCase {
+        participants,
+        order,
+        runner_host_ports: runner_host_ports.into_ports(),
+    })
 }
 
 /// Checks overrides, then fills case-supplied ports and validates socket paths in endpoint name order.
@@ -521,7 +548,7 @@ mod tests {
     }
 
     pub(super) const FILE_REGISTRIES: Registries<'_> = Registries {
-        participant_types: &[&FileServer],
+        participant_types: &[&FileServer, &Server],
         steps: &[],
     };
     pub(super) const FILE_CONFIG: &str = "{files: {settings.yaml: {from: source.yaml, template: true}}}";
@@ -1065,6 +1092,10 @@ procedure: []
                 "http://127.0.0.1:20000"
             );
         }
+        assert_eq!(
+            plan.runner_host_ports,
+            BTreeMap::from([(("server".into(), "api".into()), 20000)])
+        );
         assert_eq!(ports.allocate(), Ok(20001));
     }
 
@@ -1079,6 +1110,13 @@ procedure: []
         assert_eq!(
             plan.effective_config("z").unwrap().env["TARGET"],
             "udp://127.0.0.1:20001"
+        );
+        assert_eq!(
+            plan.runner_host_ports,
+            BTreeMap::from([
+                (("server".into(), "tcp".into()), 20000),
+                (("server".into(), "udp".into()), 20001),
+            ])
         );
     }
 
@@ -1106,6 +1144,10 @@ procedure: []
                 plan.effective_config("client").unwrap().env["UPSTREAM_URL"],
                 "http://127.0.0.1:20000"
             );
+            assert_eq!(
+                plan.runner_host_ports,
+                BTreeMap::from([(("server".into(), "api".into()), 20000)])
+            );
             assert_eq!(ports.allocate(), Ok(20001));
         }
         let mut ports = PortRegistry::new();
@@ -1117,6 +1159,150 @@ procedure: []
         .unwrap()
         .is_none());
         assert_eq!(ports.allocate(), Ok(20000));
+    }
+
+    fn host_to_container_reference_case(config: &str) -> String {
+        format!("timeout: 1s\nsubject_os: [macos]\nparticipants:\n  subject: {{type: file-server, subject: true, config: {config}}}\n  server: {{type: server, os: linux}}\nprocedure: []\n")
+    }
+
+    #[test]
+    fn a_host_process_groups_endpoint_reference_to_a_linux_container_gets_a_runner_host_port() {
+        // Address-reference checks must reserve the port that creation uses to render the reference.
+        for (config, sources) in [
+            ("{env: {KEY: '{{ server.endpoints.api.url }}'}}", vec![]),
+            (
+                "{params: {mode: [{nested: ['{{ server.endpoints.api.url }}']}]}}",
+                vec![],
+            ),
+            (FILE_CONFIG, vec![("source.yaml", "{{ server.endpoints.api.url }}")]),
+        ] {
+            let plan = compile_files(&host_to_container_reference_case(config), &sources, Os::MacOs).unwrap();
+            assert_eq!(
+                plan.runner_host_ports,
+                BTreeMap::from([(("server".into(), "api".into()), 20000)]),
+                "{config}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_connection_and_a_reference_to_one_container_endpoint_share_its_runner_host_port() {
+        let yaml = host_to_container_case()
+            .replace("subject: true", "subject: true, config: {env: {KEY: '{{ server.endpoints.api.url }} {{ self.connections.upstream.port }}'}}")
+            .replace("procedure: []", "  other: {type: server, config: {params: {mode: ['{{server.endpoints.api.host}}']}}}\nprocedure: []");
+        let mut ports = PortRegistry::new();
+        let plan = compile_with_ports(&yaml, Os::MacOs, &mut ports).unwrap().unwrap();
+        assert_eq!(
+            plan.effective_config("client").unwrap().env["UPSTREAM_URL"],
+            "http://127.0.0.1:20000"
+        );
+        assert_eq!(
+            plan.runner_host_ports,
+            BTreeMap::from([(("server".into(), "api".into()), 20000)])
+        );
+        assert_eq!(ports.allocate(), Ok(20001));
+    }
+
+    #[test]
+    fn references_reaching_an_endpoint_by_name_on_loopback_or_on_the_holder_get_no_runner_host_port() {
+        for (os, target, endpoint, part) in [
+            (Os::Linux, "server", "http", "url"),
+            (Os::MacOs, "server", "http", "url"),
+            (Os::Linux, "self", "http", "port"),
+            (Os::MacOs, "subject", "http", "host"),
+            (Os::Linux, "server", "stream", "path"),
+            (Os::MacOs, "server", "datagram", "url"),
+            (Os::Windows, "self", "pipe", "path"),
+        ] {
+            let yaml = host_to_container_reference_case(&format!(
+                "{{env: {{KEY: '{{{{ {target}.endpoints.{endpoint}.{part} }}}}'}}}}"
+            ))
+            .replace("[macos]", &format!("[{}]", os.name()))
+            .replace("type: server, os: linux", "type: every-kind-server");
+            let mut ports = PortRegistry::new();
+            let plan = compile_with_ports(&yaml, os, &mut ports).unwrap().unwrap();
+            assert!(plan.runner_host_ports.is_empty(), "{yaml}");
+            assert_eq!(ports.allocate(), Ok(20000), "{yaml}");
+        }
+    }
+
+    #[test]
+    fn runner_host_ports_are_drawn_for_connections_then_references_in_participant_name_order() {
+        let yaml = r#"timeout: 1s
+subject_os: [macos]
+participants:
+  z: {type: client, subject: true, connect: {upstream: server.api}}
+  b: {type: server, config: {env: {KEY: '{{ server.endpoints.extra.url }}'}}}
+  a: {type: server, config: {env: {KEY: '{{ server.endpoints.metrics.url }}'}}}
+  server: {type: server, os: linux, config: {endpoints: {extra: {port: 8123}}}}
+procedure: []
+"#;
+        let plan = compile(yaml, Os::MacOs).unwrap().unwrap();
+        assert_eq!(
+            plan.runner_host_ports,
+            BTreeMap::from([
+                (("server".into(), "api".into()), 20000),
+                (("server".into(), "metrics".into()), 20001),
+                (("server".into(), "extra".into()), 20002),
+            ])
+        );
+
+        let config = "{env: {Z: '{{server.endpoints.tcp.port}}', A: '{{server.endpoints.udp.host}}'}, params: {mode: [{nested: '{{server.endpoints.grpc.url}}'}]}, files: {settings.yaml: {from: source.yaml, template: true}}}";
+        let yaml = host_to_container_reference_case(config).replace("type: server", "type: file-server");
+        let plan = compile_files(&yaml, &[("source.yaml", "{{server.endpoints.http.url}}")], Os::MacOs).unwrap();
+        assert_eq!(
+            plan.runner_host_ports,
+            BTreeMap::from([
+                (("server".into(), "udp".into()), 20000),
+                (("server".into(), "tcp".into()), 20001),
+                (("server".into(), "grpc".into()), 20002),
+                (("server".into(), "http".into()), 20003),
+            ])
+        );
+    }
+
+    #[test]
+    fn an_invalid_address_part_fails_before_a_runner_host_port_is_drawn() {
+        let yaml = host_to_container_reference_case("{env: {KEY: '{{ server.endpoints.api.path }}'}}");
+        let mut ports = PortRegistry::new();
+        assert_eq!(
+            compile_with_ports(&yaml, Os::MacOs, &mut ports).err().unwrap().to_string(),
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'subject' of type 'file-server' as host-process-group on macos environment variable 'KEY' '{{ server.endpoints.api.path }}': a http endpoint has no 'path'; use url, host or port"
+        );
+        assert_eq!(ports.allocate(), Ok(20000));
+    }
+
+    #[test]
+    fn runner_host_port_exhaustion_in_a_reference_names_the_reference() {
+        let yaml = host_to_container_case().replace(
+            "subject: true",
+            "subject: true, config: {env: {KEY: '{{ server.endpoints.metrics.url }}'}}",
+        );
+        let mut ports = PortRegistry::over(21000..=21000);
+        assert_eq!(
+            compile_with_ports(&yaml, Os::MacOs, &mut ports).err().unwrap().to_string(),
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'client' of type 'client' as host-process-group on macos environment variable 'KEY' '{{ server.endpoints.metrics.url }}' references endpoint 'metrics' of participant 'server', which needs a runner-host port: all 1 runner-host ports are allocated"
+        );
+    }
+
+    #[test]
+    fn only_the_selected_subject_os_records_runner_host_ports() {
+        let yaml = host_to_container_reference_case("{os: {macos: {env: {KEY: '{{ server.endpoints.api.url }}'}}}}")
+            .replace("[macos]", "[linux, macos]");
+        for selected in [Os::Linux, Os::MacOs] {
+            let mut ports = PortRegistry::new();
+            let plan = compile_with_ports(&yaml, selected, &mut ports).unwrap().unwrap();
+            if selected == Os::Linux {
+                assert!(plan.runner_host_ports.is_empty());
+                assert_eq!(ports.allocate(), Ok(20000));
+            } else {
+                assert_eq!(
+                    plan.runner_host_ports,
+                    BTreeMap::from([(("server".into(), "api".into()), 20000)])
+                );
+                assert_eq!(ports.allocate(), Ok(20001));
+            }
+        }
     }
 
     #[test]
@@ -1965,6 +2151,7 @@ procedure: []
                 assert_eq!(plan.subject_os(), os);
                 assert_eq!(plan.case().name(), "alpha");
                 assert!(plan.layout().is_none());
+                assert!(plan.runner_host_ports.is_empty());
             }
         }
     }

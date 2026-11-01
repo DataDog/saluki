@@ -2,7 +2,11 @@
 
 use std::collections::BTreeMap;
 
-use super::{connections::ParticipantEndpoints, routes::route};
+use super::{
+    connections::ParticipantEndpoints,
+    ports::RunnerHostPorts,
+    routes::{route, Route},
+};
 use crate::{
     backend::{late_facts, writes_late_files, LateFact, LateFactTiming},
     case::{
@@ -148,13 +152,14 @@ fn resolve_reference(
 
 pub(super) fn check_address_references(
     file: &CaseFile, templates: &FileTemplates, layout: &Layout, endpoints: &BTreeMap<String, ParticipantEndpoints>,
+    ports: &mut RunnerHostPorts<'_>,
 ) -> Result<(), String> {
     for (name, participant) in endpoints {
         walk_config_strings(&participant.values.env, &participant.values.params, |field, text| {
             let template: Template = text
                 .parse()
                 .expect("substituted configuration retains valid references");
-            check_template_addresses(file, layout, endpoints, name, field, &template)
+            check_template_addresses(file, layout, endpoints, name, field, &template, ports)
         })?;
         for (file_name, source) in participant.values.files.iter().filter(|(_, source)| source.template) {
             check_template_addresses(
@@ -164,6 +169,7 @@ pub(super) fn check_address_references(
                 name,
                 ConfigField::File(file_name),
                 templates.get(&source.from),
+                ports,
             )?;
         }
     }
@@ -172,14 +178,14 @@ pub(super) fn check_address_references(
 
 fn check_template_addresses(
     file: &CaseFile, layout: &Layout, endpoints: &BTreeMap<String, ParticipantEndpoints>, name: &str,
-    field: ConfigField<'_>, template: &Template,
+    field: ConfigField<'_>, template: &Template, ports: &mut RunnerHostPorts<'_>,
 ) -> Result<(), String> {
     let realization = layout.get(name).expect("loaded participants have a layout");
     let entry = &file.participants[name];
     let holder = describe_participant(name, &entry.participant_type, realization);
     for (written, reference) in template.written_references() {
         let context = format!("{holder} {field} '{written}'");
-        let (kind, part) = match reference {
+        let (kind, part, allocation_target) = match reference {
             Reference::Endpoint {
                 participant,
                 endpoint,
@@ -193,17 +199,20 @@ fn check_template_addresses(
                         declared_names(&served.keys().map(String::as_str).collect::<Vec<_>>()),
                     ));
                 };
-                if target != name {
+                let allocation_target = if target != name {
                     let target_realization = layout.get(target).expect("referenced participants have a layout");
-                    route(served_endpoint.kind, realization, target_realization).map_err(|constraint| format!(
+                    let route = route(served_endpoint.kind, realization, target_realization).map_err(|constraint| format!(
                         "{context} references endpoint '{endpoint}' of participant '{target}', which it cannot reach: {constraint}"
                     ))?;
-                }
-                (served_endpoint.kind, part)
+                    (route == Route::RunnerHostPort).then_some((target, endpoint))
+                } else {
+                    None
+                };
+                (served_endpoint.kind, part, allocation_target)
             }
             Reference::Connection { consumed, part } => {
                 let target = &entry.connect[consumed];
-                (endpoints[&target.participant].served[&target.endpoint].kind, part)
+                (endpoints[&target.participant].served[&target.endpoint].kind, part, None)
             }
             _ => continue,
         };
@@ -221,6 +230,11 @@ fn check_template_addresses(
                 "{context}: a {} endpoint has no '{part}'; use {parts}",
                 kind.name()
             ));
+        }
+        if let Some((target, endpoint)) = allocation_target {
+            ports.for_endpoint(target, endpoint).map_err(|error| format!(
+                "{context} references endpoint '{endpoint}' of participant '{target}', which needs a runner-host port: {error}"
+            ))?;
         }
     }
     Ok(())

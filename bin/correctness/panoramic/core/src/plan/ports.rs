@@ -1,6 +1,9 @@
 //! Run-wide allocation of runner-host ports.
 
-use std::ops::RangeInclusive;
+use std::{
+    collections::{btree_map::Entry, BTreeMap},
+    ops::RangeInclusive,
+};
 
 const RUNNER_HOST_PORTS: RangeInclusive<u16> = 20000..=29999;
 
@@ -37,6 +40,34 @@ impl PortRegistry {
 impl Default for PortRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Every host-process-group connection or configuration reference to one Linux container endpoint
+/// shares one runner-host port within a case and OS.
+pub(super) struct RunnerHostPorts<'a> {
+    registry: &'a mut PortRegistry,
+    ports: BTreeMap<(String, String), u16>,
+}
+
+impl<'a> RunnerHostPorts<'a> {
+    pub(super) fn new(registry: &'a mut PortRegistry) -> Self {
+        Self {
+            registry,
+            ports: BTreeMap::new(),
+        }
+    }
+
+    pub(super) fn for_endpoint(&mut self, server: &str, endpoint: &str) -> Result<u16, String> {
+        let entry = self.ports.entry((server.into(), endpoint.into()));
+        match entry {
+            Entry::Occupied(entry) => Ok(*entry.get()),
+            Entry::Vacant(entry) => Ok(*entry.insert(self.registry.allocate()?)),
+        }
+    }
+
+    pub(super) fn into_ports(self) -> BTreeMap<(String, String), u16> {
+        self.ports
     }
 }
 
