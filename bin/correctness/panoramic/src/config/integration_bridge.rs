@@ -11,18 +11,13 @@ use std::{any::Any, path::Path};
 
 use panoramic_core::case::{CaseFile, Os, ParticipantConfig, ParticipantEntry, ProcedureNode, Step, StepNode};
 use panoramic_core::record::step_label;
+use panoramic_participants::AGENT_ADP;
+use panoramic_steps::{FileContains, LogContains, LogNotContains};
 
 use super::{
     runtime_for_os, AssertionConfig, AssertionStep, ContainerConfig, IntakeConfig, IntegrationConfig, LogStream,
 };
-use crate::{
-    dynamic_vars::ENV_PREFIX,
-    participants::AGENT_ADP,
-    steps::{
-        file_contains::FileContains,
-        log_contains::{LogContains, LogNotContains},
-    },
-};
+use crate::dynamic_vars::ENV_PREFIX;
 
 /// Translates the file and its built procedure, preserving step order and time budgets.
 ///
@@ -232,6 +227,7 @@ pub(super) fn integration_config(
 #[cfg(test)]
 mod tests {
     use panoramic_core::case::{CaseSchema, Need};
+    use panoramic_steps::{test_support::valid_fields, REGISTERED_STEPS};
 
     use super::*;
     use crate::{
@@ -241,7 +237,6 @@ mod tests {
             typed_case::{RunnableCase, TypedConfig},
             LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME,
         },
-        steps::{tests::fields, REGISTERED_STEPS},
         test::TestSuite,
     };
 
@@ -379,7 +374,7 @@ mod tests {
         for declaration in REGISTERED_STEPS {
             for (parallel, label) in [(false, "1"), (true, "1.1")] {
                 let mut file: CaseFile = serde_saphyr::from_str(PARTICIPANT_FIELDS).unwrap();
-                let mut fields = fields(declaration.name);
+                let mut fields = valid_fields(declaration.name);
                 fields.insert("on".into(), serde_json::json!("other"));
                 let step = (declaration.build)(&fields).unwrap();
                 let node = StepNode {
@@ -413,7 +408,7 @@ mod tests {
                 .replace("  adp:", "  subject:");
             let mut file: CaseFile = serde_saphyr::from_str(&yaml).unwrap();
             assert_eq!(file.subject_os, [Os::Linux, Os::MacOs, Os::Windows]);
-            let fields = fields(declaration.name);
+            let fields = valid_fields(declaration.name);
             let procedure = [ProcedureNode::Step((declaration.build)(&fields).unwrap())];
             file.procedure = vec![ProcedureNode::Step(StepNode {
                 name: declaration.name.into(),
@@ -456,9 +451,11 @@ mod tests {
             let ProcedureNode::Step(node) = &file.procedure[0] else {
                 panic!("expected one step")
             };
-            let procedure = [ProcedureNode::Step(
-                (crate::steps::file_contains::FILE_CONTAINS.build)(&node.fields).unwrap(),
-            )];
+            let declaration = REGISTERED_STEPS
+                .iter()
+                .find(|step| step.name == "file_contains")
+                .unwrap();
+            let procedure = [ProcedureNode::Step((declaration.build)(&node.fields).unwrap())];
             assert_eq!(
                 integration_config(&file, "alpha", Path::new("alpha/config.yaml"), &procedure, os).unwrap_err(),
                 format!("step 1 'file_contains' path: cannot resolve fact reference '{{{{ {reference} }}}}'")

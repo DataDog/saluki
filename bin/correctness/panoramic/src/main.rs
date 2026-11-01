@@ -46,14 +46,16 @@ use self::config::{
 mod image_override;
 mod intake;
 
-mod participants;
-mod steps;
+#[cfg(test)]
+mod case_loader_tests;
+#[cfg(test)]
+mod crate_dependencies_tests;
 
 /// Loads case files with the participant types and steps this binary registers.
 pub(crate) const CASE_LOADER: CaseLoader<'static, TypedConfigLoader> = CaseLoader::new(
     Registries {
-        participant_types: participants::REGISTERED_TYPES,
-        steps: steps::REGISTERED_STEPS,
+        participant_types: panoramic_participants::REGISTERED_TYPES,
+        steps: panoramic_steps::REGISTERED_STEPS,
     },
     TypedConfigLoader,
     test::TestSuite::Integration.name(),

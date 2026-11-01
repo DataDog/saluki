@@ -24,6 +24,8 @@ futures = { workspace = true }
 k8s-openapi = { workspace = true }
 kube = { workspace = true, features = ["client", "http-proxy", "rustls-tls", "ws"] }
 panoramic-core = { workspace = true }
+panoramic-participants = { workspace = true }
+panoramic-steps = { workspace = true }
 rand = { workspace = true, features = ["std", "std_rng", "thread_rng"] }
 regex = { workspace = true, features = ["std"] }
 reqwest = { workspace = true, features = ["json", "zstd", "rustls-no-provider", "query"] }
@@ -56,5 +58,6 @@ rustls-cng-crypto = { workspace = true }
 
 [dev-dependencies]
 panoramic-core = { workspace = true, features = ["test-util"] }
+panoramic-steps = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

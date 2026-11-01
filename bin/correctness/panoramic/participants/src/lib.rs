@@ -1,12 +1,17 @@
-//! Participant-type declarations and the registry the loader checks cases against.
+//! Participant type declarations: what each type accepts in a case file and what it provides to steps.
+//!
+//! Knowledge of the products under test lives in this crate.
+
+#![deny(warnings)]
+#![deny(missing_docs)]
 
 use panoramic_core::case::ParticipantDeclaration;
 
 mod agent_adp;
-pub(crate) use agent_adp::AGENT_ADP;
+pub use self::agent_adp::AGENT_ADP;
 
 /// Participant types available to case files.
-pub(crate) const REGISTERED_TYPES: &[&ParticipantDeclaration] = &[&AGENT_ADP];
+pub const REGISTERED_TYPES: &[&ParticipantDeclaration] = &[&AGENT_ADP];
 
 #[cfg(test)]
 mod tests {

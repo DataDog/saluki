@@ -6,20 +6,22 @@ use serde::Deserialize;
 use super::check_pattern;
 
 /// Waits until a file inside a participant contains a pattern.
+///
+/// Its fields are public so callers can read the decoded step.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct FileContains {
+pub struct FileContains {
     /// Required participant whose file is searched; has no default.
-    pub(crate) on: String,
+    pub on: String,
     /// Required path inside the participant; may reference participant facts. Has no default.
-    pub(crate) path: Template,
+    pub path: Template,
     /// Required text or regex to find; has no default.
-    pub(crate) pattern: String,
+    pub pattern: String,
     /// Whether `pattern` is a regex. Defaults to false.
     #[serde(default)]
-    pub(crate) regex: bool,
+    pub regex: bool,
     /// Required, positive time to wait for a match; has no default.
-    pub(crate) timeout: CaseDuration,
+    pub timeout: CaseDuration,
 }
 
 impl Step for FileContains {
@@ -52,12 +54,12 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
-    use crate::steps::tests::fields;
+    use crate::test_support::valid_fields;
 
     #[test]
     fn file_contains_rejects_process_and_stream_fields() {
         for field in ["process", "stream"] {
-            let mut fields = fields("file_contains");
+            let mut fields = valid_fields("file_contains");
             fields.insert(field.into(), Value::String("worker".into()));
             let message = (FILE_CONTAINS.build)(&fields).unwrap_err();
             assert!(message.contains(&format!("unknown field `{field}`")), "{message}");
@@ -67,7 +69,7 @@ mod tests {
     #[test]
     fn file_contains_requires_on_path_pattern_and_timeout() {
         for field in ["on", "path", "pattern", "timeout"] {
-            let mut fields = fields("file_contains");
+            let mut fields = valid_fields("file_contains");
             fields.remove(field).unwrap();
             let message = (FILE_CONTAINS.build)(&fields).unwrap_err();
             assert!(message.contains(&format!("missing field `{field}`")), "{message}");
@@ -77,7 +79,7 @@ mod tests {
     #[test]
     fn file_contains_decodes_its_fields_and_keeps_paths_verbatim() {
         for path in ["/logs/output.log", r"C:\logs\output.log"] {
-            let mut fields = fields("file_contains");
+            let mut fields = valid_fields("file_contains");
             fields.insert("path".into(), Value::String(path.into()));
             let step: FileContains = decode_fields(&fields).unwrap();
             assert_eq!(step.on, "subject");
@@ -90,13 +92,13 @@ mod tests {
 
     #[test]
     fn file_contains_needs_only_its_participant() {
-        let step = (FILE_CONTAINS.build)(&fields("file_contains")).unwrap();
+        let step = (FILE_CONTAINS.build)(&valid_fields("file_contains")).unwrap();
         assert_eq!(step.needs(), vec![Need::Handle("subject".into())]);
     }
 
     #[test]
     fn file_contains_reports_facts_in_path_order_after_its_participant() {
-        let mut fields = fields("file_contains");
+        let mut fields = valid_fields("file_contains");
         fields.insert(
             "path".into(),
             Value::String("{{ other.facts.dir }}/{{ subject.facts.file }}/{{ other.facts.dir }}".into()),

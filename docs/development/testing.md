@@ -157,8 +157,8 @@ configuration fields, but the integration runner rejects a case that sets them, 
 The source documents each part:
 
 - `bin/correctness/panoramic/core/src/case/file.rs`: the case file's fields and their defaults.
-- `bin/correctness/panoramic/src/participants/agent_adp.rs`: what `agent-adp` declares, including its facts.
-- `bin/correctness/panoramic/src/steps/`: each step's fields.
+- `bin/correctness/panoramic/participants/src/agent_adp.rs`: what `agent-adp` declares, including its facts.
+- `bin/correctness/panoramic/steps/src/`: each step's fields.
 - `bin/correctness/panoramic/src/config/integration_bridge.rs`: the subset the integration runner supports, and the output each OS captures.
 
 ### Step deadlines

@@ -12,13 +12,11 @@ use std::{
     path::Path,
 };
 
+use panoramic_participants::AGENT_ADP;
 use serde_json::{json, Value};
 
 use super::{create_case_dirs, read_text, repository_root, Inventory, INTEGRATION, JSON_PATH, OLD, PARTICIPANTS};
-use crate::{
-    config::{os_for_runtime, tests::write_case, typed_case::RunnableCase, ContainerConfig, IntakeConfig},
-    participants::AGENT_ADP,
-};
+use crate::config::{os_for_runtime, tests::write_case, typed_case::RunnableCase, ContainerConfig, IntakeConfig};
 
 const LOGGING_CASES: [&str; 7] = [
     "adp-logging-default-path",

@@ -233,12 +233,9 @@ mod tests {
     use panoramic_core::case::{CaseLoader, Registries};
 
     use super::*;
-    use crate::{
-        config::{
-            build_runners,
-            tests::{write_case, PARTICIPANT_FIELDS},
-        },
-        participants, steps,
+    use crate::config::{
+        build_runners,
+        tests::{write_case, PARTICIPANT_FIELDS},
     };
 
     const CORRECTNESS_FIELDS: &str =
@@ -290,8 +287,8 @@ mod tests {
         let path = write_case(dir.path(), "alpha", PARTICIPANT_FIELDS);
         let loader = CaseLoader::new(
             Registries {
-                participant_types: participants::REGISTERED_TYPES,
-                steps: steps::REGISTERED_STEPS,
+                participant_types: panoramic_participants::REGISTERED_TYPES,
+                steps: panoramic_steps::REGISTERED_STEPS,
             },
             TypedConfigLoader,
             TestSuite::Correctness.name(),

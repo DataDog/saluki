@@ -6,21 +6,23 @@ use serde::Deserialize;
 use super::check_pattern;
 
 /// Waits until a participant's output contains a pattern.
+///
+/// Its fields are public so callers can read the decoded step.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct LogContains {
+pub struct LogContains {
     /// Required participant whose output is searched; has no default.
-    pub(crate) on: String,
+    pub on: String,
     /// Process whose output is searched. Defaults to every process of the participant.
     #[serde(default)]
-    pub(crate) process: Option<String>,
+    pub process: Option<String>,
     /// Required text or regex to find; has no default.
-    pub(crate) pattern: String,
+    pub pattern: String,
     /// Whether `pattern` is a regex. Defaults to false.
     #[serde(default)]
-    pub(crate) regex: bool,
+    pub regex: bool,
     /// Required, positive time to wait for a match; has no default.
-    pub(crate) timeout: CaseDuration,
+    pub timeout: CaseDuration,
 }
 
 impl Step for LogContains {
@@ -33,21 +35,23 @@ impl Step for LogContains {
 }
 
 /// Checks that a pattern stays absent from a participant's output.
+///
+/// Its fields are public so callers can read the decoded step.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct LogNotContains {
+pub struct LogNotContains {
     /// Required participant whose output is searched; has no default.
-    pub(crate) on: String,
+    pub on: String,
     /// Process whose output is searched. Defaults to every process of the participant.
     #[serde(default)]
-    pub(crate) process: Option<String>,
+    pub process: Option<String>,
     /// Required text or regex that must stay absent; has no default.
-    pub(crate) pattern: String,
+    pub pattern: String,
     /// Whether `pattern` is a regex. Defaults to false.
     #[serde(default)]
-    pub(crate) regex: bool,
+    pub regex: bool,
     /// Required, positive time the pattern must stay absent; has no default.
-    pub(crate) during: CaseDuration,
+    pub during: CaseDuration,
 }
 
 impl Step for LogNotContains {
@@ -88,12 +92,12 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
-    use crate::steps::tests::fields;
+    use crate::test_support::valid_fields;
 
     #[test]
     fn log_steps_reject_a_stream_field() {
         for declaration in [&LOG_CONTAINS, &LOG_NOT_CONTAINS] {
-            let mut fields = fields(declaration.name);
+            let mut fields = valid_fields(declaration.name);
             fields.insert("stream".into(), Value::String("stdout".into()));
             let message = (declaration.build)(&fields).unwrap_err();
             assert!(message.contains("unknown field `stream`"), "{message}");
@@ -102,7 +106,7 @@ mod tests {
 
     #[test]
     fn log_contains_decodes_its_fields_and_regex_defaults_to_false() {
-        let fields = fields("log_contains");
+        let fields = valid_fields("log_contains");
         let step: LogContains = decode_fields(&fields).unwrap();
         assert_eq!(step.on, "subject");
         assert_eq!(step.process, None);
@@ -113,7 +117,7 @@ mod tests {
 
     #[test]
     fn log_not_contains_requires_during_and_rejects_timeout() {
-        let mut fields = fields("log_not_contains");
+        let mut fields = valid_fields("log_not_contains");
         let step: LogNotContains = decode_fields(&fields).unwrap();
         assert_eq!(step.on, "subject");
         assert_eq!(step.process, None);
@@ -132,7 +136,7 @@ mod tests {
     fn log_steps_require_their_participant_pattern_and_duration() {
         for (declaration, duration) in [(&LOG_CONTAINS, "timeout"), (&LOG_NOT_CONTAINS, "during")] {
             for field in ["on", "pattern", duration] {
-                let mut fields = fields(declaration.name);
+                let mut fields = valid_fields(declaration.name);
                 fields.remove(field).unwrap();
                 let message = (declaration.build)(&fields).unwrap_err();
                 assert!(message.contains(&format!("missing field `{field}`")), "{message}");
@@ -143,7 +147,7 @@ mod tests {
     #[test]
     fn a_log_step_with_a_process_needs_that_process_and_one_without_needs_its_participant() {
         for declaration in [&LOG_CONTAINS, &LOG_NOT_CONTAINS] {
-            let mut fields = fields(declaration.name);
+            let mut fields = valid_fields(declaration.name);
             let step = (declaration.build)(&fields).unwrap();
             assert_eq!(step.needs(), vec![Need::Handle("subject".into())]);
             fields.insert("process".into(), Value::String("worker".into()));
