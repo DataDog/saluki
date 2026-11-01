@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use super::connections::ParticipantEndpoints;
+use super::ParticipantEndpoints;
 use crate::{
     backend::{late_facts, LateFactTiming},
     case::{
@@ -427,7 +427,7 @@ procedure: []
                         _ => unreachable!(),
                     };
                     let yaml = format!(
-                        "timeout: 1s\nsubject_os: [{}]\nparticipants:\n  holder: {{type: file-server, subject: true, realization: {{kind: {}}}, config: {config}}}\n  target: {{type: file-server, os: {}, realization: {{kind: {}}}}}\nprocedure: []\n",
+                        "timeout: 1s\nsubject_os: [{}]\nparticipants:\n  holder: {{type: file-server, subject: true, realization: {{kind: {}}}, config: {config}}}\n  target: {{type: file-server, os: {}, realization: {{kind: {}}}, config: {{env: {{PORT_OFFSET: '100'}}}}}}\nprocedure: []\n",
                         holder_os.name(), holder_kind.name(), target_os.name(), target_kind.name(),
                     );
                     match (
@@ -581,7 +581,7 @@ procedure: []
     fn fixed_ip_and_fact_references_add_no_dependencies() {
         let yaml = FILE_CASE.replace("[linux]", "[macos]").replace(
             "config: {files:",
-            "config: {env: {KEY: '{{fixture.late.ip}}'}, params: {mode: '{{fixture.late.ip}}'}, files:",
+            "config: {env: {PORT_OFFSET: '100', KEY: '{{fixture.late.ip}}'}, params: {mode: '{{fixture.late.ip}}'}, files:",
         );
         let plan = compile_files(&yaml, &[("source.yaml", "{{fixture.late.ip}}")], Os::MacOs).unwrap();
         assert_orders(&plan, &[&["fixture", "subject"]], &[&["fixture", "subject"]]);

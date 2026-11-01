@@ -3,9 +3,9 @@
 use std::collections::BTreeMap;
 
 use super::{
-    connections::ParticipantEndpoints,
     ports::RunnerHostPorts,
     routes::{route, Route},
+    ParticipantEndpoints,
 };
 use crate::{
     backend::{late_facts, writes_late_files, LateFact, LateFactTiming},
@@ -399,7 +399,7 @@ mod tests {
     fn a_host_process_groups_ip_resolves_to_loopback_in_env_and_params() {
         for name in ["self", "subject", "other"] {
             let yaml = case(&format!("{{env: {{KEY: 'prefix/{{{{ {name}.late.ip }}}}'}}, params: {{mode: [{{nested: '{{{{{name}.late.ip}}}}'}}]}}}}"), "macos")
-                .replace("procedure: []", "  other: {type: server}\nprocedure: []");
+                .replace("procedure: []", "  other: {type: server, config: {env: {PORT: '8081', METRICS: 'off'}}}\nprocedure: []");
             let plan = compile(&yaml, Os::MacOs).unwrap().unwrap();
             let config = plan.effective_config("subject").unwrap();
             assert_eq!(config.env["KEY"], "prefix/127.0.0.1");
@@ -952,7 +952,10 @@ mod tests {
 
     #[test]
     fn a_host_process_groups_ip_in_a_template_file_requires_the_same_realization() {
-        let yaml = file_case("macos").replace("procedure: []", "  other: {type: file-server}\nprocedure: []");
+        let yaml = file_case("macos").replace(
+            "procedure: []",
+            "  other: {type: file-server, config: {env: {PORT_OFFSET: '100'}}}\nprocedure: []",
+        );
         let text = "{{self.late.ip}} {{subject.late.ip}} {{other.late.ip}}";
         let plan = compile_files(&yaml, &[("source.yaml", text)], Os::MacOs).unwrap();
         assert_eq!(

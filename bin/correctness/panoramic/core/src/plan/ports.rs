@@ -5,6 +5,13 @@ use std::{
     ops::RangeInclusive,
 };
 
+use super::ParticipantEndpoints;
+use crate::{
+    case::CaseFile,
+    endpoint::{EndpointKind, Listener, Port},
+    layout::{describe_participant, Layout, RealizationKind},
+};
+
 const RUNNER_HOST_PORTS: RangeInclusive<u16> = 20000..=29999;
 
 /// Records runner-host port numbers handed out during planning.
@@ -71,9 +78,85 @@ impl<'a> RunnerHostPorts<'a> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) enum Transport {
+    Tcp,
+    Udp,
+}
+
+impl Transport {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Tcp => "tcp",
+            Self::Udp => "udp",
+        }
+    }
+}
+
+impl EndpointKind {
+    pub(super) fn runner_host_transport(self) -> Option<Transport> {
+        match self {
+            Self::Tcp | Self::Http | Self::Grpc => Some(Transport::Tcp),
+            Self::Udp => Some(Transport::Udp),
+            Self::UnixDatagram | Self::UnixStream | Self::NamedPipe => None,
+        }
+    }
+}
+
+/// Checks host-process-group network listeners in participant and endpoint name order.
+/// Rejects unassigned ports inside `RUNNER_HOST_PORTS` and listeners sharing a transport and port.
+pub(super) fn check_host_listeners(
+    file: &CaseFile, layout: &Layout, endpoints: &BTreeMap<String, ParticipantEndpoints>,
+) -> Result<(), String> {
+    let mut listeners = BTreeMap::new();
+    for (name, realization) in layout.iter() {
+        if realization.kind != RealizationKind::HostProcessGroup {
+            continue;
+        }
+        let holder = describe_participant(name, &file.participants[name].participant_type, realization);
+        let participant = &endpoints[name];
+        for (endpoint_name, endpoint) in &participant.served {
+            let Some(transport) = endpoint.kind.runner_host_transport() else {
+                continue;
+            };
+            let Listener::Port(Port::Fixed(port)) = endpoint.listener else {
+                unreachable!("network listener ports are resolved before host listener checks");
+            };
+            let transport_name = transport.name();
+            if RUNNER_HOST_PORTS.contains(&port) && !participant.assigned_ports.contains_key(endpoint_name) {
+                return Err(format!(
+                    "{holder} serves endpoint '{endpoint_name}' on runner-host {transport_name} port {port}, inside {}-{}, where panoramic assigns ports; use a port outside that range",
+                    RUNNER_HOST_PORTS.start(), RUNNER_HOST_PORTS.end(),
+                ));
+            }
+            if let Some((earlier_name, earlier_endpoint)) = listeners.insert((transport, port), (name, endpoint_name)) {
+                return Err(format!(
+                    "{holder} serves endpoint '{endpoint_name}' on runner-host {transport_name} port {port}, which participant '{earlier_name}' already serves as endpoint '{earlier_endpoint}'"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn network_endpoint_kinds_map_to_their_runner_host_transport() {
+        for (kind, expected) in [
+            (EndpointKind::Tcp, Some(Transport::Tcp)),
+            (EndpointKind::Http, Some(Transport::Tcp)),
+            (EndpointKind::Grpc, Some(Transport::Tcp)),
+            (EndpointKind::Udp, Some(Transport::Udp)),
+            (EndpointKind::UnixDatagram, None),
+            (EndpointKind::UnixStream, None),
+            (EndpointKind::NamedPipe, None),
+        ] {
+            assert_eq!(kind.runner_host_transport(), expected);
+        }
+    }
 
     #[test]
     fn the_registry_never_hands_out_a_port_twice() {

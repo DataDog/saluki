@@ -10,8 +10,8 @@ use crate::{
         config_references::FileTemplates, declared_names, CaseConfig, CaseFile, CaseSchema, ProcedureNode, Registries,
         Template,
     },
-    endpoint::{Endpoint, Listener, Port},
-    layout::{describe_participant, describe_realizations, lay_out, Layout, Os, Realization},
+    endpoint::{ConsumedEndpoint, Endpoint, Listener, Port},
+    layout::{describe_participant, describe_realizations, lay_out, Layout, Os, Realization, RealizationKind},
     participant::{find_type, CaseValues, EffectiveConfig, FactDeclaration, ParticipantType},
     record::step_label,
     step::{Need, Step},
@@ -25,9 +25,9 @@ mod routes;
 
 pub use self::ports::PortRegistry;
 use self::{
-    connections::{check_connections, ParticipantEndpoints},
+    connections::check_connections,
     order::{dependency_order, DependencyOrder},
-    ports::RunnerHostPorts,
+    ports::{check_host_listeners, RunnerHostPorts},
 };
 
 /// A loaded case with the layout selected for execution.
@@ -60,20 +60,41 @@ struct PlannedParticipant {
     config: EffectiveConfig,
 }
 
+/// Configured endpoints and the case values used to derive them.
+pub(super) struct ParticipantEndpoints {
+    /// Endpoints served with the effective configuration.
+    served: BTreeMap<String, Endpoint>,
+    /// Endpoints consumed with the effective configuration.
+    consumed: BTreeMap<String, ConsumedEndpoint>,
+    /// Case values after the OS overlay and fact substitution.
+    values: CaseValues,
+    /// Assigned listener ports, keyed by endpoint name.
+    assigned_ports: BTreeMap<String, u16>,
+    /// Environment keys carrying assigned ports, mapped to their endpoint names.
+    assigned_keys: BTreeMap<String, String>,
+}
+
+struct PortAssignments {
+    ports: BTreeMap<String, u16>,
+    keys: BTreeMap<String, String>,
+}
+
 impl<C> CasePlan<C> {
     /// Validates every declared subject OS, returning a plan only for a declared selection.
     /// Participant cases carry a layout; typed cases retain their loader-supplied data.
     /// Only the selected OS draws runner-host ports from `ports`; other OSes use separate registries.
-    /// Ports are drawn in check order: connections per consumer, then references per participant
-    /// (`env`, `params`, template files), each endpoint once.
+    /// Ports are drawn in check order: assigned listeners per participant and endpoint in name order,
+    /// then connections per consumer, then references per participant (`env`, `params`, template files).
+    /// Connections and references to one container endpoint share a runner-host port.
     ///
     /// # Errors
     ///
     /// Returns the first error on any declared subject OS, naming the case, source and failing OS,
     /// even when the selected OS is excluded. On each OS, checks run in this order: layout;
     /// configuration fact and late-fact references (`env`, `params`, then template files), configuration,
-    /// endpoint derivation and overrides, then case-port and socket-path checks in endpoint name order,
-    /// all per participant in name order;
+    /// endpoint derivation, port assignment and re-derivation, overrides, then case-port and socket-path checks
+    /// in endpoint name order, all per participant in name order;
+    /// runner-host listener range and transport uniqueness per participant and endpoint in name order;
     /// connections per consumer in name order (per `connect` key in name order: consumed, served,
     /// accepted kind, route, delivered env keys, address allocation and delivery values;
     /// then required endpoints in name order);
@@ -195,8 +216,8 @@ impl<C> CasePlan<C> {
     }
 }
 
-/// Builds effective configurations, checks endpoints and connections, merges connection deliveries into each
-/// consumer's environment and checks configuration address references, all in participant name order.
+/// Builds effective configurations (assigning host process group ports), checks endpoints, runner-host listeners
+/// and connections, merges connection deliveries and checks configuration address references in participant name order.
 /// Then computes create and start orders.
 fn plan_participants(
     file: &CaseFile, templates: &FileTemplates, layout: &Layout, types: &[&dyn ParticipantType],
@@ -209,28 +230,11 @@ fn plan_participants(
         let participant_type =
             find_type(types, &entry.participant_type).expect("laid-out participants have registered types");
         let holder = describe_participant(name, &entry.participant_type, realization);
-        let invalid_config = |message| format!("{holder} has invalid configuration: {message}");
         let mut values = CaseValues::for_os(&entry.config, realization.os);
         references::resolve_config_references(file, layout, types, name, &mut values)?;
         references::check_file_references(file, templates, layout, types, name, &values)?;
-        participant_type
-            .validate_config(realization, &values)
-            .map_err(&invalid_config)?;
-        let defaults = participant_type.default_env(realization, &values);
-        let config = EffectiveConfig::assemble(defaults, values.clone());
-        let mut endpoints = participant_type
-            .endpoints(realization, &config)
-            .map_err(invalid_config)?;
-        resolve_listeners(&holder, &config, &mut endpoints)?;
-        let consumed = participant_type.consumes(realization, &config);
-        participant_endpoints.insert(
-            name.to_string(),
-            ParticipantEndpoints {
-                served: endpoints,
-                consumed,
-                values,
-            },
-        );
+        let (config, endpoints) = derive_endpoints(&holder, participant_type, realization, values, ports)?;
+        participant_endpoints.insert(name.to_string(), endpoints);
         participants.insert(
             name.to_string(),
             PlannedParticipant {
@@ -239,6 +243,7 @@ fn plan_participants(
             },
         );
     }
+    check_host_listeners(file, layout, &participant_endpoints)?;
     let mut runner_host_ports = RunnerHostPorts::new(ports);
     let deliveries = check_connections(file, layout, &participant_endpoints, &mut runner_host_ports)?;
     for (name, env) in deliveries {
@@ -256,6 +261,150 @@ fn plan_participants(
         order,
         runner_host_ports: runner_host_ports.into_ports(),
     })
+}
+
+/// Derives listeners, assigning host ports through type defaults before deriving them again.
+fn derive_endpoints(
+    holder: &str, participant_type: &dyn ParticipantType, realization: Realization, values: CaseValues,
+    ports: &mut PortRegistry,
+) -> Result<(EffectiveConfig, ParticipantEndpoints), String> {
+    let invalid_config = |message| format!("{holder} has invalid configuration: {message}");
+    participant_type
+        .validate_config(realization, &values)
+        .map_err(&invalid_config)?;
+    let mut defaults = participant_type.default_env(realization, &values);
+    let mut config = EffectiveConfig::assemble(defaults.clone(), values.clone());
+    let mut served = participant_type
+        .endpoints(realization, &config)
+        .map_err(invalid_config)?;
+    let PortAssignments {
+        ports: assigned_ports,
+        keys: assigned_keys,
+    } = assign_ports(holder, realization, &served, &mut defaults, ports)?;
+    if !assigned_ports.is_empty() {
+        config = EffectiveConfig::assemble(defaults, values.clone());
+        let rederived = participant_type
+            .endpoints(realization, &config)
+            .map_err(|error| assignment_error(holder, &assigned_ports, &assigned_keys, None, &error))?;
+        check_rederived(holder, &served, &rederived, &assigned_ports, &assigned_keys)?;
+        served = rederived;
+    }
+    resolve_listeners(holder, &config, &mut served)?;
+    let consumed = participant_type.consumes(realization, &config);
+    Ok((
+        config,
+        ParticipantEndpoints {
+            served,
+            consumed,
+            values,
+            assigned_ports,
+            assigned_keys,
+        },
+    ))
+}
+
+fn assign_ports(
+    holder: &str, realization: Realization, served: &BTreeMap<String, Endpoint>,
+    defaults: &mut BTreeMap<String, String>, ports: &mut PortRegistry,
+) -> Result<PortAssignments, String> {
+    let mut assigned_ports = BTreeMap::new();
+    let mut assigned_keys = BTreeMap::new();
+    for (name, endpoint) in served {
+        let Listener::Port(Port::Assigned { deliver }) = endpoint.listener else {
+            continue;
+        };
+        if realization.kind != RealizationKind::HostProcessGroup {
+            return Err(format!(
+                "{holder} serves endpoint '{name}' with an assigned port; only host process groups get assigned ports"
+            ));
+        }
+        let port = ports
+            .allocate()
+            .map_err(|error| format!("{holder} cannot assign a port to endpoint '{name}': {error}"))?;
+        let env = deliver(port);
+        for key in env.keys() {
+            if let Some(earlier) = assigned_keys.insert(key.clone(), name.clone()) {
+                return Err(format!(
+                    "{holder} delivers the assigned ports of endpoints '{earlier}' and '{name}' through the same env '{key}'"
+                ));
+            }
+        }
+        defaults.extend(env);
+        assigned_ports.insert(name.clone(), port);
+    }
+    Ok(PortAssignments {
+        ports: assigned_ports,
+        keys: assigned_keys,
+    })
+}
+
+fn check_rederived(
+    holder: &str, served: &BTreeMap<String, Endpoint>, rederived: &BTreeMap<String, Endpoint>,
+    assigned_ports: &BTreeMap<String, u16>, assigned_keys: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    let invalid_derivation = |detail: &str| assignment_error(holder, assigned_ports, assigned_keys, None, detail);
+    for (name, endpoint) in served {
+        let Some(new_endpoint) = rederived.get(name) else {
+            return Err(invalid_derivation(&format!("endpoint '{name}' was removed")));
+        };
+        if new_endpoint.kind != endpoint.kind {
+            return Err(invalid_derivation(&format!(
+                "endpoint '{name}' changed kind from {} to {}",
+                endpoint.kind.name(),
+                new_endpoint.kind.name(),
+            )));
+        }
+        if let Some(&port) = assigned_ports.get(name) {
+            if !matches!(new_endpoint.listener, Listener::Port(Port::Fixed(actual)) if actual == port) {
+                return Err(assignment_error(
+                    holder,
+                    assigned_ports,
+                    assigned_keys,
+                    Some((name, port)),
+                    "the re-derived listener does not use that port",
+                ));
+            }
+        }
+    }
+    for (name, endpoint) in rederived {
+        if !served.contains_key(name) {
+            return Err(invalid_derivation(&format!("endpoint '{name}' was added")));
+        }
+        if matches!(endpoint.listener, Listener::Port(Port::Assigned { .. })) {
+            return Err(invalid_derivation(&format!(
+                "endpoint '{name}' still reports an assigned port"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn assignment_error(
+    holder: &str, assigned_ports: &BTreeMap<String, u16>, assigned_keys: &BTreeMap<String, String>,
+    endpoint: Option<(&str, u16)>, detail: &str,
+) -> String {
+    let delivered_keys = |name: &str| {
+        declared_names(
+            &assigned_keys
+                .iter()
+                .filter_map(|(key, endpoint)| (endpoint == name).then_some(key.as_str()))
+                .collect::<Vec<_>>(),
+        )
+    };
+    let header = if let Some((name, port)) = endpoint {
+        format!(
+            "{holder} does not serve endpoint '{name}' at its assigned port {port} (delivered as env {})",
+            delivered_keys(name)
+        )
+    } else {
+        let assignments = assigned_ports
+            .iter()
+            .map(|(name, port)| format!("{name} {port} via {}", delivered_keys(name)))
+            .collect::<Vec<_>>()
+            .join("; ");
+        format!("{holder} does not derive its assigned ports ({assignments}) after delivery")
+    };
+    format!("{header}: {detail}; a type reports an assigned port only when its configuration sets none")
 }
 
 /// Checks overrides, then fills case-supplied ports and validates socket paths in endpoint name order.
@@ -277,6 +426,7 @@ fn resolve_listeners(
                 continue;
             }
             Listener::Port(Port::Fixed(_)) => "port",
+            Listener::Port(Port::Assigned { .. }) => unreachable!("assigned ports are re-derived before overrides"),
             Listener::Path(_) => "path",
             Listener::Pipe(_) => "pipe name",
         };
@@ -304,6 +454,7 @@ fn resolve_listeners(
                     ));
                 }
             }
+            Listener::Port(Port::Assigned { .. }) => unreachable!("assigned ports are re-derived before overrides"),
             Listener::Port(Port::Fixed(_)) | Listener::Pipe(_) => {}
         }
     }
@@ -409,13 +560,18 @@ mod tests {
         }
 
         fn endpoints(
-            &self, _realization: Realization, _config: &EffectiveConfig,
+            &self, _realization: Realization, config: &EffectiveConfig,
         ) -> Result<BTreeMap<String, Endpoint>, String> {
+            let offset = config
+                .env
+                .get("PORT_OFFSET")
+                .map(|value| value.parse::<u16>().unwrap())
+                .unwrap_or(0);
             Ok([
-                ("tcp", Endpoint::tcp(Port::Fixed(1001))),
-                ("udp", Endpoint::udp(Port::Fixed(1001))),
-                ("http", Endpoint::http(Port::Fixed(1003))),
-                ("grpc", Endpoint::grpc(Port::Fixed(1004))),
+                ("tcp", Endpoint::tcp(Port::Fixed(1001 + offset))),
+                ("udp", Endpoint::udp(Port::Fixed(1001 + offset))),
+                ("http", Endpoint::http(Port::Fixed(1003 + offset))),
+                ("grpc", Endpoint::grpc(Port::Fixed(1004 + offset))),
                 ("datagram", Endpoint::unix_datagram("/run/every/datagram.sock")),
                 ("stream", Endpoint::unix_stream("/run/every/stream.sock")),
                 ("pipe", Endpoint::named_pipe("every-pipe")),
@@ -580,6 +736,133 @@ mod tests {
             .map(Option::unwrap)
     }
 
+    struct AssignedServer;
+
+    impl ParticipantType for AssignedServer {
+        fn name(&self) -> &'static str {
+            "assigned-server"
+        }
+
+        fn supports(&self) -> &'static [(Os, RealizationKind)] {
+            &[
+                (Os::Linux, RealizationKind::LinuxContainer),
+                (Os::Linux, RealizationKind::HostProcessGroup),
+                (Os::MacOs, RealizationKind::HostProcessGroup),
+            ]
+        }
+
+        fn params(&self) -> &'static [&'static str] {
+            &["mode"]
+        }
+
+        fn default_env(&self, realization: Realization, _config: &CaseValues) -> BTreeMap<String, String> {
+            if realization.kind == RealizationKind::HostProcessGroup {
+                BTreeMap::from([("API_URL".into(), "default".into())])
+            } else {
+                BTreeMap::new()
+            }
+        }
+
+        fn endpoints(
+            &self, realization: Realization, config: &EffectiveConfig,
+        ) -> Result<BTreeMap<String, Endpoint>, String> {
+            let mode = config.params.get("mode").and_then(serde_json::Value::as_str);
+            let api_port = if matches!(mode, Some("keep-assigned" | "assign-anywhere")) {
+                None
+            } else {
+                config.env.get("API_PORT").map(|port| port.parse::<u16>().unwrap())
+            };
+            let api = match api_port {
+                Some(port) => Port::Fixed(port + u16::from(mode == Some("wrong-port"))),
+                None if realization.kind == RealizationKind::HostProcessGroup || mode == Some("assign-anywhere") => {
+                    Port::Assigned {
+                        deliver: |port| {
+                            BTreeMap::from([
+                                ("API_PORT".into(), port.to_string()),
+                                ("API_URL".into(), format!("http://0.0.0.0:{port}")),
+                            ])
+                        },
+                    }
+                }
+                None => Port::Fixed(8080),
+            };
+            let metrics = match config.env.get("METRICS_PORT") {
+                Some(port) => Port::Fixed(port.parse().unwrap()),
+                None if realization.kind == RealizationKind::HostProcessGroup => Port::Assigned {
+                    deliver: if mode == Some("shared-key") {
+                        |port| BTreeMap::from([("API_PORT".into(), port.to_string())])
+                    } else {
+                        |port| BTreeMap::from([("METRICS_PORT".into(), port.to_string())])
+                    },
+                },
+                None => Port::Fixed(9000),
+            };
+            let mut endpoints = BTreeMap::from([
+                ("api".into(), Endpoint::http(api)),
+                ("metrics".into(), Endpoint::udp(metrics)),
+            ]);
+            if config.env.contains_key("API_PORT") {
+                match mode {
+                    Some("extra-after-assignment") => {
+                        endpoints.insert("extra".into(), Endpoint::tcp(Port::Fixed(8082)));
+                    }
+                    Some("remove-after-assignment") => {
+                        endpoints.remove("api");
+                    }
+                    Some("change-kind") => {
+                        endpoints.insert("api".into(), Endpoint::grpc(api));
+                    }
+                    Some("remove-metrics-after-assignment") => {
+                        endpoints.remove("metrics");
+                    }
+                    Some("change-metrics-kind") => {
+                        endpoints.insert("metrics".into(), Endpoint::tcp(metrics));
+                    }
+                    Some("from-case-after-assignment") => {
+                        endpoints.insert("api".into(), Endpoint::http(Port::FromCase));
+                    }
+                    Some("error-after-assignment") => return Err("cannot read delivered port".into()),
+                    Some("assign-another") => {
+                        endpoints.insert(
+                            "metrics".into(),
+                            Endpoint::udp(Port::Assigned {
+                                deliver: |_| BTreeMap::new(),
+                            }),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            Ok(endpoints)
+        }
+
+        fn consumes(&self, _realization: Realization, config: &EffectiveConfig) -> BTreeMap<String, ConsumedEndpoint> {
+            let delivery = match config.params.get("mode").and_then(serde_json::Value::as_str) {
+                Some("consume-assigned-key") => Delivery::Env {
+                    keys: BTreeSet::from(["API_PORT".into()]),
+                    value: |address| BTreeMap::from([("API_PORT".into(), address.port.unwrap().to_string())]),
+                },
+                Some("consume-after-assignment") if config.env.contains_key("API_PORT") => Delivery::Env {
+                    keys: BTreeSet::from(["UPSTREAM_URL".into()]),
+                    value: |address| BTreeMap::from([("UPSTREAM_URL".into(), address.url.clone())]),
+                },
+                _ => return BTreeMap::new(),
+            };
+            BTreeMap::from([(
+                "upstream".into(),
+                ConsumedEndpoint {
+                    accepts: vec![EndpointKind::Http],
+                    required: true,
+                    delivery,
+                },
+            )])
+        }
+
+        fn processes(&self) -> &'static [&'static str] {
+            &[]
+        }
+    }
+
     struct SharedDeliveryClient;
 
     impl ParticipantType for SharedDeliveryClient {
@@ -630,6 +913,7 @@ mod tests {
             &EveryKindServer,
             &FileServer,
             &SharedDeliveryClient,
+            &AssignedServer,
         ],
         steps: STEPS,
     };
@@ -1028,6 +1312,380 @@ participants:
 procedure: []
 "#;
 
+    fn assigned_server_case(config: &str) -> String {
+        CONNECTION_CASE
+            .replace("[linux]", "[macos]")
+            .replace("type: server}", &format!("type: assigned-server, config: {config}}}"))
+    }
+
+    #[test]
+    fn a_host_process_groups_assigned_port_is_delivered_into_its_type_defaults_and_rederived() {
+        let mut ports = PortRegistry::new();
+        for port in [20000, 20002] {
+            let plan = compile_with_ports(&assigned_server_case("{}"), Os::MacOs, &mut ports)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                plan.effective_config("server").unwrap().env,
+                BTreeMap::from([
+                    ("API_PORT".into(), port.to_string()),
+                    ("API_URL".into(), format!("http://0.0.0.0:{port}")),
+                    ("METRICS_PORT".into(), (port + 1).to_string()),
+                ])
+            );
+            assert_eq!(
+                plan.effective_config("client").unwrap().env["UPSTREAM_URL"],
+                format!("http://127.0.0.1:{port}")
+            );
+            assert!(plan.runner_host_ports.is_empty());
+        }
+        assert_eq!(ports.allocate(), Ok(20004));
+    }
+
+    #[test]
+    fn a_case_env_key_pins_an_assigned_port_and_draws_none() {
+        let mut ports = PortRegistry::new();
+        let plan = compile_with_ports(
+            &assigned_server_case("{env: {API_PORT: '8081', METRICS_PORT: '9001'}}"),
+            Os::MacOs,
+            &mut ports,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            plan.effective_config("server").unwrap().env,
+            BTreeMap::from([
+                ("API_PORT".into(), "8081".into()),
+                ("API_URL".into(), "default".into()),
+                ("METRICS_PORT".into(), "9001".into()),
+            ])
+        );
+        assert_eq!(
+            plan.effective_config("client").unwrap().env["UPSTREAM_URL"],
+            "http://127.0.0.1:8081"
+        );
+        assert_eq!(ports.allocate(), Ok(20000));
+    }
+
+    #[test]
+    fn case_env_replaces_assigned_defaults_without_changing_the_assigned_port() {
+        let plan = compile(&assigned_server_case("{env: {API_URL: literal}}"), Os::MacOs)
+            .unwrap()
+            .unwrap();
+        let config = plan.effective_config("server").unwrap();
+        assert_eq!(config.env["API_URL"], "literal");
+        assert_eq!(config.env["API_PORT"], "20000");
+        assert_eq!(
+            plan.effective_config("client").unwrap().env["UPSTREAM_URL"],
+            "http://127.0.0.1:20000"
+        );
+    }
+
+    #[test]
+    fn assigned_ports_are_drawn_per_participant_and_endpoint_in_name_order_before_connection_ports() {
+        let yaml = r#"timeout: 1s
+subject_os: [macos]
+participants:
+  z: {type: assigned-server}
+  client: {type: client, subject: true, connect: {upstream: container.api}, config: {env: {REF: '{{container.endpoints.metrics.port}}'}}}
+  a: {type: assigned-server}
+  container: {type: server, os: linux}
+procedure: []
+"#;
+        let mut ports = PortRegistry::new();
+        let plan = compile_with_ports(yaml, Os::MacOs, &mut ports).unwrap().unwrap();
+        for (name, api, metrics) in [("a", "20000", "20001"), ("z", "20002", "20003")] {
+            let config = plan.effective_config(name).unwrap();
+            assert_eq!(config.env["API_PORT"], api);
+            assert_eq!(config.env["METRICS_PORT"], metrics);
+        }
+        assert_eq!(
+            plan.effective_config("client").unwrap().env["UPSTREAM_URL"],
+            "http://127.0.0.1:20004"
+        );
+        assert_eq!(
+            plan.runner_host_ports,
+            BTreeMap::from([
+                (("container".into(), "api".into()), 20004),
+                (("container".into(), "metrics".into()), 20005),
+            ])
+        );
+        assert_eq!(ports.allocate(), Ok(20006));
+    }
+
+    #[test]
+    fn an_assigned_port_outside_a_host_process_group_fails_naming_the_endpoint() {
+        let yaml = assigned_server_case("{params: {mode: assign-anywhere}}").replace("[macos]", "[linux]");
+        let mut ports = PortRegistry::new();
+        assert_eq!(compile_with_ports(&yaml, Os::Linux, &mut ports).err().unwrap().to_string(),
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'server' of type 'assigned-server' as linux-container on linux serves endpoint 'api' with an assigned port; only host process groups get assigned ports");
+        assert_eq!(ports.allocate(), Ok(20000));
+    }
+
+    #[test]
+    fn a_type_that_does_not_serve_its_assigned_port_after_delivery_fails() {
+        let wrong_api = "does not serve endpoint 'api' at its assigned port 20000 (delivered as env API_PORT, API_URL)";
+        let both_ports = "does not derive its assigned ports (api 20000 via API_PORT, API_URL; metrics 20001 via METRICS_PORT) after delivery";
+        let api_only = "does not derive its assigned ports (api 20000 via API_PORT, API_URL) after delivery";
+        for (mode, env, header, detail) in [
+            (
+                "keep-assigned",
+                "",
+                wrong_api,
+                "the re-derived listener does not use that port",
+            ),
+            (
+                "keep-assigned",
+                "API_PORT: '8081'",
+                wrong_api,
+                "the re-derived listener does not use that port",
+            ),
+            (
+                "wrong-port",
+                "",
+                wrong_api,
+                "the re-derived listener does not use that port",
+            ),
+            ("extra-after-assignment", "", both_ports, "endpoint 'extra' was added"),
+            ("remove-after-assignment", "", both_ports, "endpoint 'api' was removed"),
+            (
+                "change-kind",
+                "",
+                both_ports,
+                "endpoint 'api' changed kind from http to grpc",
+            ),
+            (
+                "remove-metrics-after-assignment",
+                "METRICS_PORT: '9001'",
+                api_only,
+                "endpoint 'metrics' was removed",
+            ),
+            (
+                "change-metrics-kind",
+                "METRICS_PORT: '9001'",
+                api_only,
+                "endpoint 'metrics' changed kind from udp to tcp",
+            ),
+            (
+                "from-case-after-assignment",
+                "",
+                wrong_api,
+                "the re-derived listener does not use that port",
+            ),
+            ("error-after-assignment", "", both_ports, "cannot read delivered port"),
+            (
+                "assign-another",
+                "METRICS_PORT: '9001'",
+                api_only,
+                "endpoint 'metrics' still reports an assigned port",
+            ),
+        ] {
+            let yaml = assigned_server_case(&format!("{{params: {{mode: {mode}}}, env: {{{env}}}}}"));
+            let message = compile(&yaml, Os::MacOs).err().unwrap().to_string();
+            assert_eq!(message, format!(
+                "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'server' of type 'assigned-server' as host-process-group on macos {header}: {detail}; a type reports an assigned port only when its configuration sets none"
+            ), "{mode}");
+        }
+    }
+
+    #[test]
+    fn two_assigned_endpoints_delivering_one_env_key_fail() {
+        let yaml = assigned_server_case("{params: {mode: shared-key}}");
+        assert_eq!(compile(&yaml, Os::MacOs).err().unwrap().to_string(),
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'server' of type 'assigned-server' as host-process-group on macos delivers the assigned ports of endpoints 'api' and 'metrics' through the same env 'API_PORT'");
+    }
+
+    #[test]
+    fn a_connection_delivering_an_assigned_port_key_fails() {
+        let yaml = assigned_server_case("{params: {mode: consume-assigned-key}}")
+            .replace(
+                "type: assigned-server,",
+                "type: assigned-server, connect: {upstream: other.api},",
+            )
+            .replace("procedure: []", "  other: {type: server}\nprocedure: []");
+        assert_eq!(compile(&yaml, Os::MacOs).err().unwrap().to_string(),
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'server' of type 'assigned-server' as host-process-group on macos delivers env 'API_PORT' through connection 'upstream', which also carries the assigned port of its endpoint 'api'");
+        let yaml = yaml.replace(
+            "mode: consume-assigned-key}",
+            "mode: consume-assigned-key}, env: {API_PORT: '8081'}",
+        );
+        assert!(compile(&yaml, Os::MacOs)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("sets env 'API_PORT', which its connection 'upstream' delivers"));
+    }
+
+    #[test]
+    fn consumed_endpoints_are_derived_from_the_configuration_with_assigned_ports() {
+        let yaml = assigned_server_case("{params: {mode: consume-after-assignment}}")
+            .replace(
+                "type: assigned-server,",
+                "type: assigned-server, connect: {upstream: other.api},",
+            )
+            .replace("procedure: []", "  other: {type: server}\nprocedure: []");
+        let mut ports = PortRegistry::new();
+        let plan = compile_with_ports(&yaml, Os::MacOs, &mut ports).unwrap().unwrap();
+        let config = plan.effective_config("server").unwrap();
+        assert_eq!(config.env["API_PORT"], "20000");
+        assert_eq!(config.env["UPSTREAM_URL"], "http://127.0.0.1:8080");
+        assert_eq!(ports.allocate(), Ok(20002));
+    }
+
+    #[test]
+    fn assigned_port_exhaustion_names_the_endpoint() {
+        let mut ports = PortRegistry::over(21000..=21000);
+        assert_eq!(compile_with_ports(&assigned_server_case("{}"), Os::MacOs, &mut ports).err().unwrap().to_string(),
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'server' of type 'assigned-server' as host-process-group on macos cannot assign a port to endpoint 'metrics': all 1 runner-host ports are allocated");
+    }
+
+    #[test]
+    fn only_the_selected_subject_os_draws_assigned_ports_from_the_run_registry() {
+        let yaml = assigned_server_case("{}").replace("[macos]", "[linux, macos]");
+        for (selected, next) in [(Os::Linux, 20000), (Os::MacOs, 20002), (Os::Windows, 20000)] {
+            let mut ports = PortRegistry::new();
+            let plan = compile_with_ports(&yaml, selected, &mut ports).unwrap();
+            if selected == Os::MacOs {
+                assert_eq!(
+                    plan.unwrap().effective_config("server").unwrap().env["API_PORT"],
+                    "20000"
+                );
+            } else if selected == Os::Linux {
+                assert!(!plan
+                    .unwrap()
+                    .effective_config("server")
+                    .unwrap()
+                    .env
+                    .contains_key("API_PORT"));
+            } else {
+                assert!(plan.is_none());
+            }
+            assert_eq!(ports.allocate(), Ok(next));
+        }
+        let yaml = yaml
+            .replace(
+                "type: assigned-server",
+                "type: assigned-server, realization: {kind: host-process-group}",
+            )
+            .replace(
+                "type: client",
+                "type: every-kind-client, realization: {kind: host-process-group}",
+            );
+        let yaml = yaml.replace("upstream: server.api", "target: server.api");
+        let mut ports = PortRegistry::new();
+        let plan = compile_with_ports(&yaml, Os::Linux, &mut ports).unwrap().unwrap();
+        assert_eq!(plan.effective_config("server").unwrap().env["API_PORT"], "20000");
+        assert_eq!(ports.allocate(), Ok(20002));
+    }
+
+    #[test]
+    fn a_fixed_case_supplied_or_pinned_host_port_inside_the_runner_host_range_fails() {
+        for (participant_type, config, endpoint, port) in [
+            ("server", "{env: {PORT: '20000'}}", "api", 20000),
+            ("server", "{endpoints: {extra: {port: 25000}}}", "extra", 25000),
+            ("assigned-server", "{env: {API_PORT: '29999'}}", "api", 29999),
+        ] {
+            let yaml =
+                assigned_server_case(config).replace("type: assigned-server", &format!("type: {participant_type}"));
+            // A custom registry must not change the reserved runner-host range.
+            let mut ports = PortRegistry::over(21000..=21010);
+            assert_eq!(compile_with_ports(&yaml, Os::MacOs, &mut ports).err().unwrap().to_string(), format!(
+                "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'server' of type '{participant_type}' as host-process-group on macos serves endpoint '{endpoint}' on runner-host tcp port {port}, inside 20000-29999, where panoramic assigns ports; use a port outside that range"));
+            for boundary in [19999, 30000] {
+                let plan = compile(&yaml.replace(&port.to_string(), &boundary.to_string()), Os::MacOs)
+                    .unwrap()
+                    .unwrap();
+                if endpoint == "api" {
+                    assert_eq!(
+                        plan.effective_config("client").unwrap().env["UPSTREAM_URL"],
+                        format!("http://127.0.0.1:{boundary}")
+                    );
+                } else {
+                    assert_eq!(
+                        plan.effective_config("server").unwrap().endpoints["extra"].port,
+                        boundary
+                    );
+                }
+            }
+        }
+        let yaml = assigned_server_case("{env: {METRICS_PORT: '25000'}}");
+        assert!(compile(&yaml, Os::MacOs)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("endpoint 'metrics' on runner-host udp port 25000, inside 20000-29999"));
+    }
+
+    #[test]
+    fn container_ports_inside_the_runner_host_range_are_accepted() {
+        let yaml = CONNECTION_CASE.replace(
+            "type: server}",
+            "type: server, config: {env: {PORT: '20000'}, endpoints: {extra: {port: 25000}}}}",
+        );
+        let mut ports = PortRegistry::new();
+        let plan = compile_with_ports(&yaml, Os::Linux, &mut ports).unwrap().unwrap();
+        assert_eq!(
+            plan.effective_config("client").unwrap().env["UPSTREAM_URL"],
+            "http://server:20000"
+        );
+        assert_eq!(plan.effective_config("server").unwrap().endpoints["extra"].port, 25000);
+        assert_eq!(ports.allocate(), Ok(20000));
+    }
+
+    #[test]
+    fn two_host_process_groups_serving_one_tcp_port_fail_naming_both() {
+        for (other, config, port, earlier) in [
+            ("server", "{}", 8080, "api"),
+            ("every-kind-server", "{env: {PORT: '1004'}}", 1004, "grpc"),
+        ] {
+            let yaml = format!("timeout: 1s\nsubject_os: [macos]\nparticipants:\n  z: {{type: server, subject: true, config: {config}}}\n  a: {{type: {other}}}\nprocedure: []\n");
+            assert_eq!(compile(&yaml, Os::MacOs).err().unwrap().to_string(), format!(
+                "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'z' of type 'server' as host-process-group on macos serves endpoint 'api' on runner-host tcp port {port}, which participant 'a' already serves as endpoint '{earlier}'"));
+        }
+    }
+
+    #[test]
+    fn two_endpoints_of_one_host_process_group_on_one_port_and_transport_fail() {
+        let yaml = CONNECTION_CASE.replace("[linux]", "[macos]").replace(
+            "type: server}",
+            "type: server, config: {endpoints: {extra: {port: 8080}}}}",
+        );
+        assert_eq!(compile(&yaml, Os::MacOs).err().unwrap().to_string(),
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'server' of type 'server' as host-process-group on macos serves endpoint 'extra' on runner-host tcp port 8080, which participant 'server' already serves as endpoint 'api'");
+    }
+
+    #[test]
+    fn a_tcp_and_a_udp_host_listener_may_share_a_port_number() {
+        let yaml = CONNECTION_CASE
+            .replace("[linux]", "[macos]")
+            .replace("type: server}", "type: server, config: {env: {PORT: '9000'}}}")
+            .replace("upstream: server.api", "upstream: server.api, side: server.metrics");
+        let mut ports = PortRegistry::new();
+        let plan = compile_with_ports(&yaml, Os::MacOs, &mut ports).unwrap().unwrap();
+        assert_eq!(
+            plan.effective_config("client").unwrap().env,
+            BTreeMap::from([
+                ("UPSTREAM_URL".into(), "http://127.0.0.1:9000".into()),
+                ("SIDE_HOST".into(), "127.0.0.1".into()),
+                ("SIDE_PORT".into(), "9000".into()),
+            ])
+        );
+        assert_eq!(ports.allocate(), Ok(20000));
+    }
+
+    #[test]
+    fn host_port_conflicts_fail_on_an_unselected_subject_os() {
+        let yaml = r#"timeout: 1s
+subject_os: [linux, macos]
+participants:
+  a: {type: server, subject: true}
+  z: {type: server, config: {env: {PORT: '8081', METRICS: 'off'}, os: {macos: {env: {PORT: '8080'}}}}}
+procedure: []
+"#;
+        assert_eq!(compile(yaml, Os::Linux).err().unwrap().to_string(),
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'z' of type 'server' as host-process-group on macos serves endpoint 'api' on runner-host tcp port 8080, which participant 'a' already serves as endpoint 'api'");
+    }
+
     fn host_to_container_case() -> String {
         CONNECTION_CASE
             .replace("[linux]", "[macos]")
@@ -1218,7 +1876,10 @@ procedure: []
                 "{{env: {{KEY: '{{{{ {target}.endpoints.{endpoint}.{part} }}}}'}}}}"
             ))
             .replace("[macos]", &format!("[{}]", os.name()))
-            .replace("type: server, os: linux", "type: every-kind-server");
+            .replace(
+                "type: server, os: linux",
+                "type: every-kind-server, config: {env: {PORT_OFFSET: '100'}}",
+            );
             let mut ports = PortRegistry::new();
             let plan = compile_with_ports(&yaml, os, &mut ports).unwrap().unwrap();
             assert!(plan.runner_host_ports.is_empty(), "{yaml}");
@@ -1232,7 +1893,7 @@ procedure: []
 subject_os: [macos]
 participants:
   z: {type: client, subject: true, connect: {upstream: server.api}}
-  b: {type: server, config: {env: {KEY: '{{ server.endpoints.extra.url }}'}}}
+  b: {type: server, config: {env: {PORT: '8081', METRICS: 'off', KEY: '{{ server.endpoints.extra.url }}'}}}
   a: {type: server, config: {env: {KEY: '{{ server.endpoints.metrics.url }}'}}}
   server: {type: server, os: linux, config: {endpoints: {extra: {port: 8123}}}}
 procedure: []
@@ -2011,7 +2672,10 @@ procedure: []
     fn a_participant_with_its_own_os_needs_facts_only_from_its_realization_on_that_os() {
         let yaml = FACT_CASE
             .replace("[linux]", "[macos]")
-            .replace("participants:", "participants:\n  other: {type: server, os: linux}")
+            .replace(
+                "participants:",
+                "participants:\n  other: {type: server, os: linux, config: {env: {PORT: '8081', METRICS: 'off'}}}",
+            )
             .replace("subject.facts.file", "other.facts.file");
         let plan = compile(&yaml, Os::MacOs).unwrap().unwrap();
         assert_eq!(plan.fact("other", "file"), Some("/logs/output.log"));
@@ -2049,7 +2713,7 @@ procedure: []
     fn a_layout_error_on_a_subject_os_is_reported_before_its_fact_errors() {
         let yaml = FACT_CASE.replace("[linux]", "[macos]").replace(
             "participants:",
-            "participants:\n  other: {type: server, realization: {kind: linux-container}}",
+            "participants:\n  other: {type: server, realization: {kind: linux-container}, config: {env: {PORT: '8081', METRICS: 'off'}}}",
         );
         let message = compile(&yaml, Os::MacOs).err().unwrap().to_string();
         assert_eq!(message,
@@ -2068,7 +2732,7 @@ procedure: []
     fn fact_errors_follow_subject_os_order_then_procedure_order_including_parallel_members() {
         let yaml = PARTICIPANT_FIELDS
             .replace("[linux]", "[macos, linux]")
-            .replace("participants:", "participants:\n  other: {type: server, os: macos}")
+            .replace("participants:", "participants:\n  other: {type: server, os: macos, config: {env: {PORT: '8081', METRICS: 'off'}}}")
             .replace("procedure: []", "procedure:\n  - {step: probe, on: subject, path: '{{ subject.facts.file }}'}\n  - parallel:\n    - {step: probe, on: subject}\n    - {step: probe, on: subject, path: '{{ other.facts.file }}'}\n  - {step: probe, on: subject, path: '{{ other.facts.file }}'}");
         let message = compile(&yaml, Os::MacOs).err().unwrap().to_string();
         assert!(

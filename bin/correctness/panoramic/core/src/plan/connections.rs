@@ -6,23 +6,13 @@ use std::collections::BTreeMap;
 use super::{
     ports::RunnerHostPorts,
     routes::{address, route, Route},
+    ParticipantEndpoints,
 };
 use crate::{
     case::{declared_names, CaseFile},
-    endpoint::{ConsumedEndpoint, Delivery, Endpoint},
+    endpoint::Delivery,
     layout::{describe_participant, Layout},
-    participant::CaseValues,
 };
-
-/// Configured endpoints and the case values used to derive them.
-pub(super) struct ParticipantEndpoints {
-    /// Endpoints served with the effective configuration.
-    pub(super) served: BTreeMap<String, Endpoint>,
-    /// Endpoints consumed with the effective configuration.
-    pub(super) consumed: BTreeMap<String, ConsumedEndpoint>,
-    /// Case values after the OS overlay and fact substitution.
-    pub(super) values: CaseValues,
-}
 
 /// Checks each consumer's connections, then its required endpoints, all in name order.
 /// Resolves each connection's address, drawing runner-host ports from `ports` in check order,
@@ -77,6 +67,11 @@ pub(super) fn check_connections(
                 if consumer_endpoints.values.env.contains_key(key) {
                     return Err(format!(
                         "{holder} sets env '{key}', which its connection '{connection}' delivers; remove one of them"
+                    ));
+                }
+                if let Some(endpoint) = consumer_endpoints.assigned_keys.get(key) {
+                    return Err(format!(
+                        "{holder} delivers env '{key}' through connection '{connection}', which also carries the assigned port of its endpoint '{endpoint}'"
                     ));
                 }
                 if let Some(earlier) = delivered_keys.insert(key, connection) {

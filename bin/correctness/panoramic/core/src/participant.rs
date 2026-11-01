@@ -52,12 +52,15 @@ impl CaseValues {
 
 /// A participant's configuration: type defaults, connection deliveries, then case values, with later layers winning.
 ///
-/// The `validate_config`, `default_env`, `endpoints` and `consumes` hooks see configuration before deliveries.
+/// Type defaults include assigned-port values. Case environment variables can pin those ports.
+/// The `validate_config`, `default_env`, `endpoints` and `consumes` hooks see configuration
+/// before connection deliveries.
+/// After port assignment, `endpoints` and `consumes` see the reassembled configuration including assigned values.
 /// A type must derive what it serves and consumes independently of where it connects.
 /// Case references follow the substitution and checking rules of [`CaseValues`].
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EffectiveConfig {
-    /// Type defaults, then delivered values, then case environment variables. Defaults to empty.
+    /// Type defaults (including assigned ports), then connection deliveries, then case variables. Defaults to empty.
     /// Case values must not set a key delivered by a connection.
     pub env: BTreeMap<String, String>,
     /// Case-supplied file sources, relative to the case directory. Defaults to empty.
@@ -139,6 +142,11 @@ pub trait ParticipantType: Send + Sync {
     ///
     /// `config` holds substituted values before connection deliveries; see [`EffectiveConfig`].
     /// Derive these endpoints independently of where the participant connects.
+    ///
+    /// On a host process group, report `Port::Assigned` for a listener whose configuration leaves its port unset.
+    /// Other realizations must not report it. Core delivers assigned ports into type defaults, reapplies case
+    /// values and calls this hook again with that reassembled configuration. Keep the same endpoint names and
+    /// kinds, derive each assigned listener as `Port::Fixed` at its assigned port and resolve every `Port::Assigned`.
     ///
     /// # Errors
     ///

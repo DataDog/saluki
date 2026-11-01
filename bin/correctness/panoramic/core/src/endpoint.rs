@@ -37,33 +37,35 @@ impl EndpointKind {
 }
 
 /// An endpoint a participant serves.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Endpoint {
     pub(crate) kind: EndpointKind,
     pub(crate) listener: Listener,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) enum Listener {
     Port(Port),
     Path(String),
-    Pipe(String),
+    Pipe(#[expect(dead_code, reason = "Named-pipe listener names are retained for address rendering.")] String),
 }
 
 /// Where a network listener's port comes from.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 #[cfg_attr(
     not(test),
-    expect(
-        dead_code,
-        reason = "Case-supplied ports are declared by core's test participant types."
-    )
+    expect(dead_code, reason = "Only core's test participant types declare listener ports.")
 )]
 pub(crate) enum Port {
     /// A port the participant type derives from its configuration.
     Fixed(u16),
     /// A port only the case knows, supplied as `config.endpoints.<name>.port`.
     FromCase,
+    /// A host-process-group port core assigns when configuration sets none.
+    /// `deliver` maps it to the environment variables from which the type derives it.
+    Assigned {
+        deliver: fn(u16) -> BTreeMap<String, String>,
+    },
 }
 
 #[cfg_attr(

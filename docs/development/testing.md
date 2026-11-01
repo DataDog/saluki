@@ -209,13 +209,19 @@ other, and pods reach each other, by participant name and the server's port. Hos
 port, allocated while planning from one pool per invocation below the OS's default ephemeral port range.
 An endpoint reference in a host process group's configuration to a Linux container's network endpoint reserves a
 runner-host port the same way. Every connection and reference that reaches one endpoint shares its port.
+A host process group's type may also have panoramic assign a listener port from this pool, delivered through
+its environment defaults. A case pins the port by setting the type's variable in `env`.
+No two network listeners of a case's host process groups may share a port on one transport (TCP or UDP).
+A fixed or pinned host port must be outside the pool, `20000–29999`; avoiding collisions across concurrent
+cases is the case author's responsibility.
 A Unix socket is reached at the path its server listens on. A served socket path may use fact references,
 but not references resolved later, such as late facts. `config.endpoints` gives the nonzero port of a listener
 whose port the type can't derive from configuration. Overriding any other endpoint fails, as does leaving
 such a port out.
 
 A case must not set, in `config.env` or the overlay for that OS, an environment variable that one of its
-connections delivers. Two connections of one participant must not deliver the same variable.
+connections delivers. Two connections of one participant must not deliver the same variable, and a connection
+must not deliver a variable carrying an assigned listener port.
 Every required consumed endpoint must be connected, and each `config.endpoints` key must name an endpoint
 the participant serves. Both `connect` and `config.endpoints` must be empty for `agent-adp`.
 
