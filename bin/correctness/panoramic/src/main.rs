@@ -118,6 +118,7 @@ async fn main() -> ExitCode {
         Command::Run(cmd) => run_tests(cmd, use_tui).await,
         Command::List(cmd) => list_tests(cmd).await,
         Command::Artifacts(cmd) => match cmd.command {
+            cli::ArtifactsSubcommand::Render(cmd) => artifact_commands::render(cmd),
             cli::ArtifactsSubcommand::Verify(cmd) => artifact_commands::verify(cmd, &mut std::io::stdout()).await,
         },
     };

@@ -29,7 +29,7 @@ sha2 = { workspace = true }
 snafu = { workspace = true }
 tokio = { workspace = true, features = ["rt", "signal", "sync", "time"] }
 tokio-util = { workspace = true, features = ["rt"] }
-toml = { workspace = true }
+toml = { workspace = true, features = ["display"] }
 tracing = { workspace = true }
 
 [dev-dependencies]

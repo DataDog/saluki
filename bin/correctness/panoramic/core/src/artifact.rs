@@ -1,15 +1,12 @@
 //! Artifact roles name the images, binaries and installs that participants and backends run.
-//! Manifests bind roles to references for a run; omitted roles use their local defaults.
+//! Manifests bind roles to references for a run and can be rendered from bindings; omitted roles use their local defaults.
 //! Plans carry resolved bindings with the source of each reference.
 //! Verification checks availability and records identities.
 
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-};
+use std::{collections::BTreeMap, path::Path};
 
 use saluki_error::{generic_error, GenericError};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 mod verify;
 pub use verify::{verify, ArtifactVerification};
@@ -63,15 +60,15 @@ impl ArtifactRole {
     }
 }
 
-/// Role bindings for one run, read from an artifact manifest. The default binds nothing.
+/// Role bindings for one run. The default binds nothing.
 #[derive(Clone, Debug, Default)]
 pub struct ArtifactManifest {
-    /// File the roles were read from; set whenever roles is non-empty.
-    pub(crate) source: Option<PathBuf>,
+    /// Label naming where the bindings came from in errors.
+    pub(crate) origin: String,
     pub(crate) roles: BTreeMap<String, String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ManifestFile {
     schema: u32,
@@ -80,6 +77,22 @@ struct ManifestFile {
 }
 
 impl ArtifactManifest {
+    /// Creates a manifest from role bindings, preserving references as written.
+    /// `origin` labels the bindings in errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a reference is empty or whitespace-only.
+    pub fn new(origin: impl Into<String>, roles: BTreeMap<String, String>) -> Result<Self, GenericError> {
+        let origin = origin.into();
+        for (name, reference) in &roles {
+            if reference.trim().is_empty() {
+                return Err(generic_error!("{origin}: role '{name}' has an empty reference"));
+            }
+        }
+        Ok(Self { origin, roles })
+    }
+
     /// Reads and parses a manifest file.
     ///
     /// # Errors
@@ -107,18 +120,16 @@ impl ArtifactManifest {
                 file.schema
             ));
         }
-        for (name, reference) in &file.roles {
-            if reference.trim().is_empty() {
-                return Err(generic_error!(
-                    "artifact manifest {}: role '{name}' has an empty reference",
-                    source.display()
-                ));
-            }
-        }
-        Ok(Self {
-            source: Some(source.to_path_buf()),
-            roles: file.roles,
+        Self::new(format!("artifact manifest {}", source.display()), file.roles)
+    }
+
+    /// Renders the schema and bindings as TOML, with roles in name order.
+    pub fn render(&self) -> String {
+        toml::to_string(&ManifestFile {
+            schema: 1,
+            roles: self.roles.clone(),
         })
+        .expect("a u32 schema and a string-to-string map always serialize as TOML")
     }
 }
 
@@ -185,7 +196,7 @@ mod tests {
             Path::new("artifacts.toml"),
         )
         .unwrap();
-        assert_eq!(manifest.source.as_deref(), Some(Path::new("artifacts.toml")));
+        assert_eq!(manifest.origin, "artifact manifest artifacts.toml");
         assert_eq!(
             manifest.roles,
             BTreeMap::from([
@@ -200,6 +211,44 @@ mod tests {
         let manifest = ArtifactManifest::parse("schema = 1", Path::new("artifacts.toml")).unwrap();
         assert!(manifest.roles.is_empty());
         assert!(ArtifactManifest::default().roles.is_empty());
+    }
+
+    #[test]
+    fn a_manifest_renders_its_schema_and_roles_in_name_order_as_toml() {
+        let manifest = ArtifactManifest::new(
+            "bindings",
+            BTreeMap::from([("b".into(), "y".into()), ("a".into(), "x".into())]),
+        )
+        .unwrap();
+        assert_eq!(manifest.render(), "schema = 1\n\n[roles]\na = \"x\"\nb = \"y\"\n");
+    }
+
+    #[test]
+    fn a_rendered_manifest_parses_back_to_the_same_bindings() {
+        let manifest = ArtifactManifest::new(
+            "bindings",
+            BTreeMap::from([
+                ("equals".into(), "a=b=c".into()),
+                ("path".into(), r"C:\tools\tool.log".into()),
+                ("quotes".into(), "\"double\" and 'single'".into()),
+                ("spaces".into(), " reference ".into()),
+                ("unicode".into(), "référence/工具".into()),
+            ]),
+        )
+        .unwrap();
+        for manifest in [manifest, ArtifactManifest::default()] {
+            let parsed = ArtifactManifest::parse(&manifest.render(), Path::new("rendered.toml")).unwrap();
+            assert_eq!(parsed.roles, manifest.roles);
+        }
+    }
+
+    #[test]
+    fn manifests_built_from_roles_reject_empty_references_naming_their_origin() {
+        for reference in ["", " "] {
+            let error =
+                ArtifactManifest::new("--set", BTreeMap::from([("tool".into(), reference.into())])).unwrap_err();
+            assert_eq!(error.to_string(), "--set: role 'tool' has an empty reference");
+        }
     }
 
     #[test]
@@ -242,7 +291,7 @@ mod tests {
         let path = dir.path().join("artifacts.toml");
         std::fs::write(&path, "schema = 1\n[roles]\ntool = 'bin/tool'").unwrap();
         let manifest = ArtifactManifest::load(&path).unwrap();
-        assert_eq!(manifest.source, Some(path));
+        assert_eq!(manifest.origin, format!("artifact manifest {}", path.display()));
         assert_eq!(manifest.roles, BTreeMap::from([("tool".into(), "bin/tool".into())]));
     }
 }

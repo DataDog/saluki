@@ -5,16 +5,29 @@ use std::{
     path::{Component, Path},
 };
 
+use saluki_error::{generic_error, GenericError};
+
 use super::CasePlan;
 use crate::{
     artifact::{ArtifactBinding, ArtifactKind, ArtifactManifest, ArtifactRole, BindingSource},
     backend,
-    case::CaseFile,
+    case::{CaseFile, Registries},
     layout::{Layout, Realization},
     participant::{find_type, ParticipantType},
 };
 
-pub(super) fn role_catalog(types: &[&dyn ParticipantType]) -> Result<BTreeMap<&'static str, ArtifactRole>, String> {
+/// Checks bindings against the artifact roles declared by all registered participant types and backends.
+///
+/// # Errors
+///
+/// Returns an error for invalid install main-binary paths or conflicting role declarations,
+/// then for unknown manifest roles, naming the manifest's origin.
+pub fn check_artifact_manifest(registries: Registries<'_>, manifest: &ArtifactManifest) -> Result<(), GenericError> {
+    let catalog = role_catalog(registries.participant_types).map_err(|error| generic_error!(error))?;
+    check_manifest(&catalog, manifest).map_err(|error| generic_error!(error))
+}
+
+fn role_catalog(types: &[&dyn ParticipantType]) -> Result<BTreeMap<&'static str, ArtifactRole>, String> {
     let mut roles: BTreeMap<_, (ArtifactRole, String)> = BTreeMap::new();
     let mut declare = |role: ArtifactRole, declarer: String| {
         if let ArtifactKind::Install { main_binary } = role.kind {
@@ -72,9 +85,7 @@ pub(super) fn role_catalog(types: &[&dyn ParticipantType]) -> Result<BTreeMap<&'
     Ok(roles.into_iter().map(|(name, (role, _))| (name, role)).collect())
 }
 
-pub(super) fn check_manifest(
-    catalog: &BTreeMap<&str, ArtifactRole>, manifest: ArtifactManifest,
-) -> Result<BTreeMap<String, String>, String> {
+fn check_manifest(catalog: &BTreeMap<&str, ArtifactRole>, manifest: &ArtifactManifest) -> Result<(), String> {
     let unknown: Vec<_> = manifest
         .roles
         .keys()
@@ -83,13 +94,13 @@ pub(super) fn check_manifest(
         .collect();
     if !unknown.is_empty() {
         return Err(format!(
-            "artifact manifest {}: no participant type or backend declares role {}; declared roles: {}",
-            manifest.source.expect("manifest bindings have a source file").display(),
+            "{}: no participant type or backend declares role {}; declared roles: {}",
+            manifest.origin,
             unknown.join(", "),
             catalog.keys().copied().collect::<Vec<_>>().join(", "),
         ));
     }
-    Ok(manifest.roles)
+    Ok(())
 }
 
 pub(super) fn bind(
@@ -138,7 +149,7 @@ pub fn needed_artifacts<'p, C: 'p>(plans: impl IntoIterator<Item = &'p CasePlan<
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::{collections::BTreeMap, path::Path};
 
     use crate::{
         artifact::{ArtifactBinding, ArtifactKind, ArtifactManifest, ArtifactRole, BindingSource},
@@ -149,6 +160,7 @@ mod tests {
         layout::{Os, Realization, RealizationKind},
         participant::ParticipantType,
         plan::{
+            check_artifact_manifest,
             fixtures::{compile_with, planner, CONFIG_REGISTRIES},
             needed_artifacts, Planner,
         },
@@ -494,6 +506,54 @@ mod tests {
             "artifact manifest artifacts.toml: no participant type or backend declares role 'a', 'z'; \
              declared roles: fixup-image, resources, tool, windows-tool"
         );
+    }
+
+    #[test]
+    fn checking_a_manifest_reports_every_unknown_role_naming_its_origin() {
+        let manifest = ArtifactManifest::new(
+            "--set",
+            BTreeMap::from([
+                ("z".into(), "z".into()),
+                ("a".into(), "a".into()),
+                ("tool".into(), "bin/other".into()),
+            ]),
+        )
+        .unwrap();
+        let error = check_artifact_manifest(
+            Registries {
+                participant_types: &[&SERVER],
+                ..CONFIG_REGISTRIES
+            },
+            &manifest,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "--set: no participant type or backend declares role 'a', 'z'; \
+             declared roles: fixup-image, resources, tool, windows-tool"
+        );
+    }
+
+    #[test]
+    fn checking_a_manifest_and_constructing_a_planner_fail_identically() {
+        let manifest = ArtifactManifest::new("--set", BTreeMap::from([("unknown".into(), "x".into())])).unwrap();
+        let disagreeing = Type {
+            name: "server",
+            roles: &[TOOL],
+            windows_roles: &[ArtifactRole {
+                kind: ArtifactKind::Image,
+                ..TOOL
+            }],
+        };
+        for participant_type in [&SERVER, &disagreeing] {
+            let registries = Registries {
+                participant_types: &[participant_type],
+                ..CONFIG_REGISTRIES
+            };
+            let checked = check_artifact_manifest(registries, &manifest).unwrap_err().to_string();
+            let planned = Planner::new(registries, manifest.clone()).err().unwrap().to_string();
+            assert_eq!(checked, planned);
+        }
     }
 
     #[test]

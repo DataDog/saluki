@@ -215,6 +215,12 @@ a declared role the selected cases don't need is ignored. Relative binary and in
 working directory, whether supplied by a manifest or a local default. Runners choose images and binaries from their
 settings.
 
+Use `panoramic artifacts render --set <role>=<reference> … -o <file>` to write a manifest, replacing an existing
+file. Repeat `--set` to bind more roles; omitting it writes a manifest binding nothing. Rendering checks bindings
+against every declared role, whatever cases a run selects. A duplicate role, empty reference or unknown role writes
+nothing and exits 2, leaving an existing output file untouched. References may contain `=`: only the first `=`
+separates the role from its reference.
+
 Use `panoramic artifacts verify -d <cases> [--subject-os linux|macos|windows] [--artifacts <file>]` to check every
 artifact the selected participant cases need. The subject OS defaults to the host's OS. Verification prints each
 role once, sorted by name, with its reference, source and identity or failure:

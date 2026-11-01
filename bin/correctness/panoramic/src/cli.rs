@@ -204,8 +204,31 @@ pub struct ArtifactsCommand {
 
 #[derive(Subcommand)]
 pub enum ArtifactsSubcommand {
+    /// Write an artifact manifest from role bindings.
+    Render(RenderCommand),
+
     /// Verify needed artifacts and print their identities without pulling images.
     Verify(VerifyCommand),
+}
+
+#[derive(Args)]
+#[command(args_override_self = true)]
+pub struct RenderCommand {
+    /// Binds an artifact role to a reference, as ROLE=REFERENCE (can be specified multiple times).
+    /// Only the first `=` separates the role.
+    #[arg(long, value_name = "ROLE=REFERENCE", value_parser = artifact_binding_parser, verbatim_doc_comment)]
+    pub set: Vec<(String, String)>,
+
+    /// File to write the manifest to; an existing file is replaced.
+    #[arg(short = 'o', long, value_name = "FILE")]
+    pub output: PathBuf,
+}
+
+fn artifact_binding_parser(value: &str) -> Result<(String, String), String> {
+    value
+        .split_once('=')
+        .map(|(role, reference)| (role.to_string(), reference.to_string()))
+        .ok_or_else(|| "expected ROLE=REFERENCE".to_string())
 }
 
 #[derive(Args)]
@@ -853,6 +876,84 @@ mod tests {
             .unwrap();
         assert_eq!(argument.get_env(), None);
         assert!(Cli::try_parse_from(["panoramic", "run", "--artifacts", "artifacts.toml"]).is_err());
+    }
+
+    #[test]
+    fn artifacts_render_accepts_repeated_set_pairs_and_an_output_file() {
+        let Command::Artifacts(ArtifactsCommand {
+            command: ArtifactsSubcommand::Render(cmd),
+        }) = Cli::try_parse_from([
+            "panoramic",
+            "artifacts",
+            "render",
+            "--set",
+            "b=y",
+            "-o",
+            "first.toml",
+            "--set",
+            "a=x",
+            "-o",
+            "last.toml",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("expected artifacts render")
+        };
+        assert_eq!(cmd.set, vec![("b".into(), "y".into()), ("a".into(), "x".into())]);
+        assert_eq!(cmd.output, PathBuf::from("last.toml"));
+    }
+
+    #[test]
+    fn artifacts_render_splits_each_pair_at_its_first_equals_sign() {
+        for (pair, expected) in [("a=b=c", ("a", "b=c")), ("a=", ("a", "")), ("=b", ("", "b"))] {
+            let Command::Artifacts(ArtifactsCommand {
+                command: ArtifactsSubcommand::Render(cmd),
+            }) = Cli::try_parse_from([
+                "panoramic",
+                "artifacts",
+                "render",
+                "--set",
+                pair,
+                "--output",
+                "out.toml",
+            ])
+            .unwrap()
+            .command
+            else {
+                panic!("expected artifacts render")
+            };
+            assert_eq!(cmd.set, vec![(expected.0.into(), expected.1.into())]);
+            assert_eq!(cmd.output, PathBuf::from("out.toml"));
+        }
+    }
+
+    #[test]
+    fn artifacts_render_rejects_pairs_without_equals_and_requires_an_output_file() {
+        let error = Cli::try_parse_from(["panoramic", "artifacts", "render", "--set", "role", "-o", "out.toml"])
+            .err()
+            .unwrap();
+        assert_eq!(error.exit_code(), 2);
+        assert!(error.to_string().contains("expected ROLE=REFERENCE"), "{error}");
+        let error = Cli::try_parse_from(["panoramic", "artifacts", "render"]).err().unwrap();
+        assert_eq!(error.exit_code(), 2);
+        assert!(error.to_string().contains("--output <FILE>"), "{error}");
+    }
+
+    #[test]
+    fn artifacts_render_takes_no_test_directories_subject_os_or_manifest() {
+        for (flag, value) in [
+            ("-d", "cases"),
+            ("--test-dirs", "cases"),
+            ("--subject-os", "linux"),
+            ("--artifacts", "artifacts.toml"),
+        ] {
+            let error = Cli::try_parse_from(["panoramic", "artifacts", "render", "-o", "out.toml", flag, value])
+                .err()
+                .unwrap();
+            assert_eq!(error.exit_code(), 2);
+            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        }
     }
 
     #[test]

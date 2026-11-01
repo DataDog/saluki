@@ -1,6 +1,7 @@
-//! Commands for checking the artifacts selected participant cases need.
+//! Commands for writing artifact manifests and checking the artifacts selected participant cases need.
 
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
     io::Write,
     path::{Path, PathBuf},
@@ -10,11 +11,50 @@ use std::{
 use panoramic_core::{
     artifact::{self, ArtifactManifest, ArtifactVerification},
     layout::Os,
-    plan::{needed_artifacts, Planner},
+    plan::{check_artifact_manifest, needed_artifacts, Planner},
 };
 use tracing::{error, info};
 
-use crate::{cli::VerifyCommand, collector::EXIT_HARNESS_ERROR, config::discover_in_scope};
+use crate::{
+    cli::{RenderCommand, VerifyCommand},
+    collector::EXIT_HARNESS_ERROR,
+    config::discover_in_scope,
+};
+
+pub(crate) fn render(cmd: RenderCommand) -> ExitCode {
+    let mut roles = BTreeMap::new();
+    let mut duplicates = BTreeSet::new();
+    for (name, reference) in cmd.set {
+        if roles.insert(name.clone(), reference).is_some() {
+            duplicates.insert(name);
+        }
+    }
+    if !duplicates.is_empty() {
+        let messages: Vec<_> = duplicates
+            .iter()
+            .map(|name| format!("--set binds role '{name}' more than once"))
+            .collect();
+        error!("Invalid artifact roles: {}", messages.join("; "));
+        return ExitCode::from(EXIT_HARNESS_ERROR);
+    }
+    let n = roles.len();
+    let manifest = match ArtifactManifest::new("--set", roles).and_then(|manifest| {
+        check_artifact_manifest(crate::REGISTRIES, &manifest)?;
+        Ok(manifest)
+    }) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            error!("Invalid artifact roles: {error:#}");
+            return ExitCode::from(EXIT_HARNESS_ERROR);
+        }
+    };
+    if let Err(error) = std::fs::write(&cmd.output, manifest.render()) {
+        error!("Cannot write artifact manifest {}: {error}", cmd.output.display());
+        return ExitCode::from(EXIT_HARNESS_ERROR);
+    }
+    info!("Wrote artifact manifest {} binding {n} role(s).", cmd.output.display());
+    ExitCode::SUCCESS
+}
 
 /// Checks directory selection, subject OS, manifest and role declarations before discovery, in that order.
 pub(crate) fn artifact_planner(
@@ -138,6 +178,166 @@ mod tests {
             String::from_utf8(report).unwrap(),
             std::fs::read_to_string(output.path()).unwrap(),
         )
+    }
+
+    fn render_with_logs(cmd: RenderCommand) -> (ExitCode, String) {
+        let output = tempfile::NamedTempFile::new().unwrap();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(std::sync::Mutex::new(output.reopen().unwrap()))
+            .finish();
+        let exit = tracing::subscriber::with_default(subscriber, || render(cmd));
+        (exit, std::fs::read_to_string(output.path()).unwrap())
+    }
+
+    #[track_caller]
+    fn assert_render_rejected(pairs: &[(&str, &str)], problem: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("artifacts.toml");
+        for existing in [false, true] {
+            if existing {
+                std::fs::write(&output, "keep this content").unwrap();
+            }
+            let (exit, log) = render_with_logs(RenderCommand {
+                set: pairs
+                    .iter()
+                    .map(|(role, reference)| (role.to_string(), reference.to_string()))
+                    .collect(),
+                output: output.clone(),
+            });
+            assert_eq!(exit, ExitCode::from(2), "{log}");
+            assert!(log.contains(&format!("Invalid artifact roles: {problem}")), "{log}");
+            assert!(!log.contains("Wrote artifact manifest"), "{log}");
+            if existing {
+                assert_eq!(std::fs::read_to_string(&output).unwrap(), "keep this content");
+            } else {
+                assert!(!output.exists());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn artifacts_render_writes_a_manifest_that_verify_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let cases = dir.path().join("cases");
+        write_case(&cases, "host", &PARTICIPANT_FIELDS.replace("[linux]", "[macos]"));
+        let binary = dir.path().join("tool");
+        let install = dir.path().join("install");
+        write_executable(&binary);
+        write_executable(&install.join("bin/agent/agent"));
+        let manifest = dir.path().join("artifacts.toml");
+        let (exit, log) = render_with_logs(RenderCommand {
+            set: vec![
+                ("adp-host-binary".into(), binary.to_str().unwrap().into()),
+                ("agent-host-install".into(), install.to_str().unwrap().into()),
+            ],
+            output: manifest.clone(),
+        });
+        assert_eq!(exit, ExitCode::SUCCESS, "{log}");
+        assert!(
+            log.contains(&format!(
+                "Wrote artifact manifest {} binding 2 role(s).",
+                manifest.display()
+            )),
+            "{log}"
+        );
+        let (exit, report, log) = verify_with_logs(vec![cases], Some(manifest)).await;
+        assert_eq!(exit, ExitCode::SUCCESS, "{log}");
+        assert_eq!(
+            report,
+            format!(
+                "Artifacts needed on macos:\n  adp-host-binary = {} (manifest): binary sha256:{hash}\n  \
+                 agent-host-install = {} (manifest): install sha256:{hash}\n",
+                binary.display(),
+                install.display(),
+                hash = "7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+            )
+        );
+        assert!(log.contains("Verified 2 artifact(s)."), "{log}");
+    }
+
+    #[test]
+    fn artifacts_render_with_no_pairs_writes_a_manifest_binding_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("artifacts.toml");
+        let (exit, log) = render_with_logs(RenderCommand {
+            set: vec![],
+            output: output.clone(),
+        });
+        assert_eq!(exit, ExitCode::SUCCESS, "{log}");
+        assert_eq!(
+            ArtifactManifest::load(&output).unwrap().render(),
+            ArtifactManifest::default().render()
+        );
+        assert!(log.contains("binding 0 role(s)."), "{log}");
+    }
+
+    #[test]
+    fn artifacts_render_replaces_an_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("artifacts.toml");
+        std::fs::write(&output, "old content that is not a manifest").unwrap();
+        let (exit, log) = render_with_logs(RenderCommand {
+            set: vec![("fixup-image".into(), "alpine:3".into())],
+            output: output.clone(),
+        });
+        assert_eq!(exit, ExitCode::SUCCESS, "{log}");
+        assert_eq!(
+            std::fs::read_to_string(output).unwrap(),
+            "schema = 1\n\n[roles]\nfixup-image = \"alpine:3\"\n"
+        );
+    }
+
+    #[test]
+    fn artifacts_render_reports_every_unknown_role_and_writes_nothing() {
+        assert_render_rejected(
+            &[("z", "z"), ("a", "a")],
+            "--set: no participant type or backend declares role 'a', 'z'; declared roles: \
+             adp-host-binary, agent-adp-linux-image, agent-adp-windows-image, agent-host-install, fixup-image",
+        );
+        assert_render_rejected(&[("", "x")], "--set: no participant type or backend declares role '';");
+    }
+
+    #[test]
+    fn artifacts_render_rejects_a_role_bound_twice_and_writes_nothing() {
+        for second in ["alpine:3", "alpine:latest"] {
+            assert_render_rejected(
+                &[("fixup-image", "alpine:3"), ("fixup-image", second)],
+                "--set binds role 'fixup-image' more than once",
+            );
+        }
+        assert_render_rejected(
+            &[("z", ""), ("a", "x"), ("z", ""), ("a", "x"), ("z", "")],
+            "--set binds role 'a' more than once; --set binds role 'z' more than once",
+        );
+    }
+
+    #[test]
+    fn artifacts_render_rejects_an_empty_reference_and_writes_nothing() {
+        for reference in ["", "  "] {
+            assert_render_rejected(
+                &[("fixup-image", reference)],
+                "--set: role 'fixup-image' has an empty reference",
+            );
+        }
+        assert_render_rejected(&[("unknown", "")], "--set: role 'unknown' has an empty reference");
+    }
+
+    #[test]
+    fn artifacts_render_exits_2_if_the_manifest_cannot_be_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("missing/artifacts.toml");
+        let (exit, log) = render_with_logs(RenderCommand {
+            set: vec![],
+            output: output.clone(),
+        });
+        assert_eq!(exit, ExitCode::from(2));
+        assert!(
+            log.contains(&format!("Cannot write artifact manifest {}:", output.display())),
+            "{log}"
+        );
+        assert!(!output.exists());
     }
 
     #[tokio::test]
