@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
     io::Write,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::ExitCode,
 };
 
@@ -84,29 +84,23 @@ pub(crate) async fn verify(cmd: ArtifactCasesCommand, output: &mut impl Write) -
         Ok(selection) => selection,
         Err(exit) => return exit,
     };
-    let (report, failed) = verify_bindings(subject_os, &bindings, &base).await;
-    if let Err(error) = output.write_all(report.as_bytes()) {
+    let results = artifact::verify(&bindings, &base).await;
+    if let Err(error) = output.write_all(verification_text(subject_os, &results, ("Artifacts", "artifacts")).as_bytes())
+    {
         error!("Cannot write artifact verification report: {error}");
         return ExitCode::from(EXIT_HARNESS_ERROR);
     }
     let n = bindings.len();
-    if failed == 0 {
-        info!("Verified {n} artifact(s).");
-        ExitCode::SUCCESS
-    } else {
-        error!("{failed} of {n} artifact(s) failed verification.");
-        ExitCode::from(EXIT_HARNESS_ERROR)
+    match artifact::verified_artifacts(&results) {
+        Ok(_) => {
+            info!("Verified {n} artifact(s).");
+            ExitCode::SUCCESS
+        }
+        Err(failed) => {
+            error!("{failed} of {n} artifact(s) failed verification.");
+            ExitCode::from(EXIT_HARNESS_ERROR)
+        }
     }
-}
-
-/// Verifies bindings and returns a formatted report and failure count.
-pub(crate) async fn verify_bindings(subject_os: Os, bindings: &[ArtifactBinding], base: &Path) -> (String, usize) {
-    let results = artifact::verify(bindings, base).await;
-    let failed = results.iter().filter(|result| result.identity.is_err()).count();
-    (
-        verification_text(subject_os, &results, ("Artifacts", "artifacts")),
-        failed,
-    )
 }
 
 pub(crate) async fn pull(cmd: ArtifactCasesCommand, output: &mut impl Write) -> ExitCode {
@@ -130,7 +124,7 @@ pub(crate) async fn pull(cmd: ArtifactCasesCommand, output: &mut impl Write) -> 
     }
 }
 
-fn verification_text(subject_os: Os, results: &[ArtifactVerification], nouns: (&str, &str)) -> String {
+pub(crate) fn verification_text(subject_os: Os, results: &[ArtifactVerification], nouns: (&str, &str)) -> String {
     let (heading, noun) = nouns;
     if results.is_empty() {
         return format!("No {noun} needed on {}.\n", subject_os.name());

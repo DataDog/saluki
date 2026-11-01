@@ -8,6 +8,7 @@ use chrono::Local;
 use serde::Serialize;
 use tracing::warn;
 
+use crate::artifact::VerifiedArtifact;
 use crate::layout::{LayoutEntry, Os};
 use crate::record::StepStatus;
 use crate::result::{
@@ -81,6 +82,8 @@ pub struct RunReport {
     pub(crate) runtime: String,
     /// Subject operating system selected for the run.
     pub(crate) subject_os: Os,
+    /// Artifacts `run --artifacts` verified, in role-name order; `null` when the run did not verify artifacts.
+    pub(crate) artifacts: Option<Vec<VerifiedArtifact>>,
     /// How many tests ran concurrently.
     pub(crate) parallelism: usize,
     /// When the run started, as an RFC 3339 timestamp.
@@ -328,6 +331,7 @@ impl RunReport {
             suite_dirs,
             runtime,
             subject_os,
+            artifacts: None,
             parallelism,
             started_at: Local::now().to_rfc3339(),
             duration_ms: 0,
@@ -337,6 +341,12 @@ impl RunReport {
             not_run: selected,
             tests: skipped,
         }
+    }
+
+    /// Records the artifacts the run verified before any case started.
+    pub fn with_artifacts(mut self, artifacts: Vec<VerifiedArtifact>) -> Self {
+        self.artifacts = Some(artifacts);
+        self
     }
 }
 
@@ -1114,6 +1124,44 @@ mod tests {
     }
 
     #[test]
+    fn a_run_report_records_artifacts_as_null_until_verification_then_lists_them() {
+        let report = RunReport::new(
+            "unknown".into(),
+            Vec::new(),
+            "linux".into(),
+            Os::Linux,
+            1,
+            PathBuf::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(
+            serde_json::to_value(&report).unwrap().get("artifacts"),
+            Some(&serde_json::Value::Null)
+        );
+        let report = report.with_artifacts(vec![VerifiedArtifact {
+            role: "tool",
+            reference: "tool:latest".into(),
+            identity: "sha256:123".into(),
+            kind: crate::artifact::ArtifactKind::Image,
+        }]);
+        assert_eq!(
+            serde_json::to_value(&report).unwrap()["artifacts"],
+            serde_json::json!([{
+                "role": "tool",
+                "reference": "tool:latest",
+                "identity": "sha256:123",
+                "kind": "image",
+            }])
+        );
+        let report = report.with_artifacts(Vec::new());
+        assert_eq!(
+            serde_json::to_value(&report).unwrap()["artifacts"],
+            serde_json::json!([])
+        );
+    }
+
+    #[test]
     fn run_report_pins_the_schema_three_field_names() {
         let selected = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let mut report = RunReport::new(
@@ -1138,6 +1186,7 @@ mod tests {
 
         assert_eq!(json["schema_version"], 3);
         assert_eq!(json["subject_os"], "linux");
+        assert_eq!(json.get("artifacts"), Some(&serde_json::Value::Null));
         assert_eq!(json["build_revision"], "0123abcd-dirty");
         assert_eq!(json["state"], "interrupted");
         assert_eq!(json["interrupted_reason"]["kind"], "signal");

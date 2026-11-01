@@ -3,6 +3,7 @@
 
 use std::{fs::File, path::Path};
 
+use serde::{Serialize, Serializer};
 use sha2::{Digest, Sha256};
 
 use super::{
@@ -17,6 +18,50 @@ pub struct ArtifactVerification {
     pub binding: ArtifactBinding,
     /// The artifact's identity, or why verification or pulling failed.
     pub identity: Result<String, String>,
+}
+
+/// An artifact a run verified, as `run.json` records it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct VerifiedArtifact {
+    pub(crate) role: &'static str,
+    /// The binding's reference as written.
+    pub(crate) reference: String,
+    pub(crate) identity: String,
+    #[serde(serialize_with = "serialize_kind")]
+    pub(crate) kind: ArtifactKind,
+}
+
+fn serialize_kind<S>(kind: &ArtifactKind, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_str(kind.name())
+}
+
+/// Returns the verified artifacts in input order.
+///
+/// # Errors
+///
+/// Returns the number of failed results if any binding failed verification.
+pub fn verified_artifacts(results: &[ArtifactVerification]) -> Result<Vec<VerifiedArtifact>, usize> {
+    let mut verified = Vec::with_capacity(results.len());
+    let mut failed = 0;
+    for result in results {
+        match &result.identity {
+            Ok(identity) => verified.push(VerifiedArtifact {
+                role: result.binding.role.name,
+                reference: result.binding.reference.clone(),
+                identity: identity.clone(),
+                kind: result.binding.role.kind,
+            }),
+            Err(_) => failed += 1,
+        }
+    }
+    if failed == 0 {
+        Ok(verified)
+    } else {
+        Err(failed)
+    }
 }
 
 /// Verifies each binding, resolving relative paths against `base`, in input order.
@@ -141,6 +186,79 @@ mod tests {
         for (result, expected) in results.iter().zip(&bindings) {
             assert_eq!(&result.binding, expected);
             assert_eq!(result.identity.as_deref().map_err(String::as_str), Ok(TOOL_DIGEST));
+        }
+    }
+
+    #[tokio::test]
+    async fn verified_artifacts_preserve_each_bindings_role_reference_identity_and_kind_in_input_order() {
+        let dir = tempfile::tempdir().unwrap();
+        write_executable(&dir.path().join("bin/tool"));
+        let bindings = [
+            binding("tool", ArtifactKind::Binary, "./bin/tool"),
+            binding("install", INSTALL, "."),
+        ];
+        let results = verify_with(&bindings, dir.path(), || panic!("file roles must not connect")).await;
+        assert_eq!(
+            verified_artifacts(&results),
+            Ok(vec![
+                VerifiedArtifact {
+                    role: "tool",
+                    reference: "./bin/tool".into(),
+                    identity: TOOL_DIGEST.into(),
+                    kind: ArtifactKind::Binary,
+                },
+                VerifiedArtifact {
+                    role: "install",
+                    reference: ".".into(),
+                    identity: TOOL_DIGEST.into(),
+                    kind: INSTALL,
+                },
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn verified_artifacts_count_failures_instead_of_listing_identities() {
+        let dir = tempfile::tempdir().unwrap();
+        write_executable(&dir.path().join("bin/tool"));
+        let bindings = [
+            binding("missing", ArtifactKind::Binary, "missing"),
+            binding("tool", ArtifactKind::Binary, "bin/tool"),
+            binding("missing-install", INSTALL, "missing-install"),
+            binding("install", INSTALL, "."),
+        ];
+        let results = verify_with(&bindings, dir.path(), || panic!("file roles must not connect")).await;
+        assert_eq!(verified_artifacts(&results), Err(2));
+    }
+
+    #[test]
+    fn verified_artifacts_serialize_role_reference_identity_and_kind_in_order_with_kind_as_its_name() {
+        for (kind, name) in [
+            (ArtifactKind::Image, "image"),
+            (ArtifactKind::Binary, "binary"),
+            (INSTALL, "install"),
+        ] {
+            let artifact = VerifiedArtifact {
+                role: "tool",
+                reference: " reference ".into(),
+                identity: TOOL_DIGEST.into(),
+                kind,
+            };
+            assert_eq!(
+                serde_json::to_value(&artifact).unwrap(),
+                serde_json::json!({
+                    "role": "tool",
+                    "reference": " reference ",
+                    "identity": TOOL_DIGEST,
+                    "kind": name,
+                })
+            );
+            assert_eq!(
+                serde_json::to_string(&artifact).unwrap(),
+                format!(
+                    "{{\"role\":\"tool\",\"reference\":\" reference \",\"identity\":\"{TOOL_DIGEST}\",\"kind\":\"{name}\"}}"
+                )
+            );
         }
     }
 
@@ -356,10 +474,8 @@ mod tests {
 
     #[tokio::test]
     async fn no_bindings_need_no_image_store() {
-        assert!(
-            verify_with(&[], Path::new("."), || panic!("no bindings must not connect"))
-                .await
-                .is_empty()
-        );
+        let results = verify_with(&[], Path::new("."), || panic!("no bindings must not connect")).await;
+        assert!(results.is_empty());
+        assert_eq!(verified_artifacts(&results), Ok(Vec::new()));
     }
 }

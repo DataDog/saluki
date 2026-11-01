@@ -12,7 +12,7 @@ mod image_store;
 mod pull;
 mod verify;
 pub use pull::pull;
-pub use verify::{verify, ArtifactVerification};
+pub use verify::{verified_artifacts, verify, ArtifactVerification, VerifiedArtifact};
 
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util;

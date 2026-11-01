@@ -244,6 +244,12 @@ contribute no artifacts to verification. Any verification failure exits 2 before
 `run.json`, starting kind setup or running a case. The report goes to stderr, including in TUI mode, leaving stdout
 for `-o json`.
 
+When verification passes, `run.json`'s `artifacts` lists each verified binding as `{role, reference, identity, kind}`
+in role-name order. `identity` is the image ID for images, the SHA-256 of the file for binaries, and the SHA-256 of the
+main binary for installs. `reference` is preserved as written. Roles needed only by skipped cases or cases the host
+can't provide aren't verified and don't appear. With `--artifacts`, the list is empty (`[]`) when no bindings need
+verification; without the flag, `artifacts` is `null`.
+
 The flag has no environment fallback. It rejects these flags and their environment variables, even when the
 value comes only from the environment:
 
@@ -438,7 +444,8 @@ each step. Check `issues` even on passes; they don't change `outcome`. Open repo
 Each `run.json` entry in `tests[]` and each `result.json` contains `layout`, using the same
 `{participant, type, os, realization}` entries as `list --json`. It records the planned layout even when setup
 fails, including when the host can't provide a realization. Skipped cases, and cases with a top-level `type`,
-have `layout: null`.
+have `layout: null`. Run-level `artifacts` in `run.json` records the bindings and identities verified before cases
+started, or `null` when the run didn't verify artifacts.
 
 Follow report types in `bin/correctness/panoramic/core/src/machine_output.rs` for semantics. For precedence rules, see
 `TestResult::from_steps` in `bin/correctness/panoramic/core/src/result.rs` and `exit_code` in

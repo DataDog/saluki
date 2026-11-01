@@ -7,7 +7,7 @@ use std::{borrow::Borrow, collections::BTreeMap, fmt::Write as _, path::Path};
 use std::{io::IsTerminal, process::ExitCode};
 
 use clap::Parser as _;
-use panoramic_core::artifact::ArtifactBinding;
+use panoramic_core::artifact::{self, verified_artifacts, ArtifactBinding, VerifiedArtifact};
 use panoramic_core::case::{CaseLoader, Registries};
 use panoramic_core::events::create_event_channel;
 use panoramic_core::interrupts::Interrupts;
@@ -328,7 +328,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         }
         providability::check(&mut built).await
     };
-    if cmd.artifacts.is_some() {
+    let verified = if cmd.artifacts.is_some() {
         let bindings = run_artifacts(&built, &unprovidable);
         let base = match std::env::current_dir() {
             Ok(base) => base,
@@ -341,30 +341,13 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
                 return ExitCode::from(EXIT_HARNESS_ERROR);
             }
         };
-        if use_tui {
-            eprintln!("Verifying the artifacts the selected cases need…");
-        } else {
-            info!("Verifying the artifacts the selected cases need…");
-        }
-        let (report, failed) = artifact_commands::verify_bindings(subject_os, &bindings, &base).await;
-        let report = report.trim_end();
-        if use_tui {
-            eprintln!("{report}");
-        } else if failed == 0 {
-            info!("{report}");
-        } else {
-            error!("{report}");
-        }
-        if failed != 0 {
-            let n = bindings.len();
-            if use_tui {
-                eprintln!("{failed} of {n} artifact(s) failed verification.");
-            } else {
-                error!("{failed} of {n} artifact(s) failed verification.");
-            }
+        let Some(verified) = verify_run_artifacts(&bindings, subject_os, &base, use_tui).await else {
             return ExitCode::from(EXIT_HARNESS_ERROR);
-        }
-    }
+        };
+        Some(verified)
+    } else {
+        None
+    };
 
     // Create log directory.
     let log_dir = match std::path::absolute(cmd.log_dir()) {
@@ -385,28 +368,30 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
 
     // Install interrupt handlers before starting background work.
     let mut interrupts = Interrupts::install();
-    let mut collector = RunCollector::start(
-        RunReport::new(
-            build_revision(),
-            cmd.test_dirs.clone(),
-            integration_runtime.to_string(),
-            subject_os,
-            cmd.parallelism.get(),
-            log_dir.clone(),
-            built.iter().map(|built| built.plan.case().name().to_string()).collect(),
-            excluded
-                .into_iter()
-                .map(|case| {
-                    TestReport::skipped(
-                        case.name().to_string(),
-                        case.source().parent().unwrap_or(Path::new("")).to_path_buf(),
-                        subject_os,
-                    )
-                })
-                .collect(),
-        ),
-        cmd.fail_fast,
+    let report = RunReport::new(
+        build_revision(),
+        cmd.test_dirs.clone(),
+        integration_runtime.to_string(),
+        subject_os,
+        cmd.parallelism.get(),
+        log_dir.clone(),
+        built.iter().map(|built| built.plan.case().name().to_string()).collect(),
+        excluded
+            .into_iter()
+            .map(|case| {
+                TestReport::skipped(
+                    case.name().to_string(),
+                    case.source().parent().unwrap_or(Path::new("")).to_path_buf(),
+                    subject_os,
+                )
+            })
+            .collect(),
     );
+    let report = match verified {
+        Some(verified) => report.with_artifacts(verified),
+        None => report,
+    };
+    let mut collector = RunCollector::start(report, cmd.fail_fast);
 
     let display_error = if !built.is_empty() {
         execute(
@@ -587,6 +572,39 @@ fn run_artifacts(built: &[BuiltCase], unprovidable: &BTreeMap<Realization, Strin
             .all(|(_, realization)| !unprovidable.contains_key(realization))
             .then_some(&built.plan)
     }))
+}
+
+async fn verify_run_artifacts(
+    bindings: &[ArtifactBinding], subject_os: Os, base: &Path, use_tui: bool,
+) -> Option<Vec<VerifiedArtifact>> {
+    if use_tui {
+        eprintln!("Verifying the artifacts the selected cases need…");
+    } else {
+        info!("Verifying the artifacts the selected cases need…");
+    }
+    let results = artifact::verify(bindings, base).await;
+    let verified = verified_artifacts(&results);
+    let report = artifact_commands::verification_text(subject_os, &results, ("Artifacts", "artifacts"));
+    let report = report.trim_end();
+    if use_tui {
+        eprintln!("{report}");
+    } else if verified.is_ok() {
+        info!("{report}");
+    } else {
+        error!("{report}");
+    }
+    match verified {
+        Ok(verified) => Some(verified),
+        Err(failed) => {
+            let n = bindings.len();
+            if use_tui {
+                eprintln!("{failed} of {n} artifact(s) failed verification.");
+            } else {
+                error!("{failed} of {n} artifact(s) failed verification.");
+            }
+            None
+        }
+    }
 }
 
 /// Collects the unique images of cases that need Kubernetes pods.
@@ -802,7 +820,7 @@ mod tests {
     use super::*;
     use crate::config::tests::{build_case_runners, planner, write_case, CORRECTNESS_FIELDS, PARTICIPANT_FIELDS};
 
-    async fn run_skipped_selection(requested: Option<&str>) {
+    async fn run_skipped_selection(requested: Option<&str>, manifest: Option<ArtifactManifest>) {
         use tracing::instrument::WithSubscriber as _;
 
         let dir = tempfile::tempdir().unwrap();
@@ -817,6 +835,11 @@ mod tests {
             "correctness",
             &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
         );
+        let manifest = manifest.map(|manifest| {
+            let path = dir.path().join("artifacts.toml");
+            std::fs::write(&path, manifest.render()).unwrap();
+            path
+        });
         let logs = dir.path().join("logs");
         let mut args = vec![
             "panoramic",
@@ -831,6 +854,9 @@ mod tests {
         ];
         if let Some(name) = requested {
             args.extend(["-t", name]);
+        }
+        if let Some(path) = &manifest {
+            args.extend(["--artifacts", path.to_str().unwrap()]);
         }
         let Command::Run(cmd) = Cli::try_parse_from(args).unwrap().command else {
             panic!("expected run")
@@ -862,6 +888,12 @@ mod tests {
         assert_eq!(report["state"], "complete");
         assert_eq!(report["subject_os"], "macos");
         assert_eq!(report["runtime"], "mac");
+        let expected_artifacts = if manifest.is_some() {
+            serde_json::json!([])
+        } else {
+            serde_json::Value::Null
+        };
+        assert_eq!(report.get("artifacts"), Some(&expected_artifacts));
         let expected = requested.map_or_else(|| vec!["correctness", "windows"], |name| vec![name]);
         assert_eq!(report["totals"]["skipped"], expected.len());
         assert_eq!(report["running"], serde_json::json!([]));
@@ -902,12 +934,17 @@ mod tests {
 
     #[tokio::test]
     async fn a_run_whose_every_selected_case_is_skipped_exits_3_and_writes_run_json_saying_why() {
-        run_skipped_selection(None).await;
+        run_skipped_selection(None, None).await;
     }
 
     #[tokio::test]
     async fn naming_a_skipped_case_selects_it_and_the_run_exits_3() {
-        run_skipped_selection(Some("windows")).await;
+        run_skipped_selection(Some("windows"), None).await;
+    }
+
+    #[tokio::test]
+    async fn a_run_with_artifacts_and_only_skipped_cases_records_an_empty_artifact_list() {
+        run_skipped_selection(None, Some(ArtifactManifest::new("test", BTreeMap::new()).unwrap())).await;
     }
 
     #[tokio::test]
@@ -1111,8 +1148,9 @@ mod tests {
             source: BindingSource::Manifest,
         })
         .collect();
-        let (report, failed) = artifact_commands::verify_bindings(Os::MacOs, &bindings, dir.path()).await;
-        assert_eq!(failed, 2, "{report}");
+        let results = artifact::verify(&bindings, dir.path()).await;
+        let report = artifact_commands::verification_text(Os::MacOs, &results, ("Artifacts", "artifacts"));
+        assert_eq!(verified_artifacts(&results), Err(2), "{report}");
         assert_eq!(report.matches("FAILED:").count(), 2, "{report}");
         assert_eq!(
             report
@@ -1131,6 +1169,63 @@ mod tests {
                     binding.role.kind.name()
                 )),
                 "{line}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn run_artifact_verification_returns_identities_for_verified_bindings_and_nothing_after_any_failure() {
+        use panoramic_core::artifact::{test_util::write_executable, ArtifactKind, ArtifactRole, BindingSource};
+
+        let dir = tempfile::tempdir().unwrap();
+        let bindings: Vec<_> = [
+            ("binary", ArtifactKind::Binary, "./present"),
+            (
+                "install",
+                ArtifactKind::Install {
+                    main_binary: "bin/main",
+                },
+                "install",
+            ),
+        ]
+        .into_iter()
+        .map(|(name, kind, reference)| ArtifactBinding {
+            role: ArtifactRole {
+                name,
+                kind,
+                local_default: "unused",
+            },
+            reference: reference.into(),
+            source: BindingSource::Manifest,
+        })
+        .collect();
+        write_executable(&dir.path().join("install/bin/main"));
+        for use_tui in [false, true] {
+            write_executable(&dir.path().join("present"));
+            let verified = verify_run_artifacts(&bindings, Os::MacOs, dir.path(), use_tui)
+                .await
+                .unwrap();
+            assert_eq!(
+                serde_json::to_value(verified).unwrap(),
+                serde_json::json!([
+                    {
+                        "role": "binary",
+                        "reference": "./present",
+                        "identity": "sha256:7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+                        "kind": "binary",
+                    },
+                    {
+                        "role": "install",
+                        "reference": "install",
+                        "identity": "sha256:7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+                        "kind": "install",
+                    },
+                ])
+            );
+            std::fs::remove_file(dir.path().join("present")).unwrap();
+            assert_eq!(
+                verify_run_artifacts(&bindings, Os::MacOs, dir.path(), use_tui).await,
+                None
             );
         }
     }
@@ -1210,6 +1305,7 @@ mod tests {
             assert_eq!(tests[0]["name"], "host");
             assert_eq!(tests[0]["outcome"], "errored");
             assert_eq!(tests[0]["error"]["kind"], "setup");
+            assert_eq!(report["artifacts"], serde_json::json!([]));
             assert!(diagnostic.contains("No artifacts needed on macos."), "{diagnostic}");
             assert!(!diagnostic.contains("failed verification"), "{diagnostic}");
         }
