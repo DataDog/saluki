@@ -14,6 +14,10 @@ pub type DockerExitCodeCell = Arc<OnceLock<i64>>;
 use futures::future;
 use panoramic_core::deadline::{Budget, Deadline};
 use panoramic_core::probe::PROBE_TIMEOUT;
+use panoramic_core::record::{
+    step_label, AssertionResult, AssertionStatus, CaseRecord, RunningStep, StepResult, StepStatus, Verdict,
+};
+use panoramic_core::result::{ErrorKind, TestResult};
 use saluki_error::GenericError;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -22,10 +26,6 @@ use tracing::{debug, error};
 use crate::actions::Action;
 use crate::config::{AssertionConfig, AssertionStep, LogStream};
 use crate::integration::IntegrationTestCase;
-use crate::record::{
-    step_label, AssertionResult, AssertionStatus, CaseRecord, RunningStep, StepResult, StepStatus, Verdict,
-};
-use crate::reporter::{ErrorKind, TestResult};
 
 mod adp_config_key_equals;
 mod adp_exits;
@@ -606,10 +606,11 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
+    use panoramic_core::result::TestOutcome;
+
     use super::test_support::{host_context, procedure};
     use super::*;
     use crate::intake::test_server::MockIntake;
-    use crate::reporter::TestOutcome;
 
     /// Shorter than the long-running test steps, so missed cancellation fails promptly.
     const BOUND: Duration = Duration::from_secs(120);

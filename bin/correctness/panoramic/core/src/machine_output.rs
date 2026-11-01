@@ -9,7 +9,7 @@ use serde::Serialize;
 use tracing::warn;
 
 use crate::record::StepStatus;
-use crate::reporter::{
+use crate::result::{
     DurationMs, Issue, PhaseTiming, ReclaimEntry, StopCause, TestError, TestOutcome, TestResult, TimeoutAttribution,
 };
 
@@ -20,7 +20,10 @@ const UNKNOWN_REVISION: &str = "unknown";
 pub const RUN_REPORT_FILE_NAME: &str = "run.json";
 
 /// File name of the per-test report, written into each test's log directory.
-pub const TEST_REPORT_FILE_NAME: &str = "result.json";
+pub(crate) const TEST_REPORT_FILE_NAME: &str = "result.json";
+
+/// File name of the human-readable result log, written into each test's log directory.
+pub const RESULT_LOG_FILE_NAME: &str = "result.log";
 
 /// Directory, under a test's log directory, holding uncapped assertion detail files.
 const DETAILS_DIR_NAME: &str = "details";
@@ -38,7 +41,7 @@ const DIAGNOSTIC_LINE_LENGTH_CAP: usize = 500;
 ///
 /// The harness's own summaries repeat assertion messages, so scanning them would report the
 /// verdict back as if it were evidence.
-const HARNESS_LOG_FILE_NAMES: &[&str] = &["result.log"];
+const HARNESS_LOG_FILE_NAMES: &[&str] = &[RESULT_LOG_FILE_NAME];
 
 /// Severity markers that qualify a captured stdout line.
 ///
@@ -55,34 +58,34 @@ const SEVERITY_MARKERS: &[&str] = &[
 ];
 
 /// Schema version of `run.json` and `result.json`. An absent version field denotes version 1.
-pub const REPORT_SCHEMA_VERSION: u32 = 2;
+pub(crate) const REPORT_SCHEMA_VERSION: u32 = 2;
 
 /// A whole run, as consumed by a program.
 ///
 /// The run collector rewrites `run.json` throughout the run, so a reader may see any [`RunState`].
 #[derive(Debug, Serialize)]
 pub struct RunReport {
-    /// Report schema version, set to [`REPORT_SCHEMA_VERSION`].
-    pub schema_version: u32,
+    /// Report schema version, set to `REPORT_SCHEMA_VERSION`.
+    pub(crate) schema_version: u32,
     /// Current run status.
     pub state: RunState,
     /// First interruption reason, set when `state` becomes `interrupted`.
     pub interrupted_reason: Option<InterruptReason>,
-    /// Revision of the repository this binary was built from: a commit SHA, `-dirty` suffixed when
+    /// Revision of the repository the runner was built from: a commit SHA, `-dirty` suffixed when
     /// the checkout had uncommitted changes, or `unknown` when the build could not read a repository.
-    pub build_revision: String,
+    pub(crate) build_revision: String,
     /// Test-case directories the run discovered from.
-    pub suite_dirs: Vec<PathBuf>,
+    pub(crate) suite_dirs: Vec<PathBuf>,
     /// Integration-test runtime the run was scoped to.
-    pub runtime: String,
+    pub(crate) runtime: String,
     /// How many tests ran concurrently.
-    pub parallelism: usize,
+    pub(crate) parallelism: usize,
     /// When the run started, as an RFC 3339 timestamp.
-    pub started_at: String,
+    pub(crate) started_at: String,
     /// Elapsed milliseconds at the last report update.
     pub duration_ms: u64,
     /// Absolute path of the run's log directory.
-    pub log_dir: PathBuf,
+    pub(crate) log_dir: PathBuf,
     /// Counts by outcome.
     pub totals: RunTotals,
     /// Tests that started and haven't completed, in start order.
@@ -154,39 +157,39 @@ pub struct TestReport {
     /// Name of the test case.
     pub name: String,
     /// Directory the test case was loaded from, when the runner knows it.
-    pub case_path: Option<PathBuf>,
+    pub(crate) case_path: Option<PathBuf>,
     /// How the test finished.
     pub outcome: TestOutcome,
     /// How long the test took.
-    pub duration_ms: u64,
+    pub(crate) duration_ms: u64,
     /// Absolute path of this test's log directory, when the runner knows it.
-    pub log_dir: Option<PathBuf>,
+    pub(crate) log_dir: Option<PathBuf>,
     /// Absolute paths of the files in this test's log directory.
-    pub artifacts: Vec<PathBuf>,
+    pub(crate) artifacts: Vec<PathBuf>,
     /// Timing breakdown of the test's phases.
-    pub phase_timings: Vec<PhaseTimingReport>,
+    pub(crate) phase_timings: Vec<PhaseTimingReport>,
     /// Harness-side error, when the test never reached a verdict.
-    pub error: Option<TestError>,
+    pub(crate) error: Option<TestError>,
     /// Which deadline fired and what the test was doing, when `outcome` is `timed_out`.
-    pub timeout: Option<TimeoutAttribution>,
+    pub(crate) timeout: Option<TimeoutAttribution>,
     /// Cause and running steps for a test interrupted before its verdict.
-    pub cause: Option<StopCause>,
+    pub(crate) cause: Option<StopCause>,
     /// Cleanup results for registered resources, in reverse registration order.
-    pub reclaim: Vec<ReclaimEntry>,
+    pub(crate) reclaim: Vec<ReclaimEntry>,
     /// Problems after the verdict or during cleanup. They never change `outcome`.
-    pub issues: Vec<Issue>,
+    pub(crate) issues: Vec<Issue>,
     /// Captured output lines worth reading first. Empty for a passing test.
-    pub diagnostic_lines: Vec<DiagnosticLine>,
+    pub(crate) diagnostic_lines: Vec<DiagnosticLine>,
     /// Whether `diagnostic_lines` was capped.
-    pub diagnostic_lines_truncated: bool,
+    pub(crate) diagnostic_lines_truncated: bool,
     /// All planned steps and parallel members in procedure order, including those that never ran.
-    pub assertions: Vec<AssertionReport>,
+    pub(crate) assertions: Vec<AssertionReport>,
 }
 
 /// The contents of `result.json`: a [`TestReport`] with the schema version.
 #[derive(Serialize)]
 struct TestReportFile<'a> {
-    /// Report schema version, set to [`REPORT_SCHEMA_VERSION`].
+    /// Report schema version, set to `REPORT_SCHEMA_VERSION`.
     schema_version: u32,
     #[serde(flatten)]
     report: &'a TestReport,
@@ -197,21 +200,21 @@ struct TestReportFile<'a> {
 /// Treat a selected line as a lead and read it in context in the artifact it names: benign lines land
 /// on stderr, and a failing test can produce no diagnostic lines at all.
 #[derive(Debug, Serialize)]
-pub struct DiagnosticLine {
+pub(crate) struct DiagnosticLine {
     /// Absolute path of the artifact the line came from.
-    pub source: PathBuf,
+    pub(crate) source: PathBuf,
     /// Position of the line in that artifact, starting at one.
-    pub line_number: usize,
+    pub(crate) line_number: usize,
     /// Why the line was selected.
-    pub reason: DiagnosticReason,
+    pub(crate) reason: DiagnosticReason,
     /// The line, cut to a bounded length.
-    pub text: String,
+    pub(crate) text: String,
 }
 
 /// Why a captured output line was selected as a diagnostic lead.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum DiagnosticReason {
+pub(crate) enum DiagnosticReason {
     /// The line was written to the component's stderr, where anything at all is worth reading.
     CapturedStderr,
     /// The line carries one of the severity markers the harness looks for.
@@ -265,50 +268,53 @@ impl CapturedStream {
 
 /// One phase of a test's execution.
 #[derive(Debug, Serialize)]
-pub struct PhaseTimingReport {
+pub(crate) struct PhaseTimingReport {
     /// Name of the phase.
-    pub phase: String,
+    pub(crate) phase: String,
     /// How long the phase took.
-    pub duration_ms: u64,
+    pub(crate) duration_ms: u64,
 }
 
 /// One procedure step, or one member of a parallel block, within a test.
 #[derive(Debug, Serialize)]
-pub struct AssertionReport {
+pub(crate) struct AssertionReport {
     /// Zero-based position in this test's entries, counting parallel members separately.
-    pub index: usize,
+    pub(crate) index: usize,
     /// Position of the procedure step, starting at zero.
-    pub step: usize,
+    pub(crate) step: usize,
     /// Position within a parallel block, starting at zero, or `null` for a step that runs alone.
-    pub member: Option<usize>,
+    pub(crate) member: Option<usize>,
     /// Kind of assertion or action, as named by the harness.
-    pub kind: String,
+    pub(crate) kind: String,
     /// How the step ended, or `not_run`.
-    pub status: StepStatus,
+    pub(crate) status: StepStatus,
     /// Whether `status` is `passed`.
-    pub passed: bool,
+    pub(crate) passed: bool,
     /// Human-readable summary.
-    pub message: String,
+    pub(crate) message: String,
     /// How long the assertion took.
-    pub duration_ms: u64,
+    pub(crate) duration_ms: u64,
     /// Mismatch detail, capped at 100 lines.
-    pub details: Vec<String>,
+    pub(crate) details: Vec<String>,
     /// Whether `details` was capped.
-    pub details_truncated: bool,
+    pub(crate) details_truncated: bool,
     /// Absolute path of the file holding the uncapped detail, when there is one.
-    pub details_path: Option<PathBuf>,
+    pub(crate) details_path: Option<PathBuf>,
 }
 
 impl RunReport {
     /// Creates a report in the `running` state that lists every selected test as not run.
+    ///
+    /// `build_revision` identifies the runner build, formatted by [`revision`].
     pub fn new(
-        suite_dirs: Vec<PathBuf>, runtime: String, parallelism: usize, log_dir: PathBuf, selected: Vec<String>,
+        build_revision: String, suite_dirs: Vec<PathBuf>, runtime: String, parallelism: usize, log_dir: PathBuf,
+        selected: Vec<String>,
     ) -> Self {
         Self {
             schema_version: REPORT_SCHEMA_VERSION,
             state: RunState::Running,
             interrupted_reason: None,
-            build_revision: build_revision(),
+            build_revision,
             suite_dirs,
             runtime,
             parallelism,
@@ -401,16 +407,11 @@ impl TestReport {
     }
 }
 
-/// Revision of the repository this binary was built from, as recorded by the build script.
-fn build_revision() -> String {
-    revision(env!("VERGEN_GIT_SHA"), env!("VERGEN_GIT_DIRTY"))
-}
-
 /// Formats the build script's SHA and dirty flag as a revision string.
 ///
 /// A value that is not a SHA collapses to `unknown` on its own, with no `-dirty` suffix to read as
 /// provenance the build never had.
-fn revision(sha: &str, dirty: &str) -> String {
+pub fn revision(sha: &str, dirty: &str) -> String {
     if sha.is_empty() || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
         return UNKNOWN_REVISION.to_string();
     }
@@ -600,7 +601,7 @@ mod tests {
 
     use super::*;
     use crate::record::{AssertionResult, AssertionStatus};
-    use crate::reporter::{ErrorKind, TestOutcome, TimeoutAttribution};
+    use crate::result::{ErrorKind, TestOutcome, TimeoutAttribution};
 
     fn assertion(name: &str, status: AssertionStatus) -> AssertionResult {
         AssertionResult {
@@ -807,7 +808,7 @@ mod tests {
         .expect("stderr log should be writable");
         // The harness's own files are not scanned, so its summaries never feed back as leads.
         std::fs::write(
-            log_dir.path().join("result.log"),
+            log_dir.path().join(RESULT_LOG_FILE_NAME),
             "FAIL log_contains: ERROR failed to bind socket\n",
         )
         .expect("result log should be writable");
@@ -944,26 +945,6 @@ mod tests {
     }
 
     #[test]
-    fn run_report_records_the_revision_it_was_built_from() {
-        let report = RunReport::new(
-            vec![PathBuf::from("/cases")],
-            "linux".to_string(),
-            1,
-            PathBuf::from("/logs"),
-            Vec::new(),
-        );
-
-        // A build outside a checkout reports `unknown`; inside one it is a SHA, optionally dirty.
-        let revision = report.build_revision.trim_end_matches("-dirty");
-        assert!(
-            revision == UNKNOWN_REVISION || revision.chars().all(|c| c.is_ascii_hexdigit()),
-            "revision was: {}",
-            report.build_revision
-        );
-        assert!(!revision.is_empty());
-    }
-
-    #[test]
     fn revision_collapses_to_unknown_without_a_sha() {
         assert_eq!(revision("", "true"), UNKNOWN_REVISION);
         assert_eq!(revision("VERGEN_IDEMPOTENT_OUTPUT", "true"), UNKNOWN_REVISION);
@@ -1004,7 +985,14 @@ mod tests {
     #[test]
     fn run_report_pins_the_schema_two_field_names() {
         let selected = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-        let mut report = RunReport::new(Vec::new(), "linux".to_string(), 1, PathBuf::new(), selected);
+        let mut report = RunReport::new(
+            "0123abcd-dirty".to_string(),
+            Vec::new(),
+            "linux".to_string(),
+            1,
+            PathBuf::new(),
+            selected,
+        );
         let timed_out = TestResult::errored("a", ErrorKind::Timeout, "too slow", Duration::from_secs(1), Vec::new());
         report.tests = vec![TestReport::new(&timed_out)];
         report.running = vec!["b".to_string()];
@@ -1016,6 +1004,7 @@ mod tests {
         let json = serde_json::to_value(&report).expect("run report should serialize");
 
         assert_eq!(json["schema_version"], 2);
+        assert_eq!(json["build_revision"], "0123abcd-dirty");
         assert_eq!(json["state"], "interrupted");
         assert_eq!(json["interrupted_reason"]["kind"], "signal");
         assert_eq!(json["interrupted_reason"]["source"], "SIGTERM");
@@ -1043,6 +1032,7 @@ mod tests {
         };
 
         let mut report = RunReport::new(
+            "unknown".to_string(),
             Vec::new(),
             "linux".to_string(),
             1,

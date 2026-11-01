@@ -7,7 +7,9 @@ use std::collections::BTreeMap;
 use std::{io::IsTerminal, process::ExitCode};
 
 use clap::Parser as _;
+use panoramic_core::events::create_event_channel;
 use panoramic_core::interrupts::Interrupts;
+use panoramic_core::machine_output::{revision, RunReport};
 use saluki_common::logging::{filter_from_env, parse_filter_directives};
 use tokio::sync::{watch, Mutex};
 use tokio_util::sync::CancellationToken;
@@ -36,21 +38,14 @@ mod integration;
 mod mounts;
 use self::config::{build_runners, case::CaseConfig, default_host_runtime, discover_in_scope};
 
-mod events;
-use self::events::create_event_channel;
-
 mod image_override;
 mod intake;
 
-mod machine_output;
-use self::machine_output::RunReport;
-
 mod ledger;
 mod participants;
-mod record;
-mod reporter;
 mod steps;
-use self::reporter::{OutputFormat, Reporter};
+mod text_output;
+use self::text_output::{OutputFormat, Reporter};
 
 mod runner;
 mod test;
@@ -262,6 +257,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     let mut interrupts = Interrupts::install();
     let mut collector = RunCollector::start(
         RunReport::new(
+            build_revision(),
             cmd.test_dirs.clone(),
             integration_runtime.clone(),
             cmd.parallelism.get(),
@@ -505,6 +501,11 @@ fn listing(cases: &[CaseConfig], runners: &[Box<dyn test::Test>]) -> BTreeMap<St
         .collect()
 }
 
+/// Revision of the repository this binary was built from, as recorded by the build script.
+fn build_revision() -> String {
+    revision(env!("VERGEN_GIT_SHA"), env!("VERGEN_GIT_DIRTY"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -515,6 +516,18 @@ mod tests {
 
     const CORRECTNESS_FIELDS: &str =
         "runtime: docker\nanalysis_mode: metrics\nbaseline: {image: 'base:declared'}\ncomparison: {image: 'comp:declared'}\n";
+
+    #[test]
+    fn build_revision_is_a_commit_sha_or_unknown() {
+        let build_revision = build_revision();
+        let revision = build_revision.trim_end_matches("-dirty");
+        assert!(!revision.is_empty());
+        assert!(
+            revision == "unknown" || revision.chars().all(|c| c.is_ascii_hexdigit()),
+            "revision was: {}",
+            build_revision
+        );
+    }
 
     #[test]
     fn log_level_scopes_the_selected_level_to_first_party_crates() {

@@ -8,16 +8,17 @@ use std::io;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+use panoramic_core::events::TestEvent;
 use panoramic_core::interrupts::Interrupts;
+use panoramic_core::machine_output::{self, InterruptReason, RunReport, RunState, RunTotals, TestReport};
+use panoramic_core::result::DurationMs;
 use tokio::sync::mpsc;
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::events::TestEvent;
-use crate::machine_output::{self, InterruptReason, RunReport, RunState, RunTotals, TestReport};
-use crate::reporter::{run_counts, DurationMs, Reporter};
+use crate::text_output::{run_counts, Reporter};
 use crate::tui::Tui;
 
 /// Exit code for an assertion failure.
@@ -320,16 +321,17 @@ fn apply_event(collector: &mut RunCollector, display: Option<&mut RunDisplay>, e
 mod tests {
     use std::sync::Arc;
 
+    use panoramic_core::events::create_event_channel;
+    use panoramic_core::machine_output::RUN_REPORT_FILE_NAME;
+    use panoramic_core::record::{AssertionResult, AssertionStatus};
+    use panoramic_core::result::{ErrorKind, TestResult};
     use serde_json::{json, Value};
     use tokio::sync::Notify;
 
     use super::*;
-    use crate::events::create_event_channel;
-    use crate::machine_output::RUN_REPORT_FILE_NAME;
-    use crate::record::{AssertionResult, AssertionStatus};
-    use crate::reporter::{ErrorKind, OutputFormat, TestResult};
     use crate::runner::test_support::{test_runner_settings, Behavior, ScriptedTest};
     use crate::runner::{RunArgs, Runner};
+    use crate::text_output::OutputFormat;
 
     /// Bounds test waits below the runner's cleanup grace period so hangs fail promptly.
     const WAIT_BOUND: Duration = Duration::from_secs(5);
@@ -351,6 +353,7 @@ mod tests {
             let mounts_dir = tempfile::tempdir().expect("temp dir should be creatable");
             let selected = tests.iter().map(|t| t.name.clone()).collect();
             let report = RunReport::new(
+                "unknown".to_string(),
                 Vec::new(),
                 "linux".to_string(),
                 1,
@@ -666,6 +669,7 @@ mod tests {
         let log_dir = tempfile::tempdir().expect("temp dir should be creatable");
         let selected = vec!["a".to_string(), "b".to_string()];
         let report = RunReport::new(
+            "unknown".to_string(),
             Vec::new(),
             "linux".to_string(),
             1,
@@ -729,6 +733,7 @@ mod tests {
         for (case, results, interrupted, expected) in cases {
             let log_dir = tempfile::tempdir().expect("temp dir should be creatable");
             let report = RunReport::new(
+                "unknown".to_string(),
                 Vec::new(),
                 "linux".to_string(),
                 1,
@@ -754,6 +759,7 @@ mod tests {
         // cluster may remain.
         let log_dir = tempfile::tempdir().expect("temp dir should be creatable");
         let report = RunReport::new(
+            "unknown".to_string(),
             Vec::new(),
             "linux".to_string(),
             1,

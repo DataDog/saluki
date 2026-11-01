@@ -3,18 +3,18 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use panoramic_core::deadline::{Budget, Deadline};
 use serde::Serialize;
 use tokio::time::Instant;
 
-use crate::reporter::{DurationMs, PhaseTiming, TestResult};
+use crate::deadline::{Budget, Deadline};
+use crate::result::{DurationMs, PhaseTiming, TestResult};
 
 /// Shared step states and verdict, retained by the runner when it drops the test future.
 ///
 /// The step driver records each step's start and result. The first [`Verdict`] determines the outcome, which the
 /// runner preserves if a deadline or signal arrives later. Running steps identify where the test was interrupted.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct CaseRecord {
+pub struct CaseRecord {
     state: Arc<Mutex<RecordState>>,
 }
 
@@ -36,7 +36,7 @@ enum Slot {
 
 /// A completed procedure or setup failure that fixes the case's outcome.
 #[derive(Clone, Debug)]
-pub(crate) enum Verdict {
+pub enum Verdict {
     /// The procedure finished. The step statuses decide the outcome.
     Procedure,
     /// Setup failed with this result.
@@ -50,36 +50,36 @@ impl CaseRecord {
     }
 
     /// Registers the procedure's steps as `not_run`.
-    pub(crate) fn plan(&self, steps: Vec<StepResult>) {
+    pub fn plan(&self, steps: Vec<StepResult>) {
         self.lock().slots = steps.into_iter().map(Slot::Waiting).collect();
     }
 
     /// Marks the step in `slot` as running.
-    pub(crate) fn start(&self, slot: usize, step: RunningStep) {
+    pub fn start(&self, slot: usize, step: RunningStep) {
         if let Some(entry) = self.lock().slots.get_mut(slot) {
             *entry = Slot::Running(step);
         }
     }
 
     /// Records the result of the step in `slot`.
-    pub(crate) fn finish(&self, slot: usize, result: StepResult) {
+    pub fn finish(&self, slot: usize, result: StepResult) {
         if let Some(entry) = self.lock().slots.get_mut(slot) {
             *entry = Slot::Finished(result);
         }
     }
 
     /// Sets the verdict if the case is undecided.
-    pub(crate) fn decide(&self, verdict: Verdict) {
+    pub fn decide(&self, verdict: Verdict) {
         self.lock().verdict.get_or_insert(verdict);
     }
 
     /// Whether a verdict has been reached.
-    pub(crate) fn decided(&self) -> bool {
+    pub fn decided(&self) -> bool {
         self.lock().verdict.is_some()
     }
 
     /// Returns the running steps in procedure order.
-    pub(crate) fn running(&self) -> Vec<ActiveStep> {
+    pub fn running(&self) -> Vec<ActiveStep> {
         self.lock()
             .slots
             .iter()
@@ -91,7 +91,7 @@ impl CaseRecord {
     }
 
     /// Returns all planned steps in order, reporting running steps as `interrupted` and waiting steps as `not_run`.
-    pub(crate) fn steps(&self) -> Vec<StepResult> {
+    pub fn steps(&self) -> Vec<StepResult> {
         self.lock()
             .slots
             .iter()
@@ -103,7 +103,7 @@ impl CaseRecord {
     }
 
     /// Builds a result from the recorded setup failure or step statuses, using `duration` and `phase_timings`.
-    pub(crate) fn result(&self, name: &str, duration: Duration, phase_timings: Vec<PhaseTiming>) -> TestResult {
+    pub fn result(&self, name: &str, duration: Duration, phase_timings: Vec<PhaseTiming>) -> TestResult {
         let verdict = self.lock().verdict.clone();
         match verdict {
             Some(Verdict::SetupFailed(result)) => TestResult {
@@ -152,7 +152,7 @@ pub struct AssertionResult {
 
 impl AssertionResult {
     /// Creates a step result with the elapsed time since `started`.
-    pub(crate) fn new(name: &str, started: Instant, status: AssertionStatus, message: impl Into<String>) -> Self {
+    pub fn new(name: &str, started: Instant, status: AssertionStatus, message: impl Into<String>) -> Self {
         Self {
             name: name.to_string(),
             status,
@@ -164,15 +164,19 @@ impl AssertionResult {
 
 /// Identity and timing of a running step, retained in the case record until it finishes.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct RunningStep {
-    pub(crate) step: usize,
-    pub(crate) member: Option<usize>,
-    pub(crate) name: &'static str,
-    pub(crate) started: Instant,
+pub struct RunningStep {
+    /// Position of the step in the procedure, from zero.
+    pub step: usize,
+    /// Zero-based position within a parallel block, or `None` for a step that runs alone.
+    pub member: Option<usize>,
+    /// Step kind, such as `log_contains`.
+    pub name: &'static str,
+    /// When the step started running.
+    pub started: Instant,
     /// The step's own budget.
-    pub(crate) budget: Duration,
+    pub budget: Duration,
     /// The case deadline narrowed to `budget`.
-    pub(crate) deadline: Deadline,
+    pub deadline: Deadline,
 }
 
 impl RunningStep {
@@ -191,7 +195,7 @@ impl RunningStep {
     ///
     /// Reports elapsed time and any budget reduction imposed by the case deadline. The test result carries the
     /// interruption cause.
-    pub(crate) fn interrupted(&self, step_message: Option<String>) -> StepResult {
+    pub fn interrupted(&self, step_message: Option<String>) -> StepResult {
         let elapsed = self.started.elapsed();
         let mut message = format!("Interrupted after {elapsed:.1?}.");
         if self.deadline.budget == Budget::Case {
@@ -209,7 +213,7 @@ impl RunningStep {
     }
 
     /// Returns an `errored` result for a step that ran past its budget and the driver's grace period.
-    pub(crate) fn overran(&self) -> StepResult {
+    pub fn overran(&self) -> StepResult {
         let elapsed = self.started.elapsed();
         self.result(
             StepStatus::Errored,
@@ -222,7 +226,7 @@ impl RunningStep {
     }
 
     /// Returns the result the step reported itself.
-    pub(crate) fn returned(&self, result: AssertionResult) -> StepResult {
+    pub fn returned(&self, result: AssertionResult) -> StepResult {
         self.result(result.status.into(), result.message, result.duration)
     }
 
@@ -287,7 +291,7 @@ pub struct ActiveStep {
 }
 
 /// Formats a one-based step label: `3` for a standalone step, `3.1` for a parallel member.
-pub(crate) fn step_label(step: usize, member: Option<usize>) -> String {
+pub fn step_label(step: usize, member: Option<usize>) -> String {
     match member {
         Some(member) => format!("{}.{}", step + 1, member + 1),
         None => (step + 1).to_string(),

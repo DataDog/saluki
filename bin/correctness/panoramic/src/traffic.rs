@@ -27,6 +27,7 @@ use std::{
     time::Duration,
 };
 
+use panoramic_core::result::TestOutcome;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Serialize;
 use serde_json::Value;
@@ -34,7 +35,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use crate::intake::{CollectedData, IntakeClient};
-use crate::reporter::TestOutcome;
 
 const TRAFFIC_DIR_NAME: &str = "traffic";
 
@@ -918,6 +918,7 @@ mod tests {
     mod capture_intake {
         use std::time::Duration;
 
+        use panoramic_core::result::TestOutcome;
         use serde_json::json;
         use tokio_util::sync::CancellationToken;
 
@@ -925,7 +926,6 @@ mod tests {
         use super::{read_json, read_manifest};
         use crate::intake::test_server::{closed_port, install_crypto_provider, MockIntake};
         use crate::intake::IntakeClient;
-        use crate::reporter::TestOutcome;
 
         /// Runs a capture into a fresh log directory, finalizes it as failed, and returns the merged manifest.
         async fn capture(port: u16, cancel: &CancellationToken, budget: Duration) -> serde_json::Value {

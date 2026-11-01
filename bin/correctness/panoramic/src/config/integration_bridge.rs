@@ -9,6 +9,8 @@
 
 use std::{any::Any, path::Path};
 
+use panoramic_core::record::step_label;
+
 use super::{
     case::Os,
     case_file::{CaseFile, ParticipantConfig, ParticipantEntry, ProcedureNode, StepNode},
@@ -17,7 +19,6 @@ use super::{
 use crate::{
     dynamic_vars::ENV_PREFIX,
     participants::AGENT_ADP,
-    record::step_label,
     steps::{
         file_contains::FileContains,
         log_contains::{LogContains, LogNotContains},

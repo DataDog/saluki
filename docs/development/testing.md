@@ -211,8 +211,9 @@ Follow the selected tests' `log_dir` to `result.json`. Use `outcome` for the tes
 each step. Check `issues` even on passes; they don't change `outcome`. Open reported artifact paths and
 `diagnostic_lines` sources for context and uncapped details.
 
-Follow report types in `bin/correctness/panoramic/src/machine_output.rs` for semantics. For precedence rules, see
-`TestResult::from_steps` in `reporter.rs` and `exit_code` in `collector.rs`. Check `schema_version` and `run.json`'s
+Follow report types in `bin/correctness/panoramic/core/src/machine_output.rs` for semantics. For precedence rules, see
+`TestResult::from_steps` in `bin/correctness/panoramic/core/src/result.rs` and `exit_code` in
+`bin/correctness/panoramic/src/collector.rs`. Check `schema_version` and `run.json`'s
 `build_revision` against the working tree.
 
 On Unix, send SIGINT or SIGTERM to stop a run with cleanup. A second signal may leave containers behind.

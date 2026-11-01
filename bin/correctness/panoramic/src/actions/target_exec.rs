@@ -6,6 +6,7 @@ use bollard::{
     exec::{CreateExecOptions, StartExecResults},
 };
 use futures::TryStreamExt as _;
+use panoramic_core::record::{AssertionResult, AssertionStatus};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::process::Command;
 use tokio::time::Instant;
@@ -13,7 +14,6 @@ use tokio_util::sync::CancellationToken;
 
 use super::Action;
 use crate::assertions::AssertionContext;
-use crate::record::{AssertionResult, AssertionStatus};
 
 pub(super) struct TargetExecAction {
     command: Vec<String>,

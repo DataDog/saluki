@@ -1,11 +1,11 @@
 use std::time::Duration;
 
+use panoramic_core::record::{AssertionResult, AssertionStatus};
 use tokio::time::Instant;
 
 use crate::{
     assertions::{Assertion, AssertionContext},
     config::LogStream,
-    record::{AssertionResult, AssertionStatus},
 };
 
 /// Assertion that checks ADP exited with a specific exit code.

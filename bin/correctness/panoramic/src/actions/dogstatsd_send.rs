@@ -1,11 +1,11 @@
 use std::time::Duration;
 
+use panoramic_core::record::{AssertionResult, AssertionStatus};
 use tokio::net::UdpSocket;
 use tokio::time::Instant;
 
 use super::Action;
 use crate::assertions::AssertionContext;
-use crate::record::{AssertionResult, AssertionStatus};
 
 /// Sends a single DogStatsD datagram over UDP to the target.
 ///

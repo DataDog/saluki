@@ -3,6 +3,7 @@ use std::fmt::Write as _;
 use std::time::Duration;
 
 use panoramic_core::probe::{probe, ProbeError, POLL_INTERVAL, PROBE_TIMEOUT};
+use panoramic_core::record::{AssertionResult, AssertionStatus};
 use saluki_error::{generic_error, GenericError};
 use stele::{Metric, MetricValue};
 use tokio::time::Instant;
@@ -15,7 +16,6 @@ use crate::intake::metrics::{
     NormalizedMetrics,
 };
 use crate::intake::IntakeClient;
-use crate::record::{AssertionResult, AssertionStatus};
 
 /// Names the intake request in probe messages.
 const METRICS_DUMP: &str = "the intake sidecar's metrics dump";
@@ -485,6 +485,7 @@ mod tests {
     use std::sync::{Arc, RwLock};
     use std::time::Duration;
 
+    use panoramic_core::record::{AssertionResult, AssertionStatus};
     use saluki_error::{generic_error, GenericError};
     use serde_json::{json, Value};
     use stele::Metric;
@@ -497,7 +498,6 @@ mod tests {
     use crate::config::{AssertionConfig, AssertionStep, IntegrationConfig, MetricTypeMatcher, TagMatch};
     use crate::intake::test_server::{closed_port, install_crypto_provider, MockIntake};
     use crate::intake::IntakeClient;
-    use crate::record::{AssertionResult, AssertionStatus};
 
     fn count(value: f64) -> Value {
         json!({"mtype": "Count", "value": value})

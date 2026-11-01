@@ -15,11 +15,12 @@ use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     terminal, ExecutableCommand as _, QueueableCommand as _,
 };
+use panoramic_core::events::TestEvent;
+use panoramic_core::machine_output::RunReport;
+use panoramic_core::record::StepStatus;
+use panoramic_core::result::TestResult;
 
-use crate::events::TestEvent;
-use crate::machine_output::RunReport;
-use crate::record::StepStatus;
-use crate::reporter::{run_counts, run_status_label, run_unfinished_lines, TestResult, RUN_PASSED_LABEL};
+use crate::text_output::{run_counts, run_status_label, run_unfinished_lines, RUN_PASSED_LABEL};
 
 /// Terminal UI state and rendering.
 pub struct Tui {
@@ -375,9 +376,9 @@ fn truncate_to_width(value: &str, max_width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use crossterm::event::KeyEventState;
+    use panoramic_core::result::test_support::{each_outcome, NOT_RUN_KIND, PASS_ISSUE, TIMEOUT_CAUSE};
 
     use super::*;
-    use crate::reporter::test_support::{each_outcome, NOT_RUN_KIND, PASS_ISSUE, TIMEOUT_CAUSE};
 
     #[test]
     fn tui_labels_every_outcome_and_prints_a_timeout_cause() {

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use tokio::sync::mpsc;
 
-use crate::reporter::TestResult;
+use crate::result::TestResult;
 
 /// Events emitted during test execution.
 #[derive(Clone, Debug)]
@@ -28,7 +28,7 @@ pub enum TestEvent {
         /// The result of the completed test.
         result: Box<TestResult>,
 
-        /// The directory where this test keeps its logs. Determined and created by the Runner object.
+        /// The directory where this test keeps its logs, created by the runner before the test starts.
         log_dir: PathBuf,
     },
 
@@ -40,7 +40,7 @@ pub enum TestEvent {
 }
 
 /// Sends a run's events to its consumer.
-pub(crate) type EventSender = mpsc::UnboundedSender<TestEvent>;
+pub type EventSender = mpsc::UnboundedSender<TestEvent>;
 
 /// Create a channel for sending test events.
 pub fn create_event_channel() -> (EventSender, mpsc::UnboundedReceiver<TestEvent>) {

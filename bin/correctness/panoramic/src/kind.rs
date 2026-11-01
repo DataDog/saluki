@@ -1,12 +1,12 @@
 use std::collections::BTreeSet;
 
 use futures::future;
+use panoramic_core::events::TestEvent;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use crate::events::TestEvent;
 use crate::utils::strip_ansi_codes;
 
 pub const DEFAULT_CLUSTER_NAME: &str = "saluki-correctness";

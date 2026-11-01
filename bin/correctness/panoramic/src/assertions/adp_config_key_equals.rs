@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use panoramic_core::probe::POLL_INTERVAL;
+use panoramic_core::record::{AssertionResult, AssertionStatus};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde_json::Value;
 use tokio::time::Instant;
@@ -9,7 +10,6 @@ use tracing::trace;
 use crate::{
     actions::{execute_target_command, CommandDiagnostics, CommandError},
     assertions::{Assertion, AssertionContext, Attempts},
-    record::{AssertionResult, AssertionStatus},
 };
 
 const DEFAULT_ADP_CONFIG_ENDPOINT: &str = "https://localhost:55101/config";

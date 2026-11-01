@@ -7,7 +7,8 @@ use airlock::driver::DEFAULT_ALPINE_IMAGE;
 use chrono::Local;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use crate::{image_override::ImageOverride, reporter::OutputFormat, test::RunnerSettings};
+use crate::text_output::OutputFormat;
+use crate::{image_override::ImageOverride, test::RunnerSettings};
 
 /// Environment variables Panoramic honors but doesn't own, rendered at the bottom of the help output.
 ///

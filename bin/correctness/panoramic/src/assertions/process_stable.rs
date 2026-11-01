@@ -1,9 +1,9 @@
 use std::time::Duration;
 
+use panoramic_core::record::{AssertionResult, AssertionStatus};
 use tokio::time::Instant;
 
 use crate::assertions::{Assertion, AssertionContext};
-use crate::record::{AssertionResult, AssertionStatus};
 
 /// Assertion that checks the container process remains stable for a specified duration.
 pub struct ProcessStableForAssertion {

@@ -2,6 +2,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use panoramic_core::probe::{probe, AttemptLimits, ProbeError, POLL_INTERVAL};
+use panoramic_core::record::{AssertionResult, AssertionStatus};
 use reqwest::ClientBuilder;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde_json::Value;
@@ -9,7 +10,6 @@ use tokio::time::Instant;
 
 use super::{docker_exec, Action};
 use crate::assertions::{AssertionContext, Attempts};
-use crate::record::{AssertionResult, AssertionStatus};
 
 pub(super) struct CoreAgentConfigSetAction {
     pub(super) key: String,
@@ -344,6 +344,7 @@ mod tests {
 
     use airlock::driver::ContainerOs;
     use panoramic_core::probe::AttemptLimits;
+    use panoramic_core::record::{AssertionResult, AssertionStatus};
     use serde_json::Value;
     use tokio_util::sync::CancellationToken;
 
@@ -351,7 +352,6 @@ mod tests {
     use crate::actions::test_docker::{curl_max_time, Exec, FakeDocker};
     use crate::actions::Action as _;
     use crate::assertions::test_support::host_context;
-    use crate::record::{AssertionResult, AssertionStatus};
 
     /// Sets `log_level` in a `target_os` container within `timeout`, with its execs served by `docker`.
     async fn set_in_container(docker: &FakeDocker, target_os: ContainerOs, timeout: Duration) -> AssertionResult {

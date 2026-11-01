@@ -10,11 +10,11 @@ use airlock::{
     driver::{ContainerOs, DriverConfig},
 };
 use async_trait::async_trait;
+use panoramic_core::result::TestResult;
 use saluki_error::{generic_error, GenericError};
 
 use super::config::{Config, Runtime, TargetConfig};
 use crate::config::case::CORRECTNESS_TIMEOUT;
-use crate::reporter::TestResult;
 use crate::test::{resolve_case_path, Test, TestContext, TestSuite};
 
 /// Container names a correctness test carries in [`Test::images`] and image overrides.

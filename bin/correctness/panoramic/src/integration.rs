@@ -7,6 +7,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use panoramic_core::result::TestResult;
 
 use crate::{
     config::{
@@ -14,7 +15,6 @@ use crate::{
         MAC_RUNTIME, TARGET_IMAGE_NAME,
     },
     image_override::ImageOverrides,
-    reporter::TestResult,
     test::{Test, TestContext, TestSuite},
 };
 
@@ -204,11 +204,11 @@ procedure:
         use std::sync::{Arc, RwLock};
 
         use panoramic_core::deadline::{Budget, Deadline};
+        use panoramic_core::record::{CaseRecord, StepStatus};
         use tokio_util::sync::CancellationToken;
 
         use crate::assertions::test_support::{host_context, procedure};
         use crate::assertions::{run_assertion_steps, LogBuffer};
-        use crate::record::{CaseRecord, StepStatus};
 
         let mut case = procedure(
             r#"

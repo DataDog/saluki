@@ -7,6 +7,7 @@ use std::{
     path::Path,
 };
 
+use panoramic_core::record::step_label;
 use saluki_error::{generic_error, GenericError};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -16,7 +17,6 @@ use super::{
     case_file::{CaseFile, ProcedureNode, StepNode},
     participant_check::{declared_names, find_type, possible_os, ParticipantDeclaration},
 };
-use crate::record::step_label;
 
 /// A step's fields as written in the case file, keyed by field name.
 pub(crate) type StepFields = BTreeMap<String, Value>;

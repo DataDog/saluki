@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use panoramic_core::record::{AssertionResult, AssertionStatus};
 use saluki_error::generic_error;
 use tokio::time::Instant;
 
@@ -8,7 +9,6 @@ use super::{
     Action,
 };
 use crate::assertions::AssertionContext;
-use crate::record::{AssertionResult, AssertionStatus};
 
 /// Runs a complete DogStatsD capture and replay flow against the tested ADP process.
 pub(super) struct DogstatsdReplayAction {
@@ -249,20 +249,21 @@ fn capture_path_from_output(output: &str) -> Result<String, saluki_error::Generi
 mod tests {
     use std::time::Duration;
 
+    use panoramic_core::record::AssertionStatus;
+
     use super::{capture_path_from_output, duration_as_go_duration, stats_output_contains_metric};
     use super::{CommandError, DogstatsdReplayAction};
-    use crate::record::AssertionStatus;
 
     #[cfg(unix)]
     #[tokio::test]
     async fn cancelling_during_the_replay_capture_wait_interrupts_the_replay() {
         use panoramic_core::deadline::{Budget, Deadline};
+        use panoramic_core::record::{CaseRecord, StepStatus};
         use tokio::time::Instant;
         use tokio_util::sync::CancellationToken;
 
         use crate::assertions::test_support::{host_context, procedure};
         use crate::assertions::{run_assertion_steps, TargetCommand};
-        use crate::record::{CaseRecord, StepStatus};
 
         let marker_dir = tempfile::tempdir().expect("temp dir should be creatable");
         let marker = marker_dir.path().join("sender-ran");

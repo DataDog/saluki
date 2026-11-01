@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use panoramic_core::record::{AssertionResult, AssertionStatus};
 use tokio::time::Instant;
 
 use super::{
@@ -7,7 +8,6 @@ use super::{
     Action,
 };
 use crate::assertions::{AssertionContext, TargetCommand};
-use crate::record::{AssertionResult, AssertionStatus};
 
 #[derive(Clone, Copy)]
 pub(super) enum TargetCli {

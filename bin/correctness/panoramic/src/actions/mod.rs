@@ -1,8 +1,8 @@
+use panoramic_core::record::AssertionResult;
 use saluki_error::GenericError;
 
 use crate::assertions::AssertionContext;
 use crate::config::ActionConfig;
-use crate::record::AssertionResult;
 
 mod core_agent_config_set;
 mod dogstatsd_replay;
@@ -27,7 +27,7 @@ pub trait Action: Send + Sync {
 
     /// Executes the action and returns a result shaped like an assertion result.
     ///
-    /// Classify failures using [`AssertionStatus`](crate::record::AssertionStatus). Release resources on drop:
+    /// Classify failures using [`AssertionStatus`](panoramic_core::record::AssertionStatus). Release resources on drop:
     /// the step driver may drop this future on cancellation or a budget overrun.
     async fn execute(&self, ctx: &AssertionContext) -> AssertionResult;
 }
@@ -97,13 +97,13 @@ mod tests {
         time::Duration,
     };
 
+    use panoramic_core::record::AssertionStatus;
     use tokio_util::sync::CancellationToken;
 
     use super::create_action;
     use crate::{
         assertions::{AssertionContext, LogBuffer, TargetCommand},
         config::{ActionConfig, HumanDuration},
-        record::AssertionStatus,
     };
 
     fn host_context_with_commands(

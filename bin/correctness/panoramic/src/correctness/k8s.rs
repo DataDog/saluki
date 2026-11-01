@@ -16,6 +16,7 @@ use kube::{
     api::{Api, AttachParams, LogParams, PostParams},
     Client,
 };
+use panoramic_core::result::{TestResult, UNKNOWN_PHASE};
 use panoramic_core::tasks::CaseTasks;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::{io::AsyncWriteExt as _, net::TcpListener, time::sleep};
@@ -31,7 +32,6 @@ use crate::{
     },
     intake::{CollectedData, IntakeClient},
     ledger::{random_id, ResourceLedger},
-    reporter::{TestResult, UNKNOWN_PHASE},
     test::TestContext,
     traffic::{self, Side},
 };
@@ -367,9 +367,9 @@ pub async fn run_k8s_correctness_test(case: CorrectnessTestCase, tctx: TestConte
         Ok(()) => TestResult::from_assertions(
             name,
             started.elapsed(),
-            vec![crate::record::AssertionResult {
+            vec![panoramic_core::record::AssertionResult {
                 name: "telemetry matches".to_string(),
-                status: crate::record::AssertionStatus::Passed,
+                status: panoramic_core::record::AssertionStatus::Passed,
                 message: "No difference detected between baseline and comparison.".to_string(),
                 duration: analysis_duration,
             }],
@@ -380,9 +380,9 @@ pub async fn run_k8s_correctness_test(case: CorrectnessTestCase, tctx: TestConte
             TestResult::from_assertions(
                 name,
                 started.elapsed(),
-                vec![crate::record::AssertionResult {
+                vec![panoramic_core::record::AssertionResult {
                     name: "telemetry matches".to_string(),
-                    status: crate::record::AssertionStatus::Failed,
+                    status: panoramic_core::record::AssertionStatus::Failed,
                     message: full_message,
                     duration: analysis_duration,
                 }],

@@ -16,7 +16,14 @@ use airlock::driver::{ContainerOs, Driver, DriverConfig, DriverDetails};
 use bollard::{container::LogOutput, errors::Error as DockerError};
 use futures::stream::{self, StreamExt as _};
 use panoramic_core::deadline::{Budget, Deadline};
+use panoramic_core::events::{EventSender, TestEvent};
+use panoramic_core::machine_output::RESULT_LOG_FILE_NAME;
 use panoramic_core::probe::probe;
+use panoramic_core::record::{ActiveStep, CaseRecord, StepStatus, Verdict};
+use panoramic_core::result::{
+    ErrorKind, Issue, IssueKind, PhaseTiming, PhaseTracker, StopCause, StoppedBy, TestResult, TimeoutAttribution,
+    UNKNOWN_PHASE,
+};
 use panoramic_core::tasks::TASK_STOP_TIME;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::pin;
@@ -25,18 +32,12 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::ledger::RECLAIM_TIME;
-use crate::record::{ActiveStep, CaseRecord, StepStatus, Verdict};
 use crate::test::{RunnerSettings, Test, TestContext};
 use crate::{
     assertions::{AssertionContext, LogBuffer, TargetCommand},
     config::{parse_file_spec, parse_port_spec},
-    events::{EventSender, TestEvent},
     intake::IntakeClient,
     integration::IntegrationTestCase,
-    reporter::{
-        ErrorKind, Issue, IssueKind, PhaseTiming, PhaseTracker, StopCause, StoppedBy, TestResult, TimeoutAttribution,
-        UNKNOWN_PHASE,
-    },
 };
 
 /// How long a cancelled or timed-out test has to return its result before the runner drops it.
@@ -378,10 +379,15 @@ impl Runner {
         // Create a directory for the test to write logs into and pass it into the test context.
         let log_dir = log_base_dir.join(format!("{:?}", suite).to_lowercase()).join(&name);
         if let Err(e) = tokio::fs::create_dir_all(&log_dir).await {
-            let mut result = TestResult::setup_error(
+            let mut result = TestResult::errored(
                 name.clone(),
+                ErrorKind::Setup,
+                format!(
+                    "Test failed to start due to an error during setup. Error creating log directory at {}: {e}",
+                    log_dir.display()
+                ),
                 started.elapsed(),
-                format!("Error creating log directory at {}: {e}", log_dir.display()),
+                vec![],
             );
             result.case_path = Some(test.case_path());
 
@@ -469,7 +475,7 @@ impl Runner {
         write_result_log(&result, &log_dir);
         // Traffic retention runs before the report, so `result.json` lists the artifacts that are on disk.
         crate::traffic::finalize(&log_dir, result.outcome);
-        crate::machine_output::write_test_report(&result, &log_dir);
+        panoramic_core::machine_output::write_test_report(&result, &log_dir);
 
         let _ = event_sender.send(TestEvent::TestCompleted {
             result: Box::new(result.clone()),
@@ -1106,7 +1112,7 @@ impl IntegrationRunner {
 fn write_result_log(result: &TestResult, dir: impl AsRef<Path>) {
     let dir = dir.as_ref();
 
-    let path = dir.join("result.log");
+    let path = dir.join(RESULT_LOG_FILE_NAME);
     let mut f = match std::fs::File::create(&path) {
         Ok(f) => f,
         Err(e) => {
@@ -1158,30 +1164,17 @@ fn write_result_log(result: &TestResult, dir: impl AsRef<Path>) {
     }
 }
 
-// These TestResult constructors just declutter the execution code a little bit.
-impl TestResult {
-    fn setup_error(name: impl Into<String>, total_duration: Duration, e: impl AsRef<str>) -> Self {
-        Self::errored(
-            name,
-            ErrorKind::Setup,
-            format!("Test failed to start due to an error during setup. {}", e.as_ref()),
-            total_duration,
-            vec![],
-        )
-    }
-}
-
 /// Scripted tests and settings for exercising [`Runner`].
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::collections::BTreeMap;
 
+    use panoramic_core::record::{AssertionResult, AssertionStatus};
     use tokio::sync::Notify;
 
     use super::*;
     use crate::assertions::run_assertion_steps;
     use crate::assertions::test_support::{host_context, procedure};
-    use crate::record::{AssertionResult, AssertionStatus};
     use crate::test::TestSuite;
 
     /// What a [`ScriptedTest`] does once it has entered its phase.
@@ -1422,13 +1415,13 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
+    use panoramic_core::record::StepStatus;
+    use panoramic_core::result::test_support::{each_outcome, NOT_RUN_KIND};
+    use panoramic_core::result::{ReclaimResult, TestOutcome, TimeoutDeadline};
     use tokio::sync::mpsc;
 
     use super::test_support::{test_runner_settings, Behavior, ScriptedTest, TaskProbe};
     use super::*;
-    use crate::record::StepStatus;
-    use crate::reporter::test_support::{each_outcome, NOT_RUN_KIND};
-    use crate::reporter::{ReclaimResult, TestOutcome, TimeoutDeadline};
 
     /// A bound for real-time tests.
     const BOUND: Duration = Duration::from_secs(5);
@@ -1587,7 +1580,7 @@ mod tests {
         .await;
 
         let log_dir = result.log_dir.expect("the runner should record the log directory");
-        let result_log = std::fs::read_to_string(log_dir.join("result.log")).expect("result.log should exist");
+        let result_log = std::fs::read_to_string(log_dir.join(RESULT_LOG_FILE_NAME)).expect("result.log should exist");
         let mut lines = result_log.lines();
         let first = lines.next().expect("result.log should not be empty");
         assert!(first.starts_with("TIMEOUT stuck "), "first line was: {}", first);
@@ -1601,7 +1594,8 @@ mod tests {
 
         write_result_log(&failed, log_dir.path());
 
-        let result_log = std::fs::read_to_string(log_dir.path().join("result.log")).expect("result.log should exist");
+        let result_log =
+            std::fs::read_to_string(log_dir.path().join(RESULT_LOG_FILE_NAME)).expect("result.log should exist");
         let assertions: Vec<&str> = result_log
             .lines()
             .skip_while(|line| *line != "Assertions:")

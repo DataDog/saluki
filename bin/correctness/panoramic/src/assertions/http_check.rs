@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use panoramic_core::probe::{probe, AttemptLimits, ProbeError, POLL_INTERVAL};
+use panoramic_core::record::{AssertionResult, AssertionStatus};
 use reqwest::ClientBuilder;
 use saluki_error::GenericError;
 use tokio::time::Instant;
@@ -9,7 +10,6 @@ use tracing::trace;
 use crate::actions::docker_exec;
 use crate::assertions::{Assertion, AssertionContext, Attempts};
 use crate::config::HttpStatusMatcher;
-use crate::record::{AssertionResult, AssertionStatus};
 
 /// Assertion that probes an HTTP/HTTPS endpoint and checks the response status code.
 ///
@@ -292,6 +292,7 @@ mod tests {
 
     use airlock::driver::ContainerOs;
     use panoramic_core::probe::AttemptLimits;
+    use panoramic_core::record::{AssertionResult, AssertionStatus};
     use tokio_util::sync::CancellationToken;
 
     use super::{curl_status_command, HttpCheckAssertion};
@@ -299,7 +300,6 @@ mod tests {
     use crate::assertions::test_support::host_context;
     use crate::assertions::Assertion as _;
     use crate::config::HttpStatusMatcher;
-    use crate::record::{AssertionResult, AssertionStatus};
 
     /// Checks a Windows target for `timeout`, with its execs served by `docker`.
     async fn check_windows_target(docker: &FakeDocker, timeout: Duration) -> AssertionResult {

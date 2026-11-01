@@ -5,12 +5,12 @@ use std::{
 };
 
 use panoramic_core::probe::PROBE_TIMEOUT;
+use panoramic_core::record::AssertionStatus;
 use tokio_util::sync::CancellationToken;
 
 use super::{AdpConfigEndpoint, AdpConfigKeyEqualsAssertion, ADP_CONFIG_CLI_DIAGNOSTIC_LABEL};
 use crate::actions::test_docker::{Exec, FakeDocker};
 use crate::assertions::{Assertion as _, AssertionContext, LogBuffer, TargetCommand};
-use crate::record::AssertionStatus;
 
 fn host_context(adp_cli_command: TargetCommand) -> AssertionContext {
     AssertionContext {

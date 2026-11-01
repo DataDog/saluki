@@ -1,12 +1,12 @@
 use std::time::Duration;
 
+use panoramic_core::record::{AssertionResult, AssertionStatus};
 use tokio::time::Instant;
 use tracing::trace;
 
 use crate::{
     assertions::{Assertion, AssertionContext},
     config::LogStream,
-    record::{AssertionResult, AssertionStatus},
 };
 
 /// Assertion that checks for a pattern in the container logs.

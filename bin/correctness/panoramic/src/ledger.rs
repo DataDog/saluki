@@ -12,12 +12,11 @@ use futures::future::join_all;
 use k8s_openapi::api::core::v1::Namespace;
 use kube::api::{Api, DeleteParams};
 use kube::Client;
+use panoramic_core::result::{Issue, IssueKind, ReclaimEntry, ReclaimResult};
 use rand::RngExt as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::time::{sleep, timeout_at, Instant};
 use tokio_util::sync::CancellationToken;
-
-use crate::reporter::{Issue, IssueKind, ReclaimEntry, ReclaimResult};
 
 /// Shared budget for stopping a case's tracked tasks and removing its resources.
 pub(crate) const RECLAIM_TIME: Duration = Duration::from_secs(30);
