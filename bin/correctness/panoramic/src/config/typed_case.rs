@@ -366,6 +366,7 @@ mod tests {
                 Os::Linux,
                 &crate::REGISTRIES,
                 &mut panoramic_core::plan::PortRegistry::new(),
+                &mut panoramic_core::plan::ScopeRegistry::new(),
             )
             .unwrap()
             .unwrap();
@@ -613,6 +614,7 @@ mod tests {
                     Os::Linux,
                     &crate::REGISTRIES,
                     &mut panoramic_core::plan::PortRegistry::new(),
+                    &mut panoramic_core::plan::ScopeRegistry::new(),
                 )
                 .unwrap()
                 .unwrap()

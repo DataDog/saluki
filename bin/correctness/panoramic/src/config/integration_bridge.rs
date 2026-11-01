@@ -4,7 +4,7 @@
 //! configured through `config.env` and `config.os` env overlays, with `log_contains` and `log_not_contains`
 //! (`process` omitted), translated to `stream: both`, and `file_contains`.
 //! File paths may reference the participant's facts, resolved from the participant's planned realization;
-//! late-fact references are rejected.
+//! the integration runner rejects `shared_dir` and late-fact references.
 //! Log steps search captured output: Linux container logs (Agent and ADP under s6),
 //! macOS stdout and stderr of the spawned Agent and ADP processes, or Windows container console output only.
 //! The translated configuration has default container settings, with empty `container.exposed_ports`;
@@ -13,9 +13,9 @@
 use std::path::Path;
 
 use panoramic_core::case::{CaseFile, ParticipantConfig, ParticipantEntry, ProcedureNode, StepNode};
-use panoramic_core::participant::EffectiveConfig;
+use panoramic_core::participant::{EffectiveConfig, SHARED_DIR_FACT};
 use panoramic_core::record::step_label;
-use panoramic_core::step::decode_fields;
+use panoramic_core::step::{decode_fields, Need};
 use panoramic_participants::AgentAdp;
 use panoramic_steps::{FileContains, LogContains, LogNotContains};
 use serde::de::DeserializeOwned;
@@ -199,6 +199,14 @@ pub(super) fn integration_config<'a>(
                     timeout,
                 } = decode(node, &label)?;
                 check_on(&on)?;
+                if path
+                    .needs()
+                    .any(|need| matches!(need, Need::Fact(_, fact) if fact == SHARED_DIR_FACT))
+                {
+                    return Err(error(
+                        "path: the integration runner does not create participant shared directories",
+                    ));
+                }
                 Ok(AssertionConfig::FileContains {
                     path: path
                         .resolve(&fact)
@@ -261,7 +269,7 @@ mod tests {
         case::{CaseLoader, CaseSchema, Registries},
         layout::{Os, RealizationKind},
         participant::ParticipantType,
-        plan::{CasePlan, PortRegistry},
+        plan::{CasePlan, PortRegistry, ScopeRegistry},
     };
     use panoramic_steps::{test_support::valid_fields, REGISTERED_STEPS};
 
@@ -298,9 +306,15 @@ mod tests {
             let plans: Vec<_> = participant_cases
                 .into_iter()
                 .map(|case| {
-                    CasePlan::compile(case, Os::Linux, &crate::REGISTRIES, &mut PortRegistry::new())
-                        .unwrap()
-                        .unwrap()
+                    CasePlan::compile(
+                        case,
+                        Os::Linux,
+                        &crate::REGISTRIES,
+                        &mut PortRegistry::new(),
+                        &mut ScopeRegistry::new(),
+                    )
+                    .unwrap()
+                    .unwrap()
                 })
                 .collect();
             let config = plans[0].integration_config().unwrap();
@@ -332,9 +346,15 @@ mod tests {
                     .unwrap()
                     .into_iter()
                     .map(|case| {
-                        CasePlan::compile(case, os, &crate::REGISTRIES, &mut PortRegistry::new())
-                            .unwrap()
-                            .unwrap()
+                        CasePlan::compile(
+                            case,
+                            os,
+                            &crate::REGISTRIES,
+                            &mut PortRegistry::new(),
+                            &mut ScopeRegistry::new(),
+                        )
+                        .unwrap()
+                        .unwrap()
                     })
                     .collect::<Vec<_>>()
             });
@@ -503,9 +523,15 @@ mod tests {
             std::fs::write(path.parent().unwrap().join("windows.yaml"), "").unwrap();
             for os in [Os::Linux, Os::Windows] {
                 let case = loader.load_file(&path).unwrap().remove(0);
-                let plan = CasePlan::compile(case, os, &registries, &mut PortRegistry::new())
-                    .unwrap()
-                    .unwrap();
+                let plan = CasePlan::compile(
+                    case,
+                    os,
+                    &registries,
+                    &mut PortRegistry::new(),
+                    &mut ScopeRegistry::new(),
+                )
+                .unwrap()
+                .unwrap();
                 assert_eq!(
                     plan.effective_config("adp").unwrap().files.is_empty(),
                     os == Os::Linux || !config.contains("files:")
@@ -578,9 +604,15 @@ mod tests {
                     .load_content(&participant_yaml, "alpha", &path)
                     .unwrap()
                     .remove(0);
-                let plan = CasePlan::compile(case, os, &crate::REGISTRIES, &mut PortRegistry::new())
-                    .unwrap()
-                    .unwrap();
+                let plan = CasePlan::compile(
+                    case,
+                    os,
+                    &crate::REGISTRIES,
+                    &mut PortRegistry::new(),
+                    &mut ScopeRegistry::new(),
+                )
+                .unwrap()
+                .unwrap();
                 let translated = plan.integration_config().unwrap();
                 let Some(AssertionStep::Single(AssertionConfig::FileContains { path, .. })) =
                     translated.procedure.last()
@@ -712,6 +744,47 @@ mod tests {
     }
 
     #[test]
+    fn translation_rejects_shared_dir_in_file_paths() {
+        for path in [
+            "{{ adp.facts.shared_dir }}",
+            "{{ adp.facts.default_log_file }}/{{ adp.facts.shared_dir }}/socket",
+        ] {
+            let yaml = PARTICIPANT_FIELDS.replace(
+                "procedure: []",
+                &format!("procedure: [{{step: file_contains, on: adp, path: '{path}', pattern: ready, timeout: 1s}}]"),
+            );
+            let case = crate::CASE_LOADER
+                .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
+                .unwrap()
+                .remove(0);
+            let plan = CasePlan::compile(
+                case,
+                Os::Linux,
+                &crate::REGISTRIES,
+                &mut PortRegistry::new(),
+                &mut ScopeRegistry::new(),
+            )
+            .unwrap()
+            .unwrap();
+            let CaseSchema::Participants { file, .. } = plan.case().schema() else {
+                panic!("expected participant data")
+            };
+            let error = integration_config(
+                file,
+                "alpha",
+                Path::new("alpha/config.yaml"),
+                |_, _| panic!("shared_dir must be rejected before resolving facts"),
+                |participant| plan.effective_config(participant),
+            )
+            .unwrap_err();
+            assert_eq!(
+                error,
+                "step 1 'file_contains' path: the integration runner does not create participant shared directories"
+            );
+        }
+    }
+
+    #[test]
     fn translation_rejects_late_fact_references_in_file_paths() {
         let yaml = PARTICIPANT_FIELDS.replace(
             "procedure: []",
@@ -721,9 +794,15 @@ mod tests {
             .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
             .unwrap()
             .remove(0);
-        let plan = CasePlan::compile(case, Os::Linux, &crate::REGISTRIES, &mut PortRegistry::new())
-            .unwrap()
-            .unwrap();
+        let plan = CasePlan::compile(
+            case,
+            Os::Linux,
+            &crate::REGISTRIES,
+            &mut PortRegistry::new(),
+            &mut ScopeRegistry::new(),
+        )
+        .unwrap()
+        .unwrap();
         let CaseSchema::Participants { file, .. } = plan.case().schema() else {
             panic!("expected participant data");
         };
@@ -864,6 +943,7 @@ mod tests {
             Os::Linux,
             &crate::REGISTRIES,
             &mut PortRegistry::new(),
+            &mut ScopeRegistry::new(),
         )
         .unwrap()
         .unwrap();

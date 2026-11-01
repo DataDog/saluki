@@ -1077,6 +1077,7 @@ comparison: {image: comp}
             Os::MacOs,
             &REGISTRIES,
             &mut panoramic_core::plan::PortRegistry::new(),
+            &mut panoramic_core::plan::ScopeRegistry::new(),
         )
         .unwrap()
         .unwrap();
@@ -1108,6 +1109,7 @@ comparison: {image: comp}
                 Os::Linux,
                 &REGISTRIES,
                 &mut panoramic_core::plan::PortRegistry::new(),
+                &mut panoramic_core::plan::ScopeRegistry::new(),
             )
             .unwrap()
             .unwrap();

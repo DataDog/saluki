@@ -12,7 +12,7 @@ use crate::{
     },
     endpoint::{ConsumedEndpoint, Endpoint, Listener, Port},
     layout::{describe_participant, describe_realizations, lay_out, Layout, Os, Realization, RealizationKind},
-    participant::{find_type, CaseValues, EffectiveConfig, FactDeclaration, ParticipantType},
+    participant::{find_type, CaseValues, EffectiveConfig, ParticipantType, SHARED_DIR_FACT},
     record::step_label,
     step::{Need, Step},
 };
@@ -22,19 +22,27 @@ mod order;
 mod ports;
 mod references;
 mod routes;
+mod scope;
 
-pub use self::ports::PortRegistry;
+pub(crate) use self::scope::ScopeLayout;
 use self::{
     connections::check_connections,
     order::{dependency_order, DependencyOrder},
     ports::{check_host_listeners, RunnerHostPorts},
+    scope::participant_shared_dir,
 };
+pub use self::{ports::PortRegistry, scope::ScopeRegistry};
 
 /// A loaded case with the layout selected for execution.
 pub struct CasePlan<C> {
     case: CaseConfig<C>,
     subject_os: Os,
     layout: Option<Layout>,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Read when backends prepare isolation scopes.")
+    )]
+    scope: Option<ScopeLayout>,
     order: Option<DependencyOrder>,
     participants: BTreeMap<String, PlannedParticipant>,
     /// Ports the runner host publishes for Linux container endpoints reached by host process groups,
@@ -56,12 +64,16 @@ struct PlannedCase {
 }
 
 struct PlannedParticipant {
-    facts: &'static [FactDeclaration],
+    facts: BTreeMap<String, String>,
     config: EffectiveConfig,
 }
 
 /// Configured endpoints and the case values used to derive them.
 pub(super) struct ParticipantEndpoints {
+    /// The participant's `shared_dir` fact; consumed sockets must lie under it.
+    shared_dir: String,
+    /// The OS of the participant's realization, which sets its path separator and socket path limit.
+    os: Os,
     /// Endpoints served with the effective configuration.
     served: BTreeMap<String, Endpoint>,
     /// Endpoints consumed with the effective configuration.
@@ -82,6 +94,7 @@ struct PortAssignments {
 impl<C> CasePlan<C> {
     /// Validates every declared subject OS, returning a plan only for a declared selection.
     /// Participant cases carry a layout; typed cases retain their loader-supplied data.
+    /// A participant case declaring the selected OS draws one isolation scope from `scopes`.
     /// Only the selected OS draws runner-host ports from `ports`; other OSes use separate registries.
     /// Ports are drawn in check order: assigned listeners per participant and endpoint in name order,
     /// then connections per consumer, then references per participant (`env`, `params`, template files).
@@ -89,27 +102,42 @@ impl<C> CasePlan<C> {
     ///
     /// # Errors
     ///
-    /// Returns the first error on any declared subject OS, naming the case, source and failing OS,
-    /// even when the selected OS is excluded. On each OS, checks run in this order: layout;
+    /// Checks scope allocation first. Then returns the first error on any declared subject OS, naming
+    /// the case, source and failing OS, even when the selected OS is excluded.
+    /// On each OS, checks run in this order: layout; participant facts;
     /// configuration fact and late-fact references (`env`, `params`, then template files), configuration,
     /// endpoint derivation, port assignment and re-derivation, overrides, then case-port and socket-path checks
     /// in endpoint name order, all per participant in name order;
     /// runner-host listener range and transport uniqueness per participant and endpoint in name order;
     /// connections per consumer in name order (per `connect` key in name order: consumed, served,
-    /// accepted kind, route, delivered env keys, address allocation and delivery values;
+    /// accepted kind, route, socket location and length, delivered env keys, address allocation and delivery values;
     /// then required endpoints in name order);
     /// configuration endpoint and connection references per participant in name order (`env`, then `params`,
-    /// then template files): address part, then runner-host port allocation;
+    /// then template files): route, socket location and length, address part, then runner-host port allocation;
     /// create order, then start order;
     /// step fact and late-fact references in procedure order with step labels.
     pub fn compile(
         case: CaseConfig<C>, subject_os: Os, registries: &Registries<'_>, ports: &mut PortRegistry,
+        scopes: &mut ScopeRegistry,
     ) -> Result<Option<Self>, GenericError> {
+        let selected = case.subject_os().contains(&subject_os);
         let mut layout = None;
+        let mut scope = None;
         let mut order = None;
         let mut participants = BTreeMap::new();
         let mut runner_host_ports = BTreeMap::new();
         if let CaseSchema::Participants { file, procedure } = case.schema() {
+            let candidate_scope = if selected {
+                scopes.allocate().map_err(|error| {
+                    generic_error!(
+                        "case '{}' in {}: cannot allocate an isolation scope: {error}",
+                        case.name(),
+                        case.source().display()
+                    )
+                })?
+            } else {
+                scopes.unallocated()
+            };
             for &os in case.subject_os() {
                 let error = |message: String| {
                     generic_error!(
@@ -131,6 +159,7 @@ impl<C> CasePlan<C> {
                     file,
                     case.file_templates(),
                     &candidate,
+                    &candidate_scope,
                     registries.participant_types,
                     os_ports,
                 )
@@ -150,14 +179,18 @@ impl<C> CasePlan<C> {
                     runner_host_ports = planned.runner_host_ports;
                 }
             }
+            if selected {
+                scope = Some(candidate_scope);
+            }
         }
-        if !case.subject_os().contains(&subject_os) {
+        if !selected {
             return Ok(None);
         }
         Ok(Some(Self {
             case,
             subject_os,
             layout,
+            scope,
             order,
             participants,
             runner_host_ports,
@@ -196,15 +229,10 @@ impl<C> CasePlan<C> {
         self.order.as_ref().map(|order| order.start.as_slice())
     }
 
-    /// Returns a fact from the participant's planned realization.
+    /// Returns a fact from the participant's planned realization, including `shared_dir`.
     /// Returns `None` for unknown participants or facts, and for typed cases.
     pub fn fact(&self, participant: &str, fact: &str) -> Option<&str> {
-        self.participants
-            .get(participant)?
-            .facts
-            .iter()
-            .find(|declaration| declaration.name == fact)
-            .map(|declaration| declaration.value)
+        self.participants.get(participant)?.facts.get(fact).map(String::as_str)
     }
 
     /// Returns the participant's effective configuration for its planned realization.
@@ -216,14 +244,37 @@ impl<C> CasePlan<C> {
     }
 }
 
-/// Builds effective configurations (assigning host process group ports), checks endpoints, runner-host listeners
+/// Computes every participant's facts, including `shared_dir`, rejecting types that declare it.
+/// Then builds effective configurations (assigning host process group ports), checks endpoints, runner-host listeners
 /// and connections, merges connection deliveries and checks configuration address references in participant name order.
 /// Then computes create and start orders.
 fn plan_participants(
-    file: &CaseFile, templates: &FileTemplates, layout: &Layout, types: &[&dyn ParticipantType],
+    file: &CaseFile, templates: &FileTemplates, layout: &Layout, scope: &ScopeLayout, types: &[&dyn ParticipantType],
     ports: &mut PortRegistry,
 ) -> Result<PlannedCase, String> {
-    let mut participants = BTreeMap::new();
+    let mut facts: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    for (name, realization) in layout.iter() {
+        let entry = &file.participants[name];
+        let participant_type =
+            find_type(types, &entry.participant_type).expect("laid-out participants have registered types");
+        let mut participant_facts = BTreeMap::new();
+        for fact in participant_type.facts(realization) {
+            if fact.name == SHARED_DIR_FACT {
+                return Err(format!(
+                    "{} declares fact 'shared_dir', which panoramic provides for every participant",
+                    describe_participant(name, &entry.participant_type, realization)
+                ));
+            }
+            participant_facts.insert(fact.name.into(), fact.value.into());
+        }
+        let root = backend::shared_root(realization.kind, realization.os, scope);
+        participant_facts.insert(
+            SHARED_DIR_FACT.into(),
+            participant_shared_dir(&root, name, realization.os),
+        );
+        facts.insert(name.to_string(), participant_facts);
+    }
+    let mut configs = BTreeMap::new();
     let mut participant_endpoints = BTreeMap::new();
     for (name, realization) in layout.iter() {
         let entry = &file.participants[name];
@@ -231,18 +282,24 @@ fn plan_participants(
             find_type(types, &entry.participant_type).expect("laid-out participants have registered types");
         let holder = describe_participant(name, &entry.participant_type, realization);
         let mut values = CaseValues::for_os(&entry.config, realization.os);
-        references::resolve_config_references(file, layout, types, name, &mut values)?;
-        references::check_file_references(file, templates, layout, types, name, &values)?;
-        let (config, endpoints) = derive_endpoints(&holder, participant_type, realization, values, ports)?;
+        references::resolve_config_references(file, layout, types, &facts, name, &mut values)?;
+        references::check_file_references(file, templates, layout, types, &facts, name, &values)?;
+        let (config, endpoints) = derive_endpoints(
+            &holder,
+            participant_type,
+            realization,
+            values,
+            facts[name][SHARED_DIR_FACT].clone(),
+            ports,
+        )?;
         participant_endpoints.insert(name.to_string(), endpoints);
-        participants.insert(
-            name.to_string(),
-            PlannedParticipant {
-                facts: participant_type.facts(realization),
-                config,
-            },
-        );
+        configs.insert(name.to_string(), config);
     }
+    let mut participants: BTreeMap<_, _> = facts
+        .into_iter()
+        .zip(configs.into_values())
+        .map(|((name, facts), config)| (name, PlannedParticipant { facts, config }))
+        .collect();
     check_host_listeners(file, layout, &participant_endpoints)?;
     let mut runner_host_ports = RunnerHostPorts::new(ports);
     let deliveries = check_connections(file, layout, &participant_endpoints, &mut runner_host_ports)?;
@@ -266,7 +323,7 @@ fn plan_participants(
 /// Derives listeners, assigning host ports through type defaults before deriving them again.
 fn derive_endpoints(
     holder: &str, participant_type: &dyn ParticipantType, realization: Realization, values: CaseValues,
-    ports: &mut PortRegistry,
+    shared_dir: String, ports: &mut PortRegistry,
 ) -> Result<(EffectiveConfig, ParticipantEndpoints), String> {
     let invalid_config = |message| format!("{holder} has invalid configuration: {message}");
     participant_type
@@ -294,6 +351,8 @@ fn derive_endpoints(
     Ok((
         config,
         ParticipantEndpoints {
+            shared_dir,
+            os: realization.os,
             served,
             consumed,
             values,
@@ -491,11 +550,7 @@ fn check_reference_needs(
                     }
                     Need::Handle(_) | Need::Process(_, _) => continue,
                 };
-                if participants[&participant]
-                    .facts
-                    .iter()
-                    .any(|declaration| declaration.name == fact)
-                {
+                if participants[&participant].facts.contains_key(&fact) {
                     continue;
                 }
                 let realization = layout.get(&participant).expect("step needs name laid-out participants");
@@ -536,6 +591,7 @@ mod tests {
         },
         endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind},
         layout::{Realization, RealizationKind},
+        participant::FactDeclaration,
     };
 
     pub(super) struct EveryKindServer;
@@ -567,13 +623,17 @@ mod tests {
                 .get("PORT_OFFSET")
                 .map(|value| value.parse::<u16>().unwrap())
                 .unwrap_or(0);
+            let socket_dir = config.env.get("SOCKET_DIR").map(String::as_str).unwrap_or("/run/every");
             Ok([
                 ("tcp", Endpoint::tcp(Port::Fixed(1001 + offset))),
                 ("udp", Endpoint::udp(Port::Fixed(1001 + offset))),
                 ("http", Endpoint::http(Port::Fixed(1003 + offset))),
                 ("grpc", Endpoint::grpc(Port::Fixed(1004 + offset))),
-                ("datagram", Endpoint::unix_datagram("/run/every/datagram.sock")),
-                ("stream", Endpoint::unix_stream("/run/every/stream.sock")),
+                (
+                    "datagram",
+                    Endpoint::unix_datagram(format!("{socket_dir}/datagram.sock")),
+                ),
+                ("stream", Endpoint::unix_stream(format!("{socket_dir}/stream.sock"))),
                 ("pipe", Endpoint::named_pipe("every-pipe")),
             ]
             .into_iter()
@@ -731,9 +791,15 @@ mod tests {
         for (from, _) in sources {
             std::fs::remove_file(source.parent().unwrap().join(from)).unwrap();
         }
-        CasePlan::compile(case, os, &FILE_REGISTRIES, &mut PortRegistry::new())
-            .map_err(normalize)
-            .map(Option::unwrap)
+        CasePlan::compile(
+            case,
+            os,
+            &FILE_REGISTRIES,
+            &mut PortRegistry::new(),
+            &mut ScopeRegistry::with_run("testrun0"),
+        )
+        .map_err(normalize)
+        .map(Option::unwrap)
     }
 
     struct AssignedServer;
@@ -931,7 +997,382 @@ mod tests {
             .load_content(yaml, "alpha", Path::new("cases/alpha/config.yaml"))
             .unwrap()
             .remove(0);
-        CasePlan::compile(case, os, &CONFIG_REGISTRIES, ports)
+        CasePlan::compile(
+            case,
+            os,
+            &CONFIG_REGISTRIES,
+            ports,
+            &mut ScopeRegistry::with_run("testrun0"),
+        )
+    }
+
+    #[test]
+    fn every_participant_has_a_shared_dir_fact_for_its_realization() {
+        for (os, kind, expected) in [
+            (Os::Linux, "linux-container", "/airlock/subject/shared"),
+            (Os::Windows, "windows-container", r"C:\airlock\subject\shared"),
+            (
+                Os::MacOs,
+                "host-process-group",
+                "/tmp/panoramic-testrun0/0000/subject/shared",
+            ),
+            (
+                Os::Linux,
+                "host-process-group",
+                "/tmp/panoramic-testrun0/0000/subject/shared",
+            ),
+            (Os::Linux, "kubernetes-pod", "/airlock/subject/shared"),
+        ] {
+            let yaml = format!("timeout: 1s\nsubject_os: [{}]\nparticipants:\n  subject: {{type: every-kind-server, subject: true, realization: {{kind: {kind}}}}}\n  other: {{type: every-kind-client}}\nprocedure: []", os.name());
+            let plan = compile(&yaml, os).unwrap().unwrap();
+            assert_eq!(plan.fact("subject", SHARED_DIR_FACT), Some(expected));
+            assert_eq!(
+                plan.fact("other", SHARED_DIR_FACT),
+                Some(
+                    expected
+                        .replace("/subject/", "/other/")
+                        .replace(r"\subject\", r"\other\")
+                        .as_str()
+                )
+            );
+        }
+    }
+
+    fn compile_with_scopes(
+        yaml: &str, os: Os, scopes: &mut ScopeRegistry,
+    ) -> Result<Option<CasePlan<FixtureConfig>>, GenericError> {
+        let case = CONFIG_LOADER
+            .load_content(yaml, "alpha", Path::new("cases/alpha/config.yaml"))
+            .unwrap()
+            .remove(0);
+        CasePlan::compile(case, os, &CONFIG_REGISTRIES, &mut PortRegistry::new(), scopes)
+    }
+
+    #[test]
+    fn each_participant_case_declaring_the_selected_os_draws_one_scope() {
+        let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[linux, macos, windows]");
+        let mut scopes = ScopeRegistry::with_run("testrun0");
+        for (index, os) in [Os::Linux, Os::MacOs, Os::Windows].into_iter().enumerate() {
+            let plan = compile_with_scopes(&yaml, os, &mut scopes).unwrap().unwrap();
+            let scope = plan.scope.unwrap();
+            assert_eq!(usize::from(scope.index), index);
+            assert_eq!(scope.run, "testrun0");
+            if os == Os::MacOs {
+                assert_eq!(
+                    plan.participants["subject"].facts[SHARED_DIR_FACT],
+                    "/tmp/panoramic-testrun0/0001/subject/shared"
+                );
+            }
+        }
+        assert_eq!(scopes.allocate().unwrap().index, 3);
+    }
+
+    #[test]
+    fn a_case_excluding_the_selected_os_and_a_typed_case_draw_no_scope() {
+        let mut scopes = ScopeRegistry::with_run("testrun0");
+        assert!(compile_with_scopes(PARTICIPANT_FIELDS, Os::MacOs, &mut scopes)
+            .unwrap()
+            .is_none());
+        let plan = compile_with_scopes("type: fixture", Os::MacOs, &mut scopes)
+            .unwrap()
+            .unwrap();
+        assert!(plan.scope.is_none());
+        assert_eq!(plan.fact("subject", SHARED_DIR_FACT), None);
+        assert_eq!(scopes.allocate().unwrap().index, 0);
+    }
+
+    #[test]
+    fn scope_exhaustion_names_the_case_and_precedes_layout_checks() {
+        let mut scopes = ScopeRegistry::with_run("testrun0");
+        for _ in 0..10000 {
+            scopes.allocate().unwrap();
+        }
+        let yaml = PARTICIPANT_FIELDS.replace("subject: true", "subject: true, realization: {kind: kubernetes-pod}");
+        assert_eq!(compile_with_scopes(&yaml, Os::Linux, &mut scopes).err().unwrap().to_string(),
+            "case 'alpha' in cases/alpha/config.yaml: cannot allocate an isolation scope: all 10000 isolation scopes are allocated");
+        assert!(compile_with_scopes(PARTICIPANT_FIELDS, Os::MacOs, &mut scopes)
+            .unwrap()
+            .is_none());
+        assert!(compile_with_scopes("type: fixture", Os::MacOs, &mut scopes)
+            .unwrap()
+            .unwrap()
+            .scope
+            .is_none());
+    }
+
+    #[test]
+    fn a_type_declaring_shared_dir_fails_compile_naming_the_type_and_realization() {
+        struct ReservedFact;
+        impl ParticipantType for ReservedFact {
+            fn name(&self) -> &'static str {
+                "reserved"
+            }
+            fn supports(&self) -> &'static [(Os, RealizationKind)] {
+                EveryKindServer.supports()
+            }
+            fn facts(&self, _: Realization) -> &'static [FactDeclaration] {
+                &[FactDeclaration {
+                    name: SHARED_DIR_FACT,
+                    value: "/wrong",
+                }]
+            }
+            fn processes(&self) -> &'static [&'static str] {
+                &[]
+            }
+        }
+        let registries = Registries {
+            participant_types: &[&ReservedFact, &EveryKindServer],
+            steps: &[],
+        };
+        let loader = CaseLoader::new(registries, FixtureTypes, "fixture");
+        for (os, kind) in [
+            (Os::Linux, "linux-container"),
+            (Os::MacOs, "host-process-group"),
+            (Os::Windows, "windows-container"),
+        ] {
+            let yaml = format!("timeout: 1s\nsubject_os: [{}]\nparticipants:\n  a: {{type: every-kind-server, subject: true, config: {{env: {{KEY: '{{{{ self.facts.missing }}}}'}}}}}}\n  z: {{type: reserved}}\nprocedure: []", os.name());
+            let case = loader
+                .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
+                .unwrap()
+                .remove(0);
+            let error = CasePlan::compile(
+                case,
+                os,
+                &registries,
+                &mut PortRegistry::new(),
+                &mut ScopeRegistry::with_run("testrun0"),
+            )
+            .err()
+            .unwrap()
+            .to_string();
+            assert_eq!(error, format!("case 'alpha' in cases/alpha/config.yaml: on subject OS '{}', participant 'z' of type 'reserved' as {kind} on {} declares fact 'shared_dir', which panoramic provides for every participant", os.name(), os.name()));
+        }
+    }
+
+    #[test]
+    fn shared_dir_substitutes_into_env_params_and_served_socket_paths() {
+        let yaml = "timeout: 1s\nsubject_os: [linux, macos]\nparticipants:\n  client: {type: file-server, subject: true, connect: {target: server.stream}, config: {env: {COPY: '{{ server.facts.shared_dir }}', PORT_OFFSET: '100'}, params: {mode: [{nested: '{{ server.facts.shared_dir }}'}]}}}\n  server: {type: file-server, config: {env: {SOCKET_PATH: '{{ self.facts.shared_dir }}/stream.sock'}}}\nprocedure: []";
+        for (os, dir) in [
+            (Os::Linux, "/airlock/server/shared"),
+            (Os::MacOs, "/tmp/panoramic-testrun0/0000/server/shared"),
+        ] {
+            let plan = compile(yaml, os).unwrap().unwrap();
+            let config = plan.effective_config("client").unwrap();
+            assert_eq!(config.env["COPY"], dir);
+            assert_eq!(config.params["mode"][0]["nested"], dir);
+            assert_eq!(config.env["TARGET"], format!("unix://{dir}/stream.sock"));
+            assert_eq!(
+                plan.effective_config("server").unwrap().env["SOCKET_PATH"],
+                format!("{dir}/stream.sock")
+            );
+        }
+        let yaml = format!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {{type: file-server, subject: true, config: {FILE_CONFIG}}}\n  other: {{type: server}}\nprocedure: []");
+        let plan = compile_files(
+            &yaml,
+            &[(
+                "source.yaml",
+                "self: {{ self.facts.shared_dir }}\nother: {{ other.facts.shared_dir }}",
+            )],
+            Os::Linux,
+        )
+        .unwrap();
+        assert_eq!(plan.fact("other", SHARED_DIR_FACT), Some("/airlock/other/shared"));
+    }
+
+    #[test]
+    fn a_step_may_reference_any_participants_shared_dir() {
+        let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[linux, macos, windows]")
+            .replace("participants:", "participants:\n  other: {type: every-kind-client}")
+            .replace("procedure: []", "procedure: [{step: probe, on: subject, path: '{{ subject.facts.shared_dir }}/{{ other.facts.shared_dir }}'}]");
+        for os in [Os::Linux, Os::MacOs, Os::Windows] {
+            let plan = compile(&yaml, os).unwrap().unwrap();
+            let CaseSchema::Participants { procedure, .. } = plan.case().schema() else {
+                panic!("participant case")
+            };
+            let ProcedureNode::Step(step) = &procedure[0] else {
+                panic!("single step")
+            };
+            assert_eq!(
+                step.needs(),
+                [
+                    Need::Handle("subject".into()),
+                    Need::Fact("subject".into(), SHARED_DIR_FACT.into()),
+                    Need::Fact("other".into(), SHARED_DIR_FACT.into())
+                ]
+            );
+        }
+    }
+
+    fn socket_case(config: &str) -> String {
+        format!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n  client: {{type: every-kind-client, subject: true, connect: {{target: server.stream}}}}\n  server: {{type: every-kind-server, config: {config}}}\nprocedure: []")
+    }
+
+    #[test]
+    fn a_connected_socket_outside_the_servers_shared_dir_fails_naming_both_participants() {
+        for (endpoint, kind) in [("stream", "unix-stream"), ("datagram", "unix-datagram")] {
+            let yaml = socket_case("{}").replace("server.stream", &format!("server.{endpoint}"));
+            assert_eq!(compile(&yaml, Os::Linux).err().unwrap().to_string(), format!(
+                "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'client' connects 'target' to 'server.{endpoint}', a {kind} socket that participant 'server' of type 'every-kind-server' as linux-container on linux serves at '/run/every/{endpoint}.sock', outside its shared_dir '/airlock/server/shared'; consumed sockets must lie under their server's shared_dir"
+            ));
+        }
+    }
+
+    #[test]
+    fn a_socket_referenced_by_another_participant_outside_its_shared_dir_fails() {
+        let yaml = socket_case("{}").replace(
+            "connect: {target: server.stream}",
+            "config: {env: {SOCKET: '{{ server.endpoints.stream.path }}'}}",
+        );
+        let expected = "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'client' of type 'every-kind-client' as linux-container on linux environment variable 'SOCKET' '{{ server.endpoints.stream.path }}' references endpoint 'stream' of participant 'server', a unix-stream socket served at '/run/every/stream.sock', outside its shared_dir '/airlock/server/shared'; consumed sockets must lie under their server's shared_dir";
+        assert_eq!(compile(&yaml, Os::Linux).err().unwrap().to_string(), expected);
+        let yaml = format!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {{type: file-server, subject: true, config: {FILE_CONFIG}}}\n  server: {{type: file-server}}\nprocedure: []");
+        let expected = expected
+            .replace(
+                "'client' of type 'every-kind-client'",
+                "'subject' of type 'file-server'",
+            )
+            .replace("environment variable 'SOCKET'", "configuration file 'settings.yaml'");
+        assert_eq!(
+            compile_files(
+                &yaml,
+                &[("source.yaml", "{{ server.endpoints.stream.path }}")],
+                Os::Linux
+            )
+            .err()
+            .unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn a_participant_may_reference_its_own_socket_anywhere() {
+        for participant in ["self", "subject"] {
+            let yaml = PARTICIPANT_FIELDS.replace("type: server", &format!("type: every-kind-server, config: {{env: {{SOCKET_DIR: '/dev/null/{}', COPY: '{{{{ {participant}.endpoints.stream.path }}}}'}}}}", "x".repeat(108)));
+            let plan = compile(&yaml, Os::Linux).unwrap().unwrap();
+            assert_eq!(
+                plan.effective_config("subject").unwrap().env["COPY"],
+                format!("{{{{ {participant}.endpoints.stream.path }}}}")
+            );
+        }
+    }
+
+    #[test]
+    fn an_unconsumed_socket_may_lie_anywhere() {
+        let yaml = PARTICIPANT_FIELDS
+            .replace(
+                "type: server",
+                "type: every-kind-server, config: {env: {SOCKET_DIR: '/dev/null'}}",
+            )
+            .replace(
+                "participants:",
+                "participants:\n  other: {type: every-kind-client, connect: {target: subject.tcp}}",
+            );
+        let plan = compile(&yaml, Os::Linux).unwrap().unwrap();
+        assert_eq!(plan.effective_config("subject").unwrap().env["SOCKET_DIR"], "/dev/null");
+        assert_eq!(
+            plan.effective_config("other").unwrap().env["TARGET"],
+            "tcp://subject:1001"
+        );
+    }
+
+    #[test]
+    fn a_consumed_socket_path_over_the_os_limit_fails_and_one_at_the_limit_passes() {
+        for (os, dir, limit) in [
+            (Os::MacOs, "/tmp/panoramic-testrun0/0000/server/shared", 103),
+            (Os::Linux, "/airlock/server/shared", 107),
+        ] {
+            for reference in [false, true] {
+                for length in [limit, limit + 1] {
+                    let path = format!("{dir}/{}", "x".repeat(length - dir.len() - 1));
+                    let mut yaml = socket_case(&format!("{{env: {{SOCKET_PATH: '{path}'}}}}"))
+                        .replace("type: every-kind-server", "type: file-server")
+                        .replace("[linux]", &format!("[{}]", os.name()));
+                    if reference {
+                        yaml = yaml.replace(
+                            "connect: {target: server.stream}",
+                            "config: {env: {SOCKET: '{{ server.endpoints.stream.path }}'}}",
+                        );
+                    }
+                    let result = compile(&yaml, os);
+                    if length == limit {
+                        let plan = result.unwrap().unwrap();
+                        assert_eq!(plan.effective_config("server").unwrap().env["SOCKET_PATH"], path);
+                    } else {
+                        let message = result.err().unwrap().to_string();
+                        assert!(
+                            message.ends_with(&format!(
+                                "at '{path}' ({length} bytes); a socket path on {} holds at most {limit} bytes",
+                                os.name()
+                            )),
+                            "{message}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn socket_location_errors_fail_on_an_unselected_subject_os() {
+        let yaml = socket_case(
+            "{env: {SOCKET_DIR: '{{ self.facts.shared_dir }}'}, os: {macos: {env: {SOCKET_DIR: /elsewhere}}}}",
+        )
+        .replace("[linux]", "[linux, macos]");
+        for reference in [false, true] {
+            let yaml = if reference {
+                yaml.replace(
+                    "connect: {target: server.stream}",
+                    "config: {env: {SOCKET: '{{ server.endpoints.stream.path }}'}}",
+                )
+            } else {
+                yaml.clone()
+            };
+            for os in [Os::Linux, Os::MacOs, Os::Windows] {
+                let mut scopes = ScopeRegistry::with_run("testrun0");
+                for _ in 0..3 {
+                    scopes.allocate().unwrap();
+                }
+                let message = compile_with_scopes(&yaml, os, &mut scopes).err().unwrap().to_string();
+                let index = if os == Os::Windows { 0 } else { 3 };
+                assert!(message.contains("on subject OS 'macos'"), "{message}");
+                assert!(
+                    message.contains(&format!(
+                        "outside its shared_dir '/tmp/panoramic-testrun0/{index:04}/server/shared'"
+                    )),
+                    "{message}"
+                );
+                assert_eq!(scopes.allocate().unwrap().index, if os == Os::Windows { 3 } else { 4 });
+            }
+        }
+    }
+
+    #[test]
+    fn socket_length_errors_fail_on_an_unselected_subject_os() {
+        let path = format!(
+            "{{{{ self.facts.shared_dir }}}}/{}",
+            "x".repeat(104 - "/tmp/panoramic-testrun0/0000/server/shared/".len())
+        );
+        let yaml = socket_case(&format!("{{env: {{SOCKET_PATH: '{path}'}}}}"))
+            .replace("type: every-kind-server", "type: file-server")
+            .replace("[linux]", "[linux, macos]");
+        for reference in [false, true] {
+            let yaml = if reference {
+                yaml.replace(
+                    "connect: {target: server.stream}",
+                    "config: {env: {SOCKET: '{{ server.endpoints.stream.path }}'}}",
+                )
+            } else {
+                yaml.clone()
+            };
+            for os in [Os::Linux, Os::MacOs, Os::Windows] {
+                let message = compile(&yaml, os).err().unwrap().to_string();
+                assert!(message.contains("on subject OS 'macos'"), "{message}");
+                assert!(
+                    message.ends_with("(104 bytes); a socket path on macos holds at most 103 bytes"),
+                    "{message}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -997,9 +1438,15 @@ procedure: []
         std::fs::write(source.parent().unwrap().join("windows.yaml"), "port: 7").unwrap();
         for os in [Os::Linux, Os::Windows] {
             let case = CONFIG_LOADER.load_file(&source).unwrap().remove(0);
-            let plan = CasePlan::compile(case, os, &CONFIG_REGISTRIES, &mut PortRegistry::new())
-                .unwrap()
-                .unwrap();
+            let plan = CasePlan::compile(
+                case,
+                os,
+                &CONFIG_REGISTRIES,
+                &mut PortRegistry::new(),
+                &mut ScopeRegistry::with_run("testrun0"),
+            )
+            .unwrap()
+            .unwrap();
             let effective = plan.effective_config("subject").unwrap();
             assert_eq!(effective.env["LEVEL"], "info");
             if os == Os::Windows {
@@ -1272,10 +1719,16 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
                 .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
                 .unwrap()
                 .remove(0);
-            let message = CasePlan::compile(case, Os::Linux, &registries, &mut PortRegistry::new())
-                .err()
-                .unwrap()
-                .to_string();
+            let message = CasePlan::compile(
+                case,
+                Os::Linux,
+                &registries,
+                &mut PortRegistry::new(),
+                &mut ScopeRegistry::with_run("testrun0"),
+            )
+            .err()
+            .unwrap()
+            .to_string();
             assert!(message.contains(expected), "{message}");
             assert!(yaml.contains(bad));
             yaml = yaml.replace(bad, fix);
@@ -1284,9 +1737,15 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
             .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
             .unwrap()
             .remove(0);
-        let plan = CasePlan::compile(case, Os::Linux, &registries, &mut PortRegistry::new())
-            .unwrap()
-            .unwrap();
+        let plan = CasePlan::compile(
+            case,
+            Os::Linux,
+            &registries,
+            &mut PortRegistry::new(),
+            &mut ScopeRegistry::with_run("testrun0"),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(
             plan.create_order().unwrap(),
             [vec!["observer", "subject"], vec!["fixture"]]
@@ -1878,7 +2337,7 @@ procedure: []
             .replace("[macos]", &format!("[{}]", os.name()))
             .replace(
                 "type: server, os: linux",
-                "type: every-kind-server, config: {env: {PORT_OFFSET: '100'}}",
+                "type: every-kind-server, config: {env: {PORT_OFFSET: '100', SOCKET_DIR: '{{ self.facts.shared_dir }}'}}",
             );
             let mut ports = PortRegistry::new();
             let plan = compile_with_ports(&yaml, os, &mut ports).unwrap().unwrap();
@@ -1978,12 +2437,15 @@ procedure: []
     #[test]
     fn a_unix_socket_connection_delivers_the_servers_socket_path() {
         for (endpoint, expected) in [
-            ("stream", "unix:///run/every/stream.sock"),
-            ("datagram", "unixgram:///run/every/datagram.sock"),
+            ("stream", "unix:///airlock/server/shared/stream.sock"),
+            ("datagram", "unixgram:///airlock/server/shared/datagram.sock"),
         ] {
             let yaml = CONNECTION_CASE
                 .replace("type: client", "type: every-kind-client")
-                .replace("type: server", "type: every-kind-server")
+                .replace(
+                    "type: server",
+                    "type: every-kind-server, config: {env: {SOCKET_DIR: '{{ self.facts.shared_dir }}'}}",
+                )
                 .replace("upstream: server.api", &format!("target: server.{endpoint}"));
             let plan = compile(&yaml, Os::Linux).unwrap().unwrap();
             assert_eq!(plan.effective_config("client").unwrap().env["TARGET"], expected);
@@ -2061,9 +2523,15 @@ procedure: []
             .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
             .unwrap()
             .remove(0);
-        let plan = CasePlan::compile(case, Os::Linux, &registries, &mut PortRegistry::new())
-            .unwrap()
-            .unwrap();
+        let plan = CasePlan::compile(
+            case,
+            Os::Linux,
+            &registries,
+            &mut PortRegistry::new(),
+            &mut ScopeRegistry::with_run("testrun0"),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(
             *hooks.0.lock().unwrap(),
             ["validate", "defaults", "endpoints", "consumes"]
@@ -2169,11 +2637,11 @@ procedure: []
             assert_eq!(compile_files(&yaml, &[], Os::Linux).err().unwrap(), format!(
                 "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'subject' of type 'file-server' as linux-container on linux serves endpoint 'stream' at '{path}', which holds a reference resolved only after planning"));
         }
-        let yaml = "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  client: {type: file-server, subject: true, connect: {target: server.stream}}\n  server: {type: file-server, config: {env: {SOCKET_PATH: '{{self.facts.file}}.sock'}}}\nprocedure: []\n";
+        let yaml = "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  client: {type: file-server, subject: true, connect: {target: server.stream}}\n  server: {type: file-server, config: {env: {SOCKET_PATH: '{{self.facts.shared_dir}}/stream.sock'}}}\nprocedure: []\n";
         let plan = compile_files(yaml, &[], Os::Linux).unwrap();
         assert_eq!(
             plan.effective_config("client").unwrap().env["TARGET"],
-            "unix:///logs/output.log.sock"
+            "unix:///airlock/server/shared/stream.sock"
         );
     }
 
@@ -2270,7 +2738,10 @@ procedure: []
         let yaml = CONNECTION_CASE
             .replace("[linux]", "[linux, macos]")
             .replace("type: client", "type: every-kind-client")
-            .replace("type: server", "type: every-kind-server, os: linux")
+            .replace(
+                "type: server",
+                "type: every-kind-server, os: linux, config: {env: {SOCKET_DIR: '{{ self.facts.shared_dir }}'}}",
+            )
             .replace("upstream: server.api", "target: server.stream");
         for os in [Os::Linux, Os::MacOs, Os::Windows] {
             let message = compile(&yaml, os).err().unwrap().to_string();
@@ -2503,7 +2974,7 @@ procedure: []
         ] {
             let yaml = format!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n{participants}\nprocedure: []\n");
             let case = loader.load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml")).unwrap().remove(0);
-            let message = CasePlan::compile(case, Os::Linux, &registries, &mut PortRegistry::new()).err().unwrap().to_string();
+            let message = CasePlan::compile(case, Os::Linux, &registries, &mut PortRegistry::new(), &mut ScopeRegistry::with_run("testrun0")).err().unwrap().to_string();
             assert_eq!(message, format!("case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', {expected}"));
         }
     }
@@ -2585,9 +3056,15 @@ procedure: []
             .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
             .unwrap()
             .remove(0);
-        let plan = CasePlan::compile(case, Os::Linux, &registries, &mut PortRegistry::new())
-            .unwrap()
-            .unwrap();
+        let plan = CasePlan::compile(
+            case,
+            Os::Linux,
+            &registries,
+            &mut PortRegistry::new(),
+            &mut ScopeRegistry::with_run("testrun0"),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(
             plan.layout().unwrap().get("subject").unwrap().kind,
             RealizationKind::KubernetesPod
@@ -2600,7 +3077,7 @@ procedure: []
             )
             .unwrap()
             .remove(0);
-        assert_eq!(CasePlan::compile(case, Os::Linux, &registries, &mut PortRegistry::new()).err().unwrap().to_string(),
+        assert_eq!(CasePlan::compile(case, Os::Linux, &registries, &mut PortRegistry::new(), &mut ScopeRegistry::with_run("testrun0")).err().unwrap().to_string(),
             "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 1 references late fact 'pod_uid' of participant 'subject', which a linux-container does not have; a linux-container has container_id, ip"
         );
     }
@@ -2647,10 +3124,16 @@ procedure: []
             .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
             .unwrap()
             .remove(0);
-        let message = CasePlan::compile(case, Os::Linux, &registries, &mut PortRegistry::new())
-            .err()
-            .unwrap()
-            .to_string();
+        let message = CasePlan::compile(
+            case,
+            Os::Linux,
+            &registries,
+            &mut PortRegistry::new(),
+            &mut ScopeRegistry::with_run("testrun0"),
+        )
+        .err()
+        .unwrap()
+        .to_string();
         assert_eq!(message,
             "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 1 references fact 'file' of participant 'subject', which type 'pod-server' does not provide as kubernetes-pod on linux; it provides it as linux-container on linux"
         );
@@ -2662,9 +3145,15 @@ procedure: []
             )
             .unwrap()
             .remove(0);
-        let plan = CasePlan::compile(case, Os::Linux, &registries, &mut PortRegistry::new())
-            .unwrap()
-            .unwrap();
+        let plan = CasePlan::compile(
+            case,
+            Os::Linux,
+            &registries,
+            &mut PortRegistry::new(),
+            &mut ScopeRegistry::with_run("testrun0"),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(plan.fact("subject", "file"), Some("/logs/output.log"));
     }
 
@@ -2761,7 +3250,14 @@ procedure: []
                 .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
                 .unwrap()
                 .remove(0);
-            let plan = CasePlan::compile(case, os, &REGISTRIES, &mut PortRegistry::new()).unwrap();
+            let plan = CasePlan::compile(
+                case,
+                os,
+                &REGISTRIES,
+                &mut PortRegistry::new(),
+                &mut ScopeRegistry::with_run("testrun0"),
+            )
+            .unwrap();
             if let Some(kind) = kind {
                 let plan = plan.unwrap();
                 assert_eq!(plan.case().name(), "alpha");
@@ -2786,10 +3282,16 @@ procedure: []
                 .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
                 .unwrap()
                 .remove(0);
-            let message = CasePlan::compile(case, os, &REGISTRIES, &mut PortRegistry::new())
-                .err()
-                .unwrap()
-                .to_string();
+            let message = CasePlan::compile(
+                case,
+                os,
+                &REGISTRIES,
+                &mut PortRegistry::new(),
+                &mut ScopeRegistry::with_run("testrun0"),
+            )
+            .err()
+            .unwrap()
+            .to_string();
             assert!(
                 message.contains(
                     "on subject OS 'windows', participant 'subject' of type 'server' \
@@ -2807,7 +3309,14 @@ procedure: []
                 .load_content("type: fixture", "alpha", Path::new("config.yaml"))
                 .unwrap()
                 .remove(0);
-            let plan = CasePlan::compile(case, os, &REGISTRIES, &mut PortRegistry::new()).unwrap();
+            let plan = CasePlan::compile(
+                case,
+                os,
+                &REGISTRIES,
+                &mut PortRegistry::new(),
+                &mut ScopeRegistry::with_run("testrun0"),
+            )
+            .unwrap();
             if os == Os::Linux {
                 assert!(plan.is_none());
             } else {
@@ -2827,10 +3336,16 @@ procedure: []
             .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
             .unwrap()
             .remove(0);
-        let message = CasePlan::compile(case, Os::Linux, &REGISTRIES, &mut PortRegistry::new())
-            .err()
-            .unwrap()
-            .to_string();
+        let message = CasePlan::compile(
+            case,
+            Os::Linux,
+            &REGISTRIES,
+            &mut PortRegistry::new(),
+            &mut ScopeRegistry::with_run("testrun0"),
+        )
+        .err()
+        .unwrap()
+        .to_string();
         assert_eq!(
             message,
             "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', \

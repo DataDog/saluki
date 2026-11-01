@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use super::{
     ports::RunnerHostPorts,
     routes::{route, Route},
+    scope::check_consumed_socket,
     ParticipantEndpoints,
 };
 use crate::{
@@ -15,13 +16,14 @@ use crate::{
         template::{AddressPart, Reference, Template},
         CaseFile,
     },
-    endpoint::EndpointKind,
+    endpoint::{EndpointKind, Listener},
     layout::{describe_participant, describe_realizations, Layout, Realization},
     participant::{find_type, CaseValues, ParticipantType},
 };
 
 pub(super) fn resolve_config_references(
-    file: &CaseFile, layout: &Layout, types: &[&dyn ParticipantType], name: &str, values: &mut CaseValues,
+    file: &CaseFile, layout: &Layout, types: &[&dyn ParticipantType],
+    facts: &BTreeMap<String, BTreeMap<String, String>>, name: &str, values: &mut CaseValues,
 ) -> Result<(), String> {
     let realization = layout.get(name).expect("loaded participants have a layout");
     let holder = describe_participant(name, &file.participants[name].participant_type, realization);
@@ -29,7 +31,7 @@ pub(super) fn resolve_config_references(
         let template: Template = text.parse().expect("configuration templates were checked at load");
         *text = template
             .substitute(|written, reference| {
-                resolve_reference(file, layout, types, name, field, reference)
+                resolve_reference(file, layout, types, facts, name, field, reference)
                     .map_err(|reason| format!("'{written}' {reason}"))
             })
             .map_err(|reason| format!("{holder} {field} {reason}"))?;
@@ -38,15 +40,15 @@ pub(super) fn resolve_config_references(
 }
 
 pub(super) fn check_file_references(
-    file: &CaseFile, templates: &FileTemplates, layout: &Layout, types: &[&dyn ParticipantType], name: &str,
-    values: &CaseValues,
+    file: &CaseFile, templates: &FileTemplates, layout: &Layout, types: &[&dyn ParticipantType],
+    facts: &BTreeMap<String, BTreeMap<String, String>>, name: &str, values: &CaseValues,
 ) -> Result<(), String> {
     let realization = layout.get(name).expect("loaded participants have a layout");
     let holder = describe_participant(name, &file.participants[name].participant_type, realization);
     for (file_name, source) in values.files.iter().filter(|(_, source)| source.template) {
         let field = ConfigField::File(file_name);
         for (written, reference) in templates.get(&source.from).written_references() {
-            resolve_reference(file, layout, types, name, field, reference)
+            resolve_reference(file, layout, types, facts, name, field, reference)
                 .map_err(|reason| format!("{holder} {field} '{written}' {reason}"))?;
         }
     }
@@ -54,8 +56,8 @@ pub(super) fn check_file_references(
 }
 
 fn resolve_reference(
-    file: &CaseFile, layout: &Layout, types: &[&dyn ParticipantType], holder: &str, field: ConfigField<'_>,
-    reference: &Reference,
+    file: &CaseFile, layout: &Layout, types: &[&dyn ParticipantType],
+    facts: &BTreeMap<String, BTreeMap<String, String>>, holder: &str, field: ConfigField<'_>, reference: &Reference,
 ) -> Result<Option<String>, String> {
     let (participant, fact) = match reference {
         Reference::Fact { participant, fact } => (participant, Some(fact)),
@@ -69,12 +71,8 @@ fn resolve_reference(
     let participant_type = find_type(types, &file.participants[name].participant_type)
         .expect("laid-out participants have registered types");
     if let Some(fact) = fact {
-        if let Some(declaration) = participant_type
-            .facts(realization)
-            .iter()
-            .find(|value| value.name == fact)
-        {
-            return Ok(Some(declaration.value.into()));
+        if let Some(value) = facts[name].get(fact) {
+            return Ok(Some(value.clone()));
         }
         let provided = describe_realizations(participant_type.supports().iter().copied().filter(|&(os, kind)| {
             participant_type
@@ -204,6 +202,16 @@ fn check_template_addresses(
                     let route = route(served_endpoint.kind, realization, target_realization).map_err(|constraint| format!(
                         "{context} references endpoint '{endpoint}' of participant '{target}', which it cannot reach: {constraint}"
                     ))?;
+                    if route == Route::SharedFilesystem {
+                        let Listener::Path(path) = &served_endpoint.listener else {
+                            unreachable!("shared-filesystem routes use socket paths");
+                        };
+                        let server = &endpoints[target];
+                        check_consumed_socket(path, &server.shared_dir, server.os).map_err(|reason| format!(
+                            "{context} references endpoint '{endpoint}' of participant '{target}', a {} socket served at '{path}'{reason}",
+                            served_endpoint.kind.name()
+                        ))?;
+                    }
                     (route == Route::RunnerHostPort).then_some((target, endpoint))
                 } else {
                     None
@@ -340,9 +348,15 @@ mod tests {
             .load_content(yaml, "alpha", Path::new("alpha/config.yaml"))
             .unwrap()
             .remove(0);
-        let plan = CasePlan::compile(case, Os::Linux, &registries, &mut crate::plan::PortRegistry::new())
-            .unwrap()
-            .unwrap();
+        let plan = CasePlan::compile(
+            case,
+            Os::Linux,
+            &registries,
+            &mut crate::plan::PortRegistry::new(),
+            &mut crate::plan::ScopeRegistry::with_run("testrun0"),
+        )
+        .unwrap()
+        .unwrap();
         let config = plan.effective_config("subject").unwrap();
         assert_eq!(
             config.env,
@@ -668,7 +682,7 @@ mod tests {
                                 "subject: true",
                                 &format!("subject: true, connect: {{target: other.{endpoint}}}"),
                             )
-                            .replace("procedure: []", "  other: {type: every-kind-server}\nprocedure: []");
+                            .replace("procedure: []", "  other: {type: every-kind-server, config: {env: {SOCKET_DIR: '{{ self.facts.shared_dir }}'}}}\nprocedure: []");
                     }
                     let valid = part == "url" || (network && part != "path") || (!network && part == "path");
                     if valid {
@@ -1067,7 +1081,7 @@ mod tests {
                                 "subject: true",
                                 &format!("subject: true, connect: {{target: other.{endpoint}}}"),
                             )
-                            .replace("procedure: []", "  other: {type: file-server}\nprocedure: []");
+                            .replace("procedure: []", "  other: {type: file-server, config: {env: {SOCKET_DIR: '{{ self.facts.shared_dir }}'}}}\nprocedure: []");
                         format!("{{{{self.connections.target.{part}}}}}")
                     } else {
                         format!("{{{{self.endpoints.{endpoint}.{part}}}}}")

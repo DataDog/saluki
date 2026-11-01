@@ -11,7 +11,7 @@ use super::{
 };
 use crate::{
     layout::Realization,
-    participant::{find_type, ParticipantType},
+    participant::{find_type, ParticipantType, SHARED_DIR_FACT},
     record::step_label,
     step::{Need, Step, StepFactory},
 };
@@ -113,7 +113,7 @@ fn build_step(
                 .flat_map(|&(os, kind)| participant_type.facts(Realization { os, kind }))
                 .map(|declaration| declaration.name)
                 .collect();
-            if !declared.contains(fact.as_str()) {
+            if fact != SHARED_DIR_FACT && !declared.contains(fact.as_str()) {
                 return Err(error(format!(
                     "'{}' references fact '{fact}' of participant '{participant}', which type '{}' does not declare; it declares {}",
                     node.name,
@@ -293,6 +293,25 @@ mod tests {
                 Need::Fact("subject".into(), "file".into())
             ]
         );
+    }
+
+    #[test]
+    fn every_participant_type_declares_shared_dir_at_load() {
+        for participant_type in TYPES {
+            let mut file = case("- {step: probe, on: subject, path: '{{ subject.facts.shared_dir }}'}");
+            file.participants.get_mut("subject").unwrap().participant_type = participant_type.name().into();
+            let procedure = build_steps(&file, STEPS, TYPES, "alpha", Path::new("cases/alpha/config.yaml")).unwrap();
+            let [ProcedureNode::Step(step)] = procedure.as_slice() else {
+                panic!("expected one step")
+            };
+            assert_eq!(
+                step.needs(),
+                [
+                    Need::Handle("subject".into()),
+                    Need::Fact("subject".into(), SHARED_DIR_FACT.into())
+                ]
+            );
+        }
     }
 
     #[test]

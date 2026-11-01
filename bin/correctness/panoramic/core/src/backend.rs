@@ -12,7 +12,10 @@ use std::{
 use async_trait::async_trait;
 use saluki_error::GenericError;
 
-use crate::layout::{Os, Realization, RealizationKind};
+use crate::{
+    layout::{Os, Realization, RealizationKind},
+    plan::ScopeLayout,
+};
 
 const PROVIDABILITY_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -63,6 +66,9 @@ pub(crate) trait Backend: Send + Sync {
     /// The realization kind this backend creates.
     fn kind(&self) -> RealizationKind;
 
+    /// Root of the filesystem shared by participants in this scope.
+    fn shared_root(&self, os: Os, scope: &ScopeLayout) -> String;
+
     /// Late facts and their availability, sorted by fact.
     fn late_facts(&self) -> &'static [(LateFact, LateFactTiming)];
 
@@ -81,6 +87,10 @@ pub(crate) const BACKENDS: &[&dyn Backend] = &[
     &HostProcessGroups,
     &KubernetesPods,
 ];
+
+pub(crate) fn shared_root(kind: RealizationKind, os: Os, scope: &ScopeLayout) -> String {
+    backend(kind).shared_root(os, scope)
+}
 
 pub(crate) fn late_facts(kind: RealizationKind) -> &'static [(LateFact, LateFactTiming)] {
     backend(kind).late_facts()
@@ -133,6 +143,10 @@ impl Backend for LinuxContainers {
         RealizationKind::LinuxContainer
     }
 
+    fn shared_root(&self, _os: Os, _scope: &ScopeLayout) -> String {
+        "/airlock".into()
+    }
+
     fn late_facts(&self) -> &'static [(LateFact, LateFactTiming)] {
         &[
             (LateFact::ContainerId, LateFactTiming::AfterCreate),
@@ -152,6 +166,10 @@ impl Backend for LinuxContainers {
 impl Backend for WindowsContainers {
     fn kind(&self) -> RealizationKind {
         RealizationKind::WindowsContainer
+    }
+
+    fn shared_root(&self, _os: Os, _scope: &ScopeLayout) -> String {
+        r"C:\airlock".into()
     }
 
     fn late_facts(&self) -> &'static [(LateFact, LateFactTiming)] {
@@ -175,6 +193,10 @@ impl Backend for HostProcessGroups {
         RealizationKind::HostProcessGroup
     }
 
+    fn shared_root(&self, os: Os, scope: &ScopeLayout) -> String {
+        scope.state_dir(os)
+    }
+
     fn late_facts(&self) -> &'static [(LateFact, LateFactTiming)] {
         &[(LateFact::Ip, LateFactTiming::Fixed("127.0.0.1"))]
     }
@@ -192,6 +214,10 @@ impl Backend for HostProcessGroups {
 impl Backend for KubernetesPods {
     fn kind(&self) -> RealizationKind {
         RealizationKind::KubernetesPod
+    }
+
+    fn shared_root(&self, _os: Os, _scope: &ScopeLayout) -> String {
+        "/airlock".into()
     }
 
     fn late_facts(&self) -> &'static [(LateFact, LateFactTiming)] {
@@ -261,6 +287,36 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+
+    #[test]
+    fn every_backend_reports_its_shared_root() {
+        let scope = ScopeLayout {
+            run: "testrun0".into(),
+            index: 3,
+        };
+        for (kind, os, expected) in [
+            (RealizationKind::LinuxContainer, Os::Linux, "/airlock"),
+            (RealizationKind::WindowsContainer, Os::Windows, r"C:\airlock"),
+            (RealizationKind::KubernetesPod, Os::Linux, "/airlock"),
+            (
+                RealizationKind::HostProcessGroup,
+                Os::Linux,
+                "/tmp/panoramic-testrun0/0003",
+            ),
+            (
+                RealizationKind::HostProcessGroup,
+                Os::MacOs,
+                "/tmp/panoramic-testrun0/0003",
+            ),
+            (
+                RealizationKind::HostProcessGroup,
+                Os::Windows,
+                r"C:\Windows\Temp\panoramic-testrun0\0003",
+            ),
+        ] {
+            assert_eq!(shared_root(kind, os, &scope), expected);
+        }
+    }
 
     #[test]
     fn each_realization_kind_has_one_backend_declaring_its_late_facts() {
@@ -438,6 +494,10 @@ mod tests {
     impl Backend for FakeBackend {
         fn kind(&self) -> RealizationKind {
             self.kind
+        }
+
+        fn shared_root(&self, os: Os, scope: &ScopeLayout) -> String {
+            scope.state_dir(os)
         }
 
         fn late_facts(&self) -> &'static [(LateFact, LateFactTiming)] {

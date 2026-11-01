@@ -15,7 +15,10 @@ pub const REGISTERED_TYPES: &[&dyn ParticipantType] = &[&AgentAdp];
 
 #[cfg(test)]
 mod tests {
-    use panoramic_core::layout::{Os, Realization, RealizationKind};
+    use panoramic_core::{
+        layout::{Os, Realization, RealizationKind},
+        participant::SHARED_DIR_FACT,
+    };
 
     use super::*;
 
@@ -43,6 +46,12 @@ mod tests {
                     participant_type.name()
                 );
                 for fact in facts {
+                    assert_ne!(
+                        fact.name,
+                        SHARED_DIR_FACT,
+                        "{} on {os:?} as {kind:?}",
+                        participant_type.name()
+                    );
                     assert!(
                         !fact.value.contains("{{"),
                         "{} on {os:?} as {kind:?}: {}: {}",

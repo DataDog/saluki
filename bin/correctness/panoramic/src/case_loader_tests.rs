@@ -361,7 +361,7 @@ fn agent_adp_env_placeholders_from_the_integration_schema_fail_at_load() {
 
 #[test]
 fn agent_adp_default_log_file_in_env_plans_on_linux_and_windows_but_not_macos() {
-    use panoramic_core::plan::{CasePlan, PortRegistry};
+    use panoramic_core::plan::{CasePlan, PortRegistry, ScopeRegistry};
 
     let yaml = PARTICIPANT_FIELDS
         .replace(
@@ -377,9 +377,15 @@ fn agent_adp_default_log_file_in_env_plans_on_linux_and_windows_but_not_macos() 
             .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
             .unwrap()
             .remove(0);
-        let plan = CasePlan::compile(case, os, &crate::REGISTRIES, &mut PortRegistry::new())
-            .unwrap()
-            .unwrap();
+        let plan = CasePlan::compile(
+            case,
+            os,
+            &crate::REGISTRIES,
+            &mut PortRegistry::new(),
+            &mut ScopeRegistry::new(),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(plan.effective_config("adp").unwrap().env["FILE"], expected);
     }
     let case = crate::CASE_LOADER
@@ -390,13 +396,13 @@ fn agent_adp_default_log_file_in_env_plans_on_linux_and_windows_but_not_macos() 
         )
         .unwrap()
         .remove(0);
-    assert_eq!(CasePlan::compile(case, Os::Linux, &crate::REGISTRIES, &mut PortRegistry::new()).err().unwrap().to_string(),
+    assert_eq!(CasePlan::compile(case, Os::Linux, &crate::REGISTRIES, &mut PortRegistry::new(), &mut ScopeRegistry::new()).err().unwrap().to_string(),
         "case 'alpha' in alpha/config.yaml: on subject OS 'macos', participant 'adp' of type 'agent-adp' as host-process-group on macos environment variable 'FILE' '{{ self.facts.default_log_file }}' references fact 'default_log_file' of participant 'adp', which type 'agent-adp' does not provide as host-process-group on macos; it provides it as linux-container on linux, windows-container on windows");
 }
 
 #[test]
 fn agent_adp_cannot_use_its_own_ip_in_env_in_containers() {
-    use panoramic_core::plan::{CasePlan, PortRegistry};
+    use panoramic_core::plan::{CasePlan, PortRegistry, ScopeRegistry};
 
     for (os, kind) in [("linux", "linux-container"), ("windows", "windows-container")] {
         for name in ["self", "adp"] {
@@ -408,7 +414,7 @@ fn agent_adp_cannot_use_its_own_ip_in_env_in_containers() {
                 .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
                 .unwrap()
                 .remove(0);
-            assert_eq!(CasePlan::compile(case, Os::Linux, &crate::REGISTRIES, &mut PortRegistry::new()).err().unwrap().to_string(), format!(
+            assert_eq!(CasePlan::compile(case, Os::Linux, &crate::REGISTRIES, &mut PortRegistry::new(), &mut ScopeRegistry::new()).err().unwrap().to_string(), format!(
                 "case 'alpha' in alpha/config.yaml: on subject OS '{os}', participant 'adp' of type 'agent-adp' as {kind} on {os} environment variable 'IP' '{{{{{name}.late.ip}}}}' references its own late fact 'ip', which type 'agent-adp' does not substitute into its environment as {kind}"
             ));
         }

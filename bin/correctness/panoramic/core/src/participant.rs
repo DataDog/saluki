@@ -86,6 +86,9 @@ impl EffectiveConfig {
     }
 }
 
+/// The core-provided fact naming a participant's directory for served sockets.
+pub const SHARED_DIR_FACT: &str = "shared_dir";
+
 /// A participant fact available before execution for one realization.
 pub struct FactDeclaration {
     /// Name used in participant fact references.
@@ -168,6 +171,7 @@ pub trait ParticipantType: Send + Sync {
 
     /// Early facts configuration and steps may reference for this realization, sorted by name. Defaults to none.
     /// Called only with realizations from [`Self::supports`].
+    /// Types must not declare [`SHARED_DIR_FACT`]; panoramic supplies it for every participant.
     fn facts(&self, _realization: Realization) -> &'static [FactDeclaration] {
         &[]
     }

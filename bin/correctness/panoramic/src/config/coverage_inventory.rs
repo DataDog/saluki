@@ -17,7 +17,7 @@ use std::{
 use panoramic_core::case::CaseSchema;
 use panoramic_core::{
     layout::Os,
-    plan::{CasePlan, PortRegistry},
+    plan::{CasePlan, PortRegistry, ScopeRegistry},
 };
 use saluki_error::{generic_error, GenericError};
 use serde::Serialize;
@@ -238,7 +238,16 @@ impl Inventory {
             let plans: Vec<_> = cases
                 .into_iter()
                 .filter(|case| case.suite() == INTEGRATION || os == Os::Linux)
-                .filter_map(|case| CasePlan::compile(case, os, &crate::REGISTRIES, &mut PortRegistry::new()).unwrap())
+                .filter_map(|case| {
+                    CasePlan::compile(
+                        case,
+                        os,
+                        &crate::REGISTRIES,
+                        &mut PortRegistry::new(),
+                        &mut ScopeRegistry::new(),
+                    )
+                    .unwrap()
+                })
                 .collect();
             for built in build_runners(plans, os, &[]).unwrap() {
                 let case = built.plan.case();
@@ -445,8 +454,14 @@ fn record_cases(cases: &[LoadedCase], content: &str, directory: &str) -> Result<
                         .into_iter()
                         .find(|loaded| loaded.name() == case.name())
                         .expect("reloading yields the same case");
-                    let plan = CasePlan::compile(loaded, os, &crate::REGISTRIES, &mut PortRegistry::new())?
-                        .expect("the case declares this subject OS");
+                    let plan = CasePlan::compile(
+                        loaded,
+                        os,
+                        &crate::REGISTRIES,
+                        &mut PortRegistry::new(),
+                        &mut ScopeRegistry::new(),
+                    )?
+                    .expect("the case declares this subject OS");
                     plan.integration_config()
                 };
                 let mut subject_os = case.subject_os().iter();

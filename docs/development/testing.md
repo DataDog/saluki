@@ -202,6 +202,13 @@ realizations have no route for the endpoint's kind. Network endpoints connect pa
 realization, or a host process group to a Linux container. Unix sockets need the same realization and can't use
 Windows containers. Named pipes don't connect participants.
 
+Every participant has a `shared_dir` fact: its directory for sockets it serves. It is
+`/airlock/<participant>/shared` in Linux containers and pods, `C:\airlock\<participant>\shared` in Windows
+containers, and `<state dir>/<participant>/shared` for host process groups. Planning chooses a short per-case
+state directory under `/tmp`. A Unix socket another participant connects to or references must lie under the
+server's `shared_dir` and fit the OS limit: 103 bytes on macOS, 107 on Linux. Other sockets may lie anywhere.
+The integration runner rejects the `shared_dir` fact.
+
 On every OS in `subject_os`, panoramic resolves each connection to an address as the consumer sees it and sets
 its type's delivered environment variables, replacing the type's defaults. Containers of one kind reach each
 other, and pods reach each other, by participant name and the server's port. Host process groups use

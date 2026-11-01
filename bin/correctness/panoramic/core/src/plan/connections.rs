@@ -6,11 +6,12 @@ use std::collections::BTreeMap;
 use super::{
     ports::RunnerHostPorts,
     routes::{address, route, Route},
+    scope::check_consumed_socket,
     ParticipantEndpoints,
 };
 use crate::{
     case::{declared_names, CaseFile},
-    endpoint::Delivery,
+    endpoint::{Delivery, Listener},
     layout::{describe_participant, Layout},
 };
 
@@ -62,6 +63,16 @@ pub(super) fn check_connections(
                     served_endpoint.kind.name(),
                 )
             })?;
+            if route == Route::SharedFilesystem && target_name != name {
+                let Listener::Path(path) = &served_endpoint.listener else {
+                    unreachable!("shared-filesystem routes use socket paths");
+                };
+                let server = &endpoints[target_name];
+                check_consumed_socket(path, &server.shared_dir, server.os).map_err(|reason| format!(
+                    "participant '{name}' connects '{connection}' to '{target_name}.{target_endpoint}', a {} socket that {target_holder} serves at '{path}'{reason}",
+                    served_endpoint.kind.name()
+                ))?;
+            }
             let Delivery::Env { keys, value } = &endpoint.delivery;
             for key in keys {
                 if consumer_endpoints.values.env.contains_key(key) {
