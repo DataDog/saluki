@@ -1,6 +1,6 @@
-//! Events for test execution reporting.
+//! Events a run emits as it progresses.
 //!
-//! The consume loop records runner events in the run report and forwards them to the TUI or plain output.
+//! A run sends them over the channel from [`create_event_channel`]; the consumer records and displays them.
 
 use std::path::PathBuf;
 
@@ -39,7 +39,10 @@ pub enum TestEvent {
     },
 }
 
+/// Sends a run's events to its consumer.
+pub(crate) type EventSender = mpsc::UnboundedSender<TestEvent>;
+
 /// Create a channel for sending test events.
-pub fn create_event_channel() -> (mpsc::UnboundedSender<TestEvent>, mpsc::UnboundedReceiver<TestEvent>) {
+pub fn create_event_channel() -> (EventSender, mpsc::UnboundedReceiver<TestEvent>) {
     mpsc::unbounded_channel()
 }

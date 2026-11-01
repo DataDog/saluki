@@ -2,7 +2,8 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
-use crate::assertions::{Assertion, AssertionContext, AssertionResult, AssertionStatus};
+use crate::assertions::{Assertion, AssertionContext};
+use crate::record::{AssertionResult, AssertionStatus};
 
 /// Assertion that checks the container process remains stable for a specified duration.
 pub struct ProcessStableForAssertion {

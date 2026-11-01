@@ -12,7 +12,8 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::Action;
-use crate::assertions::{AssertionContext, AssertionResult, AssertionStatus};
+use crate::assertions::AssertionContext;
+use crate::record::{AssertionResult, AssertionStatus};
 
 pub(super) struct TargetExecAction {
     command: Vec<String>,

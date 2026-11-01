@@ -7,8 +7,9 @@ use serde_json::Value;
 use tokio::time::Instant;
 
 use super::{docker_exec, Action};
-use crate::assertions::{AssertionContext, AssertionResult, AssertionStatus, Attempts};
+use crate::assertions::{AssertionContext, Attempts};
 use crate::probe::{probe, AttemptLimits, ProbeError, POLL_INTERVAL};
+use crate::record::{AssertionResult, AssertionStatus};
 
 pub(super) struct CoreAgentConfigSetAction {
     pub(super) key: String,
@@ -349,8 +350,8 @@ mod tests {
     use crate::actions::test_docker::{curl_max_time, Exec, FakeDocker};
     use crate::actions::Action as _;
     use crate::assertions::test_support::host_context;
-    use crate::assertions::{AssertionResult, AssertionStatus};
     use crate::probe::AttemptLimits;
+    use crate::record::{AssertionResult, AssertionStatus};
 
     /// Sets `log_level` in a `target_os` container within `timeout`, with its execs served by `docker`.
     async fn set_in_container(docker: &FakeDocker, target_os: ContainerOs, timeout: Duration) -> AssertionResult {

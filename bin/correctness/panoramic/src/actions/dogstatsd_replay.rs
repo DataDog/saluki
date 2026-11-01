@@ -7,7 +7,8 @@ use super::{
     target_exec::{execute_target_command, CommandDiagnostics, CommandError},
     Action,
 };
-use crate::assertions::{AssertionContext, AssertionResult, AssertionStatus};
+use crate::assertions::AssertionContext;
+use crate::record::{AssertionResult, AssertionStatus};
 
 /// Runs a complete DogStatsD capture and replay flow against the tested ADP process.
 pub(super) struct DogstatsdReplayAction {
@@ -250,7 +251,7 @@ mod tests {
 
     use super::{capture_path_from_output, duration_as_go_duration, stats_output_contains_metric};
     use super::{CommandError, DogstatsdReplayAction};
-    use crate::assertions::AssertionStatus;
+    use crate::record::AssertionStatus;
 
     #[cfg(unix)]
     #[tokio::test]

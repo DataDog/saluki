@@ -367,9 +367,9 @@ pub async fn run_k8s_correctness_test(case: CorrectnessTestCase, tctx: TestConte
         Ok(()) => TestResult::from_assertions(
             name,
             started.elapsed(),
-            vec![crate::assertions::AssertionResult {
+            vec![crate::record::AssertionResult {
                 name: "telemetry matches".to_string(),
-                status: crate::assertions::AssertionStatus::Passed,
+                status: crate::record::AssertionStatus::Passed,
                 message: "No difference detected between baseline and comparison.".to_string(),
                 duration: analysis_duration,
             }],
@@ -380,9 +380,9 @@ pub async fn run_k8s_correctness_test(case: CorrectnessTestCase, tctx: TestConte
             TestResult::from_assertions(
                 name,
                 started.elapsed(),
-                vec![crate::assertions::AssertionResult {
+                vec![crate::record::AssertionResult {
                     name: "telemetry matches".to_string(),
-                    status: crate::assertions::AssertionStatus::Failed,
+                    status: crate::record::AssertionStatus::Failed,
                     message: full_message,
                     duration: analysis_duration,
                 }],

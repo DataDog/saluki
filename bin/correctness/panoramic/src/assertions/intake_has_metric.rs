@@ -7,7 +7,7 @@ use stele::{Metric, MetricValue};
 use tokio::time::Instant;
 use tracing::trace;
 
-use crate::assertions::{Assertion, AssertionContext, AssertionResult, AssertionStatus};
+use crate::assertions::{Assertion, AssertionContext};
 use crate::config::{MetricTypeMatcher, TagMatch};
 use crate::intake::metrics::{
     get_formatted_metric_value, MetricType, NormalizationFailure, NormalizedMetric, NormalizedMetricContext,
@@ -15,6 +15,7 @@ use crate::intake::metrics::{
 };
 use crate::intake::IntakeClient;
 use crate::probe::{probe, ProbeError, POLL_INTERVAL, PROBE_TIMEOUT};
+use crate::record::{AssertionResult, AssertionStatus};
 
 /// Names the intake request in probe messages.
 const METRICS_DUMP: &str = "the intake sidecar's metrics dump";
@@ -492,12 +493,11 @@ mod tests {
     use super::{
         truncate_message, IntakeHasMetricAssertion, LastError, Snapshot, MAX_MESSAGE_BYTES, TRUNCATION_NOTICE,
     };
-    use crate::assertions::{
-        create_assertion, Assertion as _, AssertionContext, AssertionResult, AssertionStatus, LogBuffer, TargetCommand,
-    };
+    use crate::assertions::{create_assertion, Assertion as _, AssertionContext, LogBuffer, TargetCommand};
     use crate::config::{AssertionConfig, AssertionStep, IntegrationConfig, MetricTypeMatcher, TagMatch};
     use crate::intake::test_server::{closed_port, install_crypto_provider, MockIntake};
     use crate::intake::IntakeClient;
+    use crate::record::{AssertionResult, AssertionStatus};
 
     fn count(value: f64) -> Value {
         json!({"mtype": "Count", "value": value})

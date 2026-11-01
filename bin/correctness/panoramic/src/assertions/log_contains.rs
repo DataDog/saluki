@@ -4,8 +4,9 @@ use tokio::time::Instant;
 use tracing::trace;
 
 use crate::{
-    assertions::{Assertion, AssertionContext, AssertionResult, AssertionStatus},
+    assertions::{Assertion, AssertionContext},
     config::LogStream,
+    record::{AssertionResult, AssertionStatus},
 };
 
 /// Assertion that checks for a pattern in the container logs.

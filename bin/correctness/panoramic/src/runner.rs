@@ -17,7 +17,7 @@ use bollard::{container::LogOutput, errors::Error as DockerError};
 use futures::stream::{self, StreamExt as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::pin;
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -30,7 +30,7 @@ use crate::test::{RunnerSettings, Test, TestContext};
 use crate::{
     assertions::{AssertionContext, LogBuffer, TargetCommand},
     config::{parse_file_spec, parse_port_spec},
-    events::TestEvent,
+    events::{EventSender, TestEvent},
     intake::IntakeClient,
     integration::IntegrationTestCase,
     reporter::{
@@ -38,9 +38,6 @@ use crate::{
         UNKNOWN_PHASE,
     },
 };
-
-/// A sender that the `Runner` can use to send `TestEvent`s.
-pub(crate) type EventSender = mpsc::UnboundedSender<TestEvent>;
 
 /// How long a cancelled or timed-out test has to return its result before the runner drops it.
 const GRACE_TIME: Duration = Duration::from_secs(30);
@@ -1182,8 +1179,9 @@ pub(crate) mod test_support {
     use tokio::sync::Notify;
 
     use super::*;
+    use crate::assertions::run_assertion_steps;
     use crate::assertions::test_support::{host_context, procedure};
-    use crate::assertions::{run_assertion_steps, AssertionResult, AssertionStatus};
+    use crate::record::{AssertionResult, AssertionStatus};
     use crate::test::TestSuite;
 
     /// What a [`ScriptedTest`] does once it has entered its phase.
@@ -1424,6 +1422,8 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
+    use tokio::sync::mpsc;
+
     use super::test_support::{test_runner_settings, Behavior, ScriptedTest, TaskProbe};
     use super::*;
     use crate::record::StepStatus;

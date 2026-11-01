@@ -599,9 +599,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::assertions::{AssertionResult, AssertionStatus};
-    use crate::collector::RunCollector;
-    use crate::events::TestEvent;
+    use crate::record::{AssertionResult, AssertionStatus};
     use crate::reporter::{ErrorKind, TestOutcome, TimeoutAttribution};
 
     fn assertion(name: &str, status: AssertionStatus) -> AssertionResult {
@@ -1005,30 +1003,17 @@ mod tests {
 
     #[test]
     fn run_report_pins_the_schema_two_field_names() {
-        let log_dir = tempfile::tempdir().expect("temp dir should be creatable");
         let selected = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-        let report = RunReport::new(
-            Vec::new(),
-            "linux".to_string(),
-            1,
-            log_dir.path().to_path_buf(),
-            selected,
-        );
-        let mut collector = RunCollector::start(report, false);
+        let mut report = RunReport::new(Vec::new(), "linux".to_string(), 1, PathBuf::new(), selected);
         let timed_out = TestResult::errored("a", ErrorKind::Timeout, "too slow", Duration::from_secs(1), Vec::new());
-        for event in [
-            TestEvent::TestStarted { name: "a".to_string() },
-            TestEvent::TestCompleted {
-                result: Box::new(timed_out),
-                log_dir: log_dir.path().to_path_buf(),
-            },
-            TestEvent::TestStarted { name: "b".to_string() },
-        ] {
-            collector.observe(&event);
-        }
-        collector.interrupt(InterruptReason::Signal { source: "SIGTERM" });
+        report.tests = vec![TestReport::new(&timed_out)];
+        report.running = vec!["b".to_string()];
+        report.not_run = vec!["c".to_string()];
+        report.state = RunState::Interrupted;
+        report.interrupted_reason = Some(InterruptReason::Signal { source: "SIGTERM" });
+        report.totals = RunTotals::new(&report.tests, report.not_run.len());
 
-        let json = serde_json::to_value(collector.report()).expect("run report should serialize");
+        let json = serde_json::to_value(&report).expect("run report should serialize");
 
         assert_eq!(json["schema_version"], 2);
         assert_eq!(json["state"], "interrupted");

@@ -6,9 +6,8 @@ use std::time::{Duration, Instant};
 use colored::Colorize as _;
 use serde::Serialize;
 
-use crate::assertions::AssertionResult;
 use crate::machine_output::{InterruptReason, RunReport, RunState, RUN_REPORT_FILE_NAME};
-use crate::record::{step_label, ActiveStep, StepResult, StepStatus};
+use crate::record::{step_label, ActiveStep, AssertionResult, StepResult, StepStatus};
 
 /// Phase name reported when the harness cannot tell which phase a test was in.
 pub const UNKNOWN_PHASE: &str = "unknown";
@@ -865,9 +864,8 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::{each_outcome, step, NOT_RUN_KIND, PASS_ISSUE, TIMEOUT_CAUSE};
     use super::*;
-    use crate::assertions::AssertionStatus;
-    use crate::collector::RunCollector;
-    use crate::events::TestEvent;
+    use crate::machine_output::{RunTotals, TestReport};
+    use crate::record::AssertionStatus;
 
     const LABELS: [&str; 5] = ["PASS", "FAIL", "ERROR", "TIMEOUT", "INTERRUPTED"];
 
@@ -1016,77 +1014,67 @@ mod tests {
         }
     }
 
-    /// Applies events, an optional interrupt, and optional runner completion to a collector of `selected` tests.
-    fn collected(
-        log_dir: &Path, fail_fast: bool, selected: &[&str], events: Vec<TestEvent>, interrupt: Option<&'static str>,
-        finished: bool,
-    ) -> RunCollector {
-        let selected = selected.iter().map(|name| name.to_string()).collect();
-        let report = RunReport::new(Vec::new(), "linux".to_string(), 1, log_dir.to_path_buf(), selected);
-        let mut collector = RunCollector::start(report, fail_fast);
-        for event in &events {
-            collector.observe(event);
-        }
-        if let Some(source) = interrupt {
-            collector.interrupt(InterruptReason::Signal { source });
-        }
-        if finished {
-            collector.finish(Ok(()));
-        }
-        collector
-    }
-
-    fn started(name: &str) -> TestEvent {
-        TestEvent::TestStarted { name: name.to_string() }
-    }
-
-    fn completed(result: &TestResult) -> TestEvent {
-        TestEvent::TestCompleted {
-            result: Box::new(result.clone()),
-            log_dir: PathBuf::new(),
-        }
-    }
-
     #[test]
     fn run_summary_reads_incomplete_for_an_interrupted_run() {
-        let log_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        struct Unfinished<'a> {
+            running: &'a [&'a str],
+            not_run: &'a [&'a str],
+        }
+
+        fn run_report(
+            result: &TestResult, unfinished: Unfinished<'_>, state: RunState,
+            interrupted_reason: Option<InterruptReason>,
+        ) -> RunReport {
+            let mut report = RunReport::new(Vec::new(), "linux".to_string(), 1, PathBuf::new(), Vec::new());
+            report.tests = vec![TestReport::new(result)];
+            report.running = unfinished.running.iter().map(|name| name.to_string()).collect();
+            report.not_run = unfinished.not_run.iter().map(|name| name.to_string()).collect();
+            report.state = state;
+            report.interrupted_reason = interrupted_reason;
+            report.totals = RunTotals::new(&report.tests, report.not_run.len());
+            report
+        }
+
         let [(passed, _), (failed, _), _, (timed_out, _), _] = each_outcome();
 
-        let all_pass = collected(
-            log_dir.path(),
-            false,
-            &["p"],
-            vec![started("p"), completed(&passed)],
+        let all_pass = run_report(
+            &passed,
+            Unfinished {
+                running: &[],
+                not_run: &[],
+            },
+            RunState::Complete,
             None,
-            true,
         );
-        let report = all_pass.report();
+        let report = &all_pass;
         assert_eq!(run_status_label(report), "PASSED");
         assert!(run_counts(report).starts_with("1 passed, 0 failed, 0 errored, 1 total ("));
         assert!(run_unfinished_lines(report).is_empty());
 
-        let fail_fast = collected(
-            log_dir.path(),
-            true,
-            &["f", "b"],
-            vec![started("f"), completed(&failed)],
+        let fail_fast = run_report(
+            &failed,
+            Unfinished {
+                running: &[],
+                not_run: &["b"],
+            },
+            RunState::Complete,
             None,
-            true,
         );
-        let report = fail_fast.report();
+        let report = &fail_fast;
         assert_eq!(run_status_label(report), "FAILED");
         assert!(run_counts(report).starts_with("0 passed, 1 failed, 0 errored, 1 not run, 2 total ("));
         assert_eq!(run_unfinished_lines(report), vec!["Not run: b"]);
 
-        let interrupted = collected(
-            log_dir.path(),
-            false,
-            &["t", "a", "b"],
-            vec![started("t"), completed(&timed_out), started("a")],
-            Some("SIGTERM"),
-            false,
+        let interrupted = run_report(
+            &timed_out,
+            Unfinished {
+                running: &["a"],
+                not_run: &["b"],
+            },
+            RunState::Interrupted,
+            Some(InterruptReason::Signal { source: "SIGTERM" }),
         );
-        let report = interrupted.report();
+        let report = &interrupted;
         assert_eq!(run_status_label(report), "INCOMPLETE");
         assert!(run_counts(report)
             .starts_with("0 passed, 0 failed, 1 errored (1 timed out), 1 running, 1 not run, 3 total ("));
@@ -1095,13 +1083,7 @@ mod tests {
             vec!["Interrupted: SIGTERM", "Still running: a", "Not run: b"]
         );
 
-        let mut long_run = RunReport::new(
-            Vec::new(),
-            "linux".to_string(),
-            1,
-            log_dir.path().to_path_buf(),
-            Vec::new(),
-        );
+        let mut long_run = RunReport::new(Vec::new(), "linux".to_string(), 1, PathBuf::new(), Vec::new());
         long_run.duration_ms = 63_000;
         assert_eq!(run_counts(&long_run), "0 passed, 0 failed, 0 errored, 0 total (1m 3s)");
     }

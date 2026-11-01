@@ -3,8 +3,9 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use crate::{
-    assertions::{Assertion, AssertionContext, AssertionResult, AssertionStatus},
+    assertions::{Assertion, AssertionContext},
     config::LogStream,
+    record::{AssertionResult, AssertionStatus},
 };
 
 /// Assertion that checks ADP exited with a specific exit code.

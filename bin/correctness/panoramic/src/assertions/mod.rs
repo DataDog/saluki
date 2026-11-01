@@ -22,8 +22,10 @@ use crate::config::{AssertionConfig, AssertionStep, LogStream};
 use crate::deadline::{Budget, Deadline};
 use crate::integration::IntegrationTestCase;
 use crate::probe::PROBE_TIMEOUT;
-use crate::record::{step_label, ActiveStep, CaseRecord, StepResult, StepStatus, Verdict};
-use crate::reporter::{DurationMs, ErrorKind, TestResult};
+use crate::record::{
+    step_label, AssertionResult, AssertionStatus, CaseRecord, RunningStep, StepResult, StepStatus, Verdict,
+};
+use crate::reporter::{ErrorKind, TestResult};
 
 mod adp_config_key_equals;
 mod adp_exits;
@@ -42,52 +44,6 @@ pub use intake_has_metric::IntakeHasMetricAssertion;
 pub use log_contains::{LogContainsAssertion, LogNotContainsAssertion};
 pub use port_listening::PortListeningAssertion;
 pub use process_stable::ProcessStableForAssertion;
-
-/// What an action or assertion concluded. The step driver adds `interrupted` and `not_run`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AssertionStatus {
-    /// The step met its expectation.
-    Passed,
-    /// The observed product behavior did not meet the expectation.
-    Failed,
-    /// A harness or configuration error prevented evaluation of the product.
-    Errored,
-}
-
-impl From<AssertionStatus> for StepStatus {
-    fn from(status: AssertionStatus) -> Self {
-        match status {
-            AssertionStatus::Passed => Self::Passed,
-            AssertionStatus::Failed => Self::Failed,
-            AssertionStatus::Errored => Self::Errored,
-        }
-    }
-}
-
-/// Result of running an assertion.
-#[derive(Clone, Debug)]
-pub struct AssertionResult {
-    /// Name of the assertion type.
-    pub name: String,
-    /// How the step ended.
-    pub status: AssertionStatus,
-    /// Human-readable message about the result.
-    pub message: String,
-    /// How long the assertion took to run.
-    pub duration: Duration,
-}
-
-impl AssertionResult {
-    /// Creates a step result with the elapsed time since `started`.
-    pub(crate) fn new(name: &str, started: Instant, status: AssertionStatus, message: impl Into<String>) -> Self {
-        Self {
-            name: name.to_string(),
-            status,
-            message: message.into(),
-            duration: started.elapsed(),
-        }
-    }
-}
 
 /// Tracks product observations and harness errors across polling attempts.
 ///
@@ -607,82 +563,6 @@ async fn run_step(record: &CaseRecord, member: &Member, case: Deadline, ctx: &As
     let status = result.status;
     record.finish(member.slot, result);
     status
-}
-
-/// Identity and timing of a running step, retained in the case record until it finishes.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct RunningStep {
-    step: usize,
-    member: Option<usize>,
-    name: &'static str,
-    started: Instant,
-    /// The step's own budget.
-    budget: Duration,
-    /// The case deadline narrowed to `budget`.
-    deadline: Deadline,
-}
-
-impl RunningStep {
-    /// Captures the step's identity and timing for interruption reports.
-    pub(crate) fn active(&self) -> ActiveStep {
-        ActiveStep {
-            step: self.step,
-            member: self.member,
-            kind: self.name.to_string(),
-            elapsed_ms: DurationMs(self.started.elapsed()).as_millis(),
-            budget_ms: DurationMs(self.budget).as_millis(),
-        }
-    }
-
-    /// Returns an `interrupted` result, appending the step's own message if available.
-    ///
-    /// Reports elapsed time and any budget reduction imposed by the case deadline. The test result carries the
-    /// interruption cause.
-    pub(crate) fn interrupted(&self, step_message: Option<String>) -> StepResult {
-        let elapsed = self.started.elapsed();
-        let mut message = format!("Interrupted after {elapsed:.1?}.");
-        if self.deadline.budget == Budget::Case {
-            let left = self.deadline.at.saturating_duration_since(self.started);
-            message.push_str(&format!(
-                " The case left this step {left:.1?} of its {:?} step budget.",
-                self.budget
-            ));
-        }
-        if let Some(step_message) = step_message {
-            message.push('\n');
-            message.push_str(&step_message);
-        }
-        self.result(StepStatus::Interrupted, message, elapsed)
-    }
-
-    /// Returns an `errored` result for a step that exceeded its budget and [`STEP_SLACK`].
-    fn overran(&self) -> StepResult {
-        let elapsed = self.started.elapsed();
-        self.result(
-            StepStatus::Errored,
-            format!(
-                "Did not finish within its {:?} step budget; stopped after {elapsed:.1?}.",
-                self.budget
-            ),
-            elapsed,
-        )
-    }
-
-    /// Returns the result the step reported itself.
-    fn returned(&self, result: AssertionResult) -> StepResult {
-        self.result(result.status.into(), result.message, result.duration)
-    }
-
-    fn result(&self, status: StepStatus, message: String, duration: Duration) -> StepResult {
-        StepResult {
-            step: self.step,
-            member: self.member,
-            name: self.name.to_string(),
-            status,
-            message,
-            duration,
-        }
-    }
 }
 
 /// Fixtures for running a procedure through [`run_assertion_steps`] on the host.

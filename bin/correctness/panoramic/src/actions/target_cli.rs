@@ -6,7 +6,8 @@ use super::{
     target_exec::{execute_target_command, CommandDiagnostics},
     Action,
 };
-use crate::assertions::{AssertionContext, AssertionResult, AssertionStatus, TargetCommand};
+use crate::assertions::{AssertionContext, TargetCommand};
+use crate::record::{AssertionResult, AssertionStatus};
 
 #[derive(Clone, Copy)]
 pub(super) enum TargetCli {

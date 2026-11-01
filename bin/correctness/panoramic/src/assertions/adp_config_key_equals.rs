@@ -7,8 +7,9 @@ use tracing::trace;
 
 use crate::{
     actions::{execute_target_command, CommandDiagnostics, CommandError},
-    assertions::{Assertion, AssertionContext, AssertionResult, AssertionStatus, Attempts},
+    assertions::{Assertion, AssertionContext, Attempts},
     probe::POLL_INTERVAL,
+    record::{AssertionResult, AssertionStatus},
 };
 
 const DEFAULT_ADP_CONFIG_ENDPOINT: &str = "https://localhost:55101/config";

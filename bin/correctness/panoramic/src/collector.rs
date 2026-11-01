@@ -324,9 +324,9 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::*;
-    use crate::assertions::{AssertionResult, AssertionStatus};
     use crate::events::create_event_channel;
     use crate::machine_output::RUN_REPORT_FILE_NAME;
+    use crate::record::{AssertionResult, AssertionStatus};
     use crate::reporter::{ErrorKind, OutputFormat, TestResult};
     use crate::runner::test_support::{test_runner_settings, Behavior, ScriptedTest};
     use crate::runner::{RunArgs, Runner};

@@ -19,9 +19,9 @@ use crate::correctness::{
     config::Runtime,
 };
 use crate::{
-    assertions::{AssertionResult, AssertionStatus},
     intake::{CollectedData, IntakeClient},
     ledger::ResourceLedger,
+    record::{AssertionResult, AssertionStatus},
     reporter::{ErrorKind, PhaseTiming, TestResult},
     tasks::CaseTasks,
     test::TestContext,
