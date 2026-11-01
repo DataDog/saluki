@@ -1,4 +1,4 @@
-//! Checks configuration references and substitutes facts available from the layout.
+//! Checks fact availability and configuration references, substituting facts available from the layout.
 
 use std::collections::BTreeMap;
 
@@ -17,9 +17,53 @@ use crate::{
         CaseFile,
     },
     endpoint::{EndpointKind, Listener},
-    layout::{describe_participant, describe_realizations, Layout, Realization},
+    layout::{describe_participant, describe_realizations, Layout, Realization, RealizationKind},
     participant::{find_type, CaseValues, ParticipantType},
 };
+
+/// Returns `participant`'s planned value of early fact `fact`.
+///
+/// # Errors
+///
+/// If the fact is missing, names the realizations on which the participant's type provides it.
+pub(super) fn planned_fact<'f>(
+    participant: &str, participant_type: &dyn ParticipantType, realization: Realization,
+    facts: &'f BTreeMap<String, String>, fact: &str,
+) -> Result<&'f str, String> {
+    if let Some(value) = facts.get(fact) {
+        return Ok(value);
+    }
+    let provided = describe_realizations(participant_type.supports().iter().copied().filter(|&(os, kind)| {
+        participant_type
+            .facts(Realization { os, kind })
+            .iter()
+            .any(|value| value.name == fact)
+    }));
+    Err(format!(
+        "references fact '{fact}' of participant '{participant}', which type '{}' does not provide as {} on {}; it provides it as {provided}",
+        participant_type.name(), realization.kind.name(), realization.os.name(),
+    ))
+}
+
+/// Returns when a participant realized as `kind` can supply late fact `fact`.
+///
+/// # Errors
+///
+/// If the fact is missing, lists the late facts the realization kind has.
+pub(super) fn late_fact_timing(
+    participant: &str, kind: RealizationKind, fact: LateFact,
+) -> Result<LateFactTiming, String> {
+    let facts = late_facts(kind);
+    if let Some((_, timing)) = facts.iter().find(|(provided, _)| *provided == fact) {
+        return Ok(*timing);
+    }
+    let kind = kind.name();
+    Err(format!(
+        "references late fact '{}' of participant '{participant}', which a {kind} does not have; a {kind} has {}",
+        fact.name(),
+        declared_names(&facts.iter().map(|(fact, _)| fact.name()).collect::<Vec<_>>()),
+    ))
+}
 
 pub(super) fn resolve_config_references(
     file: &CaseFile, layout: &Layout, types: &[&dyn ParticipantType],
@@ -71,33 +115,14 @@ fn resolve_reference(
     let participant_type = find_type(types, &file.participants[name].participant_type)
         .expect("laid-out participants have registered types");
     if let Some(fact) = fact {
-        if let Some(value) = facts[name].get(fact) {
-            return Ok(Some(value.clone()));
-        }
-        let provided = describe_realizations(participant_type.supports().iter().copied().filter(|&(os, kind)| {
-            participant_type
-                .facts(Realization { os, kind })
-                .iter()
-                .any(|value| value.name == fact)
-        }));
-        return Err(format!(
-            "references fact '{fact}' of participant '{name}', which type '{}' does not provide as {} on {}; it provides it as {provided}",
-            participant_type.name(), realization.kind.name(), realization.os.name(),
-        ));
+        return planned_fact(name, participant_type, realization, &facts[name], fact).map(|value| Some(value.into()));
     }
     let Reference::Late { fact, .. } = reference else {
         unreachable!("only late references remain");
     };
     let fact_name = fact.name();
     let kind = realization.kind.name();
-    let Some((_, timing)) = late_facts(realization.kind)
-        .iter()
-        .find(|(provided, _)| provided == fact)
-    else {
-        return Err(format!(
-            "references late fact '{fact_name}' of participant '{name}', which a {kind} does not have"
-        ));
-    };
+    let timing = late_fact_timing(name, realization.kind, *fact)?;
     if let LateFactTiming::Fixed(value) = timing {
         let holder_realization = layout.get(holder).expect("loaded participants have a layout");
         if holder_realization != realization {
@@ -106,7 +131,7 @@ fn resolve_reference(
                 realization.os.name(),
             ));
         }
-        return Ok(Some((*value).into()));
+        return Ok(Some(value.into()));
     }
     if matches!(field, ConfigField::File(_)) {
         let holder_kind = layout.get(holder).expect("loaded participants have a layout").kind;
@@ -458,7 +483,7 @@ mod tests {
             "participant 'subject' of type 'server' as windows-container on windows environment variable 'KEY' '{{ self.late.ip }}' references its own late fact 'ip', which type 'server' does not substitute into its environment as windows-container");
         for (fact, reason) in [
             ("container_id", "references its own late fact 'container_id', which type 'server' does not substitute into its environment as linux-container"),
-            ("pod_uid", "references late fact 'pod_uid' of participant 'subject', which a linux-container does not have"),
+            ("pod_uid", "references late fact 'pod_uid' of participant 'subject', which a linux-container does not have; a linux-container has container_id, ip"),
         ] {
             error(&case(&format!("{{env: {{KEY: '{{{{ self.late.{fact} }}}}'}}}}"), "linux"), "linux", &format!(
                 "participant 'subject' of type 'server' as linux-container on linux environment variable 'KEY' '{{{{ self.late.{fact} }}}}' {reason}"
@@ -479,7 +504,7 @@ mod tests {
             ),
             (
                 "pod_uid",
-                "references late fact 'pod_uid' of participant 'subject', which a linux-container does not have",
+                "references late fact 'pod_uid' of participant 'subject', which a linux-container does not have; a linux-container has container_id, ip",
             ),
         ] {
             error(&case(&format!("{{params: {{mode: [{{nested: '{{{{self.late.{fact}}}}}'}}]}}}}"), "linux"), "linux", &format!(
@@ -505,7 +530,7 @@ mod tests {
                     format!("{{params: {{mode: '{{{{self.late.{fact}}}}}'}}}}"),
                 ),
             ] {
-                error(&case(&config, "macos"), "macos", &format!("participant 'subject' of type 'server' as host-process-group on macos {field} '{{{{self.late.{fact}}}}}' references late fact '{fact}' of participant 'subject', which a host-process-group does not have"));
+                error(&case(&config, "macos"), "macos", &format!("participant 'subject' of type 'server' as host-process-group on macos {field} '{{{{self.late.{fact}}}}}' references late fact '{fact}' of participant 'subject', which a host-process-group does not have; a host-process-group has ip"));
             }
         }
     }
@@ -516,7 +541,11 @@ mod tests {
             ("linux", "linux-container", None),
             ("windows", "windows-container", None),
             ("linux", "kubernetes-pod", Some("knows only after it starts")),
-            ("macos", "host-process-group", Some("does not have")),
+            (
+                "macos",
+                "host-process-group",
+                Some("does not have; a host-process-group has ip"),
+            ),
         ] {
             for (config, field) in [
                 (
@@ -570,7 +599,7 @@ mod tests {
                         &format!("  other: {{type: every-kind-server, realization: {{kind: {kind}}}}}\nprocedure: []"),
                     );
                     let reason = if kind == "linux-container" && fact == "pod_uid" {
-                        "references late fact 'pod_uid' of participant 'other', which a linux-container does not have"
+                        "references late fact 'pod_uid' of participant 'other', which a linux-container does not have; a linux-container has container_id, ip"
                             .to_string()
                     } else {
                         format!("references late fact '{fact}' of participant 'other'; configuration can use another participant's late fact only as the container_id of a participant known once created")
@@ -906,7 +935,7 @@ mod tests {
                 &text.parse().unwrap()
             );
             if target_kind == "linux-container" {
-                file_error(&yaml, "{{other.late.pod_uid}}", "linux", "participant 'subject' of type 'file-server' as kubernetes-pod on linux configuration file 'settings.yaml' '{{other.late.pod_uid}}' references late fact 'pod_uid' of participant 'other', which a linux-container does not have");
+                file_error(&yaml, "{{other.late.pod_uid}}", "linux", "participant 'subject' of type 'file-server' as kubernetes-pod on linux configuration file 'settings.yaml' '{{other.late.pod_uid}}' references late fact 'pod_uid' of participant 'other', which a linux-container does not have; a linux-container has container_id, ip");
             }
         }
     }
@@ -924,7 +953,8 @@ mod tests {
                         continue;
                     }
                     let reason = if fact == "pod_uid" || os == "macos" {
-                        format!("references late fact '{fact}' of participant 'subject', which a {kind} does not have")
+                        let names = if os == "macos" { "ip" } else { "container_id, ip" };
+                        format!("references late fact '{fact}' of participant 'subject', which a {kind} does not have; a {kind} has {names}")
                     } else {
                         format!("references its own late fact '{fact}', which a configuration file of a {kind} cannot wait for")
                     };
@@ -955,7 +985,7 @@ mod tests {
                 let reason = if fact == "container_id" {
                     format!("references late fact '{fact}' of participant 'other', which a {kind} knows only after it starts")
                 } else if fact == "pod_uid" && kind != "kubernetes-pod" {
-                    format!("references late fact '{fact}' of participant 'other', which a {kind} does not have")
+                    format!("references late fact '{fact}' of participant 'other', which a {kind} does not have; a {kind} has container_id, ip")
                 } else {
                     format!("references late fact '{fact}' of participant 'other'; configuration can use another participant's late fact only as the container_id of a participant known once created")
                 };

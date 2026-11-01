@@ -6,19 +6,16 @@ use saluki_error::{generic_error, GenericError};
 
 use crate::{
     backend,
-    case::{
-        config_references::FileTemplates, declared_names, CaseConfig, CaseFile, CaseSchema, ProcedureNode, Registries,
-    },
-    layout::{describe_participant, describe_realizations, lay_out, Layout, Os, Realization},
+    case::{config_references::FileTemplates, CaseConfig, CaseFile, CaseSchema, Registries},
+    layout::{describe_participant, lay_out, Layout, Os},
     participant::{find_type, CaseValues, EffectiveConfig, ParticipantType, SHARED_DIR_FACT},
-    record::step_label,
-    step::{Need, Step},
 };
 
 mod connections;
 mod endpoints;
 mod order;
 mod ports;
+mod procedure;
 mod references;
 mod routes;
 mod scope;
@@ -146,7 +143,7 @@ impl<C> CasePlan<C> {
                     os_ports,
                 )
                 .map_err(&error)?;
-                check_reference_needs(
+                procedure::check_step_references(
                     file,
                     procedure,
                     &candidate,
@@ -302,62 +299,6 @@ fn plan_participants(
     })
 }
 
-/// Rejects the first step needing an unavailable fact or late fact.
-fn check_reference_needs(
-    file: &CaseFile, procedure: &[ProcedureNode<Box<dyn Step>>], layout: &Layout, types: &[&dyn ParticipantType],
-    participants: &BTreeMap<String, PlannedParticipant>,
-) -> Result<(), String> {
-    for (index, node) in procedure.iter().enumerate() {
-        let (steps, parallel) = match node {
-            ProcedureNode::Step(step) => (std::slice::from_ref(step), false),
-            ProcedureNode::Parallel(steps) => (steps.as_slice(), true),
-        };
-        for (member, step) in steps.iter().enumerate() {
-            for need in step.needs() {
-                let (participant, fact) = match need {
-                    Need::Fact(participant, fact) => (participant, fact),
-                    Need::Late(participant, fact) => {
-                        let realization = layout.get(&participant).expect("step needs name laid-out participants");
-                        let facts = backend::late_facts(realization.kind);
-                        if !facts.iter().any(|(provided, _)| *provided == fact) {
-                            let kind = realization.kind.name();
-                            return Err(format!(
-                                "step {} references late fact '{}' of participant '{participant}', which a {kind} does not have; a {kind} has {}",
-                                step_label(index, parallel.then_some(member)),
-                                fact.name(),
-                                declared_names(&facts.iter().map(|(fact, _)| fact.name()).collect::<Vec<_>>()),
-                            ));
-                        }
-                        continue;
-                    }
-                    Need::Handle(_) | Need::Process(_, _) => continue,
-                };
-                if participants[&participant].facts.contains_key(&fact) {
-                    continue;
-                }
-                let realization = layout.get(&participant).expect("step needs name laid-out participants");
-                let participant_type = find_type(types, &file.participants[&participant].participant_type)
-                    .expect("laid-out participants have registered types");
-                let provided =
-                    describe_realizations(participant_type.supports().iter().copied().filter(|&(os, kind)| {
-                        participant_type
-                            .facts(Realization { os, kind })
-                            .iter()
-                            .any(|declaration| declaration.name == fact)
-                    }));
-                return Err(format!(
-                    "step {} references fact '{fact}' of participant '{participant}', which type '{}' does not provide as {} on {}; it provides it as {provided}",
-                    step_label(index, parallel.then_some(member)),
-                    participant_type.name(),
-                    realization.kind.name(),
-                    realization.os.name(),
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use std::{collections::BTreeSet, path::Path};
@@ -366,14 +307,15 @@ mod tests {
     use crate::{
         case::{
             fixtures::{
-                write_case, Client, Configured, FixtureConfig, FixtureTypes, PodServer, Server, LOADER,
-                PARTICIPANT_FIELDS, REGISTRIES, STEPS,
+                write_case, Client, Configured, FixtureConfig, FixtureTypes, Server, LOADER, PARTICIPANT_FIELDS,
+                REGISTRIES, STEPS,
             },
-            CaseLoader, FileSource,
+            CaseLoader, FileSource, ProcedureNode,
         },
         endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind, Port},
         layout::{Realization, RealizationKind},
         participant::FactDeclaration,
+        step::Need,
     };
 
     pub(super) struct EveryKindServer;
@@ -750,7 +692,7 @@ mod tests {
         }
     }
 
-    const FACT_CASE: &str = "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {type: server, subject: true}\nprocedure: [{step: probe, on: subject, path: '{{ subject.facts.file }}'}]\n";
+    pub(super) const FACT_CASE: &str = "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {type: server, subject: true}\nprocedure: [{step: probe, on: subject, path: '{{ subject.facts.file }}'}]\n";
 
     const CONFIG_REGISTRIES: Registries<'static> = Registries {
         participant_types: &[
@@ -2324,199 +2266,6 @@ procedure: []
     }
 
     #[test]
-    fn facts_must_be_provided_by_the_participants_realization_on_every_declared_subject_os() {
-        for declared in ["[windows, macos, linux]", "[macos]"] {
-            for os in [Os::Linux, Os::MacOs, Os::Windows] {
-                let message = compile(&FACT_CASE.replace("[linux]", declared), os)
-                    .err()
-                    .unwrap()
-                    .to_string();
-                assert_eq!(message,
-                    "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', step 1 references fact 'file' of participant 'subject', which type 'server' does not provide as host-process-group on macos; it provides it as linux-container on linux, windows-container on windows"
-                );
-            }
-        }
-        assert!(compile(&FACT_CASE.replace("[linux]", "[linux, windows]"), Os::Linux)
-            .unwrap()
-            .is_some());
-    }
-
-    #[test]
-    fn late_facts_must_be_provided_by_the_participants_realization_on_every_declared_subject_os() {
-        let yaml = FACT_CASE
-            .replace("[linux]", "[linux, macos]")
-            .replace("subject.facts.file", "subject.late.container_id");
-        for os in [Os::Linux, Os::MacOs, Os::Windows] {
-            assert_eq!(compile(&yaml, os).err().unwrap().to_string(),
-                "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', step 1 references late fact 'container_id' of participant 'subject', which a host-process-group does not have; a host-process-group has ip"
-            );
-        }
-        assert!(compile(&yaml.replace("[linux, macos]", "[linux, windows]"), Os::Linux)
-            .unwrap()
-            .is_some());
-    }
-
-    #[test]
-    fn a_late_fact_every_realization_has_compiles_on_every_declared_subject_os() {
-        let yaml = FACT_CASE
-            .replace("[linux]", "[linux, macos, windows]")
-            .replace("subject.facts.file", "subject.late.ip");
-        for os in [Os::Linux, Os::MacOs, Os::Windows] {
-            let plan = compile(&yaml, os).unwrap().unwrap();
-            assert_eq!(plan.subject_os(), os);
-            let CaseSchema::Participants { procedure, .. } = plan.case().schema() else {
-                panic!("expected participant data");
-            };
-            let [ProcedureNode::Step(step)] = procedure.as_slice() else {
-                panic!("expected one step");
-            };
-            assert_eq!(
-                step.needs(),
-                [
-                    Need::Handle("subject".into()),
-                    Need::Late("subject".into(), backend::LateFact::Ip)
-                ]
-            );
-        }
-    }
-
-    #[test]
-    fn pod_uid_is_available_only_to_a_kubernetes_pod() {
-        let registries = Registries {
-            participant_types: &[&PodServer],
-            steps: STEPS,
-        };
-        let loader = CaseLoader::new(registries, FixtureTypes, "fixture-participants");
-        let yaml = FACT_CASE
-            .replace("type: server", "type: pod-server, realization: {kind: kubernetes-pod}")
-            .replace("subject.facts.file", "subject.late.pod_uid");
-        let case = loader
-            .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
-            .unwrap()
-            .remove(0);
-        let plan = CasePlan::compile(
-            case,
-            Os::Linux,
-            &registries,
-            &mut PortRegistry::new(),
-            &mut ScopeRegistry::with_run("testrun0"),
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(
-            plan.layout().unwrap().get("subject").unwrap().kind,
-            RealizationKind::KubernetesPod
-        );
-        let case = loader
-            .load_content(
-                &yaml.replace("kubernetes-pod", "linux-container"),
-                "alpha",
-                Path::new("cases/alpha/config.yaml"),
-            )
-            .unwrap()
-            .remove(0);
-        assert_eq!(CasePlan::compile(case, Os::Linux, &registries, &mut PortRegistry::new(), &mut ScopeRegistry::with_run("testrun0")).err().unwrap().to_string(),
-            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 1 references late fact 'pod_uid' of participant 'subject', which a linux-container does not have; a linux-container has container_id, ip"
-        );
-    }
-
-    #[test]
-    fn fact_and_late_fact_errors_follow_procedure_order_including_parallel_members() {
-        let mut yaml = PARTICIPANT_FIELDS.replace("[linux]", "[macos]").replace(
-            "procedure: []",
-            r#"procedure:
-  - {step: probe, on: subject, path: '{{ subject.late.container_id }}{{ subject.facts.file }}'}
-  - parallel:
-    - {step: probe, on: subject, path: '{{ subject.late.ip }}'}
-    - {step: probe, on: subject, path: '{{ subject.facts.file }}{{ subject.late.pod_uid }}'}
-  - {step: probe, on: subject, path: '{{ subject.late.container_id }}'}"#,
-        );
-        for (reference, label, kind, fact) in [
-            ("{{ subject.late.container_id }}", "1", "late fact", "container_id"),
-            ("{{ subject.facts.file }}", "1", "fact", "file"),
-            ("{{ subject.facts.file }}", "2.2", "fact", "file"),
-            ("{{ subject.late.pod_uid }}", "2.2", "late fact", "pod_uid"),
-            ("{{ subject.late.container_id }}", "3", "late fact", "container_id"),
-        ] {
-            let message = compile(&yaml, Os::MacOs).err().unwrap().to_string();
-            assert!(
-                message.contains(&format!(
-                    "on subject OS 'macos', step {label} references {kind} '{fact}' of participant 'subject'"
-                )),
-                "{message}"
-            );
-            yaml = yaml.replacen(reference, "literal", 1);
-        }
-        assert!(compile(&yaml, Os::MacOs).unwrap().is_some());
-    }
-
-    #[test]
-    fn a_fact_provided_for_one_realization_is_missing_for_another_realization_on_the_same_os() {
-        let registries = Registries {
-            participant_types: &[&PodServer],
-            steps: STEPS,
-        };
-        let loader = CaseLoader::new(registries, FixtureTypes, "fixture-participants");
-        let yaml = FACT_CASE.replace("type: server", "type: pod-server, realization: {kind: kubernetes-pod}");
-        let case = loader
-            .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
-            .unwrap()
-            .remove(0);
-        let message = CasePlan::compile(
-            case,
-            Os::Linux,
-            &registries,
-            &mut PortRegistry::new(),
-            &mut ScopeRegistry::with_run("testrun0"),
-        )
-        .err()
-        .unwrap()
-        .to_string();
-        assert_eq!(message,
-            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 1 references fact 'file' of participant 'subject', which type 'pod-server' does not provide as kubernetes-pod on linux; it provides it as linux-container on linux"
-        );
-        let case = loader
-            .load_content(
-                &yaml.replace("kubernetes-pod", "linux-container"),
-                "alpha",
-                Path::new("config.yaml"),
-            )
-            .unwrap()
-            .remove(0);
-        let plan = CasePlan::compile(
-            case,
-            Os::Linux,
-            &registries,
-            &mut PortRegistry::new(),
-            &mut ScopeRegistry::with_run("testrun0"),
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(plan.fact("subject", "file"), Some("/logs/output.log"));
-    }
-
-    #[test]
-    fn a_participant_with_its_own_os_needs_facts_only_from_its_realization_on_that_os() {
-        let yaml = FACT_CASE
-            .replace("[linux]", "[macos]")
-            .replace(
-                "participants:",
-                "participants:\n  other: {type: server, os: linux, config: {env: {PORT: '8081', METRICS: 'off'}}}",
-            )
-            .replace("subject.facts.file", "other.facts.file");
-        let plan = compile(&yaml, Os::MacOs).unwrap().unwrap();
-        assert_eq!(plan.fact("other", "file"), Some("/logs/output.log"));
-        assert_eq!(plan.fact("subject", "file"), None);
-        let message = compile(&yaml.replace(", os: linux", ""), Os::MacOs)
-            .err()
-            .unwrap()
-            .to_string();
-        assert_eq!(message,
-            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', step 1 references fact 'file' of participant 'other', which type 'server' does not provide as host-process-group on macos; it provides it as linux-container on linux, windows-container on windows"
-        );
-    }
-
-    #[test]
     fn a_plan_resolves_facts_from_each_participants_realization_on_the_selected_subject_os() {
         let yaml = FACT_CASE
             .replace("[linux]", "[linux, windows]")
@@ -2552,27 +2301,6 @@ procedure: []
                 .unwrap()
                 .to_string()
                 .contains("step 1 references fact 'file'")
-        );
-    }
-
-    #[test]
-    fn fact_errors_follow_subject_os_order_then_procedure_order_including_parallel_members() {
-        let yaml = PARTICIPANT_FIELDS
-            .replace("[linux]", "[macos, linux]")
-            .replace("participants:", "participants:\n  other: {type: server, os: macos, config: {env: {PORT: '8081', METRICS: 'off'}}}")
-            .replace("procedure: []", "procedure:\n  - {step: probe, on: subject, path: '{{ subject.facts.file }}'}\n  - parallel:\n    - {step: probe, on: subject}\n    - {step: probe, on: subject, path: '{{ other.facts.file }}'}\n  - {step: probe, on: subject, path: '{{ other.facts.file }}'}");
-        let message = compile(&yaml, Os::MacOs).err().unwrap().to_string();
-        assert!(
-            message.contains("on subject OS 'linux', step 2.2 references fact 'file' of participant 'other'"),
-            "{message}"
-        );
-        let message = compile(&yaml.replace("{{ other.facts.file }}", "literal"), Os::Linux)
-            .err()
-            .unwrap()
-            .to_string();
-        assert!(
-            message.contains("on subject OS 'macos', step 1 references fact 'file' of participant 'subject'"),
-            "{message}"
         );
     }
 
