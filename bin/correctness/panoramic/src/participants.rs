@@ -1,6 +1,6 @@
 //! Participant-type declarations and the registry the loader checks cases against.
 
-use crate::config::ParticipantDeclaration;
+use panoramic_core::case::ParticipantDeclaration;
 
 mod agent_adp;
 pub(crate) use agent_adp::AGENT_ADP;

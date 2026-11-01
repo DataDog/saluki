@@ -6,7 +6,7 @@ use serde::{Deserialize, Deserializer};
 
 /// A positive duration parsed from unit-qualified numbers, such as `1m30s`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct CaseDuration(Duration);
+pub struct CaseDuration(Duration);
 
 impl From<CaseDuration> for Duration {
     fn from(duration: CaseDuration) -> Self {

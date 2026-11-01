@@ -6,7 +6,7 @@ use serde::{Deserialize, Deserializer};
 
 /// Text containing literal segments and named participant facts.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Template {
+pub struct Template {
     segments: Vec<Segment>,
 }
 
@@ -18,7 +18,7 @@ enum Segment {
 
 impl Template {
     /// Returns referenced participant and fact names in text order, including duplicates.
-    pub(crate) fn references(&self) -> impl Iterator<Item = (&str, &str)> {
+    pub fn references(&self) -> impl Iterator<Item = (&str, &str)> {
         self.segments.iter().filter_map(|segment| match segment {
             Segment::Fact { participant, fact } => Some((participant.as_str(), fact.as_str())),
             Segment::Literal(_) => None,
@@ -26,7 +26,7 @@ impl Template {
     }
 
     /// Substitutes facts, failing on the first missing value or if the result contains `{{`.
-    pub(crate) fn resolve<'a>(&self, fact: impl Fn(&str, &str) -> Option<&'a str>) -> Result<String, String> {
+    pub fn resolve<'a>(&self, fact: impl Fn(&str, &str) -> Option<&'a str>) -> Result<String, String> {
         let mut resolved = String::new();
         for segment in &self.segments {
             match segment {

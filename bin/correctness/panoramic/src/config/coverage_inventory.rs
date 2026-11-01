@@ -14,13 +14,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use panoramic_core::case::{CaseSchema, Os};
 use saluki_error::{generic_error, GenericError};
 use serde::Serialize;
 use serde_json::{json, Value};
 
 use super::{
     build_runners,
-    case::{CaseSchema, Os},
     tests::{write_case, LOGGING_INTEGRATION, LOGGING_PARTICIPANT, PARTICIPANT_FIELDS},
     typed_case::{LoadedCase, RunnableCase, TypedConfig},
     AssertionStep, IntegrationConfig, LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME,

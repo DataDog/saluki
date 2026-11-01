@@ -9,12 +9,11 @@
 
 use std::{any::Any, path::Path};
 
+use panoramic_core::case::{CaseFile, Os, ParticipantConfig, ParticipantEntry, ProcedureNode, Step, StepNode};
 use panoramic_core::record::step_label;
 
 use super::{
-    case::Os,
-    case_file::{CaseFile, ParticipantConfig, ParticipantEntry, ProcedureNode, StepNode},
-    runtime_for_os, AssertionConfig, AssertionStep, ContainerConfig, IntakeConfig, IntegrationConfig, LogStream, Step,
+    runtime_for_os, AssertionConfig, AssertionStep, ContainerConfig, IntakeConfig, IntegrationConfig, LogStream,
 };
 use crate::{
     dynamic_vars::ENV_PREFIX,
@@ -232,14 +231,15 @@ pub(super) fn integration_config(
 
 #[cfg(test)]
 mod tests {
+    use panoramic_core::case::{CaseSchema, Need};
+
     use super::*;
     use crate::{
         config::{
             build_runners,
-            case::CaseSchema,
             tests::{write_case, LOGGING_INTEGRATION, LOGGING_PARTICIPANT, PARTICIPANT_FIELDS},
             typed_case::{RunnableCase, TypedConfig},
-            Need, LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME,
+            LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME,
         },
         steps::{tests::fields, REGISTERED_STEPS},
         test::TestSuite,

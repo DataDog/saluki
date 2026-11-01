@@ -10,12 +10,10 @@ use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::super::{
-    participant_check::{FactDeclaration, ParticipantDeclaration},
-    step_check::{decode_fields, Need, Step, StepDeclaration},
-    template::Template,
+use super::{
+    case_name, decode_fields, CaseLoader, FactDeclaration, Need, Os, ParticipantDeclaration, Registries, Step,
+    StepDeclaration, Template, TypedCase, TypedCaseLoader,
 };
-use super::{case_name, CaseLoader, Os, Registries, TypedCase, TypedCaseLoader};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

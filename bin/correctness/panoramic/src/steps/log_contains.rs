@@ -1,9 +1,9 @@
 //! Steps that search a participant's output for a pattern.
 
+use panoramic_core::case::{decode_fields, CaseDuration, Need, Step, StepDeclaration, StepFields};
 use serde::Deserialize;
 
 use super::check_pattern;
-use crate::config::{decode_fields, CaseDuration, Need, Step, StepDeclaration, StepFields};
 
 /// Waits until a participant's output contains a pattern.
 #[derive(Debug, Deserialize)]

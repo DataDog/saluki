@@ -2,10 +2,10 @@
 
 use std::{collections::BTreeSet, path::Path, time::Duration};
 
+use panoramic_core::case::{case_name, deserialize_case, CaseConfig, CaseSchema, Os, TypedCase, TypedCaseLoader};
 use saluki_error::{generic_error, GenericError};
 
 use super::{
-    case::{case_name, deserialize_case, CaseConfig, CaseSchema, Os, TypedCase, TypedCaseLoader},
     integration_bridge, os_for_runtime, parse_case, IntegrationConfig, MatrixVariants, LINUX_RUNTIME, MAC_RUNTIME,
     WINDOWS_RUNTIME,
 };
@@ -232,12 +232,12 @@ impl RunnableCase for LoadedCase {
 mod tests {
     use std::fs;
 
+    use panoramic_core::case::{CaseLoader, Registries};
+
     use super::*;
     use crate::{
         config::{
-            build_runners,
-            case::{CaseLoader, Registries},
-            default_host_runtime,
+            build_runners, default_host_runtime,
             tests::{write_case, PARTICIPANT_FIELDS},
         },
         participants, steps,

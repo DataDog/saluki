@@ -5,37 +5,39 @@ use std::{collections::BTreeSet, path::Path};
 use saluki_error::{generic_error, GenericError};
 
 use super::{
-    case::Os,
-    case_file::{CaseFile, ParticipantEntry},
+    file::{CaseFile, ParticipantEntry},
+    Os,
 };
 
 /// A participant fact available before execution, with values by OS.
-pub(crate) struct FactDeclaration {
-    pub(crate) name: &'static str,
-    pub(crate) values: &'static [(Os, &'static str)],
+pub struct FactDeclaration {
+    /// Name used in participant fact references.
+    pub name: &'static str,
+    /// Fact values for each supported participant OS.
+    pub values: &'static [(Os, &'static str)],
 }
 
 /// The names a case may use for one participant type, checked when the case loads.
-pub(crate) struct ParticipantDeclaration {
+pub struct ParticipantDeclaration {
     /// Registry name, as written in a participant's `type`.
-    pub(crate) name: &'static str,
+    pub name: &'static str,
     /// Names a case may supply under `config.files`.
-    pub(crate) config_files: &'static [&'static str],
+    pub config_files: &'static [&'static str],
     /// Served endpoints: connection targets and keys of `config.endpoints`.
-    pub(crate) endpoints: &'static [&'static str],
+    pub endpoints: &'static [&'static str],
     /// Consumed endpoints: keys of `connect`.
-    pub(crate) consumes: &'static [&'static str],
+    pub consumes: &'static [&'static str],
     /// Names a case may set under `config.params`.
-    pub(crate) params: &'static [&'static str],
+    pub params: &'static [&'static str],
     /// Early facts steps may reference, sorted by name.
-    pub(crate) facts: &'static [FactDeclaration],
+    pub facts: &'static [FactDeclaration],
     /// Named processes steps may address with `process`, in sorted order.
-    pub(crate) processes: &'static [&'static str],
+    pub processes: &'static [&'static str],
 }
 
 impl ParticipantDeclaration {
     /// Looks up a declared fact's value for a participant OS.
-    pub(crate) fn fact_value(&self, fact: &str, os: Os) -> Option<&'static str> {
+    pub fn fact_value(&self, fact: &str, os: Os) -> Option<&'static str> {
         self.facts
             .iter()
             .find(|declaration| declaration.name == fact)?

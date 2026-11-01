@@ -154,12 +154,12 @@ Every step names the participant it acts on with `on`. Step fields differ from t
 `step:` instead of `assertion:`, and `file_contains` requires `pattern`. The loader accepts other participant and
 configuration fields, but the integration runner rejects a case that sets them, with an error naming the field.
 
-The source documents each part; start in `bin/correctness/panoramic/src/`:
+The source documents each part:
 
-- `config/case_file.rs`: the case file's fields and their defaults.
-- `participants/agent_adp.rs`: what `agent-adp` declares, including its facts.
-- `steps/`: each step's fields.
-- `config/integration_bridge.rs`: the subset the integration runner supports, and the output each OS captures.
+- `bin/correctness/panoramic/core/src/case/file.rs`: the case file's fields and their defaults.
+- `bin/correctness/panoramic/src/participants/agent_adp.rs`: what `agent-adp` declares, including its facts.
+- `bin/correctness/panoramic/src/steps/`: each step's fields.
+- `bin/correctness/panoramic/src/config/integration_bridge.rs`: the subset the integration runner supports, and the output each OS captures.
 
 ### Step deadlines
 

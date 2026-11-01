@@ -1,9 +1,9 @@
 //! A step that searches a file inside a participant for a pattern.
 
+use panoramic_core::case::{decode_fields, CaseDuration, Need, Step, StepDeclaration, StepFields, Template};
 use serde::Deserialize;
 
 use super::check_pattern;
-use crate::config::{decode_fields, CaseDuration, Need, Step, StepDeclaration, StepFields, Template};
 
 /// Waits until a file inside a participant contains a pattern.
 #[derive(Debug, Deserialize)]

@@ -1,6 +1,6 @@
 //! The `agent-adp` participant type: the Core Agent and ADP running together.
 
-use crate::config::{case::Os, FactDeclaration, ParticipantDeclaration};
+use panoramic_core::case::{FactDeclaration, Os, ParticipantDeclaration};
 
 /// Configuration, connection, process and fact names accepted by `agent-adp`.
 ///
@@ -24,12 +24,10 @@ pub(crate) const AGENT_ADP: ParticipantDeclaration = ParticipantDeclaration {
 
 #[cfg(test)]
 mod tests {
+    use panoramic_core::case::{CaseSchema, Need, ProcedureNode};
+
     use super::*;
-    use crate::config::{
-        case::CaseSchema,
-        tests::{write_case, PARTICIPANT_FIELDS},
-        Need, ProcedureNode,
-    };
+    use crate::config::tests::{write_case, PARTICIPANT_FIELDS};
 
     #[test]
     fn agent_adp_declares_its_default_log_file_on_linux_and_windows_only() {

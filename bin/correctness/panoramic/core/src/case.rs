@@ -11,31 +11,43 @@ use std::{
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::{de::DeserializeOwned, Deserialize};
 
-use super::{
-    case_file::{CaseFile, ProcedureNode},
-    participant_check::{check_participants, ParticipantDeclaration},
-    step_check::{build_steps, Step, StepDeclaration},
-};
+mod duration;
+mod file;
+mod participant_check;
+mod step_check;
+mod template;
 
 #[cfg(test)]
-pub(crate) mod fixtures;
+mod fixtures;
+
+pub use self::{
+    duration::CaseDuration,
+    file::{deserialize_env_map, CaseFile, ParticipantConfig, ParticipantEntry, ProcedureNode, StepNode},
+    participant_check::{FactDeclaration, ParticipantDeclaration},
+    step_check::{decode_fields, Need, Step, StepDeclaration, StepFields},
+    template::Template,
+};
+use self::{participant_check::check_participants, step_check::build_steps};
 
 /// An operating system a case's processes run on.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum Os {
+pub enum Os {
+    /// Linux.
     Linux,
+    /// macOS.
     #[allow(
         clippy::enum_variant_names,
         reason = "macOS is one word; the Os suffix is part of its name."
     )]
     MacOs,
+    /// Windows.
     Windows,
 }
 
 impl Os {
     /// Returns the OS spelling used in case files.
-    pub(crate) fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Self::Linux => "linux",
             Self::MacOs => "macos",
@@ -46,13 +58,15 @@ impl Os {
 
 /// The participant types and steps a case file may name.
 #[derive(Clone, Copy)]
-pub(crate) struct Registries<'a> {
-    pub(crate) participant_types: &'a [&'a ParticipantDeclaration],
-    pub(crate) steps: &'a [&'a StepDeclaration],
+pub struct Registries<'a> {
+    /// Participant types available to case files.
+    pub participant_types: &'a [&'a ParticipantDeclaration],
+    /// Steps available to case procedures.
+    pub steps: &'a [&'a StepDeclaration],
 }
 
 /// Loads case files that select their schema with a top-level `type` key.
-pub(crate) trait TypedCaseLoader {
+pub trait TypedCaseLoader {
     /// Parsed data of one typed case.
     type Config;
 
@@ -64,25 +78,33 @@ pub(crate) trait TypedCaseLoader {
 }
 
 /// One case a typed loader loaded, with the metadata [`CaseConfig`] records for it.
-pub(crate) struct TypedCase<C> {
-    pub(super) name: String,
-    pub(super) description: Option<String>,
-    pub(super) suite: String,
-    pub(super) timeout: Duration,
-    pub(super) subject_os: BTreeSet<Os>,
-    pub(super) disabled: bool,
-    pub(super) config: C,
+pub struct TypedCase<C> {
+    /// Case name used for selection and reporting.
+    pub name: String,
+    /// Optional reporting description.
+    pub description: Option<String>,
+    /// Suite used to group the case in reports.
+    pub suite: String,
+    /// Maximum execution time for the case.
+    pub timeout: Duration,
+    /// Operating systems the subject supports.
+    pub subject_os: BTreeSet<Os>,
+    /// Whether the case is excluded from execution.
+    pub disabled: bool,
+    /// Parsed data supplied by the typed loader.
+    pub config: C,
 }
 
 /// Loads and discovers cases with fixed registries and typed schemas.
-pub(crate) struct CaseLoader<'a, L> {
+pub struct CaseLoader<'a, L> {
     registries: Registries<'a>,
     typed: L,
     participant_suite: &'a str,
 }
 
 impl<'a, L> CaseLoader<'a, L> {
-    pub(crate) const fn new(registries: Registries<'a>, typed: L, participant_suite: &'a str) -> Self {
+    /// Creates a loader with registries, a typed loader and the suite assigned to participant cases.
+    pub const fn new(registries: Registries<'a>, typed: L, participant_suite: &'a str) -> Self {
         Self {
             registries,
             typed,
@@ -105,7 +127,7 @@ where
     ///
     /// Returns an error if a directory is missing or unreadable, a case cannot be loaded,
     /// a directory contains `config.yml`, or multiple cases share a name.
-    pub(crate) fn discover_cases(&self, dirs: &[PathBuf]) -> Result<Vec<CaseConfig<L::Config>>, GenericError> {
+    pub fn discover_cases(&self, dirs: &[PathBuf]) -> Result<Vec<CaseConfig<L::Config>>, GenericError> {
         let mut cases = Vec::new();
         let mut load_errors = Vec::new();
 
@@ -180,7 +202,7 @@ where
     ///
     /// Returns path resolution and read errors, an error if the directory has no name,
     /// and every error of [`Self::load_content`].
-    pub(crate) fn load_file(&self, config_path: &Path) -> Result<Vec<CaseConfig<L::Config>>, GenericError> {
+    pub fn load_file(&self, config_path: &Path) -> Result<Vec<CaseConfig<L::Config>>, GenericError> {
         let canonical_path = config_path.canonicalize().error_context(format!(
             "Failed to resolve configuration file: {}",
             config_path.display()
@@ -216,7 +238,7 @@ where
     /// Types and steps must be registered, their fields valid, and their references declared.
     /// Connections must join a consumed endpoint to another participant's served endpoint.
     /// OS overlays must be reachable, and referenced facts must exist on every possible participant OS.
-    pub(crate) fn load_content(
+    pub fn load_content(
         &self, content: &str, directory: &str, source: &Path,
     ) -> Result<Vec<CaseConfig<L::Config>>, GenericError> {
         let peek: serde_json::Value = serde_saphyr::from_str(content)
@@ -267,7 +289,7 @@ where
 }
 
 /// Immutable case metadata and parsed data.
-pub(crate) struct CaseConfig<C> {
+pub struct CaseConfig<C> {
     name: String,
     description: Option<String>,
     suite: String,
@@ -279,50 +301,62 @@ pub(crate) struct CaseConfig<C> {
 }
 
 /// A participant case or data supplied by the typed loader.
-pub(crate) enum CaseSchema<C> {
+pub enum CaseSchema<C> {
+    /// A participant case with its validated procedure.
     Participants {
+        /// Parsed case file, including the original procedure fields.
         file: CaseFile,
+        /// Steps built from their registered declarations.
         procedure: Vec<ProcedureNode<Box<dyn Step>>>,
     },
+    /// Parsed data supplied by the typed loader.
     Typed(C),
 }
 
 impl<C> CaseConfig<C> {
-    pub(crate) fn name(&self) -> &str {
+    /// Returns the case name used for selection and reporting.
+    pub fn name(&self) -> &str {
         &self.name
     }
 
-    pub(crate) fn description(&self) -> Option<&str> {
+    /// Returns the optional reporting description.
+    pub fn description(&self) -> Option<&str> {
         self.description.as_deref()
     }
 
-    pub(crate) fn suite(&self) -> &str {
+    /// Returns the suite used to group the case in reports.
+    pub fn suite(&self) -> &str {
         &self.suite
     }
 
-    pub(crate) fn source(&self) -> &Path {
+    /// Returns the case file path recorded during loading.
+    pub fn source(&self) -> &Path {
         &self.source
     }
 
-    pub(crate) fn timeout(&self) -> Duration {
+    /// Returns the maximum execution time for the case.
+    pub fn timeout(&self) -> Duration {
         self.timeout
     }
 
-    pub(super) fn subject_os(&self) -> &BTreeSet<Os> {
+    /// Returns the operating systems the subject supports.
+    pub fn subject_os(&self) -> &BTreeSet<Os> {
         &self.subject_os
     }
 
-    pub(super) fn is_disabled(&self) -> bool {
+    /// Returns whether the case is excluded from execution.
+    pub fn is_disabled(&self) -> bool {
         self.disabled
     }
 
-    pub(crate) fn schema(&self) -> &CaseSchema<C> {
+    /// Returns the parsed case data and built procedure.
+    pub fn schema(&self) -> &CaseSchema<C> {
         &self.schema
     }
 }
 
 /// Deserializes case data and includes its source path in parse errors.
-pub(crate) fn deserialize_case<T>(content: &str, source: &Path) -> Result<T, GenericError>
+pub fn deserialize_case<T>(content: &str, source: &Path) -> Result<T, GenericError>
 where
     T: DeserializeOwned,
 {
@@ -330,7 +364,7 @@ where
 }
 
 /// Names a case after its directory. A declared name must equal the directory name.
-pub(super) fn case_name(declared: Option<&str>, directory: &str, source: &Path) -> Result<String, GenericError> {
+pub fn case_name(declared: Option<&str>, directory: &str, source: &Path) -> Result<String, GenericError> {
     match declared {
         Some(name) if name != directory => Err(generic_error!(
             "case name '{}' in {} does not match its directory '{}'; rename the directory or the name so they agree",

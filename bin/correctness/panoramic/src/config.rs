@@ -5,18 +5,11 @@ use std::{
     time::Duration,
 };
 
+use panoramic_core::case::{deserialize_case, deserialize_env_map, CaseDuration, Os};
 use saluki_error::{generic_error, GenericError};
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value;
 
-use self::case::Os;
-pub(crate) use self::case_file::deserialize_env_map;
-#[cfg(test)]
-pub(crate) use self::case_file::ProcedureNode;
-pub(crate) use self::duration::CaseDuration;
-pub(crate) use self::participant_check::{FactDeclaration, ParticipantDeclaration};
-pub(crate) use self::step_check::{decode_fields, Need, Step, StepDeclaration, StepFields};
-pub(crate) use self::template::Template;
 use self::typed_case::{LoadedCase, RunnableCase};
 use crate::correctness::config::Config as CorrectnessConfig;
 use crate::image_override::{ImageOverride, ImageOverrides};
@@ -687,7 +680,7 @@ fn parse_case<T>(content: &str, source: &Path) -> Result<T, GenericError>
 where
     T: LoadedFrom + DeserializeOwned,
 {
-    let mut case: T = case::deserialize_case(content, source)?;
+    let mut case: T = deserialize_case(content, source)?;
 
     case.set_loaded_from(source.to_path_buf());
 
@@ -771,13 +764,7 @@ pub fn parse_file_spec(spec: &str) -> Result<(&str, &str), GenericError> {
     Ok((parts[0], parts[1]))
 }
 
-pub(crate) mod case;
-mod case_file;
-mod duration;
 mod integration_bridge;
-mod participant_check;
-mod step_check;
-mod template;
 pub(crate) mod typed_case;
 
 #[cfg(test)]

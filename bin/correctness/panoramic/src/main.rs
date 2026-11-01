@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::{io::IsTerminal, process::ExitCode};
 
 use clap::Parser as _;
+use panoramic_core::case::{CaseLoader, Registries};
 use panoramic_core::events::create_event_channel;
 use panoramic_core::interrupts::Interrupts;
 use panoramic_core::machine_output::{revision, RunReport};
@@ -37,9 +38,7 @@ mod dynamic_vars;
 mod integration;
 mod mounts;
 use self::config::{
-    build_runners,
-    case::{CaseLoader, Registries},
-    default_host_runtime, discover_in_scope,
+    build_runners, default_host_runtime, discover_in_scope,
     typed_case::{LoadedCase, TypedConfigLoader},
 };
 

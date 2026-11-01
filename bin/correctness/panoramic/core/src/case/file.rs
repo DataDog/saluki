@@ -13,24 +13,24 @@ use serde::{
 };
 use serde_json::Value;
 
-use super::{case::Os, duration::CaseDuration};
+use super::{duration::CaseDuration, Os};
 
 /// A case's identity, participants and procedure.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct CaseFile {
+pub struct CaseFile {
     /// Reporting name. Defaults to the directory name and must match it when supplied.
-    pub(super) name: Option<String>,
+    pub name: Option<String>,
     /// Reporting description. Defaults to none.
-    pub(super) description: Option<String>,
+    pub description: Option<String>,
     /// Required case deadline, greater than zero; has no default.
-    pub(super) timeout: CaseDuration,
+    pub timeout: CaseDuration,
     /// Required, nonempty list of supported subject operating systems, without duplicates; has no default.
-    pub(super) subject_os: Vec<Os>,
+    pub subject_os: Vec<Os>,
     /// Required participant instances keyed by name. Must contain at least one; has no default.
-    pub(crate) participants: BTreeMap<String, ParticipantEntry>,
+    pub participants: BTreeMap<String, ParticipantEntry>,
     /// Required ordered steps and parallel blocks. May be empty; has no default.
-    pub(super) procedure: Vec<ProcedureNode>,
+    pub procedure: Vec<ProcedureNode>,
 }
 
 impl CaseFile {
@@ -73,23 +73,23 @@ impl CaseFile {
 /// One named instance of a participant type.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ParticipantEntry {
+pub struct ParticipantEntry {
     /// Required participant type name; has no default.
     #[serde(rename = "type")]
-    pub(super) participant_type: String,
+    pub participant_type: String,
     /// Whether this participant is the test subject; exactly one participant sets it. Defaults to false.
     #[serde(default)]
-    pub(super) subject: bool,
+    pub subject: bool,
     /// Participant OS for a non-subject participant; the subject must not set it. Defaults to the subject OS.
-    pub(super) os: Option<Os>,
+    pub os: Option<Os>,
     /// Requested execution mechanism. Defaults to the layout's choice.
-    pub(super) realization: Option<RequestedRealization>,
+    pub realization: Option<RequestedRealization>,
     /// Product configuration. Defaults to empty maps.
     #[serde(default)]
-    pub(crate) config: ParticipantConfig,
+    pub config: ParticipantConfig,
     /// Consumed endpoint names mapped to other participants' endpoints. Defaults to empty.
     #[serde(default)]
-    pub(super) connect: BTreeMap<String, ConnectionTarget>,
+    pub connect: BTreeMap<String, ConnectionTarget>,
 }
 
 /// An execution mechanism explicitly requested by the case.
@@ -100,7 +100,7 @@ pub(crate) struct ParticipantEntry {
 )]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct RequestedRealization {
+pub struct RequestedRealization {
     /// Required execution mechanism; has no default.
     pub(super) kind: RealizationKind,
     /// Backend-specific options. Defaults to empty.
@@ -125,28 +125,28 @@ pub(super) enum RealizationKind {
 /// Product configuration supplied to a participant.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ParticipantConfig {
+pub struct ParticipantConfig {
     /// Process environment variables; values must be YAML strings. Defaults to empty.
     #[serde(default, deserialize_with = "deserialize_env_map")]
-    pub(crate) env: BTreeMap<String, String>,
+    pub env: BTreeMap<String, String>,
     /// Declared configuration file names mapped to case-relative sources. Defaults to empty.
     #[serde(default)]
-    pub(super) files: BTreeMap<String, FileSource>,
+    pub files: BTreeMap<String, FileSource>,
     /// Listener overrides keyed by declared endpoint name. Defaults to empty.
     #[serde(default)]
-    pub(super) endpoints: BTreeMap<String, EndpointOverride>,
+    pub endpoints: BTreeMap<String, EndpointOverride>,
     /// Participant-type-specific parameters, preserving YAML value types. Defaults to empty.
     #[serde(default)]
-    pub(super) params: BTreeMap<String, Value>,
+    pub params: BTreeMap<String, Value>,
     /// Configuration overlays selected by participant OS. Defaults to empty.
     #[serde(default)]
-    pub(crate) os: BTreeMap<Os, ConfigOverlay>,
+    pub os: BTreeMap<Os, ConfigOverlay>,
 }
 
 /// Product configuration overlaid for one participant OS.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ConfigOverlay {
+pub struct ConfigOverlay {
     /// Environment overrides; values must be YAML strings. Defaults to empty.
     // TODO: remove once panoramic builds participants from this field.
     #[allow(
@@ -154,7 +154,7 @@ pub(crate) struct ConfigOverlay {
         reason = "Only tests read this field until participant construction uses it."
     )]
     #[serde(default, deserialize_with = "deserialize_env_map")]
-    pub(crate) env: BTreeMap<String, String>,
+    pub env: BTreeMap<String, String>,
     /// Configuration file source overrides. Defaults to empty.
     #[serde(default)]
     pub(super) files: BTreeMap<String, FileSource>,
@@ -170,7 +170,7 @@ pub(crate) struct ConfigOverlay {
     reason = "Only tests read these fields until participant construction uses them."
 )]
 #[derive(Debug, PartialEq)]
-pub(super) struct FileSource {
+pub struct FileSource {
     /// Required source path, stored as written; has no default.
     pub(super) from: PathBuf,
     /// Whether to expand template references in the source. Defaults to false.
@@ -228,7 +228,7 @@ impl<'de> Deserialize<'de> for FileSource {
 /// A listener port supplied by the case.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct EndpointOverride {
+pub struct EndpointOverride {
     /// Required listener port; has no default.
     // TODO: remove once panoramic builds participants from this field.
     #[allow(
@@ -240,7 +240,7 @@ pub(super) struct EndpointOverride {
 
 /// A connection target written as `participant.endpoint`.
 #[derive(Debug, PartialEq)]
-pub(super) struct ConnectionTarget {
+pub struct ConnectionTarget {
     /// Required name of the participant serving the endpoint; has no default.
     pub(super) participant: String,
     /// Required endpoint name within the participant; has no default.
@@ -271,7 +271,7 @@ impl<'de> Deserialize<'de> for ConnectionTarget {
 
 /// One sequential step or a block of concurrent steps.
 #[derive(Debug)]
-pub(crate) enum ProcedureNode<S = StepNode> {
+pub enum ProcedureNode<S = StepNode> {
     /// A single step, with its declaration-specific fields.
     Step(S),
     /// A nonempty block of steps to run concurrently.
@@ -335,11 +335,11 @@ impl<'de> Deserialize<'de> for ProcedureNode<StepNode> {
 
 /// A step name and the YAML fields its declaration decodes.
 #[derive(Debug)]
-pub(crate) struct StepNode {
+pub struct StepNode {
     /// Required step declaration name; has no default.
-    pub(super) name: String,
+    pub name: String,
     /// Declaration-specific fields, preserving YAML value types; decoded by the step's declaration. Defaults to empty.
-    pub(super) fields: BTreeMap<String, Value>,
+    pub fields: BTreeMap<String, Value>,
 }
 
 impl<'de> Deserialize<'de> for StepNode {
@@ -391,7 +391,7 @@ impl<'de> Deserialize<'de> for StepNode {
 /// # Errors
 ///
 /// Returns an error naming the first variable whose value is not a YAML string.
-pub(crate) fn deserialize_env_map<'de, D, M>(deserializer: D) -> Result<M, D::Error>
+pub fn deserialize_env_map<'de, D, M>(deserializer: D) -> Result<M, D::Error>
 where
     D: Deserializer<'de>,
     M: FromIterator<(String, String)>,
@@ -415,7 +415,7 @@ mod tests {
 
     use serde_json::json;
 
-    use super::super::case::fixtures::{self, write_case, NO_PARTICIPANT_FIELDS, PARTICIPANT_FIELDS};
+    use super::super::fixtures::{self, write_case, NO_PARTICIPANT_FIELDS, PARTICIPANT_FIELDS};
     use super::*;
 
     fn load_error(yaml: &str) -> String {

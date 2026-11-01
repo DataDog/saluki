@@ -1,6 +1,6 @@
 //! Steps a case procedure may name, and the registry the loader builds procedures from.
 
-use crate::config::StepDeclaration;
+use panoramic_core::case::StepDeclaration;
 
 pub(crate) mod file_contains;
 pub(crate) mod log_contains;
@@ -24,14 +24,11 @@ fn check_pattern(pattern: &str, regex: bool) -> Result<(), String> {
 pub(crate) mod tests {
     use std::path::Path;
 
+    use panoramic_core::case::{CaseSchema, Need, ProcedureNode, StepFields};
     use serde_json::Value;
 
     use super::*;
-    use crate::config::{
-        case::CaseSchema,
-        tests::{write_case, PARTICIPANT_FIELDS},
-        Need, ProcedureNode, StepFields,
-    };
+    use crate::config::tests::{write_case, PARTICIPANT_FIELDS};
 
     pub(crate) fn fields(name: &str) -> StepFields {
         let yaml = match name {

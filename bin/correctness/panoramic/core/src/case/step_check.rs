@@ -7,23 +7,23 @@ use std::{
     path::Path,
 };
 
-use panoramic_core::record::step_label;
 use saluki_error::{generic_error, GenericError};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use super::{
-    case::Os,
-    case_file::{CaseFile, ProcedureNode, StepNode},
+    file::{CaseFile, ProcedureNode, StepNode},
     participant_check::{declared_names, find_type, possible_os, ParticipantDeclaration},
+    Os,
 };
+use crate::record::step_label;
 
 /// A step's fields as written in the case file, keyed by field name.
-pub(crate) type StepFields = BTreeMap<String, Value>;
+pub type StepFields = BTreeMap<String, Value>;
 
 /// Something a built step uses, checked against the case when it loads.
 #[derive(Debug, PartialEq)]
-pub(crate) enum Need {
+pub enum Need {
     /// The participant the step runs on.
     Handle(String),
     /// One named process of a participant: (participant, process).
@@ -33,23 +33,23 @@ pub(crate) enum Need {
 }
 
 /// A step built from its case-file fields.
-pub(crate) trait Step: Any + fmt::Debug + Send + Sync {
+pub trait Step: Any + fmt::Debug + Send + Sync {
     /// Participants, processes and facts the step uses.
     fn needs(&self) -> Vec<Need>;
 }
 
 /// A step a case may name, and how to build it from its fields.
-pub(crate) struct StepDeclaration {
+pub struct StepDeclaration {
     /// Registry name, as written in a node's `step`.
-    pub(crate) name: &'static str,
+    pub name: &'static str,
     /// Fields decoded as templates, whose fact references the step reports as needs.
-    pub(crate) template_fields: &'static [&'static str],
+    pub template_fields: &'static [&'static str],
     /// Builds the step, or describes the first problem with its fields.
-    pub(crate) build: fn(&StepFields) -> Result<Box<dyn Step>, String>,
+    pub build: fn(&StepFields) -> Result<Box<dyn Step>, String>,
 }
 
 /// Decodes step fields into `T`; errors name the failing field.
-pub(crate) fn decode_fields<T>(fields: &StepFields) -> Result<T, String>
+pub fn decode_fields<T>(fields: &StepFields) -> Result<T, String>
 where
     T: DeserializeOwned,
 {
@@ -206,7 +206,7 @@ fn contains_template_reference(value: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::super::case::fixtures::{Probe, SERVER, STEPS, TYPES};
+    use super::super::fixtures::{Probe, SERVER, STEPS, TYPES};
     use super::*;
 
     fn case(procedure: &str) -> CaseFile {
