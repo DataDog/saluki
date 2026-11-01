@@ -7,13 +7,17 @@ use std::{
 };
 
 use panoramic_core::case::{deserialize_case, deserialize_env_map, CaseDuration};
-use panoramic_core::{artifact::ArtifactManifest, case::CaseSchema, layout::Os, plan::Planner};
+use panoramic_core::{
+    artifact::ArtifactManifest,
+    layout::Os,
+    plan::{Compiled, Planner},
+};
 use saluki_error::{generic_error, GenericError};
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value;
 
 use self::runner_artifacts::RunnerArtifacts;
-use self::typed_case::{LoadedPlan, RunnableCase, TypedConfig};
+use self::typed_case::{LoadedCase, LoadedPlan, RunnableCase};
 use crate::correctness::config::Config as CorrectnessConfig;
 use crate::image_override::ImageOverrides;
 use crate::test::Test;
@@ -672,24 +676,26 @@ pub(crate) fn load_planner(artifacts: Option<&Path>) -> Result<Planner<'static>,
     Planner::new(crate::REGISTRIES, manifest).map_err(|error| format!("Invalid artifact roles: {error:#}"))
 }
 
+/// Enabled cases partitioned by the selected subject OS, with each list sorted by name.
+pub(crate) struct Discovered {
+    /// Cases that declare the selected subject OS, planned for it.
+    pub(crate) plans: Vec<LoadedPlan>,
+    /// Cases whose `subject_os` omits the selected OS and whose compilation checks passed.
+    pub(crate) excluded: Vec<LoadedCase>,
+}
+
 /// Discovers and compiles enabled cases, sorted by name, using the caller's run planner.
 pub(crate) fn discover_in_scope(
     planner: &mut Planner<'_>, dirs: &[PathBuf], subject_os: Os,
-) -> Result<Vec<LoadedPlan>, GenericError> {
+) -> Result<Discovered, GenericError> {
     let cases = crate::CASE_LOADER.discover_cases(dirs)?;
     let mut plans = Vec::new();
+    let mut excluded = Vec::new();
     let mut errors = Vec::new();
     for case in cases.into_iter().filter(|case| !case.is_disabled()) {
-        // The correctness runner always uses Linux containers, so its cases are selected under every runtime.
-        // TODO: report correctness cases as skipped off Linux once skipped outcomes exist.
-        let os = if matches!(case.schema(), CaseSchema::Typed(TypedConfig::Correctness(_))) {
-            Os::Linux
-        } else {
-            subject_os
-        };
-        match planner.compile(case, os) {
-            Ok(Some(plan)) => plans.push(plan),
-            Ok(None) => {}
+        match planner.compile(case, subject_os) {
+            Ok(Compiled::Planned(plan)) => plans.push(plan),
+            Ok(Compiled::Excluded(case)) => excluded.push(case),
             Err(error) => errors.push(format!("{error:#}").replace('\n', "\n    ")),
         }
     }
@@ -699,7 +705,7 @@ pub(crate) fn discover_in_scope(
             errors.join("\n  - ")
         ));
     }
-    Ok(plans)
+    Ok(Discovered { plans, excluded })
 }
 
 /// A compiled case and the runner built from it.
@@ -926,7 +932,7 @@ procedure:
             .load_content(yaml, "case", Path::new("/cases/case/config.yaml"))
             .unwrap()
             .remove(0);
-        planner().compile(case, os).unwrap().unwrap()
+        planner().compile(case, os).unwrap().into_plan().unwrap()
     }
 
     fn load_case<T, P>(path: P) -> Result<T, GenericError>
@@ -1111,7 +1117,10 @@ timeout: 30s
             .map(|case| planner().compile(case, os))
             .collect::<Result<Vec<_>, _>>()?
             .into_iter()
-            .map(|plan| plan.expect("the test case declares the selected subject OS"))
+            .map(|plan| {
+                plan.into_plan()
+                    .expect("the test case declares the selected subject OS")
+            })
             .collect::<Vec<_>>();
         build_runners(plans, os, &RunnerArtifacts::Overrides(overrides))
     }
@@ -1120,12 +1129,12 @@ timeout: 30s
         dirs: &[PathBuf], runtime: &str, image_overrides: &[ImageOverride],
     ) -> Result<Vec<BuiltCase>, GenericError> {
         let os = os_for_runtime(runtime).unwrap();
-        let plans = discover_in_scope(&mut planner(), dirs, os)?;
+        let plans = discover_in_scope(&mut planner(), dirs, os)?.plans;
         build_runners(plans, os, &RunnerArtifacts::Overrides(image_overrides))
     }
 
     #[test]
-    fn discovery_returns_disabled_and_other_runtime_cases_sorted_by_name() {
+    fn discovery_reports_excluded_cases_in_name_order_beside_the_plans() {
         let windows = create_test_case_dir(
             "windows-only",
             "type: integration\nname: windows-only\ntimeout: 1s\nruntimes: [windows]\nprocedure: []\n",
@@ -1149,22 +1158,38 @@ timeout: 30s
             cases.iter().map(LoadedCase::name).collect::<Vec<_>>(),
             ["disabled", "matrix/first", "matrix/second", "windows-only"]
         );
-        assert_eq!(
-            discover_in_scope(
+        for os in [Os::Linux, Os::MacOs, Os::Windows] {
+            let discovered = discover_in_scope(
                 &mut planner(),
                 &[
                     windows.path().to_path_buf(),
                     matrix.path().to_path_buf(),
-                    disabled.path().to_path_buf()
+                    disabled.path().to_path_buf(),
                 ],
-                Os::Linux
+                os,
             )
-            .unwrap()
-            .iter()
-            .map(|plan| plan.case().name())
-            .collect::<Vec<_>>(),
-            ["matrix/first", "matrix/second"]
-        );
+            .unwrap();
+            let plans = discovered
+                .plans
+                .iter()
+                .map(|plan| plan.case().name())
+                .collect::<Vec<_>>();
+            let excluded = discovered.excluded.iter().map(LoadedCase::name).collect::<Vec<_>>();
+            match os {
+                Os::Linux => {
+                    assert_eq!(plans, ["matrix/first", "matrix/second"]);
+                    assert_eq!(excluded, ["windows-only"]);
+                }
+                Os::MacOs => {
+                    assert!(plans.is_empty());
+                    assert_eq!(excluded, ["matrix/first", "matrix/second", "windows-only"]);
+                }
+                Os::Windows => {
+                    assert_eq!(plans, ["windows-only"]);
+                    assert_eq!(excluded, ["matrix/first", "matrix/second"]);
+                }
+            }
+        }
     }
 
     #[test]
@@ -1547,7 +1572,7 @@ timeout: 30s
         let entries = ["baseline=base:override".parse().unwrap()];
         let plans: Vec<_> = cases
             .into_iter()
-            .map(|case| planner().compile(case, Os::Linux).unwrap().unwrap())
+            .map(|case| planner().compile(case, Os::Linux).unwrap().into_plan().unwrap())
             .collect();
         let runners = build_runners(&plans, Os::Linux, &RunnerArtifacts::Overrides(&entries)).unwrap();
         assert_eq!(runners.len(), plans.len());
@@ -2415,7 +2440,7 @@ variants:
     }
 
     #[test]
-    fn discovery_scopes_integration_images_to_runtime_and_leaves_correctness_eligible() {
+    fn discovery_scopes_integration_images_to_runtime_and_correctness_to_linux() {
         let integration = create_test_case_dir(
             "portable",
             "type: integration\nname: portable\ntimeout: 1s\nruntimes: [linux, mac, windows]\nprocedure: []\n",
@@ -2437,15 +2462,21 @@ comparison: {image: comp}
             (MAC_RUNTIME, None),
         ] {
             let runners = discover_runners(&dirs, runtime, &[]).unwrap();
-            assert_eq!(runners[0].plan.case().name(), "correctness");
-            assert_eq!(runners[0].runner.runtime(), "docker");
-            assert_eq!(runners.len(), 2);
-            assert_eq!(runners[1].runner.runtime(), runtime);
+            if runtime == LINUX_RUNTIME {
+                assert_eq!(runners[0].plan.case().name(), "correctness");
+                assert_eq!(runners[0].runner.runtime(), "docker");
+                assert_eq!(runners.len(), 2);
+            } else {
+                assert_eq!(runners.len(), 1);
+            }
+            let integration = runners.last().unwrap();
+            assert_eq!(integration.plan.case().name(), "portable");
+            assert_eq!(integration.runner.runtime(), runtime);
             let expected: BTreeMap<&str, String> = target
                 .into_iter()
                 .map(|image| (TARGET_IMAGE_NAME, image.to_string()))
                 .collect();
-            assert_eq!(runners[1].runner.images(), expected);
+            assert_eq!(integration.runner.images(), expected);
         }
         let override_entry = ["container=target:override".parse().unwrap()];
         let error = discover_runners(&dirs, MAC_RUNTIME, &override_entry)
@@ -2503,6 +2534,7 @@ comparison: {{image: comp}}
                 assert_eq!(
                     discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::Linux)
                         .unwrap()
+                        .plans
                         .len(),
                     if disabled { 0 } else { case_count },
                     "{kind} with {setting}"

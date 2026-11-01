@@ -16,6 +16,7 @@ use std::{
 
 use panoramic_core::case::CaseSchema;
 use panoramic_core::layout::Os;
+use panoramic_core::plan::Compiled;
 use saluki_error::{generic_error, GenericError};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -235,8 +236,10 @@ impl Inventory {
                 .unwrap_or_else(|error| panic!("{error:#}"));
             let plans: Vec<_> = cases
                 .into_iter()
-                .filter(|case| case.suite() == INTEGRATION || os == Os::Linux)
-                .filter_map(|case| planner().compile(case, os).unwrap())
+                .filter_map(|case| match planner().compile(case, os).unwrap() {
+                    Compiled::Planned(plan) => Some(plan),
+                    Compiled::Excluded(_) => None,
+                })
                 .collect();
             for built in build_runners(plans, os, &RunnerArtifacts::Overrides(&[])).unwrap() {
                 let case = built.plan.case();
@@ -445,6 +448,7 @@ fn record_cases(cases: &[LoadedCase], content: &str, directory: &str) -> Result<
                         .expect("reloading yields the same case");
                     let plan = planner()
                         .compile(loaded, os)?
+                        .into_plan()
                         .expect("the case declares this subject OS");
                     plan.integration_config()
                 };

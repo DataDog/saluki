@@ -3,7 +3,7 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
-use std::{borrow::Borrow, collections::BTreeMap, fmt::Write as _};
+use std::{borrow::Borrow, collections::BTreeMap, fmt::Write as _, path::Path};
 use std::{io::IsTerminal, process::ExitCode};
 
 use clap::Parser as _;
@@ -11,8 +11,8 @@ use panoramic_core::artifact::ArtifactBinding;
 use panoramic_core::case::{CaseLoader, Registries};
 use panoramic_core::events::create_event_channel;
 use panoramic_core::interrupts::Interrupts;
-use panoramic_core::layout::{Os, Realization};
-use panoramic_core::machine_output::{revision, RunReport};
+use panoramic_core::layout::Realization;
+use panoramic_core::machine_output::{revision, RunReport, TestReport, RUN_REPORT_FILE_NAME};
 use panoramic_core::plan::needed_artifacts;
 use saluki_common::logging::{filter_from_env, parse_filter_directives};
 use tokio::sync::{watch, Mutex};
@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _};
 
-use crate::runner::Runner;
+use crate::{runner::Runner, test::RunnerSettings};
 
 mod kind;
 use self::kind::KindLifecycle;
@@ -45,8 +45,8 @@ use self::config::{
     build_runners, discover_in_scope, load_planner,
     runner_artifacts::{BoundArtifacts, RunnerArtifacts},
     runtime_for_os,
-    typed_case::{needs_pod, realizations, LoadedPlan, TypedConfigLoader},
-    BuiltCase, NO_TEST_DIRECTORIES,
+    typed_case::{needs_pod, realizations, LoadedCase, LoadedPlan, TypedConfigLoader},
+    BuiltCase, Discovered, NO_TEST_DIRECTORIES,
 };
 
 mod image_override;
@@ -176,8 +176,8 @@ fn resolve_selection(requested: &str, discovered: &[&str]) -> (Vec<String>, Vec<
 }
 
 /// Keeps the named cases, or every case when no selection was given.
-fn retain_selected(built: &mut Vec<BuiltCase>, selected: Option<&[String]>) {
-    built.retain(|built| selected.is_none_or(|names| names.iter().any(|name| name == built.plan.case().name())));
+fn retain_selected<T>(cases: &mut Vec<T>, selected: Option<&[String]>, name: impl Fn(&T) -> &str) {
+    cases.retain(|case| selected.is_none_or(|names| names.iter().any(|selected| selected == name(case))));
 }
 
 async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
@@ -213,8 +213,8 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         }
     };
     let integration_runtime = runtime_for_os(subject_os);
-    let plans = match discover_in_scope(&mut planner, &cmd.test_dirs, subject_os) {
-        Ok(plans) => plans,
+    let Discovered { plans, mut excluded } = match discover_in_scope(&mut planner, &cmd.test_dirs, subject_os) {
+        Ok(discovered) => discovered,
         Err(e) => {
             if use_tui {
                 eprintln!("Failed to discover tests: {:#}", e);
@@ -252,7 +252,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         "Resolved runner settings."
     );
 
-    if built.is_empty() {
+    if built.is_empty() && excluded.is_empty() {
         let dirs_str: Vec<_> = cmd.test_dirs.iter().map(|d| d.display().to_string()).collect();
         let msg = format!("No test cases found in: {}", dirs_str.join(", "));
         if use_tui {
@@ -267,13 +267,18 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     // selection that leaves nothing to run, is an error rather than a green run of zero tests.
     let selected_tests = match cmd.tests.as_deref() {
         Some(requested) => {
-            let names: Vec<_> = built.iter().map(|built| built.plan.case().name()).collect();
+            let names: Vec<_> = built
+                .iter()
+                .map(|built| built.plan.case().name())
+                .chain(excluded.iter().map(LoadedCase::name))
+                .collect();
             let (selected, unmatched) = resolve_selection(requested, &names);
             if !unmatched.is_empty() {
                 let msg = format!(
-                    "No test matches: {}. Run 'panoramic list' to see the tests in scope for runtime '{}'.",
+                    "No test matches: {}. Run 'panoramic list --subject-os {}' to see the tests discovered for subject OS '{}'.",
                     unmatched.join(", "),
-                    integration_runtime
+                    subject_os.name(),
+                    subject_os.name()
                 );
                 if use_tui {
                     eprintln!("{}", msg);
@@ -296,14 +301,33 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         None => None,
     };
     // Register only the selected tests so the runner and `run.json` share one selection.
-    retain_selected(&mut built, selected_tests.as_deref());
+    retain_selected(&mut built, selected_tests.as_deref(), |built| built.plan.case().name());
+    retain_selected(&mut excluded, selected_tests.as_deref(), LoadedCase::name);
 
-    if use_tui {
-        eprintln!("Checking that this host can provide the selected cases...");
-    } else {
-        info!("Checking that this host can provide the selected cases...");
+    if !excluded.is_empty() {
+        let names = excluded.iter().map(LoadedCase::name).collect::<Vec<_>>().join(", ");
+        let message = format!(
+            "Skipping {} test(s) whose subject_os excludes {}: {names}",
+            excluded.len(),
+            subject_os.name()
+        );
+        if use_tui {
+            eprintln!("{message}");
+        } else {
+            info!("{message}");
+        }
     }
-    let unprovidable = providability::check(&mut built).await;
+
+    let unprovidable = if built.is_empty() {
+        BTreeMap::new()
+    } else {
+        if use_tui {
+            eprintln!("Checking that this host can provide the selected cases...");
+        } else {
+            info!("Checking that this host can provide the selected cases...");
+        }
+        providability::check(&mut built).await
+    };
     if cmd.artifacts.is_some() {
         let bindings = run_artifacts(&built, &unprovidable);
         let base = match std::env::current_dir() {
@@ -366,18 +390,80 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
             build_revision(),
             cmd.test_dirs.clone(),
             integration_runtime.to_string(),
+            subject_os,
             cmd.parallelism.get(),
             log_dir.clone(),
             built.iter().map(|built| built.plan.case().name().to_string()).collect(),
+            excluded
+                .into_iter()
+                .map(|case| {
+                    TestReport::skipped(
+                        case.name().to_string(),
+                        case.source().parent().unwrap_or(Path::new("")).to_path_buf(),
+                        subject_os,
+                    )
+                })
+                .collect(),
         ),
         cmd.fail_fast,
     );
 
+    let display_error = if !built.is_empty() {
+        execute(
+            built,
+            settings,
+            &cmd,
+            use_tui,
+            &log_dir,
+            &mut collector,
+            &mut interrupts,
+        )
+        .await
+    } else {
+        collector.finish(Ok(()));
+        let message = format!(
+            "Every selected test is skipped for subject OS '{}'; wrote {}.",
+            subject_os.name(),
+            log_dir.join(RUN_REPORT_FILE_NAME).display(),
+        );
+        if use_tui {
+            eprintln!("{message}");
+        } else {
+            warn!("{message}");
+        }
+        None
+    };
+
+    // Print after teardown so the report includes an interrupt during teardown.
+    let mut json_output_failed = false;
+    if matches!(cmd.output, OutputFormat::Json) {
+        match serde_json::to_string_pretty(collector.report()) {
+            Ok(json) => println!("{}", json),
+            Err(e) => {
+                error!("Failed to serialize the machine-readable run report: {}", e);
+                json_output_failed = true;
+            }
+        }
+    }
+
+    // Report output failures as harness errors, even when the tests passed.
+    if json_output_failed || display_error.is_some() {
+        return ExitCode::from(EXIT_HARNESS_ERROR);
+    }
+
+    collector::exit_code(collector.report())
+}
+
+/// Runs the selected cases, collects their results and handles kind cluster cleanup.
+async fn execute(
+    built: Vec<BuiltCase>, settings: RunnerSettings, cmd: &cli::RunCommand, use_tui: bool, log_dir: &Path,
+    collector: &mut RunCollector, interrupts: &mut Interrupts,
+) -> Option<std::io::Error> {
     // Create the event channel early so the kind setup task can emit status messages.
     let (tx, rx) = create_event_channel();
 
     // Spawn kind cluster setup in the background so non-kind tests start immediately.
-    // Kind tests will wait on `kind_rx` before doing any work.
+    // Kind tests wait on `kind_rx` before doing any work.
     let kind_images = collect_kind_images(&built);
     let kind_lifecycle_slot = std::sync::Arc::new(Mutex::new(None::<KindLifecycle>));
     let kind_rx = if kind_images.is_empty() {
@@ -401,8 +487,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         Some(kind_rx)
     };
 
-    // Inject runtime config and build the test registry.
-    let mut registry = Runner::new(log_dir.clone(), settings);
+    let mut registry = Runner::new(log_dir, settings);
     if let Some(ref rx) = kind_rx {
         registry = registry.with_kind_ready(rx.clone());
     }
@@ -413,17 +498,15 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     // The consume loop cancels this on the first interrupt.
     let cancel_all = CancellationToken::new();
 
-    // Build run args.
     let args = runner::RunArgs::new(cancel_all.clone(), tx)
         .with_parallelism(cmd.parallelism)
         .with_fail_fast(cmd.fail_fast);
 
-    // Spawn the test runner task (same code path for both modes).
     let runner_handle = tokio::spawn(async move { registry.run_tests(args).await });
 
     let mut display_error = None;
     let display = if use_tui {
-        match tui::Tui::new(&log_dir) {
+        match tui::Tui::new(log_dir) {
             Ok(tui) => Some(RunDisplay::Tui(tui)),
             Err(e) => {
                 display_error = Some(e);
@@ -439,12 +522,12 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         Some(RunDisplay::Plain(Reporter::new(
             cmd.output,
             cmd.verbose,
-            Some(log_dir.clone()),
+            Some(log_dir.to_path_buf()),
         )))
     };
 
-    let consumed = consume_run(rx, runner_handle, &mut collector, display, &mut interrupts, &cancel_all).await;
-    let display_error = display_error.or(consumed.display_error);
+    let consumed = consume_run(rx, runner_handle, collector, display, interrupts, &cancel_all).await;
+    display_error = display_error.or(consumed.display_error);
     if let Some(e) = &display_error {
         eprintln!("The TUI failed: {}", e);
     }
@@ -476,7 +559,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
                          Cluster '{}' is still running.",
                         cluster_name
                     );
-                } else if let Some(source) = run_teardown(lifecycle.teardown(), &mut collector, &mut interrupts).await {
+                } else if let Some(source) = run_teardown(lifecycle.teardown(), collector, interrupts).await {
                     notice(format!(
                         "Received {}; abandoned kind cluster teardown. A 'kind delete' already started may still \
                          finish. If cluster '{}' is still running, delete it with 'kind delete cluster --name {}'.",
@@ -493,25 +576,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
             }
         }
     }
-
-    // Print after teardown so the report includes an interrupt during teardown.
-    let mut json_output_failed = false;
-    if matches!(cmd.output, OutputFormat::Json) {
-        match serde_json::to_string_pretty(collector.report()) {
-            Ok(json) => println!("{}", json),
-            Err(e) => {
-                error!("Failed to serialize the machine-readable run report: {}", e);
-                json_output_failed = true;
-            }
-        }
-    }
-
-    // Report output failures as harness errors, even when the tests passed.
-    if json_output_failed || display_error.is_some() {
-        return ExitCode::from(EXIT_HARNESS_ERROR);
-    }
-
-    collector::exit_code(collector.report())
+    display_error
 }
 
 /// Selects artifacts only from cases this host can run, after test-name selection.
@@ -563,8 +628,8 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
         info!("Discovering test cases from: {}...", dirs_str.join(", "));
     }
 
-    let plans = match discover_in_scope(&mut planner, &cmd.test_dirs, subject_os) {
-        Ok(plans) => plans,
+    let Discovered { plans, excluded } = match discover_in_scope(&mut planner, &cmd.test_dirs, subject_os) {
+        Ok(discovered) => discovered,
         Err(e) => {
             error!("Failed to discover tests: {:#}", e);
             return ExitCode::from(EXIT_HARNESS_ERROR);
@@ -584,33 +649,57 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
             serde_json::to_string_pretty(&listing(&runners)).expect("Unable to serialize a map of the tests")
         )
     } else {
-        if plans.is_empty() {
+        if plans.is_empty() && excluded.is_empty() {
             info!("No test cases found.");
             return ExitCode::SUCCESS;
         }
 
-        info!("Discovered {} test case(s).", plans.len());
+        let count = plans.len() + excluded.len();
+        let skipped = if excluded.is_empty() {
+            String::new()
+        } else {
+            format!(" ({} skipped)", excluded.len())
+        };
+        info!(
+            "Discovered {count} test case(s) for subject OS '{}'{skipped}.",
+            subject_os.name()
+        );
 
-        println!();
-        println!("Available tests ({}):", plans.len());
-        println!();
-
-        for plan in &plans {
-            print!("{}", listing_text(plan, subject_os));
-        }
+        print!("{}", listing_report(&plans, &excluded));
     }
     ExitCode::SUCCESS
 }
 
-/// Formats one case's text listing, including its layout and resolved artifact references with their sources.
-/// Artifact roles are printed only for plans compiled for `subject_os`.
-fn listing_text(plan: &LoadedPlan, subject_os: Os) -> String {
-    let case = plan.case();
+/// Formats every enabled case in name order under a total count.
+fn listing_report(plans: &[LoadedPlan], excluded: &[LoadedCase]) -> String {
+    let count = plans.len() + excluded.len();
+    let mut text = format!("\nAvailable tests ({count}):\n\n");
+    let mut entries: Vec<_> = plans
+        .iter()
+        .map(|plan| (plan.case().name(), listing_text(plan)))
+        .chain(excluded.iter().map(|case| (case.name(), excluded_listing_text(case))))
+        .collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    for (_, entry) in entries {
+        text.push_str(&entry);
+    }
+    text
+}
+
+/// Formats a case's name, description, timeout and status.
+fn listing_header(case: &LoadedCase, status: &str) -> String {
     let mut text = format!("  {}\n", case.name());
     if let Some(description) = case.description() {
         writeln!(text, "    {description}").unwrap();
     }
     writeln!(text, "    Timeout: {:?}", case.timeout()).unwrap();
+    writeln!(text, "    Status: {status}").unwrap();
+    text
+}
+
+/// Formats one case's text listing, including its layout and resolved artifact references with their sources.
+fn listing_text(plan: &LoadedPlan) -> String {
+    let mut text = listing_header(plan.case(), "runnable");
     if let Some(layout) = plan.layout() {
         let participants: Vec<_> = layout
             .iter()
@@ -618,16 +707,14 @@ fn listing_text(plan: &LoadedPlan, subject_os: Os) -> String {
             .collect();
         writeln!(text, "    Layout: {}", participants.join("; ")).unwrap();
     }
-    if artifact_commands::compiled_for(plan, subject_os) {
-        let artifacts = plan.artifacts();
-        if artifacts.is_empty() {
-            writeln!(text, "    Artifact roles: none").unwrap();
-        } else {
-            writeln!(text, "    Artifact roles:").unwrap();
-            for binding in artifacts {
-                let source = binding.source.name();
-                writeln!(text, "      {} = {} ({source})", binding.role.name, binding.reference).unwrap();
-            }
+    let artifacts = plan.artifacts();
+    if artifacts.is_empty() {
+        writeln!(text, "    Artifact roles: none").unwrap();
+    } else {
+        writeln!(text, "    Artifact roles:").unwrap();
+        for binding in artifacts {
+            let source = binding.source.name();
+            writeln!(text, "      {} = {} ({source})", binding.role.name, binding.reference).unwrap();
         }
     }
     if plan.layout().is_some() {
@@ -640,6 +727,13 @@ fn listing_text(plan: &LoadedPlan, subject_os: Os) -> String {
             writeln!(text, "    {label} order: {}", levels.join(" then ")).unwrap();
         }
     }
+    text.push('\n');
+    text
+}
+
+/// Formats an excluded case's metadata and skip status.
+fn excluded_listing_text(case: &LoadedCase) -> String {
+    let mut text = listing_header(case, "skipped (subject_os)");
     text.push('\n');
     text
 }
@@ -673,10 +767,167 @@ fn build_revision() -> String {
 
 #[cfg(test)]
 mod tests {
-    use panoramic_core::{artifact::ArtifactManifest, plan::Planner};
+    use panoramic_core::{artifact::ArtifactManifest, layout::Os, plan::Planner};
 
     use super::*;
     use crate::config::tests::{build_case_runners, planner, write_case, CORRECTNESS_FIELDS, PARTICIPANT_FIELDS};
+
+    async fn run_skipped_selection(requested: Option<&str>) {
+        use tracing::instrument::WithSubscriber as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cases = dir.path().join("cases");
+        write_case(
+            &cases,
+            "windows",
+            "type: integration\nname: windows\ntimeout: 1s\nruntimes: [windows]\nprocedure: []\n",
+        );
+        write_case(
+            &cases,
+            "correctness",
+            &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
+        );
+        let logs = dir.path().join("logs");
+        let mut args = vec![
+            "panoramic",
+            "run",
+            "-d",
+            cases.to_str().unwrap(),
+            "--subject-os",
+            "macos",
+            "--no-tui",
+            "-l",
+            logs.to_str().unwrap(),
+        ];
+        if let Some(name) = requested {
+            args.extend(["-t", name]);
+        }
+        let Command::Run(cmd) = Cli::try_parse_from(args).unwrap().command else {
+            panic!("expected run")
+        };
+        let output = tempfile::NamedTempFile::new().unwrap();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(std::sync::Mutex::new(output.reopen().unwrap()))
+            .finish();
+        assert_eq!(
+            run_tests(cmd, false).with_subscriber(subscriber).await,
+            ExitCode::from(3)
+        );
+        let diagnostic = std::fs::read_to_string(output.path()).unwrap();
+        assert!(!diagnostic.contains("Starting test run"), "{diagnostic}");
+        assert!(
+            !diagnostic.contains("Checking that this host can provide"),
+            "{diagnostic}"
+        );
+        let run_dirs = std::fs::read_dir(&logs)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(run_dirs.len(), 1);
+        let run_json = run_dirs[0].join(RUN_REPORT_FILE_NAME);
+        let report: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&run_json).unwrap()).unwrap();
+        assert_eq!(report["schema_version"], 3);
+        assert_eq!(report["state"], "complete");
+        assert_eq!(report["subject_os"], "macos");
+        assert_eq!(report["runtime"], "mac");
+        let expected = requested.map_or_else(|| vec!["correctness", "windows"], |name| vec![name]);
+        assert_eq!(report["totals"]["skipped"], expected.len());
+        assert_eq!(report["running"], serde_json::json!([]));
+        assert_eq!(report["not_run"], serde_json::json!([]));
+        assert_eq!(report["tests"].as_array().unwrap().len(), expected.len());
+        for (test, name) in report["tests"].as_array().unwrap().iter().zip(&expected) {
+            assert_eq!(test["name"], *name);
+            assert_eq!(test["outcome"], "skipped");
+            assert_eq!(test["skip_reason"], "subject_os excludes macos");
+            assert_eq!(
+                test["case_path"],
+                serde_json::to_value(cases.join(name).canonicalize().unwrap()).unwrap()
+            );
+            assert!(test["log_dir"].is_null());
+        }
+        assert_eq!(
+            std::fs::read_dir(&run_dirs[0])
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect::<Vec<_>>(),
+            std::slice::from_ref(&run_json)
+        );
+        let notice = format!(
+            "Skipping {} test(s) whose subject_os excludes macos: {}",
+            expected.len(),
+            expected.join(", ")
+        );
+        assert_eq!(diagnostic.matches(&notice).count(), 1, "{diagnostic}");
+        assert!(
+            diagnostic.contains(&format!(
+                "Every selected test is skipped for subject OS 'macos'; wrote {}.",
+                run_json.display()
+            )),
+            "{diagnostic}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_whose_every_selected_case_is_skipped_exits_3_and_writes_run_json_saying_why() {
+        run_skipped_selection(None).await;
+    }
+
+    #[tokio::test]
+    async fn naming_a_skipped_case_selects_it_and_the_run_exits_3() {
+        run_skipped_selection(Some("windows")).await;
+    }
+
+    #[tokio::test]
+    async fn an_unmatched_test_name_names_the_subject_os() {
+        use tracing::instrument::WithSubscriber as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        write_case(
+            dir.path(),
+            "available",
+            "type: integration\nname: available\ntimeout: 1s\nruntimes: [mac]\nprocedure: []\n",
+        );
+        let logs = dir.path().join("logs");
+        let Command::Run(cmd) = Cli::try_parse_from([
+            "panoramic",
+            "run",
+            "-d",
+            dir.path().to_str().unwrap(),
+            "--subject-os",
+            "macos",
+            "-t",
+            "missing",
+            "--no-tui",
+            "-l",
+            logs.to_str().unwrap(),
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("expected run")
+        };
+        let output = tempfile::NamedTempFile::new().unwrap();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(std::sync::Mutex::new(output.reopen().unwrap()))
+            .finish();
+        assert_eq!(
+            run_tests(cmd, false).with_subscriber(subscriber).await,
+            ExitCode::from(3)
+        );
+        assert!(!logs.exists());
+        let diagnostic = std::fs::read_to_string(output.path()).unwrap();
+        assert!(
+            diagnostic.contains(
+                "No test matches: missing. Run 'panoramic list --subject-os macos' \
+                 to see the tests discovered for subject OS 'macos'."
+            ),
+            "{diagnostic}"
+        );
+    }
 
     #[tokio::test]
     async fn run_validates_directories_then_subject_os_then_manifest() {
@@ -734,7 +985,7 @@ mod tests {
     }
 
     #[test]
-    fn run_artifacts_verify_the_selected_providable_cases_including_correctness_off_linux() {
+    fn run_artifacts_verify_only_the_selected_providable_cases() {
         use panoramic_core::layout::RealizationKind;
 
         let dir = tempfile::tempdir().unwrap();
@@ -752,48 +1003,35 @@ mod tests {
             os: Os::MacOs,
             kind: RealizationKind::HostProcessGroup,
         };
-        let linux = Realization {
-            os: Os::Linux,
-            kind: RealizationKind::LinuxContainer,
-        };
         for (selected, unavailable, expected) in [
-            (
-                None,
-                vec![],
-                vec![
-                    "adp-host-binary",
-                    "agent-adp-linux-image",
-                    "agent-host-install",
-                    "fixup-image",
-                    "tools-linux-image",
-                ],
-            ),
-            (
-                Some("correctness"),
-                vec![],
-                vec!["agent-adp-linux-image", "fixup-image", "tools-linux-image"],
-            ),
-            (
-                Some("correctness,host"),
-                vec![host],
-                vec!["agent-adp-linux-image", "fixup-image", "tools-linux-image"],
-            ),
+            (None, vec![], vec!["adp-host-binary", "agent-host-install"]),
+            (Some("correctness"), vec![], vec![]),
+            (Some("correctness,host"), vec![host], vec![]),
             (Some("host"), vec![host], vec![]),
             (
                 Some("correctness,host"),
-                vec![linux],
+                vec![],
                 vec!["adp-host-binary", "agent-host-install"],
             ),
         ] {
-            let plans = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::MacOs).unwrap();
+            let Discovered { plans, excluded } =
+                discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::MacOs).unwrap();
+            assert_eq!(
+                excluded.iter().map(LoadedCase::name).collect::<Vec<_>>(),
+                ["correctness"]
+            );
             let mut built = build_runners(plans, Os::MacOs, &RunnerArtifacts::Overrides(&[])).unwrap();
-            let names: Vec<_> = built.iter().map(|built| built.plan.case().name()).collect();
+            let names: Vec<_> = built
+                .iter()
+                .map(|built| built.plan.case().name())
+                .chain(excluded.iter().map(LoadedCase::name))
+                .collect();
             let selected = selected.map(|requested| {
                 let (selected, unmatched) = resolve_selection(requested, &names);
                 assert!(unmatched.is_empty());
                 selected
             });
-            retain_selected(&mut built, selected.as_deref());
+            retain_selected(&mut built, selected.as_deref(), |built| built.plan.case().name());
             let unprovidable = unavailable
                 .into_iter()
                 .map(|realization| (realization, "unavailable".into()))
@@ -979,7 +1217,8 @@ mod tests {
                 &[dir.path().to_path_buf()],
                 os,
             )
-            .unwrap();
+            .unwrap()
+            .plans;
             let artifacts = RunnerArtifacts::Bound(BoundArtifacts::new(needed_artifacts(&plans)));
             let built = build_runners(plans, os, &artifacts).unwrap();
             let listing = listing(&built);
@@ -988,6 +1227,10 @@ mod tests {
                 serde_json::json!({"container": target})
             );
             for name in ["docker", "kind"] {
+                if os != Os::Linux {
+                    assert!(!listing.contains_key(name));
+                    continue;
+                }
                 assert_eq!(
                     listing[name]["images"],
                     serde_json::json!({
@@ -995,7 +1238,14 @@ mod tests {
                     })
                 );
             }
-            assert_eq!(collect_kind_images(&built), ["linux:bound", "tools:bound"]);
+            assert_eq!(
+                collect_kind_images(&built),
+                if os == Os::Linux {
+                    vec!["linux:bound", "tools:bound"]
+                } else {
+                    vec![]
+                }
+            );
         }
     }
 
@@ -1020,13 +1270,14 @@ mod tests {
                 .map(|manifest| {
                     let plans =
                         discover_in_scope(&mut load_planner(manifest).unwrap(), &[dir.path().to_path_buf()], os)
-                            .unwrap();
+                            .unwrap()
+                            .plans;
                     let built = build_runners(plans, os, &RunnerArtifacts::Overrides(&[])).unwrap();
                     serde_json::to_string_pretty(&listing(&built)).unwrap()
                 })
                 .collect();
             assert_eq!(listings[0], listings[1]);
-            assert!(listings[0].contains("base:file"));
+            assert_eq!(listings[0].contains("base:file"), os == Os::Linux);
             assert!(!listings[0].contains("changed:"));
         }
     }
@@ -1177,7 +1428,9 @@ mod tests {
                     .replace("comp:file", "comp:pod")
             ),
         );
-        let plans = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::Linux).unwrap();
+        let plans = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::Linux)
+            .unwrap()
+            .plans;
         let built: Vec<_> = build_runners(plans, Os::Linux, &RunnerArtifacts::Overrides(&[]))
             .unwrap()
             .into_iter()
@@ -1254,6 +1507,8 @@ comparison: {image: comp}
             let cli = Cli::try_parse_from([
                 "panoramic",
                 "run",
+                "--subject-os",
+                "linux",
                 "-d",
                 dir.path().to_str().unwrap(),
                 "-t",
@@ -1344,7 +1599,9 @@ comparison: {image: comp}
             "good",
             "type: integration\nname: good\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n",
         );
-        let cases = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::Linux).unwrap();
+        let cases = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::Linux)
+            .unwrap()
+            .plans;
         assert_eq!(
             cases.iter().map(|plan| plan.case().name()).collect::<Vec<_>>(),
             ["good", "participant"]
@@ -1413,7 +1670,9 @@ comparison: {image: comp}
             "matrix",
             &format!("type: correctness_matrix\n{CORRECTNESS_FIELDS}variants: [{{name: second}}, {{name: first}}]\n"),
         );
-        let cases = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::Linux).unwrap();
+        let cases = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::Linux)
+            .unwrap()
+            .plans;
         let names: Vec<_> = cases.iter().map(|plan| plan.case().name()).collect();
         let (selected, unmatched) = resolve_selection("matrix/first, missing, integration", &names);
         assert_eq!(selected, ["matrix/first", "integration"]);
@@ -1421,7 +1680,7 @@ comparison: {image: comp}
     }
 
     #[tokio::test]
-    async fn selection_rejects_disabled_cases_and_cases_for_another_runtime() {
+    async fn selection_rejects_disabled_cases() {
         let dir = tempfile::tempdir().unwrap();
         write_case(
             dir.path(),
@@ -1438,27 +1697,21 @@ comparison: {image: comp}
             "disabled",
             &format!("type: correctness\ndisabled: true\n{CORRECTNESS_FIELDS}"),
         );
-        for name in ["linux-only", "disabled"] {
-            let cli = Cli::try_parse_from([
-                "panoramic",
-                "run",
-                "-d",
-                dir.path().to_str().unwrap(),
-                "--runtime",
-                "windows",
-                "-t",
-                name,
-            ])
-            .unwrap();
-            let Command::Run(cmd) = cli.command else {
-                panic!("expected run")
-            };
-            assert_eq!(
-                run_tests(cmd, false).await,
-                ExitCode::from(EXIT_NO_TESTS_SELECTED),
-                "{name}"
-            );
-        }
+        let cli = Cli::try_parse_from([
+            "panoramic",
+            "run",
+            "-d",
+            dir.path().to_str().unwrap(),
+            "--runtime",
+            "windows",
+            "-t",
+            "disabled",
+        ])
+        .unwrap();
+        let Command::Run(cmd) = cli.command else {
+            panic!("expected run")
+        };
+        assert_eq!(run_tests(cmd, false).await, ExitCode::from(EXIT_NO_TESTS_SELECTED));
     }
 
     #[tokio::test]
@@ -1666,10 +1919,11 @@ comparison: {image: comp}
             .unwrap()
             .compile(case, Os::MacOs)
             .unwrap()
+            .into_plan()
             .unwrap();
         assert_eq!(
-            listing_text(&plan, Os::MacOs),
-            "  participant\n    Timeout: 1s\n    \
+            listing_text(&plan),
+            "  participant\n    Timeout: 1s\n    Status: runnable\n    \
              Layout: adp on macos as host-process-group; alpha on linux as linux-container; \
              zebra on macos as host-process-group\n    \
              Artifact roles:\n      \
@@ -1685,13 +1939,13 @@ comparison: {image: comp}
                 "type: integration\nname: typed\ndescription: A typed case\n\
                  timeout: 7s\nruntimes: [linux]\nprocedure: []\n"
                     .to_string(),
-                "  typed\n    A typed case\n    Timeout: 7s\n    Artifact roles:\n      \
+                "  typed\n    A typed case\n    Timeout: 7s\n    Status: runnable\n    Artifact roles:\n      \
                  agent-adp-linux-image = saluki-images/datadog-agent:testing-devel (local default)\n      \
                  fixup-image = alpine:latest (local default)\n\n",
             ),
             (
                 format!("type: correctness\n{CORRECTNESS_FIELDS}"),
-                "  typed\n    Timeout: 1200s\n    Artifact roles:\n      \
+                "  typed\n    Timeout: 1200s\n    Status: runnable\n    Artifact roles:\n      \
                  agent-adp-linux-image = saluki-images/datadog-agent:testing-devel (local default)\n      \
                  fixup-image = alpine:latest (local default)\n      \
                  tools-linux-image = saluki-images/correctness-tools:latest (local default)\n\n",
@@ -1701,19 +1955,104 @@ comparison: {image: comp}
                 .load_content(&yaml, "typed", std::path::Path::new("config.yaml"))
                 .unwrap()
                 .remove(0);
-            let plan = planner().compile(case, Os::Linux).unwrap().unwrap();
-            assert_eq!(listing_text(&plan, Os::Linux), expected);
+            let plan = planner().compile(case, Os::Linux).unwrap().into_plan().unwrap();
+            assert_eq!(listing_text(&plan), expected);
         }
     }
 
-    #[test]
-    fn listing_text_omits_correctness_artifacts_when_selected_off_linux() {
+    #[tokio::test]
+    async fn listing_text_reports_runnable_and_skipped_cases_with_their_status() {
+        use tracing::instrument::WithSubscriber as _;
+
         let dir = tempfile::tempdir().unwrap();
         write_case(dir.path(), "typed", &format!("type: correctness\n{CORRECTNESS_FIELDS}"));
-        for os in [Os::MacOs, Os::Windows] {
-            let plans = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], os).unwrap();
-            assert_eq!(plans.len(), 1);
-            assert_eq!(listing_text(&plans[0], os), "  typed\n    Timeout: 1200s\n\n");
+        write_case(
+            dir.path(),
+            "participant",
+            &PARTICIPANT_FIELDS.replace("[linux]", "[macos, windows]"),
+        );
+        write_case(
+            dir.path(),
+            "integration",
+            "type: integration\nname: integration\ndescription: Windows only\n\
+             timeout: 7s\nruntimes: [windows]\nprocedure: []\n",
+        );
+        for (os, runnable, skipped) in [
+            (Os::MacOs, vec!["participant"], vec!["integration", "typed"]),
+            (Os::Windows, vec!["integration", "participant"], vec!["typed"]),
+        ] {
+            let Discovered { plans, excluded } =
+                discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], os).unwrap();
+            assert_eq!(
+                plans.iter().map(|plan| plan.case().name()).collect::<Vec<_>>(),
+                runnable
+            );
+            assert_eq!(excluded.iter().map(LoadedCase::name).collect::<Vec<_>>(), skipped);
+            for plan in &plans {
+                assert!(listing_text(plan).contains("    Status: runnable\n"));
+            }
+            for case in &excluded {
+                let expected = match case.name() {
+                    "integration" => {
+                        "  integration\n    Windows only\n    Timeout: 7s\n    Status: skipped (subject_os)\n\n"
+                    }
+                    "typed" => "  typed\n    Timeout: 1200s\n    Status: skipped (subject_os)\n\n",
+                    name => panic!("unexpected skipped case: {name}"),
+                };
+                assert_eq!(excluded_listing_text(case), expected);
+            }
+            let report = listing_report(&plans, &excluded);
+            assert!(report.starts_with("\nAvailable tests (3):\n\n"), "{report}");
+            let names = report
+                .lines()
+                .filter_map(|line| line.strip_prefix("  ").filter(|line| !line.starts_with(' ')))
+                .collect::<Vec<_>>();
+            assert_eq!(names, ["integration", "participant", "typed"]);
+            if os == Os::MacOs {
+                assert_eq!(
+                    report,
+                    concat!(
+                        "\nAvailable tests (3):\n\n",
+                        "  integration\n    Windows only\n    Timeout: 7s\n    Status: skipped (subject_os)\n\n",
+                        "  participant\n    Timeout: 1s\n    Status: runnable\n",
+                        "    Layout: adp on macos as host-process-group\n",
+                        "    Artifact roles:\n",
+                        "      adp-host-binary = target/release/agent-data-plane (local default)\n",
+                        "      agent-host-install = /tmp/saluki-dda/datadog-agent (local default)\n",
+                        "    Create order: adp\n    Start order: adp\n\n",
+                        "  typed\n    Timeout: 1200s\n    Status: skipped (subject_os)\n\n",
+                    )
+                );
+            }
+            let Command::List(cmd) = Cli::try_parse_from([
+                "panoramic",
+                "list",
+                "-d",
+                dir.path().to_str().unwrap(),
+                "--subject-os",
+                os.name(),
+            ])
+            .unwrap()
+            .command
+            else {
+                panic!("expected list")
+            };
+            let output = tempfile::NamedTempFile::new().unwrap();
+            let subscriber = tracing_subscriber::fmt()
+                .with_ansi(false)
+                .without_time()
+                .with_writer(std::sync::Mutex::new(output.reopen().unwrap()))
+                .finish();
+            assert_eq!(list_tests(cmd).with_subscriber(subscriber).await, ExitCode::SUCCESS);
+            let diagnostic = std::fs::read_to_string(output.path()).unwrap();
+            assert!(
+                diagnostic.contains(&format!(
+                    "Discovered 3 test case(s) for subject OS '{}' ({} skipped).",
+                    os.name(),
+                    skipped.len(),
+                )),
+                "{diagnostic}"
+            );
         }
     }
 

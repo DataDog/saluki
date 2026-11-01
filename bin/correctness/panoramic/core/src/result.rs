@@ -144,12 +144,19 @@ pub enum TestOutcome {
     Errored,
     /// The test exceeded its timeout.
     TimedOut,
+    /// The case excludes the selected subject OS.
+    Skipped,
 }
 
 impl TestOutcome {
     /// Whether every assertion the test ran passed.
     pub fn is_passed(&self) -> bool {
         matches!(self, Self::Passed)
+    }
+
+    /// Whether the test failed an assertion or encountered a harness-side error.
+    pub fn is_unsuccessful(&self) -> bool {
+        matches!(self, Self::Failed | Self::Errored | Self::TimedOut)
     }
 
     /// Whether this outcome represents a harness-side error rather than an assertion verdict.
@@ -166,6 +173,7 @@ impl fmt::Display for TestOutcome {
             Self::Failed => "failed",
             Self::Errored => "errored",
             Self::TimedOut => "timed_out",
+            Self::Skipped => "skipped",
         };
         f.write_str(name)
     }
@@ -484,7 +492,7 @@ impl TestResult {
         self
     }
 
-    /// Returns the display label: `PASS`, `FAIL`, `ERROR`, `TIMEOUT`, or `INTERRUPTED` for a signal interruption.
+    /// Returns the display label: `PASS`, `FAIL`, `ERROR`, `TIMEOUT`, `SKIP`, or `INTERRUPTED` for a signal interruption.
     pub fn label(&self) -> &'static str {
         match self.outcome {
             TestOutcome::Passed => "PASS",
@@ -494,6 +502,7 @@ impl TestResult {
             }
             TestOutcome::Errored => "ERROR",
             TestOutcome::TimedOut => "TIMEOUT",
+            TestOutcome::Skipped => "SKIP",
         }
     }
 
@@ -687,6 +696,23 @@ mod tests {
     fn every_outcome_has_its_own_label() {
         let labels: Vec<&str> = each_outcome().iter().map(|(result, _)| result.label()).collect();
         assert_eq!(labels, LABELS);
+        let mut skipped = each_outcome().into_iter().next().unwrap().0;
+        skipped.outcome = TestOutcome::Skipped;
+        assert_eq!(skipped.label(), "SKIP");
+        assert_eq!(skipped.outcome.to_string(), "skipped");
+    }
+
+    #[test]
+    fn only_failed_errored_and_timed_out_outcomes_are_unsuccessful() {
+        for (outcome, unsuccessful) in [
+            (TestOutcome::Passed, false),
+            (TestOutcome::Failed, true),
+            (TestOutcome::Errored, true),
+            (TestOutcome::TimedOut, true),
+            (TestOutcome::Skipped, false),
+        ] {
+            assert_eq!(outcome.is_unsuccessful(), unsuccessful, "{outcome}");
+        }
     }
 
     /// A timed-out result with two running parallel members, an issue, and two steps that never ran.

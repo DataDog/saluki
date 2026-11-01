@@ -470,6 +470,7 @@ mod tests {
             let plan = planner()
                 .compile(cases.into_iter().next().unwrap(), Os::Linux)
                 .unwrap()
+                .into_plan()
                 .unwrap();
             assert_eq!(
                 plan.integration_config().unwrap_err().to_string(),
@@ -520,7 +521,9 @@ mod tests {
             "type: integration\nname: integration\ntimeout: 1s\nruntimes: [linux, windows]\nprocedure: []\n",
         );
         for os in [Os::Linux, Os::MacOs, Os::Windows] {
-            let plans = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], os).unwrap();
+            let plans = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], os)
+                .unwrap()
+                .plans;
             let names: Vec<_> = plans.iter().map(|plan| plan.case().name()).collect();
             assert_eq!(
                 names,
@@ -594,7 +597,7 @@ mod tests {
     }
 
     #[test]
-    fn disabled_cases_are_never_planned() {
+    fn disabled_cases_are_neither_planned_nor_excluded() {
         let dir = tempfile::tempdir().unwrap();
         for (kind, variants, names) in [
             ("correctness", "", vec!["disabled"]),
@@ -615,18 +618,15 @@ mod tests {
                 assert!(case.is_disabled());
             }
             for os in [Os::Linux, Os::MacOs, Os::Windows] {
-                assert!(
-                    discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], os)
-                        .unwrap()
-                        .is_empty(),
-                    "{kind} under {os:?}"
-                );
+                let discovered = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], os).unwrap();
+                assert!(discovered.plans.is_empty(), "{kind} under {os:?}");
+                assert!(discovered.excluded.is_empty(), "{kind} under {os:?}");
             }
         }
     }
 
     #[test]
-    fn correctness_cases_are_planned_for_linux_under_every_selected_os() {
+    fn correctness_cases_are_skipped_off_linux() {
         let dir = tempfile::tempdir().unwrap();
         write_case(
             dir.path(),
@@ -639,17 +639,31 @@ mod tests {
             &format!("type: correctness_matrix\n{CORRECTNESS_FIELDS}variants: [{{name: first}}, {{name: second}}]\n"),
         );
         for os in [Os::Linux, Os::MacOs, Os::Windows] {
-            let plans = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], os).unwrap();
-            assert_eq!(
-                plans.iter().map(|plan| plan.case().name()).collect::<Vec<_>>(),
-                ["correctness", "matrix/first", "matrix/second"]
-            );
-            for plan in &plans {
-                assert_eq!(plan.subject_os(), Os::Linux);
-                assert!(plan.layout().is_none());
+            let discovered = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], os).unwrap();
+            let expected = ["correctness", "matrix/first", "matrix/second"];
+            if os != Os::Linux {
+                assert!(discovered.plans.is_empty());
+                assert_eq!(
+                    discovered.excluded.iter().map(CaseConfig::name).collect::<Vec<_>>(),
+                    expected
+                );
+            } else {
+                assert!(discovered.excluded.is_empty());
+                assert_eq!(
+                    discovered
+                        .plans
+                        .iter()
+                        .map(|plan| plan.case().name())
+                        .collect::<Vec<_>>(),
+                    expected
+                );
+                for plan in &discovered.plans {
+                    assert_eq!(plan.subject_os(), os);
+                    assert!(plan.layout().is_none());
+                }
+                let runners = build_runners(discovered.plans, os, &RunnerArtifacts::Overrides(&[])).unwrap();
+                assert!(runners.iter().all(|built| built.runner.runtime() == "docker"));
             }
-            let runners = build_runners(plans, os, &RunnerArtifacts::Overrides(&[])).unwrap();
-            assert!(runners.iter().all(|built| built.runner.runtime() == "docker"));
         }
     }
 
@@ -712,7 +726,7 @@ mod tests {
         let entries = ["baseline=base:override".parse().unwrap()];
         let plans: Vec<_> = cases
             .into_iter()
-            .map(|case| planner().compile(case, Os::Linux).unwrap().unwrap())
+            .map(|case| planner().compile(case, Os::Linux).unwrap().into_plan().unwrap())
             .collect();
         let overridden = build_runners(&plans, Os::Linux, &RunnerArtifacts::Overrides(&entries)).unwrap();
         let declared = build_runners(&plans, Os::Linux, &RunnerArtifacts::Overrides(&[])).unwrap();

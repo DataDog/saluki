@@ -18,7 +18,7 @@ use tracing::{error, info};
 use crate::{
     cli::{ArtifactCasesCommand, RenderCommand},
     collector::EXIT_HARNESS_ERROR,
-    config::{discover_in_scope, load_planner, typed_case::LoadedPlan, NO_TEST_DIRECTORIES},
+    config::{discover_in_scope, load_planner, NO_TEST_DIRECTORIES},
 };
 
 pub(crate) fn render(cmd: RenderCommand) -> ExitCode {
@@ -72,20 +72,11 @@ fn needed_bindings(cmd: &ArtifactCasesCommand) -> Result<(Os, Vec<ArtifactBindin
     })?;
     let directories: Vec<_> = cmd.test_dirs.iter().map(|dir| dir.display().to_string()).collect();
     info!("Discovering test cases from: {}...", directories.join(", "));
-    let plans = discover_in_scope(&mut planner, &cmd.test_dirs, subject_os).map_err(|error| {
+    let discovered = discover_in_scope(&mut planner, &cmd.test_dirs, subject_os).map_err(|error| {
         error!("Failed to discover tests: {error:#}");
         ExitCode::from(EXIT_HARNESS_ERROR)
     })?;
-    Ok((subject_os, selected_artifacts(&plans, subject_os), base))
-}
-
-fn selected_artifacts(plans: &[LoadedPlan], subject_os: Os) -> Vec<ArtifactBinding> {
-    needed_artifacts(plans.iter().filter(|plan| compiled_for(plan, subject_os)))
-}
-
-/// Correctness cases are compiled for Linux under every subject OS; include their roles only in Linux selections.
-pub(crate) fn compiled_for(plan: &LoadedPlan, os: Os) -> bool {
-    plan.subject_os() == os
+    Ok((subject_os, needed_artifacts(&discovered.plans), base))
 }
 
 pub(crate) async fn verify(cmd: ArtifactCasesCommand, output: &mut impl Write) -> ExitCode {
@@ -612,10 +603,12 @@ mod tests {
             (Os::MacOs, vec!["adp-host-binary", "agent-host-install"]),
             (Os::Windows, vec!["agent-adp-windows-image"]),
         ] {
-            let plans = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], os).unwrap();
-            assert_eq!(plans.len(), 2);
+            let plans = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], os)
+                .unwrap()
+                .plans;
+            assert_eq!(plans.len(), if os == Os::Linux { 2 } else { 1 });
             assert_eq!(
-                selected_artifacts(&plans, os)
+                needed_artifacts(&plans)
                     .iter()
                     .map(|binding| binding.role.name)
                     .collect::<Vec<_>>(),

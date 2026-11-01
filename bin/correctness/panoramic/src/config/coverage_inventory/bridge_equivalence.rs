@@ -393,7 +393,7 @@ fn only_the_logging_cases_and_the_log_parsed_exit_cases_fit_the_integration_runn
                     .load_content(&twin, name, Path::new("config.yaml"))
                     .unwrap()
                     .remove(0);
-                let plan = planner().compile(loaded, *os).unwrap().unwrap();
+                let plan = planner().compile(loaded, *os).unwrap().into_plan().unwrap();
                 plan.integration_config()
                     .unwrap_or_else(|error| panic!("{name} on {os:?}: {error:#}"));
             }

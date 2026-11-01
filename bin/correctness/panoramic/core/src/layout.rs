@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     case::ParticipantEntry,
@@ -10,7 +10,7 @@ use crate::{
 };
 
 /// An operating system a case's processes run on.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Os {
     /// Linux.
@@ -254,6 +254,13 @@ mod tests {
 
     fn participants(subject: &str, probe: &str) -> BTreeMap<String, ParticipantEntry> {
         serde_saphyr::from_str(&format!("subject: {{subject: true, {subject}}}\nprobe: {{{probe}}}")).unwrap()
+    }
+
+    #[test]
+    fn os_serializes_to_its_name() {
+        for os in [Os::Linux, Os::MacOs, Os::Windows] {
+            assert_eq!(serde_json::to_value(os).unwrap(), os.name());
+        }
     }
 
     #[test]

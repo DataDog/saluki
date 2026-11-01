@@ -21,7 +21,9 @@ fn default_log_file_references_plan_on_linux_and_windows_but_not_macos() {
         let path = write_case(dir.path(), "alpha", &yaml.replace("[linux]", &format!("[{oses}]")));
         let cases = crate::CASE_LOADER.load_file(&path).unwrap();
         let os = *cases[0].subject_os().first().unwrap();
-        let plans = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], os).unwrap();
+        let plans = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], os)
+            .unwrap()
+            .plans;
         assert_eq!(plans.len(), 1);
         let CaseSchema::Participants { procedure, .. } = plans[0].case().schema() else {
             panic!("expected participant data")
@@ -375,7 +377,7 @@ fn agent_adp_default_log_file_in_env_plans_on_linux_and_windows_but_not_macos() 
             .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
             .unwrap()
             .remove(0);
-        let plan = planner().compile(case, os).unwrap().unwrap();
+        let plan = planner().compile(case, os).unwrap().into_plan().unwrap();
         assert_eq!(plan.effective_config("adp").unwrap().env["FILE"], expected);
     }
     let case = crate::CASE_LOADER

@@ -39,7 +39,7 @@ match the working tree.
 `--runtime` scopes integration discovery. On macOS, assume the `linux` runtime through the local
 Docker setup unless the user explicitly requests native macOS tests; pass `--runtime linux` because
 the CLI defaults to `mac` there. Follow the current Make recipe for native macOS provisioning.
-Correctness cases choose their runtime from their case configuration.
+For correctness subject-OS selection and skipped outcomes, see `docs/development/testing.md`.
 
 Use `panoramic list` with the intended test directory and runtime to discover eligible case names
 before selecting them.

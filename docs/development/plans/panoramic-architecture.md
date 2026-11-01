@@ -51,7 +51,8 @@ equivalence, and migration proofs: their rows, CI links and comparison commit.
   Integration selects 45 Linux, 31 macOS and 34 Windows rows. Correctness selects 46 Linux rows: 39 Docker and seven
   Kubernetes-in-Docker variants. Two correctness cases are disabled (`otlp-traces` and `otlp-traces-ets`) and live in
   `test/correctness/disabled/`. The inventory has 158 rows.
-- Correctness discovery ignores the integration runtime flag. CI runs all selected correctness cases on Linux.
+- Correctness cases declare only Linux; `run` and `list` report them as skipped for other subject OSes.
+  CI runs all selected correctness cases on Linux.
   The seven variants come from `dsd-origin-detection-matrix`: `legacy`, `legacy-high-cardinality`,
   `legacy-optout-disabled`, `legacy-with-client-fields`, `unified`, `unified-high-cardinality` and
   `unified-with-client-fields`. File counts are not runnable counts.

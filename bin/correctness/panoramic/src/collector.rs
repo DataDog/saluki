@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use panoramic_core::events::TestEvent;
 use panoramic_core::interrupts::Interrupts;
 use panoramic_core::machine_output::{self, InterruptReason, RunReport, RunState, RunTotals, TestReport};
-use panoramic_core::result::DurationMs;
+use panoramic_core::result::{DurationMs, TestOutcome};
 use tokio::sync::mpsc;
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::MissedTickBehavior;
@@ -27,7 +27,7 @@ pub(crate) const EXIT_ASSERTION_FAILURE: u8 = 1;
 /// Exit code for a harness error, timeout, or interrupted run.
 pub(crate) const EXIT_HARNESS_ERROR: u8 = 2;
 
-/// Exit code for an empty selection or an unmatched test name.
+/// Exit code for an empty selection, an unmatched test name, or an all-skipped selection.
 pub(crate) const EXIT_NO_TESTS_SELECTED: u8 = 3;
 
 /// How often the TUI reads keys and redraws.
@@ -108,7 +108,7 @@ impl RunCollector {
             }
             Ok(()) => {
                 let report = &self.report;
-                let stopped_by_fail_fast = self.fail_fast && report.tests.iter().any(|t| !t.outcome.is_passed());
+                let stopped_by_fail_fast = self.fail_fast && report.tests.iter().any(|t| t.outcome.is_unsuccessful());
                 let unexplained = report.running.len() + if stopped_by_fail_fast { 0 } else { report.not_run.len() };
                 if unexplained > 0 {
                     self.interrupt(InterruptReason::RunnerFailed {
@@ -137,12 +137,22 @@ impl RunCollector {
     }
 }
 
+/// Whether every selected test is reported as skipped.
+pub(crate) fn every_test_skipped(report: &RunReport) -> bool {
+    !report.tests.is_empty()
+        && report.tests.iter().all(|test| test.outcome == TestOutcome::Skipped)
+        && report.running.is_empty()
+        && report.not_run.is_empty()
+}
+
 /// Chooses the exit code, giving interruptions and harness errors precedence over assertion failures.
 pub(crate) fn exit_code(report: &RunReport) -> ExitCode {
     if report.state == RunState::Interrupted || report.tests.iter().any(|t| t.outcome.is_error()) {
         ExitCode::from(EXIT_HARNESS_ERROR)
-    } else if report.tests.iter().any(|t| !t.outcome.is_passed()) {
+    } else if report.tests.iter().any(|t| t.outcome.is_unsuccessful()) {
         ExitCode::from(EXIT_ASSERTION_FAILURE)
+    } else if every_test_skipped(report) {
+        ExitCode::from(EXIT_NO_TESTS_SELECTED)
     } else {
         ExitCode::SUCCESS
     }
@@ -358,9 +368,11 @@ mod tests {
                 "unknown".to_string(),
                 Vec::new(),
                 "linux".to_string(),
+                Os::Linux,
                 1,
                 log_dir.path().to_path_buf(),
                 selected,
+                Vec::new(),
             );
             let collector = RunCollector::start(report, fail_fast);
 
@@ -368,7 +380,7 @@ mod tests {
             for test in tests {
                 runner
                     .register(BuiltCase {
-                        plan: planner().compile(test.case(), Os::Linux).unwrap().unwrap(),
+                        plan: planner().compile(test.case(), Os::Linux).unwrap().into_plan().unwrap(),
                         runner: Box::new(test),
                     })
                     .expect("scripted test names are unique");
@@ -524,7 +536,7 @@ mod tests {
         assert_eq!(on_disk["state"], "complete");
         assert_eq!(
             on_disk["totals"],
-            json!({"passed": 1, "failed": 1, "errored": 0, "timed_out": 0, "not_run": 0})
+            json!({"passed": 1, "failed": 1, "errored": 0, "timed_out": 0, "skipped": 0, "not_run": 0})
         );
         assert_eq!(
             exit_code(run.collector.report()),
@@ -679,9 +691,11 @@ mod tests {
             "unknown".to_string(),
             Vec::new(),
             "linux".to_string(),
+            Os::Linux,
             1,
             log_dir.path().to_path_buf(),
             selected,
+            Vec::new(),
         );
         let mut collector = RunCollector::start(report, false);
         collector.observe(&TestEvent::TestStarted { name: "a".to_string() });
@@ -697,55 +711,109 @@ mod tests {
     }
 
     #[test]
-    fn exit_code_distinguishes_failures_errors_and_interruptions() {
+    fn fail_fast_is_not_triggered_by_skipped_tests() {
+        for complete in [true, false] {
+            let log_dir = tempfile::tempdir().unwrap();
+            let report = RunReport::new(
+                "unknown".into(),
+                Vec::new(),
+                "mac".into(),
+                Os::MacOs,
+                1,
+                log_dir.path().to_path_buf(),
+                vec!["a".into()],
+                vec![TestReport::skipped(
+                    "skipped".into(),
+                    "/cases/skipped".into(),
+                    Os::MacOs,
+                )],
+            );
+            let mut collector = RunCollector::start(report, true);
+            if complete {
+                collector.observe(&completed(result("a", AssertionStatus::Passed)));
+            }
+            collector.finish(Ok(()));
+            let on_disk = read_run_json(log_dir.path());
+            if complete {
+                assert_eq!(on_disk["state"], "complete");
+                assert!(on_disk["interrupted_reason"].is_null());
+                assert_eq!(exit_code(collector.report()), ExitCode::SUCCESS);
+            } else {
+                assert_eq!(on_disk["state"], "interrupted");
+                assert_eq!(on_disk["interrupted_reason"]["kind"], "runner_failed");
+                assert_eq!(on_disk["not_run"], json!(["a"]));
+            }
+        }
+    }
+
+    #[test]
+    fn every_test_skipped_requires_a_nonempty_fully_skipped_selection() {
+        let mut report = RunReport::new(
+            "unknown".into(),
+            Vec::new(),
+            "mac".into(),
+            Os::MacOs,
+            1,
+            std::path::PathBuf::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        assert!(!every_test_skipped(&report));
+        report.tests.push(TestReport::skipped(
+            "skipped".into(),
+            "/cases/skipped".into(),
+            Os::MacOs,
+        ));
+        assert!(every_test_skipped(&report));
+        report.running.push("running".into());
+        assert!(!every_test_skipped(&report));
+        report.running.clear();
+        report.not_run.push("pending".into());
+        assert!(!every_test_skipped(&report));
+        report.not_run.clear();
+        report
+            .tests
+            .push(TestReport::new(&result("passed", AssertionStatus::Passed)));
+        assert!(!every_test_skipped(&report));
+    }
+
+    #[test]
+    fn exit_code_distinguishes_failures_errors_interruptions_and_skips() {
+        let passed = || result("a", AssertionStatus::Passed);
+        let failed = || result("b", AssertionStatus::Failed);
         let timed_out = || TestResult::errored("t", ErrorKind::Timeout, "slow", Duration::from_secs(1), Vec::new());
         let setup_error = || TestResult::errored("e", ErrorKind::Setup, "boom", Duration::from_secs(1), Vec::new());
-        let cases = [
-            (
-                "pass",
-                vec![result("a", AssertionStatus::Passed)],
-                false,
-                ExitCode::SUCCESS,
-            ),
-            (
-                "pass and fail",
-                vec![
-                    result("a", AssertionStatus::Passed),
-                    result("b", AssertionStatus::Failed),
-                ],
-                false,
-                ExitCode::from(EXIT_ASSERTION_FAILURE),
-            ),
-            (
-                "setup error",
-                vec![setup_error()],
-                false,
-                ExitCode::from(EXIT_HARNESS_ERROR),
-            ),
-            // Harness errors take precedence over assertion failures.
-            (
-                "fail and timeout",
-                vec![result("b", AssertionStatus::Failed), timed_out()],
-                false,
-                ExitCode::from(EXIT_HARNESS_ERROR),
-            ),
-            (
-                "pass, then interrupt",
-                vec![result("a", AssertionStatus::Passed)],
-                true,
-                ExitCode::from(EXIT_HARNESS_ERROR),
-            ),
-        ];
-
-        for (case, results, interrupted, expected) in cases {
-            let log_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        for (case, results, skipped, interrupted, expected) in [
+            ("pass", vec![passed()], false, false, 0),
+            ("pass and fail", vec![passed(), failed()], false, false, 1),
+            ("setup error", vec![setup_error()], false, false, 2),
+            ("fail and timeout", vec![failed(), timed_out()], false, false, 2),
+            ("pass then interrupt", vec![passed()], false, true, 2),
+            ("skipped only", vec![], true, false, 3),
+            ("skipped and passed", vec![passed()], true, false, 0),
+            ("skipped and failed", vec![failed()], true, false, 1),
+            ("skipped and setup error", vec![setup_error()], true, false, 2),
+            ("skipped and interrupted", vec![], true, true, 2),
+        ] {
+            let log_dir = tempfile::tempdir().unwrap();
+            let skipped = if skipped {
+                vec![TestReport::skipped(
+                    "skipped".into(),
+                    "/cases/skipped".into(),
+                    Os::MacOs,
+                )]
+            } else {
+                Vec::new()
+            };
             let report = RunReport::new(
-                "unknown".to_string(),
+                "unknown".into(),
                 Vec::new(),
-                "linux".to_string(),
+                "mac".into(),
+                Os::MacOs,
                 1,
                 log_dir.path().to_path_buf(),
                 Vec::new(),
+                skipped,
             );
             let mut collector = RunCollector::start(report, false);
             for result in results {
@@ -755,8 +823,7 @@ mod tests {
                 collector.interrupt(InterruptReason::Signal { source: "SIGINT" });
             }
             collector.finish(Ok(()));
-
-            assert_eq!(exit_code(collector.report()), expected, "case: {}", case);
+            assert_eq!(exit_code(collector.report()), ExitCode::from(expected), "{case}");
         }
     }
 
@@ -769,9 +836,11 @@ mod tests {
             "unknown".to_string(),
             Vec::new(),
             "linux".to_string(),
+            Os::Linux,
             1,
             log_dir.path().to_path_buf(),
             vec!["a".to_string()],
+            Vec::new(),
         );
         let mut collector = RunCollector::start(report, false);
         collector.observe(&TestEvent::TestStarted { name: "a".to_string() });

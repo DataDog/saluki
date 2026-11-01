@@ -165,7 +165,7 @@ mod tests {
             .load_content(yaml, "case", Path::new("case/config.yaml"))
             .unwrap()
             .into_iter()
-            .map(|case| planner.compile(case, os).unwrap().unwrap())
+            .map(|case| planner.compile(case, os).unwrap().into_plan().unwrap())
             .collect()
     }
 

@@ -211,6 +211,7 @@ mod tests {
         let plan = Planner::with_run(registries, "testrun0")
             .compile(case, Os::Linux)
             .unwrap()
+            .into_plan()
             .unwrap();
         assert_eq!(
             plan.layout().unwrap().get("subject").unwrap().kind,
@@ -291,6 +292,7 @@ mod tests {
         let plan = Planner::with_run(registries, "testrun0")
             .compile(case, Os::Linux)
             .unwrap()
+            .into_plan()
             .unwrap();
         assert_eq!(plan.fact("subject", "file"), Some("/logs/output.log"));
     }

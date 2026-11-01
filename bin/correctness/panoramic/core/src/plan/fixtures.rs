@@ -229,7 +229,7 @@ pub(super) fn compile_files(yaml: &str, sources: &[(&str, &str)], os: Os) -> Res
     Planner::with_run(FILE_REGISTRIES, "testrun0")
         .compile(case, os)
         .map_err(normalize)
-        .map(Option::unwrap)
+        .map(|compiled| compiled.into_plan().unwrap())
 }
 
 pub(super) struct AssignedServer;
@@ -440,7 +440,7 @@ pub(super) fn compile_with(
         .load_content(yaml, "alpha", Path::new("cases/alpha/config.yaml"))
         .unwrap()
         .remove(0);
-    planner.compile(case, os)
+    planner.compile(case, os).map(super::Compiled::into_plan)
 }
 
 pub(super) const CONNECTION_CASE: &str = concat!(

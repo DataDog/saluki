@@ -311,6 +311,7 @@ mod tests {
                 Os::MacOs,
             )
             .unwrap()
+            .into_plan()
             .unwrap();
         assert_eq!(
             needed_artifacts([&windows, &typed, &linux, &another]),
@@ -349,7 +350,7 @@ mod tests {
                 (Os::MacOs, vec![TOOL, RESOURCES, TOOL]),
                 (Os::Windows, vec![WINDOWS_TOOL]),
             ]));
-            let plan = planner.compile(case, os).unwrap().unwrap();
+            let plan = planner.compile(case, os).unwrap().into_plan().unwrap();
             assert_eq!(plan.artifacts(), expected);
         }
     }
@@ -399,7 +400,7 @@ mod tests {
         check_artifact_manifest(registries, &manifest).unwrap();
         let mut planner = Planner::new(registries, manifest).unwrap();
         let case = typed_case(BTreeMap::from([(Os::MacOs, vec![TOOL]), (Os::Windows, vec![])]));
-        let plan = planner.compile(case, Os::MacOs).unwrap().unwrap();
+        let plan = planner.compile(case, Os::MacOs).unwrap().into_plan().unwrap();
         assert_eq!(
             plan.artifacts(),
             [ArtifactBinding {

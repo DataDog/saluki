@@ -8,6 +8,7 @@ use chrono::Local;
 use serde::Serialize;
 use tracing::warn;
 
+use crate::layout::Os;
 use crate::record::StepStatus;
 use crate::result::{
     DurationMs, Issue, PhaseTiming, ReclaimEntry, StopCause, TestError, TestOutcome, TestResult, TimeoutAttribution,
@@ -58,7 +59,7 @@ const SEVERITY_MARKERS: &[&str] = &[
 ];
 
 /// Schema version of `run.json` and `result.json`. An absent version field denotes version 1.
-pub(crate) const REPORT_SCHEMA_VERSION: u32 = 2;
+pub(crate) const REPORT_SCHEMA_VERSION: u32 = 3;
 
 /// A whole run, as consumed by a program.
 ///
@@ -78,6 +79,8 @@ pub struct RunReport {
     pub(crate) suite_dirs: Vec<PathBuf>,
     /// Integration-test runtime the run was scoped to.
     pub(crate) runtime: String,
+    /// Subject operating system selected for the run.
+    pub(crate) subject_os: Os,
     /// How many tests ran concurrently.
     pub(crate) parallelism: usize,
     /// When the run started, as an RFC 3339 timestamp.
@@ -90,9 +93,9 @@ pub struct RunReport {
     pub totals: RunTotals,
     /// Tests that started and haven't completed, in start order.
     pub running: Vec<String>,
-    /// Selected tests that never started, in selection order.
+    /// Runnable selections that never started, in selection order.
     pub not_run: Vec<String>,
-    /// One entry per test that completed, in completion order.
+    /// Skipped tests in name order, followed by completed tests in completion order.
     pub tests: Vec<TestReport>,
 }
 
@@ -147,7 +150,9 @@ pub struct RunTotals {
     pub errored: usize,
     /// Tests that exceeded their timeout.
     pub timed_out: usize,
-    /// Selected tests that never started.
+    /// Tests whose cases exclude the selected subject OS.
+    pub skipped: usize,
+    /// Runnable selections that never started.
     pub not_run: usize,
 }
 
@@ -160,6 +165,9 @@ pub struct TestReport {
     pub(crate) case_path: Option<PathBuf>,
     /// How the test finished.
     pub outcome: TestOutcome,
+    /// Why the case was skipped, present only when the outcome is `skipped`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) skip_reason: Option<String>,
     /// How long the test took.
     pub(crate) duration_ms: u64,
     /// Absolute path of this test's log directory, when the runner knows it.
@@ -303,12 +311,12 @@ pub(crate) struct AssertionReport {
 }
 
 impl RunReport {
-    /// Creates a report in the `running` state that lists every selected test as not run.
+    /// Creates a running report, seeding skipped results and listing runnable selections as not run.
     ///
     /// `build_revision` identifies the runner build, formatted by [`revision`].
     pub fn new(
-        build_revision: String, suite_dirs: Vec<PathBuf>, runtime: String, parallelism: usize, log_dir: PathBuf,
-        selected: Vec<String>,
+        build_revision: String, suite_dirs: Vec<PathBuf>, runtime: String, subject_os: Os, parallelism: usize,
+        log_dir: PathBuf, selected: Vec<String>, skipped: Vec<TestReport>,
     ) -> Self {
         Self {
             schema_version: REPORT_SCHEMA_VERSION,
@@ -317,20 +325,21 @@ impl RunReport {
             build_revision,
             suite_dirs,
             runtime,
+            subject_os,
             parallelism,
             started_at: Local::now().to_rfc3339(),
             duration_ms: 0,
             log_dir,
-            totals: RunTotals::new(&[], selected.len()),
+            totals: RunTotals::new(&skipped, selected.len()),
             running: Vec::new(),
             not_run: selected,
-            tests: Vec::new(),
+            tests: skipped,
         }
     }
 }
 
 impl RunTotals {
-    /// Counts completed tests by outcome and records how many never started.
+    /// Counts reported tests by outcome and records how many runnable selections never started.
     pub fn new(tests: &[TestReport], not_run: usize) -> Self {
         let count = |matches: fn(&TestOutcome) -> bool| tests.iter().filter(|t| matches(&t.outcome)).count();
 
@@ -339,12 +348,35 @@ impl RunTotals {
             failed: count(|outcome| *outcome == TestOutcome::Failed),
             errored: count(TestOutcome::is_error),
             timed_out: count(|outcome| *outcome == TestOutcome::TimedOut),
+            skipped: count(|outcome| *outcome == TestOutcome::Skipped),
             not_run,
         }
     }
 }
 
 impl TestReport {
+    /// Reports a case excluded by the selected subject OS.
+    pub fn skipped(name: String, case_path: PathBuf, subject_os: Os) -> Self {
+        Self {
+            name,
+            case_path: Some(case_path),
+            outcome: TestOutcome::Skipped,
+            skip_reason: Some(format!("subject_os excludes {}", subject_os.name())),
+            duration_ms: 0,
+            log_dir: None,
+            artifacts: Vec::new(),
+            phase_timings: Vec::new(),
+            error: None,
+            timeout: None,
+            cause: None,
+            reclaim: Vec::new(),
+            issues: Vec::new(),
+            diagnostic_lines: Vec::new(),
+            diagnostic_lines_truncated: false,
+            assertions: Vec::new(),
+        }
+    }
+
     /// Builds the per-test document. Assumes the test's detail files are already on disk, and so
     /// points at them by path rather than writing them.
     pub fn new(result: &TestResult) -> Self {
@@ -391,6 +423,7 @@ impl TestReport {
             name: result.name.clone(),
             case_path: result.case_path.clone(),
             outcome: result.outcome,
+            skip_reason: None,
             duration_ms: DurationMs(result.duration).as_millis(),
             log_dir: result.log_dir.clone(),
             artifacts,
@@ -610,6 +643,64 @@ mod tests {
             message: "message".to_string(),
             duration: Duration::from_millis(5),
         }
+    }
+
+    #[test]
+    fn a_skipped_test_report_names_its_reason_and_case_path_and_has_no_log_directory() {
+        let report = TestReport::skipped("excluded".into(), PathBuf::from("/cases/excluded"), Os::MacOs);
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["name"], "excluded");
+        assert_eq!(json["case_path"], "/cases/excluded");
+        assert_eq!(json["outcome"], "skipped");
+        assert_eq!(json["skip_reason"], "subject_os excludes macos");
+        assert_eq!(json["duration_ms"], 0);
+        for field in ["log_dir", "error", "timeout", "cause"] {
+            assert!(json[field].is_null(), "{field}");
+        }
+        for field in [
+            "artifacts",
+            "assertions",
+            "phase_timings",
+            "reclaim",
+            "issues",
+            "diagnostic_lines",
+        ] {
+            assert_eq!(json[field], serde_json::json!([]), "{field}");
+        }
+        assert_eq!(json["diagnostic_lines_truncated"], false);
+        let run = RunReport::new(
+            "unknown".into(),
+            Vec::new(),
+            "mac".into(),
+            Os::MacOs,
+            1,
+            PathBuf::new(),
+            vec!["runnable".into()],
+            vec![report],
+        );
+        assert_eq!(run.tests[0].name, "excluded");
+        assert_eq!(run.not_run, ["runnable"]);
+        assert_eq!(run.totals.skipped, 1);
+    }
+
+    #[test]
+    fn skip_reason_is_serialized_only_for_skipped_tests() {
+        for (result, _) in crate::result::test_support::each_outcome() {
+            let report = TestReport::new(&result);
+            assert!(serde_json::to_value(&report).unwrap().get("skip_reason").is_none());
+            let file = TestReportFile {
+                schema_version: REPORT_SCHEMA_VERSION,
+                report: &report,
+            };
+            let json = serde_json::to_value(file).unwrap();
+            assert_eq!(json["schema_version"], 3);
+            assert!(json.get("skip_reason").is_none());
+        }
+        let skipped = TestReport::skipped("excluded".into(), PathBuf::new(), Os::Linux);
+        assert_eq!(
+            serde_json::to_value(skipped).unwrap()["skip_reason"],
+            "subject_os excludes linux"
+        );
     }
 
     #[test]
@@ -970,7 +1061,12 @@ mod tests {
             TestResult::errored("c", ErrorKind::Setup, "boom", Duration::from_secs(1), Vec::new()),
             TestResult::errored("d", ErrorKind::Timeout, "too slow", Duration::from_secs(1), Vec::new()),
         ];
-        let tests: Vec<TestReport> = results.iter().map(TestReport::new).collect();
+        let mut tests: Vec<TestReport> = results.iter().map(TestReport::new).collect();
+        tests.push(TestReport::skipped(
+            "excluded".into(),
+            PathBuf::from("/cases/excluded"),
+            Os::MacOs,
+        ));
 
         let totals = RunTotals::new(&tests, 3);
 
@@ -979,19 +1075,22 @@ mod tests {
         assert_eq!(totals.errored, 2);
         assert_eq!(totals.timed_out, 1);
         assert_eq!(totals.not_run, 3);
+        assert_eq!(totals.skipped, 1);
         assert_eq!(tests[3].outcome, TestOutcome::TimedOut);
     }
 
     #[test]
-    fn run_report_pins_the_schema_two_field_names() {
+    fn run_report_pins_the_schema_three_field_names() {
         let selected = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let mut report = RunReport::new(
             "0123abcd-dirty".to_string(),
             Vec::new(),
             "linux".to_string(),
+            Os::Linux,
             1,
             PathBuf::new(),
             selected,
+            Vec::new(),
         );
         let timed_out = TestResult::errored("a", ErrorKind::Timeout, "too slow", Duration::from_secs(1), Vec::new());
         report.tests = vec![TestReport::new(&timed_out)];
@@ -1003,7 +1102,8 @@ mod tests {
 
         let json = serde_json::to_value(&report).expect("run report should serialize");
 
-        assert_eq!(json["schema_version"], 2);
+        assert_eq!(json["schema_version"], 3);
+        assert_eq!(json["subject_os"], "linux");
         assert_eq!(json["build_revision"], "0123abcd-dirty");
         assert_eq!(json["state"], "interrupted");
         assert_eq!(json["interrupted_reason"]["kind"], "signal");
@@ -1035,8 +1135,10 @@ mod tests {
             "unknown".to_string(),
             Vec::new(),
             "linux".to_string(),
+            Os::Linux,
             1,
             log_dir.path().to_path_buf(),
+            Vec::new(),
             Vec::new(),
         );
         write_run_report(&report);

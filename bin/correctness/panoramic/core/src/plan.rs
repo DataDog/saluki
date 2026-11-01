@@ -43,6 +43,25 @@ pub struct Planner<'a> {
     catalog: BTreeMap<&'static str, ArtifactRole>,
 }
 
+/// The result of compiling a case for one subject OS.
+pub enum Compiled<C> {
+    /// The case declares the selected OS.
+    Planned(CasePlan<C>),
+    /// The case's `subject_os` omits the selected OS.
+    Excluded(CaseConfig<C>),
+}
+
+impl<C> Compiled<C> {
+    /// Returns the plan when the case declares the selected OS.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn into_plan(self) -> Option<CasePlan<C>> {
+        match self {
+            Self::Planned(plan) => Some(plan),
+            Self::Excluded(_) => None,
+        }
+    }
+}
+
 /// A loaded case with the layout selected for execution.
 pub struct CasePlan<C> {
     case: CaseConfig<C>,
@@ -107,7 +126,7 @@ impl<'a> Planner<'a> {
         }
     }
 
-    /// Validates every declared subject OS, returning a plan only for a declared selection.
+    /// Validates every declared subject OS, returning a plan for a declared selection or the excluded case.
     /// Participant cases carry a layout; typed cases retain their loader-supplied data.
     /// A participant case declaring the selected OS draws one isolation scope from this planner.
     /// Only the selected OS draws runner-host ports from this planner; other OSes use separate registries.
@@ -137,7 +156,7 @@ impl<'a> Planner<'a> {
     ///       runner-host port allocation.
     ///    7. Create order, then start order.
     ///    8. Step fact and late-fact references in procedure order, naming the step.
-    pub fn compile<C>(&mut self, case: CaseConfig<C>, subject_os: Os) -> Result<Option<CasePlan<C>>, GenericError> {
+    pub fn compile<C>(&mut self, case: CaseConfig<C>, subject_os: Os) -> Result<Compiled<C>, GenericError> {
         let selected = case.subject_os().contains(&subject_os);
         let mut layout = None;
         let mut artifacts = Vec::new();
@@ -223,9 +242,9 @@ impl<'a> Planner<'a> {
             artifacts = artifacts::bind_roles(roles.iter().copied(), &self.bindings);
         }
         if !selected {
-            return Ok(None);
+            return Ok(Compiled::Excluded(case));
         }
-        Ok(Some(CasePlan {
+        Ok(Compiled::Planned(CasePlan {
             case,
             subject_os,
             layout,
@@ -375,7 +394,7 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        fixtures::{compile, compile_with, planner, FACT_CASE, FILE_REGISTRIES},
+        fixtures::{compile, compile_with, host_to_container_case, planner, CONFIG_LOADER, FACT_CASE, FILE_REGISTRIES},
         *,
     };
     use crate::{
@@ -685,6 +704,7 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
         let plan = Planner::with_run(registries, "testrun0")
             .compile(case, Os::Linux)
             .unwrap()
+            .into_plan()
             .unwrap();
         assert_eq!(
             plan.create_order().unwrap(),
@@ -752,27 +772,47 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
     fn a_participant_case_is_planned_only_for_a_subject_os_it_declares() {
         let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[linux, windows]");
         for (os, kind) in [
-            (Os::Linux, Some(RealizationKind::LinuxContainer)),
-            (Os::MacOs, None),
-            (Os::Windows, Some(RealizationKind::WindowsContainer)),
+            (Os::Linux, RealizationKind::LinuxContainer),
+            (Os::Windows, RealizationKind::WindowsContainer),
         ] {
             let case = LOADER
                 .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
                 .unwrap()
                 .remove(0);
-            let plan = Planner::with_run(REGISTRIES, "testrun0").compile(case, os).unwrap();
-            if let Some(kind) = kind {
-                let plan = plan.unwrap();
-                assert_eq!(plan.case().name(), "alpha");
-                assert_eq!(plan.subject_os(), os);
-                assert_eq!(
-                    plan.layout().unwrap().iter().collect::<Vec<_>>(),
-                    [("subject", Realization { os, kind })]
-                );
-            } else {
-                assert!(plan.is_none());
-            }
+            let mut planner = Planner::with_run(REGISTRIES, "testrun0");
+            let Compiled::Excluded(case) = planner.compile(case, Os::MacOs).unwrap() else {
+                panic!("macOS is excluded");
+            };
+            assert_eq!(case.name(), "alpha");
+            let plan = planner.compile(case, os).unwrap().into_plan().unwrap();
+            assert_eq!(plan.case().name(), "alpha");
+            assert_eq!(plan.subject_os(), os);
+            assert_eq!(
+                plan.layout().unwrap().iter().collect::<Vec<_>>(),
+                [("subject", Realization { os, kind })]
+            );
         }
+    }
+
+    #[test]
+    fn an_excluded_participant_case_allocates_no_isolation_scope_or_runner_host_ports() {
+        let case = CONFIG_LOADER
+            .load_content(&host_to_container_case(), "alpha", Path::new("cases/alpha/config.yaml"))
+            .unwrap()
+            .remove(0);
+        let mut planner = planner();
+        let Compiled::Excluded(case) = planner.compile(case, Os::Linux).unwrap() else {
+            panic!("Linux is excluded");
+        };
+        let plan = planner.compile(case, Os::MacOs).unwrap().into_plan().unwrap();
+        assert_eq!(
+            plan.scope.as_ref().unwrap().state_dir(Os::MacOs),
+            "/tmp/panoramic-testrun0/0000"
+        );
+        assert_eq!(
+            plan.runner_host_ports,
+            BTreeMap::from([(("server".into(), "api".into()), 20000)])
+        );
     }
 
     #[test]
@@ -802,21 +842,20 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
 
     #[test]
     fn a_typed_case_is_planned_without_a_layout_for_its_declared_subject_os() {
-        for os in [Os::Linux, Os::MacOs, Os::Windows] {
+        for os in [Os::MacOs, Os::Windows] {
             let case = LOADER
                 .load_content("type: fixture", "alpha", Path::new("config.yaml"))
                 .unwrap()
                 .remove(0);
-            let plan = Planner::with_run(REGISTRIES, "testrun0").compile(case, os).unwrap();
-            if os == Os::Linux {
-                assert!(plan.is_none());
-            } else {
-                let plan = plan.unwrap();
-                assert_eq!(plan.subject_os(), os);
-                assert_eq!(plan.case().name(), "alpha");
-                assert!(plan.layout().is_none());
-                assert!(plan.runner_host_ports.is_empty());
-            }
+            let mut planner = Planner::with_run(REGISTRIES, "testrun0");
+            let Compiled::Excluded(case) = planner.compile(case, Os::Linux).unwrap() else {
+                panic!("Linux is excluded");
+            };
+            let plan = planner.compile(case, os).unwrap().into_plan().unwrap();
+            assert_eq!(plan.subject_os(), os);
+            assert_eq!(plan.case().name(), "alpha");
+            assert!(plan.layout().is_none());
+            assert!(plan.runner_host_ports.is_empty());
         }
     }
 

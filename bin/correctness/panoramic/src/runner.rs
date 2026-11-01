@@ -1505,6 +1505,7 @@ mod tests {
                         plan: crate::config::tests::planner()
                             .compile(case, Os::Linux)
                             .unwrap()
+                            .into_plan()
                             .unwrap(),
                         runner: Box::new(ChecksContext { scripted, needs_pod }),
                     })
@@ -2132,7 +2133,7 @@ mod tests {
         assert_eq!(phase_names(&result), ["assertions"]);
 
         let json = written_report(&result);
-        assert_eq!(json["schema_version"], 2);
+        assert_eq!(json["schema_version"], 3);
         let written_statuses: Vec<&str> = json["assertions"]
             .as_array()
             .expect("assertions is an array")

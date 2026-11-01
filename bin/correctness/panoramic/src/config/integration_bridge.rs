@@ -312,6 +312,7 @@ mod tests {
                     planner()
                         .compile(case, Os::Linux)
                         .unwrap()
+                        .into_plan()
                         .unwrap()
                 })
                 .collect();
@@ -343,7 +344,7 @@ mod tests {
                     .load_file(&path)
                     .unwrap()
                     .into_iter()
-                    .map(|case| planner().compile(case, os).unwrap().unwrap())
+                    .map(|case| planner().compile(case, os).unwrap().into_plan().unwrap())
                     .collect::<Vec<_>>()
             });
             let overrides = if runtime == MAC_RUNTIME {
@@ -522,6 +523,7 @@ mod tests {
                     .unwrap()
                     .compile(case, os)
                     .unwrap()
+                    .into_plan()
                     .unwrap();
                 assert_eq!(
                     plan.effective_config("adp").unwrap().files.is_empty(),
@@ -595,7 +597,7 @@ mod tests {
                     .load_content(&participant_yaml, "alpha", &path)
                     .unwrap()
                     .remove(0);
-                let plan = planner().compile(case, os).unwrap().unwrap();
+                let plan = planner().compile(case, os).unwrap().into_plan().unwrap();
                 let translated = plan.integration_config().unwrap();
                 let Some(AssertionStep::Single(AssertionConfig::FileContains { path, .. })) =
                     translated.procedure.last()
@@ -740,7 +742,7 @@ mod tests {
                 .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
                 .unwrap()
                 .remove(0);
-            let plan = planner().compile(case, Os::Linux).unwrap().unwrap();
+            let plan = planner().compile(case, Os::Linux).unwrap().into_plan().unwrap();
             let CaseSchema::Participants { file, .. } = plan.case().schema() else {
                 panic!("expected participant data")
             };
@@ -769,7 +771,7 @@ mod tests {
             .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
             .unwrap()
             .remove(0);
-        let plan = planner().compile(case, Os::Linux).unwrap().unwrap();
+        let plan = planner().compile(case, Os::Linux).unwrap().into_plan().unwrap();
         let CaseSchema::Participants { file, .. } = plan.case().schema() else {
             panic!("expected participant data");
         };
@@ -909,6 +911,7 @@ mod tests {
         let plan = planner()
             .compile(cases.into_iter().next().unwrap(), Os::Linux)
             .unwrap()
+            .into_plan()
             .unwrap();
         let config = plan.integration_config().unwrap();
         let [AssertionStep::Single(AssertionConfig::LogContains { pattern: first, .. }), AssertionStep::Parallel { parallel }] =

@@ -564,6 +564,7 @@ participants:
         let plan = Planner::with_run(registries, "testrun0")
             .compile(case, Os::Linux)
             .unwrap()
+            .into_plan()
             .unwrap();
         assert_eq!(
             *hooks.0.lock().unwrap(),
@@ -776,6 +777,7 @@ participants:
             let plan = Planner::with_run(CONFIG_REGISTRIES, "testrun0")
                 .compile(case, os)
                 .unwrap()
+                .into_plan()
                 .unwrap();
             let effective = plan.effective_config("subject").unwrap();
             assert_eq!(effective.env["LEVEL"], "info");

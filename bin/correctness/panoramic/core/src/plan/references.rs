@@ -382,6 +382,7 @@ mod tests {
         let plan = Planner::with_run(registries, "testrun0")
             .compile(case, Os::Linux)
             .unwrap()
+            .into_plan()
             .unwrap();
         let config = plan.effective_config("subject").unwrap();
         assert_eq!(

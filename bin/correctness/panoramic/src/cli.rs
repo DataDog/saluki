@@ -59,13 +59,15 @@ pub struct SubjectOsArgs {
     /// Subject OS selection using runtime names: `linux`, `mac` or `windows`;
     /// `mac` selects `macos`. Integration cases run only if their `runtimes` list
     /// contains it, and participant cases only if their `subject_os` list contains
-    /// its OS. Defaults to the host's OS. Correctness cases use their configured runtime.
+    /// its OS. Defaults to the host's OS. Correctness cases run only for subject OS
+    /// `linux`; other selections report them as skipped.
     #[arg(long, verbatim_doc_comment, value_parser = runtime_parser())]
     pub runtime: Option<Os>,
 
     /// Subject OS to select cases for: `linux`, `macos` or `windows`. Defaults to the OS
     /// that --runtime selects, then the host's OS. Must agree with --runtime when both
-    /// are given. Correctness cases use their configured runtime.
+    /// are given. Correctness cases run only for subject OS `linux`; other selections
+    /// report them as skipped.
     #[arg(long, verbatim_doc_comment, value_parser = subject_os_parser())]
     pub subject_os: Option<Os>,
 }

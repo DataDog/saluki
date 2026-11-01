@@ -228,9 +228,9 @@ Typed integration and correctness cases map their containers and host processes 
 | Correctness, Linux, Docker or Kubernetes-in-Docker | Datadog intake and millstone | `tools-linux-image` |
 
 Each case also needs the roles its backend declares, such as `fixup-image` for Linux containers. Integration cases need the
-intake role only on Linux, where the sidecar runs. Correctness cases are compiled for Linux under every subject OS;
-their roles appear in text listings and `artifacts verify`/`pull` only when you select Linux.
-`run --artifacts` verifies their Linux roles even under another subject OS, because these cases still run.
+intake role only on Linux, where the sidecar runs. Correctness cases run only for subject OS `linux`;
+their roles appear in text listings, `artifacts verify`/`pull`, and `run --artifacts` verification only when you
+select Linux. Only runnable cases contribute artifact roles.
 
 Both correctness targets bind to `agent-adp-linux-image`, as CI supplies the same bundled image to both sides.
 Locally, correctness files declare `saluki-images/datadog-agent:testing-release`, while that role defaults to the
@@ -333,7 +333,14 @@ Every required consumed endpoint must be connected, and each `config.endpoints` 
 the participant serves. Both `connect` and `config.endpoints` must be empty for `agent-adp`.
 
 `--subject-os linux|macos|windows` selects which cases run. It defaults to the OS selected by `--runtime`, then the
-host's OS. Conflicting values exit 2 before discovery. Correctness cases keep their configured runtime.
+host's OS. Conflicting values exit 2 before discovery. Correctness cases run only for subject OS `linux` and are
+reported as `skipped` for other subject OSes. Pass `--subject-os linux` to run them from another host; the
+correctness Make targets do this.
+
+A case whose `subject_os` omits the selected OS appears in `run.json` with outcome `skipped` and `skip_reason`
+`subject_os excludes <os>`. It counts in `totals.skipped`. Only executed cases receive a log directory and
+`result.json`. The exit code follows the runnable cases; an all-skipped selection writes `run.json` and exits 3.
+Text listings show every enabled case's status: `runnable` or `skipped (subject_os)`.
 
 Before running, `run` checks each distinct realization needed by the selected cases once, without changing their
 layouts:
@@ -398,10 +405,10 @@ Exit codes distinguish the run-level result:
 
 | Code | Meaning |
 |------|---------|
-| 0 | Every test passed; run completed |
+| 0 | At least one test ran and every test that ran passed; run completed |
 | 1 | Assertion failure, unless code 2 applies |
 | 2 | Harness error, including a case that fails to load or a case name declared more than once (reported before any test runs, with no `run.json`), a case whose realization this host can't provide, a `timed_out` test, or an interrupted run |
-| 3 | Empty selection or unmatched test name |
+| 3 | Empty selection, unmatched test name, or every selected test skipped (`run.json` is written) |
 
 An `errored` step couldn't be evaluated. Inspect test `error`, `timeout`, `cause`, and step `message` fields.
 
@@ -410,7 +417,7 @@ completeness before individual results, and treat unknown states, outcomes, or s
 
 ```bash
 jq '{state, interrupted_reason, running, not_run}' run.json
-jq -r '.tests[] | select(.outcome != "passed" or (.issues | length) > 0) | "\(.name) \(.outcome) \(.log_dir)"' run.json
+jq -r '.tests[] | select((.outcome != "passed" and .outcome != "skipped") or (.issues | length) > 0) | "\(.name) \(.outcome) \(.log_dir)"' run.json
 ```
 
 Follow the selected tests' `log_dir` to `result.json`. Use `outcome` for the test result and `assertions[].status` for
@@ -419,7 +426,7 @@ each step. Check `issues` even on passes; they don't change `outcome`. Open repo
 
 Follow report types in `bin/correctness/panoramic/core/src/machine_output.rs` for semantics. For precedence rules, see
 `TestResult::from_steps` in `bin/correctness/panoramic/core/src/result.rs` and `exit_code` in
-`bin/correctness/panoramic/src/collector.rs`. Check `schema_version` and `run.json`'s
+`bin/correctness/panoramic/src/collector.rs`. The current `schema_version` is 3. Check it and `run.json`'s
 `build_revision` against the working tree.
 
 On Unix, send SIGINT or SIGTERM to stop a run with cleanup. A second signal may leave containers behind.
