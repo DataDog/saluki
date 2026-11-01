@@ -41,6 +41,7 @@ MACOS_TEST_AGENT_VERSION ?= 7.84.6
 MACOS_TEST_AGENT_DMG_DIR ?= /tmp/saluki-dda-dmg-cache
 MACOS_TEST_AGENT_DMG_URL ?= https://s3.amazonaws.com/dd-agent/datadog-agent-$(MACOS_TEST_AGENT_VERSION)-1.$(shell uname -m).dmg
 MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
+MACOS_TEST_ARTIFACTS ?= $(CURDIR)/target/panoramic-artifacts-macos.toml
 
 # General build settings used for tooling, etc.
 export GO_BUILD_IMAGE ?= golang:1.23-bullseye
@@ -48,6 +49,10 @@ export GO_APP_IMAGE ?= ubuntu:24.04
 # TODO: move this to test/output when everyone has it in their gitignore
 SALUKI_TEST_OUTPUT_DIR ?= $(CURDIR)/target/test-output
 export PANORAMIC_LOG_DIR ?= $(SALUKI_TEST_OUTPUT_DIR)/panoramic
+
+# Pass a manifest on the make command line: `make test-integration PANORAMIC_ARTIFACTS=artifacts.toml`.
+# Environment values, including empty ones, stop make when a run target expands this argument.
+PANORAMIC_ARTIFACTS_ARG = $(if $(filter environment%,$(origin PANORAMIC_ARTIFACTS)),$(error PANORAMIC_ARTIFACTS must be set on the make command line, not in the environment),$(if $(PANORAMIC_ARTIFACTS),--artifacts "$(PANORAMIC_ARTIFACTS)"))
 
 # Pinned nightly toolchain shared by the Miri tests and API-doc generation, both of which rely on
 # nightly-only features. Keeping it in one variable ensures the two stay in lockstep; bump here to
@@ -614,13 +619,13 @@ test-all: test test-property test-docs test-miri test-loom
 test-correctness: build-panoramic build-correctness-tools-image build-datadog-agent-image-release
 test-correctness: ## Runs the complete correctness suite (all test cases in parallel)
 	@echo "[*] Running correctness test suite..."
-	@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/correctness/cases $(if $(PANORAMIC_PARALLELISM),-p $(PANORAMIC_PARALLELISM))
+	@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/correctness/cases $(if $(PANORAMIC_PARALLELISM),-p $(PANORAMIC_PARALLELISM)) $(PANORAMIC_ARTIFACTS_ARG)
 
 .PHONY: test-correctness-case
 test-correctness-case: build-panoramic build-correctness-tools-image build-datadog-agent-image-release
 test-correctness-case: ## Runs a single correctness test case by name (usage: make test-correctness-case CASE=dsd-plain)
 	@echo "[*] Running '$(CASE)' correctness test case..."
-	@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/correctness/cases -t $(CASE) --no-tui
+	@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/correctness/cases -t $(CASE) --no-tui $(PANORAMIC_ARTIFACTS_ARG)
 
 .PHONY: build-panoramic
 build-panoramic: check-rust-build-tools
@@ -632,18 +637,18 @@ build-panoramic: ## Builds the panoramic binary (ADP integration test runner)
 test-integration: build-panoramic build-datadog-agent-image build-correctness-tools-image
 test-integration: ## Runs all ADP integration tests
 	@echo "[*] Running ADP integration tests..."
-	@target/release/panoramic run -d $(shell pwd)/test/integration/cases $(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
+	@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/integration/cases $(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR)) $(PANORAMIC_ARTIFACTS_ARG)
 
 .PHONY: test-integration-quick
 test-integration-quick: build-panoramic
 test-integration-quick: ## Runs ADP integration tests (assumes images already built)
 	@echo "[*] Running ADP integration tests (quick mode)..."
-	@target/release/panoramic run -d $(shell pwd)/test/integration/cases $(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
+	@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/integration/cases $(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR)) $(PANORAMIC_ARTIFACTS_ARG)
 
 .PHONY: list-integration-tests
 list-integration-tests: build-panoramic
 list-integration-tests: ## Lists available ADP integration tests
-	@target/release/panoramic list -d $(shell pwd)/test/integration/cases
+	@target/release/panoramic list --subject-os linux -d $(shell pwd)/test/integration/cases
 
 .PHONY: build-adp-host
 build-adp-host: BUILD_PROFILE ?= release
@@ -686,8 +691,10 @@ test-integration-macos-run: BUILD_PROFILE ?= release
 test-integration-macos-run: ## Runs the macOS host-process integration tests using already-built binaries (assumes target/$$BUILD_PROFILE/agent-data-plane and target/release/panoramic exist). Defaults to all `mac`-runtime-eligible tests; narrow with CASE=<name>.
 	@echo "[*] Running macOS host-process integration tests..."
 	@target/release/panoramic run -d "$(CURDIR)/test/integration/cases" \
+		--subject-os macos \
 		--adp-binary-path "$(CURDIR)/target/$(BUILD_PROFILE)/agent-data-plane" \
 		--core-agent-binary-path "$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent" \
+		$(PANORAMIC_ARTIFACTS_ARG) \
 		$(if $(CASE),-t $(CASE)) --no-tui -p 1 \
 		$(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
 
@@ -769,8 +776,18 @@ provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGE
 	@echo "[*] macOS test environment ready."
 	@echo "[*] Agent binary: $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent"
 
+.PHONY: render-macos-test-artifacts
+render-macos-test-artifacts: BUILD_PROFILE ?= release
+render-macos-test-artifacts: build-panoramic
+render-macos-test-artifacts: ## Writes $$MACOS_TEST_ARTIFACTS binding the macOS tests' ADP binary and Agent install
+	@target/release/panoramic artifacts render \
+		--set adp-host-binary="$(CURDIR)/target/$(BUILD_PROFILE)/agent-data-plane" \
+		--set agent-host-install="$(MACOS_TEST_AGENT_INSTALL_DIR)" \
+		--output "$(MACOS_TEST_ARTIFACTS)"
+
 .PHONY: test-integration-macos-ci
-test-integration-macos-ci: build-panoramic build-adp-host provision-macos-test-env test-integration-macos-run ## CI entry point: builds binaries, ensures Agent + cert are provisioned, then runs the `mac`-runtime integration tests
+test-integration-macos-ci: override PANORAMIC_ARTIFACTS = $(MACOS_TEST_ARTIFACTS)
+test-integration-macos-ci: build-panoramic build-adp-host provision-macos-test-env render-macos-test-artifacts test-integration-macos-run ## CI entry point: builds binaries, provisions the Agent and cert, renders artifacts, and runs macOS integration tests
 
 .PHONY: ensure-rust-nightly
 ensure-rust-nightly:

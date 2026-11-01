@@ -76,12 +76,17 @@ Invoke-Native cargo build --profile $env:BUILD_PROFILE --package agent-data-plan
 $ImageTag = if ($env:WINDOWS_ADP_IMAGE_TAG) { $env:WINDOWS_ADP_IMAGE_TAG } else { "saluki-images/agent-data-plane:testing-windows" }
 Build-WindowsAdpImage -ImageTag $ImageTag
 
+$Panoramic = Join-Path $env:CARGO_TARGET_DIR "release\panoramic.exe"
+$Manifest = Join-Path $env:CARGO_TARGET_DIR "panoramic-artifacts.toml"
+
+Write-Host "[*] Rendering the artifact manifest for ${ImageTag}..."
+Invoke-Native -FilePath $Panoramic -Arguments @("artifacts", "render", "--set", "agent-adp-windows-image=$ImageTag", "--output", $Manifest)
+
 if (-not $env:PANORAMIC_LOG_DIR) {
     $env:PANORAMIC_LOG_DIR = "integration-logs"
 }
 New-Item -ItemType Directory -Force $env:PANORAMIC_LOG_DIR | Out-Null
 
-$Panoramic = Join-Path $env:CARGO_TARGET_DIR "release\panoramic.exe"
 $TestDir = Join-Path $RepoRoot "test\integration\cases"
 
 Write-Host "[*] Running Windows integration tests..."
@@ -97,7 +102,9 @@ $PanoramicArgs = @(
     "run",
     "-d", $TestDir,
     "--runtime", "windows",
+    "--subject-os", "windows",
     "--image-override", "container=$ImageTag",
+    "--artifacts", $Manifest,
     "--no-tui",
     "-p", "4",
     "-l", $env:PANORAMIC_LOG_DIR

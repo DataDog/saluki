@@ -90,6 +90,24 @@ make test-integration-quick  # skip image builds
 make list-integration-tests  # list available tests
 ```
 
+`test-integration`, `test-integration-quick` and `list-integration-tests` select subject OS `linux`, including on
+macOS, where tests run in Linux containers through the local Docker setup. Use the macOS Make targets for native
+host-process tests.
+
+Pass `PANORAMIC_ARTIFACTS=<file>` on the make command line to run with an artifact manifest:
+
+```bash
+make test-integration-quick PANORAMIC_ARTIFACTS=artifacts.toml
+```
+
+`test-integration`, `test-integration-quick`, `test-integration-macos-run`, `test-correctness` and
+`test-correctness-case` accept this variable only on the command line; they reject values from the environment,
+including empty values. For `test-integration-macos-run`, the manifest must bind `adp-host-binary` and
+`agent-host-install` to the paths the target passes as flags; `make render-macos-test-artifacts` writes a matching
+manifest to `MACOS_TEST_ARTIFACTS` (default: `target/panoramic-artifacts-macos.toml`). Use the same `BUILD_PROFILE` and
+`MACOS_TEST_AGENT_INSTALL_DIR` values for rendering and running.
+`test-integration-macos-ci` renders and forces its own manifest, even if you supply another path.
+
 ### Test case config
 
 Test cases live in `test/integration/cases/` as `config.yaml` files. The runner is **panoramic**
@@ -288,6 +306,15 @@ file. Repeat `--set` to bind more roles; omitting it writes a manifest binding n
 against every declared role, whatever cases a run selects. A duplicate role, empty reference or unknown role writes
 nothing and exits 2, leaving an existing output file untouched. References may contain `=`: only the first `=`
 separates the role from its reference.
+
+**Artifact manifests in CI.** Every panoramic CI job renders a manifest and runs with `--subject-os` and
+`--artifacts`, so its `run.json` records what it tested in `artifacts`. Linux integration and correctness jobs bind
+`agent-adp-linux-image` and `tools-linux-image` to the pipeline's images and `fixup-image` to
+`registry.ddbuild.io/alpine:latest`, then run `panoramic artifacts pull` before testing.
+`make test-integration-macos-ci` binds the ADP binary and Agent install it builds and provisions;
+`ci/tooling/windows-integration-tests.ps1` binds the image it builds. Image and binary overrides must agree with
+the manifest. Every selected correctness case must use a `saluki-images/` baseline, because both sides take
+`agent-adp-linux-image`.
 
 Use `panoramic artifacts verify -d <cases> [--subject-os linux|macos|windows] [--artifacts <file>]` to check every
 artifact the selected cases need. The subject OS defaults to the host's OS. Verification prints each

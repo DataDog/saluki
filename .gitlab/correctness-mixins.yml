@@ -31,8 +31,15 @@
     # comma-separated list of <container>=<image>; the container names are the ones
     # `panoramic list --json` reports per test.
     PANORAMIC_IMAGE_OVERRIDES: "millstone=${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA},datadog-intake=${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA},comparison=${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${PARENT_PIPELINE_ID}"
+  # Bind and pull the parent pipeline's images. The overrides above must agree with the manifest.
   script:
-    - target/release/panoramic run -d $(pwd)/test/correctness/cases -t ${CORRECTNESS_TEST_CASE} --no-tui
+    - target/release/panoramic artifacts render
+      --set agent-adp-linux-image=${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${PARENT_PIPELINE_ID}
+      --set tools-linux-image=${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA}
+      --set fixup-image=registry.ddbuild.io/alpine:latest
+      --output target/panoramic-artifacts.toml
+    - target/release/panoramic artifacts pull -d $(pwd)/test/correctness/cases --subject-os linux --artifacts target/panoramic-artifacts.toml
+    - target/release/panoramic run -d $(pwd)/test/correctness/cases -t ${CORRECTNESS_TEST_CASE} --subject-os linux --artifacts target/panoramic-artifacts.toml --no-tui
 
 # Added when the test's config.yaml names a saluki-images/ baseline (a
 # placeholder valid only locally). Replaces it with the CI-built image.

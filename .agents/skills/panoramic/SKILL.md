@@ -36,12 +36,12 @@ make test-integration
 `make test-integration-quick` skips image builds. Use it only after verifying that the local images
 match the working tree.
 
-`--runtime` scopes integration discovery. On macOS, assume the `linux` runtime through the local
-Docker setup unless the user explicitly requests native macOS tests; pass `--runtime linux` because
-the CLI defaults to `mac` there. Follow the current Make recipe for native macOS provisioning.
-For correctness subject-OS selection and skipped outcomes, see `docs/development/testing.md`.
+`test-integration` and `test-integration-quick` select Linux containers, even on macOS. Direct
+`panoramic` calls default to the host OS; pass `--subject-os linux` for containers on macOS.
+For native macOS tests, follow the macOS targets in `Makefile`. See `docs/development/testing.md`
+for subject-OS selection, artifact manifests and skipped outcomes.
 
-Use `panoramic list` with the intended test directory and runtime to discover eligible case names
+Use `panoramic list` with the intended test directory and subject OS to discover eligible case names
 before selecting them.
 
 ## Run non-interactively
@@ -55,7 +55,7 @@ runs.
 make build-panoramic
 target/release/panoramic run \
   -d "$(pwd)/test/integration/cases" \
-  --runtime linux \
+  --subject-os linux \
   -t <case-name> \
   --no-tui -o json -l "$(pwd)/target/test-output/panoramic"
 ```

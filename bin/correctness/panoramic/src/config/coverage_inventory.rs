@@ -856,6 +856,99 @@ fn inventory_reports_the_loader_error_for_a_non_string_type() {
     Inventory::generate(root.path());
 }
 
+/// Returns the first pin missing after its predecessor's match in `text`.
+/// Lines are trimmed; a candidate's trailing ` \` is optional.
+fn missing_line<'a>(text: &str, lines: &[&'a str]) -> Option<&'a str> {
+    let mut candidates = text.lines().map(str::trim);
+    lines.iter().copied().find(|line| {
+        !candidates.any(|candidate| candidate == line.trim() || candidate.strip_suffix(" \\") == Some(line.trim()))
+    })
+}
+
+#[track_caller]
+fn assert_lines_in_order(file: &str, text: &str, lines: &[&str]) {
+    if let Some(line) = missing_line(text, lines) {
+        panic!("{file}: CI line changed or out of order: {line}");
+    }
+}
+
+/// Restricts pins to one YAML job or Make target, including repeated declarations of that target.
+#[track_caller]
+fn assert_ci_block_lines_in_order(file: &str, text: &str, lines: &[&str]) {
+    let (name, _) = lines[0]
+        .split_once(':')
+        .expect("the first pin must be a job or target header");
+    let block: Vec<_> = text
+        .lines()
+        .skip_while(|line| *line != lines[0])
+        .take_while(|line| {
+            line.split_once(':').is_none_or(|(candidate, _)| {
+                candidate == name || candidate.contains(char::is_whitespace) || candidate.starts_with('#')
+            })
+        })
+        .collect();
+    assert_lines_in_order(file, &block.join("\n"), lines);
+}
+
+#[test]
+fn ci_line_pins_reject_commands_moved_to_another_job_or_target() {
+    let root = repository_root();
+    for (file, header, command) in [
+        (".gitlab/e2e.yml", "test-integration:", "- make build-panoramic"),
+        (
+            "Makefile",
+            "test-integration: build-panoramic build-datadog-agent-image build-correctness-tools-image",
+            r#"@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/integration/cases $(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR)) $(PANORAMIC_ARTIFACTS_ARG)"#,
+        ),
+    ] {
+        let text = read_text(&root.join(file));
+        let pins = [header, command];
+        assert_ci_block_lines_in_order(file, &text, &pins);
+        let (before, after) = text.split_once(header).unwrap();
+        let moved = format!(
+            "{before}{header}{}\npin-test-later:\n\t{command}\n",
+            after.replacen(command, "", 1)
+        );
+        let error = std::panic::catch_unwind(|| assert_ci_block_lines_in_order(file, &moved, &pins))
+            .expect_err("a command in another job or target must not satisfy the pin");
+        assert_eq!(
+            error.downcast_ref::<String>().unwrap(),
+            &format!("{file}: CI line changed or out of order: {command}")
+        );
+    }
+}
+
+#[test]
+fn missing_line_returns_the_first_pinned_line_absent_after_its_predecessor() {
+    let fixture = " first\n  second \\\n  third  \n";
+    for (lines, expected) in [
+        (vec!["first", "second", "third"], None),
+        (vec!["first", "missing", "third"], Some("missing")),
+        (vec!["second", "first"], Some("first")),
+        (vec![" second "], None),
+        (vec!["first", "first"], Some("first")),
+        (vec![], None),
+    ] {
+        assert_eq!(missing_line(fixture, &lines), expected, "pins: {lines:?}");
+    }
+}
+
+#[test]
+fn every_selected_correctness_case_extends_the_ci_baseline_mixin() {
+    let inventory = Inventory::generate(&repository_root());
+    for row in inventory
+        .rows
+        .iter()
+        .filter(|row| row.suite == CORRECTNESS && row.status == SELECTED)
+    {
+        assert!(
+            row.ci_mixins.iter().any(|mixin| mixin == ".test-correctness-adp-baseline"),
+            "{}: CI's manifest binds both baseline and comparison to the bundled image, so a published baseline would be replaced; use a saluki-images/ baseline to extend .test-correctness-adp-baseline",
+            row.name,
+        );
+    }
+}
+
 #[test]
 fn ci_jobs_in_the_inventory_are_defined() {
     let root = repository_root();
@@ -863,6 +956,8 @@ fn ci_jobs_in_the_inventory_are_defined() {
     let e2e = read_text(&root.join(".gitlab/e2e.yml"));
     let windows = read_text(&root.join(".gitlab/windows.yml"));
     let mixins = read_text(&root.join(".gitlab/correctness-mixins.yml"));
+    let makefile = read_text(&root.join("Makefile"));
+    let windows_script = read_text(&root.join("ci/tooling/windows-integration-tests.ps1"));
     let has_job = |text: &str, job: &str| text.lines().any(|line| line == format!("{job}:"));
     assert!(
         has_job(&e2e, "run-correctness-tests"),
@@ -885,6 +980,123 @@ fn ci_jobs_in_the_inventory_are_defined() {
             assert!(has_job(&mixins, mixin), "Missing CI mixin: {mixin}");
         }
     }
+    assert_ci_block_lines_in_order(
+        ".gitlab/e2e.yml",
+        &e2e,
+        &[
+            r#"test-integration:"#,
+            r#"- make build-panoramic"#,
+            r#"- target/release/panoramic artifacts render"#,
+            r#"--set agent-adp-linux-image=${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${CI_PIPELINE_ID}"#,
+            r#"--set tools-linux-image=${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA}"#,
+            r#"--set fixup-image=registry.ddbuild.io/alpine:latest"#,
+            r#"--output target/panoramic-artifacts.toml"#,
+            r#"- target/release/panoramic artifacts pull -d test/integration/cases --subject-os linux --artifacts target/panoramic-artifacts.toml"#,
+            r#"- make test-integration-quick PANORAMIC_ARTIFACTS=target/panoramic-artifacts.toml"#,
+        ],
+    );
+    assert_ci_block_lines_in_order(
+        ".gitlab/correctness-mixins.yml",
+        &mixins,
+        &[
+            r#".test-correctness-definition:"#,
+            r#"- target/release/panoramic artifacts render"#,
+            r#"--set agent-adp-linux-image=${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${PARENT_PIPELINE_ID}"#,
+            r#"--set tools-linux-image=${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA}"#,
+            r#"--set fixup-image=registry.ddbuild.io/alpine:latest"#,
+            r#"--output target/panoramic-artifacts.toml"#,
+            r#"- target/release/panoramic artifacts pull -d $(pwd)/test/correctness/cases --subject-os linux --artifacts target/panoramic-artifacts.toml"#,
+            r#"- target/release/panoramic run -d $(pwd)/test/correctness/cases -t ${CORRECTNESS_TEST_CASE} --subject-os linux --artifacts target/panoramic-artifacts.toml --no-tui"#,
+        ],
+    );
+    assert_lines_in_order(
+        "Makefile",
+        &makefile,
+        &[
+            r#"PANORAMIC_ARTIFACTS_ARG = $(if $(filter environment%,$(origin PANORAMIC_ARTIFACTS)),$(error PANORAMIC_ARTIFACTS must be set on the make command line, not in the environment),$(if $(PANORAMIC_ARTIFACTS),--artifacts "$(PANORAMIC_ARTIFACTS)"))"#,
+        ],
+    );
+    assert_ci_block_lines_in_order(
+        "Makefile",
+        &makefile,
+        &[
+            r#"test-correctness: build-panoramic build-correctness-tools-image build-datadog-agent-image-release"#,
+            r#"@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/correctness/cases $(if $(PANORAMIC_PARALLELISM),-p $(PANORAMIC_PARALLELISM)) $(PANORAMIC_ARTIFACTS_ARG)"#,
+        ],
+    );
+    assert_ci_block_lines_in_order(
+        "Makefile",
+        &makefile,
+        &[
+            r#"test-correctness-case: build-panoramic build-correctness-tools-image build-datadog-agent-image-release"#,
+            r#"@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/correctness/cases -t $(CASE) --no-tui $(PANORAMIC_ARTIFACTS_ARG)"#,
+        ],
+    );
+    assert_ci_block_lines_in_order(
+        "Makefile",
+        &makefile,
+        &[
+            r#"test-integration: build-panoramic build-datadog-agent-image build-correctness-tools-image"#,
+            r#"@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/integration/cases $(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR)) $(PANORAMIC_ARTIFACTS_ARG)"#,
+        ],
+    );
+    assert_ci_block_lines_in_order(
+        "Makefile",
+        &makefile,
+        &[
+            r#"test-integration-quick: build-panoramic"#,
+            r#"@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/integration/cases $(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR)) $(PANORAMIC_ARTIFACTS_ARG)"#,
+        ],
+    );
+    assert_ci_block_lines_in_order(
+        "Makefile",
+        &makefile,
+        &[
+            r#"list-integration-tests: build-panoramic"#,
+            r#"@target/release/panoramic list --subject-os linux -d $(shell pwd)/test/integration/cases"#,
+        ],
+    );
+    assert_ci_block_lines_in_order(
+        "Makefile",
+        &makefile,
+        &[
+            r#"test-integration-macos-run: BUILD_PROFILE ?= release"#,
+            r#"@target/release/panoramic run -d "$(CURDIR)/test/integration/cases""#,
+            r#"--subject-os macos"#,
+            r#"$(PANORAMIC_ARTIFACTS_ARG)"#,
+        ],
+    );
+    assert_ci_block_lines_in_order(
+        "Makefile",
+        &makefile,
+        &[
+            r#"render-macos-test-artifacts: build-panoramic"#,
+            r#"@target/release/panoramic artifacts render"#,
+            r#"--set adp-host-binary="$(CURDIR)/target/$(BUILD_PROFILE)/agent-data-plane""#,
+            r#"--set agent-host-install="$(MACOS_TEST_AGENT_INSTALL_DIR)""#,
+            r#"--output "$(MACOS_TEST_ARTIFACTS)""#,
+        ],
+    );
+    assert_ci_block_lines_in_order(
+        "Makefile",
+        &makefile,
+        &[
+            r#"test-integration-macos-ci: override PANORAMIC_ARTIFACTS = $(MACOS_TEST_ARTIFACTS)"#,
+            r#"test-integration-macos-ci: build-panoramic build-adp-host provision-macos-test-env render-macos-test-artifacts test-integration-macos-run ## CI entry point: builds binaries, provisions the Agent and cert, renders artifacts, and runs macOS integration tests"#,
+        ],
+    );
+    assert_lines_in_order(
+        "ci/tooling/windows-integration-tests.ps1",
+        &windows_script,
+        &[
+            r#"$Manifest = Join-Path $env:CARGO_TARGET_DIR "panoramic-artifacts.toml""#,
+            r#"Invoke-Native -FilePath $Panoramic -Arguments @("artifacts", "render", "--set", "agent-adp-windows-image=$ImageTag", "--output", $Manifest)"#,
+            r#""run","#,
+            r#""--subject-os", "windows","#,
+            r#""--artifacts", $Manifest,"#,
+            r#"Invoke-Native -FilePath $Panoramic -Arguments $PanoramicArgs"#,
+        ],
+    );
     let script = read_text(&root.join("ci/tooling/generate-correctness-pipeline.sh"));
     let position = |rule: &str| {
         script

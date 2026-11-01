@@ -125,14 +125,23 @@ test-integration:
     PANORAMIC_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
     PANORAMIC_LOG_DIR: integration-logs
   script:
-    # Copy the images we built to the local Docker instance, under the tags the Makefile builds locally, so we can
-    # share the integration test configurations between CI and local test runs. The correctness-tools image provides
-    # the intake sidecar that opted-in test cases run.
+    # Also tag pipeline images with the Makefile's local names; the image list below shows their IDs.
+    # correctness-tools provides the optional intake sidecar.
     - docker pull ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${CI_PIPELINE_ID}
     - docker tag ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${CI_PIPELINE_ID} saluki-images/datadog-agent:testing-devel
     - docker pull ${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA}
     - docker tag ${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA} saluki-images/correctness-tools:latest
-    - make test-integration-quick
+    # Compare these IDs with run.json's artifact identities.
+    - docker image ls --no-trunc --format '{{.Repository}}:{{.Tag}} {{.ID}}'
+    # Bind and pull pipeline images. PANORAMIC_ALPINE_IMAGE must agree with fixup-image.
+    - make build-panoramic
+    - target/release/panoramic artifacts render
+      --set agent-adp-linux-image=${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${CI_PIPELINE_ID}
+      --set tools-linux-image=${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA}
+      --set fixup-image=registry.ddbuild.io/alpine:latest
+      --output target/panoramic-artifacts.toml
+    - target/release/panoramic artifacts pull -d test/integration/cases --subject-os linux --artifacts target/panoramic-artifacts.toml
+    - make test-integration-quick PANORAMIC_ARTIFACTS=target/panoramic-artifacts.toml
 
 # Runs the subset of integration tests that have opted in to the `mac` runtime
 # directly on a bare-metal macOS runner. No Docker, no virtualization: panoramic spawns ADP
