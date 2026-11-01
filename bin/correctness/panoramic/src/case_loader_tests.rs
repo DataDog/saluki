@@ -105,9 +105,7 @@ fn agent_adp_participants_accept_environment_variables_and_os_overlays_only() {
 
     for (fields, expected) in [
         ("config: {files: {settings.yaml: missing.yaml}}", "it declares none"),
-        ("config: {endpoints: {api: {port: 80}}}", "it serves none"),
         ("config: {params: {mode: fast}}", "it accepts none"),
-        ("connect: {upstream: other.api}", "it consumes none"),
         (
             "config: {os: {linux: {files: {settings.yaml: missing.yaml}}}}",
             "it declares none",
@@ -127,6 +125,38 @@ fn agent_adp_participants_accept_environment_variables_and_os_overlays_only() {
         );
         assert!(message.contains("which type 'agent-adp' does not"), "{message}");
         assert!(message.ends_with(expected), "{message}");
+    }
+}
+
+#[test]
+fn agent_adp_participants_accept_no_endpoint_overrides_or_connections() {
+    let dir = tempfile::tempdir().unwrap();
+    for (fields, expected) in [
+        (
+            "config: {endpoints: {api: {port: 80}}}",
+            "overrides endpoint 'api', which it does not serve; it serves none",
+        ),
+        (
+            "connect: {upstream: other.api}",
+            "connects 'upstream', which it does not consume; it consumes none",
+        ),
+    ] {
+        let yaml = PARTICIPANT_FIELDS
+            .replace("[linux]", "[linux, macos, windows]")
+            .replace("participants:", "participants:\n  other: {type: agent-adp}")
+            .replace("subject: true", &format!("subject: true, {fields}"));
+        let path = write_case(dir.path(), "alpha", &yaml);
+        assert_eq!(crate::CASE_LOADER.load_file(&path).unwrap().len(), 1);
+        for os in [Os::Linux, Os::MacOs, Os::Windows] {
+            let message = discover_in_scope(&[dir.path().to_path_buf()], os)
+                .err()
+                .expect("undeclared endpoints must fail planning")
+                .to_string();
+            assert_eq!(message, format!(
+                "Failed to plan test cases:\n  - case 'alpha' in {}: on subject OS 'linux', participant 'adp' of type 'agent-adp' as linux-container on linux {expected}",
+                path.canonicalize().unwrap().display(),
+            ));
+        }
     }
 }
 

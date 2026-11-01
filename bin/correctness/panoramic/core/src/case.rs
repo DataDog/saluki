@@ -26,11 +26,12 @@ mod template;
 #[cfg(test)]
 pub(crate) mod fixtures;
 
+pub(crate) use self::participant_check::declared_names;
 pub use self::{
     duration::CaseDuration,
     file::{
-        deserialize_env_map, CaseFile, ConfigOverlay, FileSource, ParticipantConfig, ParticipantEntry, ProcedureNode,
-        RequestedRealization, StepNode,
+        deserialize_env_map, CaseFile, ConfigOverlay, ConnectionTarget, EndpointOverride, FileSource,
+        ParticipantConfig, ParticipantEntry, ProcedureNode, RequestedRealization, StepNode,
     },
     template::Template,
 };
@@ -216,7 +217,8 @@ where
     /// Participant names must be DNS labels starting with a letter, other than `self`;
     /// exactly one subject is required, without an `os` override.
     /// Types and steps must be registered, their fields valid, and their references declared.
-    /// Connections must join a consumed endpoint to another participant's served endpoint.
+    /// Connections must name another, existing participant. Endpoint and connection checks against types
+    /// run in [`crate::plan::CasePlan::compile`].
     /// OS overlays must be reachable, and referenced facts must be declared by the participant's type.
     /// Configuration file sources, including overlays, must be nonempty relative paths within the case directory
     /// that resolve to existing files or directories. Symlink targets may be outside the directory.

@@ -101,6 +101,15 @@ impl Layout {
     }
 }
 
+/// Formats a participant's name, type and realization for diagnostics.
+pub(crate) fn describe_participant(name: &str, type_name: &str, realization: Realization) -> String {
+    format!(
+        "participant '{name}' of type '{type_name}' as {} on {}",
+        realization.kind.name(),
+        realization.os.name(),
+    )
+}
+
 /// Formats realizations for diagnostics, preserving their order.
 pub(crate) fn describe_realizations(realizations: impl IntoIterator<Item = (Os, RealizationKind)>) -> String {
     let descriptions: Vec<_> = realizations

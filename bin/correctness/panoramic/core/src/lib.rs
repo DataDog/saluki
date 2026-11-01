@@ -8,6 +8,7 @@
 pub mod backend;
 pub mod case;
 pub mod deadline;
+pub mod endpoint;
 pub mod events;
 pub mod interrupts;
 pub mod layout;

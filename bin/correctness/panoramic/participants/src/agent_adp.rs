@@ -47,6 +47,8 @@ impl ParticipantType for AgentAdp {
 
 #[cfg(test)]
 mod tests {
+    use panoramic_core::participant::EffectiveConfig;
+
     use super::*;
 
     #[test]
@@ -59,6 +61,16 @@ mod tests {
                 (Os::Windows, RealizationKind::WindowsContainer)
             ]
         );
+    }
+
+    #[test]
+    fn agent_adp_serves_and_consumes_no_endpoints_on_any_supported_realization() {
+        let config = EffectiveConfig::default();
+        for &(os, kind) in AgentAdp.supports() {
+            let realization = Realization { os, kind };
+            assert!(AgentAdp.endpoints(realization, &config).unwrap().is_empty());
+            assert!(AgentAdp.consumes(realization, &config).is_empty());
+        }
     }
 
     #[test]

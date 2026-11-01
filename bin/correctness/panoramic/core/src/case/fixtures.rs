@@ -12,8 +12,9 @@ use serde_json::Value;
 
 use super::{case_name, CaseLoader, Registries, Template, TypedCase, TypedCaseLoader};
 use crate::{
+    endpoint::{ConsumedEndpoint, Endpoint, EndpointKind},
     layout::{Os, Realization, RealizationKind},
-    participant::{CaseValues, FactDeclaration, ParticipantType},
+    participant::{CaseValues, EffectiveConfig, FactDeclaration, ParticipantType},
     step::{decode_fields, Need, Step, StepFactory, StepFields},
 };
 
@@ -101,6 +102,47 @@ impl ParticipantType for Server {
             (Os::MacOs, RealizationKind::HostProcessGroup),
             (Os::Windows, RealizationKind::WindowsContainer),
         ]
+    }
+
+    fn default_env(&self, realization: Realization, _config: &CaseValues) -> BTreeMap<String, String> {
+        match (realization.os, realization.kind) {
+            (Os::Windows, RealizationKind::WindowsContainer) => BTreeMap::from([("METRICS".into(), "off".into())]),
+            _ => BTreeMap::new(),
+        }
+    }
+
+    fn endpoints(
+        &self, realization: Realization, config: &EffectiveConfig,
+    ) -> Result<BTreeMap<String, Endpoint>, String> {
+        assert!(self.supports().contains(&(realization.os, realization.kind)));
+        if let Some(port) = config.env.get("PORT") {
+            if port.parse::<u16>().is_err() {
+                return Err(format!("PORT '{port}' is not a number"));
+            }
+        }
+        let mut endpoints = BTreeMap::from([(
+            "api".into(),
+            Endpoint {
+                kind: EndpointKind::Http,
+            },
+        )]);
+        if config.env.get("METRICS").map(String::as_str) != Some("off") {
+            endpoints.insert(
+                "metrics".into(),
+                Endpoint {
+                    kind: EndpointKind::Udp,
+                },
+            );
+        }
+        if config.endpoints.contains_key("extra") {
+            endpoints.insert(
+                "extra".into(),
+                Endpoint {
+                    kind: EndpointKind::Tcp,
+                },
+            );
+        }
+        Ok(endpoints)
     }
 
     fn facts(&self, realization: Realization) -> &'static [FactDeclaration] {
@@ -195,11 +237,39 @@ impl ParticipantType for Configured {
     }
 }
 
-struct Client;
+pub(crate) struct Client;
 
 impl ParticipantType for Client {
     fn name(&self) -> &'static str {
         "client"
+    }
+
+    fn supports(&self) -> &'static [(Os, RealizationKind)] {
+        &[
+            (Os::Linux, RealizationKind::LinuxContainer),
+            (Os::MacOs, RealizationKind::HostProcessGroup),
+            (Os::Windows, RealizationKind::WindowsContainer),
+        ]
+    }
+
+    fn consumes(&self, realization: Realization, _config: &EffectiveConfig) -> BTreeMap<String, ConsumedEndpoint> {
+        assert!(self.supports().contains(&(realization.os, realization.kind)));
+        BTreeMap::from([
+            (
+                "upstream".into(),
+                ConsumedEndpoint {
+                    accepts: vec![EndpointKind::Http],
+                    required: true,
+                },
+            ),
+            (
+                "side".into(),
+                ConsumedEndpoint {
+                    accepts: vec![EndpointKind::Udp, EndpointKind::Tcp],
+                    required: false,
+                },
+            ),
+        ])
     }
 
     fn processes(&self) -> &'static [&'static str] {

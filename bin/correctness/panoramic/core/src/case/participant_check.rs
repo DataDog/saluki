@@ -18,9 +18,9 @@ use crate::{
 /// # Errors
 ///
 /// Returns the first error in this order: participant names, subject count, subject OS override;
-/// then, per participant in name order, registered type, realization options, file names and sources, endpoint
-/// overrides, parameters, OS overlays (reachable OS, file names and sources, parameters), and connections
-/// (consumed name, target, endpoint). Sources must be nonempty relative paths within the case directory
+/// then, per participant in name order, registered type, realization options, file names and sources,
+/// parameters, OS overlays (reachable OS, file names and sources, parameters), and connection targets
+/// (existing participant, not self). Sources must be nonempty relative paths within the case directory
 /// that resolve to existing files or directories.
 /// Map keys and overlay OSes are checked in sorted order. Every error names the case and source.
 pub(super) fn check_participants(
@@ -85,13 +85,6 @@ pub(super) fn check_participants(
         .map_err(&error)?;
         check_file_sources(&entry.config.files, case_dir, &holder, "").map_err(&error)?;
         check_keys(
-            entry.config.endpoints.keys(),
-            participant_type.serves(),
-            "serves",
-            |key| format!("{holder} overrides endpoint '{key}', which type '{type_name}' does not serve"),
-        )
-        .map_err(&error)?;
-        check_keys(
             entry.config.params.keys(),
             participant_type.params(),
             "accepts",
@@ -133,33 +126,14 @@ pub(super) fn check_participants(
         }
 
         for (consumed, target) in &entry.connect {
-            if !participant_type.consumes().contains(&consumed.as_str()) {
-                return Err(error(format!(
-                    "{holder} connects '{consumed}', which type '{type_name}' does not consume; it consumes {}",
-                    declared_names(participant_type.consumes())
-                )));
-            }
-            let Some(target_entry) = file.participants.get(&target.participant) else {
+            if !file.participants.contains_key(&target.participant) {
                 return Err(error(format!(
                     "{holder} connects '{consumed}' to unknown participant '{}'",
                     target.participant
                 )));
-            };
+            }
             if target.participant == *participant {
                 return Err(error(format!("{holder} connects '{consumed}' to itself")));
-            }
-            let Some(target_type) = find_type(types, &target_entry.participant_type) else {
-                // The target's own turn reports its unknown type; checking it here would break name order.
-                continue;
-            };
-            if !target_type.serves().contains(&target.endpoint.as_str()) {
-                return Err(error(format!(
-                    "{holder} connects '{consumed}' to '{}.{}', which type '{}' does not serve; it serves {}",
-                    target.participant,
-                    target.endpoint,
-                    target_type.name(),
-                    declared_names(target_type.serves())
-                )));
             }
         }
     }
@@ -234,7 +208,7 @@ fn check_keys<'a>(
     Ok(())
 }
 
-pub(super) fn declared_names(names: &[&str]) -> String {
+pub(crate) fn declared_names(names: &[&str]) -> String {
     if names.is_empty() {
         "none".into()
     } else {
@@ -261,10 +235,6 @@ mod tests {
             &["settings.yaml"]
         }
 
-        fn serves(&self) -> &'static [&'static str] {
-            &["api"]
-        }
-
         fn params(&self) -> &'static [&'static str] {
             &["mode"]
         }
@@ -279,10 +249,6 @@ mod tests {
     impl ParticipantType for Client {
         fn name(&self) -> &'static str {
             "client"
-        }
-
-        fn consumes(&self) -> &'static [&'static str] {
-            &["upstream"]
         }
 
         fn processes(&self) -> &'static [&'static str] {
@@ -442,7 +408,6 @@ mod tests {
                 "supplies configuration file 'typo'",
                 "settings.yaml",
             ),
-            ("{endpoints: {typo: {port: 80}}}", "overrides endpoint 'typo'", "api"),
             ("{params: {typo: fast}}", "sets parameter 'typo'", "mode"),
             (
                 "{os: {linux: {files: {typo: source.yaml}}}}",
@@ -469,7 +434,6 @@ mod tests {
 
         for (config, expected) in [
             ("{files: {settings.yaml: source.yaml}}", "it declares none"),
-            ("{endpoints: {api: {port: 80}}}", "it serves none"),
             ("{params: {mode: fast}}", "it accepts none"),
             (
                 "{os: {linux: {files: {settings.yaml: source.yaml}}}}",
@@ -609,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn a_participant_type_that_declares_only_its_name_and_processes_accepts_no_configuration_or_connections() {
+    fn a_participant_type_that_declares_only_its_name_and_processes_accepts_no_files_or_params() {
         struct Minimal;
 
         impl ParticipantType for Minimal {
@@ -630,20 +594,8 @@ mod tests {
                 "participant 'subject' supplies configuration file 'settings.yaml', which type 'minimal' does not declare; it declares none",
             ),
             (
-                "  subject: {type: minimal, subject: true, config: {endpoints: {api: {port: 80}}}}",
-                "participant 'subject' overrides endpoint 'api', which type 'minimal' does not serve; it serves none",
-            ),
-            (
                 "  subject: {type: minimal, subject: true, config: {params: {mode: fast}}}",
                 "participant 'subject' sets parameter 'mode', which type 'minimal' does not accept; it accepts none",
-            ),
-            (
-                "  subject: {type: minimal, subject: true, connect: {upstream: other.api}}\n  other: {type: minimal}",
-                "participant 'subject' connects 'upstream', which type 'minimal' does not consume; it consumes none",
-            ),
-            (
-                "  subject: {type: minimal, subject: true}\n  client: {type: client, connect: {upstream: subject.api}}",
-                "participant 'client' connects 'upstream' to 'subject.api', which type 'minimal' does not serve; it serves none",
             ),
         ] {
             let file: CaseFile = serde_saphyr::from_str(&case_yaml(participants, "linux")).unwrap();
@@ -695,16 +647,12 @@ mod tests {
     }
 
     #[test]
-    fn connections_join_a_consumed_endpoint_to_an_endpoint_another_participant_serves() {
+    fn a_connection_must_name_another_participant() {
         let yaml = case_yaml(
             "  client: {type: client, subject: true, connect: {upstream: server.api}}\n  server: {type: server}",
             "linux",
         );
         for (invalid, expected) in [
-            (
-                yaml.replace("upstream:", "typo:"),
-                "participant 'client' connects 'typo', which type 'client' does not consume; it consumes upstream",
-            ),
             (
                 yaml.replace("server.api", "missing.api"),
                 "participant 'client' connects 'upstream' to unknown participant 'missing'",
@@ -713,24 +661,11 @@ mod tests {
                 yaml.replace("server.api", "client.api"),
                 "participant 'client' connects 'upstream' to itself",
             ),
-            (
-                yaml.replace("server.api", "server.typo"),
-                "participant 'client' connects 'upstream' to 'server.typo', \
-                 which type 'server' does not serve; it serves api",
-            ),
-            (
-                yaml.replace("type: client,", "type: server,"),
-                "which type 'server' does not consume; it consumes none",
-            ),
-            (
-                yaml.replace("type: server}", "type: client}"),
-                "to 'server.api', which type 'client' does not serve; it serves none",
-            ),
         ] {
             let message = check_error(&invalid);
             assert!(message.contains(expected), "{message}");
-            check(&yaml).unwrap();
         }
+        check(&yaml).unwrap();
     }
 
     #[test]
@@ -744,7 +679,6 @@ mod tests {
     realization: {kind: linux-container, options: {z-option: true, a-option: true}}
     config:
       files: {z-file: z, a-file: a, settings.yaml: missing-base.yaml}
-      endpoints: {z-endpoint: {port: 80}, a-endpoint: {port: 80}}
       params: {z-param: true, a-param: true}
       os:
         windows: {}
@@ -777,8 +711,6 @@ mod tests {
                 "",
                 "configuration file 'settings.yaml' from 'missing-base.yaml'",
             ),
-            (", a-endpoint: {port: 80}", "", "overrides endpoint 'a-endpoint'"),
-            ("z-endpoint: {port: 80}", "", "overrides endpoint 'z-endpoint'"),
             (", a-param: true", "", "sets parameter 'a-param'"),
             ("z-param: true", "", "sets parameter 'z-param'"),
             (", a-overlay-file: a", "", "configuration file 'a-overlay-file'"),
@@ -792,8 +724,16 @@ mod tests {
             ("z-overlay-param: true", "", "sets parameter 'z-overlay-param'"),
             ("mac-file: x", "", "configuration file 'mac-file'"),
             ("        windows: {}\n", "", "has an 'os' overlay for 'windows'"),
-            (", a-connect: missing.api", "", "connects 'a-connect'"),
-            ("z-connect: missing.api", "", "connects 'z-connect'"),
+            (
+                ", a-connect: missing.api",
+                "",
+                "connects 'a-connect' to unknown participant 'missing'",
+            ),
+            (
+                "z-connect: missing.api",
+                "",
+                "connects 'z-connect' to unknown participant 'missing'",
+            ),
             (
                 "z: {type: unknown}",
                 "z: {type: server}",
@@ -823,34 +763,13 @@ mod tests {
             "linux",
         );
         for (bad, fix, expected) in [
-            ("typo:", "upstream:", "does not consume"),
             ("missing.api", "a.typo", "unknown participant 'missing'"),
             ("a.typo", "z.typo", "to itself"),
-            ("z.typo", "z.api", "which type 'server' does not serve"),
         ] {
             let message = check_error(&yaml);
             assert!(message.contains(expected), "{message}");
             yaml = yaml.replace(bad, fix);
         }
         check(&yaml).unwrap();
-    }
-
-    #[test]
-    fn a_connection_to_an_unknown_type_preserves_participant_check_order() {
-        let yaml = case_yaml(
-            r#"  z: {type: unknown}
-  b: {type: server, config: {params: {typo: true}}}
-  a: {type: client, subject: true, connect: {upstream: z.api}}"#,
-            "linux",
-        );
-        let message = check_error(&yaml);
-        assert!(message.contains("participant 'b' sets parameter 'typo'"), "{message}");
-        let yaml = yaml.replace("params: {typo: true}", "params: {}");
-        let message = check_error(&yaml);
-        assert!(
-            message.contains("participant 'z' has unknown type 'unknown'"),
-            "{message}"
-        );
-        check(&yaml.replace("type: unknown", "type: server")).unwrap();
     }
 }

@@ -83,8 +83,12 @@ pub(super) fn integration_config<'a>(
             ));
         }
     }
-    let EffectiveConfig { env, files: _ } =
-        config(participant).ok_or_else(|| format!("participant '{participant}' has no planned configuration"))?;
+    let EffectiveConfig {
+        env,
+        files: _,
+        params: _,
+        endpoints: _,
+    } = config(participant).ok_or_else(|| format!("participant '{participant}' has no planned configuration"))?;
     if !files.is_empty() || overlays.values().any(|overlay| !overlay.files.is_empty()) {
         return Err(format!(
             "participant '{participant}' sets 'config.files' or an overlay's 'files', which the integration runner does not support"

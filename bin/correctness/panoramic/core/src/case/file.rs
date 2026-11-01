@@ -199,25 +199,22 @@ impl<'de> Deserialize<'de> for FileSource {
 }
 
 /// A listener port supplied by the case.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EndpointOverride {
     /// Required listener port; has no default.
-    // TODO: remove once panoramic builds participants from this field.
-    #[allow(
-        dead_code,
-        reason = "Only tests read this field until participant construction uses it."
-    )]
-    pub(super) port: u16,
+    // TODO: remove once endpoint addresses use the override's port.
+    #[allow(dead_code, reason = "Retained for endpoint address resolution.")]
+    pub(crate) port: u16,
 }
 
 /// A connection target written as `participant.endpoint`.
 #[derive(Debug, PartialEq)]
 pub struct ConnectionTarget {
     /// Required name of the participant serving the endpoint; has no default.
-    pub(super) participant: String,
+    pub(crate) participant: String,
     /// Required endpoint name within the participant; has no default.
-    pub(super) endpoint: String,
+    pub(crate) endpoint: String,
 }
 
 impl<'de> Deserialize<'de> for ConnectionTarget {

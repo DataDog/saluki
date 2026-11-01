@@ -3,7 +3,8 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    case::{FileSource, ParticipantConfig},
+    case::{EndpointOverride, FileSource, ParticipantConfig},
+    endpoint::{ConsumedEndpoint, Endpoint},
     layout::{Os, Realization, RealizationKind},
 };
 
@@ -16,6 +17,8 @@ pub struct CaseValues {
     pub files: BTreeMap<String, FileSource>,
     /// Type-specific parameters; overlay values replace whole base values by key. Defaults to empty.
     pub params: BTreeMap<String, serde_json::Value>,
+    /// Base endpoint overrides, shared by every OS. Defaults to empty.
+    pub endpoints: BTreeMap<String, EndpointOverride>,
 }
 
 impl CaseValues {
@@ -25,6 +28,7 @@ impl CaseValues {
             env: config.env.clone(),
             files: config.files.clone(),
             params: config.params.clone(),
+            endpoints: config.endpoints.clone(),
         };
         if let Some(overlay) = config.os.get(&os) {
             values.env.extend(overlay.env.clone());
@@ -42,14 +46,23 @@ pub struct EffectiveConfig {
     pub env: BTreeMap<String, String>,
     /// Case-supplied file sources, relative to the case directory. Defaults to empty.
     pub files: BTreeMap<String, FileSource>,
+    /// Case parameters after the OS overlay, interpreted by the participant type. Defaults to empty.
+    pub params: BTreeMap<String, serde_json::Value>,
+    /// Case endpoint overrides, whose values the participant type interprets. Defaults to empty.
+    pub endpoints: BTreeMap<String, EndpointOverride>,
 }
 
 impl EffectiveConfig {
-    /// Applies case environment values over type defaults and takes files from the case.
+    /// Applies case environment values over type defaults, preserving files, parameters and endpoint overrides.
     pub(crate) fn assemble(defaults: BTreeMap<String, String>, case: CaseValues) -> Self {
         let mut env = defaults;
         env.extend(case.env);
-        Self { env, files: case.files }
+        Self {
+            env,
+            files: case.files,
+            params: case.params,
+            endpoints: case.endpoints,
+        }
     }
 }
 
@@ -77,16 +90,6 @@ pub trait ParticipantType: Send + Sync {
         &[]
     }
 
-    /// Served endpoints: connection targets and keys of `config.endpoints`. Defaults to none.
-    fn serves(&self) -> &'static [&'static str] {
-        &[]
-    }
-
-    /// Consumed endpoints: keys of `connect`. Defaults to none.
-    fn consumes(&self) -> &'static [&'static str] {
-        &[]
-    }
-
     /// Names a case may set under `config.params`. Defaults to none.
     fn params(&self) -> &'static [&'static str] {
         &[]
@@ -107,6 +110,24 @@ pub trait ParticipantType: Send + Sync {
     /// such as a key in a supplied configuration file. Defaults to none.
     /// Called after [`Self::validate_config`], only with realizations from [`Self::supports`].
     fn default_env(&self, _realization: Realization, _config: &CaseValues) -> BTreeMap<String, String> {
+        BTreeMap::new()
+    }
+
+    /// Endpoints this participant serves with its configuration, by name. Defaults to none.
+    /// Called after [`Self::validate_config`], only with realizations from [`Self::supports`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error describing configuration from which the type cannot derive its endpoints.
+    fn endpoints(
+        &self, _realization: Realization, _config: &EffectiveConfig,
+    ) -> Result<BTreeMap<String, Endpoint>, String> {
+        Ok(BTreeMap::new())
+    }
+
+    /// Endpoints this participant consumes with its configuration, by name: the keys a case may `connect`.
+    /// Defaults to none. Called after [`Self::validate_config`], only with realizations from [`Self::supports`].
+    fn consumes(&self, _realization: Realization, _config: &EffectiveConfig) -> BTreeMap<String, ConsumedEndpoint> {
         BTreeMap::new()
     }
 
@@ -150,6 +171,7 @@ mod tests {
 env: {A: base, B: base}
 files: {settings: base.yaml, scripts: scripts/}
 params: {mode: base, nested: {keep: true, replace: base}}
+endpoints: {api: {port: 80}, extra: {port: 90}}
 os:
   windows:
     env: {A: windows, C: windows}
@@ -218,8 +240,32 @@ os:
                     env: config.env.clone(),
                     files: config.files.clone(),
                     params: config.params.clone(),
+                    endpoints: config.endpoints.clone(),
                 }
             );
+        }
+    }
+
+    #[test]
+    fn case_values_carry_the_base_endpoint_overrides_on_every_os() {
+        let config: ParticipantConfig = serde_saphyr::from_str(CONFIG).unwrap();
+        let expected = BTreeMap::from([
+            ("api".into(), EndpointOverride { port: 80 }),
+            ("extra".into(), EndpointOverride { port: 90 }),
+        ]);
+        for os in [Os::Linux, Os::MacOs, Os::Windows] {
+            assert_eq!(CaseValues::for_os(&config, os).endpoints, expected);
+        }
+    }
+
+    #[test]
+    fn effective_config_carries_the_case_params_and_endpoint_overrides() {
+        let config: ParticipantConfig = serde_saphyr::from_str(CONFIG).unwrap();
+        for os in [Os::Linux, Os::MacOs, Os::Windows] {
+            let values = CaseValues::for_os(&config, os);
+            let effective = EffectiveConfig::assemble(BTreeMap::new(), values.clone());
+            assert_eq!(effective.params, values.params);
+            assert_eq!(effective.endpoints, values.endpoints);
         }
     }
 

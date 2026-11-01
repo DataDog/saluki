@@ -5,12 +5,16 @@ use std::collections::BTreeMap;
 use saluki_error::{generic_error, GenericError};
 
 use crate::{
-    case::{CaseConfig, CaseFile, CaseSchema, ProcedureNode, Registries},
-    layout::{describe_realizations, lay_out, Layout, Os, Realization},
+    case::{declared_names, CaseConfig, CaseFile, CaseSchema, ProcedureNode, Registries},
+    layout::{describe_participant, describe_realizations, lay_out, Layout, Os, Realization},
     participant::{find_type, CaseValues, EffectiveConfig, FactDeclaration, ParticipantType},
     record::step_label,
     step::{Need, Step},
 };
+
+mod connections;
+
+use self::connections::check_connections;
 
 /// A loaded case with the layout selected for execution.
 pub struct CasePlan<C> {
@@ -31,9 +35,11 @@ impl<C> CasePlan<C> {
     ///
     /// # Errors
     ///
-    /// Returns the first layout, configuration or fact-availability error, naming the case, source and failing
-    /// subject OS, even when the selected OS is excluded by the case. On each OS, layout errors precede
-    /// configuration errors in participant name order, then fact errors in procedure order with step labels.
+    /// Returns the first error on any declared subject OS, naming the case, source and failing OS,
+    /// even when the selected OS is excluded. On each OS, checks run in this order: layout;
+    /// configuration, endpoint derivation and overrides per participant in name order;
+    /// connections per consumer in name order (connect keys, then required endpoints, each in name order);
+    /// facts in procedure order with step labels.
     pub fn compile(
         case: CaseConfig<C>, subject_os: Os, registries: &Registries<'_>,
     ) -> Result<Option<Self>, GenericError> {
@@ -51,31 +57,8 @@ impl<C> CasePlan<C> {
                     )
                 };
                 let candidate = lay_out(&file.participants, registries.participant_types, os).map_err(&error)?;
-                let mut candidate_participants = BTreeMap::new();
-                for (name, realization) in candidate.iter() {
-                    let entry = &file.participants[name];
-                    let participant_type = find_type(registries.participant_types, &entry.participant_type)
-                        .expect("laid-out participants have registered types");
-                    let values = CaseValues::for_os(&entry.config, realization.os);
-                    participant_type
-                        .validate_config(realization, &values)
-                        .map_err(|message| {
-                            error(format!(
-                                "participant '{name}' of type '{}' as {} on {} has invalid configuration: {message}",
-                                participant_type.name(),
-                                realization.kind.name(),
-                                realization.os.name(),
-                            ))
-                        })?;
-                    let defaults = participant_type.default_env(realization, &values);
-                    candidate_participants.insert(
-                        name.to_string(),
-                        PlannedParticipant {
-                            facts: participant_type.facts(realization),
-                            config: EffectiveConfig::assemble(defaults, values),
-                        },
-                    );
-                }
+                let candidate_participants =
+                    plan_participants(file, &candidate, registries.participant_types).map_err(&error)?;
                 check_fact_needs(
                     file,
                     procedure,
@@ -136,6 +119,50 @@ impl<C> CasePlan<C> {
     }
 }
 
+/// Builds effective configurations and checks endpoints, then connections, in participant name order.
+fn plan_participants(
+    file: &CaseFile, layout: &Layout, types: &[&dyn ParticipantType],
+) -> Result<BTreeMap<String, PlannedParticipant>, String> {
+    let mut participants = BTreeMap::new();
+    let mut served = BTreeMap::new();
+    let mut consumed = BTreeMap::new();
+    for (name, realization) in layout.iter() {
+        let entry = &file.participants[name];
+        let participant_type =
+            find_type(types, &entry.participant_type).expect("laid-out participants have registered types");
+        let holder = describe_participant(name, &entry.participant_type, realization);
+        let invalid_config = |message| format!("{holder} has invalid configuration: {message}");
+        let values = CaseValues::for_os(&entry.config, realization.os);
+        participant_type
+            .validate_config(realization, &values)
+            .map_err(&invalid_config)?;
+        let defaults = participant_type.default_env(realization, &values);
+        let config = EffectiveConfig::assemble(defaults, values);
+        let endpoints = participant_type
+            .endpoints(realization, &config)
+            .map_err(invalid_config)?;
+        consumed.insert(name.to_string(), participant_type.consumes(realization, &config));
+        for endpoint in config.endpoints.keys() {
+            if !endpoints.contains_key(endpoint) {
+                return Err(format!(
+                    "{holder} overrides endpoint '{endpoint}', which it does not serve; it serves {}",
+                    declared_names(&endpoints.keys().map(String::as_str).collect::<Vec<_>>()),
+                ));
+            }
+        }
+        served.insert(name.to_string(), endpoints);
+        participants.insert(
+            name.to_string(),
+            PlannedParticipant {
+                facts: participant_type.facts(realization),
+                config,
+            },
+        );
+    }
+    check_connections(file, layout, &served, &consumed)?;
+    Ok(participants)
+}
+
 /// Rejects the first step needing an unavailable fact.
 fn check_fact_needs(
     file: &CaseFile, procedure: &[ProcedureNode<Box<dyn Step>>], layout: &Layout, types: &[&dyn ParticipantType],
@@ -189,8 +216,8 @@ mod tests {
     use crate::{
         case::{
             fixtures::{
-                write_case, Configured, FixtureConfig, FixtureTypes, PodServer, Server, LOADER, PARTICIPANT_FIELDS,
-                REGISTRIES, STEPS,
+                write_case, Client, Configured, FixtureConfig, FixtureTypes, PodServer, Server, LOADER,
+                PARTICIPANT_FIELDS, REGISTRIES, STEPS,
             },
             CaseLoader, FileSource,
         },
@@ -200,7 +227,7 @@ mod tests {
     const FACT_CASE: &str = "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {type: server, subject: true}\nprocedure: [{step: probe, on: subject, path: '{{ subject.facts.file }}'}]\n";
 
     const CONFIG_REGISTRIES: Registries<'static> = Registries {
-        participant_types: &[&Configured, &Server],
+        participant_types: &[&Client, &Configured, &Server],
         steps: STEPS,
     };
     const CONFIG_LOADER: CaseLoader<'static, FixtureTypes> =
@@ -238,14 +265,14 @@ procedure: []
                         ("PORT".into(), "1".into()),
                         ("EXTRA".into(), extra.into()),
                     ]),
-                    files: BTreeMap::new(),
+                    ..EffectiveConfig::default()
                 })
             );
             assert_eq!(
                 plan.effective_config("other"),
                 Some(&EffectiveConfig {
                     env: BTreeMap::from([("LEVEL".into(), "info".into()), ("PORT".into(), "2".into())]),
-                    files: BTreeMap::new(),
+                    ..EffectiveConfig::default()
                 })
             );
             assert_eq!(plan.effective_config("unknown"), None);
@@ -318,15 +345,21 @@ procedure: []
     }
 
     #[test]
-    fn configuration_errors_follow_layout_errors_and_precede_fact_errors() {
+    fn compile_reports_layout_configuration_endpoint_connection_and_fact_errors_in_that_order() {
         let mut yaml = FACT_CASE
             .replace("[linux]", "[windows]")
+            .replace("subject: true", "subject: true, config: {env: {METRICS: 'on'}}")
             .replace(
                 "participants:",
                 r#"participants:
   z: {type: server, realization: {kind: linux-container}}
   b: {type: configured, config: {params: {mode: broken}}}
   a: {type: configured, config: {params: {mode: broken}}}
+  c: {type: server, config: {env: {PORT: x}}}
+  d: {type: server, config: {endpoints: {z-typo: {port: 80}, a-typo: {port: 80}}}}
+  e: {type: client, connect: {z-typo: subject.typo, a-typo: subject.typo}}
+  f: {type: client, connect: {typo: subject.api}}
+  g: {type: server, config: {endpoints: {typo: {port: 80}}}}
   other: {type: server, os: macos}"#,
             )
             .replace("subject.facts.file", "other.facts.file");
@@ -347,6 +380,61 @@ procedure: []
                 "participant 'b' of type 'configured' as windows-container on windows has invalid configuration",
             ),
             (
+                "env: {PORT: x}",
+                "env: {PORT: '80'}",
+                "participant 'c' of type 'server' as windows-container on windows has invalid configuration: PORT 'x' is not a number",
+            ),
+            (
+                ", a-typo: {port: 80}",
+                "",
+                "participant 'd' of type 'server' as windows-container on windows overrides endpoint 'a-typo'",
+            ),
+            (
+                "z-typo: {port: 80}",
+                "",
+                "participant 'd' of type 'server' as windows-container on windows overrides endpoint 'z-typo'",
+            ),
+            (
+                "g: {type: server, config: {endpoints: {typo: {port: 80}}}}",
+                "g: {type: server}",
+                "participant 'g' of type 'server' as windows-container on windows overrides endpoint 'typo'",
+            ),
+            (
+                ", a-typo: subject.typo",
+                "",
+                "participant 'e' of type 'client' as windows-container on windows connects 'a-typo', which it does not consume",
+            ),
+            (
+                "z-typo: subject.typo",
+                "side: subject.typo",
+                "participant 'e' of type 'client' as windows-container on windows connects 'z-typo', which it does not consume",
+            ),
+            (
+                "side: subject.typo",
+                "side: subject.api",
+                "participant 'e' connects 'side' to 'subject.typo', which participant 'subject' of type 'server' as windows-container on windows does not serve",
+            ),
+            (
+                "side: subject.api",
+                "side: subject.metrics",
+                "participant 'e' connects 'side' to 'subject.api', an endpoint of kind http; 'side' of type 'client' accepts udp, tcp",
+            ),
+            (
+                "side: subject.metrics",
+                "side: subject.metrics, upstream: subject.api",
+                "participant 'e' of type 'client' as windows-container on windows does not connect required endpoint 'upstream'",
+            ),
+            (
+                "f: {type: client, connect: {typo: subject.api}}",
+                "f: {type: client}",
+                "participant 'f' of type 'client' as windows-container on windows connects 'typo', which it does not consume",
+            ),
+            (
+                "f: {type: client}",
+                "f: {type: client, connect: {upstream: subject.api}}",
+                "participant 'f' of type 'client' as windows-container on windows does not connect required endpoint 'upstream'",
+            ),
+            (
                 "other.facts.file",
                 "subject.facts.file",
                 "step 1 references fact 'file' of participant 'other'",
@@ -361,6 +449,204 @@ procedure: []
             compile(&yaml, Os::Windows).unwrap().unwrap().fact("subject", "file"),
             Some(r"C:\logs\output.log")
         );
+    }
+
+    const CONNECTION_CASE: &str = r#"timeout: 1s
+subject_os: [linux]
+participants:
+  client: {type: client, subject: true, connect: {upstream: server.api}}
+  server: {type: server}
+procedure: []
+"#;
+
+    #[test]
+    fn a_connection_must_name_an_endpoint_its_consumer_consumes() {
+        let message = compile(&CONNECTION_CASE.replace("upstream:", "typo:"), Os::Linux)
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(message,
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'client' of type 'client' as linux-container on linux connects 'typo', which it does not consume; it consumes side, upstream"
+        );
+        assert!(compile(CONNECTION_CASE, Os::Linux).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_connection_must_name_an_endpoint_its_target_serves_with_its_configuration() {
+        let yaml = CONNECTION_CASE
+            .replace("upstream: server.api", "upstream: server.api, side: server.metrics")
+            .replace("type: server}", "type: server, config: {env: {METRICS: 'off'}}}");
+        let message = compile(&yaml, Os::Linux).err().unwrap().to_string();
+        assert_eq!(message,
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'client' connects 'side' to 'server.metrics', which participant 'server' of type 'server' as linux-container on linux does not serve; it serves api"
+        );
+        assert!(compile(&yaml.replace("METRICS: 'off'", "METRICS: 'on'"), Os::Linux)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn an_endpoint_turned_off_by_a_type_default_is_not_served_unless_the_case_env_turns_it_on() {
+        let yaml = CONNECTION_CASE
+            .replace("[linux]", "[windows]")
+            .replace("upstream: server.api", "upstream: server.api, side: server.metrics");
+        let message = compile(&yaml, Os::Windows).err().unwrap().to_string();
+        assert_eq!(message,
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'windows', participant 'client' connects 'side' to 'server.metrics', which participant 'server' of type 'server' as windows-container on windows does not serve; it serves api"
+        );
+        let yaml = yaml.replace("type: server}", "type: server, config: {env: {METRICS: 'on'}}}");
+        assert!(compile(&yaml, Os::Windows).unwrap().is_some());
+    }
+
+    #[test]
+    fn an_os_overlay_can_turn_off_a_connected_endpoint_and_fail_compile_whatever_os_is_selected() {
+        let yaml = CONNECTION_CASE
+            .replace("[linux]", "[linux, macos, windows]")
+            .replace("upstream: server.api", "upstream: server.api, side: server.metrics")
+            .replace(
+                "type: server}",
+                "type: server, config: {env: {METRICS: 'on'}, os: {windows: {env: {METRICS: 'off'}}}}}",
+            );
+        for os in [Os::Linux, Os::MacOs, Os::Windows] {
+            let message = compile(&yaml, os).err().unwrap().to_string();
+            assert_eq!(message,
+                "case 'alpha' in cases/alpha/config.yaml: on subject OS 'windows', participant 'client' connects 'side' to 'server.metrics', which participant 'server' of type 'server' as windows-container on windows does not serve; it serves api"
+            );
+            assert!(compile(&yaml.replace("METRICS: 'off'", "METRICS: 'on'"), os)
+                .unwrap()
+                .is_some());
+        }
+    }
+
+    #[test]
+    fn a_connection_to_an_endpoint_of_a_kind_its_consumer_does_not_accept_fails_compile() {
+        let message = compile(&CONNECTION_CASE.replace("server.api", "server.metrics"), Os::Linux)
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(message,
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'client' connects 'upstream' to 'server.metrics', an endpoint of kind udp; 'upstream' of type 'client' accepts http"
+        );
+        assert!(compile(CONNECTION_CASE, Os::Linux).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_required_consumed_endpoint_must_be_connected() {
+        let yaml = CONNECTION_CASE.replace(", connect: {upstream: server.api}", "");
+        let message = compile(&yaml, Os::Linux).err().unwrap().to_string();
+        assert_eq!(message,
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'client' of type 'client' as linux-container on linux does not connect required endpoint 'upstream'; add 'upstream: <participant>.<endpoint>' to its 'connect'"
+        );
+        assert!(compile(CONNECTION_CASE, Os::Linux).unwrap().is_some());
+    }
+
+    #[test]
+    fn an_optional_consumed_endpoint_may_be_left_unconnected() {
+        assert!(compile(CONNECTION_CASE, Os::Linux).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_consumed_endpoint_accepts_each_kind_it_lists() {
+        for (endpoint, config) in [("metrics", ""), ("extra", ", config: {endpoints: {extra: {port: 90}}}")] {
+            let yaml = CONNECTION_CASE
+                .replace(
+                    "upstream: server.api",
+                    &format!("upstream: server.api, side: server.{endpoint}"),
+                )
+                .replace("type: server}", &format!("type: server{config}}}"));
+            assert!(compile(&yaml, Os::Linux).unwrap().is_some());
+        }
+    }
+
+    #[test]
+    fn a_connection_target_on_another_os_is_checked_with_its_own_realization() {
+        let yaml = CONNECTION_CASE
+            .replace("[linux]", "[macos]")
+            .replace("upstream: server.api", "upstream: server.api, side: server.metrics")
+            .replace(
+                "type: server}",
+                "type: server, os: linux, config: {os: {linux: {env: {METRICS: 'off'}}}}}",
+            );
+        let message = compile(&yaml, Os::MacOs).err().unwrap().to_string();
+        assert_eq!(message,
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'client' connects 'side' to 'server.metrics', which participant 'server' of type 'server' as linux-container on linux does not serve; it serves api"
+        );
+        assert!(compile(&yaml.replace("METRICS: 'off'", "METRICS: 'on'"), Os::MacOs)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn an_endpoint_override_must_name_an_endpoint_the_type_serves_with_that_override() {
+        let yaml = CONNECTION_CASE.replace(
+            "type: server}",
+            "type: server, config: {endpoints: {extra: {port: 90}}}}",
+        );
+        let plan = compile(&yaml, Os::Linux).unwrap().unwrap();
+        assert_eq!(plan.effective_config("server").unwrap().endpoints["extra"].port, 90);
+        let message = compile(&yaml.replace("extra:", "typo:"), Os::Linux)
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(message,
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'server' of type 'server' as linux-container on linux overrides endpoint 'typo', which it does not serve; it serves api, metrics"
+        );
+    }
+
+    #[test]
+    fn an_endpoint_derivation_error_fails_compile_naming_the_participant_and_realization() {
+        let yaml = CONNECTION_CASE.replace("type: server}", "type: server, config: {env: {PORT: x}}}");
+        let message = compile(&yaml, Os::Linux).err().unwrap().to_string();
+        assert_eq!(message,
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'server' of type 'server' as linux-container on linux has invalid configuration: PORT 'x' is not a number"
+        );
+        assert!(compile(&yaml.replace("PORT: x", "PORT: '80'"), Os::Linux)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn a_participant_type_that_declares_no_endpoints_serves_and_consumes_nothing() {
+        struct Minimal;
+
+        impl ParticipantType for Minimal {
+            fn name(&self) -> &'static str {
+                "minimal"
+            }
+
+            fn supports(&self) -> &'static [(Os, RealizationKind)] {
+                &[(Os::Linux, RealizationKind::LinuxContainer)]
+            }
+
+            fn processes(&self) -> &'static [&'static str] {
+                &["main"]
+            }
+        }
+
+        let registries = Registries {
+            participant_types: &[&Minimal, &Client],
+            steps: &[],
+        };
+        let loader = CaseLoader::new(registries, FixtureTypes, "fixture-participants");
+        for (participants, expected) in [
+            (
+                "  subject: {type: minimal, subject: true, config: {endpoints: {api: {port: 80}}}}",
+                "participant 'subject' of type 'minimal' as linux-container on linux overrides endpoint 'api', which it does not serve; it serves none",
+            ),
+            (
+                "  subject: {type: minimal, subject: true, connect: {upstream: other.api}}\n  other: {type: minimal}",
+                "participant 'subject' of type 'minimal' as linux-container on linux connects 'upstream', which it does not consume; it consumes none",
+            ),
+            (
+                "  subject: {type: minimal, subject: true}\n  client: {type: client, connect: {upstream: subject.api}}",
+                "participant 'client' connects 'upstream' to 'subject.api', which participant 'subject' of type 'minimal' as linux-container on linux does not serve; it serves none",
+            ),
+        ] {
+            let yaml = format!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n{participants}\nprocedure: []\n");
+            let case = loader.load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml")).unwrap().remove(0);
+            let message = CasePlan::compile(case, Os::Linux, &registries).err().unwrap().to_string();
+            assert_eq!(message, format!("case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', {expected}"));
+        }
     }
 
     #[test]
