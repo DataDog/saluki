@@ -165,6 +165,15 @@ an endpoint the participant serves and a route from the referencing participant,
 matching `connect` key. `host` and `port` apply to network endpoints, `path` to sockets and pipes, and `url` to every
 kind. The integration runner rejects any reference in an environment variable, and `agent-adp` accepts no parameters.
 
+A `config.files` source can be a map with `from` and `template: true`. Panoramic reads that file when the case
+loads: it must be a regular UTF-8 file, and every double opening brace in it must start a reference.
+Other sources aren't read. On every OS in `subject_os`, references in the files a participant uses after its
+overlay follow the rules for environment variables, except for late facts. A Kubernetes pod's template files
+may reference any late fact the referenced participant has, including the pod's own, except a host process group's
+`ip`, which only participants on that host process group's realization can use. On other realizations, a template
+file may not reference the participant's own late facts, except for a host process group's fixed `ip`.
+The integration runner rejects `config.files`.
+
 Durations in a participant case need a unit: write `30s`, not `30`.
 
 Every step names the participant it acts on with `on`. Step fields differ from the integration schema: steps use

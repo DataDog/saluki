@@ -11,16 +11,18 @@ use crate::{
 
 /// One participant's case configuration for its participant OS, after applying that OS's overlay.
 ///
-/// Fact references and fixed late facts (a host process group's `ip`) are already substituted.
+/// In `env` and `params`, fact references and fixed late facts (a host process group's `ip`) are already substituted.
 /// Other references stay exactly as written: another participant's `container_id` and endpoint and connection
 /// addresses resolve at creation; the participant's own late facts listed by
 /// [`ParticipantType::substituted_late_facts`] resolve after start.
 /// A type that must interpret an unresolved value reports a configuration error.
+/// Files marked `template: true` keep their references as written; their references are checked for this OS.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CaseValues {
     /// Environment variables after applying the overlay. Defaults to empty.
     pub env: BTreeMap<String, String>,
     /// File sources as written, relative to the case directory. Defaults to empty.
+    /// Files marked `template: true` keep their references as written, checked for this OS.
     pub files: BTreeMap<String, FileSource>,
     /// Type-specific parameters; overlay values replace whole base values by key. Defaults to empty.
     pub params: BTreeMap<String, serde_json::Value>,
@@ -48,16 +50,13 @@ impl CaseValues {
 
 /// A participant's configuration: its type's defaults with the case's values applied over them.
 ///
-/// Fact references and fixed late facts (a host process group's `ip`) are already substituted.
-/// Other references stay exactly as written: another participant's `container_id` and endpoint and connection
-/// addresses resolve at creation; the participant's own late facts listed by
-/// [`ParticipantType::substituted_late_facts`] resolve after start.
-/// A type that must interpret an unresolved value reports a configuration error.
+/// Case references follow the substitution and checking rules of [`CaseValues`].
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EffectiveConfig {
     /// Type defaults with case environment variables replacing matching keys. Defaults to empty.
     pub env: BTreeMap<String, String>,
     /// Case-supplied file sources, relative to the case directory. Defaults to empty.
+    /// Files marked `template: true` keep their references as written, checked for this OS.
     pub files: BTreeMap<String, FileSource>,
     /// Case parameters after the OS overlay, interpreted by the participant type. Defaults to empty.
     pub params: BTreeMap<String, serde_json::Value>,

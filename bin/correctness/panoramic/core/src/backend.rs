@@ -66,6 +66,11 @@ pub(crate) trait Backend: Send + Sync {
     /// Late facts and their availability, sorted by fact.
     fn late_facts(&self) -> &'static [(LateFact, LateFactTiming)];
 
+    /// Whether this backend writes template files after start, once their late facts are known.
+    fn writes_late_files(&self) -> bool {
+        false
+    }
+
     /// Checks that this host can create this kind for participants on `os`.
     async fn providable(&self, os: Os) -> Result<(), String>;
 }
@@ -78,11 +83,19 @@ pub(crate) const BACKENDS: &[&dyn Backend] = &[
 ];
 
 pub(crate) fn late_facts(kind: RealizationKind) -> &'static [(LateFact, LateFactTiming)] {
+    backend(kind).late_facts()
+}
+
+pub(crate) fn writes_late_files(kind: RealizationKind) -> bool {
+    backend(kind).writes_late_files()
+}
+
+fn backend(kind: RealizationKind) -> &'static dyn Backend {
     BACKENDS
         .iter()
+        .copied()
         .find(|backend| backend.kind() == kind)
         .expect("every realization kind has a backend")
-        .late_facts()
 }
 
 /// Returns each realization this runner host cannot provide, with the reason.
@@ -189,6 +202,10 @@ impl Backend for KubernetesPods {
         ]
     }
 
+    fn writes_late_files(&self) -> bool {
+        true
+    }
+
     async fn providable(&self, os: Os) -> Result<(), String> {
         if os != Os::Linux {
             return Err(format!("{} runs only on linux", self.kind().name()));
@@ -286,6 +303,16 @@ mod tests {
             let facts = late_facts(kind);
             assert!(facts.windows(2).all(|pair| pair[0].0 < pair[1].0));
             assert_eq!(facts, expected);
+        }
+    }
+
+    #[test]
+    fn only_kubernetes_pods_write_template_files_after_start() {
+        for backend in BACKENDS {
+            assert_eq!(
+                writes_late_files(backend.kind()),
+                backend.kind() == RealizationKind::KubernetesPod
+            );
         }
     }
 

@@ -146,7 +146,9 @@ pub struct FileSource {
     /// Required nonempty path within the case directory, stored as written. Must resolve to an existing file or
     /// directory; symlink targets may be outside the case directory. Has no default.
     pub from: PathBuf,
-    /// Whether to expand template references in the source. Defaults to false.
+    /// Whether the source holds template references. When true, it must be a regular UTF-8 file.
+    /// The loader reads only template sources, once each, and checks their references like `env` values.
+    /// Defaults to false.
     pub template: bool,
 }
 

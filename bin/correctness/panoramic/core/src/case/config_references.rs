@@ -1,20 +1,37 @@
 //! Walks participant configuration strings and checks their reference syntax and names at load,
 //! including every OS overlay.
 
-use std::{collections::BTreeMap, fmt};
+use std::{
+    collections::{btree_map::Entry, BTreeMap},
+    fmt,
+    path::{Path, PathBuf},
+};
 
 use serde_json::Value;
 
 use super::{
-    file::{CaseFile, ParticipantEntry},
+    file::{CaseFile, FileSource, ParticipantEntry},
     participant_check::declared_names,
     template::{ParticipantRef, Reference, Template},
 };
+
+/// Parsed template sources, shared by every participant and overlay that names the same path.
+#[derive(Debug, Default)]
+pub(crate) struct FileTemplates(BTreeMap<PathBuf, Template>);
+
+impl FileTemplates {
+    pub(crate) fn get(&self, from: &Path) -> &Template {
+        self.0
+            .get(from)
+            .expect("template file sources were read and parsed at load")
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(crate) enum ConfigField<'a> {
     Env(&'a str),
     Param(&'a str),
+    File(&'a str),
 }
 
 impl ConfigField<'_> {
@@ -22,6 +39,7 @@ impl ConfigField<'_> {
         match self {
             Self::Env(key) => format!("{prefix}.env '{key}'"),
             Self::Param(key) => format!("{prefix}.params '{key}'"),
+            Self::File(name) => format!("{prefix}.files '{name}'"),
         }
     }
 }
@@ -31,6 +49,7 @@ impl fmt::Display for ConfigField<'_> {
         match self {
             Self::Env(key) => write!(f, "environment variable '{key}'"),
             Self::Param(key) => write!(f, "parameter '{key}'"),
+            Self::File(name) => write!(f, "configuration file '{name}'"),
         }
     }
 }
@@ -105,10 +124,43 @@ pub(crate) fn walk_config_strings_mut(
 }
 
 pub(super) fn check_config_references(
-    file: &CaseFile, participant: &str, entry: &ParticipantEntry,
+    file: &CaseFile, participant: &str, entry: &ParticipantEntry, sources: &BTreeMap<PathBuf, String>,
+    templates: &mut FileTemplates,
 ) -> Result<(), String> {
     let holder = format!("participant '{participant}'");
-    let check = |env: &BTreeMap<String, String>, params: &BTreeMap<String, Value>, prefix: &str| {
+    let check_template = |template: &Template, field: &str| {
+        for (written, reference) in template.written_references() {
+            let (target, referenced) = match reference {
+                Reference::Fact { participant, fact } => (participant, format!("fact '{fact}'")),
+                Reference::Late { participant, fact } => (participant, format!("late fact '{}'", fact.name())),
+                Reference::Endpoint {
+                    participant, endpoint, ..
+                } => (participant, format!("endpoint '{endpoint}'")),
+                Reference::Connection { consumed, .. } => {
+                    if !entry.connect.contains_key(consumed) {
+                        return Err(format!(
+                            "{field} '{written}' references connection '{consumed}', which it does not connect; it connects {}",
+                            declared_names(&entry.connect.keys().map(String::as_str).collect::<Vec<_>>()),
+                        ));
+                    }
+                    continue;
+                }
+            };
+            if let ParticipantRef::Named(target) = target {
+                if !file.participants.contains_key(target) {
+                    return Err(format!(
+                        "{field} '{written}' references {referenced} of unknown participant '{target}'; participants: {}",
+                        declared_names(&file.participants.keys().map(String::as_str).collect::<Vec<_>>()),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    };
+    let mut check = |env: &BTreeMap<String, String>,
+                     params: &BTreeMap<String, Value>,
+                     files: &BTreeMap<String, FileSource>,
+                     prefix: &str| {
         for key in env.keys() {
             if key.contains("{{") {
                 return Err(format!(
@@ -119,38 +171,30 @@ pub(super) fn check_config_references(
         walk_config_strings(env, params, |field, text| {
             let field = format!("{holder} {}", field.in_config(prefix));
             let template: Template = text.parse().map_err(|reason| format!("{field} {reason}"))?;
-            for (written, reference) in template.written_references() {
-                let (target, referenced) = match reference {
-                    Reference::Fact { participant, fact } => (participant, format!("fact '{fact}'")),
-                    Reference::Late { participant, fact } => (participant, format!("late fact '{}'", fact.name())),
-                    Reference::Endpoint {
-                        participant, endpoint, ..
-                    } => (participant, format!("endpoint '{endpoint}'")),
-                    Reference::Connection { consumed, .. } => {
-                        if !entry.connect.contains_key(consumed) {
-                            return Err(format!(
-                                "{field} '{written}' references connection '{consumed}', which it does not connect; it connects {}",
-                                declared_names(&entry.connect.keys().map(String::as_str).collect::<Vec<_>>()),
-                            ));
-                        }
-                        continue;
-                    }
-                };
-                if let ParticipantRef::Named(target) = target {
-                    if !file.participants.contains_key(target) {
-                        return Err(format!(
-                            "{field} '{written}' references {referenced} of unknown participant '{target}'; participants: {}",
-                            declared_names(&file.participants.keys().map(String::as_str).collect::<Vec<_>>()),
-                        ));
-                    }
-                }
+            check_template(&template, &field)
+        })?;
+        for (name, source) in files.iter().filter(|(_, source)| source.template) {
+            let field = format!("{holder} {}", ConfigField::File(name).in_config(prefix));
+            if let Entry::Vacant(entry) = templates.0.entry(source.from.clone()) {
+                let template = sources
+                    .get(&source.from)
+                    .expect("template sources were read by check_file_sources")
+                    .parse()
+                    .map_err(|reason| format!("{field} {reason}"))?;
+                entry.insert(template);
             }
-            Ok(())
-        })
+            check_template(templates.get(&source.from), &field)?;
+        }
+        Ok(())
     };
-    check(&entry.config.env, &entry.config.params, "config")?;
+    check(&entry.config.env, &entry.config.params, &entry.config.files, "config")?;
     for (os, overlay) in &entry.config.os {
-        check(&overlay.env, &overlay.params, &format!("config.os.{}", os.name()))?;
+        check(
+            &overlay.env,
+            &overlay.params,
+            &overlay.files,
+            &format!("config.os.{}", os.name()),
+        )?;
     }
     Ok(())
 }

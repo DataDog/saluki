@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 
 use super::{connections::ParticipantEndpoints, routes::check_route};
 use crate::{
-    backend::{late_facts, LateFact, LateFactTiming},
+    backend::{late_facts, writes_late_files, LateFact, LateFactTiming},
     case::{
-        config_references::{walk_config_strings, walk_config_strings_mut, ConfigField},
+        config_references::{walk_config_strings, walk_config_strings_mut, ConfigField, FileTemplates},
         declared_names,
         template::{AddressPart, Reference, Template},
         CaseFile,
@@ -31,6 +31,22 @@ pub(super) fn resolve_config_references(
             .map_err(|reason| format!("{holder} {field} {reason}"))?;
         Ok(())
     })
+}
+
+pub(super) fn check_file_references(
+    file: &CaseFile, templates: &FileTemplates, layout: &Layout, types: &[&dyn ParticipantType], name: &str,
+    values: &CaseValues,
+) -> Result<(), String> {
+    let realization = layout.get(name).expect("loaded participants have a layout");
+    let holder = describe_participant(name, &file.participants[name].participant_type, realization);
+    for (file_name, source) in values.files.iter().filter(|(_, source)| source.template) {
+        let field = ConfigField::File(file_name);
+        for (written, reference) in templates.get(&source.from).written_references() {
+            resolve_reference(file, layout, types, name, field, reference)
+                .map_err(|reason| format!("{holder} {field} '{written}' {reason}"))?;
+        }
+    }
+    Ok(())
 }
 
 fn resolve_reference(
@@ -90,6 +106,18 @@ fn resolve_reference(
         }
         return Ok(Some((*value).into()));
     }
+    if matches!(field, ConfigField::File(_)) {
+        let holder_kind = layout.get(holder).expect("loaded participants have a layout").kind;
+        if writes_late_files(holder_kind) {
+            return Ok(None);
+        }
+        if name == holder {
+            return Err(format!(
+                "references its own late fact '{fact_name}', which a configuration file of a {} cannot wait for",
+                holder_kind.name(),
+            ));
+        }
+    }
     if name == holder {
         if matches!(field, ConfigField::Param(_)) {
             return Err(format!(
@@ -119,64 +147,81 @@ fn resolve_reference(
 }
 
 pub(super) fn check_address_references(
-    file: &CaseFile, layout: &Layout, endpoints: &BTreeMap<String, ParticipantEndpoints>,
+    file: &CaseFile, templates: &FileTemplates, layout: &Layout, endpoints: &BTreeMap<String, ParticipantEndpoints>,
 ) -> Result<(), String> {
     for (name, participant) in endpoints {
-        let realization = layout.get(name).expect("loaded participants have a layout");
-        let entry = &file.participants[name];
-        let holder = describe_participant(name, &entry.participant_type, realization);
         walk_config_strings(&participant.values.env, &participant.values.params, |field, text| {
             let template: Template = text
                 .parse()
                 .expect("substituted configuration retains valid references");
-            for (written, reference) in template.written_references() {
-                let context = format!("{holder} {field} '{written}'");
-                let (kind, part) = match reference {
-                    Reference::Endpoint {
-                        participant,
-                        endpoint,
-                        part,
-                    } => {
-                        let target = participant.name(name);
-                        let served = &endpoints[target].served;
-                        let Some(served_endpoint) = served.get(endpoint) else {
-                            return Err(format!(
-                                "{context} references endpoint '{endpoint}' of participant '{target}', which it does not serve; it serves {}",
-                                declared_names(&served.keys().map(String::as_str).collect::<Vec<_>>()),
-                            ));
-                        };
-                        if target != name {
-                            let target_realization = layout.get(target).expect("referenced participants have a layout");
-                            check_route(served_endpoint.kind, realization, target_realization).map_err(|constraint| format!(
-                                "{context} references endpoint '{endpoint}' of participant '{target}', which it cannot reach: {constraint}"
-                            ))?;
-                        }
-                        (served_endpoint.kind, part)
-                    }
-                    Reference::Connection { consumed, part } => {
-                        let target = &entry.connect[consumed];
-                        (endpoints[&target.participant].served[&target.endpoint].kind, part)
-                    }
-                    _ => continue,
-                };
-                let (allowed, parts) = match kind {
-                    EndpointKind::Tcp | EndpointKind::Udp | EndpointKind::Http | EndpointKind::Grpc => (
-                        matches!(part, AddressPart::Url | AddressPart::Host | AddressPart::Port),
-                        "url, host or port",
-                    ),
-                    EndpointKind::UnixDatagram | EndpointKind::UnixStream | EndpointKind::NamedPipe => {
-                        (matches!(part, AddressPart::Url | AddressPart::Path), "url or path")
-                    }
-                };
-                if !allowed {
-                    return Err(format!(
-                        "{context}: a {} endpoint has no '{part}'; use {parts}",
-                        kind.name()
-                    ));
-                }
-            }
-            Ok(())
+            check_template_addresses(file, layout, endpoints, name, field, &template)
         })?;
+        for (file_name, source) in participant.values.files.iter().filter(|(_, source)| source.template) {
+            check_template_addresses(
+                file,
+                layout,
+                endpoints,
+                name,
+                ConfigField::File(file_name),
+                templates.get(&source.from),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn check_template_addresses(
+    file: &CaseFile, layout: &Layout, endpoints: &BTreeMap<String, ParticipantEndpoints>, name: &str,
+    field: ConfigField<'_>, template: &Template,
+) -> Result<(), String> {
+    let realization = layout.get(name).expect("loaded participants have a layout");
+    let entry = &file.participants[name];
+    let holder = describe_participant(name, &entry.participant_type, realization);
+    for (written, reference) in template.written_references() {
+        let context = format!("{holder} {field} '{written}'");
+        let (kind, part) = match reference {
+            Reference::Endpoint {
+                participant,
+                endpoint,
+                part,
+            } => {
+                let target = participant.name(name);
+                let served = &endpoints[target].served;
+                let Some(served_endpoint) = served.get(endpoint) else {
+                    return Err(format!(
+                        "{context} references endpoint '{endpoint}' of participant '{target}', which it does not serve; it serves {}",
+                        declared_names(&served.keys().map(String::as_str).collect::<Vec<_>>()),
+                    ));
+                };
+                if target != name {
+                    let target_realization = layout.get(target).expect("referenced participants have a layout");
+                    check_route(served_endpoint.kind, realization, target_realization).map_err(|constraint| format!(
+                        "{context} references endpoint '{endpoint}' of participant '{target}', which it cannot reach: {constraint}"
+                    ))?;
+                }
+                (served_endpoint.kind, part)
+            }
+            Reference::Connection { consumed, part } => {
+                let target = &entry.connect[consumed];
+                (endpoints[&target.participant].served[&target.endpoint].kind, part)
+            }
+            _ => continue,
+        };
+        let (allowed, parts) = match kind {
+            EndpointKind::Tcp | EndpointKind::Udp | EndpointKind::Http | EndpointKind::Grpc => (
+                matches!(part, AddressPart::Url | AddressPart::Host | AddressPart::Port),
+                "url, host or port",
+            ),
+            EndpointKind::UnixDatagram | EndpointKind::UnixStream | EndpointKind::NamedPipe => {
+                (matches!(part, AddressPart::Url | AddressPart::Path), "url or path")
+            }
+        };
+        if !allowed {
+            return Err(format!(
+                "{context}: a {} endpoint has no '{part}'; use {parts}",
+                kind.name()
+            ));
+        }
     }
     Ok(())
 }
@@ -190,13 +235,16 @@ mod tests {
     use super::*;
     use crate::{
         case::{
-            fixtures::{FixtureTypes, Server},
+            fixtures::{write_case, FixtureConfig, FixtureTypes, Server},
             CaseLoader, Registries,
         },
         endpoint::{ConsumedEndpoint, Endpoint},
         layout::{Os, RealizationKind},
         participant::{EffectiveConfig, FactDeclaration},
-        plan::{tests::compile, CasePlan},
+        plan::{
+            tests::{compile, EveryKindClient, EveryKindServer},
+            CasePlan,
+        },
     };
 
     fn case(config: &str, os: &str) -> String {
@@ -725,5 +773,427 @@ mod tests {
             yaml = yaml.replace(&format!("{{{{self.endpoints.{endpoint}.url}}}}"), "literal");
         }
         error(&yaml, "linux", "step 1 references late fact 'pod_uid' of participant 'subject', which a linux-container does not have; a linux-container has container_id, ip");
+    }
+
+    struct FileServer;
+
+    impl ParticipantType for FileServer {
+        fn name(&self) -> &'static str {
+            "file-server"
+        }
+
+        fn supports(&self) -> &'static [(Os, RealizationKind)] {
+            EveryKindServer.supports()
+        }
+
+        fn config_files(&self) -> &'static [&'static str] {
+            &["settings.yaml", "z.yaml"]
+        }
+
+        fn params(&self) -> &'static [&'static str] {
+            &["mode"]
+        }
+
+        fn validate_config(&self, _realization: Realization, config: &CaseValues) -> Result<(), String> {
+            if config.env.get("PORT").is_some_and(|value| value == "broken") {
+                return Err("PORT 'broken' is not a number".into());
+            }
+            Ok(())
+        }
+
+        fn endpoints(
+            &self, realization: Realization, config: &EffectiveConfig,
+        ) -> Result<BTreeMap<String, Endpoint>, String> {
+            let mut endpoints = EveryKindServer.endpoints(realization, config)?;
+            if config.env.get("TCP").is_some_and(|value| value == "off") {
+                endpoints.remove("tcp");
+            }
+            Ok(endpoints)
+        }
+
+        fn consumes(&self, realization: Realization, config: &EffectiveConfig) -> BTreeMap<String, ConsumedEndpoint> {
+            EveryKindClient.consumes(realization, config)
+        }
+
+        fn facts(&self, realization: Realization) -> &'static [FactDeclaration] {
+            Server.facts(realization)
+        }
+
+        fn substituted_late_facts(&self, _realization: Realization) -> &'static [LateFact] {
+            &[LateFact::Ip]
+        }
+
+        fn processes(&self) -> &'static [&'static str] {
+            &[]
+        }
+    }
+
+    const FILE_REGISTRIES: Registries<'_> = Registries {
+        participant_types: &[&FileServer],
+        steps: &[],
+    };
+    const FILE_CONFIG: &str = "{files: {settings.yaml: {from: source.yaml, template: true}}}";
+
+    fn file_case(os: &str) -> String {
+        case(FILE_CONFIG, os).replace("type: server", "type: file-server")
+    }
+
+    fn compile_files(yaml: &str, sources: &[(&str, &str)], os: Os) -> Result<CasePlan<FixtureConfig>, String> {
+        let dir = tempfile::tempdir().unwrap();
+        let source = write_case(dir.path(), "alpha", yaml);
+        for (from, text) in sources {
+            std::fs::write(source.parent().unwrap().join(from), text).unwrap();
+        }
+        let loader = CaseLoader::new(FILE_REGISTRIES, FixtureTypes, "fixture");
+        let normalize = |error: saluki_error::GenericError| {
+            error
+                .to_string()
+                .replace(&source.display().to_string(), "cases/alpha/config.yaml")
+        };
+        let case = loader
+            .load_content(yaml, "alpha", &source)
+            .map_err(normalize)?
+            .remove(0);
+        // Planning must use the contents captured at load, even if the source disappears.
+        for (from, _) in sources {
+            std::fs::remove_file(source.parent().unwrap().join(from)).unwrap();
+        }
+        CasePlan::compile(case, os, &FILE_REGISTRIES)
+            .map_err(normalize)
+            .map(Option::unwrap)
+    }
+
+    #[track_caller]
+    fn file_error(yaml: &str, text: &str, os: &str, expected: &str) {
+        assert_eq!(
+            compile_files(yaml, &[("source.yaml", text)], Os::Linux).err().unwrap(),
+            format!("case 'alpha' in cases/alpha/config.yaml: on subject OS '{os}', {expected}")
+        );
+    }
+
+    #[test]
+    fn template_file_facts_are_checked_from_loaded_contents_on_every_subject_os() {
+        for name in ["self", "subject"] {
+            let text = format!("path: {{{{ {name}.facts.file }}}}");
+            file_error(&file_case("windows, macos, linux"), &text, "macos", &format!(
+                "participant 'subject' of type 'file-server' as host-process-group on macos configuration file 'settings.yaml' '{{{{ {name}.facts.file }}}}' references fact 'file' of participant 'subject', which type 'file-server' does not provide as host-process-group on macos; it provides it as linux-container on linux, windows-container on windows"));
+            let plan = compile_files(&file_case("linux, windows"), &[("source.yaml", &text)], Os::Linux).unwrap();
+            assert_eq!(
+                plan.effective_config("subject").unwrap().files["settings.yaml"],
+                crate::case::FileSource {
+                    from: "source.yaml".into(),
+                    template: true
+                }
+            );
+            assert_eq!(
+                plan.case().file_templates().get(Path::new("source.yaml")),
+                &text.parse().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn shared_template_self_references_are_checked_for_each_holder() {
+        let yaml = file_case("macos").replace(
+            "procedure: []",
+            &format!("  other: {{type: file-server, os: linux, config: {FILE_CONFIG}}}\nprocedure: []"),
+        );
+        file_error(&yaml, "{{ self.facts.file }}", "macos",
+            "participant 'subject' of type 'file-server' as host-process-group on macos configuration file 'settings.yaml' '{{ self.facts.file }}' references fact 'file' of participant 'subject', which type 'file-server' does not provide as host-process-group on macos; it provides it as linux-container on linux, windows-container on windows");
+    }
+
+    #[test]
+    fn only_template_files_in_effect_for_the_participants_os_are_checked() {
+        for replacement in ["{from: host.yaml, template: true}", "host.yaml"] {
+            let config = format!("{{files: {{settings.yaml: {{from: source.yaml, template: true}}}}, os: {{macos: {{files: {{settings.yaml: {replacement}}}}}}}}}");
+            let yaml = case(&config, "linux, macos, windows").replace("type: server", "type: file-server");
+            for os in [Os::Linux, Os::MacOs, Os::Windows] {
+                let plan = compile_files(
+                    &yaml,
+                    &[
+                        ("source.yaml", "{{self.facts.file}}"),
+                        ("host.yaml", "{{self.late.ip}}"),
+                    ],
+                    os,
+                )
+                .unwrap();
+                let source = &plan.effective_config("subject").unwrap().files["settings.yaml"];
+                assert_eq!(
+                    source.from,
+                    Path::new(if os == Os::MacOs { "host.yaml" } else { "source.yaml" })
+                );
+                assert_eq!(source.template, os != Os::MacOs || replacement.contains("true"));
+            }
+            let yaml = file_case("linux").replace(
+                "procedure: []",
+                &format!("  other: {{type: file-server, os: macos, config: {config}}}\nprocedure: []"),
+            );
+            let plan = compile_files(
+                &yaml,
+                &[
+                    ("source.yaml", "{{self.facts.file}}"),
+                    ("host.yaml", "{{self.late.ip}}"),
+                ],
+                Os::Linux,
+            )
+            .unwrap();
+            assert_eq!(
+                plan.effective_config("other").unwrap().files["settings.yaml"].from,
+                Path::new("host.yaml")
+            );
+        }
+    }
+
+    #[test]
+    fn pod_template_files_accept_their_own_and_other_participants_existing_late_facts() {
+        for target_kind in ["kubernetes-pod", "linux-container"] {
+            let yaml = file_case("linux")
+                .replace("subject: true", "subject: true, realization: {kind: kubernetes-pod}")
+                .replace(
+                    "procedure: []",
+                    &format!("  other: {{type: file-server, realization: {{kind: {target_kind}}}}}\nprocedure: []"),
+                );
+            let text = format!("{{{{self.late.ip}}}} {{{{subject.late.container_id}}}} {{{{self.late.pod_uid}}}} {{{{other.late.ip}}}} {{{{other.late.container_id}}}} {}", if target_kind == "kubernetes-pod" { "{{other.late.pod_uid}}" } else { "" });
+            let plan = compile_files(&yaml, &[("source.yaml", &text)], Os::Linux).unwrap();
+            assert_eq!(
+                plan.case().file_templates().get(Path::new("source.yaml")),
+                &text.parse().unwrap()
+            );
+            if target_kind == "linux-container" {
+                file_error(&yaml, "{{other.late.pod_uid}}", "linux", "participant 'subject' of type 'file-server' as kubernetes-pod on linux configuration file 'settings.yaml' '{{other.late.pod_uid}}' references late fact 'pod_uid' of participant 'other', which a linux-container does not have");
+            }
+        }
+    }
+
+    #[test]
+    fn non_pod_template_files_reject_their_own_nonfixed_late_facts() {
+        for (os, kind) in [
+            ("linux", "linux-container"),
+            ("windows", "windows-container"),
+            ("macos", "host-process-group"),
+        ] {
+            for name in ["self", "subject"] {
+                for fact in ["ip", "container_id", "pod_uid"] {
+                    if os == "macos" && fact == "ip" {
+                        continue;
+                    }
+                    let reason = if fact == "pod_uid" || os == "macos" {
+                        format!("references late fact '{fact}' of participant 'subject', which a {kind} does not have")
+                    } else {
+                        format!("references its own late fact '{fact}', which a configuration file of a {kind} cannot wait for")
+                    };
+                    file_error(&file_case(os), &format!("{{{{{name}.late.{fact}}}}}"), os, &format!("participant 'subject' of type 'file-server' as {kind} on {os} configuration file 'settings.yaml' '{{{{{name}.late.{fact}}}}}' {reason}"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn non_pod_template_files_accept_another_containers_id_but_not_after_start_facts() {
+        for (os, kind) in [
+            ("linux", "linux-container"),
+            ("windows", "windows-container"),
+            ("linux", "kubernetes-pod"),
+        ] {
+            let yaml = file_case("linux").replace(
+                "procedure: []",
+                &format!("  other: {{type: file-server, os: {os}, realization: {{kind: {kind}}}}}\nprocedure: []"),
+            );
+            for fact in ["container_id", "ip", "pod_uid"] {
+                let text = format!("{{{{other.late.{fact}}}}}");
+                if fact == "container_id" && kind != "kubernetes-pod" {
+                    let plan = compile_files(&yaml, &[("source.yaml", &text)], Os::Linux).unwrap();
+                    assert!(plan.effective_config("subject").unwrap().files["settings.yaml"].template);
+                    continue;
+                }
+                let reason = if fact == "container_id" {
+                    format!("references late fact '{fact}' of participant 'other', which a {kind} knows only after it starts")
+                } else if fact == "pod_uid" && kind != "kubernetes-pod" {
+                    format!("references late fact '{fact}' of participant 'other', which a {kind} does not have")
+                } else {
+                    format!("references late fact '{fact}' of participant 'other'; configuration can use another participant's late fact only as the container_id of a participant known once created")
+                };
+                file_error(&yaml, &text, "linux", &format!("participant 'subject' of type 'file-server' as linux-container on linux configuration file 'settings.yaml' '{text}' {reason}"));
+            }
+        }
+    }
+
+    #[test]
+    fn a_host_process_groups_ip_in_a_template_file_requires_the_same_realization() {
+        let yaml = file_case("macos").replace("procedure: []", "  other: {type: file-server}\nprocedure: []");
+        let text = "{{self.late.ip}} {{subject.late.ip}} {{other.late.ip}}";
+        let plan = compile_files(&yaml, &[("source.yaml", text)], Os::MacOs).unwrap();
+        assert_eq!(
+            plan.case().file_templates().get(Path::new("source.yaml")),
+            &text.parse().unwrap()
+        );
+        for (os, kind) in [
+            ("linux", "linux-container"),
+            ("linux", "host-process-group"),
+            ("windows", "windows-container"),
+            ("linux", "kubernetes-pod"),
+        ] {
+            let yaml = file_case(os)
+                .replace(
+                    "subject: true",
+                    &format!("subject: true, realization: {{kind: {kind}}}"),
+                )
+                .replace(
+                    "procedure: []",
+                    "  other: {type: file-server, os: macos}\nprocedure: []",
+                );
+            file_error(&yaml, "{{other.late.ip}}", os, &format!("participant 'subject' of type 'file-server' as {kind} on {os} configuration file 'settings.yaml' '{{{{other.late.ip}}}}' references late fact 'ip' of participant 'other', which a host-process-group on macos reports only to participants on its own host"));
+        }
+    }
+
+    #[test]
+    fn template_endpoint_references_need_a_served_endpoint_and_a_route() {
+        let yaml = file_case("linux").replace(
+            "procedure: []",
+            "  other: {type: file-server, config: {env: {TCP: 'off'}}}\nprocedure: []",
+        );
+        file_error(&yaml, "{{other.endpoints.tcp.url}}", "linux", "participant 'subject' of type 'file-server' as linux-container on linux configuration file 'settings.yaml' '{{other.endpoints.tcp.url}}' references endpoint 'tcp' of participant 'other', which it does not serve; it serves datagram, grpc, http, pipe, stream, udp");
+        let yaml = yaml.replace("TCP: 'off'", "TCP: 'on'");
+        let text = "{{other.endpoints.tcp.url}}";
+        assert_eq!(
+            compile_files(&yaml, &[("source.yaml", text)], Os::Linux)
+                .unwrap()
+                .case()
+                .file_templates()
+                .get(Path::new("source.yaml")),
+            &text.parse().unwrap()
+        );
+        let yaml = yaml.replace("other: {type: file-server", "other: {type: file-server, os: macos");
+        file_error(&yaml, text, "linux", "participant 'subject' of type 'file-server' as linux-container on linux configuration file 'settings.yaml' '{{other.endpoints.tcp.url}}' references endpoint 'tcp' of participant 'other', which it cannot reach: network endpoints connect only participants with the same realization, or a host-process-group to a linux-container");
+    }
+
+    #[test]
+    fn template_connection_references_are_checked_after_connection_targets_and_routes() {
+        let yaml = file_case("linux")
+            .replace("subject: true", "subject: true, connect: {target: other.tcp}")
+            .replace(
+                "procedure: []",
+                "  other: {type: file-server, config: {env: {TCP: 'off'}}}\nprocedure: []",
+            );
+        let text = "{{self.connections.target.path}}";
+        file_error(&yaml, text, "linux", "participant 'subject' connects 'target' to 'other.tcp', which participant 'other' of type 'file-server' as linux-container on linux does not serve; it serves datagram, grpc, http, pipe, stream, udp");
+        let yaml = yaml.replace("TCP: 'off'", "TCP: 'on'");
+        file_error(&yaml, text, "linux", "participant 'subject' of type 'file-server' as linux-container on linux configuration file 'settings.yaml' '{{self.connections.target.path}}': a tcp endpoint has no 'path'; use url, host or port");
+        let yaml = yaml.replace("other: {type: file-server", "other: {type: file-server, os: macos");
+        file_error(&yaml, text, "linux", "participant 'subject' connects 'target' to 'other.tcp', an endpoint of kind tcp; participant 'subject' of type 'file-server' as linux-container on linux cannot reach participant 'other' of type 'file-server' as host-process-group on macos: network endpoints connect only participants with the same realization, or a host-process-group to a linux-container");
+    }
+
+    #[test]
+    fn template_address_checks_use_only_the_files_selected_by_the_os_overlay() {
+        let config = "{files: {settings.yaml: {from: source.yaml, template: true}}, os: {macos: {env: {TCP: 'off'}, files: {settings.yaml: {from: host.yaml, template: true}}}}}";
+        let yaml = case(config, "linux, macos, windows").replace("type: server", "type: file-server");
+        for os in [Os::Linux, Os::MacOs, Os::Windows] {
+            let plan = compile_files(
+                &yaml,
+                &[
+                    ("source.yaml", "{{self.endpoints.tcp.url}}"),
+                    ("host.yaml", "{{self.endpoints.udp.url}}"),
+                ],
+                os,
+            )
+            .unwrap();
+            assert_eq!(
+                plan.effective_config("subject").unwrap().files["settings.yaml"].from,
+                Path::new(if os == Os::MacOs { "host.yaml" } else { "source.yaml" })
+            );
+        }
+    }
+
+    #[test]
+    fn template_endpoint_and_connection_parts_must_match_the_endpoint_kind() {
+        for (endpoint, kind, network) in [
+            ("tcp", "tcp", true),
+            ("udp", "udp", true),
+            ("http", "http", true),
+            ("grpc", "grpc", true),
+            ("datagram", "unix-datagram", false),
+            ("stream", "unix-stream", false),
+            ("pipe", "named-pipe", false),
+        ] {
+            for part in ["url", "host", "port", "path"] {
+                for connection in [false, true] {
+                    if connection && endpoint == "pipe" {
+                        continue;
+                    }
+                    let (os, selected, realization) = if endpoint == "pipe" {
+                        ("windows", Os::Windows, "windows-container")
+                    } else {
+                        ("linux", Os::Linux, "linux-container")
+                    };
+                    let mut yaml = file_case(os);
+                    let text = if connection {
+                        yaml = yaml
+                            .replace(
+                                "subject: true",
+                                &format!("subject: true, connect: {{target: other.{endpoint}}}"),
+                            )
+                            .replace("procedure: []", "  other: {type: file-server}\nprocedure: []");
+                        format!("{{{{self.connections.target.{part}}}}}")
+                    } else {
+                        format!("{{{{self.endpoints.{endpoint}.{part}}}}}")
+                    };
+                    if part == "url" || (network && part != "path") || (!network && part == "path") {
+                        let plan = compile_files(&yaml, &[("source.yaml", &text)], selected).unwrap();
+                        assert_eq!(
+                            plan.case().file_templates().get(Path::new("source.yaml")),
+                            &text.parse().unwrap()
+                        );
+                    } else {
+                        let allowed = if network { "url, host or port" } else { "url or path" };
+                        file_error(&yaml, &text, os, &format!("participant 'subject' of type 'file-server' as {realization} on {os} configuration file 'settings.yaml' '{text}': a {kind} endpoint has no '{part}'; use {allowed}"));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn template_files_follow_env_and_params_in_fact_and_address_checks() {
+        for addresses in [false, true] {
+            let reference = if addresses {
+                "{{self.endpoints.missing.url}}"
+            } else {
+                "{{self.facts.missing}}"
+            };
+            let reason = if addresses {
+                "references endpoint 'missing' of participant 'subject', which it does not serve; it serves datagram, grpc, http, pipe, stream, tcp, udp"
+            } else {
+                "references fact 'missing' of participant 'subject', which type 'file-server' does not provide as linux-container on linux; it provides it as none"
+            };
+            let config = format!("{{env: {{KEY: '{reference}'}}, params: {{mode: '{reference}'}}, files: {{z.yaml: {{from: z.yaml, template: true}}, settings.yaml: {{from: source.yaml, template: true}}}}}}");
+            let mut yaml = case(&config, "linux").replace("type: server", "type: file-server");
+            let mut sources = [("source.yaml", reference), ("z.yaml", reference)];
+            for field in [
+                "environment variable 'KEY'",
+                "parameter 'mode'",
+                "configuration file 'settings.yaml'",
+                "configuration file 'z.yaml'",
+            ] {
+                assert_eq!(compile_files(&yaml, &sources, Os::Linux).err().unwrap(), format!("case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'subject' of type 'file-server' as linux-container on linux {field} '{reference}' {reason}"));
+                match field {
+                    "environment variable 'KEY'" => yaml = yaml.replace(&format!("KEY: '{reference}'"), "KEY: literal"),
+                    "parameter 'mode'" => yaml = yaml.replace(&format!("mode: '{reference}'"), "mode: literal"),
+                    "configuration file 'settings.yaml'" => sources[0].1 = "literal",
+                    _ => sources[1].1 = "literal",
+                }
+            }
+            assert_eq!(
+                compile_files(&yaml, &sources, Os::Linux)
+                    .unwrap()
+                    .effective_config("subject")
+                    .unwrap()
+                    .files
+                    .len(),
+                2
+            );
+        }
+        let yaml = file_case("linux").replace("config: {files:", "config: {env: {PORT: broken}, files:");
+        file_error(&yaml, "{{self.facts.missing}}", "linux", "participant 'subject' of type 'file-server' as linux-container on linux configuration file 'settings.yaml' '{{self.facts.missing}}' references fact 'missing' of participant 'subject', which type 'file-server' does not provide as linux-container on linux; it provides it as none");
+        file_error(&yaml, "literal", "linux", "participant 'subject' of type 'file-server' as linux-container on linux has invalid configuration: PORT 'broken' is not a number");
     }
 }

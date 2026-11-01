@@ -1,14 +1,14 @@
 //! Load-time checks of case participants against their registered types.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::{Component, Path},
+    collections::{btree_map::Entry, BTreeMap, BTreeSet},
+    path::{Component, Path, PathBuf},
 };
 
 use saluki_error::{generic_error, GenericError};
 
 use super::{
-    config_references::{check_config_references, check_param_keys},
+    config_references::{check_config_references, check_param_keys, FileTemplates},
     file::{CaseFile, FileSource, ParticipantEntry},
 };
 use crate::{
@@ -24,12 +24,13 @@ use crate::{
 /// then, per participant in name order, registered type, realization options, file names and sources,
 /// parameter key syntax then declarations, OS overlays (reachable OS, file names and sources, parameter key syntax
 /// then declarations), connection targets (existing participant, not self), and configuration reference syntax
-/// and names (base, then overlays). Sources must be nonempty relative paths within the case directory that resolve
-/// to existing files or directories.
+/// and names (base, then overlays; `env`, `params`, then template files). Sources must be nonempty relative paths
+/// within the case directory that resolve to existing files or directories. Template sources must be regular UTF-8 files;
+/// each template source is read and parsed once. Other sources are not read.
 /// Map keys and overlay OSes are checked in sorted order. Every error names the case and source.
 pub(super) fn check_participants(
     file: &CaseFile, subject_os: &BTreeSet<Os>, types: &[&dyn ParticipantType], name: &str, source: &Path,
-) -> Result<(), GenericError> {
+) -> Result<FileTemplates, GenericError> {
     let error = |message: String| generic_error!("case '{}' in {}: {}", name, source.display(), message);
     let case_dir = source.parent().expect("a case source names a file in its directory");
     for participant in file.participants.keys() {
@@ -65,6 +66,8 @@ pub(super) fn check_participants(
         )));
     }
 
+    let mut sources = BTreeMap::new();
+    let mut templates = FileTemplates::default();
     for (participant, entry) in &file.participants {
         let Some(participant_type) = find_type(types, &entry.participant_type) else {
             return Err(error(unknown_type_message(participant, &entry.participant_type, types)));
@@ -87,7 +90,7 @@ pub(super) fn check_participants(
             |key| format!("{holder} supplies configuration file '{key}', which type '{type_name}' does not declare"),
         )
         .map_err(&error)?;
-        check_file_sources(&entry.config.files, case_dir, &holder, "").map_err(&error)?;
+        check_file_sources(&entry.config.files, case_dir, &holder, "", &mut sources).map_err(&error)?;
         check_param_keys(&entry.config.params, &format!("{holder} config.params")).map_err(&error)?;
         check_keys(
             entry.config.params.keys(),
@@ -119,8 +122,14 @@ pub(super) fn check_participants(
                 },
             )
             .map_err(&error)?;
-            check_file_sources(&overlay.files, case_dir, &holder, &format!(" in its '{os}' overlay"))
-                .map_err(&error)?;
+            check_file_sources(
+                &overlay.files,
+                case_dir,
+                &holder,
+                &format!(" in its '{os}' overlay"),
+                &mut sources,
+            )
+            .map_err(&error)?;
             check_param_keys(&overlay.params, &format!("{holder} config.os.{os}.params")).map_err(&error)?;
             check_keys(overlay.params.keys(), participant_type.params(), "accepts", |key| {
                 format!(
@@ -142,14 +151,16 @@ pub(super) fn check_participants(
                 return Err(error(format!("{holder} connects '{consumed}' to itself")));
             }
         }
-        check_config_references(file, participant, entry).map_err(&error)?;
+        check_config_references(file, participant, entry, &sources, &mut templates).map_err(&error)?;
     }
-    Ok(())
+    Ok(templates)
 }
 
 /// Checks source paths stay within the case directory and exist. Symlink targets may be outside it.
+/// Reads only `template: true` sources, requiring regular UTF-8 files and caching each path in `sources` once.
 fn check_file_sources(
     files: &BTreeMap<String, FileSource>, case_dir: &Path, holder: &str, suffix: &str,
+    sources: &mut BTreeMap<PathBuf, String>,
 ) -> Result<(), String> {
     for (name, source) in files {
         let from = source.from.display();
@@ -180,11 +191,34 @@ fn check_file_sources(
             ));
         }
         let path = case_dir.join(&source.from);
-        if std::fs::metadata(&path).is_err() {
-            return Err(format!(
+        let metadata = std::fs::metadata(&path).map_err(|_| {
+            format!(
                 "{holder} supplies configuration file '{name}'{suffix} from '{from}', which does not exist at {}",
                 path.display()
-            ));
+            )
+        })?;
+        if source.template {
+            if metadata.is_dir() {
+                return Err(format!(
+                    "{holder} supplies configuration file '{name}'{suffix} from directory '{from}' with 'template: true'; only a file can be a template"
+                ));
+            }
+            if !metadata.is_file() {
+                return Err(format!(
+                    "{holder} supplies configuration file '{name}'{suffix} from '{from}' with 'template: true', which is not a regular file"
+                ));
+            }
+            if let Entry::Vacant(entry) = sources.entry(source.from.clone()) {
+                let bytes = std::fs::read(&path).map_err(|error| {
+                    format!(
+                        "{holder} supplies configuration file '{name}'{suffix} from '{from}', which can't be read: {error}"
+                    )
+                })?;
+                let text = String::from_utf8(bytes).map_err(|_| format!(
+                    "{holder} supplies configuration file '{name}'{suffix} from '{from}' with 'template: true', which is not UTF-8 text"
+                ))?;
+                entry.insert(text);
+            }
         }
     }
     Ok(())
@@ -275,7 +309,7 @@ mod tests {
         std::fs::write(source.parent().unwrap().join("source.yaml"), "").unwrap();
         let file: CaseFile = serde_saphyr::from_str(yaml).unwrap();
         let subject_os = file.check("alpha", &source).unwrap();
-        check_participants(&file, &subject_os, TYPES, "alpha", &source)
+        check_participants(&file, &subject_os, TYPES, "alpha", &source).map(|_| ())
     }
 
     #[track_caller]
@@ -778,5 +812,182 @@ mod tests {
             yaml = yaml.replace(bad, fix);
         }
         check(&yaml).unwrap();
+    }
+
+    fn loader() -> CaseLoader<'static, FixtureTypes> {
+        CaseLoader::new(
+            Registries {
+                participant_types: TYPES,
+                steps: &[],
+            },
+            FixtureTypes,
+            "fixture",
+        )
+    }
+
+    fn template_case(config: &str) -> String {
+        case_yaml(
+            &format!("  subject: {{type: server, subject: true, config: {config}, connect: {{link: other.api}}}}\n  other: {{type: server}}"),
+            "linux, windows",
+        )
+    }
+
+    #[track_caller]
+    fn template_error(config: &str, content: &[u8], expected: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let source = write_case(dir.path(), "alpha", &template_case(config));
+        std::fs::write(source.parent().unwrap().join("source.yaml"), content).unwrap();
+        let loader = loader();
+        assert_eq!(
+            loader.load_file(&source).err().unwrap().to_string(),
+            format!(
+                "case 'alpha' in {}: participant 'subject' {expected}",
+                source.canonicalize().unwrap().display()
+            )
+        );
+    }
+
+    #[test]
+    fn template_files_require_utf8_text_and_valid_references_in_the_base_and_overlays() {
+        for (content, reason) in [
+            (&[0xff, 0xfe][..], "supplies configuration file 'settings.yaml'SUFFIX from 'source.yaml' with 'template: true', which is not UTF-8 text"),
+            (&b"{{ x"[..], "PREFIX.files 'settings.yaml' unterminated template reference '{{ x': expected '}}'"),
+            (&b"{{ missing.facts.file }}"[..], "PREFIX.files 'settings.yaml' '{{ missing.facts.file }}' references fact 'file' of unknown participant 'missing'; participants: other, subject"),
+            (&b"{{ missing.late.ip }}"[..], "PREFIX.files 'settings.yaml' '{{ missing.late.ip }}' references late fact 'ip' of unknown participant 'missing'; participants: other, subject"),
+            (&b"{{ missing.endpoints.api.url }}"[..], "PREFIX.files 'settings.yaml' '{{ missing.endpoints.api.url }}' references endpoint 'api' of unknown participant 'missing'; participants: other, subject"),
+            (&b"{{ self.connections.missing.url }}"[..], "PREFIX.files 'settings.yaml' '{{ self.connections.missing.url }}' references connection 'missing', which it does not connect; it connects link"),
+        ] {
+            let values = "{files: {settings.yaml: {from: source.yaml, template: true}}}";
+            for (config, prefix, suffix) in [
+                (values.to_string(), "config", ""),
+                (format!("{{os: {{windows: {values}}}}}"), "config.os.windows", " in its 'windows' overlay"),
+            ] {
+                template_error(&config, content, &reason.replace("PREFIX", prefix).replace("SUFFIX", suffix));
+            }
+        }
+    }
+
+    #[test]
+    fn template_sources_must_be_files_but_other_sources_are_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let loader = loader();
+        let source = write_case(dir.path(), "alpha", &template_case("{}"));
+        std::fs::create_dir(source.parent().unwrap().join("directory")).unwrap();
+        std::fs::write(source.parent().unwrap().join("binary"), [0xff, 0xfe]).unwrap();
+        std::fs::write(source.parent().unwrap().join("literal"), "{{ x").unwrap();
+        std::fs::write(source.parent().unwrap().join("empty"), "").unwrap();
+        for from in ["directory", "binary", "literal", "empty"] {
+            let config = format!("{{files: {{settings.yaml: {from}}}}}");
+            let loaded = loader.load_content(&template_case(&config), "alpha", &source).unwrap();
+            assert_eq!(loaded.len(), 1);
+            assert_eq!(loaded[0].name(), "alpha");
+        }
+        let config = "{files: {settings.yaml: {from: empty, template: true}}}";
+        let loaded = loader.load_content(&template_case(config), "alpha", &source).unwrap();
+        assert_eq!(loaded[0].file_templates().get(Path::new("empty")), &"".parse().unwrap());
+        let values = "{files: {settings.yaml: {from: directory, template: true}}}";
+        for (config, suffix) in [
+            (values.to_string(), ""),
+            (format!("{{os: {{windows: {values}}}}}"), " in its 'windows' overlay"),
+        ] {
+            assert_eq!(loader.load_content(&template_case(&config), "alpha", &source).err().unwrap().to_string(),
+                format!("case 'alpha' in {}: participant 'subject' supplies configuration file 'settings.yaml'{suffix} from directory 'directory' with 'template: true'; only a file can be a template", source.display()));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn template_sources_follow_symlinks_and_reject_special_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sources = BTreeMap::new();
+        let files = BTreeMap::from([(
+            "settings.yaml".into(),
+            FileSource {
+                from: "source".into(),
+                template: true,
+            },
+        )]);
+        std::os::unix::fs::symlink(dir.path(), dir.path().join("source")).unwrap();
+        assert_eq!(check_file_sources(&files, dir.path(), "participant 'subject'", " in its 'windows' overlay", &mut sources).unwrap_err(),
+            "participant 'subject' supplies configuration file 'settings.yaml' in its 'windows' overlay from directory 'source' with 'template: true'; only a file can be a template");
+        std::fs::remove_file(dir.path().join("source")).unwrap();
+        let _listener = std::os::unix::net::UnixListener::bind(dir.path().join("source")).unwrap();
+        for suffix in ["", " in its 'windows' overlay"] {
+            assert_eq!(check_file_sources(&files, dir.path(), "participant 'subject'", suffix, &mut sources).unwrap_err(),
+                format!("participant 'subject' supplies configuration file 'settings.yaml'{suffix} from 'source' with 'template: true', which is not a regular file"));
+        }
+    }
+
+    #[test]
+    fn template_sources_are_read_once_per_written_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sources = BTreeMap::new();
+        let files = BTreeMap::from([(
+            "settings.yaml".into(),
+            FileSource {
+                from: "source.yaml".into(),
+                template: true,
+            },
+        )]);
+        std::fs::write(dir.path().join("source.yaml"), "{{ self.facts.file }}").unwrap();
+        check_file_sources(&files, dir.path(), "participant 'other'", "", &mut sources).unwrap();
+        std::fs::write(dir.path().join("source.yaml"), [0xff, 0xfe]).unwrap();
+        check_file_sources(&files, dir.path(), "participant 'subject'", "", &mut sources).unwrap();
+        check_file_sources(
+            &files,
+            dir.path(),
+            "participant 'subject'",
+            " in its 'windows' overlay",
+            &mut sources,
+        )
+        .unwrap();
+        assert_eq!(
+            sources,
+            BTreeMap::from([("source.yaml".into(), "{{ self.facts.file }}".into())])
+        );
+    }
+
+    #[test]
+    fn template_reference_checks_follow_env_and_params_then_overlays() {
+        let mut config = "{env: {KEY: '{{ env'}, params: {mode: '{{ param'}, files: {settings.yaml: {from: source.yaml, template: true}}, os: {windows: {env: {KEY: '{{ overlay'}}}}".to_string();
+        for (text, field) in [("{{ env", "config.env 'KEY'"), ("{{ param", "config.params 'mode'")] {
+            template_error(
+                &config,
+                b"{{ file",
+                &format!("{field} unterminated template reference '{text}': expected '}}}}'"),
+            );
+            config = config.replace(text, "literal");
+        }
+        template_error(
+            &config,
+            b"{{ file",
+            "config.files 'settings.yaml' unterminated template reference '{{ file': expected '}}'",
+        );
+        template_error(
+            &config,
+            b"literal",
+            "config.os.windows.env 'KEY' unterminated template reference '{{ overlay': expected '}}'",
+        );
+    }
+
+    #[test]
+    fn a_shared_template_checks_connections_for_each_holder() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = "{files: {settings.yaml: {from: source.yaml, template: true}}}";
+        let yaml = template_case(config)
+            .replace(
+                "other: {type: server}",
+                &format!("other: {{type: server, config: {config}, connect: {{link: subject.api}}}}"),
+            )
+            .replace(", connect: {link: other.api}", "");
+        let source = write_case(dir.path(), "alpha", &yaml);
+        std::fs::write(
+            source.parent().unwrap().join("source.yaml"),
+            "{{ self.connections.link.url }}",
+        )
+        .unwrap();
+        let loader = loader();
+        assert_eq!(loader.load_file(&source).err().unwrap().to_string(),
+            format!("case 'alpha' in {}: participant 'subject' config.files 'settings.yaml' '{{{{ self.connections.link.url }}}}' references connection 'link', which it does not connect; it connects none", source.canonicalize().unwrap().display()));
     }
 }

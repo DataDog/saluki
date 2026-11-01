@@ -6,7 +6,9 @@ use saluki_error::{generic_error, GenericError};
 
 use crate::{
     backend,
-    case::{declared_names, CaseConfig, CaseFile, CaseSchema, ProcedureNode, Registries},
+    case::{
+        config_references::FileTemplates, declared_names, CaseConfig, CaseFile, CaseSchema, ProcedureNode, Registries,
+    },
     layout::{describe_participant, describe_realizations, lay_out, Layout, Os, Realization},
     participant::{find_type, CaseValues, EffectiveConfig, FactDeclaration, ParticipantType},
     record::step_label,
@@ -40,11 +42,13 @@ impl<C> CasePlan<C> {
     ///
     /// Returns the first error on any declared subject OS, naming the case, source and failing OS,
     /// even when the selected OS is excluded. On each OS, checks run in this order: layout;
-    /// configuration fact and late-fact references, configuration, endpoint derivation and overrides
+    /// configuration fact and late-fact references (`env`, `params`, then template files), configuration,
+    /// endpoint derivation and overrides
     /// per participant in name order;
     /// connections per consumer in name order (per `connect` key in name order: consumed, served,
     /// accepted kind, route, delivered env keys; then required endpoints in name order);
-    /// configuration endpoint and connection references per participant in name order (`env`, then `params`);
+    /// configuration endpoint and connection references per participant in name order (`env`, then `params`,
+    /// then template files);
     /// step fact and late-fact references in procedure order with step labels.
     pub fn compile(
         case: CaseConfig<C>, subject_os: Os, registries: &Registries<'_>,
@@ -64,7 +68,8 @@ impl<C> CasePlan<C> {
                 };
                 let candidate = lay_out(&file.participants, registries.participant_types, os).map_err(&error)?;
                 let candidate_participants =
-                    plan_participants(file, &candidate, registries.participant_types).map_err(&error)?;
+                    plan_participants(file, case.file_templates(), &candidate, registries.participant_types)
+                        .map_err(&error)?;
                 check_reference_needs(
                     file,
                     procedure,
@@ -127,7 +132,7 @@ impl<C> CasePlan<C> {
 
 /// Builds effective configurations and checks endpoints, then connections, in participant name order.
 fn plan_participants(
-    file: &CaseFile, layout: &Layout, types: &[&dyn ParticipantType],
+    file: &CaseFile, templates: &FileTemplates, layout: &Layout, types: &[&dyn ParticipantType],
 ) -> Result<BTreeMap<String, PlannedParticipant>, String> {
     let mut participants = BTreeMap::new();
     let mut participant_endpoints = BTreeMap::new();
@@ -139,6 +144,7 @@ fn plan_participants(
         let invalid_config = |message| format!("{holder} has invalid configuration: {message}");
         let mut values = CaseValues::for_os(&entry.config, realization.os);
         references::resolve_config_references(file, layout, types, name, &mut values)?;
+        references::check_file_references(file, templates, layout, types, name, &values)?;
         participant_type
             .validate_config(realization, &values)
             .map_err(&invalid_config)?;
@@ -173,7 +179,7 @@ fn plan_participants(
         );
     }
     check_connections(file, layout, &participant_endpoints)?;
-    references::check_address_references(file, layout, &participant_endpoints)?;
+    references::check_address_references(file, templates, layout, &participant_endpoints)?;
     Ok(participants)
 }
 
@@ -254,7 +260,7 @@ mod tests {
         layout::{Realization, RealizationKind},
     };
 
-    struct EveryKindServer;
+    pub(super) struct EveryKindServer;
 
     impl ParticipantType for EveryKindServer {
         fn name(&self) -> &'static str {
@@ -297,7 +303,7 @@ mod tests {
         }
     }
 
-    struct EveryKindClient;
+    pub(super) struct EveryKindClient;
 
     impl ParticipantType for EveryKindClient {
         fn name(&self) -> &'static str {

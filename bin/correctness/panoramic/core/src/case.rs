@@ -28,6 +28,7 @@ pub(crate) mod template;
 pub(crate) mod fixtures;
 
 pub(crate) use self::participant_check::declared_names;
+use self::{config_references::FileTemplates, participant_check::check_participants, step_check::build_steps};
 pub use self::{
     duration::CaseDuration,
     file::{
@@ -36,7 +37,6 @@ pub use self::{
     },
     template::Template,
 };
-use self::{participant_check::check_participants, step_check::build_steps};
 
 /// The participant types and steps a case file may name.
 #[derive(Clone, Copy)]
@@ -223,6 +223,8 @@ where
     /// OS overlays must be reachable, and referenced facts must be declared by the participant's type.
     /// Configuration file sources, including overlays, must be nonempty relative paths within the case directory
     /// that resolve to existing files or directories. Symlink targets may be outside the directory.
+    /// Sources marked `template: true` must be regular UTF-8 files; each is read and parsed once, and its references
+    /// are checked like environment values. Other sources are not read.
     pub fn load_content(
         &self, content: &str, directory: &str, source: &Path,
     ) -> Result<Vec<CaseConfig<L::Config>>, GenericError> {
@@ -232,7 +234,8 @@ where
             let file: CaseFile = deserialize_case(content, source)?;
             let name = case_name(file.name.as_deref(), directory, source)?;
             let subject_os = file.check(&name, source)?;
-            check_participants(&file, &subject_os, self.registries.participant_types, &name, source)?;
+            let file_templates =
+                check_participants(&file, &subject_os, self.registries.participant_types, &name, source)?;
             let procedure = build_steps(
                 &file,
                 self.registries.steps,
@@ -250,6 +253,7 @@ where
                 subject_os,
                 disabled: false,
                 schema: CaseSchema::Participants { file, procedure },
+                file_templates,
             }]);
         };
         let cases = self.typed.load(case_type, content, directory, source)?;
@@ -267,6 +271,7 @@ where
                 subject_os: case.subject_os,
                 disabled: case.disabled,
                 schema: CaseSchema::Typed(case.config),
+                file_templates: FileTemplates::default(),
             })
             .collect())
     }
@@ -282,6 +287,7 @@ pub struct CaseConfig<C> {
     subject_os: BTreeSet<Os>,
     disabled: bool,
     schema: CaseSchema<C>,
+    file_templates: FileTemplates,
 }
 
 /// A participant case or data supplied by the typed loader.
@@ -298,6 +304,10 @@ pub enum CaseSchema<C> {
 }
 
 impl<C> CaseConfig<C> {
+    pub(crate) fn file_templates(&self) -> &FileTemplates {
+        &self.file_templates
+    }
+
     /// Returns the case name used for selection and reporting.
     pub fn name(&self) -> &str {
         &self.name
