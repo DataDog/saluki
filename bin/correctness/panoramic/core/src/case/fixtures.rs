@@ -1,7 +1,7 @@
 //! Participant types and typed-case declarations for loader tests.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -13,7 +13,7 @@ use serde_json::Value;
 use super::{case_name, CaseLoader, Registries, Template, TypedCase, TypedCaseLoader};
 use crate::{
     layout::{Os, Realization, RealizationKind},
-    participant::{FactDeclaration, ParticipantType},
+    participant::{CaseValues, FactDeclaration, ParticipantType},
     step::{decode_fields, Need, Step, StepFactory, StepFields},
 };
 
@@ -148,6 +148,50 @@ impl ParticipantType for PodServer {
 
     fn processes(&self) -> &'static [&'static str] {
         &["server"]
+    }
+}
+
+pub(crate) struct Configured;
+
+impl ParticipantType for Configured {
+    fn name(&self) -> &'static str {
+        "configured"
+    }
+
+    fn supports(&self) -> &'static [(Os, RealizationKind)] {
+        &[
+            (Os::Linux, RealizationKind::LinuxContainer),
+            (Os::Windows, RealizationKind::WindowsContainer),
+        ]
+    }
+
+    fn config_files(&self) -> &'static [&'static str] {
+        &["settings.yaml"]
+    }
+
+    fn params(&self) -> &'static [&'static str] {
+        &["mode"]
+    }
+
+    fn validate_config(&self, realization: Realization, config: &CaseValues) -> Result<(), String> {
+        if realization.os == Os::Windows && config.params.get("mode") == Some(&Value::from("broken")) {
+            return Err("mode 'broken' is unavailable on windows".into());
+        }
+        Ok(())
+    }
+
+    fn default_env(&self, realization: Realization, config: &CaseValues) -> BTreeMap<String, String> {
+        assert!(self.supports().contains(&(realization.os, realization.kind)));
+        assert!(self.validate_config(realization, config).is_ok());
+        let mut env = BTreeMap::from([("LEVEL".into(), "info".into())]);
+        if !config.files.contains_key("settings.yaml") {
+            env.insert("PORT".into(), "1".into());
+        }
+        env
+    }
+
+    fn processes(&self) -> &'static [&'static str] {
+        &[]
     }
 }
 

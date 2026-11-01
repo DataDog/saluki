@@ -1,7 +1,8 @@
 //! Translates a case that declares participants into an [`IntegrationConfig`] so the integration runner can execute it.
 //!
-//! Reads step fields from the case file. Supports one `agent-adp` participant configured only by `config.env`,
-//! with `log_contains` and `log_not_contains` (`process` omitted), translated to `stream: both`, and `file_contains`.
+//! Reads step fields from the case file and environment from the plan. Supports one `agent-adp` participant
+//! configured through `config.env` and `config.os` env overlays, with `log_contains` and `log_not_contains`
+//! (`process` omitted), translated to `stream: both`, and `file_contains`.
 //! File paths may reference the participant's facts, resolved from the participant's planned realization.
 //! Log steps search captured output: Linux container logs (Agent and ADP under s6),
 //! macOS stdout and stderr of the spawned Agent and ADP processes, or Windows container console output only.
@@ -11,6 +12,7 @@
 use std::path::Path;
 
 use panoramic_core::case::{CaseFile, ParticipantConfig, ParticipantEntry, ProcedureNode, StepNode};
+use panoramic_core::participant::EffectiveConfig;
 use panoramic_core::record::step_label;
 use panoramic_core::step::decode_fields;
 use panoramic_participants::AgentAdp;
@@ -26,10 +28,12 @@ use crate::dynamic_vars::ENV_PREFIX;
 ///
 /// # Errors
 ///
-/// Returns the first unsupported participant setting, unsupported or invalid step, or unresolvable file-path fact.
+/// Returns the first unsupported participant setting, missing planned configuration, unsupported or invalid step,
+/// or unresolvable file-path fact.
 /// Checks participants before steps. The caller supplies the case name and source in its error context.
 pub(super) fn integration_config<'a>(
     file: &CaseFile, name: &str, source: &Path, fact: impl Fn(&str, &str) -> Option<&'a str>,
+    config: impl Fn(&str) -> Option<&'a EffectiveConfig>,
 ) -> Result<IntegrationConfig, String> {
     let CaseFile {
         // Use the name resolved by the case loader.
@@ -52,16 +56,16 @@ pub(super) fn integration_config<'a>(
         subject: _,
         os: participant_os,
         realization,
-        config,
+        config: case_config,
         connect,
     } = entry;
     let ParticipantConfig {
-        env,
+        env: case_env,
         files,
         endpoints,
         params,
         os: overlays,
-    } = config;
+    } = case_config;
     if participant_type != AgentAdp::NAME {
         return Err(format!(
             "participant '{participant}' has type '{participant_type}'; the integration runner runs only '{}'",
@@ -72,10 +76,6 @@ pub(super) fn integration_config<'a>(
         ("os", participant_os.is_some()),
         ("realization", realization.is_some()),
         ("connect", !connect.is_empty()),
-        ("config.files", !files.is_empty()),
-        ("config.endpoints", !endpoints.is_empty()),
-        ("config.params", !params.is_empty()),
-        ("config.os", !overlays.is_empty()),
     ] {
         if is_set {
             return Err(format!(
@@ -83,18 +83,49 @@ pub(super) fn integration_config<'a>(
             ));
         }
     }
-    for (key, value) in env {
-        if key.contains("{{") || value.contains("{{") {
+    let EffectiveConfig { env, files: _ } =
+        config(participant).ok_or_else(|| format!("participant '{participant}' has no planned configuration"))?;
+    if !files.is_empty() || overlays.values().any(|overlay| !overlay.files.is_empty()) {
+        return Err(format!(
+            "participant '{participant}' sets 'config.files' or an overlay's 'files', which the integration runner does not support"
+        ));
+    }
+    for (field, is_set) in [
+        ("config.endpoints", !endpoints.is_empty()),
+        ("config.params", !params.is_empty()),
+    ] {
+        if is_set {
             return Err(format!(
-                "participant '{participant}' sets config.env '{key}' with a template reference ('{{{{'); \
-                 panoramic does not resolve references in environment variables"
+                "participant '{participant}' sets '{field}', which the integration runner does not support"
             ));
         }
-        if key.starts_with(ENV_PREFIX) {
+    }
+    for (os, overlay) in overlays {
+        if !overlay.params.is_empty() {
             return Err(format!(
-                "participant '{participant}' sets config.env '{key}'; names starting with {ENV_PREFIX} \
-                 are reserved for cases with 'type: integration'"
+                "participant '{participant}' sets 'config.os.{}.params', which the integration runner does not support",
+                os.name(),
             ));
+        }
+    }
+    for (field, values) in std::iter::once(("config.env".to_string(), case_env)).chain(
+        overlays
+            .iter()
+            .map(|(os, overlay)| (format!("config.os.{}.env", os.name()), &overlay.env)),
+    ) {
+        for (key, value) in values {
+            if key.contains("{{") || value.contains("{{") {
+                return Err(format!(
+                    "participant '{participant}' sets {field} '{key}' with a template reference ('{{{{'); \
+                     panoramic does not resolve references in environment variables"
+                ));
+            }
+            if key.starts_with(ENV_PREFIX) {
+                return Err(format!(
+                    "participant '{participant}' sets {field} '{key}'; names starting with {ENV_PREFIX} \
+                     are reserved for cases with 'type: integration'"
+                ));
+            }
         }
     }
 
@@ -221,15 +252,22 @@ where
 
 #[cfg(test)]
 mod tests {
-    use panoramic_core::{case::CaseSchema, layout::Os, plan::CasePlan};
+    use panoramic_core::{
+        case::{CaseLoader, CaseSchema, Registries},
+        layout::{Os, RealizationKind},
+        participant::ParticipantType,
+        plan::CasePlan,
+    };
     use panoramic_steps::{test_support::valid_fields, REGISTERED_STEPS};
 
     use super::*;
     use crate::{
         config::{
             build_runners,
-            tests::{build_case_runners, write_case, LOGGING_INTEGRATION, LOGGING_PARTICIPANT, PARTICIPANT_FIELDS},
-            typed_case::{RunnableCase, TypedConfig},
+            tests::{
+                build_case_runners, plan, write_case, LOGGING_INTEGRATION, LOGGING_PARTICIPANT, PARTICIPANT_FIELDS,
+            },
+            typed_case::{RunnableCase, TypedConfig, TypedConfigLoader},
             LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME,
         },
         test::TestSuite,
@@ -330,6 +368,150 @@ mod tests {
     }
 
     #[test]
+    fn an_env_overlay_changes_the_translated_env_only_on_its_subject_os() {
+        let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[linux, windows]").replace(
+            "subject: true",
+            "subject: true, config: {env: {A: base, B: base}, os: {windows: {env: {A: win, C: win}}}}",
+        );
+        for (os, expected) in [
+            (Os::Linux, vec![("A", "base"), ("B", "base")]),
+            (Os::Windows, vec![("A", "win"), ("B", "base"), ("C", "win")]),
+        ] {
+            let config = plan(&yaml, os).integration_config().unwrap();
+            assert_eq!(
+                config.env,
+                expected.into_iter().map(|(k, v)| (k.into(), v.into())).collect()
+            );
+        }
+    }
+
+    #[test]
+    fn overlay_env_values_with_template_references_or_reserved_names_are_rejected_on_every_subject_os() {
+        for (env, reason) in [
+            ("{KEY: '{{ adp.facts.default_log_file }}'}", "'KEY' with a template reference ('{{'); panoramic does not resolve references in environment variables"),
+            ("{'{{name}}': value}", "'{{name}}' with a template reference ('{{'); panoramic does not resolve references in environment variables"),
+            ("{PANORAMIC_DYNAMIC_IP: value}", "'PANORAMIC_DYNAMIC_IP'; names starting with PANORAMIC_DYNAMIC_ are reserved for cases with 'type: integration'"),
+        ] {
+            for overlay_os in ["linux", "windows"] {
+                let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[windows, linux]").replace(
+                    "subject: true",
+                    &format!("subject: true, config: {{os: {{{overlay_os}: {{env: {env}}}}}}}"),
+                );
+                for os in [Os::Linux, Os::Windows] {
+                    let plan = plan(&yaml, os);
+                    assert_eq!(plan.integration_config().unwrap_err().to_string(), format!(
+                        "Cannot run case 'case' from /cases/case/config.yaml: participant 'adp' sets config.os.{overlay_os}.env {reason}"
+                    ));
+                }
+            }
+        }
+        let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[windows, linux]").replace(
+            "subject: true",
+            "subject: true, config: {os: {windows: {env: {PANORAMIC_DYNAMIC_IP: windows}}, linux: {env: {PANORAMIC_DYNAMIC_IP: linux}}}}",
+        );
+        for os in [Os::Linux, Os::Windows] {
+            let message = plan(&yaml, os).integration_config().unwrap_err().to_string();
+            assert!(message.contains("config.os.linux.env"), "{message}");
+        }
+    }
+
+    #[test]
+    fn the_integration_runner_rejects_overlay_files_and_params() {
+        struct Configured;
+
+        impl ParticipantType for Configured {
+            fn name(&self) -> &'static str {
+                AgentAdp::NAME
+            }
+
+            fn supports(&self) -> &'static [(Os, RealizationKind)] {
+                AgentAdp.supports()
+            }
+
+            fn config_files(&self) -> &'static [&'static str] {
+                &["settings.yaml"]
+            }
+
+            fn params(&self) -> &'static [&'static str] {
+                &["mode"]
+            }
+
+            fn processes(&self) -> &'static [&'static str] {
+                AgentAdp.processes()
+            }
+        }
+
+        let registries = Registries {
+            participant_types: &[&Configured],
+            steps: REGISTERED_STEPS,
+        };
+        let loader = CaseLoader::new(registries, TypedConfigLoader, TestSuite::Integration.name());
+        let dir = tempfile::tempdir().unwrap();
+        for (config, reason) in [
+            (
+                "{os: {windows: {files: {settings.yaml: windows.yaml}}}}",
+                "'config.files' or an overlay's 'files'",
+            ),
+            ("{os: {windows: {params: {mode: fast}}}}", "'config.os.windows.params'"),
+            (
+                "{os: {windows: {params: {mode: fast}}, linux: {params: {mode: slow}}}}",
+                "'config.os.linux.params'",
+            ),
+        ] {
+            let yaml = PARTICIPANT_FIELDS
+                .replace("[linux]", "[linux, windows]")
+                .replace("subject: true", &format!("subject: true, config: {config}"));
+            let path = write_case(dir.path(), "alpha", &yaml).canonicalize().unwrap();
+            std::fs::write(path.parent().unwrap().join("windows.yaml"), "").unwrap();
+            for os in [Os::Linux, Os::Windows] {
+                let case = loader.load_file(&path).unwrap().remove(0);
+                let plan = CasePlan::compile(case, os, &registries).unwrap().unwrap();
+                assert_eq!(
+                    plan.effective_config("adp").unwrap().files.is_empty(),
+                    os == Os::Linux || !config.contains("files:")
+                );
+                assert_eq!(plan.integration_config().unwrap_err().to_string(), format!(
+                    "Cannot run case 'alpha' from {}: participant 'adp' sets {reason}, which the integration runner does not support",
+                    path.display(),
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn translation_requires_the_participants_planned_configuration() {
+        let file: CaseFile = serde_saphyr::from_str(PARTICIPANT_FIELDS).unwrap();
+        assert_eq!(
+            integration_config(&file, "alpha", Path::new("alpha/config.yaml"), |_, _| None, |_| None,).unwrap_err(),
+            "participant 'adp' has no planned configuration"
+        );
+    }
+
+    #[test]
+    fn translation_takes_environment_only_from_the_planned_configuration() {
+        let file: CaseFile = serde_saphyr::from_str(
+            &PARTICIPANT_FIELDS.replace("subject: true", "subject: true, config: {env: {A: raw}}"),
+        )
+        .unwrap();
+        let planned_config = EffectiveConfig {
+            env: [("B".into(), "planned".into())].into(),
+            ..EffectiveConfig::default()
+        };
+        let translated = integration_config(
+            &file,
+            "alpha",
+            Path::new("alpha/config.yaml"),
+            |_, _| None,
+            |participant| {
+                assert_eq!(participant, "adp");
+                Some(&planned_config)
+            },
+        )
+        .unwrap();
+        assert_eq!(translated.env, [("B".into(), "planned".into())].into());
+    }
+
+    #[test]
     fn translation_resolves_file_paths_through_the_plan_on_every_subject_os() {
         let dir = tempfile::tempdir().unwrap();
         for (oses, runtimes) in [
@@ -376,6 +558,7 @@ mod tests {
 
     #[test]
     fn translation_rejects_a_step_on_another_participant() {
+        let planned_config = EffectiveConfig::default();
         for factory in REGISTERED_STEPS {
             for (parallel, label) in [(false, "1"), (true, "1.1")] {
                 let mut file: CaseFile = serde_saphyr::from_str(PARTICIPANT_FIELDS).unwrap();
@@ -391,7 +574,14 @@ mod tests {
                     vec![ProcedureNode::Step(node)]
                 };
                 assert_eq!(
-                    integration_config(&file, "alpha", Path::new("alpha/config.yaml"), |_, _| None).unwrap_err(),
+                    integration_config(
+                        &file,
+                        "alpha",
+                        Path::new("alpha/config.yaml"),
+                        |_, _| None,
+                        |_| Some(&planned_config)
+                    )
+                    .unwrap_err(),
                     format!(
                         "step {label} '{}' runs on 'other'; the integration runner runs only participant 'adp'",
                         factory.name()
@@ -403,6 +593,7 @@ mod tests {
 
     #[test]
     fn every_registered_step_translates_to_a_log_or_file_assertion_on_every_subject_os() {
+        let planned_config = EffectiveConfig::default();
         for factory in REGISTERED_STEPS {
             let yaml = PARTICIPANT_FIELDS
                 .replace("[linux]", "[linux, macos, windows]")
@@ -415,7 +606,14 @@ mod tests {
                 fields,
             })];
             for os in &file.subject_os {
-                let config = integration_config(&file, "alpha", Path::new("alpha/config.yaml"), |_, _| None).unwrap();
+                let config = integration_config(
+                    &file,
+                    "alpha",
+                    Path::new("alpha/config.yaml"),
+                    |_, _| None,
+                    |_| Some(&planned_config),
+                )
+                .unwrap();
                 let [AssertionStep::Single(assertion)] = config.procedure.as_slice() else {
                     panic!("expected one assertion for '{}' on {os:?}", factory.name());
                 };
@@ -440,6 +638,7 @@ mod tests {
 
     #[test]
     fn translation_resolves_file_path_facts_only_through_the_resolver() {
+        let planned_config = EffectiveConfig::default();
         for (reference, expected) in [
             ("other.facts.default_log_file", None),
             ("adp.facts.unknown", None),
@@ -447,9 +646,13 @@ mod tests {
         ] {
             let yaml = PARTICIPANT_FIELDS.replace("procedure: []", &format!("procedure: [{{step: file_contains, on: adp, path: '{{{{ {reference} }}}}', pattern: ready, timeout: 1s}}]"));
             let file: CaseFile = serde_saphyr::from_str(&yaml).unwrap();
-            let translated = integration_config(&file, "alpha", Path::new("alpha/config.yaml"), |participant, fact| {
-                (participant == "adp" && fact == "default_log_file").then_some("/x")
-            });
+            let translated = integration_config(
+                &file,
+                "alpha",
+                Path::new("alpha/config.yaml"),
+                |participant, fact| (participant == "adp" && fact == "default_log_file").then_some("/x"),
+                |_| Some(&planned_config),
+            );
             if let Some(expected) = expected {
                 let config = translated.unwrap();
                 let [AssertionStep::Single(AssertionConfig::FileContains { path, .. })] = config.procedure.as_slice()
@@ -478,11 +681,6 @@ mod tests {
                 "subject: true",
                 "subject: true, realization: {kind: linux-container}",
                 "participant 'adp' sets 'realization', which the integration runner does not support",
-            ),
-            (
-                "subject: true",
-                "subject: true, config: {os: {linux: {env: {A: b}}}}",
-                "participant 'adp' sets 'config.os', which the integration runner does not support",
             ),
             (
                 "subject: true",
@@ -547,7 +745,7 @@ mod tests {
             (
                 "subject: true",
                 "subject: true, config: {files: {datadog.yaml: settings.yaml}}",
-                "participant 'adp' sets 'config.files', which the integration runner does not support",
+                "participant 'adp' sets 'config.files' or an overlay's 'files', which the integration runner does not support",
             ),
             (
                 "subject: true",
@@ -561,8 +759,12 @@ mod tests {
             ),
         ] {
             let file: CaseFile = serde_saphyr::from_str(&PARTICIPANT_FIELDS.replace(old, new)).unwrap();
+            let planned_config = EffectiveConfig {
+                files: file.participants["adp"].config.files.clone(),
+                ..EffectiveConfig::default()
+            };
             assert_eq!(
-                integration_config(&file, "alpha", Path::new("alpha/config.yaml"), |_, _| None).unwrap_err(),
+                integration_config(&file, "alpha", Path::new("alpha/config.yaml"), |_, _| None, |_| Some(&planned_config)).unwrap_err(),
                 reason
             );
         }
@@ -570,6 +772,7 @@ mod tests {
 
     #[test]
     fn a_step_whose_fields_do_not_decode_fails_translation_naming_the_step() {
+        let planned_config = EffectiveConfig::default();
         for (nodes, label) in [
             ("[{step: log_contains, on: adp}]", "1"),
             ("[{parallel: [{step: log_contains, on: adp}]}]", "1.1"),
@@ -578,7 +781,7 @@ mod tests {
                 serde_saphyr::from_str(&PARTICIPANT_FIELDS.replace("procedure: []", &format!("procedure: {nodes}")))
                     .unwrap();
             assert_eq!(
-                integration_config(&file, "alpha", Path::new("alpha/config.yaml"), |_, _| None).unwrap_err(),
+                integration_config(&file, "alpha", Path::new("alpha/config.yaml"), |_, _| None, |_| Some(&planned_config)).unwrap_err(),
                 format!("step {label} 'log_contains' has fields the integration runner cannot read: missing field `pattern`")
             );
         }
@@ -613,10 +816,18 @@ mod tests {
 
     #[test]
     fn a_step_without_an_integration_runner_equivalent_fails_translation() {
+        let planned_config = EffectiveConfig::default();
         let file: CaseFile =
             serde_saphyr::from_str(&PARTICIPANT_FIELDS.replace("procedure: []", "procedure: [{step: probe}]")).unwrap();
         assert_eq!(
-            integration_config(&file, "alpha", Path::new("alpha/config.yaml"), |_, _| None).unwrap_err(),
+            integration_config(
+                &file,
+                "alpha",
+                Path::new("alpha/config.yaml"),
+                |_, _| None,
+                |_| Some(&planned_config)
+            )
+            .unwrap_err(),
             "step 1 'probe' has no integration runner equivalent"
         );
     }

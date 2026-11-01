@@ -214,9 +214,13 @@ impl RunnableCase for LoadedPlan {
                 case.source().display()
             ));
         }
-        integration_bridge::integration_config(file, case.name(), case.source(), |participant, fact| {
-            self.fact(participant, fact)
-        })
+        integration_bridge::integration_config(
+            file,
+            case.name(),
+            case.source(),
+            |participant, fact| self.fact(participant, fact),
+            |participant| self.effective_config(participant),
+        )
         .map_err(|reason| {
             generic_error!(
                 "Cannot run case '{}' from {}: {}",

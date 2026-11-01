@@ -1381,11 +1381,11 @@ timeout: 30s
         let dir = tempfile::tempdir().unwrap();
         let mut cases = Vec::new();
         let mut errors = Vec::new();
-        for (name, yaml, field) in [
+        for (name, yaml, reason) in [
             (
                 "second",
                 PARTICIPANT_FIELDS.replace("subject: true", "subject: true, realization: {kind: linux-container}"),
-                Some("realization"),
+                Some("sets 'realization', which the integration runner does not support"),
             ),
             (
                 "integration",
@@ -1394,15 +1394,15 @@ timeout: 30s
             ),
             (
                 "first",
-                PARTICIPANT_FIELDS.replace("subject: true", "subject: true, config: {os: {linux: {env: {A: b}}}}"),
-                Some("config.os"),
+                PARTICIPANT_FIELDS.replace("subject: true", "subject: true, config: {env: {PANORAMIC_DYNAMIC_IP: value}}"),
+                Some("sets config.env 'PANORAMIC_DYNAMIC_IP'; names starting with PANORAMIC_DYNAMIC_ are reserved for cases with 'type: integration'"),
             ),
         ] {
             let path = write_case(dir.path(), name, &yaml);
             cases.extend(crate::CASE_LOADER.load_file(&path).unwrap());
-            if let Some(field) = field {
+            if let Some(reason) = reason {
                 errors.push(format!(
-                    "Cannot run case '{name}' from {}: participant 'adp' sets '{field}', which the integration runner does not support",
+                    "Cannot run case '{name}' from {}: participant 'adp' {reason}",
                     path.canonicalize().unwrap().display()
                 ));
             }

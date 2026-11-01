@@ -1,10 +1,13 @@
 //! Load-time checks of case participants against their registered types.
 
-use std::{collections::BTreeSet, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::{Component, Path},
+};
 
 use saluki_error::{generic_error, GenericError};
 
-use super::file::{CaseFile, ParticipantEntry};
+use super::file::{CaseFile, FileSource, ParticipantEntry};
 use crate::{
     layout::Os,
     participant::{find_type, unknown_type_message, ParticipantType},
@@ -15,13 +18,16 @@ use crate::{
 /// # Errors
 ///
 /// Returns the first error in this order: participant names, subject count, subject OS override;
-/// then, per participant in name order, registered type, realization options, file names, endpoint overrides,
-/// parameters, OS overlays (reachable OS, files, parameters), and connections (consumed name, target, endpoint).
+/// then, per participant in name order, registered type, realization options, file names and sources, endpoint
+/// overrides, parameters, OS overlays (reachable OS, file names and sources, parameters), and connections
+/// (consumed name, target, endpoint). Sources must be nonempty relative paths within the case directory
+/// that resolve to existing files or directories.
 /// Map keys and overlay OSes are checked in sorted order. Every error names the case and source.
 pub(super) fn check_participants(
     file: &CaseFile, subject_os: &BTreeSet<Os>, types: &[&dyn ParticipantType], name: &str, source: &Path,
 ) -> Result<(), GenericError> {
     let error = |message: String| generic_error!("case '{}' in {}: {}", name, source.display(), message);
+    let case_dir = source.parent().expect("a case source names a file in its directory");
     for participant in file.participants.keys() {
         if !is_dns_label(participant) {
             return Err(error(format!(
@@ -77,6 +83,7 @@ pub(super) fn check_participants(
             |key| format!("{holder} supplies configuration file '{key}', which type '{type_name}' does not declare"),
         )
         .map_err(&error)?;
+        check_file_sources(&entry.config.files, case_dir, &holder, "").map_err(&error)?;
         check_keys(
             entry.config.endpoints.keys(),
             participant_type.serves(),
@@ -114,6 +121,8 @@ pub(super) fn check_participants(
                 },
             )
             .map_err(&error)?;
+            check_file_sources(&overlay.files, case_dir, &holder, &format!(" in its '{os}' overlay"))
+                .map_err(&error)?;
             check_keys(overlay.params.keys(), participant_type.params(), "accepts", |key| {
                 format!(
                     "{holder} sets parameter '{key}', which type '{type_name}' does not accept \
@@ -157,6 +166,49 @@ pub(super) fn check_participants(
     Ok(())
 }
 
+/// Checks source paths stay within the case directory and exist. Symlink targets may be outside it.
+fn check_file_sources(
+    files: &BTreeMap<String, FileSource>, case_dir: &Path, holder: &str, suffix: &str,
+) -> Result<(), String> {
+    for (name, source) in files {
+        let from = source.from.display();
+        if source.from.as_os_str().is_empty() {
+            return Err(format!(
+                "{holder} supplies configuration file '{name}'{suffix} from an empty path; \
+                 write a path relative to the case directory"
+            ));
+        }
+        if !source.from.is_relative() {
+            return Err(format!(
+                "{holder} supplies configuration file '{name}'{suffix} from absolute path '{from}'; \
+                 write a path relative to the case directory"
+            ));
+        }
+        let depth = source
+            .from
+            .components()
+            .try_fold(0usize, |depth, component| match component {
+                Component::Normal(_) => Some(depth + 1),
+                Component::CurDir => Some(depth),
+                Component::ParentDir => depth.checked_sub(1),
+                Component::Prefix(_) | Component::RootDir => None,
+            });
+        if depth.is_none() {
+            return Err(format!(
+                "{holder} supplies configuration file '{name}'{suffix} from '{from}', which leaves the case directory"
+            ));
+        }
+        let path = case_dir.join(&source.from);
+        if std::fs::metadata(&path).is_err() {
+            return Err(format!(
+                "{holder} supplies configuration file '{name}'{suffix} from '{from}', which does not exist at {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn is_dns_label(name: &str) -> bool {
     (1..=63).contains(&name.len())
         && name.as_bytes()[0].is_ascii_lowercase()
@@ -193,6 +245,10 @@ pub(super) fn declared_names(names: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::case::{
+        fixtures::{write_case, FixtureTypes},
+        CaseLoader, Registries,
+    };
 
     struct Server;
 
@@ -241,16 +297,19 @@ mod tests {
     }
 
     fn check(yaml: &str) -> Result<(), GenericError> {
+        let dir = tempfile::tempdir().unwrap();
+        let source = write_case(dir.path(), "alpha", yaml);
+        std::fs::write(source.parent().unwrap().join("source.yaml"), "").unwrap();
         let file: CaseFile = serde_saphyr::from_str(yaml).unwrap();
-        let source = Path::new("config.yaml");
-        let subject_os = file.check("alpha", source).unwrap();
-        check_participants(&file, &subject_os, TYPES, "alpha", source)
+        let subject_os = file.check("alpha", &source).unwrap();
+        check_participants(&file, &subject_os, TYPES, "alpha", &source)
     }
 
     #[track_caller]
     fn check_error(yaml: &str) -> String {
         let message = check(yaml).unwrap_err().to_string();
-        assert!(message.starts_with("case 'alpha' in config.yaml: "), "{message}");
+        assert!(message.starts_with("case 'alpha' in "), "{message}");
+        assert!(message.contains("config.yaml: "), "{message}");
         message
     }
 
@@ -355,9 +414,10 @@ mod tests {
                 &format!("  subject: {{type: server, subject: true, realization: {{kind: {kind}, options: {{z_option: false, host_pid: true}}}}}}"),
                 "linux",
             );
-            assert_eq!(check_error(&yaml), format!(
-                "case 'alpha' in config.yaml: participant 'subject' sets realization option 'host_pid', which {kind} does not accept; it accepts none"
-            ));
+            let message = check_error(&yaml);
+            assert!(message.ends_with(&format!(
+                "participant 'subject' sets realization option 'host_pid', which {kind} does not accept; it accepts none"
+            )), "{message}");
         }
     }
 
@@ -378,14 +438,14 @@ mod tests {
     fn configuration_names_must_be_declared_by_the_participant_type() {
         for (config, expected, declared) in [
             (
-                "{files: {typo: missing.yaml}}",
+                "{files: {typo: source.yaml}}",
                 "supplies configuration file 'typo'",
                 "settings.yaml",
             ),
             ("{endpoints: {typo: {port: 80}}}", "overrides endpoint 'typo'", "api"),
             ("{params: {typo: fast}}", "sets parameter 'typo'", "mode"),
             (
-                "{os: {linux: {files: {typo: missing.yaml}}}}",
+                "{os: {linux: {files: {typo: source.yaml}}}}",
                 "supplies configuration file 'typo'",
                 "settings.yaml",
             ),
@@ -408,11 +468,11 @@ mod tests {
         }
 
         for (config, expected) in [
-            ("{files: {settings.yaml: missing.yaml}}", "it declares none"),
+            ("{files: {settings.yaml: source.yaml}}", "it declares none"),
             ("{endpoints: {api: {port: 80}}}", "it serves none"),
             ("{params: {mode: fast}}", "it accepts none"),
             (
-                "{os: {linux: {files: {settings.yaml: missing.yaml}}}}",
+                "{os: {linux: {files: {settings.yaml: source.yaml}}}}",
                 "it declares none",
             ),
             ("{os: {linux: {params: {mode: fast}}}}", "it accepts none"),
@@ -425,6 +485,126 @@ mod tests {
             assert!(message.contains("which type 'client' does not"), "{message}");
             assert!(message.ends_with(expected), "{message}");
             check(&yaml.replace(config, "{}")).unwrap();
+        }
+    }
+
+    const FILE_LOADER: CaseLoader<'static, FixtureTypes> = CaseLoader::new(
+        Registries {
+            participant_types: TYPES,
+            steps: &[],
+        },
+        FixtureTypes,
+        "fixture-participants",
+    );
+
+    fn file_case(from: &Path, overlay: bool) -> String {
+        let config = format!("{{files: {{settings.yaml: {}}}}}", serde_json::to_string(from).unwrap());
+        let config = if overlay {
+            format!("{{os: {{linux: {config}}}}}")
+        } else {
+            config
+        };
+        case_yaml(
+            &format!("  subject: {{type: server, subject: true, config: {config}}}"),
+            "linux",
+        )
+    }
+
+    #[test]
+    fn a_configuration_file_source_must_exist_relative_to_the_case_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = write_case(dir.path(), "alpha", "").canonicalize().unwrap();
+        let case_dir = source.parent().unwrap();
+        std::fs::write(case_dir.join("settings.yaml"), "").unwrap();
+        std::fs::create_dir(case_dir.join("scripts")).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("missing.yaml", case_dir.join("dangling.yaml")).unwrap();
+            let external = dir.path().join("external.yaml");
+            std::fs::write(&external, "").unwrap();
+            std::os::unix::fs::symlink(external, case_dir.join("linked.yaml")).unwrap();
+        }
+
+        for overlay in [false, true] {
+            let suffix = if overlay { " in its 'linux' overlay" } else { "" };
+            for from in [
+                "missing.yaml",
+                #[cfg(unix)]
+                "dangling.yaml",
+            ] {
+                let yaml = file_case(Path::new(from), overlay);
+                let message = FILE_LOADER
+                    .load_content(&yaml, "alpha", &source)
+                    .err()
+                    .unwrap()
+                    .to_string();
+                assert_eq!(message, format!(
+                    "case 'alpha' in {}: participant 'subject' supplies configuration file 'settings.yaml'{suffix} from '{from}', which does not exist at {}",
+                    source.display(), case_dir.join(from).display(),
+                ));
+            }
+            for from in [
+                "settings.yaml",
+                "scripts",
+                "scripts/../settings.yaml",
+                #[cfg(unix)]
+                "linked.yaml",
+            ] {
+                let yaml = file_case(Path::new(from), overlay);
+                std::fs::write(&source, yaml).unwrap();
+                let cases = FILE_LOADER.load_file(&source).unwrap();
+                assert_eq!(cases.len(), 1);
+                assert_eq!(cases[0].source(), source);
+            }
+        }
+    }
+
+    #[test]
+    fn a_configuration_file_source_must_not_be_absolute() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = write_case(dir.path(), "alpha", "").canonicalize().unwrap();
+        let from = source.parent().unwrap().join("settings.yaml");
+        std::fs::write(&from, "").unwrap();
+        for overlay in [false, true] {
+            let yaml = file_case(&from, overlay);
+            let suffix = if overlay { " in its 'linux' overlay" } else { "" };
+            let message = FILE_LOADER
+                .load_content(&yaml, "alpha", &source)
+                .err()
+                .unwrap()
+                .to_string();
+            assert_eq!(message, format!(
+                "case 'alpha' in {}: participant 'subject' supplies configuration file 'settings.yaml'{suffix} from absolute path '{}'; write a path relative to the case directory",
+                source.display(), from.display(),
+            ));
+        }
+    }
+
+    #[test]
+    fn a_configuration_file_source_must_be_nonempty_and_stay_within_the_case_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = write_case(dir.path(), "alpha", "").canonicalize().unwrap();
+        std::fs::write(dir.path().join("outside.yaml"), "").unwrap();
+        std::fs::create_dir(source.parent().unwrap().join("nested")).unwrap();
+        for overlay in [false, true] {
+            let suffix = if overlay { " in its 'linux' overlay" } else { "" };
+            for from in ["", "..", "../outside.yaml", "nested/../../outside.yaml"] {
+                let yaml = file_case(Path::new(from), overlay);
+                let message = FILE_LOADER
+                    .load_content(&yaml, "alpha", &source)
+                    .err()
+                    .unwrap()
+                    .to_string();
+                let reason = if from.is_empty() {
+                    "from an empty path; write a path relative to the case directory".to_string()
+                } else {
+                    format!("from '{from}', which leaves the case directory")
+                };
+                assert_eq!(message, format!(
+                    "case 'alpha' in {}: participant 'subject' supplies configuration file 'settings.yaml'{suffix} {reason}",
+                    source.display(),
+                ));
+            }
         }
     }
 
@@ -563,14 +743,14 @@ mod tests {
     os: linux
     realization: {kind: linux-container, options: {z-option: true, a-option: true}}
     config:
-      files: {z-file: z, a-file: a}
+      files: {z-file: z, a-file: a, settings.yaml: missing-base.yaml}
       endpoints: {z-endpoint: {port: 80}, a-endpoint: {port: 80}}
       params: {z-param: true, a-param: true}
       os:
         windows: {}
         macos: {files: {mac-file: x}}
         linux:
-          files: {z-overlay-file: z, a-overlay-file: a}
+          files: {z-overlay-file: z, a-overlay-file: a, settings.yaml: missing-overlay.yaml}
           params: {z-overlay-param: true, a-overlay-param: true}
     connect: {z-connect: missing.api, a-connect: missing.api}"#,
             "linux, macos",
@@ -591,13 +771,23 @@ mod tests {
             (", a-option: true", "", "sets realization option 'a-option'"),
             ("z-option: true", "", "sets realization option 'z-option'"),
             (", a-file: a", "", "configuration file 'a-file'"),
-            ("z-file: z", "", "configuration file 'z-file'"),
+            ("z-file: z, ", "", "configuration file 'z-file'"),
+            (
+                "settings.yaml: missing-base.yaml",
+                "",
+                "configuration file 'settings.yaml' from 'missing-base.yaml'",
+            ),
             (", a-endpoint: {port: 80}", "", "overrides endpoint 'a-endpoint'"),
             ("z-endpoint: {port: 80}", "", "overrides endpoint 'z-endpoint'"),
             (", a-param: true", "", "sets parameter 'a-param'"),
             ("z-param: true", "", "sets parameter 'z-param'"),
             (", a-overlay-file: a", "", "configuration file 'a-overlay-file'"),
-            ("z-overlay-file: z", "", "configuration file 'z-overlay-file'"),
+            ("z-overlay-file: z, ", "", "configuration file 'z-overlay-file'"),
+            (
+                "settings.yaml: missing-overlay.yaml",
+                "",
+                "configuration file 'settings.yaml' in its 'linux' overlay from 'missing-overlay.yaml'",
+            ),
             (", a-overlay-param: true", "", "sets parameter 'a-overlay-param'"),
             ("z-overlay-param: true", "", "sets parameter 'z-overlay-param'"),
             ("mac-file: x", "", "configuration file 'mac-file'"),

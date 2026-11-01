@@ -139,8 +139,8 @@ These cases run on the integration runner. Panoramic translates each case into a
 OS and runs it: in a Linux or Windows container with default settings, or as host processes on macOS. The translation
 supports this subset of the schema:
 
-- One participant, of type `agent-adp` with `subject: true`, configured only through `config.env`. Environment values
-  must be YAML strings.
+- One participant, of type `agent-adp` with `subject: true`, configured only through `config.env`, optionally with
+  `config.os` overlays of `env` whose values replace the base values on that OS. Environment values must be YAML strings.
 - The steps `log_contains` and `log_not_contains`, without `process`. They search the output of every process
   together, and what is captured differs by OS.
 - The step `file_contains`. Its `path` may reference a participant fact, written as in the example above with the
@@ -155,6 +155,8 @@ Every step names the participant it acts on with `on`. Step fields differ from t
 `step:` instead of `assertion:`, and `file_contains` requires `pattern`. The loader accepts other participant and
 configuration fields, but the integration runner rejects a case that sets them, with an error naming the field.
 The loader rejects keys in `realization.options` because no realization accepts options.
+A `config.files` source must be a nonempty path relative to the case directory that exists when the case loads.
+Parent-directory components must stay within the case directory; symlink targets may be outside it.
 
 `panoramic list` shows each participant case's layout. A case whose layout is invalid on any OS it lists in
 `subject_os` fails discovery for `list` and `run`, whatever runtime is selected.

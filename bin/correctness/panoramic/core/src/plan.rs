@@ -7,7 +7,7 @@ use saluki_error::{generic_error, GenericError};
 use crate::{
     case::{CaseConfig, CaseFile, CaseSchema, ProcedureNode, Registries},
     layout::{describe_realizations, lay_out, Layout, Os, Realization},
-    participant::{find_type, FactDeclaration, ParticipantType},
+    participant::{find_type, CaseValues, EffectiveConfig, FactDeclaration, ParticipantType},
     record::step_label,
     step::{Need, Step},
 };
@@ -17,7 +17,12 @@ pub struct CasePlan<C> {
     case: CaseConfig<C>,
     subject_os: Os,
     layout: Option<Layout>,
-    facts: BTreeMap<String, &'static [FactDeclaration]>,
+    participants: BTreeMap<String, PlannedParticipant>,
+}
+
+struct PlannedParticipant {
+    facts: &'static [FactDeclaration],
+    config: EffectiveConfig,
 }
 
 impl<C> CasePlan<C> {
@@ -26,14 +31,14 @@ impl<C> CasePlan<C> {
     ///
     /// # Errors
     ///
-    /// Returns the first layout or fact-availability error, naming the case, source and failing subject OS,
-    /// even when the selected OS is excluded by the case. Layout errors precede fact errors on each OS;
-    /// fact errors follow procedure order and name the step label.
+    /// Returns the first layout, configuration or fact-availability error, naming the case, source and failing
+    /// subject OS, even when the selected OS is excluded by the case. On each OS, layout errors precede
+    /// configuration errors in participant name order, then fact errors in procedure order with step labels.
     pub fn compile(
         case: CaseConfig<C>, subject_os: Os, registries: &Registries<'_>,
     ) -> Result<Option<Self>, GenericError> {
         let mut layout = None;
-        let mut facts = BTreeMap::new();
+        let mut participants = BTreeMap::new();
         if let CaseSchema::Participants { file, procedure } = case.schema() {
             for &os in case.subject_os() {
                 let error = |message: String| {
@@ -46,11 +51,42 @@ impl<C> CasePlan<C> {
                     )
                 };
                 let candidate = lay_out(&file.participants, registries.participant_types, os).map_err(&error)?;
-                let candidate_facts =
-                    planned_facts(file, procedure, &candidate, registries.participant_types).map_err(error)?;
+                let mut candidate_participants = BTreeMap::new();
+                for (name, realization) in candidate.iter() {
+                    let entry = &file.participants[name];
+                    let participant_type = find_type(registries.participant_types, &entry.participant_type)
+                        .expect("laid-out participants have registered types");
+                    let values = CaseValues::for_os(&entry.config, realization.os);
+                    participant_type
+                        .validate_config(realization, &values)
+                        .map_err(|message| {
+                            error(format!(
+                                "participant '{name}' of type '{}' as {} on {} has invalid configuration: {message}",
+                                participant_type.name(),
+                                realization.kind.name(),
+                                realization.os.name(),
+                            ))
+                        })?;
+                    let defaults = participant_type.default_env(realization, &values);
+                    candidate_participants.insert(
+                        name.to_string(),
+                        PlannedParticipant {
+                            facts: participant_type.facts(realization),
+                            config: EffectiveConfig::assemble(defaults, values),
+                        },
+                    );
+                }
+                check_fact_needs(
+                    file,
+                    procedure,
+                    &candidate,
+                    registries.participant_types,
+                    &candidate_participants,
+                )
+                .map_err(error)?;
                 if os == subject_os {
                     layout = Some(candidate);
-                    facts = candidate_facts;
+                    participants = candidate_participants;
                 }
             }
         }
@@ -61,7 +97,7 @@ impl<C> CasePlan<C> {
             case,
             subject_os,
             layout,
-            facts,
+            participants,
         }))
     }
 
@@ -83,26 +119,28 @@ impl<C> CasePlan<C> {
     /// Returns a fact from the participant's planned realization.
     /// Returns `None` for unknown participants or facts, and for typed cases.
     pub fn fact(&self, participant: &str, fact: &str) -> Option<&str> {
-        self.facts
+        self.participants
             .get(participant)?
+            .facts
             .iter()
             .find(|declaration| declaration.name == fact)
             .map(|declaration| declaration.value)
     }
+
+    /// Returns the participant's effective configuration for its planned realization.
+    /// Returns `None` for unknown participants and typed cases.
+    pub fn effective_config(&self, participant: &str) -> Option<&EffectiveConfig> {
+        self.participants
+            .get(participant)
+            .map(|participant| &participant.config)
+    }
 }
 
-/// Returns each laid-out participant's facts, or an error for the first step needing an unavailable fact.
-fn planned_facts(
+/// Rejects the first step needing an unavailable fact.
+fn check_fact_needs(
     file: &CaseFile, procedure: &[ProcedureNode<Box<dyn Step>>], layout: &Layout, types: &[&dyn ParticipantType],
-) -> Result<BTreeMap<String, &'static [FactDeclaration]>, String> {
-    let facts: BTreeMap<_, _> = layout
-        .iter()
-        .map(|(name, realization)| {
-            let participant_type = find_type(types, &file.participants[name].participant_type)
-                .expect("laid-out participants have registered types");
-            (name.to_string(), participant_type.facts(realization))
-        })
-        .collect();
+    participants: &BTreeMap<String, PlannedParticipant>,
+) -> Result<(), String> {
     for (index, node) in procedure.iter().enumerate() {
         let (steps, parallel) = match node {
             ProcedureNode::Step(step) => (std::slice::from_ref(step), false),
@@ -113,7 +151,11 @@ fn planned_facts(
                 let Need::Fact(participant, fact) = need else {
                     continue;
                 };
-                if facts[&participant].iter().any(|declaration| declaration.name == fact) {
+                if participants[&participant]
+                    .facts
+                    .iter()
+                    .any(|declaration| declaration.name == fact)
+                {
                     continue;
                 }
                 let realization = layout.get(&participant).expect("step needs name laid-out participants");
@@ -136,7 +178,7 @@ fn planned_facts(
             }
         }
     }
-    Ok(facts)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -146,20 +188,185 @@ mod tests {
     use super::*;
     use crate::{
         case::{
-            fixtures::{FixtureConfig, FixtureTypes, PodServer, LOADER, PARTICIPANT_FIELDS, REGISTRIES, STEPS},
-            CaseLoader,
+            fixtures::{
+                write_case, Configured, FixtureConfig, FixtureTypes, PodServer, Server, LOADER, PARTICIPANT_FIELDS,
+                REGISTRIES, STEPS,
+            },
+            CaseLoader, FileSource,
         },
         layout::{Realization, RealizationKind},
     };
 
     const FACT_CASE: &str = "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {type: server, subject: true}\nprocedure: [{step: probe, on: subject, path: '{{ subject.facts.file }}'}]\n";
 
+    const CONFIG_REGISTRIES: Registries<'static> = Registries {
+        participant_types: &[&Configured, &Server],
+        steps: STEPS,
+    };
+    const CONFIG_LOADER: CaseLoader<'static, FixtureTypes> =
+        CaseLoader::new(CONFIG_REGISTRIES, FixtureTypes, "fixture-participants");
+
     fn compile(yaml: &str, os: Os) -> Result<Option<CasePlan<FixtureConfig>>, GenericError> {
-        let case = LOADER
+        let case = CONFIG_LOADER
             .load_content(yaml, "alpha", Path::new("cases/alpha/config.yaml"))
             .unwrap()
             .remove(0);
-        CasePlan::compile(case, os, &REGISTRIES)
+        CasePlan::compile(case, os, &CONFIG_REGISTRIES)
+    }
+
+    #[test]
+    fn a_plan_holds_each_participants_effective_config_for_the_selected_subject_os() {
+        let yaml = r#"timeout: 1s
+subject_os: [windows, linux]
+participants:
+  subject:
+    type: configured
+    subject: true
+    config:
+      env: {LEVEL: debug, EXTRA: base}
+      os: {windows: {env: {LEVEL: trace, EXTRA: windows}}}
+  other: {type: configured, config: {env: {PORT: "2"}}}
+procedure: []
+"#;
+        for (os, level, extra) in [(Os::Linux, "debug", "base"), (Os::Windows, "trace", "windows")] {
+            let plan = compile(yaml, os).unwrap().unwrap();
+            assert_eq!(
+                plan.effective_config("subject"),
+                Some(&EffectiveConfig {
+                    env: BTreeMap::from([
+                        ("LEVEL".into(), level.into()),
+                        ("PORT".into(), "1".into()),
+                        ("EXTRA".into(), extra.into()),
+                    ]),
+                    files: BTreeMap::new(),
+                })
+            );
+            assert_eq!(
+                plan.effective_config("other"),
+                Some(&EffectiveConfig {
+                    env: BTreeMap::from([("LEVEL".into(), "info".into()), ("PORT".into(), "2".into())]),
+                    files: BTreeMap::new(),
+                })
+            );
+            assert_eq!(plan.effective_config("unknown"), None);
+        }
+    }
+
+    #[test]
+    fn a_participant_with_its_own_os_gets_the_overlay_for_that_os() {
+        let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[macos]").replace(
+            "participants:",
+            "participants:\n  other: {type: configured, os: linux, config: {env: {LEVEL: debug}, os: {linux: {env: {LEVEL: trace}}}}}",
+        );
+        let plan = compile(&yaml, Os::MacOs).unwrap().unwrap();
+        assert_eq!(
+            plan.effective_config("other").unwrap().env,
+            BTreeMap::from([("LEVEL".into(), "trace".into()), ("PORT".into(), "1".into()),])
+        );
+        assert_eq!(plan.effective_config("subject"), Some(&EffectiveConfig::default()));
+    }
+
+    #[test]
+    fn type_defaults_see_the_overlaid_case_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[linux, windows]").replace(
+            "type: server, subject: true",
+            "type: configured, subject: true, config: {os: {windows: {files: {settings.yaml: {from: windows.yaml, template: true}}}}}",
+        );
+        let source = write_case(dir.path(), "alpha", &yaml);
+        std::fs::write(source.parent().unwrap().join("windows.yaml"), "port: 7").unwrap();
+        for os in [Os::Linux, Os::Windows] {
+            let case = CONFIG_LOADER.load_file(&source).unwrap().remove(0);
+            let plan = CasePlan::compile(case, os, &CONFIG_REGISTRIES).unwrap().unwrap();
+            let effective = plan.effective_config("subject").unwrap();
+            assert_eq!(effective.env["LEVEL"], "info");
+            if os == Os::Windows {
+                assert_eq!(effective.env.get("PORT"), None);
+                assert_eq!(
+                    effective.files,
+                    BTreeMap::from([(
+                        "settings.yaml".into(),
+                        FileSource {
+                            from: "windows.yaml".into(),
+                            template: true,
+                        }
+                    )])
+                );
+            } else {
+                assert_eq!(effective.env.get("PORT").map(String::as_str), Some("1"));
+                assert!(effective.files.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn a_config_its_type_rejects_on_any_declared_subject_os_fails_compile_whatever_os_is_selected() {
+        for config in [
+            "{params: {mode: broken}}",
+            "{params: {mode: working}, os: {windows: {params: {mode: broken}}}}",
+        ] {
+            let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[windows, linux]").replace(
+                "type: server, subject: true",
+                &format!("type: configured, subject: true, config: {config}"),
+            );
+            for os in [Os::Linux, Os::MacOs, Os::Windows] {
+                assert_eq!(compile(&yaml, os).err().unwrap().to_string(),
+                    "case 'alpha' in cases/alpha/config.yaml: on subject OS 'windows', participant 'subject' of type 'configured' as windows-container on windows has invalid configuration: mode 'broken' is unavailable on windows"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn configuration_errors_follow_layout_errors_and_precede_fact_errors() {
+        let mut yaml = FACT_CASE
+            .replace("[linux]", "[windows]")
+            .replace(
+                "participants:",
+                r#"participants:
+  z: {type: server, realization: {kind: linux-container}}
+  b: {type: configured, config: {params: {mode: broken}}}
+  a: {type: configured, config: {params: {mode: broken}}}
+  other: {type: server, os: macos}"#,
+            )
+            .replace("subject.facts.file", "other.facts.file");
+        for (bad, fix, expected) in [
+            (
+                ", realization: {kind: linux-container}",
+                "",
+                "participant 'z' of type 'server' cannot run as linux-container on windows",
+            ),
+            (
+                "a: {type: configured, config: {params: {mode: broken}}}",
+                "a: {type: configured}",
+                "participant 'a' of type 'configured' as windows-container on windows has invalid configuration",
+            ),
+            (
+                "b: {type: configured, config: {params: {mode: broken}}}",
+                "b: {type: configured}",
+                "participant 'b' of type 'configured' as windows-container on windows has invalid configuration",
+            ),
+            (
+                "other.facts.file",
+                "subject.facts.file",
+                "step 1 references fact 'file' of participant 'other'",
+            ),
+        ] {
+            let message = compile(&yaml, Os::Windows).err().unwrap().to_string();
+            assert!(message.contains(expected), "{message}");
+            assert!(yaml.contains(bad));
+            yaml = yaml.replace(bad, fix);
+        }
+        assert_eq!(
+            compile(&yaml, Os::Windows).unwrap().unwrap().fact("subject", "file"),
+            Some(r"C:\logs\output.log")
+        );
+    }
+
+    #[test]
+    fn a_typed_plan_has_no_effective_configs() {
+        let plan = compile("type: fixture", Os::MacOs).unwrap().unwrap();
+        assert_eq!(plan.effective_config("subject"), None);
     }
 
     #[test]

@@ -130,33 +130,24 @@ pub struct ParticipantConfig {
 #[serde(deny_unknown_fields)]
 pub struct ConfigOverlay {
     /// Environment overrides; values must be YAML strings. Defaults to empty.
-    // TODO: remove once panoramic builds participants from this field.
-    #[allow(
-        dead_code,
-        reason = "Only tests read this field until participant construction uses it."
-    )]
     #[serde(default, deserialize_with = "deserialize_env_map")]
     pub env: BTreeMap<String, String>,
-    /// Configuration file source overrides. Defaults to empty.
+    /// Case-relative configuration file sources, replacing base entries by name. Defaults to empty.
     #[serde(default)]
-    pub(super) files: BTreeMap<String, FileSource>,
-    /// Participant-type-specific parameter overrides. Defaults to empty.
+    pub files: BTreeMap<String, FileSource>,
+    /// Participant-type-specific parameters, replacing whole base values by name. Defaults to empty.
     #[serde(default)]
-    pub(super) params: BTreeMap<String, Value>,
+    pub params: BTreeMap<String, Value>,
 }
 
 /// A case-relative file or directory supplied to a participant.
-// TODO: remove once panoramic builds participants from these fields.
-#[allow(
-    dead_code,
-    reason = "Only tests read these fields until participant construction uses them."
-)]
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FileSource {
-    /// Required source path, stored as written; has no default.
-    pub(super) from: PathBuf,
+    /// Required nonempty path within the case directory, stored as written. Must resolve to an existing file or
+    /// directory; symlink targets may be outside the case directory. Has no default.
+    pub from: PathBuf,
     /// Whether to expand template references in the source. Defaults to false.
-    pub(super) template: bool,
+    pub template: bool,
 }
 
 impl<'de> Deserialize<'de> for FileSource {
