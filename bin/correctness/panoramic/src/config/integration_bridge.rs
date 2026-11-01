@@ -10,10 +10,11 @@
 
 use std::path::Path;
 
-use panoramic_core::case::{
-    decode_fields, CaseFile, Os, ParticipantConfig, ParticipantEntry, ParticipantType, ProcedureNode, StepNode,
-};
+use panoramic_core::case::{CaseFile, ParticipantConfig, ParticipantEntry, ProcedureNode, StepNode};
+use panoramic_core::layout::Os;
+use panoramic_core::participant::ParticipantType;
 use panoramic_core::record::step_label;
+use panoramic_core::step::decode_fields;
 use panoramic_participants::AgentAdp;
 use panoramic_steps::{FileContains, LogContains, LogNotContains};
 use serde::de::DeserializeOwned;
@@ -228,14 +229,14 @@ where
 
 #[cfg(test)]
 mod tests {
-    use panoramic_core::case::CaseSchema;
+    use panoramic_core::{case::CaseSchema, plan::CasePlan};
     use panoramic_steps::{test_support::valid_fields, REGISTERED_STEPS};
 
     use super::*;
     use crate::{
         config::{
             build_runners,
-            tests::{write_case, LOGGING_INTEGRATION, LOGGING_PARTICIPANT, PARTICIPANT_FIELDS},
+            tests::{build_case_runners, write_case, LOGGING_INTEGRATION, LOGGING_PARTICIPANT, PARTICIPANT_FIELDS},
             typed_case::{RunnableCase, TypedConfig},
             LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME,
         },
@@ -259,8 +260,6 @@ mod tests {
             let integration_cases = crate::CASE_LOADER.load_file(&integration_path).unwrap();
             assert_eq!(participant_cases.len(), 1);
             assert_eq!(integration_cases.len(), 1);
-            assert_eq!(build_runners(&participant_cases, LINUX_RUNTIME, &[]).unwrap().len(), 1);
-            assert_eq!(build_runners(&integration_cases, LINUX_RUNTIME, &[]).unwrap().len(), 1);
             let participant = &participant_cases[0];
             let CaseSchema::Participants { file, .. } = participant.schema() else {
                 panic!("expected participant data");
@@ -275,21 +274,30 @@ mod tests {
             );
             assert_eq!(config.loaded_from, participant_path.canonicalize().unwrap());
             assert_eq!(integration.loaded_from, integration_path.canonicalize().unwrap());
+            assert_eq!(build_case_runners(participant_cases, Os::Linux, &[]).unwrap().len(), 1);
+            assert_eq!(build_case_runners(integration_cases, Os::Linux, &[]).unwrap().len(), 1);
         }
     }
 
     #[test]
     fn participant_case_runners_match_their_integration_twins_on_every_subject_os() {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_case(dir.path(), "alpha", LOGGING_PARTICIPANT);
-        let participant_cases = crate::CASE_LOADER.load_file(&path).unwrap();
-        write_case(dir.path(), "alpha", LOGGING_INTEGRATION);
-        let integration_cases = crate::CASE_LOADER.load_file(&path).unwrap();
+        let path = dir.path().join("alpha/config.yaml");
         let overrides = ["container=target:custom".parse().unwrap()];
         for runtime in [LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME] {
+            let os = crate::config::os_for_runtime(runtime).unwrap();
+            let [participant_plans, integration_plans] = [LOGGING_PARTICIPANT, LOGGING_INTEGRATION].map(|yaml| {
+                write_case(dir.path(), "alpha", yaml);
+                crate::CASE_LOADER
+                    .load_file(&path)
+                    .unwrap()
+                    .into_iter()
+                    .map(|case| CasePlan::compile(case, os, &crate::REGISTRIES).unwrap().unwrap())
+                    .collect::<Vec<_>>()
+            });
             let overrides = if runtime == MAC_RUNTIME {
-                let errors = [&participant_cases, &integration_cases].map(|cases| {
-                    build_runners(cases, runtime, &overrides)
+                let errors = [&participant_plans, &integration_plans].map(|plans| {
+                    build_runners(plans, os, &overrides)
                         .err()
                         .expect("host processes have no container image to override")
                         .to_string()
@@ -299,25 +307,25 @@ mod tests {
             } else {
                 &overrides[..]
             };
-            let participant_runners = build_runners(&participant_cases, runtime, overrides).unwrap();
-            let integration_runners = build_runners(&integration_cases, runtime, overrides).unwrap();
+            let participant_runners = build_runners(&participant_plans, os, overrides).unwrap();
+            let integration_runners = build_runners(&integration_plans, os, overrides).unwrap();
             assert_eq!(participant_runners.len(), 1);
             assert_eq!(integration_runners.len(), 1);
             let participant = &participant_runners[0];
             let integration = &integration_runners[0];
-            assert_eq!(participant.case.name(), integration.case.name());
-            assert_eq!(participant.case.name(), "alpha");
-            assert_eq!(participant.case.suite(), integration.case.suite());
-            assert_eq!(participant.case.suite(), TestSuite::Integration.name());
+            assert_eq!(participant.plan.case().name(), integration.plan.case().name());
+            assert_eq!(participant.plan.case().name(), "alpha");
+            assert_eq!(participant.plan.case().suite(), integration.plan.case().suite());
+            assert_eq!(participant.plan.case().suite(), TestSuite::Integration.name());
             assert_eq!(
-                participant.case.source().parent().unwrap(),
-                integration.case.source().parent().unwrap()
+                participant.plan.case().source().parent().unwrap(),
+                integration.plan.case().source().parent().unwrap()
             );
             assert_eq!(
-                participant.case.source().parent().unwrap(),
+                participant.plan.case().source().parent().unwrap(),
                 path.canonicalize().unwrap().parent().unwrap()
             );
-            assert_eq!(participant.case.timeout(), integration.case.timeout());
+            assert_eq!(participant.plan.case().timeout(), integration.plan.case().timeout());
             assert_eq!(participant.runner.runtime(), integration.runner.runtime());
             assert_eq!(participant.runner.runtime(), runtime);
             assert_eq!(participant.runner.images(), integration.runner.images());
@@ -497,7 +505,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = write_case(dir.path(), "alpha", &PARTICIPANT_FIELDS.replace(old, new));
             let cases = crate::CASE_LOADER.load_file(&path).unwrap();
-            let error = build_runners(&cases, LINUX_RUNTIME, &[])
+            let error = build_case_runners(cases, Os::Linux, &[])
                 .err()
                 .expect("unsupported participant cases must fail runner construction");
             assert_eq!(

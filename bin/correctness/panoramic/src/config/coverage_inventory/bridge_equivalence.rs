@@ -12,7 +12,7 @@ use std::{
     path::Path,
 };
 
-use panoramic_core::case::ParticipantType;
+use panoramic_core::participant::ParticipantType;
 use panoramic_participants::AgentAdp;
 use serde_json::{json, Value};
 

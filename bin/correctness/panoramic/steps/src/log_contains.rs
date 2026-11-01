@@ -1,6 +1,7 @@
 //! Steps that search a participant's output for a pattern.
 
-use panoramic_core::case::{decode_fields, CaseDuration, Need, Step, StepFactory, StepFields};
+use panoramic_core::case::CaseDuration;
+use panoramic_core::step::{decode_fields, Need, Step, StepFactory, StepFields};
 use serde::Deserialize;
 
 use super::check_pattern;

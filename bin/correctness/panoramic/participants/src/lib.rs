@@ -5,7 +5,7 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
-use panoramic_core::case::ParticipantType;
+use panoramic_core::participant::ParticipantType;
 
 mod agent_adp;
 pub use self::agent_adp::AgentAdp;

@@ -3,7 +3,7 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
-use std::collections::BTreeMap;
+use std::{borrow::Borrow, collections::BTreeMap, fmt::Write as _};
 use std::{io::IsTerminal, process::ExitCode};
 
 use clap::Parser as _;
@@ -38,8 +38,8 @@ mod dynamic_vars;
 mod integration;
 mod mounts;
 use self::config::{
-    build_runners, default_host_runtime, discover_in_scope,
-    typed_case::{LoadedCase, TypedConfigLoader},
+    build_runners, default_host_os, discover_in_scope, runtime_for_os,
+    typed_case::{LoadedPlan, TypedConfigLoader},
     BuiltCase,
 };
 
@@ -53,15 +53,15 @@ mod crate_dependencies_tests;
 #[cfg(test)]
 mod source_boundary_tests;
 
+/// Participant types and steps available to loading and compilation.
+pub(crate) const REGISTRIES: Registries<'static> = Registries {
+    participant_types: panoramic_participants::REGISTERED_TYPES,
+    steps: panoramic_steps::REGISTERED_STEPS,
+};
+
 /// Loads case files with the participant types and steps this binary registers.
-pub(crate) const CASE_LOADER: CaseLoader<'static, TypedConfigLoader> = CaseLoader::new(
-    Registries {
-        participant_types: panoramic_participants::REGISTERED_TYPES,
-        steps: panoramic_steps::REGISTERED_STEPS,
-    },
-    TypedConfigLoader,
-    test::TestSuite::Integration.name(),
-);
+pub(crate) const CASE_LOADER: CaseLoader<'static, TypedConfigLoader> =
+    CaseLoader::new(REGISTRIES, TypedConfigLoader, test::TestSuite::Integration.name());
 
 mod text_output;
 use self::text_output::{OutputFormat, Reporter};
@@ -182,12 +182,10 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let integration_runtime = cmd
-        .runtime
-        .clone()
-        .unwrap_or_else(|| default_host_runtime().to_string());
-    let mut built = match discover_in_scope(&cmd.test_dirs, &integration_runtime)
-        .and_then(|cases| build_runners(cases, &integration_runtime, &cmd.image_overrides))
+    let subject_os = cmd.runtime.unwrap_or_else(default_host_os);
+    let integration_runtime = runtime_for_os(subject_os);
+    let mut built = match discover_in_scope(&cmd.test_dirs, subject_os)
+        .and_then(|plans| build_runners(plans, subject_os, &cmd.image_overrides))
     {
         Ok(built) => built,
         Err(e) => {
@@ -215,7 +213,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     // selection that leaves nothing to run, is an error rather than a green run of zero tests.
     let selected_tests = match cmd.tests.as_deref() {
         Some(requested) => {
-            let names: Vec<_> = built.iter().map(|built| built.case.name()).collect();
+            let names: Vec<_> = built.iter().map(|built| built.plan.case().name()).collect();
             let (selected, unmatched) = resolve_selection(requested, &names);
             if !unmatched.is_empty() {
                 let msg = format!(
@@ -247,7 +245,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     built.retain(|built| {
         selected_tests
             .as_ref()
-            .is_none_or(|names| names.iter().any(|name| name == built.case.name()))
+            .is_none_or(|names| names.iter().any(|name| name == built.plan.case().name()))
     });
 
     // Create log directory.
@@ -273,10 +271,10 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         RunReport::new(
             build_revision(),
             cmd.test_dirs.clone(),
-            integration_runtime.clone(),
+            integration_runtime.to_string(),
             cmd.parallelism.get(),
             log_dir.clone(),
-            built.iter().map(|built| built.case.name().to_string()).collect(),
+            built.iter().map(|built| built.plan.case().name().to_string()).collect(),
         ),
         cmd.fail_fast,
     );
@@ -447,12 +445,9 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
         info!("Discovering test cases from: {}...", dirs_str.join(", "));
     }
 
-    let integration_runtime = cmd
-        .runtime
-        .clone()
-        .unwrap_or_else(|| default_host_runtime().to_string());
-    let cases = match discover_in_scope(&cmd.test_dirs, &integration_runtime) {
-        Ok(cases) => cases,
+    let subject_os = cmd.runtime.unwrap_or_else(default_host_os);
+    let plans = match discover_in_scope(&cmd.test_dirs, subject_os) {
+        Ok(plans) => plans,
         Err(e) => {
             error!("Failed to discover tests: {:#}", e);
             return ExitCode::from(EXIT_HARNESS_ERROR);
@@ -460,7 +455,7 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
     };
 
     if cmd.json {
-        let runners = match build_runners(&cases, &integration_runtime, &[]) {
+        let runners = match build_runners(&plans, subject_os, &[]) {
             Ok(runners) => runners,
             Err(e) => {
                 error!("Failed to discover tests: {:#}", e);
@@ -472,34 +467,52 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
             serde_json::to_string_pretty(&listing(&runners)).expect("Unable to serialize a map of the tests")
         )
     } else {
-        if cases.is_empty() {
+        if plans.is_empty() {
             info!("No test cases found.");
             return ExitCode::SUCCESS;
         }
 
-        info!("Discovered {} test case(s).", cases.len());
+        info!("Discovered {} test case(s).", plans.len());
 
         println!();
-        println!("Available tests ({}):", cases.len());
+        println!("Available tests ({}):", plans.len());
         println!();
 
-        for case in &cases {
-            println!("  {}", case.name());
-            if let Some(description) = case.description() {
-                println!("    {}", description);
-            }
-            println!("    Timeout: {:?}", case.timeout());
-            println!();
+        for plan in &plans {
+            print!("{}", listing_text(plan));
         }
     }
     ExitCode::SUCCESS
 }
 
+/// Formats one case's entry in the text listing, with its layout if it has one.
+fn listing_text(plan: &LoadedPlan) -> String {
+    let case = plan.case();
+    let mut text = format!("  {}\n", case.name());
+    if let Some(description) = case.description() {
+        writeln!(text, "    {description}").unwrap();
+    }
+    writeln!(text, "    Timeout: {:?}", case.timeout()).unwrap();
+    if let Some(layout) = plan.layout() {
+        let participants: Vec<_> = layout
+            .iter()
+            .map(|(name, realization)| format!("{name} on {} as {}", realization.os.name(), realization.kind.name()))
+            .collect();
+        writeln!(text, "    Layout: {}", participants.join("; ")).unwrap();
+    }
+    text.push('\n');
+    text
+}
+
 /// Lists each case's suite and timeout, with the runtime and images its runner uses.
-fn listing(built: &[BuiltCase<&LoadedCase>]) -> BTreeMap<String, serde_json::Value> {
+fn listing<P>(built: &[BuiltCase<P>]) -> BTreeMap<String, serde_json::Value>
+where
+    P: Borrow<LoadedPlan>,
+{
     built
         .iter()
-        .map(|BuiltCase { case, runner }| {
+        .map(|BuiltCase { plan, runner }| {
+            let case = plan.borrow().case();
             (
                 case.name().to_string(),
                 serde_json::json!({
@@ -520,10 +533,12 @@ fn build_revision() -> String {
 
 #[cfg(test)]
 mod tests {
+    use panoramic_core::layout::Os;
+
     use super::*;
     use crate::config::{
-        tests::{write_case, PARTICIPANT_FIELDS},
-        DEFAULT_LINUX_TARGET_IMAGE, DEFAULT_WINDOWS_TARGET_IMAGE, LINUX_RUNTIME, WINDOWS_RUNTIME,
+        tests::{build_case_runners, write_case, PARTICIPANT_FIELDS},
+        DEFAULT_LINUX_TARGET_IMAGE, DEFAULT_WINDOWS_TARGET_IMAGE,
     };
 
     const CORRECTNESS_FIELDS: &str =
@@ -605,7 +620,7 @@ comparison: {image: comp}
             "type: integration\nname: good\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n",
         );
         let bad = write_case(dir.path(), "bad", "type: bogus\n");
-        let error = discover_in_scope(&[dir.path().to_path_buf()], LINUX_RUNTIME)
+        let error = discover_in_scope(&[dir.path().to_path_buf()], Os::Linux)
             .err()
             .expect("the malformed case must fail discovery");
         assert!(
@@ -671,9 +686,9 @@ comparison: {image: comp}
             "good",
             "type: integration\nname: good\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n",
         );
-        let cases = discover_in_scope(&[dir.path().to_path_buf()], LINUX_RUNTIME).unwrap();
+        let cases = discover_in_scope(&[dir.path().to_path_buf()], Os::Linux).unwrap();
         assert_eq!(
-            cases.iter().map(LoadedCase::name).collect::<Vec<_>>(),
+            cases.iter().map(|plan| plan.case().name()).collect::<Vec<_>>(),
             ["good", "participant"]
         );
         for json in [false, true] {
@@ -740,8 +755,8 @@ comparison: {image: comp}
             "matrix",
             &format!("type: correctness_matrix\n{CORRECTNESS_FIELDS}variants: [{{name: second}}, {{name: first}}]\n"),
         );
-        let cases = discover_in_scope(&[dir.path().to_path_buf()], LINUX_RUNTIME).unwrap();
-        let names: Vec<_> = cases.iter().map(LoadedCase::name).collect();
+        let cases = discover_in_scope(&[dir.path().to_path_buf()], Os::Linux).unwrap();
+        let names: Vec<_> = cases.iter().map(|plan| plan.case().name()).collect();
         let (selected, unmatched) = resolve_selection("matrix/first, missing, integration", &names);
         assert_eq!(selected, ["matrix/first", "integration"]);
         assert_eq!(unmatched, ["missing"]);
@@ -788,6 +803,103 @@ comparison: {image: comp}
         }
     }
 
+    #[tokio::test]
+    async fn a_case_with_an_unsupported_realization_fails_list_list_json_and_run_with_exit_2() {
+        let dir = tempfile::tempdir().unwrap();
+        let pod = write_case(
+            dir.path(),
+            "b-pod",
+            &PARTICIPANT_FIELDS.replace("subject: true", "subject: true, realization: {kind: kubernetes-pod}"),
+        );
+        let windows = write_case(
+            dir.path(),
+            "a-windows",
+            &PARTICIPANT_FIELDS
+                .replace("[linux]", "[linux, windows]")
+                .replace("subject: true", "subject: true, realization: {kind: linux-container}"),
+        );
+        let logs = dir.path().join("logs");
+        for os in [Os::Linux, Os::MacOs, Os::Windows] {
+            let message = discover_in_scope(&[dir.path().to_path_buf()], os)
+                .err()
+                .unwrap()
+                .to_string();
+            assert_eq!(
+                message,
+                format!(
+                    "Failed to plan test cases:\n  - case 'a-windows' in {}: on subject OS 'windows', \
+                     participant 'adp' of type 'agent-adp' cannot run as linux-container on windows; \
+                     it supports linux-container on linux, host-process-group on macos, \
+                     windows-container on windows\n  - case 'b-pod' in {}: on subject OS 'linux', \
+                     participant 'adp' of type 'agent-adp' cannot run as kubernetes-pod on linux; \
+                     it supports linux-container on linux, host-process-group on macos, windows-container on windows",
+                    windows.canonicalize().unwrap().display(),
+                    pod.canonicalize().unwrap().display()
+                )
+            );
+            for (command, extra) in [
+                ("list", vec![]),
+                ("list", vec!["--json"]),
+                ("run", vec!["--no-tui", "-l", logs.to_str().unwrap()]),
+            ] {
+                let mut args = vec![
+                    "panoramic",
+                    command,
+                    "-d",
+                    dir.path().to_str().unwrap(),
+                    "--runtime",
+                    runtime_for_os(os),
+                ];
+                args.extend(extra);
+                let cli = Cli::try_parse_from(args).unwrap();
+                let exit = match cli.command {
+                    Command::Run(cmd) => run_tests(cmd, false).await,
+                    Command::List(cmd) => list_tests(cmd).await,
+                };
+                assert_eq!(exit, ExitCode::from(2), "{command} under {os:?}");
+                assert!(!logs.exists(), "layout errors must precede log directory creation");
+            }
+        }
+    }
+
+    #[test]
+    fn listing_text_prints_each_participant_layout_and_nothing_for_typed_cases() {
+        let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[macos]").replace(
+            "  adp:",
+            "  zebra: {type: agent-adp}\n  alpha: {type: agent-adp, os: linux}\n  adp:",
+        );
+        let case = crate::CASE_LOADER
+            .load_content(&yaml, "participant", std::path::Path::new("config.yaml"))
+            .unwrap()
+            .remove(0);
+        let plan = LoadedPlan::compile(case, Os::MacOs, &REGISTRIES).unwrap().unwrap();
+        assert_eq!(
+            listing_text(&plan),
+            "  participant\n    Timeout: 1s\n    \
+             Layout: adp on macos as host-process-group; alpha on linux as linux-container; \
+             zebra on macos as host-process-group\n\n"
+        );
+        for (yaml, expected) in [
+            (
+                "type: integration\nname: typed\ndescription: A typed case\n\
+                 timeout: 7s\nruntimes: [linux]\nprocedure: []\n"
+                    .to_string(),
+                "  typed\n    A typed case\n    Timeout: 7s\n\n",
+            ),
+            (
+                format!("type: correctness\n{CORRECTNESS_FIELDS}"),
+                "  typed\n    Timeout: 1200s\n\n",
+            ),
+        ] {
+            let case = crate::CASE_LOADER
+                .load_content(&yaml, "typed", std::path::Path::new("config.yaml"))
+                .unwrap()
+                .remove(0);
+            let plan = LoadedPlan::compile(case, Os::Linux, &REGISTRIES).unwrap().unwrap();
+            assert_eq!(listing_text(&plan), expected);
+        }
+    }
+
     #[test]
     fn listing_reports_suite_runtime_timeout_and_declared_images() {
         let dir = tempfile::tempdir().unwrap();
@@ -797,7 +909,7 @@ comparison: {image: comp}
             &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
         );
         let cases = crate::CASE_LOADER.load_file(&path).unwrap();
-        let runners = build_runners(&cases, LINUX_RUNTIME, &[]).unwrap();
+        let runners = build_case_runners(cases, Os::Linux, &[]).unwrap();
         let entries = listing(&runners);
         assert_eq!(entries.len(), 1);
         let entry = &entries["correctness"];
@@ -812,7 +924,7 @@ comparison: {image: comp}
             "type: integration\nname: integration\ntimeout: 7s\nruntimes: [windows]\nprocedure: []\n",
         );
         let cases = crate::CASE_LOADER.load_file(&path).unwrap();
-        let runners = build_runners(&cases, WINDOWS_RUNTIME, &[]).unwrap();
+        let runners = build_case_runners(cases, Os::Windows, &[]).unwrap();
         let entries = listing(&runners);
         assert_eq!(entries.len(), 1);
         let entry = &entries["integration"];
@@ -823,7 +935,7 @@ comparison: {image: comp}
 
         let path = write_case(dir.path(), "participant", &PARTICIPANT_FIELDS.replace("1s", "9s"));
         let cases = crate::CASE_LOADER.load_file(&path).unwrap();
-        let runners = build_runners(&cases, LINUX_RUNTIME, &[]).unwrap();
+        let runners = build_case_runners(cases, Os::Linux, &[]).unwrap();
         let entries = listing(&runners);
         assert_eq!(entries.len(), 1);
         let entry = &entries["participant"];

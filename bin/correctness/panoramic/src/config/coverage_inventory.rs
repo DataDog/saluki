@@ -14,7 +14,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use panoramic_core::case::{CaseSchema, Os};
+use panoramic_core::case::CaseSchema;
+use panoramic_core::{layout::Os, plan::CasePlan};
 use saluki_error::{generic_error, GenericError};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -23,7 +24,7 @@ use super::{
     build_runners,
     tests::{write_case, LOGGING_INTEGRATION, LOGGING_PARTICIPANT, PARTICIPANT_FIELDS},
     typed_case::{LoadedCase, RunnableCase, TypedConfig},
-    AssertionStep, IntegrationConfig, LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME,
+    AssertionStep, IntegrationConfig,
 };
 use crate::{
     correctness::analysis::AnalysisMode,
@@ -226,48 +227,28 @@ impl Inventory {
                 }
             }
         }
-        // Discover all directories together to reject duplicate names across suites and statuses.
-        let cases = crate::CASE_LOADER
-            .discover_cases(&CASE_DIRS.map(|(dir, ..)| root.join(dir)))
-            .unwrap_or_else(|error| panic!("{error:#}"));
-        let (integration_cases, correctness_cases): (Vec<_>, Vec<_>) =
-            cases.iter().partition(|case| case.suite() == INTEGRATION);
-        for (runtime, os) in [
-            (LINUX_RUNTIME, Os::Linux),
-            (MAC_RUNTIME, Os::MacOs),
-            (WINDOWS_RUNTIME, Os::Windows),
-        ] {
-            let eligible: Vec<_> = integration_cases
-                .iter()
-                .copied()
-                .filter(|case| case.is_eligible_for(runtime))
+        // Discover all directories together, per OS, to reject duplicate names across suites and statuses.
+        for os in [Os::Linux, Os::MacOs, Os::Windows] {
+            let cases = crate::CASE_LOADER
+                .discover_cases(&CASE_DIRS.map(|(dir, ..)| root.join(dir)))
+                .unwrap_or_else(|error| panic!("{error:#}"));
+            let plans: Vec<_> = cases
+                .into_iter()
+                .filter(|case| case.suite() == INTEGRATION || os == Os::Linux)
+                .filter_map(|case| CasePlan::compile(case, os, &crate::REGISTRIES).unwrap())
                 .collect();
-            for built in build_runners(eligible, runtime, &[]).unwrap() {
+            for built in build_runners(plans, os, &[]).unwrap() {
+                let case = built.plan.case();
+                let status = if case.is_disabled() { DISABLED } else { SELECTED };
                 rows.push(Row::from_case(
                     root,
-                    built.case,
+                    case,
                     built.runner.as_ref(),
                     os.name(),
-                    SELECTED,
+                    status,
                     &schemas,
                 ));
             }
-        }
-        for case in correctness_cases {
-            let built = build_runners([case], LINUX_RUNTIME, &[]).unwrap();
-            let status = if case.is_eligible_for(LINUX_RUNTIME) {
-                SELECTED
-            } else {
-                DISABLED
-            };
-            rows.push(Row::from_case(
-                root,
-                built[0].case,
-                built[0].runner.as_ref(),
-                Os::Linux.name(),
-                status,
-                &schemas,
-            ));
         }
 
         rows.sort_by(|a, b| (&a.suite, &a.name, &a.subject_os).cmp(&(&b.suite, &b.name, &b.subject_os)));

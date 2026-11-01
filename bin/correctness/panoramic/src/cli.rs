@@ -5,8 +5,13 @@ use std::path::{Path, PathBuf};
 
 use airlock::driver::DEFAULT_ALPINE_IMAGE;
 use chrono::Local;
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{
+    builder::{PossibleValuesParser, TypedValueParser},
+    Args, Parser, Subcommand, ValueEnum,
+};
+use panoramic_core::layout::Os;
 
+use crate::config::{os_for_runtime, LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME};
 use crate::text_output::OutputFormat;
 use crate::{image_override::ImageOverride, test::RunnerSettings};
 
@@ -32,6 +37,12 @@ const DEFAULT_CORE_AGENT_BINARY_PATH: &str = "/tmp/saluki-dda/datadog-agent/bin/
 ///
 /// These are tracing target names, which are crate names with underscores rather than dashes.
 const FIRST_PARTY_LOG_TARGETS: &[&str] = &["panoramic", "airlock", "stele", "saluki_common", "saluki_error"];
+
+/// Parses `--runtime`, accepting only the runtime identifiers and returning the subject OS each selects.
+fn runtime_parser() -> impl TypedValueParser<Value = Os> {
+    PossibleValuesParser::new([LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME])
+        .map(|value| os_for_runtime(&value).expect("only runtime identifiers are possible values"))
+}
 
 /// Verbosity selected by `--log-level`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -148,13 +159,14 @@ pub struct RunCommand {
     #[arg(short = 't', long)]
     pub tests: Option<String>,
 
-    /// Integration-test runtime to scope discovery to (for example, `linux`, `mac`,
-    /// or `windows`). Only integration tests whose `runtimes:` list contains this
-    /// value are eligible to run. Defaults to the host's own runtime: `mac` on
-    /// macOS, `windows` on Windows, and `linux` everywhere else. Correctness tests
-    /// are unaffected by this flag
-    #[arg(long, verbatim_doc_comment)]
-    pub runtime: Option<String>,
+    /// Integration-test runtime to scope discovery to: `linux`, `mac` or `windows`;
+    /// other values are rejected. Integration cases run only if their `runtimes:`
+    /// list contains it, and participant cases only if their `subject_os` list
+    /// contains its OS. Defaults to the host's own runtime: `mac` on macOS,
+    /// `windows` on Windows, and `linux` everywhere else.
+    /// Correctness tests are unaffected by this flag.
+    #[arg(long, verbatim_doc_comment, value_parser = runtime_parser())]
+    pub runtime: Option<Os>,
 
     /// Number of tests to run in parallel.
     #[arg(short = 'p', long, default_value = "4")]
@@ -266,11 +278,14 @@ pub struct ListCommand {
     #[arg(short = 'd', long)]
     pub test_dirs: Vec<PathBuf>,
 
-    /// Integration-test runtime to scope discovery to. Same semantics as on `run`:
-    /// defaults to `mac` on macOS, `windows` on Windows, and `linux` everywhere
-    /// else. Correctness tests are unaffected
-    #[arg(long, verbatim_doc_comment)]
-    pub runtime: Option<String>,
+    /// Integration-test runtime to scope discovery to: `linux`, `mac` or `windows`;
+    /// other values are rejected. Integration cases run only if their `runtimes:`
+    /// list contains it, and participant cases only if their `subject_os` list
+    /// contains its OS. Defaults to the host's own runtime: `mac` on macOS,
+    /// `windows` on Windows, and `linux` everywhere else.
+    /// Correctness tests are unaffected by this flag.
+    #[arg(long, verbatim_doc_comment, value_parser = runtime_parser())]
+    pub runtime: Option<Os>,
 
     /// Output the discovered tests as json along with their image dependencies. A
     /// `ci` script depends on this for dynamic pipeline creation
@@ -304,6 +319,30 @@ mod tests {
         match &cli.command {
             Command::Run(cmd) => cmd,
             Command::List(_) => panic!("expected a `run` invocation"),
+        }
+    }
+
+    #[test]
+    fn run_and_list_reject_an_unknown_runtime() {
+        for command in ["run", "list"] {
+            let error = Cli::try_parse_from(["panoramic", command, "--runtime", "docker"])
+                .err()
+                .unwrap();
+            assert_eq!(error.exit_code(), 2);
+            let message = error.to_string();
+            assert!(message.contains("docker"), "{message}");
+            assert!(message.contains("[possible values: linux, mac, windows]"), "{message}");
+            for (runtime, expected) in [("linux", Os::Linux), ("mac", Os::MacOs), ("windows", Os::Windows)] {
+                let cli = Cli::try_parse_from(["panoramic", command, "--runtime", runtime]).unwrap();
+                let os = match cli.command {
+                    Command::Run(cmd) => cmd.runtime,
+                    Command::List(cmd) => cmd.runtime,
+                };
+                assert_eq!(os, Some(expected));
+            }
+            for runtime in ["macos", "Linux", "unknown"] {
+                assert!(Cli::try_parse_from(["panoramic", command, "--runtime", runtime]).is_err());
+            }
         }
     }
 
@@ -559,7 +598,7 @@ mod tests {
         assert_eq!(cmd.tests.as_deref(), Some("two"));
         assert!(cmd.fail_fast);
         assert!(cmd.verbose);
-        assert_eq!(cmd.runtime.as_deref(), Some("mac"));
+        assert_eq!(cmd.runtime, Some(Os::MacOs));
         assert_eq!(cmd.kind_cluster_name, "custom");
         assert!(cmd.no_delete_kind_cluster);
     }

@@ -2,7 +2,8 @@
 
 use std::{collections::BTreeSet, path::Path, time::Duration};
 
-use panoramic_core::case::{case_name, deserialize_case, CaseConfig, CaseSchema, Os, TypedCase, TypedCaseLoader};
+use panoramic_core::case::{case_name, deserialize_case, CaseConfig, CaseSchema, TypedCase, TypedCaseLoader};
+use panoramic_core::{layout::Os, plan::CasePlan};
 use saluki_error::{generic_error, GenericError};
 
 use super::{
@@ -27,6 +28,9 @@ pub(crate) enum TypedConfig {
 
 /// A case loaded with this binary's typed schemas.
 pub(crate) type LoadedCase = CaseConfig<TypedConfig>;
+
+/// A case compiled for its selected subject OS.
+pub(crate) type LoadedPlan = CasePlan<TypedConfig>;
 
 /// Loads integration, correctness and correctness-matrix files.
 pub(crate) struct TypedConfigLoader;
@@ -127,12 +131,8 @@ fn from_correctness(name: String, config: CorrectnessConfig) -> TypedCase<TypedC
     }
 }
 
-/// Runtime eligibility, participant translation and runner construction for loaded cases.
+/// Participant translation and runner construction for loaded cases.
 pub(crate) trait RunnableCase {
-    /// Scopes integration and participant cases to their declared OSes;
-    /// enabled correctness cases accept every runtime.
-    fn is_eligible_for(&self, runtime: &str) -> bool;
-
     /// Translates a participant case into the configuration its integration runner receives.
     ///
     /// # Errors
@@ -146,25 +146,13 @@ pub(crate) trait RunnableCase {
     ///
     /// # Errors
     ///
-    /// Participant cases require a recognized subject OS runtime and propagate [`Self::integration_config`] errors.
+    /// Participant cases propagate [`Self::integration_config`] errors.
     fn build_test(
-        &self, integration_runtime: &str, settings: &IntegrationSettings, overrides: &ImageOverrides<'_>,
+        &self, subject_os: Os, settings: &IntegrationSettings, overrides: &ImageOverrides<'_>,
     ) -> Result<Box<dyn Test>, GenericError>;
 }
 
 impl RunnableCase for LoadedCase {
-    fn is_eligible_for(&self, runtime: &str) -> bool {
-        if self.is_disabled() {
-            return false;
-        }
-        match self.schema() {
-            CaseSchema::Typed(TypedConfig::Integration(_)) | CaseSchema::Participants { .. } => {
-                os_for_runtime(runtime).is_some_and(|os| self.subject_os().contains(&os))
-            }
-            CaseSchema::Typed(TypedConfig::Correctness(_)) => true,
-        }
-    }
-
     fn integration_config(&self, os: Os) -> Result<IntegrationConfig, GenericError> {
         let CaseSchema::Participants { file, .. } = self.schema() else {
             return Err(generic_error!(
@@ -199,7 +187,7 @@ impl RunnableCase for LoadedCase {
     }
 
     fn build_test(
-        &self, integration_runtime: &str, settings: &IntegrationSettings, overrides: &ImageOverrides<'_>,
+        &self, subject_os: Os, settings: &IntegrationSettings, overrides: &ImageOverrides<'_>,
     ) -> Result<Box<dyn Test>, GenericError> {
         match self.schema() {
             CaseSchema::Typed(TypedConfig::Integration(config)) => {
@@ -210,20 +198,10 @@ impl RunnableCase for LoadedCase {
                 overrides.apply_correctness(&mut config);
                 Ok(Box::new(CorrectnessTestCase::new(self.name().to_string(), config)))
             }
-            CaseSchema::Participants { .. } => {
-                let os = os_for_runtime(integration_runtime).ok_or_else(|| {
-                    generic_error!(
-                        "Cannot run case '{}' from {}: runtime '{}' is not a subject OS",
-                        self.name(),
-                        self.source().display(),
-                        integration_runtime
-                    )
-                })?;
-                Ok(Box::new(IntegrationTestCase::new(
-                    self.integration_config(os)?,
-                    settings,
-                )))
-            }
+            CaseSchema::Participants { .. } => Ok(Box::new(IntegrationTestCase::new(
+                self.integration_config(subject_os)?,
+                settings,
+            ))),
         }
     }
 }
@@ -234,8 +212,8 @@ mod tests {
 
     use super::*;
     use crate::config::{
-        build_runners,
-        tests::{write_case, PARTICIPANT_FIELDS},
+        build_runners, discover_in_scope,
+        tests::{build_case_runners, write_case, PARTICIPANT_FIELDS},
     };
 
     const CORRECTNESS_FIELDS: &str =
@@ -294,7 +272,7 @@ mod tests {
             TestSuite::Correctness.name(),
         );
         let cases = loader.load_file(&path).unwrap();
-        let error = build_runners(&cases, LINUX_RUNTIME, &[])
+        let error = build_case_runners(cases, Os::Linux, &[])
             .err()
             .expect("the case and runner suites must agree");
         assert_eq!(
@@ -316,44 +294,36 @@ mod tests {
             cases[0].integration_config(Os::Windows).unwrap_err().to_string(),
             "Cannot run case 'alpha' from alpha/config.yaml: it does not declare subject OS 'windows'"
         );
-        let message = build_runners(&cases, WINDOWS_RUNTIME, &[])
-            .err()
-            .expect("runner construction must translate for the requested OS")
-            .to_string();
-        assert_eq!(message, "Failed to build test runners:\n  - Cannot run case 'alpha' from alpha/config.yaml: it does not declare subject OS 'windows'");
     }
 
     #[test]
-    fn participant_runners_require_a_subject_os_runtime() {
-        let cases = crate::CASE_LOADER
-            .load_content(PARTICIPANT_FIELDS, "alpha", Path::new("alpha/config.yaml"))
-            .unwrap();
-        for runtime in ["docker", "macos", "unknown"] {
-            let message = build_runners(&cases, runtime, &[])
-                .err()
-                .expect("invalid subject OS runtime")
-                .to_string();
-            assert_eq!(message, format!("Failed to build test runners:\n  - Cannot run case 'alpha' from alpha/config.yaml: runtime '{runtime}' is not a subject OS"));
-        }
-    }
-
-    #[test]
-    fn participant_cases_are_eligible_only_for_their_subject_os() {
+    fn selection_plans_participant_and_integration_cases_only_for_their_subject_os() {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_case(
+        write_case(
             dir.path(),
-            "alpha",
+            "participant",
             &PARTICIPANT_FIELDS.replace("[linux]", "[linux, windows]"),
         );
-        let cases = crate::CASE_LOADER.load_file(&path).unwrap();
-        assert_eq!(cases.len(), 1);
-        for (runtime, eligible) in [
-            (LINUX_RUNTIME, true),
-            (MAC_RUNTIME, false),
-            (WINDOWS_RUNTIME, true),
-            ("unknown", false),
-        ] {
-            assert_eq!(cases[0].is_eligible_for(runtime), eligible, "{runtime}");
+        write_case(
+            dir.path(),
+            "integration",
+            "type: integration\nname: integration\ntimeout: 1s\nruntimes: [linux, windows]\nprocedure: []\n",
+        );
+        for os in [Os::Linux, Os::MacOs, Os::Windows] {
+            let plans = discover_in_scope(&[dir.path().to_path_buf()], os).unwrap();
+            let names: Vec<_> = plans.iter().map(|plan| plan.case().name()).collect();
+            assert_eq!(
+                names,
+                if os == Os::MacOs {
+                    vec![]
+                } else {
+                    vec!["integration", "participant"]
+                }
+            );
+            for plan in plans {
+                assert_eq!(plan.subject_os(), os);
+                assert_eq!(plan.layout().is_some(), plan.case().name() == "participant");
+            }
         }
     }
 
@@ -389,9 +359,9 @@ mod tests {
             ["matrix/second", "matrix/first"]
         );
         let source = path.canonicalize().unwrap();
-        let runners = build_runners(&cases, LINUX_RUNTIME, &[]).unwrap();
+        let runners = build_case_runners(cases, Os::Linux, &[]).unwrap();
         for (built, variant) in runners.iter().zip(["second", "first"]) {
-            let case = built.case;
+            let case = built.plan.case();
             assert_eq!(case.source(), source);
             assert_eq!(case.timeout(), CORRECTNESS_TIMEOUT);
             assert_eq!(case.suite(), TestSuite::Correctness.name());
@@ -414,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn disabled_correctness_cases_load_but_are_never_eligible() {
+    fn disabled_cases_are_never_planned() {
         let dir = tempfile::tempdir().unwrap();
         for (kind, variants, names) in [
             ("correctness", "", vec!["disabled"]),
@@ -433,39 +403,41 @@ mod tests {
             assert_eq!(cases.iter().map(CaseConfig::name).collect::<Vec<_>>(), names);
             for case in cases {
                 assert!(case.is_disabled());
-                for runtime in [LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME, "unknown"] {
-                    assert!(!case.is_eligible_for(runtime), "{kind} under {runtime}");
-                }
+            }
+            for os in [Os::Linux, Os::MacOs, Os::Windows] {
+                assert!(
+                    discover_in_scope(&[dir.path().to_path_buf()], os).unwrap().is_empty(),
+                    "{kind} under {os:?}"
+                );
             }
         }
     }
 
     #[test]
-    fn eligibility_scopes_integration_cases_to_their_runtimes_and_not_correctness_cases() {
+    fn correctness_cases_are_planned_for_linux_under_every_selected_os() {
         let dir = tempfile::tempdir().unwrap();
-        let integration = write_case(
-            dir.path(),
-            "portable",
-            "type: integration\nname: portable\ntimeout: 1s\nruntimes: [linux, windows]\nprocedure: []\n",
-        );
-        let correctness = write_case(
+        write_case(
             dir.path(),
             "correctness",
             &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
         );
-        let integration = crate::CASE_LOADER.load_file(&integration).unwrap();
-        let correctness = crate::CASE_LOADER.load_file(&correctness).unwrap();
-        assert_eq!(integration.len(), 1);
-        assert_eq!(correctness.len(), 1);
-        assert_eq!(*integration[0].subject_os(), BTreeSet::from([Os::Linux, Os::Windows]));
-        for (runtime, eligible) in [
-            (LINUX_RUNTIME, true),
-            (MAC_RUNTIME, false),
-            (WINDOWS_RUNTIME, true),
-            ("unknown", false),
-        ] {
-            assert_eq!(integration[0].is_eligible_for(runtime), eligible, "{runtime}");
-            assert!(correctness[0].is_eligible_for(runtime), "{runtime}");
+        write_case(
+            dir.path(),
+            "matrix",
+            &format!("type: correctness_matrix\n{CORRECTNESS_FIELDS}variants: [{{name: first}}, {{name: second}}]\n"),
+        );
+        for os in [Os::Linux, Os::MacOs, Os::Windows] {
+            let plans = discover_in_scope(&[dir.path().to_path_buf()], os).unwrap();
+            assert_eq!(
+                plans.iter().map(|plan| plan.case().name()).collect::<Vec<_>>(),
+                ["correctness", "matrix/first", "matrix/second"]
+            );
+            for plan in &plans {
+                assert_eq!(plan.subject_os(), Os::Linux);
+                assert!(plan.layout().is_none());
+            }
+            let runners = build_runners(plans, os, &[]).unwrap();
+            assert!(runners.iter().all(|built| built.runner.runtime() == "docker"));
         }
     }
 
@@ -526,8 +498,12 @@ mod tests {
         let cases = crate::CASE_LOADER.load_file(&path).unwrap();
         assert_eq!(cases.len(), 1);
         let entries = ["baseline=base:override".parse().unwrap()];
-        let overridden = build_runners(&cases, LINUX_RUNTIME, &entries).unwrap();
-        let declared = build_runners(&cases, LINUX_RUNTIME, &[]).unwrap();
+        let plans: Vec<_> = cases
+            .into_iter()
+            .map(|case| CasePlan::compile(case, Os::Linux, &crate::REGISTRIES).unwrap().unwrap())
+            .collect();
+        let overridden = build_runners(&plans, Os::Linux, &entries).unwrap();
+        let declared = build_runners(&plans, Os::Linux, &[]).unwrap();
         assert_eq!(overridden[0].runner.images()["baseline"], "base:override");
         assert_eq!(declared[0].runner.images()["baseline"], "base:file");
     }
@@ -595,9 +571,9 @@ mod tests {
         let case = &cases[0];
         assert_eq!(case.source(), path.canonicalize().unwrap());
         assert_eq!(case.name(), "case");
-        let runners = build_runners(&cases, LINUX_RUNTIME, &[]).unwrap();
+        let runners = build_case_runners(cases, Os::Linux, &[]).unwrap();
         assert_eq!(
-            runners[0].case.source().parent().unwrap(),
+            runners[0].plan.case().source().parent().unwrap(),
             path.canonicalize().unwrap().parent().unwrap()
         );
     }

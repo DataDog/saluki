@@ -2,7 +2,9 @@
 
 use std::path::Path;
 
-use panoramic_core::case::{CaseSchema, Need, Os, ProcedureNode};
+use panoramic_core::case::{CaseSchema, ProcedureNode};
+use panoramic_core::layout::Os;
+use panoramic_core::step::Need;
 use panoramic_steps::{test_support::valid_fields, REGISTERED_STEPS};
 use serde_json::Value;
 

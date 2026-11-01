@@ -10,9 +10,11 @@ use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{
-    case_name, decode_fields, CaseLoader, FactDeclaration, Need, Os, ParticipantType, Registries, Step, StepFactory,
-    StepFields, Template, TypedCase, TypedCaseLoader,
+use super::{case_name, CaseLoader, Registries, Template, TypedCase, TypedCaseLoader};
+use crate::{
+    layout::{Os, RealizationKind},
+    participant::{FactDeclaration, ParticipantType},
+    step::{decode_fields, Need, Step, StepFactory, StepFields},
 };
 
 #[derive(Debug, Deserialize)]
@@ -91,6 +93,14 @@ pub(crate) struct Server;
 impl ParticipantType for Server {
     fn name(&self) -> &'static str {
         "server"
+    }
+
+    fn supports(&self) -> &'static [(Os, RealizationKind)] {
+        &[
+            (Os::Linux, RealizationKind::LinuxContainer),
+            (Os::MacOs, RealizationKind::HostProcessGroup),
+            (Os::Windows, RealizationKind::WindowsContainer),
+        ]
     }
 
     fn facts(&self) -> &'static [FactDeclaration] {

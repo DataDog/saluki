@@ -6,7 +6,7 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
-use panoramic_core::case::StepFactory;
+use panoramic_core::step::StepFactory;
 
 mod file_contains;
 mod log_contains;
@@ -34,7 +34,7 @@ fn check_pattern(pattern: &str, regex: bool) -> Result<(), String> {
 /// Fields that build each registered step, shared by tests that need a valid step.
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_support {
-    use panoramic_core::case::StepFields;
+    use panoramic_core::step::StepFields;
 
     use super::{FileContains, LogContains, LogNotContains};
 
@@ -56,7 +56,7 @@ pub mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use panoramic_core::case::{Need, StepFields};
+    use panoramic_core::step::{Need, StepFields};
     use serde_json::Value;
 
     use super::*;

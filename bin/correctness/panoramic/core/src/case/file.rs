@@ -13,7 +13,8 @@ use serde::{
 };
 use serde_json::Value;
 
-use super::{duration::CaseDuration, Os};
+use super::duration::CaseDuration;
+use crate::layout::{Os, RealizationKind};
 
 /// A case's identity, participants and procedure.
 #[derive(Debug, Deserialize)]
@@ -93,33 +94,19 @@ pub struct ParticipantEntry {
 }
 
 /// An execution mechanism explicitly requested by the case.
-// TODO: remove once panoramic builds participants from these fields.
-#[allow(
-    dead_code,
-    reason = "Only tests read these fields until participant construction uses them."
-)]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RequestedRealization {
     /// Required execution mechanism; has no default.
-    pub(super) kind: RealizationKind,
+    pub kind: RealizationKind,
     /// Backend-specific options. Defaults to empty.
+    // TODO: remove once a backend reads realization options.
+    #[allow(
+        dead_code,
+        reason = "Only tests read this field until a backend consumes realization options."
+    )]
     #[serde(default)]
     pub(super) options: BTreeMap<String, Value>,
-}
-
-/// Execution mechanisms a case may request.
-#[derive(Debug, Deserialize, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-pub(super) enum RealizationKind {
-    /// Processes running directly on the host.
-    HostProcessGroup,
-    /// A Linux container.
-    LinuxContainer,
-    /// A Windows container.
-    WindowsContainer,
-    /// A Kubernetes pod.
-    KubernetesPod,
 }
 
 /// Product configuration supplied to a participant.

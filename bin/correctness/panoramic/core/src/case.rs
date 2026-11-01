@@ -9,7 +9,13 @@ use std::{
 };
 
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use serde::{de::DeserializeOwned, Deserialize};
+use serde::de::DeserializeOwned;
+
+use crate::{
+    layout::Os,
+    participant::ParticipantType,
+    step::{Step, StepFactory},
+};
 
 mod duration;
 mod file;
@@ -18,43 +24,17 @@ mod step_check;
 mod template;
 
 #[cfg(test)]
-mod fixtures;
+pub(crate) mod fixtures;
 
 pub use self::{
     duration::CaseDuration,
-    file::{deserialize_env_map, CaseFile, ParticipantConfig, ParticipantEntry, ProcedureNode, StepNode},
-    participant_check::{FactDeclaration, ParticipantType},
-    step_check::{decode_fields, Need, Step, StepFactory, StepFields},
+    file::{
+        deserialize_env_map, CaseFile, ParticipantConfig, ParticipantEntry, ProcedureNode, RequestedRealization,
+        StepNode,
+    },
     template::Template,
 };
 use self::{participant_check::check_participants, step_check::build_steps};
-
-/// An operating system a case's processes run on.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
-#[serde(rename_all = "lowercase")]
-pub enum Os {
-    /// Linux.
-    Linux,
-    /// macOS.
-    #[allow(
-        clippy::enum_variant_names,
-        reason = "macOS is one word; the Os suffix is part of its name."
-    )]
-    MacOs,
-    /// Windows.
-    Windows,
-}
-
-impl Os {
-    /// Returns the OS spelling used in case files.
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Linux => "linux",
-            Self::MacOs => "macos",
-            Self::Windows => "windows",
-        }
-    }
-}
 
 /// The participant types and steps a case file may name.
 #[derive(Clone, Copy)]

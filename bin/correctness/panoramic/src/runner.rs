@@ -237,11 +237,11 @@ impl Runner {
         if self
             .tests
             .iter()
-            .any(|existing| existing.case.name() == built.case.name())
+            .any(|existing| existing.plan.case().name() == built.plan.case().name())
         {
             return Err(generic_error!(
                 "A test named '{}' already exists in the registry",
-                built.case.name()
+                built.plan.case().name()
             ));
         }
         self.tests.push(built);
@@ -300,7 +300,7 @@ impl Runner {
 
             let _permit = semaphore.acquire().await.unwrap();
             let result = Self::run_one(
-                &built.case,
+                built.plan.case(),
                 test,
                 event_sender,
                 cancel_all,
@@ -361,7 +361,7 @@ impl Runner {
                 }
 
                 Self::run_one(
-                    &built.case,
+                    built.plan.case(),
                     test,
                     event_sender,
                     &cancel,
@@ -2326,7 +2326,9 @@ mod tests {
         fn new(case: &str, core_agent: &str, adp: &str) -> Self {
             use std::os::unix::fs::PermissionsExt as _;
 
-            use crate::config::{build_runners, MAC_RUNTIME};
+            use panoramic_core::layout::Os;
+
+            use crate::config::tests::build_case_runners;
 
             let scripts = tempfile::tempdir().expect("temp dir should be creatable");
             let script = |name: &str, body: &str| {
@@ -2351,7 +2353,7 @@ mod tests {
                 )
                 .expect("the mac case should load")
                 .remove(0);
-            let built = build_runners(vec![case], MAC_RUNTIME, &[])
+            let built = build_case_runners(vec![case], Os::MacOs, &[])
                 .expect("the mac runner should build")
                 .remove(0);
             Self {
@@ -2364,7 +2366,7 @@ mod tests {
         /// Runs the case through the runner within `bound`.
         async fn run(&self, log_base_dir: &Path, bound: Duration) -> TestResult {
             run_with_settings(
-                &self.built.case,
+                self.built.plan.case(),
                 self.built.runner.as_ref(),
                 self.settings.clone(),
                 log_base_dir,

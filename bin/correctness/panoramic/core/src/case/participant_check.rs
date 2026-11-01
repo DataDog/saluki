@@ -1,67 +1,14 @@
-//! Participant types, and the load-time checks of case participants against them.
+//! Load-time checks of case participants against their registered types.
 
 use std::{collections::BTreeSet, path::Path};
 
 use saluki_error::{generic_error, GenericError};
 
-use super::{
-    file::{CaseFile, ParticipantEntry},
-    Os,
+use super::file::{CaseFile, ParticipantEntry};
+use crate::{
+    layout::Os,
+    participant::{find_type, unknown_type_message, ParticipantType},
 };
-
-/// A participant fact available before execution, with values by OS.
-pub struct FactDeclaration {
-    /// Name used in participant fact references.
-    pub name: &'static str,
-    /// Fact values for each supported participant OS.
-    pub values: &'static [(Os, &'static str)],
-}
-
-/// A participant type a case may name, and what it accepts and provides at load time.
-pub trait ParticipantType: Send + Sync {
-    /// Registry name, as written in a participant's `type`.
-    fn name(&self) -> &'static str;
-
-    /// Names a case may supply under `config.files`. Defaults to none.
-    fn config_files(&self) -> &'static [&'static str] {
-        &[]
-    }
-
-    /// Served endpoints: connection targets and keys of `config.endpoints`. Defaults to none.
-    fn serves(&self) -> &'static [&'static str] {
-        &[]
-    }
-
-    /// Consumed endpoints: keys of `connect`. Defaults to none.
-    fn consumes(&self) -> &'static [&'static str] {
-        &[]
-    }
-
-    /// Names a case may set under `config.params`. Defaults to none.
-    fn params(&self) -> &'static [&'static str] {
-        &[]
-    }
-
-    /// Early facts steps may reference, sorted by name. Defaults to none.
-    fn facts(&self) -> &'static [FactDeclaration] {
-        &[]
-    }
-
-    /// Named processes steps may address with `process`, in sorted order.
-    fn processes(&self) -> &'static [&'static str];
-
-    /// Looks up a declared fact's value for a participant OS.
-    ///
-    /// Implementations must keep this default: the loader checks [`Self::facts`] directly.
-    fn fact_value(&self, fact: &str, os: Os) -> Option<&'static str> {
-        self.facts()
-            .iter()
-            .find(|declaration| declaration.name == fact)?
-            .values
-            .iter()
-            .find_map(|(provided_os, value)| (*provided_os == os).then_some(*value))
-    }
-}
 
 /// Checks participant names, configuration and connections against registered types.
 ///
@@ -110,15 +57,7 @@ pub(super) fn check_participants(
 
     for (participant, entry) in &file.participants {
         let Some(participant_type) = find_type(types, &entry.participant_type) else {
-            return Err(error(format!(
-                "participant '{participant}' has unknown type '{}'; registered types: {}",
-                entry.participant_type,
-                types
-                    .iter()
-                    .map(|participant_type| participant_type.name())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )));
+            return Err(error(unknown_type_message(participant, &entry.participant_type, types)));
         };
         let holder = format!("participant '{participant}'");
         let type_name = participant_type.name();
@@ -207,13 +146,6 @@ pub(super) fn check_participants(
         }
     }
     Ok(())
-}
-
-pub(super) fn find_type<'a>(types: &[&'a dyn ParticipantType], name: &str) -> Option<&'a dyn ParticipantType> {
-    types
-        .iter()
-        .copied()
-        .find(|participant_type| participant_type.name() == name)
 }
 
 fn is_dns_label(name: &str) -> bool {

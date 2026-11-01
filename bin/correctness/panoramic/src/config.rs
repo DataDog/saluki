@@ -6,12 +6,13 @@ use std::{
     time::Duration,
 };
 
-use panoramic_core::case::{deserialize_case, deserialize_env_map, CaseDuration, Os};
+use panoramic_core::case::{deserialize_case, deserialize_env_map, CaseDuration};
+use panoramic_core::{case::CaseSchema, layout::Os, plan::CasePlan};
 use saluki_error::{generic_error, GenericError};
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value;
 
-use self::typed_case::{LoadedCase, RunnableCase};
+use self::typed_case::{LoadedPlan, RunnableCase, TypedConfig};
 use crate::correctness::config::Config as CorrectnessConfig;
 use crate::image_override::{ImageOverride, ImageOverrides};
 use crate::integration::IntegrationSettings;
@@ -227,6 +228,17 @@ pub fn default_host_runtime() -> &'static str {
         WINDOWS_RUNTIME
     } else {
         LINUX_RUNTIME
+    }
+}
+
+/// Returns the default subject OS: macOS on macOS hosts, Windows on Windows hosts, and Linux elsewhere.
+pub(crate) fn default_host_os() -> Os {
+    if cfg!(target_os = "macos") {
+        Os::MacOs
+    } else if cfg!(target_os = "windows") {
+        Os::Windows
+    } else {
+        Os::Linux
     }
 }
 
@@ -688,46 +700,64 @@ where
     Ok(case)
 }
 
-/// Discovers enabled cases eligible for `integration_runtime`, sorted by name.
-pub(crate) fn discover_in_scope(dirs: &[PathBuf], integration_runtime: &str) -> Result<Vec<LoadedCase>, GenericError> {
-    let mut cases = crate::CASE_LOADER.discover_cases(dirs)?;
-    cases.retain(|case| case.is_eligible_for(integration_runtime));
-    Ok(cases)
+/// Discovers and compiles enabled cases, sorted by name, for the selected subject OS.
+pub(crate) fn discover_in_scope(dirs: &[PathBuf], subject_os: Os) -> Result<Vec<LoadedPlan>, GenericError> {
+    let cases = crate::CASE_LOADER.discover_cases(dirs)?;
+    let mut plans = Vec::new();
+    let mut errors = Vec::new();
+    for case in cases.into_iter().filter(|case| !case.is_disabled()) {
+        // The correctness runner always uses Linux containers, so its cases are selected under every runtime.
+        // TODO: report correctness cases as skipped off Linux once skipped outcomes exist.
+        let os = if matches!(case.schema(), CaseSchema::Typed(TypedConfig::Correctness(_))) {
+            Os::Linux
+        } else {
+            subject_os
+        };
+        match CasePlan::compile(case, os, &crate::REGISTRIES) {
+            Ok(Some(plan)) => plans.push(plan),
+            Ok(None) => {}
+            Err(error) => errors.push(format!("{error:#}").replace('\n', "\n    ")),
+        }
+    }
+    if !errors.is_empty() {
+        return Err(generic_error!(
+            "Failed to plan test cases:\n  - {}",
+            errors.join("\n  - ")
+        ));
+    }
+    Ok(plans)
 }
 
-/// A loaded case and the runner built from it.
+/// A compiled case and the runner built from it.
 ///
-/// `C` is `LoadedCase` when the runner task owns the case, or `&LoadedCase` when the caller builds from the same cases
-/// more than once.
-pub(crate) struct BuiltCase<C = LoadedCase> {
-    /// The loaded case, which supplies the name, suite, directory and timeout the run reports.
-    pub(crate) case: C,
-    /// The runner built from `case` for the selected runtime and image overrides.
+/// `P` is `LoadedPlan` when the runner task owns the plan, or `&LoadedPlan` when it borrows one.
+pub(crate) struct BuiltCase<P = LoadedPlan> {
+    /// The plan supplying the case metadata and selected subject OS.
+    pub(crate) plan: P,
+    /// The runner built for the selected runtime and image overrides.
     pub(crate) runner: Box<dyn Test>,
 }
 
-/// Builds an integration or correctness runner for each case and returns each case with its runner, in input order.
-///
-/// Validates image overrides across every supplied case. Eligibility is the caller's responsibility:
-/// pass the cases intended to run or list.
+/// Builds a runner for each plan, in input order, and validates image overrides across the runners.
 ///
 /// # Errors
 ///
 /// Reports every case that cannot build a runner, in input order, before validating image overrides.
 /// Returns an error if an image override is duplicate or unmatched.
-pub(crate) fn build_runners<C>(
-    cases: impl IntoIterator<Item = C>, integration_runtime: &str, image_overrides: &[ImageOverride],
-) -> Result<Vec<BuiltCase<C>>, GenericError>
+pub(crate) fn build_runners<P>(
+    plans: impl IntoIterator<Item = P>, selected: Os, image_overrides: &[ImageOverride],
+) -> Result<Vec<BuiltCase<P>>, GenericError>
 where
-    C: Borrow<LoadedCase>,
+    P: Borrow<LoadedPlan>,
 {
     let overrides = ImageOverrides::new(image_overrides);
-    let settings = IntegrationSettings::new(integration_runtime, &overrides);
+    let settings = IntegrationSettings::new(runtime_for_os(selected), &overrides);
     let mut built = Vec::new();
     let mut errors = Vec::new();
-    for case in cases {
-        match case.borrow().build_test(integration_runtime, &settings, &overrides) {
-            Ok(runner) => built.push(BuiltCase { case, runner }),
+    for plan in plans {
+        let borrowed = plan.borrow();
+        match borrowed.case().build_test(borrowed.subject_os(), &settings, &overrides) {
+            Ok(runner) => built.push(BuiltCase { plan, runner }),
             Err(error) => errors.push(format!("{error:#}").replace('\n', "\n    ")),
         }
     }
@@ -788,6 +818,7 @@ mod coverage_inventory;
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use super::typed_case::LoadedCase;
     use super::*;
     use crate::correctness::case::CorrectnessTestCase;
 
@@ -871,6 +902,7 @@ procedure:
 
     #[test]
     fn every_subject_os_maps_to_its_runtime_and_back() {
+        assert_eq!(os_for_runtime(default_host_runtime()), Some(default_host_os()));
         for (os, runtime) in [(Os::Linux, "linux"), (Os::MacOs, "mac"), (Os::Windows, "windows")] {
             assert_eq!(runtime_for_os(os), runtime);
             assert_eq!(os_for_runtime(runtime), Some(os));
@@ -1032,11 +1064,25 @@ timeout: 30s
         assert_eq!(timeout.0, Duration::from_secs(30));
     }
 
+    pub(crate) fn build_case_runners(
+        cases: impl IntoIterator<Item = LoadedCase>, os: Os, overrides: &[ImageOverride],
+    ) -> Result<Vec<BuiltCase>, GenericError> {
+        let plans = cases
+            .into_iter()
+            .map(|case| CasePlan::compile(case, os, &crate::REGISTRIES))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|plan| plan.expect("the test case declares the selected subject OS"))
+            .collect::<Vec<_>>();
+        build_runners(plans, os, overrides)
+    }
+
     fn discover_runners(
         dirs: &[PathBuf], runtime: &str, image_overrides: &[ImageOverride],
     ) -> Result<Vec<BuiltCase>, GenericError> {
-        let cases = discover_in_scope(dirs, runtime)?;
-        build_runners(cases, runtime, image_overrides)
+        let os = os_for_runtime(runtime).unwrap();
+        let plans = discover_in_scope(dirs, os)?;
+        build_runners(plans, os, image_overrides)
     }
 
     #[test]
@@ -1065,11 +1111,18 @@ timeout: 30s
             ["disabled", "matrix/first", "matrix/second", "windows-only"]
         );
         assert_eq!(
-            cases
-                .iter()
-                .filter(|case| case.is_eligible_for(LINUX_RUNTIME))
-                .map(LoadedCase::name)
-                .collect::<Vec<_>>(),
+            discover_in_scope(
+                &[
+                    windows.path().to_path_buf(),
+                    matrix.path().to_path_buf(),
+                    disabled.path().to_path_buf()
+                ],
+                Os::Linux
+            )
+            .unwrap()
+            .iter()
+            .map(|plan| plan.case().name())
+            .collect::<Vec<_>>(),
             ["matrix/first", "matrix/second"]
         );
     }
@@ -1276,7 +1329,7 @@ timeout: 30s
                 .err()
                 .expect("duplicate names must fail discovery");
             assert_eq!(format!("{error:#}"), expected);
-            let error = discover_in_scope(&roots, LINUX_RUNTIME)
+            let error = discover_in_scope(&roots, Os::Linux)
                 .err()
                 .expect("runtime and disabled filtering must not hide duplicate names");
             assert_eq!(format!("{error:#}"), expected);
@@ -1364,7 +1417,7 @@ timeout: 30s
             }
         }
         let overrides = ["unmatched=image:override".parse().unwrap()];
-        let error = build_runners(&cases, LINUX_RUNTIME, &overrides)
+        let error = build_case_runners(cases, Os::Linux, &overrides)
             .err()
             .expect("unsupported participant settings must fail runner construction");
         assert_eq!(
@@ -1447,14 +1500,18 @@ timeout: 30s
             .unwrap();
         cases.reverse();
         let entries = ["baseline=base:override".parse().unwrap()];
-        let runners = build_runners(&cases, LINUX_RUNTIME, &entries).unwrap();
-        assert_eq!(runners.len(), cases.len());
+        let plans: Vec<_> = cases
+            .into_iter()
+            .map(|case| CasePlan::compile(case, Os::Linux, &crate::REGISTRIES).unwrap().unwrap())
+            .collect();
+        let runners = build_runners(&plans, Os::Linux, &entries).unwrap();
+        assert_eq!(runners.len(), plans.len());
         assert_eq!(
-            cases.iter().map(LoadedCase::name).collect::<Vec<_>>(),
+            plans.iter().map(|plan| plan.case().name()).collect::<Vec<_>>(),
             ["integration", "correctness"]
         );
         assert_eq!(
-            runners.iter().map(|built| built.case.name()).collect::<Vec<_>>(),
+            runners.iter().map(|built| built.plan.case().name()).collect::<Vec<_>>(),
             ["integration", "correctness"]
         );
         assert_eq!(
@@ -1481,7 +1538,7 @@ procedure: []
         let runners = discover_runners(&[base_dir.path().to_path_buf()], "windows", &[]).unwrap();
 
         assert_eq!(runners.len(), 1);
-        assert_eq!(runners[0].case.name(), "windows-smoke");
+        assert_eq!(runners[0].plan.case().name(), "windows-smoke");
         assert_eq!(runners[0].runner.runtime(), "windows");
     }
 
@@ -1552,10 +1609,10 @@ variants:
         let case_dir = base_dir.path().join("dsd-matrix").canonicalize().unwrap();
         for built in &runners {
             assert_eq!(
-                built.case.source().parent().unwrap(),
+                built.plan.case().source().parent().unwrap(),
                 case_dir,
                 "case path for '{}'",
-                built.case.name()
+                built.plan.case().name()
             );
         }
     }
@@ -2223,7 +2280,7 @@ variants: [{name: one, env: {QUOTED: "true"}}]
         let expanded = matrix.expand(&ordinary, "scalars");
         let runners = discover_runners(&[dir.path().to_path_buf()], LINUX_RUNTIME, &[]).unwrap();
         assert_eq!(runners.len(), 1);
-        assert_eq!(runners[0].case.name(), "scalars/one");
+        assert_eq!(runners[0].plan.case().name(), "scalars/one");
         for config in [&ordinary, &expanded[0].1] {
             assert_eq!(config.baseline.command, ["sleep", "10", "01", "1e3", "true", "1.50"]);
             assert_eq!(config.baseline.entrypoint, ["env", "20", "02", "2e3", "false", "2.50"]);
@@ -2327,30 +2384,25 @@ comparison: {image: comp}
             (LINUX_RUNTIME, Some(DEFAULT_LINUX_TARGET_IMAGE)),
             (WINDOWS_RUNTIME, Some(DEFAULT_WINDOWS_TARGET_IMAGE)),
             (MAC_RUNTIME, None),
-            ("unknown", None),
         ] {
             let runners = discover_runners(&dirs, runtime, &[]).unwrap();
-            assert_eq!(runners[0].case.name(), "correctness");
+            assert_eq!(runners[0].plan.case().name(), "correctness");
             assert_eq!(runners[0].runner.runtime(), "docker");
-            assert_eq!(runners.len(), if runtime == "unknown" { 1 } else { 2 });
-            if runtime != "unknown" {
-                assert_eq!(runners[1].runner.runtime(), runtime);
-                let expected: BTreeMap<&str, String> = target
-                    .into_iter()
-                    .map(|image| (TARGET_IMAGE_NAME, image.to_string()))
-                    .collect();
-                assert_eq!(runners[1].runner.images(), expected);
-            }
+            assert_eq!(runners.len(), 2);
+            assert_eq!(runners[1].runner.runtime(), runtime);
+            let expected: BTreeMap<&str, String> = target
+                .into_iter()
+                .map(|image| (TARGET_IMAGE_NAME, image.to_string()))
+                .collect();
+            assert_eq!(runners[1].runner.images(), expected);
         }
         let override_entry = ["container=target:override".parse().unwrap()];
-        for runtime in [MAC_RUNTIME, "unknown"] {
-            let error = discover_runners(&dirs, runtime, &override_entry)
-                .err()
-                .expect("no eligible target image");
-            assert!(error
-                .to_string()
-                .contains("No test in this run uses a container named 'container'"));
-        }
+        let error = discover_runners(&dirs, MAC_RUNTIME, &override_entry)
+            .err()
+            .expect("no eligible target image");
+        assert!(error
+            .to_string()
+            .contains("No test in this run uses a container named 'container'"));
     }
 
     #[test]
@@ -2398,7 +2450,7 @@ comparison: {{image: comp}}
                 let cases = crate::CASE_LOADER.discover_cases(&[dir.path().to_path_buf()]).unwrap();
                 assert_eq!(cases.len(), case_count, "{kind} with {setting}");
                 assert_eq!(
-                    cases.iter().filter(|case| case.is_eligible_for(LINUX_RUNTIME)).count(),
+                    discover_in_scope(&[dir.path().to_path_buf()], Os::Linux).unwrap().len(),
                     if disabled { 0 } else { case_count },
                     "{kind} with {setting}"
                 );
