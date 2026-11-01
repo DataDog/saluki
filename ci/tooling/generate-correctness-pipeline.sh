@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Emit a GitLab child-pipeline YAML for correctness tests on stdout.
 #
-# Run by .gitlab/e2e.yml's generate-correctness-pipeline job. Uses panoramic's
-# `list --json` subcommand to enumerate test cases and their baseline images.
+# Run by .gitlab/e2e.yml's generate-correctness-pipeline job.
+# Uses `panoramic list --subject-os linux --json` to enumerate test cases and their
+# baseline images.
 # Tests whose baseline is a saluki-images/ placeholder also extend
 # .test-correctness-adp-baseline so panoramic gets the CI-built image at runtime.
 
@@ -20,7 +21,7 @@ EOF
 # Ask panoramic for the test list. jq yields one `<case>\t<runtime>\t<baseline-image>`
 # line per test. Kind-runtime tests use .test-correctness-kind-definition (longer timeout);
 # all cluster and image management is handled inside panoramic at runtime.
-./target/release/panoramic list -d test/correctness/cases --json \
+./target/release/panoramic list -d test/correctness/cases --subject-os linux --json \
     | jq -r 'to_entries[] | "\(.key)\t\(.value.runtime)\t\(.value.images.baseline)"' \
     | while IFS=$'\t' read -r case runtime baseline; do
 

@@ -260,8 +260,8 @@ Before using `--artifacts`, unset these variables in your shell or remove them f
 The image roles feed the containers in the table above. `adp-host-binary` supplies the host ADP executable;
 `agent-host-install` supplies the Core Agent executable at `bin/agent/agent` beneath that directory. `fixup-image`
 supplies the shared-volume permission fix-up container. Kind loads the runners' bound images into its cluster.
-`--mounts-dir`, kind options, `-l` and TUI options remain available. `list --json` keeps reporting the original images,
-including when combined with `--artifacts`.
+`--mounts-dir`, kind options, `-l` and TUI options remain available. In `list --json`, `images` and `runtime` report
+the case files' images and runtime regardless of `--artifacts`, while `roles` shows the bound references and their sources.
 
 Use `panoramic artifacts render --set <role>=<reference> … -o <file>` to write a manifest, replacing an existing
 file. Repeat `--set` to bind more roles; omitting it writes a manifest binding nothing. Rendering checks bindings
@@ -341,6 +341,17 @@ A case whose `subject_os` omits the selected OS appears in `run.json` with outco
 `subject_os excludes <os>`. It counts in `totals.skipped`. Only executed cases receive a log directory and
 `result.json`. The exit code follows the runnable cases; an all-skipped selection writes `run.json` and exits 3.
 Text listings show every enabled case's status: `runnable` or `skipped (subject_os)`.
+
+`list --json` includes every enabled case, keyed by name. Every row has `type`, `timeout` and `status`, which is
+`runnable` or `skipped`. Runnable rows also have `runtime` and `images`; skipped rows have `skip_reason`
+instead. Each row also has:
+
+- `layout`: a list of `{participant, type, os, realization}` in participant-name order. `type` names the participant
+  type, `os` is `linux`, `macos` or `windows`, and `realization` is `linux-container`, `windows-container`,
+  `host-process-group` or `kubernetes-pod`. Skipped cases, and cases with a top-level `type`, have `layout: null`.
+- `roles`: a list of `{role, kind, reference, source}` in role-name order. `kind` is `image`, `binary` or `install`;
+  `source` is `manifest` or `local_default`. A runnable case needing no roles has an empty list;
+  a skipped case has `roles: null` because it wasn't planned for this OS.
 
 Before running, `run` checks each distinct realization needed by the selected cases once, without changing their
 layouts:
@@ -423,6 +434,11 @@ jq -r '.tests[] | select((.outcome != "passed" and .outcome != "skipped") or (.i
 Follow the selected tests' `log_dir` to `result.json`. Use `outcome` for the test result and `assertions[].status` for
 each step. Check `issues` even on passes; they don't change `outcome`. Open reported artifact paths and
 `diagnostic_lines` sources for context and uncapped details.
+
+Each `run.json` entry in `tests[]` and each `result.json` contains `layout`, using the same
+`{participant, type, os, realization}` entries as `list --json`. It records the planned layout even when setup
+fails, including when the host can't provide a realization. Skipped cases, and cases with a top-level `type`,
+have `layout: null`.
 
 Follow report types in `bin/correctness/panoramic/core/src/machine_output.rs` for semantics. For precedence rules, see
 `TestResult::from_steps` in `bin/correctness/panoramic/core/src/result.rs` and `exit_code` in

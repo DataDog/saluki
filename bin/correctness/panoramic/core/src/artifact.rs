@@ -137,7 +137,8 @@ impl ArtifactManifest {
 }
 
 /// Where a binding's reference came from.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BindingSource {
     /// A reference supplied by the run's artifact manifest.
     Manifest,
@@ -169,6 +170,15 @@ pub struct ArtifactBinding {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binding_sources_serialize_as_snake_case_names() {
+        assert_eq!(serde_json::to_value(BindingSource::Manifest).unwrap(), "manifest");
+        assert_eq!(
+            serde_json::to_value(BindingSource::LocalDefault).unwrap(),
+            "local_default"
+        );
+    }
 
     #[test]
     fn roles_describe_their_kind_local_default_and_main_binary() {

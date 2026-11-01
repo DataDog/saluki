@@ -8,7 +8,7 @@ use chrono::Local;
 use serde::Serialize;
 use tracing::warn;
 
-use crate::layout::Os;
+use crate::layout::{LayoutEntry, Os};
 use crate::record::StepStatus;
 use crate::result::{
     DurationMs, Issue, PhaseTiming, ReclaimEntry, StopCause, TestError, TestOutcome, TestResult, TimeoutAttribution,
@@ -168,6 +168,8 @@ pub struct TestReport {
     /// Why the case was skipped, present only when the outcome is `skipped`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) skip_reason: Option<String>,
+    /// Participant layout, including when setup failed. `null` for skipped cases and cases with a top-level `type`.
+    pub(crate) layout: Option<Vec<LayoutEntry>>,
     /// How long the test took.
     pub(crate) duration_ms: u64,
     /// Absolute path of this test's log directory, when the runner knows it.
@@ -354,6 +356,11 @@ impl RunTotals {
     }
 }
 
+/// Explains why a case was excluded by the selected subject OS.
+pub fn skip_reason(subject_os: Os) -> String {
+    format!("subject_os excludes {}", subject_os.name())
+}
+
 impl TestReport {
     /// Reports a case excluded by the selected subject OS.
     pub fn skipped(name: String, case_path: PathBuf, subject_os: Os) -> Self {
@@ -361,7 +368,8 @@ impl TestReport {
             name,
             case_path: Some(case_path),
             outcome: TestOutcome::Skipped,
-            skip_reason: Some(format!("subject_os excludes {}", subject_os.name())),
+            skip_reason: Some(skip_reason(subject_os)),
+            layout: None,
             duration_ms: 0,
             log_dir: None,
             artifacts: Vec::new(),
@@ -424,6 +432,7 @@ impl TestReport {
             case_path: result.case_path.clone(),
             outcome: result.outcome,
             skip_reason: None,
+            layout: result.layout.clone(),
             duration_ms: DurationMs(result.duration).as_millis(),
             log_dir: result.log_dir.clone(),
             artifacts,
@@ -654,7 +663,7 @@ mod tests {
         assert_eq!(json["outcome"], "skipped");
         assert_eq!(json["skip_reason"], "subject_os excludes macos");
         assert_eq!(json["duration_ms"], 0);
-        for field in ["log_dir", "error", "timeout", "cause"] {
+        for field in ["layout", "log_dir", "error", "timeout", "cause"] {
             assert!(json[field].is_null(), "{field}");
         }
         for field in [
@@ -704,6 +713,30 @@ mod tests {
     }
 
     #[test]
+    fn a_test_report_carries_the_result_layout_and_skipped_reports_have_null_layout() {
+        let mut result = TestResult::from_assertions("case", Duration::ZERO, vec![], vec![]);
+        assert_eq!(
+            serde_json::to_value(TestReport::new(&result)).unwrap().get("layout"),
+            Some(&serde_json::Value::Null)
+        );
+        result.layout = Some(vec![LayoutEntry {
+            participant: "subject".into(),
+            participant_type: "fixture".into(),
+            os: Os::Linux,
+            realization: crate::layout::RealizationKind::LinuxContainer,
+        }]);
+        assert_eq!(
+            serde_json::to_value(TestReport::new(&result)).unwrap()["layout"],
+            serde_json::json!([{"participant": "subject", "type": "fixture", "os": "linux", "realization": "linux-container"}])
+        );
+        let skipped = TestReport::skipped("case".into(), PathBuf::new(), Os::MacOs);
+        assert_eq!(
+            serde_json::to_value(skipped).unwrap().get("layout"),
+            Some(&serde_json::Value::Null)
+        );
+    }
+
+    #[test]
     fn test_report_pins_the_contract_field_names() {
         let mut result = TestResult::from_assertions(
             "dsd-plain",
@@ -721,6 +754,7 @@ mod tests {
         let json = serde_json::to_value(TestReport::new(&result)).expect("test report should serialize");
 
         assert_eq!(json["name"], "dsd-plain");
+        assert_eq!(json.get("layout"), Some(&serde_json::Value::Null));
         assert_eq!(json["outcome"], "failed");
         assert_eq!(json["duration_ms"], 3000);
         assert_eq!(json["case_path"], "/cases/dsd-plain");
@@ -1114,6 +1148,7 @@ mod tests {
         assert_eq!(json["totals"]["errored"], 1);
         assert_eq!(json["totals"]["not_run"], 1);
         assert_eq!(json["tests"][0]["outcome"], "timed_out");
+        assert_eq!(json["tests"][0].get("layout"), Some(&serde_json::Value::Null));
         assert!(
             json["tests"][0].get("schema_version").is_none(),
             "only the report as a whole carries the version"

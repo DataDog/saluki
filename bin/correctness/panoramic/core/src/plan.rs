@@ -8,7 +8,7 @@ use crate::{
     artifact::{ArtifactBinding, ArtifactManifest, ArtifactRole},
     backend,
     case::{config_references::FileTemplates, CaseConfig, CaseFile, CaseSchema, Registries},
-    layout::{describe_participant, lay_out, Layout, Os},
+    layout::{describe_participant, lay_out, Layout, LayoutEntry, Os},
     participant::{find_type, CaseValues, EffectiveConfig, ParticipantType, SHARED_DIR_FACT},
 };
 
@@ -273,6 +273,26 @@ impl<C> CasePlan<C> {
         self.layout.as_ref()
     }
 
+    /// Reports each participant's type, OS and realization in name order.
+    /// Cases with a top-level `type` report `None`.
+    pub fn layout_entries(&self) -> Option<Vec<LayoutEntry>> {
+        let CaseSchema::Participants { file, .. } = self.case.schema() else {
+            return None;
+        };
+        Some(
+            self.layout
+                .as_ref()?
+                .iter()
+                .map(|(name, realization)| LayoutEntry {
+                    participant: name.to_string(),
+                    participant_type: file.participants[name].participant_type.clone(),
+                    os: realization.os,
+                    realization: realization.kind,
+                })
+                .collect(),
+        )
+    }
+
     /// Returns the case's artifact bindings for the selected OS, sorted by role name.
     pub fn artifacts(&self) -> &[ArtifactBinding] {
         &self.artifacts
@@ -404,6 +424,31 @@ mod tests {
         },
         layout::{Realization, RealizationKind},
     };
+
+    #[test]
+    fn layout_entries_list_each_participant_with_its_type_os_and_realization_in_name_order() {
+        let yaml = host_to_container_case().replace("  client:", "  z-caller:");
+        let plan = compile(&yaml, Os::MacOs).unwrap().unwrap();
+        assert_eq!(
+            plan.layout_entries(),
+            Some(vec![
+                LayoutEntry {
+                    participant: "server".into(),
+                    participant_type: "server".into(),
+                    os: Os::Linux,
+                    realization: RealizationKind::LinuxContainer,
+                },
+                LayoutEntry {
+                    participant: "z-caller".into(),
+                    participant_type: "client".into(),
+                    os: Os::MacOs,
+                    realization: RealizationKind::HostProcessGroup,
+                },
+            ])
+        );
+        let typed = compile("type: fixture", Os::MacOs).unwrap().unwrap();
+        assert_eq!(typed.layout_entries(), None);
+    }
 
     #[test]
     fn each_participant_case_declaring_the_selected_os_draws_one_scope() {

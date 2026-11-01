@@ -48,7 +48,7 @@ impl Os {
 }
 
 /// Execution mechanisms a case may request.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RealizationKind {
     /// Processes running directly on the host.
@@ -80,6 +80,20 @@ pub struct Realization {
     pub os: Os,
     /// Execution mechanism for the participant.
     pub kind: RealizationKind,
+}
+
+/// One participant's placement, as reported by `list --json`, `run.json` and `result.json`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct LayoutEntry {
+    /// Participant name from the case file.
+    pub participant: String,
+    /// Registered participant type.
+    #[serde(rename = "type")]
+    pub participant_type: String,
+    /// Operating system of the participant's processes.
+    pub os: Os,
+    /// Execution mechanism for the participant.
+    pub realization: RealizationKind,
 }
 
 /// Assigns each participant an OS and realization kind for one subject OS.
@@ -202,6 +216,18 @@ pub(crate) fn lay_out(
 mod tests {
     use super::*;
     use crate::artifact::ArtifactRole;
+
+    #[test]
+    fn realization_kind_serializes_to_its_name() {
+        for kind in [
+            RealizationKind::LinuxContainer,
+            RealizationKind::WindowsContainer,
+            RealizationKind::HostProcessGroup,
+            RealizationKind::KubernetesPod,
+        ] {
+            assert_eq!(serde_json::to_value(kind).unwrap(), kind.name());
+        }
+    }
 
     struct Type {
         name: &'static str,

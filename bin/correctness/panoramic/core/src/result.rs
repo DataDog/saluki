@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
+use crate::layout::LayoutEntry;
 use crate::record::{step_label, ActiveStep, AssertionResult, StepResult, StepStatus};
 
 /// Phase name reported when the harness cannot tell which phase a test was in.
@@ -380,6 +381,8 @@ pub struct TestResult {
     pub issues: Vec<Issue>,
     /// Directory the test case was loaded from. Set by the runner.
     pub case_path: Option<PathBuf>,
+    /// Participant layout of the plan the test ran from. Set by the runner.
+    pub layout: Option<Vec<LayoutEntry>>,
     /// Directory this test's artifacts were written to. Set by the runner.
     pub log_dir: Option<PathBuf>,
     /// Timing breakdown for each phase of test execution.
@@ -448,6 +451,7 @@ impl TestResult {
             reclaim: Vec::new(),
             issues: Vec::new(),
             case_path: None,
+            layout: None,
             log_dir: None,
             phase_timings,
             assertion_details: Vec::new(),

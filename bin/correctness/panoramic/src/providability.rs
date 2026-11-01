@@ -165,7 +165,7 @@ mod tests {
         let typed_message = "realization linux-container on linux cannot be provided on this host: no daemon";
         for (built, expected) in built.iter().zip([Some(participant_message), Some(typed_message), None]) {
             let result = run_with_settings(
-                built.plan.case(),
+                &built.plan,
                 built.runner.as_ref(),
                 test_runner_settings(logs.path()),
                 logs.path(),
@@ -205,7 +205,7 @@ mod tests {
         );
         let logs = tempfile::tempdir().unwrap();
         let result = run_with_settings(
-            built[0].plan.case(),
+            &built[0].plan,
             built[0].runner.as_ref(),
             test_runner_settings(logs.path()),
             logs.path(),

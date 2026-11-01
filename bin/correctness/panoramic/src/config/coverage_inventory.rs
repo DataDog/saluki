@@ -891,7 +891,7 @@ fn ci_jobs_in_the_inventory_are_defined() {
             .lines()
             .position(|line| line.trim() == rule || line.trim() == format!("{rule} \\"))
     };
-    let list_rule = "./target/release/panoramic list -d test/correctness/cases --json";
+    let list_rule = "./target/release/panoramic list -d test/correctness/cases --subject-os linux --json";
     for rule in [
         "set -euo pipefail",
         list_rule,

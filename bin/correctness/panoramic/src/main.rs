@@ -11,8 +11,8 @@ use panoramic_core::artifact::ArtifactBinding;
 use panoramic_core::case::{CaseLoader, Registries};
 use panoramic_core::events::create_event_channel;
 use panoramic_core::interrupts::Interrupts;
-use panoramic_core::layout::Realization;
-use panoramic_core::machine_output::{revision, RunReport, TestReport, RUN_REPORT_FILE_NAME};
+use panoramic_core::layout::{Os, Realization};
+use panoramic_core::machine_output::{revision, skip_reason, RunReport, TestReport, RUN_REPORT_FILE_NAME};
 use panoramic_core::plan::needed_artifacts;
 use saluki_common::logging::{filter_from_env, parse_filter_directives};
 use tokio::sync::{watch, Mutex};
@@ -646,7 +646,8 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
         };
         println!(
             "{}",
-            serde_json::to_string_pretty(&listing(&runners)).expect("Unable to serialize a map of the tests")
+            serde_json::to_string_pretty(&listing(&runners, &excluded, subject_os))
+                .expect("Unable to serialize a map of the tests")
         )
     } else {
         if plans.is_empty() && excluded.is_empty() {
@@ -738,15 +739,28 @@ fn excluded_listing_text(case: &LoadedCase) -> String {
     text
 }
 
-/// Lists each case's suite and timeout, with the runtime and images its runner uses.
-fn listing<P>(built: &[BuiltCase<P>]) -> BTreeMap<String, serde_json::Value>
+/// Lists every enabled case's status, layout and roles, with runtime and images for runnable cases.
+fn listing<P>(built: &[BuiltCase<P>], excluded: &[LoadedCase], subject_os: Os) -> BTreeMap<String, serde_json::Value>
 where
     P: Borrow<LoadedPlan>,
 {
     built
         .iter()
         .map(|BuiltCase { plan, runner }| {
-            let case = plan.borrow().case();
+            let plan = plan.borrow();
+            let case = plan.case();
+            let roles: Vec<_> = plan
+                .artifacts()
+                .iter()
+                .map(|binding| {
+                    serde_json::json!({
+                        "role": binding.role.name,
+                        "kind": binding.role.kind.name(),
+                        "reference": binding.reference,
+                        "source": binding.source,
+                    })
+                })
+                .collect();
             (
                 case.name().to_string(),
                 serde_json::json!({
@@ -754,9 +768,25 @@ where
                     "runtime": runner.runtime(),
                     "timeout": case.timeout(),
                     "images": runner.images(),
+                    "status": "runnable",
+                    "layout": plan.layout_entries(),
+                    "roles": roles,
                 }),
             )
         })
+        .chain(excluded.iter().map(|case| {
+            (
+                case.name().to_string(),
+                serde_json::json!({
+                    "type": case.suite(),
+                    "timeout": case.timeout(),
+                    "status": "skipped",
+                    "skip_reason": skip_reason(subject_os),
+                    "layout": null,
+                    "roles": null,
+                }),
+            )
+        }))
         .collect()
 }
 
@@ -841,6 +871,7 @@ mod tests {
             assert_eq!(test["name"], *name);
             assert_eq!(test["outcome"], "skipped");
             assert_eq!(test["skip_reason"], "subject_os excludes macos");
+            assert_eq!(test.get("layout"), Some(&serde_json::Value::Null));
             assert_eq!(
                 test["case_path"],
                 serde_json::to_value(cases.join(name).canonicalize().unwrap()).unwrap()
@@ -1221,7 +1252,7 @@ mod tests {
             .plans;
             let artifacts = RunnerArtifacts::Bound(BoundArtifacts::new(needed_artifacts(&plans)));
             let built = build_runners(plans, os, &artifacts).unwrap();
-            let listing = listing(&built);
+            let listing = listing(&built, &[], os);
             assert_eq!(
                 listing["integration"]["images"],
                 serde_json::json!({"container": target})
@@ -1250,7 +1281,84 @@ mod tests {
     }
 
     #[test]
-    fn listing_json_ignores_artifact_bindings() {
+    fn listing_json_reports_status_layout_and_roles_for_runnable_cases() {
+        let participant = crate::config::tests::plan(PARTICIPANT_FIELDS, Os::Linux);
+        let typed = crate::config::tests::plan(
+            "type: integration\nname: case\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n",
+            Os::Linux,
+        );
+        for (plan, expected_layout) in [
+            (
+                participant,
+                serde_json::json!([{
+                    "participant": "adp", "type": "agent-adp", "os": "linux", "realization": "linux-container",
+                }]),
+            ),
+            (typed, serde_json::Value::Null),
+        ] {
+            let built = build_runners([&plan], Os::Linux, &RunnerArtifacts::Overrides(&[])).unwrap();
+            let entries = listing(&built, &[], Os::Linux);
+            let entry = &entries["case"];
+            assert_eq!(entry["status"], "runnable");
+            assert_eq!(entry["layout"], expected_layout);
+            assert_eq!(
+                entry
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                ["images", "layout", "roles", "runtime", "status", "timeout", "type"]
+            );
+            let expected_roles: Vec<_> = plan
+                .artifacts()
+                .iter()
+                .map(|binding| {
+                    serde_json::json!({
+                        "role": binding.role.name,
+                        "kind": "image",
+                        "reference": binding.reference,
+                        "source": "local_default",
+                    })
+                })
+                .collect();
+            assert!(!expected_roles.is_empty());
+            assert_eq!(entry["roles"], serde_json::json!(expected_roles));
+        }
+    }
+
+    #[test]
+    fn listing_json_reports_skipped_cases_with_their_reason_and_without_runtime_or_images() {
+        let dir = tempfile::tempdir().unwrap();
+        write_case(dir.path(), "participant", PARTICIPANT_FIELDS);
+        write_case(
+            dir.path(),
+            "correctness",
+            &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
+        );
+        let Discovered { plans, excluded } =
+            discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::MacOs).unwrap();
+        assert!(plans.is_empty());
+        let built = build_runners(plans, Os::MacOs, &RunnerArtifacts::Overrides(&[])).unwrap();
+        let entries = listing(&built, &excluded, Os::MacOs);
+        assert_eq!(entries.len(), 2);
+        for case in &excluded {
+            assert_eq!(
+                entries[case.name()],
+                serde_json::json!({
+                    "type": case.suite(),
+                    "timeout": case.timeout(),
+                    "status": "skipped",
+                    "skip_reason": "subject_os excludes macos",
+                    "layout": null,
+                    "roles": null,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn listing_json_images_ignore_artifact_bindings_while_roles_follow_them() {
         let dir = tempfile::tempdir().unwrap();
         write_case(
             dir.path(),
@@ -1262,23 +1370,62 @@ mod tests {
             "correctness",
             &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
         );
+        let bindings = BTreeMap::from([
+            ("agent-adp-linux-image".into(), "changed:linux".into()),
+            ("agent-adp-windows-image".into(), "changed:windows".into()),
+            ("tools-linux-image".into(), "changed:tools".into()),
+            ("adp-host-binary".into(), "changed:adp".into()),
+            ("agent-host-install".into(), "changed:agent".into()),
+        ]);
         let manifest = dir.path().join("artifacts.toml");
-        std::fs::write(&manifest, "schema = 1\n[roles]\nagent-adp-linux-image = 'changed:linux'\nagent-adp-windows-image = 'changed:windows'\ntools-linux-image = 'changed:tools'\n").unwrap();
+        std::fs::write(
+            &manifest,
+            ArtifactManifest::new("test", bindings.clone()).unwrap().render(),
+        )
+        .unwrap();
         for os in [Os::Linux, Os::Windows, Os::MacOs] {
             let listings: Vec<_> = [None, Some(manifest.as_path())]
                 .into_iter()
                 .map(|manifest| {
-                    let plans =
+                    let Discovered { plans, excluded } =
                         discover_in_scope(&mut load_planner(manifest).unwrap(), &[dir.path().to_path_buf()], os)
-                            .unwrap()
-                            .plans;
+                            .unwrap();
                     let built = build_runners(plans, os, &RunnerArtifacts::Overrides(&[])).unwrap();
-                    serde_json::to_string_pretty(&listing(&built)).unwrap()
+                    listing(&built, &excluded, os)
                 })
                 .collect();
-            assert_eq!(listings[0], listings[1]);
-            assert_eq!(listings[0].contains("base:file"), os == Os::Linux);
-            assert!(!listings[0].contains("changed:"));
+            for (name, before) in &listings[0] {
+                let after = &listings[1][name];
+                for field in ["runtime", "images"] {
+                    assert_eq!(before.get(field), after.get(field));
+                    assert!(!before[field].to_string().contains("changed:"));
+                }
+                if before["status"] == "skipped" {
+                    assert_eq!(before, after);
+                    continue;
+                }
+                let before_roles = before["roles"].as_array().unwrap();
+                let after_roles = after["roles"].as_array().unwrap();
+                assert_eq!(before_roles.len(), after_roles.len());
+                let mut manifest_roles = 0;
+                for (before, after) in before_roles.iter().zip(after_roles) {
+                    assert_eq!(before["source"], "local_default");
+                    assert_eq!(before["role"], after["role"]);
+                    assert_eq!(before["kind"], after["kind"]);
+                    if let Some(reference) = bindings.get(after["role"].as_str().unwrap()) {
+                        assert_eq!(after["reference"], reference.as_str());
+                        assert_eq!(after["source"], "manifest");
+                        manifest_roles += 1;
+                    } else {
+                        assert_eq!(before, after);
+                    }
+                }
+                assert!(manifest_roles > 0);
+            }
+            assert_eq!(
+                listings[0]["correctness"]["images"]["baseline"] == "base:file",
+                os == Os::Linux
+            );
         }
     }
 
@@ -1390,9 +1537,14 @@ mod tests {
             "realization {kind} on {} for participant 'adp' cannot be provided on this host: ",
             os.name()
         )));
-        assert!(std::path::Path::new(result["log_dir"].as_str().unwrap())
-            .join("result.json")
-            .is_file());
+        let layout = serde_json::json!([{
+            "participant": "adp", "type": "agent-adp", "os": os.name(), "realization": kind,
+        }]);
+        assert_eq!(result["layout"], layout);
+        let result_path = std::path::Path::new(result["log_dir"].as_str().unwrap()).join("result.json");
+        let result_json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(result_path).unwrap()).unwrap();
+        assert_eq!(result_json["layout"], layout);
     }
 
     #[test]
@@ -2066,7 +2218,7 @@ comparison: {image: comp}
         );
         let cases = crate::CASE_LOADER.load_file(&path).unwrap();
         let runners = build_case_runners(cases, Os::Linux, &[]).unwrap();
-        let entries = listing(&runners);
+        let entries = listing(&runners, &[], Os::Linux);
         assert_eq!(entries.len(), 1);
         let entry = &entries["correctness"];
         assert_eq!(entry["type"], "correctness");
@@ -2081,7 +2233,7 @@ comparison: {image: comp}
         );
         let cases = crate::CASE_LOADER.load_file(&path).unwrap();
         let runners = build_case_runners(cases, Os::Windows, &[]).unwrap();
-        let entries = listing(&runners);
+        let entries = listing(&runners, &[], Os::Windows);
         assert_eq!(entries.len(), 1);
         let entry = &entries["integration"];
         assert_eq!(entry["type"], "integration");
@@ -2095,7 +2247,7 @@ comparison: {image: comp}
         let path = write_case(dir.path(), "participant", &PARTICIPANT_FIELDS.replace("1s", "9s"));
         let cases = crate::CASE_LOADER.load_file(&path).unwrap();
         let runners = build_case_runners(cases, Os::Linux, &[]).unwrap();
-        let entries = listing(&runners);
+        let entries = listing(&runners, &[], Os::Linux);
         assert_eq!(entries.len(), 1);
         let entry = &entries["participant"];
         assert_eq!(entry["type"], "integration");

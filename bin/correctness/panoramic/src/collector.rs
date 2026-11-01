@@ -340,7 +340,7 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::*;
-    use crate::config::{tests::planner, BuiltCase};
+    use crate::config::BuiltCase;
     use crate::runner::test_support::{test_runner_settings, Behavior, ScriptedTest};
     use crate::runner::{RunArgs, Runner};
     use crate::text_output::OutputFormat;
@@ -380,7 +380,7 @@ mod tests {
             for test in tests {
                 runner
                     .register(BuiltCase {
-                        plan: planner().compile(test.case(), Os::Linux).unwrap().into_plan().unwrap(),
+                        plan: test.plan(),
                         runner: Box::new(test),
                     })
                     .expect("scripted test names are unique");
