@@ -164,9 +164,15 @@ A referenced fact missing for a participant's realization on any OS in `subject_
 
 Connections and endpoint overrides are checked the same way: on every OS in `subject_os`, each `connect` key
 must be an endpoint the participant consumes, the target must serve the named endpoint with its configuration,
-and the endpoint's kind must be one the consumer accepts. Every required consumed endpoint must be connected,
-and each `config.endpoints` key must name an endpoint the participant serves. Both `connect` and
-`config.endpoints` must be empty for `agent-adp`.
+and the endpoint's kind must be one the consumer accepts. A connection also fails when its participants'
+realizations have no route for the endpoint's kind. Network endpoints connect participants with the same
+realization, or a host process group to a Linux container. Unix sockets need the same realization and can't use
+Windows containers. Named pipes don't connect participants.
+
+A case must not set, in `config.env` or the overlay for that OS, an environment variable that one of its
+connections delivers. Two connections of one participant must not deliver the same variable.
+Every required consumed endpoint must be connected, and each `config.endpoints` key must name an endpoint
+the participant serves. Both `connect` and `config.endpoints` must be empty for `agent-adp`.
 
 `--subject-os linux|macos|windows` selects which cases run. It defaults to the OS selected by `--runtime`, then the
 host's OS. Conflicting values exit 2 before discovery. Correctness cases keep their configured runtime.

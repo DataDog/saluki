@@ -13,8 +13,9 @@ use crate::{
 };
 
 mod connections;
+mod routes;
 
-use self::connections::check_connections;
+use self::connections::{check_connections, ParticipantEndpoints};
 
 /// A loaded case with the layout selected for execution.
 pub struct CasePlan<C> {
@@ -38,7 +39,8 @@ impl<C> CasePlan<C> {
     /// Returns the first error on any declared subject OS, naming the case, source and failing OS,
     /// even when the selected OS is excluded. On each OS, checks run in this order: layout;
     /// configuration, endpoint derivation and overrides per participant in name order;
-    /// connections per consumer in name order (connect keys, then required endpoints, each in name order);
+    /// connections per consumer in name order (per `connect` key in name order: consumed, served,
+    /// accepted kind, route, delivered env keys; then required endpoints in name order);
     /// facts in procedure order with step labels.
     pub fn compile(
         case: CaseConfig<C>, subject_os: Os, registries: &Registries<'_>,
@@ -124,8 +126,7 @@ fn plan_participants(
     file: &CaseFile, layout: &Layout, types: &[&dyn ParticipantType],
 ) -> Result<BTreeMap<String, PlannedParticipant>, String> {
     let mut participants = BTreeMap::new();
-    let mut served = BTreeMap::new();
-    let mut consumed = BTreeMap::new();
+    let mut participant_endpoints = BTreeMap::new();
     for (name, realization) in layout.iter() {
         let entry = &file.participants[name];
         let participant_type =
@@ -137,11 +138,12 @@ fn plan_participants(
             .validate_config(realization, &values)
             .map_err(&invalid_config)?;
         let defaults = participant_type.default_env(realization, &values);
+        let case_env = values.env.keys().cloned().collect();
         let config = EffectiveConfig::assemble(defaults, values);
         let endpoints = participant_type
             .endpoints(realization, &config)
             .map_err(invalid_config)?;
-        consumed.insert(name.to_string(), participant_type.consumes(realization, &config));
+        let consumed = participant_type.consumes(realization, &config);
         for endpoint in config.endpoints.keys() {
             if !endpoints.contains_key(endpoint) {
                 return Err(format!(
@@ -150,7 +152,14 @@ fn plan_participants(
                 ));
             }
         }
-        served.insert(name.to_string(), endpoints);
+        participant_endpoints.insert(
+            name.to_string(),
+            ParticipantEndpoints {
+                served: endpoints,
+                consumed,
+                case_env,
+            },
+        );
         participants.insert(
             name.to_string(),
             PlannedParticipant {
@@ -159,7 +168,7 @@ fn plan_participants(
             },
         );
     }
-    check_connections(file, layout, &served, &consumed)?;
+    check_connections(file, layout, &participant_endpoints)?;
     Ok(participants)
 }
 
@@ -210,7 +219,7 @@ fn check_fact_needs(
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::{collections::BTreeSet, path::Path};
 
     use super::*;
     use crate::{
@@ -221,13 +230,128 @@ mod tests {
             },
             CaseLoader, FileSource,
         },
+        endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind},
         layout::{Realization, RealizationKind},
     };
+
+    struct EveryKindServer;
+
+    impl ParticipantType for EveryKindServer {
+        fn name(&self) -> &'static str {
+            "every-kind-server"
+        }
+
+        fn supports(&self) -> &'static [(Os, RealizationKind)] {
+            &[
+                (Os::Linux, RealizationKind::LinuxContainer),
+                (Os::Linux, RealizationKind::HostProcessGroup),
+                (Os::MacOs, RealizationKind::HostProcessGroup),
+                (Os::Windows, RealizationKind::WindowsContainer),
+                (Os::Linux, RealizationKind::KubernetesPod),
+            ]
+        }
+
+        fn endpoints(
+            &self, _realization: Realization, _config: &EffectiveConfig,
+        ) -> Result<BTreeMap<String, Endpoint>, String> {
+            Ok([
+                ("tcp", EndpointKind::Tcp),
+                ("datagram", EndpointKind::UnixDatagram),
+                ("stream", EndpointKind::UnixStream),
+                ("pipe", EndpointKind::NamedPipe),
+            ]
+            .into_iter()
+            .map(|(name, kind)| (name.into(), Endpoint { kind }))
+            .collect())
+        }
+
+        fn processes(&self) -> &'static [&'static str] {
+            &[]
+        }
+    }
+
+    struct EveryKindClient;
+
+    impl ParticipantType for EveryKindClient {
+        fn name(&self) -> &'static str {
+            "every-kind-client"
+        }
+
+        fn supports(&self) -> &'static [(Os, RealizationKind)] {
+            EveryKindServer.supports()
+        }
+
+        fn consumes(&self, _realization: Realization, _config: &EffectiveConfig) -> BTreeMap<String, ConsumedEndpoint> {
+            BTreeMap::from([(
+                "target".into(),
+                ConsumedEndpoint {
+                    accepts: vec![
+                        EndpointKind::Tcp,
+                        EndpointKind::Udp,
+                        EndpointKind::Http,
+                        EndpointKind::Grpc,
+                        EndpointKind::UnixDatagram,
+                        EndpointKind::UnixStream,
+                        EndpointKind::NamedPipe,
+                    ],
+                    required: false,
+                    delivery: Delivery::Env(BTreeSet::from(["TARGET".into()])),
+                },
+            )])
+        }
+
+        fn processes(&self) -> &'static [&'static str] {
+            &[]
+        }
+    }
+
+    struct SharedDeliveryClient;
+
+    impl ParticipantType for SharedDeliveryClient {
+        fn name(&self) -> &'static str {
+            "shared-delivery-client"
+        }
+
+        fn supports(&self) -> &'static [(Os, RealizationKind)] {
+            Client.supports()
+        }
+
+        fn default_env(&self, _realization: Realization, _config: &CaseValues) -> BTreeMap<String, String> {
+            BTreeMap::from([("SHARED".into(), "default".into())])
+        }
+
+        fn consumes(&self, _realization: Realization, _config: &EffectiveConfig) -> BTreeMap<String, ConsumedEndpoint> {
+            ["a", "z"]
+                .into_iter()
+                .map(|name| {
+                    (
+                        name.into(),
+                        ConsumedEndpoint {
+                            accepts: vec![EndpointKind::Http],
+                            required: false,
+                            delivery: Delivery::Env(BTreeSet::from(["SHARED".into()])),
+                        },
+                    )
+                })
+                .collect()
+        }
+
+        fn processes(&self) -> &'static [&'static str] {
+            &[]
+        }
+    }
 
     const FACT_CASE: &str = "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {type: server, subject: true}\nprocedure: [{step: probe, on: subject, path: '{{ subject.facts.file }}'}]\n";
 
     const CONFIG_REGISTRIES: Registries<'static> = Registries {
-        participant_types: &[&Client, &Configured, &Server],
+        participant_types: &[
+            &Client,
+            &Configured,
+            &Server,
+            &EveryKindClient,
+            &EveryKindServer,
+            &SharedDeliveryClient,
+        ],
         steps: STEPS,
     };
     const CONFIG_LOADER: CaseLoader<'static, FixtureTypes> =
@@ -357,7 +481,7 @@ procedure: []
   a: {type: configured, config: {params: {mode: broken}}}
   c: {type: server, config: {env: {PORT: x}}}
   d: {type: server, config: {endpoints: {z-typo: {port: 80}, a-typo: {port: 80}}}}
-  e: {type: client, connect: {z-typo: subject.typo, a-typo: subject.typo}}
+  e: {type: client, config: {env: {SIDE_PORT: '80', SIDE_HOST: literal}}, connect: {z-typo: subject.typo, a-typo: subject.typo}}
   f: {type: client, connect: {typo: subject.api}}
   g: {type: server, config: {endpoints: {typo: {port: 80}}}}
   other: {type: server, os: macos}"#,
@@ -411,13 +535,28 @@ procedure: []
             ),
             (
                 "side: subject.typo",
-                "side: subject.api",
+                "side: other.api",
                 "participant 'e' connects 'side' to 'subject.typo', which participant 'subject' of type 'server' as windows-container on windows does not serve",
             ),
             (
-                "side: subject.api",
+                "side: other.api",
+                "side: other.metrics",
+                "participant 'e' connects 'side' to 'other.api', an endpoint of kind http; 'side' of type 'client' accepts udp, tcp",
+            ),
+            (
+                "side: other.metrics",
                 "side: subject.metrics",
-                "participant 'e' connects 'side' to 'subject.api', an endpoint of kind http; 'side' of type 'client' accepts udp, tcp",
+                "participant 'e' connects 'side' to 'other.metrics', an endpoint of kind udp; participant 'e' of type 'client' as windows-container on windows cannot reach participant 'other' of type 'server' as host-process-group on macos: network endpoints connect only participants with the same realization, or a host-process-group to a linux-container",
+            ),
+            (
+                ", SIDE_HOST: literal",
+                "",
+                "participant 'e' of type 'client' as windows-container on windows sets env 'SIDE_HOST', which its connection 'side' delivers; remove one of them",
+            ),
+            (
+                "SIDE_PORT: '80'",
+                "",
+                "participant 'e' of type 'client' as windows-container on windows sets env 'SIDE_PORT', which its connection 'side' delivers; remove one of them",
             ),
             (
                 "side: subject.metrics",
@@ -528,6 +667,146 @@ procedure: []
             "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'client' connects 'upstream' to 'server.metrics', an endpoint of kind udp; 'upstream' of type 'client' accepts http"
         );
         assert!(compile(CONNECTION_CASE, Os::Linux).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_connection_without_a_route_between_its_realizations_fails_compile_naming_both_participants_and_the_constraint()
+    {
+        let yaml = CONNECTION_CASE
+            .replace("[linux]", "[macos]")
+            .replace("type: client", "type: every-kind-client")
+            .replace("type: server", "type: every-kind-server, os: linux")
+            .replace("upstream: server.api", "target: server.stream");
+        let message = compile(&yaml, Os::MacOs).err().unwrap().to_string();
+        assert_eq!(message,
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'client' connects 'target' to 'server.stream', an endpoint of kind unix-stream; participant 'client' of type 'every-kind-client' as host-process-group on macos cannot reach participant 'server' of type 'every-kind-server' as linux-container on linux: unix sockets connect only participants with the same realization, other than windows-container, because they need one shared filesystem"
+        );
+        assert!(compile(&yaml.replace("server.stream", "server.tcp"), Os::MacOs)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn a_connection_without_a_route_on_one_declared_subject_os_fails_compile_whatever_os_is_selected() {
+        let yaml = CONNECTION_CASE
+            .replace("[linux]", "[linux, macos]")
+            .replace("type: client", "type: every-kind-client")
+            .replace("type: server", "type: every-kind-server, os: linux")
+            .replace("upstream: server.api", "target: server.stream");
+        for os in [Os::Linux, Os::MacOs, Os::Windows] {
+            let message = compile(&yaml, os).err().unwrap().to_string();
+            assert_eq!(message,
+                "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'client' connects 'target' to 'server.stream', an endpoint of kind unix-stream; participant 'client' of type 'every-kind-client' as host-process-group on macos cannot reach participant 'server' of type 'every-kind-server' as linux-container on linux: unix sockets connect only participants with the same realization, other than windows-container, because they need one shared filesystem"
+            );
+        }
+        assert!(compile(&yaml.replace("[linux, macos]", "[linux]"), Os::Linux)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn a_case_env_key_a_connection_delivers_fails_compile() {
+        let yaml = CONNECTION_CASE.replace("type: client", "type: client, config: {env: {UPSTREAM_URL: literal}}");
+        let message = compile(&yaml, Os::Linux).err().unwrap().to_string();
+        assert_eq!(message,
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'client' of type 'client' as linux-container on linux sets env 'UPSTREAM_URL', which its connection 'upstream' delivers; remove one of them"
+        );
+        assert!(compile(CONNECTION_CASE, Os::Linux).unwrap().is_some());
+    }
+
+    #[test]
+    fn an_os_overlay_env_key_a_connection_delivers_fails_compile_whatever_os_is_selected() {
+        let yaml = CONNECTION_CASE.replace("[linux]", "[linux, windows]").replace(
+            "type: client",
+            "type: client, config: {os: {windows: {env: {UPSTREAM_URL: literal}}}}",
+        );
+        for os in [Os::Linux, Os::MacOs, Os::Windows] {
+            let message = compile(&yaml, os).err().unwrap().to_string();
+            assert_eq!(message,
+                "case 'alpha' in cases/alpha/config.yaml: on subject OS 'windows', participant 'client' of type 'client' as windows-container on windows sets env 'UPSTREAM_URL', which its connection 'upstream' delivers; remove one of them"
+            );
+        }
+        assert!(compile(&yaml.replace("UPSTREAM_URL: literal", ""), Os::Linux)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn a_delivery_conflict_uses_the_consumers_own_os_overlay() {
+        let yaml = CONNECTION_CASE
+            .replace(
+                "type: client, subject: true",
+                "type: client, os: macos, config: {os: {macos: {env: {UPSTREAM_URL: literal}}}}",
+            )
+            .replace("type: server", "type: server, subject: true");
+        let message = compile(&yaml, Os::Linux).err().unwrap().to_string();
+        assert_eq!(message,
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'client' of type 'client' as host-process-group on macos sets env 'UPSTREAM_URL', which its connection 'upstream' delivers; remove one of them"
+        );
+        assert!(compile(&yaml.replace("UPSTREAM_URL: literal", ""), Os::Linux)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn a_case_may_set_the_delivery_keys_of_an_endpoint_it_does_not_connect() {
+        let yaml = CONNECTION_CASE.replace(
+            "type: client",
+            "type: client, config: {env: {SIDE_HOST: literal, SIDE_PORT: '80'}}",
+        );
+        let plan = compile(&yaml, Os::Linux).unwrap().unwrap();
+        assert_eq!(
+            plan.effective_config("client").unwrap().env,
+            BTreeMap::from([
+                ("SIDE_HOST".into(), "literal".into()),
+                ("SIDE_PORT".into(), "80".into())
+            ])
+        );
+    }
+
+    #[test]
+    fn a_type_default_for_a_delivered_key_is_not_a_conflict() {
+        let yaml = CONNECTION_CASE
+            .replace("type: client", "type: shared-delivery-client")
+            .replace("upstream:", "a:");
+        let plan = compile(&yaml, Os::Linux).unwrap().unwrap();
+        assert_eq!(
+            plan.effective_config("client").unwrap().env,
+            BTreeMap::from([("SHARED".into(), "default".into())])
+        );
+        let message = compile(
+            &yaml.replace("subject: true", "subject: true, config: {env: {SHARED: literal}}"),
+            Os::Linux,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert_eq!(message,
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'client' of type 'shared-delivery-client' as linux-container on linux sets env 'SHARED', which its connection 'a' delivers; remove one of them"
+        );
+    }
+
+    #[test]
+    fn two_connections_of_one_participant_delivering_the_same_env_key_fail_compile() {
+        let yaml = CONNECTION_CASE
+            .replace("type: client", "type: shared-delivery-client")
+            .replace("upstream: server.api", "z: server.api, a: server.api");
+        let message = compile(&yaml, Os::Linux).err().unwrap().to_string();
+        assert_eq!(message,
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'client' of type 'shared-delivery-client' as linux-container on linux delivers env 'SHARED' through both 'a' and 'z'"
+        );
+        for connection in ["z: server.api, ", ", a: server.api"] {
+            assert!(compile(&yaml.replace(connection, ""), Os::Linux).unwrap().is_some());
+        }
+    }
+
+    #[test]
+    fn connections_of_different_participants_may_deliver_the_same_env_keys() {
+        let yaml = CONNECTION_CASE.replace(
+            "participants:",
+            "participants:\n  other: {type: client, connect: {upstream: server.api}}",
+        );
+        assert!(compile(&yaml, Os::Linux).unwrap().is_some());
     }
 
     #[test]

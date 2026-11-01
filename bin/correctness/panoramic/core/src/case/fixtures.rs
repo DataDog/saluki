@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use super::{case_name, CaseLoader, Registries, Template, TypedCase, TypedCaseLoader};
 use crate::{
-    endpoint::{ConsumedEndpoint, Endpoint, EndpointKind},
+    endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind},
     layout::{Os, Realization, RealizationKind},
     participant::{CaseValues, EffectiveConfig, FactDeclaration, ParticipantType},
     step::{decode_fields, Need, Step, StepFactory, StepFields},
@@ -260,6 +260,7 @@ impl ParticipantType for Client {
                 ConsumedEndpoint {
                     accepts: vec![EndpointKind::Http],
                     required: true,
+                    delivery: Delivery::Env(BTreeSet::from(["UPSTREAM_URL".into()])),
                 },
             ),
             (
@@ -267,6 +268,7 @@ impl ParticipantType for Client {
                 ConsumedEndpoint {
                     accepts: vec![EndpointKind::Udp, EndpointKind::Tcp],
                     required: false,
+                    delivery: Delivery::Env(BTreeSet::from(["SIDE_HOST".into(), "SIDE_PORT".into()])),
                 },
             ),
         ])

@@ -1,5 +1,7 @@
 //! Configuration-dependent served and consumed endpoint declarations.
 
+use std::collections::BTreeSet;
+
 /// How a served endpoint is reached.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum EndpointKind {
@@ -21,7 +23,7 @@ pub enum EndpointKind {
 
 impl EndpointKind {
     /// Spelling used in diagnostics.
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Tcp => "tcp",
             Self::Udp => "udp",
@@ -48,6 +50,15 @@ pub struct ConsumedEndpoint {
     pub accepts: Vec<EndpointKind>,
     /// Whether the case must connect this endpoint.
     pub required: bool,
+    /// How a connection's resolved address reaches the consumer's processes.
+    pub delivery: Delivery,
+}
+
+/// How a connection's resolved address reaches the consuming participant's processes.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Delivery {
+    /// Sets these environment variables. A case that connects the endpoint must not set them in `env`.
+    Env(BTreeSet<String>),
 }
 
 #[cfg(test)]
