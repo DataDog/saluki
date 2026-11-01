@@ -73,7 +73,7 @@ mod tests {
         layout::{Os, RealizationKind},
         plan::{
             fixtures::{compile, FACT_CASE},
-            CasePlan, PortRegistry, ScopeRegistry,
+            Planner,
         },
     };
 
@@ -207,15 +207,10 @@ mod tests {
             .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
             .unwrap()
             .remove(0);
-        let plan = CasePlan::compile(
-            case,
-            Os::Linux,
-            &registries,
-            &mut PortRegistry::new(),
-            &mut ScopeRegistry::with_run("testrun0"),
-        )
-        .unwrap()
-        .unwrap();
+        let plan = Planner::with_run(registries, "testrun0")
+            .compile(case, Os::Linux)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             plan.layout().unwrap().get("subject").unwrap().kind,
             RealizationKind::KubernetesPod
@@ -228,7 +223,7 @@ mod tests {
             )
             .unwrap()
             .remove(0);
-        assert_eq!(CasePlan::compile(case, Os::Linux, &registries, &mut PortRegistry::new(), &mut ScopeRegistry::with_run("testrun0")).err().unwrap().to_string(),
+        assert_eq!(Planner::with_run(registries, "testrun0").compile(case, Os::Linux).err().unwrap().to_string(),
             "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 1 references late fact 'pod_uid' of participant 'subject', which a linux-container does not have; a linux-container has container_id, ip"
         );
     }
@@ -275,16 +270,11 @@ mod tests {
             .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
             .unwrap()
             .remove(0);
-        let message = CasePlan::compile(
-            case,
-            Os::Linux,
-            &registries,
-            &mut PortRegistry::new(),
-            &mut ScopeRegistry::with_run("testrun0"),
-        )
-        .err()
-        .unwrap()
-        .to_string();
+        let message = Planner::with_run(registries, "testrun0")
+            .compile(case, Os::Linux)
+            .err()
+            .unwrap()
+            .to_string();
         assert_eq!(message,
             "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 1 references fact 'file' of participant 'subject', which type 'pod-server' does not provide as kubernetes-pod on linux; it provides it as linux-container on linux"
         );
@@ -296,15 +286,10 @@ mod tests {
             )
             .unwrap()
             .remove(0);
-        let plan = CasePlan::compile(
-            case,
-            Os::Linux,
-            &registries,
-            &mut PortRegistry::new(),
-            &mut ScopeRegistry::with_run("testrun0"),
-        )
-        .unwrap()
-        .unwrap();
+        let plan = Planner::with_run(registries, "testrun0")
+            .compile(case, Os::Linux)
+            .unwrap()
+            .unwrap();
         assert_eq!(plan.fact("subject", "file"), Some("/logs/output.log"));
     }
 

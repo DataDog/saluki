@@ -219,7 +219,7 @@ where
     /// exactly one subject is required, without an `os` override.
     /// Types and steps must be registered, their fields valid, and participant and process names declared.
     /// Connections must name another, existing participant. OS overlays must be reachable.
-    /// Fact availability and endpoint and connection checks run in [`crate::plan::CasePlan::compile`].
+    /// Fact availability and endpoint and connection checks run in [`crate::plan::Planner::compile`].
     /// Configuration file sources, including overlays, must be nonempty relative paths within the case directory
     /// that resolve to existing files or directories. Symlink targets may be outside the directory.
     /// Sources marked `template: true` must be regular UTF-8 files; each is read and parsed once, and its references

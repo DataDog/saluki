@@ -5,7 +5,7 @@ use std::{
 
 use saluki_error::GenericError;
 
-use super::{CasePlan, PortRegistry, ScopeRegistry};
+use super::{CasePlan, Planner};
 use crate::{
     backend,
     case::{
@@ -212,15 +212,10 @@ pub(super) fn compile_files(yaml: &str, sources: &[(&str, &str)], os: Os) -> Res
     for (from, _) in sources {
         std::fs::remove_file(source.parent().unwrap().join(from)).unwrap();
     }
-    CasePlan::compile(
-        case,
-        os,
-        &FILE_REGISTRIES,
-        &mut PortRegistry::new(),
-        &mut ScopeRegistry::with_run("testrun0"),
-    )
-    .map_err(normalize)
-    .map(Option::unwrap)
+    Planner::with_run(FILE_REGISTRIES, "testrun0")
+        .compile(case, os)
+        .map_err(normalize)
+        .map(Option::unwrap)
 }
 
 pub(super) struct AssignedServer;
@@ -407,24 +402,22 @@ pub(super) const CONFIG_REGISTRIES: Registries<'static> = Registries {
 pub(super) const CONFIG_LOADER: CaseLoader<'static, FixtureTypes> =
     CaseLoader::new(CONFIG_REGISTRIES, FixtureTypes, "fixture-participants");
 
-pub(super) fn compile(yaml: &str, os: Os) -> Result<Option<CasePlan<FixtureConfig>>, GenericError> {
-    compile_with_ports(yaml, os, &mut PortRegistry::new())
+pub(super) fn planner() -> Planner<'static> {
+    Planner::with_run(CONFIG_REGISTRIES, "testrun0")
 }
 
-pub(super) fn compile_with_ports(
-    yaml: &str, os: Os, ports: &mut PortRegistry,
+pub(super) fn compile(yaml: &str, os: Os) -> Result<Option<CasePlan<FixtureConfig>>, GenericError> {
+    compile_with(&mut planner(), yaml, os)
+}
+
+pub(super) fn compile_with(
+    planner: &mut Planner<'static>, yaml: &str, os: Os,
 ) -> Result<Option<CasePlan<FixtureConfig>>, GenericError> {
     let case = CONFIG_LOADER
         .load_content(yaml, "alpha", Path::new("cases/alpha/config.yaml"))
         .unwrap()
         .remove(0);
-    CasePlan::compile(
-        case,
-        os,
-        &CONFIG_REGISTRIES,
-        ports,
-        &mut ScopeRegistry::with_run("testrun0"),
-    )
+    planner.compile(case, os)
 }
 
 pub(super) const CONNECTION_CASE: &str = concat!(
@@ -437,16 +430,6 @@ participants:
     minimal_procedure!(),
     "\n"
 );
-
-pub(super) fn compile_with_scopes(
-    yaml: &str, os: Os, scopes: &mut ScopeRegistry,
-) -> Result<Option<CasePlan<FixtureConfig>>, GenericError> {
-    let case = CONFIG_LOADER
-        .load_content(yaml, "alpha", Path::new("cases/alpha/config.yaml"))
-        .unwrap()
-        .remove(0);
-    CasePlan::compile(case, os, &CONFIG_REGISTRIES, &mut PortRegistry::new(), scopes)
-}
 
 pub(super) fn socket_case(config: &str) -> String {
     format!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n  client: {{type: every-kind-client, subject: true, connect: {{target: server.stream}}}}\n  server: {{type: every-kind-server, config: {config}}}\n{}", minimal_procedure!())

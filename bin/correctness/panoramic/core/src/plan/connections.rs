@@ -130,10 +130,10 @@ mod tests {
         layout::Os,
         plan::{
             fixtures::{
-                assigned_server_case, compile, compile_files, compile_with_ports, host_to_container_case,
-                host_to_container_reference_case, CONNECTION_CASE, FILE_CONFIG,
+                assigned_server_case, compile, compile_files, compile_with, host_to_container_case,
+                host_to_container_reference_case, planner, CONNECTION_CASE, FILE_CONFIG,
             },
-            PortRegistry,
+            Planner, PortRegistry,
         },
     };
 
@@ -199,10 +199,10 @@ mod tests {
     #[test]
     fn a_linux_container_cannot_reach_a_host_process_group_and_no_other_route_is_tried() {
         let yaml = CONNECTION_CASE.replace("type: server}", "type: server, os: macos}");
-        let mut ports = PortRegistry::new();
-        assert_eq!(compile_with_ports(&yaml, Os::Linux, &mut ports).err().unwrap().to_string(),
+        let mut planner = planner();
+        assert_eq!(compile_with(&mut planner, &yaml, Os::Linux).err().unwrap().to_string(),
             "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'client' connects 'upstream' to 'server.api', an endpoint of kind http; participant 'client' of type 'client' as linux-container on linux cannot reach participant 'server' of type 'server' as host-process-group on macos: network endpoints connect only participants with the same realization, or a host-process-group to a linux-container");
-        assert_eq!(ports.allocate(), Ok(20000));
+        assert_eq!(planner.ports.allocate(), Ok(20000));
     }
 
     #[test]
@@ -211,8 +211,8 @@ mod tests {
             "participants:",
             "participants:\n  other: {type: client, connect: {upstream: server.api}}",
         );
-        let mut ports = PortRegistry::new();
-        let plan = compile_with_ports(&yaml, Os::MacOs, &mut ports).unwrap().unwrap();
+        let mut planner = planner();
+        let plan = compile_with(&mut planner, &yaml, Os::MacOs).unwrap().unwrap();
         for name in ["client", "other"] {
             assert_eq!(
                 plan.effective_config(name).unwrap().env["UPSTREAM_URL"],
@@ -223,7 +223,7 @@ mod tests {
             plan.runner_host_ports,
             BTreeMap::from([(("server".into(), "api".into()), 20000)])
         );
-        assert_eq!(ports.allocate(), Ok(20001));
+        assert_eq!(planner.ports.allocate(), Ok(20001));
     }
 
     #[test]
@@ -249,9 +249,9 @@ mod tests {
 
     #[test]
     fn cases_planned_with_one_registry_get_distinct_runner_host_ports() {
-        let mut ports = PortRegistry::new();
+        let mut planner = planner();
         for port in [20000, 20001] {
-            let plan = compile_with_ports(&host_to_container_case(), Os::MacOs, &mut ports)
+            let plan = compile_with(&mut planner, &host_to_container_case(), Os::MacOs)
                 .unwrap()
                 .unwrap();
             assert_eq!(
@@ -265,8 +265,8 @@ mod tests {
     fn only_the_selected_subject_os_draws_from_the_run_wide_registry() {
         let yaml = concat!("timeout: 1s\nsubject_os: [linux, macos, windows]\nparticipants:\n  subject: {type: every-kind-server, subject: true}\n  client: {type: client, os: macos, connect: {upstream: server.api}}\n  server: {type: server, os: linux}\n", minimal_procedure!(), "\n");
         for selected in [Os::Linux, Os::MacOs, Os::Windows] {
-            let mut ports = PortRegistry::new();
-            let plan = compile_with_ports(yaml, selected, &mut ports).unwrap().unwrap();
+            let mut planner = planner();
+            let plan = compile_with(&mut planner, yaml, selected).unwrap().unwrap();
             assert_eq!(
                 plan.effective_config("client").unwrap().env["UPSTREAM_URL"],
                 "http://127.0.0.1:20000"
@@ -275,17 +275,17 @@ mod tests {
                 plan.runner_host_ports,
                 BTreeMap::from([(("server".into(), "api".into()), 20000)])
             );
-            assert_eq!(ports.allocate(), Ok(20001));
+            assert_eq!(planner.ports.allocate(), Ok(20001));
         }
-        let mut ports = PortRegistry::new();
-        assert!(compile_with_ports(
+        let mut planner = planner();
+        assert!(compile_with(
+            &mut planner,
             &yaml.replace("[linux, macos, windows]", "[linux, macos]"),
-            Os::Windows,
-            &mut ports
+            Os::Windows
         )
         .unwrap()
         .is_none());
-        assert_eq!(ports.allocate(), Ok(20000));
+        assert_eq!(planner.ports.allocate(), Ok(20000));
     }
 
     #[test]
@@ -313,8 +313,8 @@ mod tests {
         let yaml = host_to_container_case()
             .replace("subject: true", "subject: true, config: {env: {KEY: '{{ server.endpoints.api.url }} {{ self.connections.upstream.port }}'}}")
             .replace(minimal_procedure!(), concat!("  other: {type: server, config: {params: {mode: ['{{server.endpoints.api.host}}']}}}\n", minimal_procedure!()));
-        let mut ports = PortRegistry::new();
-        let plan = compile_with_ports(&yaml, Os::MacOs, &mut ports).unwrap().unwrap();
+        let mut planner = planner();
+        let plan = compile_with(&mut planner, &yaml, Os::MacOs).unwrap().unwrap();
         assert_eq!(
             plan.effective_config("client").unwrap().env["UPSTREAM_URL"],
             "http://127.0.0.1:20000"
@@ -323,7 +323,7 @@ mod tests {
             plan.runner_host_ports,
             BTreeMap::from([(("server".into(), "api".into()), 20000)])
         );
-        assert_eq!(ports.allocate(), Ok(20001));
+        assert_eq!(planner.ports.allocate(), Ok(20001));
     }
 
     #[test]
@@ -345,10 +345,10 @@ mod tests {
                 "type: server, os: linux",
                 "type: every-kind-server, config: {env: {PORT_OFFSET: '100', SOCKET_DIR: '{{ self.facts.shared_dir }}'}}",
             );
-            let mut ports = PortRegistry::new();
-            let plan = compile_with_ports(&yaml, os, &mut ports).unwrap().unwrap();
+            let mut planner = planner();
+            let plan = compile_with(&mut planner, &yaml, os).unwrap().unwrap();
             assert!(plan.runner_host_ports.is_empty(), "{yaml}");
-            assert_eq!(ports.allocate(), Ok(20000), "{yaml}");
+            assert_eq!(planner.ports.allocate(), Ok(20000), "{yaml}");
         }
     }
 
@@ -393,12 +393,12 @@ participants:
     #[test]
     fn an_invalid_address_part_fails_before_a_runner_host_port_is_drawn() {
         let yaml = host_to_container_reference_case("{env: {KEY: '{{ server.endpoints.api.path }}'}}");
-        let mut ports = PortRegistry::new();
+        let mut planner = planner();
         assert_eq!(
-            compile_with_ports(&yaml, Os::MacOs, &mut ports).err().unwrap().to_string(),
+            compile_with(&mut planner, &yaml, Os::MacOs).err().unwrap().to_string(),
             "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'subject' of type 'file-server' as host-process-group on macos environment variable 'KEY' '{{ server.endpoints.api.path }}': a http endpoint has no 'path'; use url, host or port"
         );
-        assert_eq!(ports.allocate(), Ok(20000));
+        assert_eq!(planner.ports.allocate(), Ok(20000));
     }
 
     #[test]
@@ -407,9 +407,12 @@ participants:
             "subject: true",
             "subject: true, config: {env: {KEY: '{{ server.endpoints.metrics.url }}'}}",
         );
-        let mut ports = PortRegistry::over(21000..=21000);
+        let mut planner = Planner {
+            ports: PortRegistry::over(21000..=21000),
+            ..planner()
+        };
         assert_eq!(
-            compile_with_ports(&yaml, Os::MacOs, &mut ports).err().unwrap().to_string(),
+            compile_with(&mut planner, &yaml, Os::MacOs).err().unwrap().to_string(),
             "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'client' of type 'client' as host-process-group on macos environment variable 'KEY' '{{ server.endpoints.metrics.url }}' references endpoint 'metrics' of participant 'server', which needs a runner-host port: all 1 runner-host ports are allocated"
         );
     }
@@ -419,17 +422,17 @@ participants:
         let yaml = host_to_container_reference_case("{os: {macos: {env: {KEY: '{{ server.endpoints.api.url }}'}}}}")
             .replace("[macos]", "[linux, macos]");
         for selected in [Os::Linux, Os::MacOs] {
-            let mut ports = PortRegistry::new();
-            let plan = compile_with_ports(&yaml, selected, &mut ports).unwrap().unwrap();
+            let mut planner = planner();
+            let plan = compile_with(&mut planner, &yaml, selected).unwrap().unwrap();
             if selected == Os::Linux {
                 assert!(plan.runner_host_ports.is_empty());
-                assert_eq!(ports.allocate(), Ok(20000));
+                assert_eq!(planner.ports.allocate(), Ok(20000));
             } else {
                 assert_eq!(
                     plan.runner_host_ports,
                     BTreeMap::from([(("server".into(), "api".into()), 20000)])
                 );
-                assert_eq!(ports.allocate(), Ok(20001));
+                assert_eq!(planner.ports.allocate(), Ok(20001));
             }
         }
     }
@@ -438,8 +441,11 @@ participants:
     fn runner_host_port_exhaustion_names_the_connection_in_allocation_order() {
         let yaml =
             host_to_container_case().replace("upstream: server.api", "upstream: server.api, side: server.metrics");
-        let mut ports = PortRegistry::over(21000..=21000);
-        assert_eq!(compile_with_ports(&yaml, Os::MacOs, &mut ports).err().unwrap().to_string(),
+        let mut planner = Planner {
+            ports: PortRegistry::over(21000..=21000),
+            ..planner()
+        };
+        assert_eq!(compile_with(&mut planner, &yaml, Os::MacOs).err().unwrap().to_string(),
             "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'client' of type 'client' as host-process-group on macos cannot resolve connection 'upstream' to 'server.api': all 1 runner-host ports are allocated");
     }
 

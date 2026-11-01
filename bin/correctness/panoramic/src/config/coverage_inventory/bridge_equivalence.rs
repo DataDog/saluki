@@ -12,11 +12,7 @@ use std::{
     path::Path,
 };
 
-use panoramic_core::{
-    layout::Realization,
-    participant::ParticipantType,
-    plan::{CasePlan, PortRegistry, ScopeRegistry},
-};
+use panoramic_core::{layout::Realization, participant::ParticipantType, plan::Planner};
 use panoramic_participants::AgentAdp;
 use serde_json::{json, Value};
 
@@ -392,15 +388,7 @@ fn only_the_logging_cases_and_the_log_parsed_exit_cases_fit_the_integration_runn
                     .load_content(&twin, name, Path::new("config.yaml"))
                     .unwrap()
                     .remove(0);
-                let plan = CasePlan::compile(
-                    loaded,
-                    *os,
-                    &crate::REGISTRIES,
-                    &mut PortRegistry::new(),
-                    &mut ScopeRegistry::new(),
-                )
-                .unwrap()
-                .unwrap();
+                let plan = Planner::new(crate::REGISTRIES).compile(loaded, *os).unwrap().unwrap();
                 plan.integration_config()
                     .unwrap_or_else(|error| panic!("{name} on {os:?}: {error:#}"));
             }

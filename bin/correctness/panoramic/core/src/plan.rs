@@ -25,10 +25,18 @@ use self::{
     connections::check_connections,
     endpoints::derive_endpoints,
     order::{dependency_order, DependencyOrder},
-    ports::{check_host_listeners, RunnerHostPorts},
-    scope::participant_shared_dir,
+    ports::{check_host_listeners, PortRegistry, RunnerHostPorts},
+    scope::{participant_shared_dir, ScopeRegistry},
 };
-pub use self::{ports::PortRegistry, scope::ScopeRegistry};
+
+/// Holds the registries shared across one run's plans.
+///
+/// Compile every case in a run through one planner to give cases distinct isolation scopes and runner-host ports.
+pub struct Planner<'a> {
+    registries: Registries<'a>,
+    ports: PortRegistry,
+    scopes: ScopeRegistry,
+}
 
 /// A loaded case with the layout selected for execution.
 pub struct CasePlan<C> {
@@ -65,11 +73,29 @@ struct PlannedParticipant {
     config: EffectiveConfig,
 }
 
-impl<C> CasePlan<C> {
+impl<'a> Planner<'a> {
+    /// Creates a planner with fresh port and scope registries and a random run identity.
+    pub fn new(registries: Registries<'a>) -> Self {
+        Self {
+            registries,
+            ports: PortRegistry::new(),
+            scopes: ScopeRegistry::new(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_run(registries: Registries<'a>, run: &str) -> Self {
+        Self {
+            registries,
+            ports: PortRegistry::new(),
+            scopes: ScopeRegistry::with_run(run),
+        }
+    }
+
     /// Validates every declared subject OS, returning a plan only for a declared selection.
     /// Participant cases carry a layout; typed cases retain their loader-supplied data.
-    /// A participant case declaring the selected OS draws one isolation scope from `scopes`.
-    /// Only the selected OS draws runner-host ports from `ports`; other OSes use separate registries.
+    /// A participant case declaring the selected OS draws one isolation scope from this planner.
+    /// Only the selected OS draws runner-host ports from this planner; other OSes use separate registries.
     /// Ports are drawn in check order: assigned listeners per participant and endpoint in name order,
     /// then connections per consumer, then references per participant (`env`, `params`, template files).
     /// Connections and references to one container endpoint share a runner-host port.
@@ -95,10 +121,7 @@ impl<C> CasePlan<C> {
     ///       runner-host port allocation.
     ///    7. Create order, then start order.
     ///    8. Step fact and late-fact references in procedure order, naming the step.
-    pub fn compile(
-        case: CaseConfig<C>, subject_os: Os, registries: &Registries<'_>, ports: &mut PortRegistry,
-        scopes: &mut ScopeRegistry,
-    ) -> Result<Option<Self>, GenericError> {
+    pub fn compile<C>(&mut self, case: CaseConfig<C>, subject_os: Os) -> Result<Option<CasePlan<C>>, GenericError> {
         let selected = case.subject_os().contains(&subject_os);
         let mut layout = None;
         let mut scope = None;
@@ -107,7 +130,7 @@ impl<C> CasePlan<C> {
         let mut runner_host_ports = BTreeMap::new();
         if let CaseSchema::Participants { file, procedure } = case.schema() {
             let candidate_scope = if selected {
-                scopes.allocate().map_err(|error| {
+                self.scopes.allocate().map_err(|error| {
                     generic_error!(
                         "case '{}' in {}: cannot allocate an isolation scope: {error}",
                         case.name(),
@@ -115,7 +138,7 @@ impl<C> CasePlan<C> {
                     )
                 })?
             } else {
-                scopes.unallocated()
+                self.scopes.unallocated()
             };
             for &os in case.subject_os() {
                 let error = |message: String| {
@@ -127,10 +150,10 @@ impl<C> CasePlan<C> {
                         message
                     )
                 };
-                let candidate = lay_out(&file.participants, registries.participant_types, os).map_err(&error)?;
+                let candidate = lay_out(&file.participants, self.registries.participant_types, os).map_err(&error)?;
                 let mut scratch_ports = PortRegistry::new();
                 let os_ports = if os == subject_os {
-                    &mut *ports
+                    &mut self.ports
                 } else {
                     &mut scratch_ports
                 };
@@ -139,7 +162,7 @@ impl<C> CasePlan<C> {
                     case.file_templates(),
                     &candidate,
                     &candidate_scope,
-                    registries.participant_types,
+                    self.registries.participant_types,
                     os_ports,
                 )
                 .map_err(&error)?;
@@ -147,7 +170,7 @@ impl<C> CasePlan<C> {
                     file,
                     procedure,
                     &candidate,
-                    registries.participant_types,
+                    self.registries.participant_types,
                     &planned.participants,
                 )
                 .map_err(error)?;
@@ -165,7 +188,7 @@ impl<C> CasePlan<C> {
         if !selected {
             return Ok(None);
         }
-        Ok(Some(Self {
+        Ok(Some(CasePlan {
             case,
             subject_os,
             layout,
@@ -175,7 +198,9 @@ impl<C> CasePlan<C> {
             runner_host_ports,
         }))
     }
+}
 
+impl<C> CasePlan<C> {
     /// Returns the loaded case and its metadata.
     pub fn case(&self) -> &CaseConfig<C> {
         &self.case
@@ -307,7 +332,7 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        fixtures::{compile, compile_with_scopes, FACT_CASE, FILE_REGISTRIES},
+        fixtures::{compile, compile_with, planner, FACT_CASE, FILE_REGISTRIES},
         *,
     };
     use crate::{
@@ -321,9 +346,9 @@ mod tests {
     #[test]
     fn each_participant_case_declaring_the_selected_os_draws_one_scope() {
         let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[linux, macos, windows]");
-        let mut scopes = ScopeRegistry::with_run("testrun0");
+        let mut planner = planner();
         for (index, os) in [Os::Linux, Os::MacOs, Os::Windows].into_iter().enumerate() {
-            let plan = compile_with_scopes(&yaml, os, &mut scopes).unwrap().unwrap();
+            let plan = compile_with(&mut planner, &yaml, os).unwrap().unwrap();
             let scope = plan.scope.unwrap();
             assert_eq!(usize::from(scope.index), index);
             assert_eq!(scope.run, "testrun0");
@@ -334,36 +359,34 @@ mod tests {
                 );
             }
         }
-        assert_eq!(scopes.allocate().unwrap().index, 3);
+        assert_eq!(planner.scopes.allocate().unwrap().index, 3);
     }
 
     #[test]
     fn a_case_excluding_the_selected_os_and_a_typed_case_draw_no_scope() {
-        let mut scopes = ScopeRegistry::with_run("testrun0");
-        assert!(compile_with_scopes(PARTICIPANT_FIELDS, Os::MacOs, &mut scopes)
+        let mut planner = planner();
+        assert!(compile_with(&mut planner, PARTICIPANT_FIELDS, Os::MacOs)
             .unwrap()
             .is_none());
-        let plan = compile_with_scopes("type: fixture", Os::MacOs, &mut scopes)
-            .unwrap()
-            .unwrap();
+        let plan = compile_with(&mut planner, "type: fixture", Os::MacOs).unwrap().unwrap();
         assert!(plan.scope.is_none());
         assert_eq!(plan.fact("subject", SHARED_DIR_FACT), None);
-        assert_eq!(scopes.allocate().unwrap().index, 0);
+        assert_eq!(planner.scopes.allocate().unwrap().index, 0);
     }
 
     #[test]
     fn scope_exhaustion_names_the_case_and_precedes_layout_checks() {
-        let mut scopes = ScopeRegistry::with_run("testrun0");
+        let mut planner = planner();
         for _ in 0..10000 {
-            scopes.allocate().unwrap();
+            planner.scopes.allocate().unwrap();
         }
         let yaml = PARTICIPANT_FIELDS.replace("subject: true", "subject: true, realization: {kind: kubernetes-pod}");
-        assert_eq!(compile_with_scopes(&yaml, Os::Linux, &mut scopes).err().unwrap().to_string(),
+        assert_eq!(compile_with(&mut planner, &yaml, Os::Linux).err().unwrap().to_string(),
             "case 'alpha' in cases/alpha/config.yaml: cannot allocate an isolation scope: all 10000 isolation scopes are allocated");
-        assert!(compile_with_scopes(PARTICIPANT_FIELDS, Os::MacOs, &mut scopes)
+        assert!(compile_with(&mut planner, PARTICIPANT_FIELDS, Os::MacOs)
             .unwrap()
             .is_none());
-        assert!(compile_with_scopes("type: fixture", Os::MacOs, &mut scopes)
+        assert!(compile_with(&mut planner, "type: fixture", Os::MacOs)
             .unwrap()
             .unwrap()
             .scope
@@ -603,16 +626,11 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
                 .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
                 .unwrap()
                 .remove(0);
-            let message = CasePlan::compile(
-                case,
-                Os::Linux,
-                &registries,
-                &mut PortRegistry::new(),
-                &mut ScopeRegistry::with_run("testrun0"),
-            )
-            .err()
-            .unwrap()
-            .to_string();
+            let message = Planner::with_run(registries, "testrun0")
+                .compile(case, Os::Linux)
+                .err()
+                .unwrap()
+                .to_string();
             assert!(message.contains(expected), "{message}");
             assert!(yaml.contains(bad));
             yaml = yaml.replace(bad, fix);
@@ -621,15 +639,10 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
             .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
             .unwrap()
             .remove(0);
-        let plan = CasePlan::compile(
-            case,
-            Os::Linux,
-            &registries,
-            &mut PortRegistry::new(),
-            &mut ScopeRegistry::with_run("testrun0"),
-        )
-        .unwrap()
-        .unwrap();
+        let plan = Planner::with_run(registries, "testrun0")
+            .compile(case, Os::Linux)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             plan.create_order().unwrap(),
             [vec!["observer", "subject"], vec!["fixture"]]
@@ -704,14 +717,7 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
                 .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
                 .unwrap()
                 .remove(0);
-            let plan = CasePlan::compile(
-                case,
-                os,
-                &REGISTRIES,
-                &mut PortRegistry::new(),
-                &mut ScopeRegistry::with_run("testrun0"),
-            )
-            .unwrap();
+            let plan = Planner::with_run(REGISTRIES, "testrun0").compile(case, os).unwrap();
             if let Some(kind) = kind {
                 let plan = plan.unwrap();
                 assert_eq!(plan.case().name(), "alpha");
@@ -736,16 +742,11 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
                 .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
                 .unwrap()
                 .remove(0);
-            let message = CasePlan::compile(
-                case,
-                os,
-                &REGISTRIES,
-                &mut PortRegistry::new(),
-                &mut ScopeRegistry::with_run("testrun0"),
-            )
-            .err()
-            .unwrap()
-            .to_string();
+            let message = Planner::with_run(REGISTRIES, "testrun0")
+                .compile(case, os)
+                .err()
+                .unwrap()
+                .to_string();
             assert!(
                 message.contains(
                     "on subject OS 'windows', participant 'subject' of type 'server' \
@@ -763,14 +764,7 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
                 .load_content("type: fixture", "alpha", Path::new("config.yaml"))
                 .unwrap()
                 .remove(0);
-            let plan = CasePlan::compile(
-                case,
-                os,
-                &REGISTRIES,
-                &mut PortRegistry::new(),
-                &mut ScopeRegistry::with_run("testrun0"),
-            )
-            .unwrap();
+            let plan = Planner::with_run(REGISTRIES, "testrun0").compile(case, os).unwrap();
             if os == Os::Linux {
                 assert!(plan.is_none());
             } else {
@@ -790,16 +784,11 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
             .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
             .unwrap()
             .remove(0);
-        let message = CasePlan::compile(
-            case,
-            Os::Linux,
-            &REGISTRIES,
-            &mut PortRegistry::new(),
-            &mut ScopeRegistry::with_run("testrun0"),
-        )
-        .err()
-        .unwrap()
-        .to_string();
+        let message = Planner::with_run(REGISTRIES, "testrun0")
+            .compile(case, Os::Linux)
+            .err()
+            .unwrap()
+            .to_string();
         assert_eq!(
             message,
             "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', \

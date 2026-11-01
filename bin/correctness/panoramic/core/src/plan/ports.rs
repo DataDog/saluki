@@ -18,14 +18,14 @@ const RUNNER_HOST_PORTS: RangeInclusive<u16> = 20000..=29999;
 ///
 /// Ports come from `20000..=29999`, below every default ephemeral range (Linux 32768+,
 /// macOS and Windows 49152+), so the OS doesn't hand these ports to outgoing connections.
-pub struct PortRegistry {
+pub(crate) struct PortRegistry {
     available: RangeInclusive<u16>,
     capacity: usize,
 }
 
 impl PortRegistry {
     /// Creates an empty allocation registry over `20000..=29999`.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::over(RUNNER_HOST_PORTS)
     }
 
@@ -41,12 +41,6 @@ impl PortRegistry {
             available: range,
             capacity,
         }
-    }
-}
-
-impl Default for PortRegistry {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -145,7 +139,10 @@ mod tests {
     use crate::{
         case::fixtures::minimal_procedure,
         layout::Os,
-        plan::fixtures::{assigned_server_case, compile, compile_with_ports, CONNECTION_CASE},
+        plan::{
+            fixtures::{assigned_server_case, compile, compile_with, planner, CONNECTION_CASE},
+            Planner,
+        },
     };
 
     #[test]
@@ -173,7 +170,7 @@ mod tests {
 
     #[test]
     fn the_registry_allocates_below_every_default_ephemeral_range() {
-        let registry = PortRegistry::default();
+        let registry = PortRegistry::new();
         for start in [32768, 49152] {
             assert!(*registry.available.start() < start);
             assert!(*registry.available.end() < start);
@@ -200,8 +197,11 @@ mod tests {
             let yaml =
                 assigned_server_case(config).replace("type: assigned-server", &format!("type: {participant_type}"));
             // A custom registry must not change the reserved runner-host range.
-            let mut ports = PortRegistry::over(21000..=21010);
-            assert_eq!(compile_with_ports(&yaml, Os::MacOs, &mut ports).err().unwrap().to_string(), format!(
+            let mut planner = Planner {
+                ports: PortRegistry::over(21000..=21010),
+                ..planner()
+            };
+            assert_eq!(compile_with(&mut planner, &yaml, Os::MacOs).err().unwrap().to_string(), format!(
                 "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'server' of type '{participant_type}' as host-process-group on macos serves endpoint '{endpoint}' on runner-host tcp port {port}, inside 20000-29999, where panoramic assigns ports; use a port outside that range"));
             for boundary in [19999, 30000] {
                 let plan = compile(&yaml.replace(&port.to_string(), &boundary.to_string()), Os::MacOs)
@@ -234,14 +234,14 @@ mod tests {
             "type: server}",
             "type: server, config: {env: {PORT: '20000'}, endpoints: {extra: {port: 25000}}}}",
         );
-        let mut ports = PortRegistry::new();
-        let plan = compile_with_ports(&yaml, Os::Linux, &mut ports).unwrap().unwrap();
+        let mut planner = planner();
+        let plan = compile_with(&mut planner, &yaml, Os::Linux).unwrap().unwrap();
         assert_eq!(
             plan.effective_config("client").unwrap().env["UPSTREAM_URL"],
             "http://server:20000"
         );
         assert_eq!(plan.effective_config("server").unwrap().endpoints["extra"].port, 25000);
-        assert_eq!(ports.allocate(), Ok(20000));
+        assert_eq!(planner.ports.allocate(), Ok(20000));
     }
 
     #[test]
@@ -272,8 +272,8 @@ mod tests {
             .replace("[linux]", "[macos]")
             .replace("type: server}", "type: server, config: {env: {PORT: '9000'}}}")
             .replace("upstream: server.api", "upstream: server.api, side: server.metrics");
-        let mut ports = PortRegistry::new();
-        let plan = compile_with_ports(&yaml, Os::MacOs, &mut ports).unwrap().unwrap();
+        let mut planner = planner();
+        let plan = compile_with(&mut planner, &yaml, Os::MacOs).unwrap().unwrap();
         assert_eq!(
             plan.effective_config("client").unwrap().env,
             BTreeMap::from([
@@ -282,7 +282,7 @@ mod tests {
                 ("SIDE_PORT".into(), "9000".into()),
             ])
         );
-        assert_eq!(ports.allocate(), Ok(20000));
+        assert_eq!(planner.ports.allocate(), Ok(20000));
     }
 
     #[test]

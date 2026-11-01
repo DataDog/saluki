@@ -245,18 +245,18 @@ mod tests {
         },
         plan::{
             fixtures::{
-                assigned_server_case, compile, compile_files, compile_with_ports, CONFIG_LOADER, CONFIG_REGISTRIES,
+                assigned_server_case, compile, compile_files, compile_with, planner, CONFIG_LOADER, CONFIG_REGISTRIES,
                 CONNECTION_CASE,
             },
-            CasePlan, ScopeRegistry,
+            Planner,
         },
     };
 
     #[test]
     fn a_host_process_groups_assigned_port_is_delivered_into_its_type_defaults_and_rederived() {
-        let mut ports = PortRegistry::new();
+        let mut planner = planner();
         for port in [20000, 20002] {
-            let plan = compile_with_ports(&assigned_server_case("{}"), Os::MacOs, &mut ports)
+            let plan = compile_with(&mut planner, &assigned_server_case("{}"), Os::MacOs)
                 .unwrap()
                 .unwrap();
             assert_eq!(
@@ -273,16 +273,16 @@ mod tests {
             );
             assert!(plan.runner_host_ports.is_empty());
         }
-        assert_eq!(ports.allocate(), Ok(20004));
+        assert_eq!(planner.ports.allocate(), Ok(20004));
     }
 
     #[test]
     fn a_case_env_key_pins_an_assigned_port_and_draws_none() {
-        let mut ports = PortRegistry::new();
-        let plan = compile_with_ports(
+        let mut planner = planner();
+        let plan = compile_with(
+            &mut planner,
             &assigned_server_case("{env: {API_PORT: '8081', METRICS_PORT: '9001'}}"),
             Os::MacOs,
-            &mut ports,
         )
         .unwrap()
         .unwrap();
@@ -298,7 +298,7 @@ mod tests {
             plan.effective_config("client").unwrap().env["UPSTREAM_URL"],
             "http://127.0.0.1:8081"
         );
-        assert_eq!(ports.allocate(), Ok(20000));
+        assert_eq!(planner.ports.allocate(), Ok(20000));
     }
 
     #[test]
@@ -329,8 +329,8 @@ participants:
             minimal_procedure!(),
             "\n"
         );
-        let mut ports = PortRegistry::new();
-        let plan = compile_with_ports(yaml, Os::MacOs, &mut ports).unwrap().unwrap();
+        let mut planner = planner();
+        let plan = compile_with(&mut planner, yaml, Os::MacOs).unwrap().unwrap();
         for (name, api, metrics) in [("a", "20000", "20001"), ("z", "20002", "20003")] {
             let config = plan.effective_config(name).unwrap();
             assert_eq!(config.env["API_PORT"], api);
@@ -347,16 +347,16 @@ participants:
                 (("container".into(), "metrics".into()), 20005),
             ])
         );
-        assert_eq!(ports.allocate(), Ok(20006));
+        assert_eq!(planner.ports.allocate(), Ok(20006));
     }
 
     #[test]
     fn an_assigned_port_outside_a_host_process_group_fails_naming_the_endpoint() {
         let yaml = assigned_server_case("{params: {mode: assign-anywhere}}").replace("[macos]", "[linux]");
-        let mut ports = PortRegistry::new();
-        assert_eq!(compile_with_ports(&yaml, Os::Linux, &mut ports).err().unwrap().to_string(),
+        let mut planner = planner();
+        assert_eq!(compile_with(&mut planner, &yaml, Os::Linux).err().unwrap().to_string(),
             "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'server' of type 'assigned-server' as linux-container on linux serves endpoint 'api' with an assigned port; only host process groups get assigned ports");
-        assert_eq!(ports.allocate(), Ok(20000));
+        assert_eq!(planner.ports.allocate(), Ok(20000));
     }
 
     #[test]
@@ -443,18 +443,21 @@ participants:
                 minimal_procedure!(),
                 concat!("  other: {type: server}\n", minimal_procedure!()),
             );
-        let mut ports = PortRegistry::new();
-        let plan = compile_with_ports(&yaml, Os::MacOs, &mut ports).unwrap().unwrap();
+        let mut planner = planner();
+        let plan = compile_with(&mut planner, &yaml, Os::MacOs).unwrap().unwrap();
         let config = plan.effective_config("server").unwrap();
         assert_eq!(config.env["API_PORT"], "20000");
         assert_eq!(config.env["UPSTREAM_URL"], "http://127.0.0.1:8080");
-        assert_eq!(ports.allocate(), Ok(20002));
+        assert_eq!(planner.ports.allocate(), Ok(20002));
     }
 
     #[test]
     fn assigned_port_exhaustion_names_the_endpoint() {
-        let mut ports = PortRegistry::over(21000..=21000);
-        assert_eq!(compile_with_ports(&assigned_server_case("{}"), Os::MacOs, &mut ports).err().unwrap().to_string(),
+        let mut planner = Planner {
+            ports: PortRegistry::over(21000..=21000),
+            ..planner()
+        };
+        assert_eq!(compile_with(&mut planner, &assigned_server_case("{}"), Os::MacOs).err().unwrap().to_string(),
             "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'server' of type 'assigned-server' as host-process-group on macos cannot assign a port to endpoint 'metrics': all 1 runner-host ports are allocated");
     }
 
@@ -462,8 +465,8 @@ participants:
     fn only_the_selected_subject_os_draws_assigned_ports_from_the_run_registry() {
         let yaml = assigned_server_case("{}").replace("[macos]", "[linux, macos]");
         for (selected, next) in [(Os::Linux, 20000), (Os::MacOs, 20002), (Os::Windows, 20000)] {
-            let mut ports = PortRegistry::new();
-            let plan = compile_with_ports(&yaml, selected, &mut ports).unwrap();
+            let mut planner = planner();
+            let plan = compile_with(&mut planner, &yaml, selected).unwrap();
             if selected == Os::MacOs {
                 assert_eq!(
                     plan.unwrap().effective_config("server").unwrap().env["API_PORT"],
@@ -479,7 +482,7 @@ participants:
             } else {
                 assert!(plan.is_none());
             }
-            assert_eq!(ports.allocate(), Ok(next));
+            assert_eq!(planner.ports.allocate(), Ok(next));
         }
         let yaml = yaml
             .replace(
@@ -491,10 +494,10 @@ participants:
                 "type: every-kind-client, realization: {kind: host-process-group}",
             );
         let yaml = yaml.replace("upstream: server.api", "target: server.api");
-        let mut ports = PortRegistry::new();
-        let plan = compile_with_ports(&yaml, Os::Linux, &mut ports).unwrap().unwrap();
+        let mut planner = planner();
+        let plan = compile_with(&mut planner, &yaml, Os::Linux).unwrap().unwrap();
         assert_eq!(plan.effective_config("server").unwrap().env["API_PORT"], "20000");
-        assert_eq!(ports.allocate(), Ok(20002));
+        assert_eq!(planner.ports.allocate(), Ok(20002));
     }
 
     #[test]
@@ -551,15 +554,10 @@ participants:
             .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
             .unwrap()
             .remove(0);
-        let plan = CasePlan::compile(
-            case,
-            Os::Linux,
-            &registries,
-            &mut PortRegistry::new(),
-            &mut ScopeRegistry::with_run("testrun0"),
-        )
-        .unwrap()
-        .unwrap();
+        let plan = Planner::with_run(registries, "testrun0")
+            .compile(case, Os::Linux)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             *hooks.0.lock().unwrap(),
             ["validate", "defaults", "endpoints", "consumes"]
@@ -768,15 +766,10 @@ participants:
         std::fs::write(source.parent().unwrap().join("windows.yaml"), "port: 7").unwrap();
         for os in [Os::Linux, Os::Windows] {
             let case = CONFIG_LOADER.load_file(&source).unwrap().remove(0);
-            let plan = CasePlan::compile(
-                case,
-                os,
-                &CONFIG_REGISTRIES,
-                &mut PortRegistry::new(),
-                &mut ScopeRegistry::with_run("testrun0"),
-            )
-            .unwrap()
-            .unwrap();
+            let plan = Planner::with_run(CONFIG_REGISTRIES, "testrun0")
+                .compile(case, os)
+                .unwrap()
+                .unwrap();
             let effective = plan.effective_config("subject").unwrap();
             assert_eq!(effective.env["LEVEL"], "info");
             if os == Os::Windows {
@@ -855,7 +848,7 @@ participants:
         ] {
             let yaml = format!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n{participants}\n{}\n", minimal_procedure!());
             let case = loader.load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml")).unwrap().remove(0);
-            let message = CasePlan::compile(case, Os::Linux, &registries, &mut PortRegistry::new(), &mut ScopeRegistry::with_run("testrun0")).err().unwrap().to_string();
+            let message = Planner::with_run(registries, "testrun0").compile(case, Os::Linux).err().unwrap().to_string();
             assert_eq!(message, format!("case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', {expected}"));
         }
     }

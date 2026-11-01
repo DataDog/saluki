@@ -290,7 +290,7 @@ mod tests {
         participant::{EffectiveConfig, FactDeclaration},
         plan::{
             fixtures::{compile, compile_files, FILE_CONFIG},
-            CasePlan,
+            Planner,
         },
     };
 
@@ -373,15 +373,10 @@ mod tests {
             .load_content(yaml, "alpha", Path::new("alpha/config.yaml"))
             .unwrap()
             .remove(0);
-        let plan = CasePlan::compile(
-            case,
-            Os::Linux,
-            &registries,
-            &mut crate::plan::PortRegistry::new(),
-            &mut crate::plan::ScopeRegistry::with_run("testrun0"),
-        )
-        .unwrap()
-        .unwrap();
+        let plan = Planner::with_run(registries, "testrun0")
+            .compile(case, Os::Linux)
+            .unwrap()
+            .unwrap();
         let config = plan.effective_config("subject").unwrap();
         assert_eq!(
             config.env,

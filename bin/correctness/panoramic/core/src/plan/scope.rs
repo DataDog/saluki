@@ -5,14 +5,14 @@ use crate::{layout::Os, ledger::random_id};
 /// Allocates case isolation scopes under one run identity.
 ///
 /// Each run has up to 10000 scopes. Fixed-width paths keep Unix socket path budgets independent of allocation order.
-pub struct ScopeRegistry {
+pub(crate) struct ScopeRegistry {
     run: String,
     next: u16,
 }
 
 impl ScopeRegistry {
     /// Creates a registry with a random eight-character run identity.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             run: random_id(),
             next: 0,
@@ -48,12 +48,6 @@ impl ScopeRegistry {
             run: self.run.clone(),
             index: 0,
         }
-    }
-}
-
-impl Default for ScopeRegistry {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -128,8 +122,8 @@ mod tests {
         layout::{Realization, RealizationKind},
         participant::{FactDeclaration, ParticipantType, SHARED_DIR_FACT},
         plan::{
-            fixtures::{compile, compile_files, compile_with_scopes, socket_case, EveryKindServer, FILE_CONFIG},
-            CasePlan, PortRegistry,
+            fixtures::{compile, compile_files, compile_with, planner, socket_case, EveryKindServer, FILE_CONFIG},
+            Planner,
         },
         step::Need,
     };
@@ -170,15 +164,14 @@ mod tests {
 
     #[test]
     fn a_new_registry_uses_an_eight_character_lowercase_run_id() {
-        for mut scopes in [ScopeRegistry::new(), ScopeRegistry::default()] {
-            let scope = scopes.allocate().unwrap();
-            assert_eq!(scope.run.len(), 8);
-            assert!(scope
-                .run
-                .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit()));
-            assert_eq!(scope.index, 0);
-        }
+        let mut scopes = ScopeRegistry::new();
+        let scope = scopes.allocate().unwrap();
+        assert_eq!(scope.run.len(), 8);
+        assert!(scope
+            .run
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit()));
+        assert_eq!(scope.index, 0);
     }
 
     #[test]
@@ -334,16 +327,11 @@ mod tests {
                 .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
                 .unwrap()
                 .remove(0);
-            let error = CasePlan::compile(
-                case,
-                os,
-                &registries,
-                &mut PortRegistry::new(),
-                &mut ScopeRegistry::with_run("testrun0"),
-            )
-            .err()
-            .unwrap()
-            .to_string();
+            let error = Planner::with_run(registries, "testrun0")
+                .compile(case, os)
+                .err()
+                .unwrap()
+                .to_string();
             assert_eq!(error, format!("case 'alpha' in cases/alpha/config.yaml: on subject OS '{}', participant 'z' of type 'reserved' as {kind} on {} declares fact 'shared_dir', which panoramic provides for every participant", os.name(), os.name()));
         }
     }
@@ -523,11 +511,11 @@ mod tests {
                 yaml.clone()
             };
             for os in [Os::Linux, Os::MacOs, Os::Windows] {
-                let mut scopes = ScopeRegistry::with_run("testrun0");
+                let mut planner = planner();
                 for _ in 0..3 {
-                    scopes.allocate().unwrap();
+                    planner.scopes.allocate().unwrap();
                 }
-                let message = compile_with_scopes(&yaml, os, &mut scopes).err().unwrap().to_string();
+                let message = compile_with(&mut planner, &yaml, os).err().unwrap().to_string();
                 let index = if os == Os::Windows { 0 } else { 3 };
                 assert!(message.contains("on subject OS 'macos'"), "{message}");
                 assert!(
@@ -536,7 +524,10 @@ mod tests {
                     )),
                     "{message}"
                 );
-                assert_eq!(scopes.allocate().unwrap().index, if os == Os::Windows { 3 } else { 4 });
+                assert_eq!(
+                    planner.scopes.allocate().unwrap().index,
+                    if os == Os::Windows { 3 } else { 4 }
+                );
             }
         }
     }

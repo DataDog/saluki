@@ -566,7 +566,7 @@ fn build_revision() -> String {
 
 #[cfg(test)]
 mod tests {
-    use panoramic_core::layout::Os;
+    use panoramic_core::{layout::Os, plan::Planner};
 
     use super::*;
     use crate::config::{
@@ -1072,15 +1072,7 @@ comparison: {image: comp}
             .load_content(&yaml, "participant", std::path::Path::new("config.yaml"))
             .unwrap()
             .remove(0);
-        let plan = LoadedPlan::compile(
-            case,
-            Os::MacOs,
-            &REGISTRIES,
-            &mut panoramic_core::plan::PortRegistry::new(),
-            &mut panoramic_core::plan::ScopeRegistry::new(),
-        )
-        .unwrap()
-        .unwrap();
+        let plan = Planner::new(REGISTRIES).compile(case, Os::MacOs).unwrap().unwrap();
         assert_eq!(
             listing_text(&plan),
             "  participant\n    Timeout: 1s\n    \
@@ -1104,15 +1096,7 @@ comparison: {image: comp}
                 .load_content(&yaml, "typed", std::path::Path::new("config.yaml"))
                 .unwrap()
                 .remove(0);
-            let plan = LoadedPlan::compile(
-                case,
-                Os::Linux,
-                &REGISTRIES,
-                &mut panoramic_core::plan::PortRegistry::new(),
-                &mut panoramic_core::plan::ScopeRegistry::new(),
-            )
-            .unwrap()
-            .unwrap();
+            let plan = Planner::new(REGISTRIES).compile(case, Os::Linux).unwrap().unwrap();
             assert_eq!(listing_text(&plan), expected);
         }
     }

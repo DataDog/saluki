@@ -255,7 +255,10 @@ impl RunnableCase for LoadedPlan {
 
 #[cfg(test)]
 mod tests {
-    use panoramic_core::case::{CaseLoader, Registries};
+    use panoramic_core::{
+        case::{CaseLoader, Registries},
+        plan::Planner,
+    };
 
     use super::*;
     use crate::config::{
@@ -361,15 +364,10 @@ mod tests {
                 .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
                 .unwrap();
             assert_eq!(cases.len(), 1);
-            let plan = CasePlan::compile(
-                cases.into_iter().next().unwrap(),
-                Os::Linux,
-                &crate::REGISTRIES,
-                &mut panoramic_core::plan::PortRegistry::new(),
-                &mut panoramic_core::plan::ScopeRegistry::new(),
-            )
-            .unwrap()
-            .unwrap();
+            let plan = Planner::new(crate::REGISTRIES)
+                .compile(cases.into_iter().next().unwrap(), Os::Linux)
+                .unwrap()
+                .unwrap();
             assert_eq!(
                 plan.integration_config().unwrap_err().to_string(),
                 "Cannot run case 'alpha' from alpha/config.yaml: \
@@ -609,15 +607,10 @@ mod tests {
         let plans: Vec<_> = cases
             .into_iter()
             .map(|case| {
-                CasePlan::compile(
-                    case,
-                    Os::Linux,
-                    &crate::REGISTRIES,
-                    &mut panoramic_core::plan::PortRegistry::new(),
-                    &mut panoramic_core::plan::ScopeRegistry::new(),
-                )
-                .unwrap()
-                .unwrap()
+                Planner::new(crate::REGISTRIES)
+                    .compile(case, Os::Linux)
+                    .unwrap()
+                    .unwrap()
             })
             .collect();
         let overridden = build_runners(&plans, Os::Linux, &entries).unwrap();
