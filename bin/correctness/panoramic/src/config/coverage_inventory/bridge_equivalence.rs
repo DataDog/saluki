@@ -12,12 +12,17 @@ use std::{
     path::Path,
 };
 
-use panoramic_core::{layout::Realization, participant::ParticipantType, plan::Planner};
+use panoramic_core::{layout::Realization, participant::ParticipantType};
 use panoramic_participants::AgentAdp;
 use serde_json::{json, Value};
 
 use super::{create_case_dirs, read_text, repository_root, Inventory, INTEGRATION, JSON_PATH, OLD, PARTICIPANTS};
-use crate::config::{os_for_runtime, tests::write_case, typed_case::RunnableCase, ContainerConfig, IntakeConfig};
+use crate::config::{
+    os_for_runtime,
+    tests::{planner, write_case},
+    typed_case::RunnableCase,
+    ContainerConfig, IntakeConfig,
+};
 
 const LOGGING_CASES: [&str; 7] = [
     "adp-logging-default-path",
@@ -388,7 +393,7 @@ fn only_the_logging_cases_and_the_log_parsed_exit_cases_fit_the_integration_runn
                     .load_content(&twin, name, Path::new("config.yaml"))
                     .unwrap()
                     .remove(0);
-                let plan = Planner::new(crate::REGISTRIES).compile(loaded, *os).unwrap().unwrap();
+                let plan = planner().compile(loaded, *os).unwrap().unwrap();
                 plan.integration_config()
                     .unwrap_or_else(|error| panic!("{name} on {os:?}: {error:#}"));
             }

@@ -324,14 +324,13 @@ mod tests {
     use panoramic_core::events::create_event_channel;
     use panoramic_core::layout::Os;
     use panoramic_core::machine_output::RUN_REPORT_FILE_NAME;
-    use panoramic_core::plan::Planner;
     use panoramic_core::record::{AssertionResult, AssertionStatus};
     use panoramic_core::result::{ErrorKind, TestResult};
     use serde_json::{json, Value};
     use tokio::sync::Notify;
 
     use super::*;
-    use crate::config::BuiltCase;
+    use crate::config::{tests::planner, BuiltCase};
     use crate::runner::test_support::{test_runner_settings, Behavior, ScriptedTest};
     use crate::runner::{RunArgs, Runner};
     use crate::text_output::OutputFormat;
@@ -369,10 +368,7 @@ mod tests {
             for test in tests {
                 runner
                     .register(BuiltCase {
-                        plan: Planner::new(crate::REGISTRIES)
-                            .compile(test.case(), Os::Linux)
-                            .unwrap()
-                            .unwrap(),
+                        plan: planner().compile(test.case(), Os::Linux).unwrap().unwrap(),
                         runner: Box::new(test),
                     })
                     .expect("scripted test names are unique");

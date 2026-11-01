@@ -1459,7 +1459,7 @@ mod tests {
 
     #[tokio::test]
     async fn only_cases_that_need_a_kubernetes_pod_wait_for_the_kind_cluster() {
-        use panoramic_core::{layout::Os, plan::Planner};
+        use panoramic_core::layout::Os;
 
         struct ChecksContext {
             scripted: ScriptedTest,
@@ -1502,7 +1502,7 @@ mod tests {
             ] {
                 runner
                     .register(BuiltCase {
-                        plan: Planner::new(crate::REGISTRIES)
+                        plan: crate::config::tests::planner()
                             .compile(case, Os::Linux)
                             .unwrap()
                             .unwrap(),

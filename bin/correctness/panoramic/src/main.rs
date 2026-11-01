@@ -7,10 +7,12 @@ use std::{borrow::Borrow, collections::BTreeMap, fmt::Write as _};
 use std::{io::IsTerminal, process::ExitCode};
 
 use clap::Parser as _;
+use panoramic_core::artifact::ArtifactManifest;
 use panoramic_core::case::{CaseLoader, Registries};
 use panoramic_core::events::create_event_channel;
 use panoramic_core::interrupts::Interrupts;
 use panoramic_core::machine_output::{revision, RunReport};
+use panoramic_core::plan::Planner;
 use saluki_common::logging::{filter_from_env, parse_filter_directives};
 use tokio::sync::{watch, Mutex};
 use tokio_util::sync::CancellationToken;
@@ -194,8 +196,19 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    let mut planner = match Planner::new(crate::REGISTRIES, ArtifactManifest::default()) {
+        Ok(planner) => planner,
+        Err(e) => {
+            if use_tui {
+                eprintln!("Invalid artifact roles: {e:#}");
+            } else {
+                error!("Invalid artifact roles: {e:#}");
+            }
+            return ExitCode::from(EXIT_HARNESS_ERROR);
+        }
+    };
     let integration_runtime = runtime_for_os(subject_os);
-    let mut built = match discover_in_scope(&cmd.test_dirs, subject_os)
+    let mut built = match discover_in_scope(&mut planner, &cmd.test_dirs, subject_os)
         .and_then(|plans| build_runners(plans, subject_os, &cmd.image_overrides))
     {
         Ok(built) => built,
@@ -466,12 +479,27 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
         }
     };
 
+    let manifest = match cmd.artifacts.as_deref().map(ArtifactManifest::load).transpose() {
+        Ok(manifest) => manifest.unwrap_or_default(),
+        Err(e) => {
+            error!("{e:#}");
+            return ExitCode::from(EXIT_HARNESS_ERROR);
+        }
+    };
+    let mut planner = match Planner::new(crate::REGISTRIES, manifest) {
+        Ok(planner) => planner,
+        Err(e) => {
+            error!("Invalid artifact roles: {e:#}");
+            return ExitCode::from(EXIT_HARNESS_ERROR);
+        }
+    };
+
     if !cmd.json {
         let dirs_str: Vec<_> = cmd.test_dirs.iter().map(|d| d.display().to_string()).collect();
         info!("Discovering test cases from: {}...", dirs_str.join(", "));
     }
 
-    let plans = match discover_in_scope(&cmd.test_dirs, subject_os) {
+    let plans = match discover_in_scope(&mut planner, &cmd.test_dirs, subject_os) {
         Ok(plans) => plans,
         Err(e) => {
             error!("Failed to discover tests: {:#}", e);
@@ -510,7 +538,7 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Formats one case's entry in the text listing, with its layout and artifact roles if it has them.
+/// Formats one case's text listing, including its layout and resolved artifact references with their sources.
 fn listing_text(plan: &LoadedPlan) -> String {
     let case = plan.case();
     let mut text = format!("  {}\n", case.name());
@@ -524,22 +552,16 @@ fn listing_text(plan: &LoadedPlan) -> String {
             .map(|(name, realization)| format!("{name} on {} as {}", realization.os.name(), realization.kind.name()))
             .collect();
         writeln!(text, "    Layout: {}", participants.join("; ")).unwrap();
-        let roles: Vec<_> = plan
-            .artifact_roles()
-            .expect("participant layouts have artifact roles")
-            .iter()
-            .map(|role| role.name)
-            .collect();
-        writeln!(
-            text,
-            "    Artifact roles: {}",
-            if roles.is_empty() {
-                "none".to_string()
-            } else {
-                roles.join(", ")
+        let artifacts = plan.artifacts().expect("participant layouts have artifact bindings");
+        if artifacts.is_empty() {
+            writeln!(text, "    Artifact roles: none").unwrap();
+        } else {
+            writeln!(text, "    Artifact roles:").unwrap();
+            for binding in artifacts {
+                let source = binding.source.name();
+                writeln!(text, "      {} = {} ({source})", binding.role.name, binding.reference).unwrap();
             }
-        )
-        .unwrap();
+        }
         for (label, order) in [("Create", plan.create_order()), ("Start", plan.start_order())] {
             let levels = order
                 .expect("participant layouts have dependency orders")
@@ -582,11 +604,11 @@ fn build_revision() -> String {
 
 #[cfg(test)]
 mod tests {
-    use panoramic_core::{layout::Os, plan::Planner};
+    use panoramic_core::layout::Os;
 
     use super::*;
     use crate::config::{
-        tests::{build_case_runners, write_case, CORRECTNESS_FIELDS, PARTICIPANT_FIELDS},
+        tests::{build_case_runners, planner, write_case, CORRECTNESS_FIELDS, PARTICIPANT_FIELDS},
         DEFAULT_LINUX_TARGET_IMAGE, DEFAULT_WINDOWS_TARGET_IMAGE,
     };
 
@@ -735,7 +757,7 @@ mod tests {
                     .replace("comp:file", "comp:pod")
             ),
         );
-        let plans = discover_in_scope(&[dir.path().to_path_buf()], Os::Linux).unwrap();
+        let plans = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::Linux).unwrap();
         let built: Vec<_> = build_runners(plans, Os::Linux, &[])
             .unwrap()
             .into_iter()
@@ -836,7 +858,7 @@ comparison: {image: comp}
             "type: integration\nname: good\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n",
         );
         let bad = write_case(dir.path(), "bad", "type: bogus\n");
-        let error = discover_in_scope(&[dir.path().to_path_buf()], Os::Linux)
+        let error = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::Linux)
             .err()
             .expect("the malformed case must fail discovery");
         assert!(
@@ -902,7 +924,7 @@ comparison: {image: comp}
             "good",
             "type: integration\nname: good\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n",
         );
-        let cases = discover_in_scope(&[dir.path().to_path_buf()], Os::Linux).unwrap();
+        let cases = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::Linux).unwrap();
         assert_eq!(
             cases.iter().map(|plan| plan.case().name()).collect::<Vec<_>>(),
             ["good", "participant"]
@@ -971,7 +993,7 @@ comparison: {image: comp}
             "matrix",
             &format!("type: correctness_matrix\n{CORRECTNESS_FIELDS}variants: [{{name: second}}, {{name: first}}]\n"),
         );
-        let cases = discover_in_scope(&[dir.path().to_path_buf()], Os::Linux).unwrap();
+        let cases = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::Linux).unwrap();
         let names: Vec<_> = cases.iter().map(|plan| plan.case().name()).collect();
         let (selected, unmatched) = resolve_selection("matrix/first, missing, integration", &names);
         assert_eq!(selected, ["matrix/first", "integration"]);
@@ -1036,7 +1058,7 @@ comparison: {image: comp}
         );
         let logs = dir.path().join("logs");
         for os in [Os::Linux, Os::MacOs, Os::Windows] {
-            let message = discover_in_scope(&[dir.path().to_path_buf()], os)
+            let message = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], os)
                 .err()
                 .unwrap()
                 .to_string();
@@ -1078,8 +1100,83 @@ comparison: {image: comp}
         }
     }
 
+    #[tokio::test]
+    async fn list_and_list_json_validate_manifests_before_discovery_even_without_cases() {
+        use tracing::instrument::WithSubscriber as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cases = dir.path().join("cases");
+        std::fs::create_dir(&cases).unwrap();
+        for populated in [false, true] {
+            if populated {
+                write_case(&cases, "participant", PARTICIPANT_FIELDS);
+            }
+            for json in [false, true] {
+                for (file, content, expected, problem) in [
+                    (None, None, 0, ""),
+                    (Some("missing.toml"), None, 2, "failed to read artifact manifest"),
+                    (Some("malformed.toml"), Some("not toml"), 2, "TOML parse error"),
+                    (
+                        Some("unknown.toml"),
+                        Some("schema = 1\n[roles]\nbogus = 'x'"),
+                        2,
+                        "no participant type or backend declares role 'bogus'",
+                    ),
+                    (
+                        Some("valid.toml"),
+                        Some("schema = 1\n[roles]\nfixup-image = 'registry.example/alpine:3'"),
+                        0,
+                        "",
+                    ),
+                ] {
+                    let manifest_path = file.map(|file| dir.path().join(file));
+                    if let Some(content) = content {
+                        std::fs::write(manifest_path.as_ref().unwrap(), content).unwrap();
+                    }
+                    let mut args = vec![
+                        "panoramic",
+                        "list",
+                        "-d",
+                        cases.to_str().unwrap(),
+                        "--subject-os",
+                        "linux",
+                    ];
+                    if json {
+                        args.push("--json");
+                    }
+                    if let Some(path) = &manifest_path {
+                        args.extend(["--artifacts", path.to_str().unwrap()]);
+                    }
+                    let Command::List(cmd) = Cli::try_parse_from(args).unwrap().command else {
+                        panic!("expected list");
+                    };
+                    let output = tempfile::NamedTempFile::new().unwrap();
+                    let subscriber = tracing_subscriber::fmt()
+                        .with_ansi(false)
+                        .without_time()
+                        .with_writer(std::sync::Mutex::new(output.reopen().unwrap()))
+                        .finish();
+                    assert_eq!(
+                        list_tests(cmd).with_subscriber(subscriber).await,
+                        ExitCode::from(expected),
+                        "manifest {file:?}, json {json}, populated {populated}"
+                    );
+                    if expected == 2 {
+                        let diagnostic = std::fs::read_to_string(output.path()).unwrap();
+                        assert!(diagnostic.contains(problem), "{diagnostic}");
+                        assert!(
+                            diagnostic.contains(manifest_path.as_ref().unwrap().to_str().unwrap()),
+                            "{diagnostic}"
+                        );
+                        assert!(!diagnostic.contains("Discovering test cases"), "{diagnostic}");
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
-    fn listing_text_prints_each_participant_layout_and_artifact_roles_and_nothing_for_typed_cases() {
+    fn listing_text_prints_each_participant_layout_and_resolved_artifact_bindings_and_nothing_for_typed_cases() {
         let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[macos]").replace(
             "  adp:",
             "  zebra: {type: agent-adp}\n  alpha: {type: agent-adp, os: linux}\n  adp:",
@@ -1088,13 +1185,26 @@ comparison: {image: comp}
             .load_content(&yaml, "participant", std::path::Path::new("config.yaml"))
             .unwrap()
             .remove(0);
-        let plan = Planner::new(REGISTRIES).compile(case, Os::MacOs).unwrap().unwrap();
+        let manifest = ArtifactManifest::parse(
+            "schema = 1\n[roles]\nfixup-image = 'registry.example/alpine:3'",
+            std::path::Path::new("artifacts.toml"),
+        )
+        .unwrap();
+        let plan = Planner::new(REGISTRIES, manifest)
+            .unwrap()
+            .compile(case, Os::MacOs)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             listing_text(&plan),
             "  participant\n    Timeout: 1s\n    \
              Layout: adp on macos as host-process-group; alpha on linux as linux-container; \
              zebra on macos as host-process-group\n    \
-             Artifact roles: adp-host-binary, agent-adp-linux-image, agent-host-install, fixup-image\n    \
+             Artifact roles:\n      \
+             adp-host-binary = target/release/agent-data-plane (local default)\n      \
+             agent-adp-linux-image = saluki-images/datadog-agent:testing-devel (local default)\n      \
+             agent-host-install = /tmp/saluki-dda/datadog-agent (local default)\n      \
+             fixup-image = registry.example/alpine:3 (manifest)\n    \
              Create order: adp, alpha, zebra\n    \
              Start order: adp, alpha, zebra\n\n"
         );
@@ -1114,7 +1224,7 @@ comparison: {image: comp}
                 .load_content(&yaml, "typed", std::path::Path::new("config.yaml"))
                 .unwrap()
                 .remove(0);
-            let plan = Planner::new(REGISTRIES).compile(case, Os::Linux).unwrap().unwrap();
+            let plan = planner().compile(case, Os::Linux).unwrap().unwrap();
             assert_eq!(listing_text(&plan), expected);
         }
     }

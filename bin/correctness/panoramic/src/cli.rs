@@ -323,6 +323,12 @@ pub struct ListCommand {
     #[command(flatten)]
     pub subject_os: SubjectOsArgs,
 
+    /// Artifact manifest (TOML) binding artifact roles to image references and paths.
+    /// Roles it omits use their local defaults; a role no participant type or backend
+    /// declares is an error. The text listing shows the reference each role resolves to
+    #[arg(long, value_name = "FILE", verbatim_doc_comment)]
+    pub artifacts: Option<PathBuf>,
+
     /// Output the discovered tests as json along with their image dependencies. A
     /// `ci` script depends on this for dynamic pipeline creation
     #[arg(long, verbatim_doc_comment)]
@@ -792,6 +798,26 @@ mod tests {
         // `off` is a level like any other: the scoped crates go quiet, they don't fall back to a
         // default.
         assert!(LogLevel::Off.filter_directives().contains("panoramic=off"));
+    }
+
+    #[test]
+    fn only_list_accepts_an_artifacts_file_without_an_environment_fallback() {
+        let Command::List(cmd) = Cli::try_parse_from(["panoramic", "list", "--artifacts", "artifacts.toml"])
+            .unwrap()
+            .command
+        else {
+            panic!("expected list");
+        };
+        assert_eq!(cmd.artifacts, Some(PathBuf::from("artifacts.toml")));
+        let command = Cli::command();
+        let argument = command
+            .find_subcommand("list")
+            .unwrap()
+            .get_arguments()
+            .find(|argument| argument.get_id() == "artifacts")
+            .unwrap();
+        assert_eq!(argument.get_env(), None);
+        assert!(Cli::try_parse_from(["panoramic", "run", "--artifacts", "artifacts.toml"]).is_err());
     }
 
     #[test]

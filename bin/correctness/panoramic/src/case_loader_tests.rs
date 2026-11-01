@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::config::{
     discover_in_scope,
-    tests::{minimal_procedure, write_case, PARTICIPANT_FIELDS},
+    tests::{minimal_procedure, planner, write_case, PARTICIPANT_FIELDS},
 };
 
 #[test]
@@ -21,7 +21,7 @@ fn default_log_file_references_plan_on_linux_and_windows_but_not_macos() {
         let path = write_case(dir.path(), "alpha", &yaml.replace("[linux]", &format!("[{oses}]")));
         let cases = crate::CASE_LOADER.load_file(&path).unwrap();
         let os = *cases[0].subject_os().first().unwrap();
-        let plans = discover_in_scope(&[dir.path().to_path_buf()], os).unwrap();
+        let plans = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], os).unwrap();
         assert_eq!(plans.len(), 1);
         let CaseSchema::Participants { procedure, .. } = plans[0].case().schema() else {
             panic!("expected participant data")
@@ -39,7 +39,7 @@ fn default_log_file_references_plan_on_linux_and_windows_but_not_macos() {
     }
     let path = write_case(dir.path(), "alpha", &yaml.replace("[linux]", "[linux, macos, windows]"));
     assert_eq!(crate::CASE_LOADER.load_file(&path).unwrap().len(), 1);
-    let message = discover_in_scope(&[dir.path().to_path_buf()], Os::Linux)
+    let message = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::Linux)
         .err()
         .expect("macOS has no declared default log file")
         .to_string();
@@ -58,7 +58,7 @@ fn agent_adp_cases_cannot_reference_pod_uid() {
     );
     let path = write_case(dir.path(), "alpha", &yaml);
     assert_eq!(crate::CASE_LOADER.load_file(&path).unwrap().len(), 1);
-    let message = discover_in_scope(&[dir.path().to_path_buf()], Os::Linux)
+    let message = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::Linux)
         .err()
         .unwrap()
         .to_string();
@@ -167,7 +167,7 @@ fn agent_adp_participants_accept_no_endpoint_overrides_or_connections() {
         let path = write_case(dir.path(), "alpha", &yaml);
         assert_eq!(crate::CASE_LOADER.load_file(&path).unwrap().len(), 1);
         for os in [Os::Linux, Os::MacOs, Os::Windows] {
-            let message = discover_in_scope(&[dir.path().to_path_buf()], os)
+            let message = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], os)
                 .err()
                 .expect("undeclared endpoints must fail planning")
                 .to_string();
@@ -361,8 +361,6 @@ fn agent_adp_env_placeholders_from_the_integration_schema_fail_at_load() {
 
 #[test]
 fn agent_adp_default_log_file_in_env_plans_on_linux_and_windows_but_not_macos() {
-    use panoramic_core::plan::Planner;
-
     let yaml = PARTICIPANT_FIELDS
         .replace(
             "subject: true",
@@ -377,7 +375,7 @@ fn agent_adp_default_log_file_in_env_plans_on_linux_and_windows_but_not_macos() 
             .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
             .unwrap()
             .remove(0);
-        let plan = Planner::new(crate::REGISTRIES).compile(case, os).unwrap().unwrap();
+        let plan = planner().compile(case, os).unwrap().unwrap();
         assert_eq!(plan.effective_config("adp").unwrap().env["FILE"], expected);
     }
     let case = crate::CASE_LOADER
@@ -388,14 +386,12 @@ fn agent_adp_default_log_file_in_env_plans_on_linux_and_windows_but_not_macos() 
         )
         .unwrap()
         .remove(0);
-    assert_eq!(Planner::new(crate::REGISTRIES).compile(case, Os::Linux).err().unwrap().to_string(),
+    assert_eq!(planner().compile(case, Os::Linux).err().unwrap().to_string(),
         "case 'alpha' in alpha/config.yaml: on subject OS 'macos', participant 'adp' of type 'agent-adp' as host-process-group on macos environment variable 'FILE' '{{ self.facts.default_log_file }}' references fact 'default_log_file' of participant 'adp', which type 'agent-adp' does not provide as host-process-group on macos; it provides it as linux-container on linux, windows-container on windows");
 }
 
 #[test]
 fn agent_adp_cannot_use_its_own_ip_in_env_in_containers() {
-    use panoramic_core::plan::Planner;
-
     for (os, kind) in [("linux", "linux-container"), ("windows", "windows-container")] {
         for name in ["self", "adp"] {
             let yaml = PARTICIPANT_FIELDS.replace("[linux]", &format!("[{os}]")).replace(
@@ -406,7 +402,7 @@ fn agent_adp_cannot_use_its_own_ip_in_env_in_containers() {
                 .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
                 .unwrap()
                 .remove(0);
-            assert_eq!(Planner::new(crate::REGISTRIES).compile(case, Os::Linux).err().unwrap().to_string(), format!(
+            assert_eq!(planner().compile(case, Os::Linux).err().unwrap().to_string(), format!(
                 "case 'alpha' in alpha/config.yaml: on subject OS '{os}', participant 'adp' of type 'agent-adp' as {kind} on {os} environment variable 'IP' '{{{{{name}.late.ip}}}}' references its own late fact 'ip', which type 'agent-adp' does not substitute into its environment as {kind}"
             ));
         }

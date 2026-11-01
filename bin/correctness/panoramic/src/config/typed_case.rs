@@ -255,15 +255,12 @@ impl RunnableCase for LoadedPlan {
 
 #[cfg(test)]
 mod tests {
-    use panoramic_core::{
-        case::{CaseLoader, Registries},
-        plan::Planner,
-    };
+    use panoramic_core::case::{CaseLoader, Registries};
 
     use super::*;
     use crate::config::{
         build_runners, discover_in_scope,
-        tests::{build_case_runners, plan, write_case, CORRECTNESS_FIELDS, PARTICIPANT_FIELDS},
+        tests::{build_case_runners, plan, planner, write_case, CORRECTNESS_FIELDS, PARTICIPANT_FIELDS},
     };
 
     #[test]
@@ -364,7 +361,7 @@ mod tests {
                 .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
                 .unwrap();
             assert_eq!(cases.len(), 1);
-            let plan = Planner::new(crate::REGISTRIES)
+            let plan = planner()
                 .compile(cases.into_iter().next().unwrap(), Os::Linux)
                 .unwrap()
                 .unwrap();
@@ -416,7 +413,7 @@ mod tests {
             "type: integration\nname: integration\ntimeout: 1s\nruntimes: [linux, windows]\nprocedure: []\n",
         );
         for os in [Os::Linux, Os::MacOs, Os::Windows] {
-            let plans = discover_in_scope(&[dir.path().to_path_buf()], os).unwrap();
+            let plans = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], os).unwrap();
             let names: Vec<_> = plans.iter().map(|plan| plan.case().name()).collect();
             assert_eq!(
                 names,
@@ -512,7 +509,9 @@ mod tests {
             }
             for os in [Os::Linux, Os::MacOs, Os::Windows] {
                 assert!(
-                    discover_in_scope(&[dir.path().to_path_buf()], os).unwrap().is_empty(),
+                    discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], os)
+                        .unwrap()
+                        .is_empty(),
                     "{kind} under {os:?}"
                 );
             }
@@ -533,7 +532,7 @@ mod tests {
             &format!("type: correctness_matrix\n{CORRECTNESS_FIELDS}variants: [{{name: first}}, {{name: second}}]\n"),
         );
         for os in [Os::Linux, Os::MacOs, Os::Windows] {
-            let plans = discover_in_scope(&[dir.path().to_path_buf()], os).unwrap();
+            let plans = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], os).unwrap();
             assert_eq!(
                 plans.iter().map(|plan| plan.case().name()).collect::<Vec<_>>(),
                 ["correctness", "matrix/first", "matrix/second"]
@@ -606,12 +605,7 @@ mod tests {
         let entries = ["baseline=base:override".parse().unwrap()];
         let plans: Vec<_> = cases
             .into_iter()
-            .map(|case| {
-                Planner::new(crate::REGISTRIES)
-                    .compile(case, Os::Linux)
-                    .unwrap()
-                    .unwrap()
-            })
+            .map(|case| planner().compile(case, Os::Linux).unwrap().unwrap())
             .collect();
         let overridden = build_runners(&plans, Os::Linux, &entries).unwrap();
         let declared = build_runners(&plans, Os::Linux, &[]).unwrap();

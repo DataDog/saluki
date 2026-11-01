@@ -1,76 +1,112 @@
-//! Collects layout artifact roles and checks agreement across a run.
+//! Validates the registered role catalog and resolves each layout's artifact bindings.
 
 use std::collections::{btree_map::Entry, BTreeMap};
 
 use crate::{
-    artifact::ArtifactRole,
+    artifact::{ArtifactBinding, ArtifactManifest, ArtifactRole, BindingSource},
     backend,
     case::CaseFile,
-    layout::{describe_participant, Layout},
+    layout::{Layout, Realization},
     participant::{find_type, ParticipantType},
 };
 
-/// Artifact roles declared in one run, keyed by name, with the first declaration of each.
-pub(super) struct DeclaredRoles {
-    roles: BTreeMap<&'static str, (ArtifactRole, String)>,
-}
-
-impl DeclaredRoles {
-    pub(super) fn new() -> Self {
-        Self { roles: BTreeMap::new() }
-    }
-
-    /// Collects roles in participant name order: each participant's type roles, then backend roles.
-    /// Returns each name once, sorted by name.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a role's kind or local default differs from an earlier declaration in this run,
-    /// naming both declarations.
-    pub(super) fn collect(
-        &mut self, case: &str, file: &CaseFile, layout: &Layout, types: &[&dyn ParticipantType],
-    ) -> Result<Vec<ArtifactRole>, String> {
-        let mut roles = BTreeMap::new();
-        for (name, realization) in layout.iter() {
-            let entry = &file.participants[name];
-            let participant_type =
-                find_type(types, &entry.participant_type).expect("laid-out participants have registered types");
-            for (declarations, declarer) in [
-                (
-                    participant_type.artifacts(realization),
-                    describe_participant(name, &entry.participant_type, realization),
-                ),
-                (
-                    backend::artifacts(realization.kind),
-                    format!("the {} backend", realization.kind.name()),
-                ),
-            ] {
-                for &role in declarations {
-                    match self.roles.entry(role.name) {
-                        Entry::Occupied(earlier) => {
-                            let (previous, previous_declarer) = earlier.get();
-                            if role != *previous {
-                                return Err(format!(
-                                    "artifact role '{}' is declared as {} '{}' by {declarer}, \
-                                     but as {} '{}' by {previous_declarer}",
-                                    role.name,
-                                    role.kind.name(),
-                                    role.local_default,
-                                    previous.kind.name(),
-                                    previous.local_default,
-                                ));
-                            }
-                        }
-                        Entry::Vacant(vacant) => {
-                            vacant.insert((role, format!("{declarer} in case '{case}'")));
-                        }
-                    }
-                    roles.insert(role.name, role);
+pub(super) fn role_catalog(types: &[&dyn ParticipantType]) -> Result<BTreeMap<&'static str, ArtifactRole>, String> {
+    let mut roles: BTreeMap<_, (ArtifactRole, String)> = BTreeMap::new();
+    let mut declare = |role: ArtifactRole, declarer: String| {
+        match roles.entry(role.name) {
+            Entry::Occupied(earlier) => {
+                let (previous, previous_declarer) = earlier.get();
+                if role != *previous {
+                    return Err(format!(
+                        "artifact role '{}' is declared as {} '{}' by {declarer}, \
+                         but as {} '{}' by {previous_declarer}",
+                        role.name,
+                        role.kind.name(),
+                        role.local_default,
+                        previous.kind.name(),
+                        previous.local_default,
+                    ));
                 }
             }
+            Entry::Vacant(vacant) => {
+                vacant.insert((role, declarer));
+            }
         }
-        Ok(roles.into_values().collect())
+        Ok(())
+    };
+    for participant_type in types {
+        for &(os, kind) in participant_type.supports() {
+            for &role in participant_type.artifacts(Realization { os, kind }) {
+                declare(
+                    role,
+                    format!(
+                        "participant type '{}' as {} on {}",
+                        participant_type.name(),
+                        kind.name(),
+                        os.name()
+                    ),
+                )?;
+            }
+        }
     }
+    for backend in backend::BACKENDS {
+        for &role in backend.artifacts() {
+            declare(role, format!("the {} backend", backend.kind().name()))?;
+        }
+    }
+    Ok(roles.into_iter().map(|(name, (role, _))| (name, role)).collect())
+}
+
+pub(super) fn check_manifest(
+    catalog: &BTreeMap<&str, ArtifactRole>, manifest: ArtifactManifest,
+) -> Result<BTreeMap<String, String>, String> {
+    let unknown: Vec<_> = manifest
+        .roles
+        .keys()
+        .filter(|name| !catalog.contains_key(name.as_str()))
+        .map(|name| format!("'{name}'"))
+        .collect();
+    if !unknown.is_empty() {
+        return Err(format!(
+            "artifact manifest {}: no participant type or backend declares role {}; declared roles: {}",
+            manifest.source.expect("manifest bindings have a source file").display(),
+            unknown.join(", "),
+            catalog.keys().copied().collect::<Vec<_>>().join(", "),
+        ));
+    }
+    Ok(manifest.roles)
+}
+
+pub(super) fn bind(
+    file: &CaseFile, layout: &Layout, types: &[&dyn ParticipantType], bindings: &BTreeMap<String, String>,
+) -> Vec<ArtifactBinding> {
+    let mut roles = BTreeMap::new();
+    for (name, realization) in layout.iter() {
+        let entry = &file.participants[name];
+        let participant_type =
+            find_type(types, &entry.participant_type).expect("laid-out participants have registered types");
+        for &role in participant_type
+            .artifacts(realization)
+            .iter()
+            .chain(backend::artifacts(realization.kind))
+        {
+            roles.entry(role.name).or_insert(role);
+        }
+    }
+    roles
+        .into_values()
+        .map(|role| {
+            let (reference, source) = match bindings.get(role.name) {
+                Some(reference) => (reference.clone(), BindingSource::Manifest),
+                None => (role.local_default.to_string(), BindingSource::LocalDefault),
+            };
+            ArtifactBinding {
+                role,
+                reference,
+                source,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -78,7 +114,7 @@ mod tests {
     use std::path::Path;
 
     use crate::{
-        artifact::{ArtifactKind, ArtifactRole},
+        artifact::{ArtifactBinding, ArtifactKind, ArtifactManifest, ArtifactRole, BindingSource},
         case::{
             fixtures::{minimal_procedure, PARTICIPANT_FIELDS},
             Registries,
@@ -86,7 +122,7 @@ mod tests {
         layout::{Os, Realization, RealizationKind},
         participant::ParticipantType,
         plan::{
-            fixtures::{compile_with, planner, CONFIG_LOADER, CONFIG_REGISTRIES},
+            fixtures::{compile_with, planner, CONFIG_REGISTRIES},
             Planner,
         },
     };
@@ -132,6 +168,7 @@ mod tests {
         }
 
         fn artifacts(&self, realization: Realization) -> &'static [ArtifactRole] {
+            assert!(self.supports().contains(&(realization.os, realization.kind)));
             if realization.os == Os::Windows {
                 self.windows_roles
             } else {
@@ -167,11 +204,28 @@ mod tests {
         )
     }
 
-    fn planning_error(types: &'static [&dyn ParticipantType], yaml: &str, os: Os) -> String {
-        compile_with(&mut role_planner(types), yaml, os)
-            .err()
-            .unwrap()
-            .to_string()
+    fn catalog_error(types: &[&dyn ParticipantType]) -> String {
+        Planner::new(
+            Registries {
+                participant_types: types,
+                ..CONFIG_REGISTRIES
+            },
+            ArtifactManifest::default(),
+        )
+        .err()
+        .unwrap()
+        .to_string()
+    }
+
+    fn local_bindings(roles: &[ArtifactRole]) -> Vec<ArtifactBinding> {
+        roles
+            .iter()
+            .map(|&role| ArtifactBinding {
+                role,
+                reference: role.local_default.to_string(),
+                source: BindingSource::LocalDefault,
+            })
+            .collect()
     }
 
     #[test]
@@ -182,169 +236,243 @@ mod tests {
         let plan = compile_with(&mut role_planner(&[&SERVER]), &yaml, Os::MacOs)
             .unwrap()
             .unwrap();
-        assert_eq!(plan.artifact_roles(), Some([FIXUP, RESOURCES, TOOL].as_slice()));
+        assert_eq!(
+            plan.artifacts(),
+            Some(local_bindings(&[FIXUP, RESOURCES, TOOL]).as_slice())
+        );
     }
 
     #[test]
-    fn a_typed_case_plan_has_no_artifact_roles() {
+    fn a_typed_case_plan_has_no_artifacts() {
         let plan = compile_with(&mut planner(), "type: fixture", Os::MacOs)
             .unwrap()
             .unwrap();
-        assert_eq!(plan.artifact_roles(), None);
+        assert_eq!(plan.artifacts(), None);
     }
 
     #[test]
-    fn a_participant_case_with_no_declared_roles_has_an_empty_role_list() {
+    fn a_participant_case_with_no_declared_roles_has_an_empty_artifact_list() {
         let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[macos]");
         let plan = compile_with(&mut planner(), &yaml, Os::MacOs).unwrap().unwrap();
-        assert_eq!(plan.artifact_roles(), Some([].as_slice()));
+        assert_eq!(plan.artifacts(), Some([].as_slice()));
     }
 
     #[test]
-    fn a_role_declared_with_another_kind_fails_planning_naming_both_declarations() {
-        let message = planning_error(
-            &[
-                &SERVER,
-                &Type {
-                    name: "configured",
-                    roles: &[ArtifactRole {
-                        kind: ArtifactKind::Image,
-                        ..TOOL
-                    }],
-                    windows_roles: &[],
-                },
-            ],
-            TWO_TYPES,
-            Os::MacOs,
-        );
-        assert_eq!(
-            message,
-            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', \
-             artifact role 'tool' is declared as image 'bin/tool' by \
-             participant 'z' of type 'configured' as host-process-group on macos, but as binary 'bin/tool' by \
-             participant 'a' of type 'server' as host-process-group on macos in case 'alpha'"
-        );
-    }
-
-    #[test]
-    fn a_role_declared_with_another_local_default_fails_planning_naming_both_declarations() {
-        let message = planning_error(
-            &[
-                &SERVER,
-                &Type {
-                    name: "configured",
-                    roles: &[ArtifactRole {
-                        local_default: "share/other",
-                        ..RESOURCES
-                    }],
-                    windows_roles: &[],
-                },
-            ],
-            TWO_TYPES,
-            Os::MacOs,
-        );
-        assert_eq!(
-            message,
-            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', \
-             artifact role 'resources' is declared as install 'share/other' by \
-             participant 'z' of type 'configured' as host-process-group on macos, but as install 'share/tool' by \
-             participant 'a' of type 'server' as host-process-group on macos in case 'alpha'"
-        );
-    }
-
-    #[test]
-    fn a_role_conflicting_with_one_declared_by_an_earlier_case_fails_planning_naming_that_case() {
-        let mut planner = role_planner(&[
+    fn a_planner_rejects_registered_types_declaring_one_role_with_different_kinds_without_compiling_cases() {
+        let message = catalog_error(&[
             &SERVER,
             &Type {
                 name: "configured",
                 roles: &[ArtifactRole {
-                    local_default: "bin/other",
+                    kind: ArtifactKind::Image,
                     ..TOOL
                 }],
                 windows_roles: &[],
             },
         ]);
-        let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[macos]");
-        let plan = compile_with(&mut planner, &yaml, Os::MacOs).unwrap().unwrap();
-        assert_eq!(plan.artifact_roles(), Some([RESOURCES, TOOL].as_slice()));
-        let case = CONFIG_LOADER
-            .load_content(
-                &yaml.replace("type: server", "type: configured"),
-                "beta",
-                Path::new("cases/beta/config.yaml"),
-            )
-            .unwrap()
-            .remove(0);
-        let message = planner.compile(case, Os::MacOs).err().unwrap().to_string();
         assert_eq!(
             message,
-            "case 'beta' in cases/beta/config.yaml: on subject OS 'macos', \
-             artifact role 'tool' is declared as binary 'bin/other' by \
-             participant 'subject' of type 'configured' as host-process-group on macos, but as binary 'bin/tool' by \
-             participant 'subject' of type 'server' as host-process-group on macos in case 'alpha'"
+            "artifact role 'tool' is declared as image 'bin/tool' by participant type 'configured' \
+             as linux-container on linux, but as binary 'bin/tool' by participant type 'server' \
+             as linux-container on linux"
         );
     }
 
     #[test]
-    fn a_type_role_named_like_a_backend_role_must_match_it() {
-        let message = planning_error(
-            &[&Type {
-                name: "server",
+    fn a_planner_rejects_registered_types_declaring_one_role_with_different_local_defaults() {
+        let message = catalog_error(&[
+            &SERVER,
+            &Type {
+                name: "configured",
                 roles: &[ArtifactRole {
-                    local_default: "other:latest",
-                    ..FIXUP
+                    local_default: "share/other",
+                    ..RESOURCES
                 }],
                 windows_roles: &[],
-            }],
-            PARTICIPANT_FIELDS,
-            Os::Linux,
+            },
+        ]);
+        assert_eq!(
+            message,
+            "artifact role 'resources' is declared as install 'share/other' by participant type 'configured' \
+             as linux-container on linux, but as install 'share/tool' by participant type 'server' \
+             as linux-container on linux"
         );
+    }
+
+    #[test]
+    fn a_planner_rejects_a_type_declaring_one_role_differently_on_two_realizations() {
+        let message = catalog_error(&[&Type {
+            name: "server",
+            roles: &[TOOL],
+            windows_roles: &[ArtifactRole {
+                local_default: "bin/tool.exe",
+                ..TOOL
+            }],
+        }]);
+        assert_eq!(
+            message,
+            "artifact role 'tool' is declared as binary 'bin/tool.exe' by participant type 'server' \
+             as windows-container on windows, but as binary 'bin/tool' by participant type 'server' \
+             as linux-container on linux"
+        );
+    }
+
+    #[test]
+    fn a_planner_rejects_a_type_role_that_disagrees_with_a_backend_role() {
+        let message = catalog_error(&[&Type {
+            name: "server",
+            roles: &[ArtifactRole {
+                local_default: "other:latest",
+                ..FIXUP
+            }],
+            windows_roles: &[],
+        }]);
         assert_eq!(
             message,
             format!(
-                "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', \
-                 artifact role 'fixup-image' is declared as image '{}' by the linux-container backend, \
-                 but as image 'other:latest' by participant 'subject' of type 'server' as linux-container on linux \
-                 in case 'alpha'",
+                "artifact role 'fixup-image' is declared as image '{}' by the linux-container backend, \
+             but as image 'other:latest' by participant type 'server' as linux-container on linux",
                 airlock::driver::DEFAULT_ALPINE_IMAGE,
             )
         );
-        let mut planner = role_planner(&[&Type {
-            name: "server",
-            roles: &[FIXUP],
-            windows_roles: &[],
-        }]);
-        let plan = compile_with(&mut planner, PARTICIPANT_FIELDS, Os::Linux)
-            .unwrap()
-            .unwrap();
-        assert_eq!(plan.artifact_roles(), Some([FIXUP].as_slice()));
+        let plan = compile_with(
+            &mut role_planner(&[&Type {
+                name: "server",
+                roles: &[FIXUP],
+                windows_roles: &[],
+            }]),
+            PARTICIPANT_FIELDS,
+            Os::Linux,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(plan.artifacts(), Some(local_bindings(&[FIXUP]).as_slice()));
     }
 
     #[test]
-    fn roles_are_checked_on_every_declared_subject_os_even_when_the_selected_os_is_excluded() {
-        let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[linux, windows]");
-        for os in [Os::Linux, Os::MacOs, Os::Windows] {
-            let message = planning_error(
-                &[&Type {
-                    name: "server",
-                    roles: &[TOOL],
-                    windows_roles: &[ArtifactRole {
-                        local_default: "bin/tool.exe",
-                        ..TOOL
-                    }],
-                }],
-                &yaml,
-                os,
-            );
-            assert_eq!(
-                message,
-                "case 'alpha' in cases/alpha/config.yaml: on subject OS 'windows', \
-                 artifact role 'tool' is declared as binary 'bin/tool.exe' by \
-                 participant 'subject' of type 'server' as windows-container on windows, but as binary 'bin/tool' by \
-                 participant 'subject' of type 'server' as linux-container on linux in case 'alpha'"
-            );
-        }
+    fn a_planner_reports_every_unknown_manifest_role_and_the_declared_roles_in_name_order() {
+        let manifest = ArtifactManifest::parse(
+            "schema = 1\n[roles]\nz = 'z'\na = 'a'\ntool = 'bin/other'",
+            Path::new("artifacts.toml"),
+        )
+        .unwrap();
+        let message = Planner::new(
+            Registries {
+                participant_types: &[&SERVER],
+                ..CONFIG_REGISTRIES
+            },
+            manifest,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert_eq!(
+            message,
+            "artifact manifest artifacts.toml: no participant type or backend declares role 'a', 'z'; \
+             declared roles: fixup-image, resources, tool, windows-tool"
+        );
+    }
+
+    #[test]
+    fn catalog_disagreement_precedes_unknown_manifest_roles() {
+        let manifest =
+            ArtifactManifest::parse("schema = 1\n[roles]\nunknown = 'x'", Path::new("artifacts.toml")).unwrap();
+        let types: &[&dyn ParticipantType] = &[&Type {
+            name: "server",
+            roles: &[TOOL],
+            windows_roles: &[ArtifactRole {
+                kind: ArtifactKind::Image,
+                ..TOOL
+            }],
+        }];
+        let message = Planner::new(
+            Registries {
+                participant_types: types,
+                ..CONFIG_REGISTRIES
+            },
+            manifest,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert_eq!(message, catalog_error(types));
+    }
+
+    #[test]
+    fn a_planner_accepts_a_manifest_role_only_a_backend_declares() {
+        let manifest = ArtifactManifest::parse(
+            "schema = 1\n[roles]\nfixup-image = 'registry.example/tools:3'",
+            Path::new("artifacts.toml"),
+        )
+        .unwrap();
+        Planner::new(
+            Registries {
+                participant_types: &[],
+                steps: &[],
+            },
+            manifest,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_plan_binds_manifest_roles_and_gives_omitted_roles_their_local_default() {
+        let manifest = ArtifactManifest::parse(
+            "schema = 1\n[roles]\ntool = '../bin/other'\nfixup-image = 'registry.example/tools:3'",
+            Path::new("artifacts.toml"),
+        )
+        .unwrap();
+        let mut planner = Planner::new(
+            Registries {
+                participant_types: &[&SERVER],
+                ..CONFIG_REGISTRIES
+            },
+            manifest,
+        )
+        .unwrap();
+        let plan = compile_with(&mut planner, PARTICIPANT_FIELDS, Os::Linux)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            plan.artifacts().unwrap(),
+            [
+                ArtifactBinding {
+                    role: FIXUP,
+                    reference: "registry.example/tools:3".into(),
+                    source: BindingSource::Manifest
+                },
+                ArtifactBinding {
+                    role: RESOURCES,
+                    reference: "share/tool".into(),
+                    source: BindingSource::LocalDefault
+                },
+                ArtifactBinding {
+                    role: TOOL,
+                    reference: "../bin/other".into(),
+                    source: BindingSource::Manifest
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_manifest_role_the_case_does_not_need_is_ignored() {
+        let manifest = ArtifactManifest::parse(
+            "schema = 1\n[roles]\nwindows-tool = 'bin/other.exe'\nfixup-image = 'registry.example/tools:3'",
+            Path::new("artifacts.toml"),
+        )
+        .unwrap();
+        let mut planner = Planner::new(
+            Registries {
+                participant_types: &[&SERVER],
+                ..CONFIG_REGISTRIES
+            },
+            manifest,
+        )
+        .unwrap();
+        let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[macos]");
+        let plan = compile_with(&mut planner, &yaml, Os::MacOs).unwrap().unwrap();
+        assert_eq!(plan.artifacts(), Some(local_bindings(&[RESOURCES, TOOL]).as_slice()));
     }
 
     #[test]
@@ -352,8 +480,11 @@ mod tests {
         let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[linux, windows]");
         let mut planner = role_planner(&[&SERVER]);
         let linux = compile_with(&mut planner, &yaml, Os::Linux).unwrap().unwrap();
-        assert_eq!(linux.artifact_roles(), Some([FIXUP, RESOURCES, TOOL].as_slice()));
+        assert_eq!(
+            linux.artifacts(),
+            Some(local_bindings(&[FIXUP, RESOURCES, TOOL]).as_slice())
+        );
         let windows = compile_with(&mut planner, &yaml, Os::Windows).unwrap().unwrap();
-        assert_eq!(windows.artifact_roles(), Some([WINDOWS_TOOL].as_slice()));
+        assert_eq!(windows.artifacts(), Some(local_bindings(&[WINDOWS_TOOL]).as_slice()));
     }
 }

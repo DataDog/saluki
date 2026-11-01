@@ -679,12 +679,13 @@ where
     Ok(case)
 }
 
-/// Discovers and compiles enabled cases, sorted by name, for the selected subject OS.
-pub(crate) fn discover_in_scope(dirs: &[PathBuf], subject_os: Os) -> Result<Vec<LoadedPlan>, GenericError> {
+/// Discovers and compiles enabled cases, sorted by name, using the caller's run planner.
+pub(crate) fn discover_in_scope(
+    planner: &mut Planner<'_>, dirs: &[PathBuf], subject_os: Os,
+) -> Result<Vec<LoadedPlan>, GenericError> {
     let cases = crate::CASE_LOADER.discover_cases(dirs)?;
     let mut plans = Vec::new();
     let mut errors = Vec::new();
-    let mut planner = Planner::new(crate::REGISTRIES);
     for case in cases.into_iter().filter(|case| !case.is_disabled()) {
         // The correctness runner always uses Linux containers, so its cases are selected under every runtime.
         // TODO: report correctness cases as skipped off Linux once skipped outcomes exist.
@@ -888,13 +889,18 @@ procedure:
     timeout: 60s
 "#;
 
+    /// Creates a test planner with the binary's registries and local artifact defaults.
+    pub(crate) fn planner() -> Planner<'static> {
+        Planner::new(crate::REGISTRIES, panoramic_core::artifact::ArtifactManifest::default()).unwrap()
+    }
+
     /// Loads and compiles one case for tests.
     pub(crate) fn plan(yaml: &str, os: Os) -> LoadedPlan {
         let case = crate::CASE_LOADER
             .load_content(yaml, "case", Path::new("/cases/case/config.yaml"))
             .unwrap()
             .remove(0);
-        Planner::new(crate::REGISTRIES).compile(case, os).unwrap().unwrap()
+        planner().compile(case, os).unwrap().unwrap()
     }
 
     fn load_case<T, P>(path: P) -> Result<T, GenericError>
@@ -1076,7 +1082,7 @@ timeout: 30s
     ) -> Result<Vec<BuiltCase>, GenericError> {
         let plans = cases
             .into_iter()
-            .map(|case| Planner::new(crate::REGISTRIES).compile(case, os))
+            .map(|case| planner().compile(case, os))
             .collect::<Result<Vec<_>, _>>()?
             .into_iter()
             .map(|plan| plan.expect("the test case declares the selected subject OS"))
@@ -1088,7 +1094,7 @@ timeout: 30s
         dirs: &[PathBuf], runtime: &str, image_overrides: &[ImageOverride],
     ) -> Result<Vec<BuiltCase>, GenericError> {
         let os = os_for_runtime(runtime).unwrap();
-        let plans = discover_in_scope(dirs, os)?;
+        let plans = discover_in_scope(&mut planner(), dirs, os)?;
         build_runners(plans, os, image_overrides)
     }
 
@@ -1119,6 +1125,7 @@ timeout: 30s
         );
         assert_eq!(
             discover_in_scope(
+                &mut planner(),
                 &[
                     windows.path().to_path_buf(),
                     matrix.path().to_path_buf(),
@@ -1336,7 +1343,7 @@ timeout: 30s
                 .err()
                 .expect("duplicate names must fail discovery");
             assert_eq!(format!("{error:#}"), expected);
-            let error = discover_in_scope(&roots, Os::Linux)
+            let error = discover_in_scope(&mut planner(), &roots, Os::Linux)
                 .err()
                 .expect("runtime and disabled filtering must not hide duplicate names");
             assert_eq!(format!("{error:#}"), expected);
@@ -1514,12 +1521,7 @@ timeout: 30s
         let entries = ["baseline=base:override".parse().unwrap()];
         let plans: Vec<_> = cases
             .into_iter()
-            .map(|case| {
-                Planner::new(crate::REGISTRIES)
-                    .compile(case, Os::Linux)
-                    .unwrap()
-                    .unwrap()
-            })
+            .map(|case| planner().compile(case, Os::Linux).unwrap().unwrap())
             .collect();
         let runners = build_runners(&plans, Os::Linux, &entries).unwrap();
         assert_eq!(runners.len(), plans.len());
@@ -2467,7 +2469,9 @@ comparison: {{image: comp}}
                 let cases = crate::CASE_LOADER.discover_cases(&[dir.path().to_path_buf()]).unwrap();
                 assert_eq!(cases.len(), case_count, "{kind} with {setting}");
                 assert_eq!(
-                    discover_in_scope(&[dir.path().to_path_buf()], Os::Linux).unwrap().len(),
+                    discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::Linux)
+                        .unwrap()
+                        .len(),
                     if disabled { 0 } else { case_count },
                     "{kind} with {setting}"
                 );

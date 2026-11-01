@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use saluki_error::{generic_error, GenericError};
 
 use crate::{
-    artifact::ArtifactRole,
+    artifact::{ArtifactBinding, ArtifactManifest},
     backend,
     case::{config_references::FileTemplates, CaseConfig, CaseFile, CaseSchema, Registries},
     layout::{describe_participant, lay_out, Layout, Os},
@@ -24,7 +24,6 @@ mod scope;
 
 pub(crate) use self::scope::ScopeLayout;
 use self::{
-    artifacts::DeclaredRoles,
     connections::check_connections,
     endpoints::derive_endpoints,
     order::{dependency_order, DependencyOrder},
@@ -32,15 +31,14 @@ use self::{
     scope::{participant_shared_dir, ScopeRegistry},
 };
 
-/// Holds the registries shared across one run's plans.
+/// Holds the registries and artifact bindings shared across one run's plans.
 ///
-/// Compile every case in a run through one planner to check that artifact role declarations agree
-/// and to give cases distinct isolation scopes and runner-host ports.
+/// Compile every case in a run through one planner to give cases distinct isolation scopes and runner-host ports.
 pub struct Planner<'a> {
     registries: Registries<'a>,
     ports: PortRegistry,
     scopes: ScopeRegistry,
-    roles: DeclaredRoles,
+    bindings: BTreeMap<String, String>,
 }
 
 /// A loaded case with the layout selected for execution.
@@ -48,7 +46,7 @@ pub struct CasePlan<C> {
     case: CaseConfig<C>,
     subject_os: Os,
     layout: Option<Layout>,
-    artifact_roles: Option<Vec<ArtifactRole>>,
+    artifacts: Option<Vec<ArtifactBinding>>,
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "Read when backends prepare isolation scopes.")
@@ -80,23 +78,29 @@ struct PlannedParticipant {
 }
 
 impl<'a> Planner<'a> {
-    /// Creates a planner with fresh run-wide registries and a random run identity.
-    pub fn new(registries: Registries<'a>) -> Self {
-        Self {
+    /// Creates a planner with run-wide artifact bindings and a random run identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for conflicting role kinds or local defaults across registered participant types and backends,
+    /// then for unknown manifest roles.
+    pub fn new(registries: Registries<'a>, manifest: ArtifactManifest) -> Result<Self, GenericError> {
+        let catalog = artifacts::role_catalog(registries.participant_types).map_err(|error| generic_error!(error))?;
+        let bindings = artifacts::check_manifest(&catalog, manifest).map_err(|error| generic_error!(error))?;
+        Ok(Self {
             registries,
             ports: PortRegistry::new(),
             scopes: ScopeRegistry::new(),
-            roles: DeclaredRoles::new(),
-        }
+            bindings,
+        })
     }
 
     #[cfg(test)]
     pub(crate) fn with_run(registries: Registries<'a>, run: &str) -> Self {
         Self {
-            registries,
-            ports: PortRegistry::new(),
             scopes: ScopeRegistry::with_run(run),
-            roles: DeclaredRoles::new(),
+            ..Self::new(registries, ArtifactManifest::default())
+                .expect("test registries declare consistent artifact roles")
         }
     }
 
@@ -107,7 +111,6 @@ impl<'a> Planner<'a> {
     /// Ports are drawn in check order: assigned listeners per participant and endpoint in name order,
     /// then connections per consumer, then references per participant (`env`, `params`, template files).
     /// Connections and references to one container endpoint share a runner-host port.
-    /// Artifact roles are checked across every case this planner compiles.
     ///
     /// # Errors
     ///
@@ -117,25 +120,23 @@ impl<'a> Planner<'a> {
     /// 1. Isolation scope allocation, when the case declares the selected OS.
     /// 2. On each declared subject OS in the order the case lists them, even when the selected OS is excluded:
     ///    1. Layout.
-    ///    2. Artifact roles: each participant's type roles, then backend roles, in participant name order,
-    ///       must agree with earlier declarations in this run.
-    ///    3. Participant facts: no type may declare `shared_dir`.
-    ///    4. Per participant in name order: fact and late-fact references in `env`, `params`, then template files;
+    ///    2. Participant facts: no type may declare `shared_dir`.
+    ///    3. Per participant in name order: fact and late-fact references in `env`, `params`, then template files;
     ///       configuration; endpoint derivation; port assignment and re-derivation; endpoint overrides; then
     ///       case-supplied ports and socket paths in endpoint name order.
-    ///    5. Runner-host listener range and transport uniqueness, per participant and endpoint in name order.
-    ///    6. Connections per consumer in name order. For each `connect` key in name order: consumed endpoint,
+    ///    4. Runner-host listener range and transport uniqueness, per participant and endpoint in name order.
+    ///    5. Connections per consumer in name order. For each `connect` key in name order: consumed endpoint,
     ///       served endpoint, accepted kind, route, socket location and length, delivered env keys, then address
     ///       allocation and delivered values. Then required endpoints in name order.
-    ///    7. Endpoint and connection references in configuration, per participant in name order (`env`, `params`,
+    ///    6. Endpoint and connection references in configuration, per participant in name order (`env`, `params`,
     ///       then template files): served endpoint, route, socket location and length, address part, then
     ///       runner-host port allocation.
-    ///    8. Create order, then start order.
-    ///    9. Step fact and late-fact references in procedure order, naming the step.
+    ///    7. Create order, then start order.
+    ///    8. Step fact and late-fact references in procedure order, naming the step.
     pub fn compile<C>(&mut self, case: CaseConfig<C>, subject_os: Os) -> Result<Option<CasePlan<C>>, GenericError> {
         let selected = case.subject_os().contains(&subject_os);
         let mut layout = None;
-        let mut artifact_roles = None;
+        let mut artifacts = None;
         let mut scope = None;
         let mut order = None;
         let mut participants = BTreeMap::new();
@@ -163,10 +164,6 @@ impl<'a> Planner<'a> {
                     )
                 };
                 let candidate = lay_out(&file.participants, self.registries.participant_types, os).map_err(&error)?;
-                let candidate_roles = self
-                    .roles
-                    .collect(case.name(), file, &candidate, self.registries.participant_types)
-                    .map_err(&error)?;
                 let mut scratch_ports = PortRegistry::new();
                 let os_ports = if os == subject_os {
                     &mut self.ports
@@ -191,8 +188,13 @@ impl<'a> Planner<'a> {
                 )
                 .map_err(error)?;
                 if os == subject_os {
+                    artifacts = Some(artifacts::bind(
+                        file,
+                        &candidate,
+                        self.registries.participant_types,
+                        &self.bindings,
+                    ));
                     layout = Some(candidate);
-                    artifact_roles = Some(candidate_roles);
                     order = Some(planned.order);
                     participants = planned.participants;
                     runner_host_ports = planned.runner_host_ports;
@@ -209,7 +211,7 @@ impl<'a> Planner<'a> {
             case,
             subject_os,
             layout,
-            artifact_roles,
+            artifacts,
             scope,
             order,
             participants,
@@ -234,9 +236,9 @@ impl<C> CasePlan<C> {
         self.layout.as_ref()
     }
 
-    /// Returns the artifact roles the selected layout needs, sorted by name, or `None` for typed cases.
-    pub fn artifact_roles(&self) -> Option<&[ArtifactRole]> {
-        self.artifact_roles.as_deref()
+    /// Returns the selected layout's artifact bindings, sorted by role name, or `None` for typed cases.
+    pub fn artifacts(&self) -> Option<&[ArtifactBinding]> {
+        self.artifacts.as_deref()
     }
 
     /// Returns create dependency levels for participant cases, or `None` for typed cases.

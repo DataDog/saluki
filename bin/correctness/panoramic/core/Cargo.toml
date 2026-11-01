@@ -28,6 +28,7 @@ serde_path_to_error = { workspace = true }
 snafu = { workspace = true }
 tokio = { workspace = true, features = ["rt", "signal", "sync", "time"] }
 tokio-util = { workspace = true, features = ["rt"] }
+toml = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

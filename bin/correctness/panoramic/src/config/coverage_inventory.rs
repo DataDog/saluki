@@ -15,14 +15,14 @@ use std::{
 };
 
 use panoramic_core::case::CaseSchema;
-use panoramic_core::{layout::Os, plan::Planner};
+use panoramic_core::layout::Os;
 use saluki_error::{generic_error, GenericError};
 use serde::Serialize;
 use serde_json::{json, Value};
 
 use super::{
     build_runners,
-    tests::{write_case, LOGGING_INTEGRATION, LOGGING_PARTICIPANT, PARTICIPANT_FIELDS},
+    tests::{planner, write_case, LOGGING_INTEGRATION, LOGGING_PARTICIPANT, PARTICIPANT_FIELDS},
     typed_case::{LoadedCase, RunnableCase, TypedConfig},
     AssertionStep, IntegrationConfig,
 };
@@ -235,7 +235,7 @@ impl Inventory {
             let plans: Vec<_> = cases
                 .into_iter()
                 .filter(|case| case.suite() == INTEGRATION || os == Os::Linux)
-                .filter_map(|case| Planner::new(crate::REGISTRIES).compile(case, os).unwrap())
+                .filter_map(|case| planner().compile(case, os).unwrap())
                 .collect();
             for built in build_runners(plans, os, &[]).unwrap() {
                 let case = built.plan.case();
@@ -442,7 +442,7 @@ fn record_cases(cases: &[LoadedCase], content: &str, directory: &str) -> Result<
                         .into_iter()
                         .find(|loaded| loaded.name() == case.name())
                         .expect("reloading yields the same case");
-                    let plan = Planner::new(crate::REGISTRIES)
+                    let plan = planner()
                         .compile(loaded, os)?
                         .expect("the case declares this subject OS");
                     plan.integration_config()

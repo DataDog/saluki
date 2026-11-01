@@ -279,8 +279,8 @@ mod tests {
         config::{
             build_runners,
             tests::{
-                build_case_runners, minimal_procedure, plan, write_case, LOGGING_INTEGRATION, LOGGING_PARTICIPANT,
-                PARTICIPANT_FIELDS,
+                build_case_runners, minimal_procedure, plan, planner, write_case, LOGGING_INTEGRATION,
+                LOGGING_PARTICIPANT, PARTICIPANT_FIELDS,
             },
             typed_case::{RunnableCase, TypedConfig, TypedConfigLoader},
             LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME,
@@ -308,7 +308,7 @@ mod tests {
             let plans: Vec<_> = participant_cases
                 .into_iter()
                 .map(|case| {
-                    Planner::new(crate::REGISTRIES)
+                    planner()
                         .compile(case, Os::Linux)
                         .unwrap()
                         .unwrap()
@@ -342,7 +342,7 @@ mod tests {
                     .load_file(&path)
                     .unwrap()
                     .into_iter()
-                    .map(|case| Planner::new(crate::REGISTRIES).compile(case, os).unwrap().unwrap())
+                    .map(|case| planner().compile(case, os).unwrap().unwrap())
                     .collect::<Vec<_>>()
             });
             let overrides = if runtime == MAC_RUNTIME {
@@ -514,7 +514,11 @@ mod tests {
             std::fs::write(path.parent().unwrap().join("windows.yaml"), "").unwrap();
             for os in [Os::Linux, Os::Windows] {
                 let case = loader.load_file(&path).unwrap().remove(0);
-                let plan = Planner::new(registries).compile(case, os).unwrap().unwrap();
+                let plan = Planner::new(registries, panoramic_core::artifact::ArtifactManifest::default())
+                    .unwrap()
+                    .compile(case, os)
+                    .unwrap()
+                    .unwrap();
                 assert_eq!(
                     plan.effective_config("adp").unwrap().files.is_empty(),
                     os == Os::Linux || !config.contains("files:")
@@ -587,7 +591,7 @@ mod tests {
                     .load_content(&participant_yaml, "alpha", &path)
                     .unwrap()
                     .remove(0);
-                let plan = Planner::new(crate::REGISTRIES).compile(case, os).unwrap().unwrap();
+                let plan = planner().compile(case, os).unwrap().unwrap();
                 let translated = plan.integration_config().unwrap();
                 let Some(AssertionStep::Single(AssertionConfig::FileContains { path, .. })) =
                     translated.procedure.last()
@@ -732,10 +736,7 @@ mod tests {
                 .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
                 .unwrap()
                 .remove(0);
-            let plan = Planner::new(crate::REGISTRIES)
-                .compile(case, Os::Linux)
-                .unwrap()
-                .unwrap();
+            let plan = planner().compile(case, Os::Linux).unwrap().unwrap();
             let CaseSchema::Participants { file, .. } = plan.case().schema() else {
                 panic!("expected participant data")
             };
@@ -764,10 +765,7 @@ mod tests {
             .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
             .unwrap()
             .remove(0);
-        let plan = Planner::new(crate::REGISTRIES)
-            .compile(case, Os::Linux)
-            .unwrap()
-            .unwrap();
+        let plan = planner().compile(case, Os::Linux).unwrap().unwrap();
         let CaseSchema::Participants { file, .. } = plan.case().schema() else {
             panic!("expected participant data");
         };
@@ -904,7 +902,7 @@ mod tests {
         let cases = crate::CASE_LOADER
             .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
             .unwrap();
-        let plan = Planner::new(crate::REGISTRIES)
+        let plan = planner()
             .compile(cases.into_iter().next().unwrap(), Os::Linux)
             .unwrap()
             .unwrap();
