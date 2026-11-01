@@ -140,7 +140,8 @@ OS and runs it: in a Linux or Windows container with default settings, or as hos
 supports this subset of the schema:
 
 - One participant, of type `agent-adp` with `subject: true`, configured only through `config.env`, optionally with
-  `config.os` overlays of `env` whose values replace the base values on that OS. Environment values must be YAML strings.
+  `config.os` overlays of `env` whose values replace the base values on that OS. Environment values must be YAML strings;
+  the integration runner rejects references in them.
 - The steps `log_contains` and `log_not_contains`, without `process`. They search the output of every process
   together, and what is captured differs by OS.
 - The step `file_contains`. Its `path` may reference a participant fact, written as in the example above with the
@@ -152,6 +153,17 @@ supports this subset of the schema:
 Step fields can also reference a participant's late facts as `<participant>.late.<fact>`: `ip` on every realization,
 `container_id` on containers and pods, and `pod_uid` on pods only. They exist once the participant is created or running,
 so the integration runner rejects them. Step fields accept only facts and late facts of explicitly named participants.
+
+Environment variable values and string parameters, at any depth, can also contain references, including to the
+participant itself as `self`. Variable names and parameter keys can't. On every OS in `subject_os`, a fact must exist
+for the referenced participant's realization, and panoramic substitutes it before the participant type reads the
+configuration. A host process group's `ip` is `127.0.0.1` for itself and for other host process groups on the same OS,
+and is substituted the same way. Another participant's `container_id` is allowed when that participant is a Linux or
+Windows container. A participant's own late facts are allowed only in environment variables, and only when its type
+substitutes them after start; `agent-adp` substitutes none. Other late facts are rejected. An endpoint reference needs
+an endpoint the participant serves and a route from the referencing participant, and a connection reference needs a
+matching `connect` key. `host` and `port` apply to network endpoints, `path` to sockets and pipes, and `url` to every
+kind. The integration runner rejects any reference in an environment variable, and `agent-adp` accepts no parameters.
 
 Durations in a participant case need a unit: write `30s`, not `30`.
 

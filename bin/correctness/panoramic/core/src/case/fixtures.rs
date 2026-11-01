@@ -12,6 +12,7 @@ use serde_json::Value;
 
 use super::{case_name, CaseLoader, Registries, Template, TypedCase, TypedCaseLoader};
 use crate::{
+    backend::LateFact,
     endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind},
     layout::{Os, Realization, RealizationKind},
     participant::{CaseValues, EffectiveConfig, FactDeclaration, ParticipantType},
@@ -100,6 +101,10 @@ impl ParticipantType for Server {
         ]
     }
 
+    fn params(&self) -> &'static [&'static str] {
+        &["mode"]
+    }
+
     fn default_env(&self, realization: Realization, _config: &CaseValues) -> BTreeMap<String, String> {
         match (realization.os, realization.kind) {
             (Os::Windows, RealizationKind::WindowsContainer) => BTreeMap::from([("METRICS".into(), "off".into())]),
@@ -152,6 +157,15 @@ impl ParticipantType for Server {
                 value: r"C:\logs\output.log",
             }],
             _ => &[],
+        }
+    }
+
+    fn substituted_late_facts(&self, realization: Realization) -> &'static [LateFact] {
+        assert!(self.supports().contains(&(realization.os, realization.kind)));
+        if realization.kind == RealizationKind::LinuxContainer {
+            &[LateFact::Ip]
+        } else {
+            &[]
         }
     }
 

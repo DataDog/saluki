@@ -1,22 +1,23 @@
 //! Validates connections against each participant's configured endpoints.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use super::routes::check_route;
 use crate::{
     case::{declared_names, CaseFile},
     endpoint::{ConsumedEndpoint, Delivery, Endpoint},
     layout::{describe_participant, Layout},
+    participant::CaseValues,
 };
 
-/// Connection declarations and case environment keys for one participant.
+/// Configured endpoints and the case values used to derive them.
 pub(super) struct ParticipantEndpoints {
     /// Endpoints served with the effective configuration.
     pub(super) served: BTreeMap<String, Endpoint>,
     /// Endpoints consumed with the effective configuration.
     pub(super) consumed: BTreeMap<String, ConsumedEndpoint>,
-    /// Environment keys the case sets after its OS overlay.
-    pub(super) case_env: BTreeSet<String>,
+    /// Case values after the OS overlay and fact substitution.
+    pub(super) values: CaseValues,
 }
 
 /// Checks each consumer's connections, then its required endpoints, all in name order.
@@ -64,7 +65,7 @@ pub(super) fn check_connections(
             }
             let Delivery::Env(keys) = &endpoint.delivery;
             for key in keys {
-                if consumer_endpoints.case_env.contains(key) {
+                if consumer_endpoints.values.env.contains_key(key) {
                     return Err(format!(
                         "{holder} sets env '{key}', which its connection '{connection}' delivers; remove one of them"
                     ));

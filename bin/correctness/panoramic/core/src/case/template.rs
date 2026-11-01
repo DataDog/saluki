@@ -48,6 +48,15 @@ pub(crate) enum ParticipantRef {
     Named(String),
 }
 
+impl ParticipantRef {
+    pub(crate) fn name<'a>(&'a self, holder: &'a str) -> &'a str {
+        match self {
+            Self::Holder => holder,
+            Self::Named(name) => name,
+        }
+    }
+}
+
 impl fmt::Display for ParticipantRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -154,6 +163,47 @@ impl Template {
             Segment::Reference { reference, .. } => Some(reference),
             Segment::Literal(_) => None,
         })
+    }
+
+    /// Returns references and their original spelling in text order, including duplicates.
+    pub(crate) fn written_references(&self) -> impl Iterator<Item = (&str, &Reference)> {
+        self.segments.iter().filter_map(|segment| match segment {
+            Segment::Reference { written, reference } => Some((written.as_str(), reference)),
+            Segment::Literal(_) => None,
+        })
+    }
+
+    /// Substitutes selected references, preserving the others as written.
+    ///
+    /// # Errors
+    ///
+    /// Propagates resolver errors. Rejects a replacement containing `{{` or forming it with adjacent text.
+    pub(crate) fn substitute(
+        &self, mut value: impl FnMut(&str, &Reference) -> Result<Option<String>, String>,
+    ) -> Result<String, String> {
+        const DELIMITER_ERROR: &str = "substitution would form a template delimiter ('{{')";
+        let mut resolved = String::new();
+        for segment in &self.segments {
+            let replacement;
+            let text = match segment {
+                Segment::Literal(text) => text,
+                Segment::Reference { written, reference } => match value(written, reference)? {
+                    Some(value) => {
+                        if value.contains("{{") {
+                            return Err(DELIMITER_ERROR.into());
+                        }
+                        replacement = value;
+                        &replacement
+                    }
+                    None => written,
+                },
+            };
+            if resolved.ends_with('{') && text.starts_with('{') {
+                return Err(DELIMITER_ERROR.into());
+            }
+            resolved.push_str(text);
+        }
+        Ok(resolved)
     }
 
     /// Reports named fact and late-fact needs for templates read from step fields.
@@ -290,6 +340,76 @@ mod tests {
     #[derive(Debug, Deserialize)]
     struct Fields {
         path: Template,
+    }
+
+    #[test]
+    fn substitution_replaces_only_references_the_resolver_returns_and_keeps_the_rest_as_written() {
+        let template: Template =
+            "a/{{self.facts.file}}/{{  other.late.ip  }}/{{self.facts.file}}/{{ self.endpoints.api.url }}"
+                .parse()
+                .unwrap();
+        assert_eq!(
+            template
+                .written_references()
+                .map(|(written, _)| written)
+                .collect::<Vec<_>>(),
+            [
+                "{{self.facts.file}}",
+                "{{  other.late.ip  }}",
+                "{{self.facts.file}}",
+                "{{ self.endpoints.api.url }}"
+            ]
+        );
+        let mut visited = Vec::new();
+        let resolved = template
+            .substitute(|written, reference| {
+                visited.push(written.to_string());
+                Ok(matches!(reference, Reference::Fact { .. }).then(|| "logs".into()))
+            })
+            .unwrap();
+        assert_eq!(
+            resolved,
+            "a/logs/{{  other.late.ip  }}/logs/{{ self.endpoints.api.url }}"
+        );
+        assert_eq!(
+            visited,
+            [
+                "{{self.facts.file}}",
+                "{{  other.late.ip  }}",
+                "{{self.facts.file}}",
+                "{{ self.endpoints.api.url }}"
+            ]
+        );
+        assert_eq!(
+            template.substitute(|_, _| Err("unavailable".into())).unwrap_err(),
+            "unavailable"
+        );
+    }
+
+    #[test]
+    fn substitution_cannot_introduce_a_template_reference() {
+        for (text, value) in [
+            ("{{self.facts.file}}", "{{ unresolved }}"),
+            ("{{self.facts.file}}{", "{"),
+            ("{{self.facts.file}}{{self.facts.file}}", "{"),
+            ("{x{{self.facts.file}}", "{{"),
+        ] {
+            let template: Template = text.parse().unwrap();
+            assert_eq!(
+                template.substitute(|_, _| Ok(Some(value.into()))).unwrap_err(),
+                "substitution would form a template delimiter ('{{')"
+            );
+        }
+        let template: Template = "{{self.facts.file}}{{self.facts.empty}}{".parse().unwrap();
+        assert_eq!(
+            template
+                .substitute(|_, reference| match reference {
+                    Reference::Fact { fact, .. } => Ok(Some(if fact == "empty" { "" } else { "{" }.into())),
+                    _ => unreachable!("the template references facts"),
+                })
+                .unwrap_err(),
+            "substitution would form a template delimiter ('{{')"
+        );
     }
 
     #[test]

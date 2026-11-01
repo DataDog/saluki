@@ -3,12 +3,19 @@
 use std::collections::BTreeMap;
 
 use crate::{
+    backend::LateFact,
     case::{EndpointOverride, FileSource, ParticipantConfig},
     endpoint::{ConsumedEndpoint, Endpoint},
     layout::{Os, Realization, RealizationKind},
 };
 
 /// One participant's case configuration for its participant OS, after applying that OS's overlay.
+///
+/// Fact references and fixed late facts (a host process group's `ip`) are already substituted.
+/// Other references stay exactly as written: another participant's `container_id` and endpoint and connection
+/// addresses resolve at creation; the participant's own late facts listed by
+/// [`ParticipantType::substituted_late_facts`] resolve after start.
+/// A type that must interpret an unresolved value reports a configuration error.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CaseValues {
     /// Environment variables after applying the overlay. Defaults to empty.
@@ -40,6 +47,12 @@ impl CaseValues {
 }
 
 /// A participant's configuration: its type's defaults with the case's values applied over them.
+///
+/// Fact references and fixed late facts (a host process group's `ip`) are already substituted.
+/// Other references stay exactly as written: another participant's `container_id` and endpoint and connection
+/// addresses resolve at creation; the participant's own late facts listed by
+/// [`ParticipantType::substituted_late_facts`] resolve after start.
+/// A type that must interpret an unresolved value reports a configuration error.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EffectiveConfig {
     /// Type defaults with case environment variables replacing matching keys. Defaults to empty.
@@ -98,6 +111,8 @@ pub trait ParticipantType: Send + Sync {
     /// Checks the case's configuration after its OS overlay. Defaults to accepting it.
     /// Called only with realizations from [`Self::supports`].
     ///
+    /// `config` holds substituted values; see [`CaseValues`].
+    ///
     /// # Errors
     ///
     /// Returns an error describing configuration this type cannot use for the realization.
@@ -109,12 +124,16 @@ pub trait ParticipantType: Send + Sync {
     /// Omit defaults the case sets in another form the product reads with lower precedence,
     /// such as a key in a supplied configuration file. Defaults to none.
     /// Called after [`Self::validate_config`], only with realizations from [`Self::supports`].
+    ///
+    /// `config` holds substituted values; see [`CaseValues`].
     fn default_env(&self, _realization: Realization, _config: &CaseValues) -> BTreeMap<String, String> {
         BTreeMap::new()
     }
 
     /// Endpoints this participant serves with its configuration, by name. Defaults to none.
     /// Called after [`Self::validate_config`], only with realizations from [`Self::supports`].
+    ///
+    /// `config` holds substituted values; see [`CaseValues`].
     ///
     /// # Errors
     ///
@@ -127,13 +146,22 @@ pub trait ParticipantType: Send + Sync {
 
     /// Endpoints this participant consumes with its configuration, by name: the keys a case may `connect`.
     /// Defaults to none. Called after [`Self::validate_config`], only with realizations from [`Self::supports`].
+    ///
+    /// `config` holds substituted values; see [`CaseValues`].
     fn consumes(&self, _realization: Realization, _config: &EffectiveConfig) -> BTreeMap<String, ConsumedEndpoint> {
         BTreeMap::new()
     }
 
-    /// Early facts steps may reference for this realization, sorted by name. Defaults to none.
+    /// Early facts configuration and steps may reference for this realization, sorted by name. Defaults to none.
     /// Called only with realizations from [`Self::supports`].
     fn facts(&self, _realization: Realization) -> &'static [FactDeclaration] {
+        &[]
+    }
+
+    /// The participant's own late facts this type writes into its environment variables
+    /// after the participant starts and before its product reads them.
+    /// Sorted by fact; defaults to none. Called only with realizations from [`Self::supports`].
+    fn substituted_late_facts(&self, _realization: Realization) -> &'static [LateFact] {
         &[]
     }
 

@@ -46,14 +46,25 @@ impl LateFact {
     }
 }
 
+/// When a backend can supply a late fact.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LateFactTiming {
+    /// The same value for every participant of this kind, known at plan time.
+    Fixed(&'static str),
+    /// Known once the participant is created, before it starts.
+    AfterCreate,
+    /// Known once the participant has started.
+    AfterStart,
+}
+
 /// An execution mechanism's link to the runner host.
 #[async_trait]
 pub(crate) trait Backend: Send + Sync {
     /// The realization kind this backend creates.
     fn kind(&self) -> RealizationKind;
 
-    /// Late facts provided by this realization kind, sorted by name.
-    fn provided_late_facts(&self) -> &'static [LateFact];
+    /// Late facts and their availability, sorted by fact.
+    fn late_facts(&self) -> &'static [(LateFact, LateFactTiming)];
 
     /// Checks that this host can create this kind for participants on `os`.
     async fn providable(&self, os: Os) -> Result<(), String>;
@@ -66,12 +77,12 @@ pub(crate) const BACKENDS: &[&dyn Backend] = &[
     &KubernetesPods,
 ];
 
-pub(crate) fn provided_late_facts(kind: RealizationKind) -> &'static [LateFact] {
+pub(crate) fn late_facts(kind: RealizationKind) -> &'static [(LateFact, LateFactTiming)] {
     BACKENDS
         .iter()
         .find(|backend| backend.kind() == kind)
         .expect("every realization kind has a backend")
-        .provided_late_facts()
+        .late_facts()
 }
 
 /// Returns each realization this runner host cannot provide, with the reason.
@@ -109,8 +120,11 @@ impl Backend for LinuxContainers {
         RealizationKind::LinuxContainer
     }
 
-    fn provided_late_facts(&self) -> &'static [LateFact] {
-        &[LateFact::ContainerId, LateFact::Ip]
+    fn late_facts(&self) -> &'static [(LateFact, LateFactTiming)] {
+        &[
+            (LateFact::ContainerId, LateFactTiming::AfterCreate),
+            (LateFact::Ip, LateFactTiming::AfterStart),
+        ]
     }
 
     async fn providable(&self, os: Os) -> Result<(), String> {
@@ -127,8 +141,11 @@ impl Backend for WindowsContainers {
         RealizationKind::WindowsContainer
     }
 
-    fn provided_late_facts(&self) -> &'static [LateFact] {
-        &[LateFact::ContainerId, LateFact::Ip]
+    fn late_facts(&self) -> &'static [(LateFact, LateFactTiming)] {
+        &[
+            (LateFact::ContainerId, LateFactTiming::AfterCreate),
+            (LateFact::Ip, LateFactTiming::AfterStart),
+        ]
     }
 
     async fn providable(&self, os: Os) -> Result<(), String> {
@@ -145,8 +162,8 @@ impl Backend for HostProcessGroups {
         RealizationKind::HostProcessGroup
     }
 
-    fn provided_late_facts(&self) -> &'static [LateFact] {
-        &[LateFact::Ip]
+    fn late_facts(&self) -> &'static [(LateFact, LateFactTiming)] {
+        &[(LateFact::Ip, LateFactTiming::Fixed("127.0.0.1"))]
     }
 
     async fn providable(&self, os: Os) -> Result<(), String> {
@@ -164,8 +181,12 @@ impl Backend for KubernetesPods {
         RealizationKind::KubernetesPod
     }
 
-    fn provided_late_facts(&self) -> &'static [LateFact] {
-        &[LateFact::ContainerId, LateFact::Ip, LateFact::PodUid]
+    fn late_facts(&self) -> &'static [(LateFact, LateFactTiming)] {
+        &[
+            (LateFact::ContainerId, LateFactTiming::AfterStart),
+            (LateFact::Ip, LateFactTiming::AfterStart),
+            (LateFact::PodUid, LateFactTiming::AfterStart),
+        ]
     }
 
     async fn providable(&self, os: Os) -> Result<(), String> {
@@ -228,10 +249,32 @@ mod tests {
     fn each_realization_kind_has_one_backend_declaring_its_late_facts() {
         assert_eq!(BACKENDS.len(), 4);
         for (kind, expected) in [
-            (RealizationKind::LinuxContainer, &["container_id", "ip"][..]),
-            (RealizationKind::WindowsContainer, &["container_id", "ip"][..]),
-            (RealizationKind::HostProcessGroup, &["ip"][..]),
-            (RealizationKind::KubernetesPod, &["container_id", "ip", "pod_uid"][..]),
+            (
+                RealizationKind::LinuxContainer,
+                &[
+                    (LateFact::ContainerId, LateFactTiming::AfterCreate),
+                    (LateFact::Ip, LateFactTiming::AfterStart),
+                ][..],
+            ),
+            (
+                RealizationKind::WindowsContainer,
+                &[
+                    (LateFact::ContainerId, LateFactTiming::AfterCreate),
+                    (LateFact::Ip, LateFactTiming::AfterStart),
+                ][..],
+            ),
+            (
+                RealizationKind::HostProcessGroup,
+                &[(LateFact::Ip, LateFactTiming::Fixed("127.0.0.1"))][..],
+            ),
+            (
+                RealizationKind::KubernetesPod,
+                &[
+                    (LateFact::ContainerId, LateFactTiming::AfterStart),
+                    (LateFact::Ip, LateFactTiming::AfterStart),
+                    (LateFact::PodUid, LateFactTiming::AfterStart),
+                ][..],
+            ),
         ] {
             match kind {
                 RealizationKind::HostProcessGroup
@@ -240,10 +283,18 @@ mod tests {
                 | RealizationKind::KubernetesPod => {}
             }
             assert_eq!(BACKENDS.iter().filter(|backend| backend.kind() == kind).count(), 1);
-            let facts = provided_late_facts(kind);
-            assert!(facts.windows(2).all(|pair| pair[0] < pair[1]));
-            assert_eq!(facts.iter().map(|fact| fact.name()).collect::<Vec<_>>(), expected);
+            let facts = late_facts(kind);
+            assert!(facts.windows(2).all(|pair| pair[0].0 < pair[1].0));
+            assert_eq!(facts, expected);
         }
+    }
+
+    #[test]
+    fn host_process_groups_declare_a_fixed_loopback_ip() {
+        assert_eq!(
+            HostProcessGroups.late_facts(),
+            &[(LateFact::Ip, LateFactTiming::Fixed("127.0.0.1"))]
+        );
     }
 
     #[test]
@@ -362,7 +413,7 @@ mod tests {
             self.kind
         }
 
-        fn provided_late_facts(&self) -> &'static [LateFact] {
+        fn late_facts(&self) -> &'static [(LateFact, LateFactTiming)] {
             &[]
         }
 

@@ -7,7 +7,10 @@ use std::{
 
 use saluki_error::{generic_error, GenericError};
 
-use super::file::{CaseFile, FileSource, ParticipantEntry};
+use super::{
+    config_references::{check_config_references, check_param_keys},
+    file::{CaseFile, FileSource, ParticipantEntry},
+};
 use crate::{
     layout::Os,
     participant::{find_type, unknown_type_message, ParticipantType},
@@ -19,9 +22,10 @@ use crate::{
 ///
 /// Returns the first error in this order: participant names, subject count, subject OS override;
 /// then, per participant in name order, registered type, realization options, file names and sources,
-/// parameters, OS overlays (reachable OS, file names and sources, parameters), and connection targets
-/// (existing participant, not self). Sources must be nonempty relative paths within the case directory
-/// that resolve to existing files or directories.
+/// parameter key syntax then declarations, OS overlays (reachable OS, file names and sources, parameter key syntax
+/// then declarations), connection targets (existing participant, not self), and configuration reference syntax
+/// and names (base, then overlays). Sources must be nonempty relative paths within the case directory that resolve
+/// to existing files or directories.
 /// Map keys and overlay OSes are checked in sorted order. Every error names the case and source.
 pub(super) fn check_participants(
     file: &CaseFile, subject_os: &BTreeSet<Os>, types: &[&dyn ParticipantType], name: &str, source: &Path,
@@ -84,6 +88,7 @@ pub(super) fn check_participants(
         )
         .map_err(&error)?;
         check_file_sources(&entry.config.files, case_dir, &holder, "").map_err(&error)?;
+        check_param_keys(&entry.config.params, &format!("{holder} config.params")).map_err(&error)?;
         check_keys(
             entry.config.params.keys(),
             participant_type.params(),
@@ -116,6 +121,7 @@ pub(super) fn check_participants(
             .map_err(&error)?;
             check_file_sources(&overlay.files, case_dir, &holder, &format!(" in its '{os}' overlay"))
                 .map_err(&error)?;
+            check_param_keys(&overlay.params, &format!("{holder} config.os.{os}.params")).map_err(&error)?;
             check_keys(overlay.params.keys(), participant_type.params(), "accepts", |key| {
                 format!(
                     "{holder} sets parameter '{key}', which type '{type_name}' does not accept \
@@ -136,6 +142,7 @@ pub(super) fn check_participants(
                 return Err(error(format!("{holder} connects '{consumed}' to itself")));
             }
         }
+        check_config_references(file, participant, entry).map_err(&error)?;
     }
     Ok(())
 }

@@ -14,6 +14,7 @@ use crate::{
 };
 
 mod connections;
+mod references;
 mod routes;
 
 use self::connections::{check_connections, ParticipantEndpoints};
@@ -39,10 +40,12 @@ impl<C> CasePlan<C> {
     ///
     /// Returns the first error on any declared subject OS, naming the case, source and failing OS,
     /// even when the selected OS is excluded. On each OS, checks run in this order: layout;
-    /// configuration, endpoint derivation and overrides per participant in name order;
+    /// configuration fact and late-fact references, configuration, endpoint derivation and overrides
+    /// per participant in name order;
     /// connections per consumer in name order (per `connect` key in name order: consumed, served,
     /// accepted kind, route, delivered env keys; then required endpoints in name order);
-    /// fact and late-fact references in procedure order with step labels.
+    /// configuration endpoint and connection references per participant in name order (`env`, then `params`);
+    /// step fact and late-fact references in procedure order with step labels.
     pub fn compile(
         case: CaseConfig<C>, subject_os: Os, registries: &Registries<'_>,
     ) -> Result<Option<Self>, GenericError> {
@@ -134,13 +137,13 @@ fn plan_participants(
             find_type(types, &entry.participant_type).expect("laid-out participants have registered types");
         let holder = describe_participant(name, &entry.participant_type, realization);
         let invalid_config = |message| format!("{holder} has invalid configuration: {message}");
-        let values = CaseValues::for_os(&entry.config, realization.os);
+        let mut values = CaseValues::for_os(&entry.config, realization.os);
+        references::resolve_config_references(file, layout, types, name, &mut values)?;
         participant_type
             .validate_config(realization, &values)
             .map_err(&invalid_config)?;
         let defaults = participant_type.default_env(realization, &values);
-        let case_env = values.env.keys().cloned().collect();
-        let config = EffectiveConfig::assemble(defaults, values);
+        let config = EffectiveConfig::assemble(defaults, values.clone());
         let endpoints = participant_type
             .endpoints(realization, &config)
             .map_err(invalid_config)?;
@@ -158,7 +161,7 @@ fn plan_participants(
             ParticipantEndpoints {
                 served: endpoints,
                 consumed,
-                case_env,
+                values,
             },
         );
         participants.insert(
@@ -170,6 +173,7 @@ fn plan_participants(
         );
     }
     check_connections(file, layout, &participant_endpoints)?;
+    references::check_address_references(file, layout, &participant_endpoints)?;
     Ok(participants)
 }
 
@@ -189,14 +193,14 @@ fn check_reference_needs(
                     Need::Fact(participant, fact) => (participant, fact),
                     Need::Late(participant, fact) => {
                         let realization = layout.get(&participant).expect("step needs name laid-out participants");
-                        let facts = backend::provided_late_facts(realization.kind);
-                        if !facts.contains(&fact) {
+                        let facts = backend::late_facts(realization.kind);
+                        if !facts.iter().any(|(provided, _)| *provided == fact) {
                             let kind = realization.kind.name();
                             return Err(format!(
                                 "step {} references late fact '{}' of participant '{participant}', which a {kind} does not have; a {kind} has {}",
                                 step_label(index, parallel.then_some(member)),
                                 fact.name(),
-                                declared_names(&facts.iter().map(|fact| fact.name()).collect::<Vec<_>>()),
+                                declared_names(&facts.iter().map(|(fact, _)| fact.name()).collect::<Vec<_>>()),
                             ));
                         }
                         continue;
@@ -267,11 +271,18 @@ mod tests {
             ]
         }
 
+        fn params(&self) -> &'static [&'static str] {
+            &["mode"]
+        }
+
         fn endpoints(
             &self, _realization: Realization, _config: &EffectiveConfig,
         ) -> Result<BTreeMap<String, Endpoint>, String> {
             Ok([
                 ("tcp", EndpointKind::Tcp),
+                ("udp", EndpointKind::Udp),
+                ("http", EndpointKind::Http),
+                ("grpc", EndpointKind::Grpc),
                 ("datagram", EndpointKind::UnixDatagram),
                 ("stream", EndpointKind::UnixStream),
                 ("pipe", EndpointKind::NamedPipe),
@@ -373,7 +384,7 @@ mod tests {
     const CONFIG_LOADER: CaseLoader<'static, FixtureTypes> =
         CaseLoader::new(CONFIG_REGISTRIES, FixtureTypes, "fixture-participants");
 
-    fn compile(yaml: &str, os: Os) -> Result<Option<CasePlan<FixtureConfig>>, GenericError> {
+    pub(super) fn compile(yaml: &str, os: Os) -> Result<Option<CasePlan<FixtureConfig>>, GenericError> {
         let case = CONFIG_LOADER
             .load_content(yaml, "alpha", Path::new("cases/alpha/config.yaml"))
             .unwrap()

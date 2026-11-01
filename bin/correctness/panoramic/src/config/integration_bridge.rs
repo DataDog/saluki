@@ -119,10 +119,10 @@ pub(super) fn integration_config<'a>(
             .map(|(os, overlay)| (format!("config.os.{}.env", os.name()), &overlay.env)),
     ) {
         for (key, value) in values {
-            if key.contains("{{") || value.contains("{{") {
+            if value.contains("{{") {
                 return Err(format!(
                     "participant '{participant}' sets {field} '{key}' with a template reference ('{{{{'); \
-                     panoramic does not resolve references in environment variables"
+                     the integration runner does not support references in environment variables"
                 ));
             }
             if key.starts_with(ENV_PREFIX) {
@@ -393,8 +393,7 @@ mod tests {
     #[test]
     fn overlay_env_values_with_template_references_or_reserved_names_are_rejected_on_every_subject_os() {
         for (env, reason) in [
-            ("{KEY: '{{ adp.facts.default_log_file }}'}", "'KEY' with a template reference ('{{'); panoramic does not resolve references in environment variables"),
-            ("{'{{name}}': value}", "'{{name}}' with a template reference ('{{'); panoramic does not resolve references in environment variables"),
+            ("{KEY: '{{ adp.facts.default_log_file }}'}", "'KEY' with a template reference ('{{'); the integration runner does not support references in environment variables"),
             ("{PANORAMIC_DYNAMIC_IP: value}", "'PANORAMIC_DYNAMIC_IP'; names starting with PANORAMIC_DYNAMIC_ are reserved for cases with 'type: integration'"),
         ] {
             for overlay_os in ["linux", "windows"] {
@@ -418,6 +417,32 @@ mod tests {
             let message = plan(&yaml, os).integration_config().unwrap_err().to_string();
             assert!(message.contains("config.os.linux.env"), "{message}");
         }
+    }
+
+    #[test]
+    fn the_integration_runner_rejects_resolvable_references_in_env_on_every_subject_os() {
+        let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[linux, macos, windows]").replace(
+            "subject: true",
+            "subject: true, config: {env: {KEY: '{{ self.facts.default_log_file }}'}, os: {macos: {env: {KEY: '{{ self.late.ip }}'}}}}",
+        );
+        for (os, expected) in [
+            (Os::Linux, "/var/log/datadog/agent-data-plane.log"),
+            (Os::MacOs, "127.0.0.1"),
+            (Os::Windows, r"C:\ProgramData\Datadog\logs\agent-data-plane.log"),
+        ] {
+            let plan = plan(&yaml, os);
+            assert_eq!(plan.effective_config("adp").unwrap().env["KEY"], expected);
+            assert_eq!(plan.integration_config().unwrap_err().to_string(),
+                "Cannot run case 'case' from /cases/case/config.yaml: participant 'adp' sets config.env 'KEY' with a template reference ('{{'); the integration runner does not support references in environment variables");
+        }
+        let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[macos]").replace(
+            "subject: true",
+            "subject: true, config: {env: {KEY: '{{ self.late.ip }}'}}",
+        );
+        let plan = plan(&yaml, Os::MacOs);
+        assert_eq!(plan.effective_config("adp").unwrap().env["KEY"], "127.0.0.1");
+        assert_eq!(plan.integration_config().unwrap_err().to_string(),
+            "Cannot run case 'case' from /cases/case/config.yaml: participant 'adp' sets config.env 'KEY' with a template reference ('{{'); the integration runner does not support references in environment variables");
     }
 
     #[test]
@@ -715,16 +740,6 @@ mod tests {
                 "subject: true",
                 "subject: true, realization: {kind: linux-container}",
                 "participant 'adp' sets 'realization', which the integration runner does not support",
-            ),
-            (
-                "subject: true",
-                "subject: true, config: {env: {DD_BIND_HOST: \"{{PANORAMIC_DYNAMIC_IP}}\"}}",
-                "participant 'adp' sets config.env 'DD_BIND_HOST' with a template reference ('{{'); panoramic does not resolve references in environment variables",
-            ),
-            (
-                "subject: true",
-                "subject: true, config: {env: {\"{{name}}\": x}}",
-                "participant 'adp' sets config.env '{{name}}' with a template reference ('{{'); panoramic does not resolve references in environment variables",
             ),
             (
                 "subject: true",

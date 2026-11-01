@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, fmt};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-pub use crate::backend::LateFact;
+use crate::backend::LateFact;
 
 /// A step's fields as written in the case file, keyed by field name.
 pub type StepFields = BTreeMap<String, Value>;

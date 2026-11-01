@@ -17,11 +17,12 @@ use crate::{
     step::{Step, StepFactory},
 };
 
+pub(crate) mod config_references;
 mod duration;
 mod file;
 mod participant_check;
 mod step_check;
-mod template;
+pub(crate) mod template;
 
 #[cfg(test)]
 pub(crate) mod fixtures;

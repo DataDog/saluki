@@ -335,3 +335,80 @@ fn participant_step_errors_name_the_canonical_file_and_step() {
         assert!(message.contains(expected), "expected {expected}: {message}");
     }
 }
+
+#[test]
+fn agent_adp_env_placeholders_from_the_integration_schema_fail_at_load() {
+    for (env, reason) in [
+        (
+            "{DD_BIND_HOST: '{{PANORAMIC_DYNAMIC_IP}}'}",
+            "'DD_BIND_HOST' '{{PANORAMIC_DYNAMIC_IP}}' is not a template reference; write '{{ <participant>.facts.<fact> }}', '{{ <participant>.late.<fact> }}', '{{ <participant>.endpoints.<endpoint>.<part> }}' or '{{ self.connections.<endpoint>.<part> }}'",
+        ),
+        (
+            "{'{{name}}': literal}",
+            "'{{name}}': environment variable names can't contain template references",
+        ),
+    ] {
+        for (config, prefix) in [
+            (format!("{{env: {env}}}"), "config.env"),
+            (format!("{{os: {{windows: {{env: {env}}}}}}}"), "config.os.windows.env"),
+        ] {
+            let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[linux, windows]").replace("subject: true", &format!("subject: true, config: {config}"));
+            assert_eq!(crate::CASE_LOADER.load_content(&yaml, "alpha", Path::new("alpha/config.yaml")).err().unwrap().to_string(),
+                format!("case 'alpha' in alpha/config.yaml: participant 'adp' {prefix} {reason}"));
+        }
+    }
+}
+
+#[test]
+fn agent_adp_default_log_file_in_env_plans_on_linux_and_windows_but_not_macos() {
+    use panoramic_core::plan::CasePlan;
+
+    let yaml = PARTICIPANT_FIELDS
+        .replace(
+            "subject: true",
+            "subject: true, config: {env: {FILE: '{{ self.facts.default_log_file }}'}}",
+        )
+        .replace("[linux]", "[linux, windows]");
+    for (os, expected) in [
+        (Os::Linux, "/var/log/datadog/agent-data-plane.log"),
+        (Os::Windows, r"C:\ProgramData\Datadog\logs\agent-data-plane.log"),
+    ] {
+        let case = crate::CASE_LOADER
+            .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
+            .unwrap()
+            .remove(0);
+        let plan = CasePlan::compile(case, os, &crate::REGISTRIES).unwrap().unwrap();
+        assert_eq!(plan.effective_config("adp").unwrap().env["FILE"], expected);
+    }
+    let case = crate::CASE_LOADER
+        .load_content(
+            &yaml.replace("[linux, windows]", "[linux, macos, windows]"),
+            "alpha",
+            Path::new("alpha/config.yaml"),
+        )
+        .unwrap()
+        .remove(0);
+    assert_eq!(CasePlan::compile(case, Os::Linux, &crate::REGISTRIES).err().unwrap().to_string(),
+        "case 'alpha' in alpha/config.yaml: on subject OS 'macos', participant 'adp' of type 'agent-adp' as host-process-group on macos environment variable 'FILE' '{{ self.facts.default_log_file }}' references fact 'default_log_file' of participant 'adp', which type 'agent-adp' does not provide as host-process-group on macos; it provides it as linux-container on linux, windows-container on windows");
+}
+
+#[test]
+fn agent_adp_cannot_use_its_own_ip_in_env_in_containers() {
+    use panoramic_core::plan::CasePlan;
+
+    for (os, kind) in [("linux", "linux-container"), ("windows", "windows-container")] {
+        for name in ["self", "adp"] {
+            let yaml = PARTICIPANT_FIELDS.replace("[linux]", &format!("[{os}]")).replace(
+                "subject: true",
+                &format!("subject: true, config: {{env: {{IP: '{{{{{name}.late.ip}}}}'}}}}"),
+            );
+            let case = crate::CASE_LOADER
+                .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
+                .unwrap()
+                .remove(0);
+            assert_eq!(CasePlan::compile(case, Os::Linux, &crate::REGISTRIES).err().unwrap().to_string(), format!(
+                "case 'alpha' in alpha/config.yaml: on subject OS '{os}', participant 'adp' of type 'agent-adp' as {kind} on {os} environment variable 'IP' '{{{{{name}.late.ip}}}}' references its own late fact 'ip', which type 'agent-adp' does not substitute into its environment as {kind}"
+            ));
+        }
+    }
+}
