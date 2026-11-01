@@ -281,6 +281,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        artifact::ArtifactRole,
         case::{
             fixtures::{minimal_procedure, FixtureTypes, Server, STEPS},
             CaseLoader, Registries,
@@ -315,6 +316,10 @@ mod tests {
 
         fn supports(&self) -> &'static [(Os, RealizationKind)] {
             Server.supports()
+        }
+
+        fn artifacts(&self, _realization: Realization) -> &'static [ArtifactRole] {
+            &[]
         }
 
         fn params(&self) -> &'static [&'static str] {

@@ -196,6 +196,11 @@ Parent-directory components must stay within the case directory; symlink targets
 Plan compilation checks fact availability for both steps and configuration on every OS in `subject_os`.
 A referenced fact missing for a participant's realization fails planning and therefore discovery.
 
+`panoramic list` also prints the artifact roles a participant case needs on the selected subject OS: stable
+names for the images, binaries and installs its participants and their realizations run. Each role has a
+local default, such as `saluki-images/datadog-agent:testing-devel` for `agent-adp-linux-image`. Runners
+choose images and binaries from their settings.
+
 Connections and endpoint overrides are checked the same way: on every OS in `subject_os`, each `connect` key
 must be an endpoint the participant consumes, the target must serve the named endpoint with its configuration,
 and the endpoint's kind must be one the consumer accepts. A connection also fails when its participants'
@@ -252,8 +257,9 @@ makes the run exit 2. `list` never checks host availability.
 The source documents each part:
 
 - `bin/correctness/panoramic/core/src/case/file.rs`: the case file's fields and their defaults.
+- `bin/correctness/panoramic/core/src/artifact.rs`: artifact roles.
 - `bin/correctness/panoramic/core/src/layout.rs`: how participants are placed on an OS and realization.
-- `bin/correctness/panoramic/participants/src/agent_adp.rs`: what `agent-adp` declares, including its facts.
+- `bin/correctness/panoramic/participants/src/agent_adp.rs`: what `agent-adp` declares, including its facts and artifact roles.
 - `bin/correctness/panoramic/steps/src/`: each step's fields.
 - `bin/correctness/panoramic/src/config/integration_bridge.rs`: the subset the integration runner supports, and the output each OS captures.
 

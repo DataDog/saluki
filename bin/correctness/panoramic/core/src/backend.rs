@@ -13,8 +13,16 @@ use async_trait::async_trait;
 use saluki_error::GenericError;
 
 use crate::{
+    artifact::{ArtifactKind, ArtifactRole},
     layout::{Os, Realization, RealizationKind},
     plan::ScopeLayout,
+};
+
+/// Image that makes the shared volume writable before Linux containers start.
+const FIXUP_IMAGE: ArtifactRole = ArtifactRole {
+    name: "fixup-image",
+    kind: ArtifactKind::Image,
+    local_default: airlock::driver::DEFAULT_ALPINE_IMAGE,
 };
 
 const PROVIDABILITY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -66,6 +74,9 @@ pub(crate) trait Backend: Send + Sync {
     /// The realization kind this backend creates.
     fn kind(&self) -> RealizationKind;
 
+    /// Artifact roles every participant of this realization kind needs, whatever its type.
+    fn artifacts(&self) -> &'static [ArtifactRole];
+
     /// Root of the filesystem shared by participants in this scope.
     fn shared_root(&self, os: Os, scope: &ScopeLayout) -> String;
 
@@ -90,6 +101,10 @@ pub(crate) const BACKENDS: &[&dyn Backend] = &[
 
 pub(crate) fn shared_root(kind: RealizationKind, os: Os, scope: &ScopeLayout) -> String {
     backend(kind).shared_root(os, scope)
+}
+
+pub(crate) fn artifacts(kind: RealizationKind) -> &'static [ArtifactRole] {
+    backend(kind).artifacts()
 }
 
 pub(crate) fn late_facts(kind: RealizationKind) -> &'static [(LateFact, LateFactTiming)] {
@@ -143,6 +158,10 @@ impl Backend for LinuxContainers {
         RealizationKind::LinuxContainer
     }
 
+    fn artifacts(&self) -> &'static [ArtifactRole] {
+        &[FIXUP_IMAGE]
+    }
+
     fn shared_root(&self, _os: Os, _scope: &ScopeLayout) -> String {
         "/airlock".into()
     }
@@ -166,6 +185,10 @@ impl Backend for LinuxContainers {
 impl Backend for WindowsContainers {
     fn kind(&self) -> RealizationKind {
         RealizationKind::WindowsContainer
+    }
+
+    fn artifacts(&self) -> &'static [ArtifactRole] {
+        &[]
     }
 
     fn shared_root(&self, _os: Os, _scope: &ScopeLayout) -> String {
@@ -193,6 +216,10 @@ impl Backend for HostProcessGroups {
         RealizationKind::HostProcessGroup
     }
 
+    fn artifacts(&self) -> &'static [ArtifactRole] {
+        &[]
+    }
+
     fn shared_root(&self, os: Os, scope: &ScopeLayout) -> String {
         scope.state_dir(os)
     }
@@ -214,6 +241,10 @@ impl Backend for HostProcessGroups {
 impl Backend for KubernetesPods {
     fn kind(&self) -> RealizationKind {
         RealizationKind::KubernetesPod
+    }
+
+    fn artifacts(&self) -> &'static [ArtifactRole] {
+        &[]
     }
 
     fn shared_root(&self, _os: Os, _scope: &ScopeLayout) -> String {
@@ -287,6 +318,22 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+
+    #[test]
+    fn only_linux_containers_declare_the_fixup_image_with_airlocks_default() {
+        for backend in BACKENDS {
+            let expected: &[ArtifactRole] = if backend.kind() == RealizationKind::LinuxContainer {
+                &[ArtifactRole {
+                    name: "fixup-image",
+                    kind: ArtifactKind::Image,
+                    local_default: airlock::driver::DEFAULT_ALPINE_IMAGE,
+                }]
+            } else {
+                &[]
+            };
+            assert_eq!(artifacts(backend.kind()), expected, "{:?}", backend.kind());
+        }
+    }
 
     #[test]
     fn every_backend_reports_its_shared_root() {
@@ -494,6 +541,10 @@ mod tests {
     impl Backend for FakeBackend {
         fn kind(&self) -> RealizationKind {
             self.kind
+        }
+
+        fn artifacts(&self) -> &'static [ArtifactRole] {
+            &[]
         }
 
         fn shared_root(&self, os: Os, scope: &ScopeLayout) -> String {

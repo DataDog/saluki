@@ -201,6 +201,7 @@ pub(crate) fn lay_out(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::artifact::ArtifactRole;
 
     struct Type {
         name: &'static str,
@@ -214,6 +215,10 @@ mod tests {
 
         fn supports(&self) -> &'static [(Os, RealizationKind)] {
             self.supports
+        }
+
+        fn artifacts(&self, _realization: Realization) -> &'static [ArtifactRole] {
+            &[]
         }
 
         fn processes(&self) -> &'static [&'static str] {
@@ -432,6 +437,11 @@ mod tests {
             fn name(&self) -> &'static str {
                 "empty"
             }
+
+            fn artifacts(&self, _realization: Realization) -> &'static [ArtifactRole] {
+                &[]
+            }
+
             fn processes(&self) -> &'static [&'static str] {
                 &[]
             }

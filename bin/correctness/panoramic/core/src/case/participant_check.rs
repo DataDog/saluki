@@ -260,9 +260,13 @@ pub(crate) fn declared_names(names: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::case::{
-        fixtures::{minimal_procedure, write_case, FixtureTypes, STEPS},
-        CaseLoader, Registries,
+    use crate::{
+        artifact::ArtifactRole,
+        case::{
+            fixtures::{minimal_procedure, write_case, FixtureTypes, STEPS},
+            CaseLoader, Registries,
+        },
+        layout::Realization,
     };
 
     struct Server;
@@ -270,6 +274,10 @@ mod tests {
     impl ParticipantType for Server {
         fn name(&self) -> &'static str {
             "server"
+        }
+
+        fn artifacts(&self, _realization: Realization) -> &'static [ArtifactRole] {
+            &[]
         }
 
         fn config_files(&self) -> &'static [&'static str] {
@@ -290,6 +298,10 @@ mod tests {
     impl ParticipantType for Client {
         fn name(&self) -> &'static str {
             "client"
+        }
+
+        fn artifacts(&self, _realization: Realization) -> &'static [ArtifactRole] {
+            &[]
         }
 
         fn processes(&self) -> &'static [&'static str] {
@@ -623,6 +635,10 @@ mod tests {
         impl ParticipantType for Minimal {
             fn name(&self) -> &'static str {
                 "minimal"
+            }
+
+            fn artifacts(&self, _realization: Realization) -> &'static [ArtifactRole] {
+                &[]
             }
 
             fn processes(&self) -> &'static [&'static str] {

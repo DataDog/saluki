@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use crate::{
+    artifact::ArtifactRole,
     backend::LateFact,
     case::{EndpointOverride, FileSource, ParticipantConfig},
     endpoint::{ConsumedEndpoint, Endpoint},
@@ -107,6 +108,10 @@ pub trait ParticipantType: Send + Sync {
     fn supports(&self) -> &'static [(Os, RealizationKind)] {
         &[]
     }
+
+    /// Artifact roles this type runs as one realization. Called only with realizations from [`Self::supports`].
+    /// Every declaration of a role name, by any type or backend, must agree on its kind and local default.
+    fn artifacts(&self, realization: Realization) -> &'static [ArtifactRole];
 
     /// Names a case may supply under `config.files`. Defaults to none.
     fn config_files(&self) -> &'static [&'static str] {

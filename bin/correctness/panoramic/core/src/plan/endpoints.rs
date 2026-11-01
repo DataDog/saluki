@@ -239,6 +239,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        artifact::ArtifactRole,
         case::{
             fixtures::{minimal_procedure, write_case, Client, FixtureTypes, Server, PARTICIPANT_FIELDS, STEPS},
             CaseLoader, FileSource, Registries,
@@ -510,6 +511,11 @@ participants:
             fn supports(&self) -> &'static [(Os, RealizationKind)] {
                 Client.supports()
             }
+
+            fn artifacts(&self, _realization: Realization) -> &'static [ArtifactRole] {
+                &[]
+            }
+
             fn validate_config(&self, _realization: Realization, config: &CaseValues) -> Result<(), String> {
                 assert_eq!(config.env, BTreeMap::from([("CASE".into(), "value".into())]));
                 self.0.lock().unwrap().push("validate");
@@ -820,6 +826,10 @@ participants:
 
             fn supports(&self) -> &'static [(Os, RealizationKind)] {
                 &[(Os::Linux, RealizationKind::LinuxContainer)]
+            }
+
+            fn artifacts(&self, _realization: Realization) -> &'static [ArtifactRole] {
+                &[]
             }
 
             fn processes(&self) -> &'static [&'static str] {

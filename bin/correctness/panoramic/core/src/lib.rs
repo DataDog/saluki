@@ -5,6 +5,7 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
+pub mod artifact;
 pub mod backend;
 pub mod case;
 pub mod deadline;

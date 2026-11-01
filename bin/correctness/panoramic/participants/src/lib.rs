@@ -15,6 +15,8 @@ pub const REGISTERED_TYPES: &[&dyn ParticipantType] = &[&AgentAdp];
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use panoramic_core::{
         layout::{Os, Realization, RealizationKind},
         participant::SHARED_DIR_FACT,
@@ -32,6 +34,27 @@ mod tests {
             [AgentAdp::NAME]
         );
         assert_eq!(AgentAdp::NAME, "agent-adp");
+    }
+
+    #[test]
+    fn registered_roles_with_one_name_agree_on_kind_and_local_default() {
+        let mut roles = BTreeMap::new();
+        for participant_type in REGISTERED_TYPES {
+            for &(os, kind) in participant_type.supports() {
+                for role in participant_type.artifacts(Realization { os, kind }) {
+                    let declarer = participant_type.name();
+                    if let Some((previous, previous_type, previous_os, previous_kind)) =
+                        roles.insert(role.name, (role, declarer, os, kind))
+                    {
+                        assert_eq!(
+                            role, previous,
+                            "{declarer} on {os:?} as {kind:?} disagrees with \
+                             {previous_type} on {previous_os:?} as {previous_kind:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

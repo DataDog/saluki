@@ -266,8 +266,9 @@ where
 #[cfg(test)]
 mod tests {
     use panoramic_core::{
+        artifact::ArtifactRole,
         case::{CaseLoader, CaseSchema, Registries},
-        layout::{Os, RealizationKind},
+        layout::{Os, Realization, RealizationKind},
         participant::ParticipantType,
         plan::Planner,
     };
@@ -470,6 +471,10 @@ mod tests {
 
             fn supports(&self) -> &'static [(Os, RealizationKind)] {
                 AgentAdp.supports()
+            }
+
+            fn artifacts(&self, _realization: Realization) -> &'static [ArtifactRole] {
+                &[]
             }
 
             fn config_files(&self) -> &'static [&'static str] {

@@ -7,6 +7,7 @@ use saluki_error::GenericError;
 
 use super::{CasePlan, Planner};
 use crate::{
+    artifact::ArtifactRole,
     backend,
     case::{
         fixtures::{minimal_procedure, write_case, Client, Configured, FixtureConfig, FixtureTypes, Server, STEPS},
@@ -32,6 +33,10 @@ impl ParticipantType for EveryKindServer {
             (Os::Windows, RealizationKind::WindowsContainer),
             (Os::Linux, RealizationKind::KubernetesPod),
         ]
+    }
+
+    fn artifacts(&self, _realization: Realization) -> &'static [ArtifactRole] {
+        &[]
     }
 
     fn params(&self) -> &'static [&'static str] {
@@ -80,6 +85,10 @@ impl ParticipantType for EveryKindClient {
         EveryKindServer.supports()
     }
 
+    fn artifacts(&self, _realization: Realization) -> &'static [ArtifactRole] {
+        &[]
+    }
+
     fn consumes(&self, _realization: Realization, config: &EffectiveConfig) -> BTreeMap<String, ConsumedEndpoint> {
         BTreeMap::from([(
             "target".into(),
@@ -126,6 +135,10 @@ impl ParticipantType for FileServer {
 
     fn supports(&self) -> &'static [(Os, RealizationKind)] {
         EveryKindServer.supports()
+    }
+
+    fn artifacts(&self, _realization: Realization) -> &'static [ArtifactRole] {
+        &[]
     }
 
     fn config_files(&self) -> &'static [&'static str] {
@@ -231,6 +244,10 @@ impl ParticipantType for AssignedServer {
             (Os::Linux, RealizationKind::HostProcessGroup),
             (Os::MacOs, RealizationKind::HostProcessGroup),
         ]
+    }
+
+    fn artifacts(&self, _realization: Realization) -> &'static [ArtifactRole] {
+        &[]
     }
 
     fn params(&self) -> &'static [&'static str] {
@@ -354,6 +371,10 @@ impl ParticipantType for SharedDeliveryClient {
 
     fn supports(&self) -> &'static [(Os, RealizationKind)] {
         Client.supports()
+    }
+
+    fn artifacts(&self, _realization: Realization) -> &'static [ArtifactRole] {
+        &[]
     }
 
     fn default_env(&self, _realization: Realization, _config: &CaseValues) -> BTreeMap<String, String> {

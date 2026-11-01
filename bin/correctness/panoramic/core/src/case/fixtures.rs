@@ -12,6 +12,7 @@ use serde_json::Value;
 
 use super::{case_name, CaseLoader, Registries, Template, TypedCase, TypedCaseLoader};
 use crate::{
+    artifact::ArtifactRole,
     backend::LateFact,
     endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind, Port},
     layout::{Os, Realization, RealizationKind},
@@ -124,6 +125,10 @@ impl ParticipantType for Server {
         ]
     }
 
+    fn artifacts(&self, _realization: Realization) -> &'static [ArtifactRole] {
+        &[]
+    }
+
     fn params(&self) -> &'static [&'static str] {
         &["mode"]
     }
@@ -201,6 +206,10 @@ impl ParticipantType for PodServer {
         ]
     }
 
+    fn artifacts(&self, _realization: Realization) -> &'static [ArtifactRole] {
+        &[]
+    }
+
     fn facts(&self, realization: Realization) -> &'static [FactDeclaration] {
         match (realization.os, realization.kind) {
             (Os::Linux, RealizationKind::LinuxContainer) => &[FactDeclaration {
@@ -228,6 +237,10 @@ impl ParticipantType for Configured {
             (Os::Linux, RealizationKind::LinuxContainer),
             (Os::Windows, RealizationKind::WindowsContainer),
         ]
+    }
+
+    fn artifacts(&self, _realization: Realization) -> &'static [ArtifactRole] {
+        &[]
     }
 
     fn config_files(&self) -> &'static [&'static str] {
@@ -273,6 +286,10 @@ impl ParticipantType for Client {
             (Os::MacOs, RealizationKind::HostProcessGroup),
             (Os::Windows, RealizationKind::WindowsContainer),
         ]
+    }
+
+    fn artifacts(&self, _realization: Realization) -> &'static [ArtifactRole] {
+        &[]
     }
 
     fn consumes(&self, realization: Realization, _config: &EffectiveConfig) -> BTreeMap<String, ConsumedEndpoint> {

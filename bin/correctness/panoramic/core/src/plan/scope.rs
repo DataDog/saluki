@@ -115,6 +115,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        artifact::ArtifactRole,
         case::{
             fixtures::{minimal_procedure, FixtureTypes, PARTICIPANT_FIELDS, STEPS},
             CaseLoader, CaseSchema, ProcedureNode, Registries,
@@ -302,6 +303,11 @@ mod tests {
             fn supports(&self) -> &'static [(Os, RealizationKind)] {
                 EveryKindServer.supports()
             }
+
+            fn artifacts(&self, _realization: Realization) -> &'static [ArtifactRole] {
+                &[]
+            }
+
             fn facts(&self, _: Realization) -> &'static [FactDeclaration] {
                 &[FactDeclaration {
                     name: SHARED_DIR_FACT,

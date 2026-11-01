@@ -510,7 +510,7 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Formats one case's entry in the text listing, with its layout if it has one.
+/// Formats one case's entry in the text listing, with its layout and artifact roles if it has them.
 fn listing_text(plan: &LoadedPlan) -> String {
     let case = plan.case();
     let mut text = format!("  {}\n", case.name());
@@ -524,6 +524,22 @@ fn listing_text(plan: &LoadedPlan) -> String {
             .map(|(name, realization)| format!("{name} on {} as {}", realization.os.name(), realization.kind.name()))
             .collect();
         writeln!(text, "    Layout: {}", participants.join("; ")).unwrap();
+        let roles: Vec<_> = plan
+            .artifact_roles()
+            .expect("participant layouts have artifact roles")
+            .iter()
+            .map(|role| role.name)
+            .collect();
+        writeln!(
+            text,
+            "    Artifact roles: {}",
+            if roles.is_empty() {
+                "none".to_string()
+            } else {
+                roles.join(", ")
+            }
+        )
+        .unwrap();
         for (label, order) in [("Create", plan.create_order()), ("Start", plan.start_order())] {
             let levels = order
                 .expect("participant layouts have dependency orders")
@@ -1063,7 +1079,7 @@ comparison: {image: comp}
     }
 
     #[test]
-    fn listing_text_prints_each_participant_layout_and_nothing_for_typed_cases() {
+    fn listing_text_prints_each_participant_layout_and_artifact_roles_and_nothing_for_typed_cases() {
         let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[macos]").replace(
             "  adp:",
             "  zebra: {type: agent-adp}\n  alpha: {type: agent-adp, os: linux}\n  adp:",
@@ -1077,7 +1093,9 @@ comparison: {image: comp}
             listing_text(&plan),
             "  participant\n    Timeout: 1s\n    \
              Layout: adp on macos as host-process-group; alpha on linux as linux-container; \
-             zebra on macos as host-process-group\n    Create order: adp, alpha, zebra\n    \
+             zebra on macos as host-process-group\n    \
+             Artifact roles: adp-host-binary, agent-adp-linux-image, agent-host-install, fixup-image\n    \
+             Create order: adp, alpha, zebra\n    \
              Start order: adp, alpha, zebra\n\n"
         );
         for (yaml, expected) in [
