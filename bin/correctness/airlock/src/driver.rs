@@ -1259,7 +1259,8 @@ impl Driver {
 
     /// Executes a command and collects stdout and stderr bytes with its exit code.
     ///
-    /// Every exit code is data, including a missing program (127) or a killed command (137). See
+    /// Every exit code is data, including a missing program (126 or 127, depending on the Docker
+    /// release) or a killed command (137). See
     /// [`Self::exec_stream`] for command settings, stdin, completion, cancellation, and timeout behavior.
     ///
     /// # Errors

@@ -53,7 +53,8 @@ impl ExecRequest {
     }
 }
 
-/// A command's complete output and exit code. Nonzero codes are data, including 127 and 137.
+/// A command's complete output and exit code. Nonzero codes are data, including a missing program
+/// (126 or 127, depending on the Docker release) and a killed command (137).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExecOutput {
     /// Bytes written to standard output.

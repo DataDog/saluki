@@ -719,7 +719,12 @@ async fn a_missing_program_or_a_killed_command_exits_as_data() {
             .exec(ExecRequest::new(vec!["/no/such/program".to_string()]))
             .await
             .unwrap();
-        assert_eq!(output.exit_code, 127);
+        // Docker reports a program it cannot start as 126 in some releases and 127 in others.
+        assert!(
+            matches!(output.exit_code, 126 | 127),
+            "unexpected exit code {}",
+            output.exit_code
+        );
         let output = driver
             .exec(ExecRequest::new(vec![
                 "sh".to_string(),
