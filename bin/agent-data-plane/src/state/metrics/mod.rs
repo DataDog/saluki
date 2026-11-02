@@ -552,6 +552,10 @@ mod tests {
             Some("Count the number of dogstatsd contexts in the aggregator, by metric type")
         );
         assert_eq!(
+            find("aggregator.dogstatsd_contexts_by_origin"),
+            Some("Count the number of dogstatsd contexts in the aggregator, by origin")
+        );
+        assert_eq!(
             find("aggregator.flush"),
             Some("Number of metrics/service checks/events flushed")
         );
@@ -623,6 +627,53 @@ mod tests {
             find("dogstatsd.uds_origin_detection_error"),
             Some("Dogstatsd UDS origin detection error count")
         );
+    }
+
+    #[test]
+    fn rar_rules_preserve_dynamic_origin_tags_for_aggregator_contexts() {
+        let rules = get_datadog_agent_remappings();
+        let context = Context::from_static_parts(
+            "adp.aggregate_active_contexts_by_origin",
+            &[
+                "component_id:dsd_agg",
+                "component_type:transform",
+                "container_id:abc",
+                "kube_namespace:default",
+            ],
+        );
+        let remapped = rules
+            .iter()
+            .find_map(|rule| rule.try_match_no_context(&context))
+            .expect("origin context gauge should have a remapping");
+
+        assert_eq!(remapped.name, "aggregator.dogstatsd_contexts_by_origin");
+        let tags: Vec<_> = remapped.tags.iter().map(|tag| tag.as_ref()).collect();
+        assert_eq!(tags.len(), 2);
+        assert!(tags.contains(&"container_id:abc"));
+        assert!(tags.contains(&"kube_namespace:default"));
+        assert!(!tags.contains(&"component_type:transform"));
+    }
+
+    #[test]
+    fn rar_telemetry_renders_dynamic_origin_labels_safely() {
+        let context = Context::from_static_parts(
+            "adp.aggregate_active_contexts_by_origin",
+            &[
+                "component_id:dsd_agg",
+                "component_type:transform",
+                "kube_service:api,worker",
+                "U__team_2e_name:platform\"ops\nline",
+            ],
+        );
+        let output = render_with(
+            get_datadog_agent_remappings(),
+            vec![Event::Metric(Metric::gauge(context, 1.0))],
+        );
+
+        assert!(output.contains(
+            "aggregator__dogstatsd_contexts_by_origin{U__team_2e_name=\"platform\\\"ops\\nline\",kube_service=\"api,worker\"} 1"
+        ));
+        assert!(!output.contains("component_type"));
     }
 
     #[test]

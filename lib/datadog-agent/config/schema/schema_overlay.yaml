@@ -3758,9 +3758,26 @@ inventory:
     issue: "#1679"
 
   telemetry.dogstatsd_origin:
-    support: full
+    support: partial
     pipelines: [dogstatsd]
-    description: "Per-origin processed-metrics telemetry"
+    description: "Per-origin processed metrics and context counts"
+    documentation: |-
+      The core Agent uses `telemetry.dogstatsd_origin`, together with `telemetry.enabled`, to break down its
+      DogStatsD telemetry by origin. This includes the `datadog.agent.aggregator.dogstatsd_contexts_by_origin`
+      series it sends to Datadog, which also counts contexts without an origin.
+
+      ADP breaks down its processed-metric telemetry and active aggregation contexts by origin whenever
+      `telemetry.dogstatsd_origin` is enabled, regardless of `telemetry.enabled`. The context counts appear as
+      `aggregator.dogstatsd_contexts_by_origin` only in the Agent's telemetry endpoint and flares, and aren't sent
+      to Datadog. Contexts without resolved origin tags aren't counted, so the breakdown is empty unless
+      `dogstatsd_origin_detection` is also enabled.
+
+      The context breakdown has at most 199 origin groups and one `origin_overflow:true` series. Groups exceeding
+      32 tags or 4096 bytes of encoded labels, and new groups when all slots are occupied, are counted in
+      overflow. Each context keeps its original assignment until expiry, so an origin's own series is too low
+      while any of its contexts are counted in overflow; the total across all series is exact. An emptied group
+      reports 0 briefly before its series is removed. This limit is separate from the DogStatsD source's
+      per-origin processed-counter limit.
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:
