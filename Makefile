@@ -611,6 +611,12 @@ test-loom: ## Runs all Loom-specific unit tests
 	@echo "[*] Running Loom-specific unit tests..."
 	cargo nextest run --release --features loom -p stringtheory -p saluki-core loom_tests
 
+.PHONY: test-airlock-daemon
+test-airlock-daemon: check-rust-build-tools cargo-install-cargo-nextest
+test-airlock-daemon: ## Runs airlock's tests against a real Docker daemon (the image in $AIRLOCK_TEST_IMAGE, default alpine:latest, must already be local)
+	@echo "[*] Running airlock daemon tests..."
+	cargo nextest run -p airlock --test daemon --no-fail-fast
+
 .PHONY: test-all
 test-all: ## Test everything
 test-all: test test-property test-docs test-miri test-loom

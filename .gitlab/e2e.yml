@@ -124,6 +124,9 @@ test-integration:
     # Docker Hub so the default of `alpine:latest` is insufficient.
     PANORAMIC_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
     PANORAMIC_LOG_DIR: integration-logs
+    # Image for airlock's daemon tests, which never pull: `panoramic artifacts pull` loads it
+    # below as the `fixup-image` binding.
+    AIRLOCK_TEST_IMAGE: registry.ddbuild.io/alpine:latest
   script:
     # Also tag pipeline images with the Makefile's local names; the image list below shows their IDs.
     # correctness-tools provides the optional intake sidecar.
@@ -141,6 +144,9 @@ test-integration:
       --set fixup-image=registry.ddbuild.io/alpine:latest
       --output target/panoramic-artifacts.toml
     - target/release/panoramic artifacts pull -d test/integration/cases --subject-os linux --artifacts target/panoramic-artifacts.toml
+    # A rootless daemon lists `name=rootless` among its security options.
+    - docker info --format 'Docker {{.ServerVersion}} {{.OSType}}/{{.Architecture}} security={{json .SecurityOptions}}'
+    - make test-airlock-daemon
     - make test-integration-quick PANORAMIC_ARTIFACTS=target/panoramic-artifacts.toml
 
 # Runs the subset of integration tests that have opted in to the `mac` runtime
