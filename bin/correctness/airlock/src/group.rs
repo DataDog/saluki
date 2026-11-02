@@ -83,15 +83,14 @@ impl IsolationGroup {
 
     /// Builds a container driver for one of this group's prepared participants.
     ///
+    /// The container is named `airlock-<id>-<participant>`, with the participant name as its hostname and DNS alias
+    /// on the group network.
+    ///
     /// # Errors
     ///
     /// Returns an error for a participant outside this group or a configuration selecting Windows containers.
     pub fn driver(&self, config: DriverConfig) -> Result<Driver, GenericError> {
-        if !self
-            .participants
-            .iter()
-            .any(|participant| participant == config.driver_id)
-        {
+        if !self.participants.contains(&config.driver_id) {
             return Err(generic_error!(
                 "Participant '{}' was not prepared in isolation group '{}'",
                 config.driver_id,

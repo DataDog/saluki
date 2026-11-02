@@ -82,7 +82,7 @@ pub enum ContainerOs {
 /// This is the basic set of configuration options needed to spawn the container for a given driver.
 #[derive(Clone)]
 pub struct DriverConfig {
-    pub(crate) driver_id: &'static str,
+    pub(crate) driver_id: String,
     image: String,
     entrypoint: Option<Vec<String>>,
     command: Option<Vec<String>>,
@@ -181,7 +181,7 @@ impl DriverConfig {
         Ok(driver_config)
     }
 
-    pub async fn target(target_id: &'static str, config: TargetConfig) -> Result<Self, GenericError> {
+    pub async fn target(target_id: impl Into<String>, config: TargetConfig) -> Result<Self, GenericError> {
         let driver_config = DriverConfig::from_image(target_id, config.image)
             .with_entrypoint(config.entrypoint)
             .with_command(config.command)
@@ -193,9 +193,9 @@ impl DriverConfig {
     }
 
     /// Creates a new `DriverConfig` from the given driver identifier and container image reference.
-    pub fn from_image(driver_id: &'static str, image: String) -> Self {
+    pub fn from_image(driver_id: impl Into<String>, image: String) -> Self {
         Self {
-            driver_id,
+            driver_id: driver_id.into(),
             image,
             entrypoint: None,
             command: None,
@@ -309,8 +309,8 @@ impl DriverConfig {
 
     /// Adds a DNS alias for this container on its primary network.
     ///
-    /// Other containers on the same network can resolve this container by `alias` in addition to
-    /// its hostname. Call this before the container is started.
+    /// Prepared participants already resolve by participant name; this adds another name.
+    /// Call this before creating the container.
     pub fn with_network_alias(mut self, alias: impl Into<String>) -> Self {
         self.network_aliases.push(alias.into());
         self
@@ -551,9 +551,9 @@ impl Driver {
 
     /// Returns the string identifier of the driver.
     ///
-    /// This is generally a shorthand of the application/service, such as `dogstatsd` or `millstone`.
-    pub fn driver_id(&self) -> &'static str {
-        self.config.driver_id
+    /// For a prepared isolation group, this is the participant name.
+    pub fn driver_id(&self) -> &str {
+        &self.config.driver_id
     }
 
     /// Removes the containers, shared volume, and network of the given isolation group.
@@ -779,19 +779,38 @@ impl Driver {
         Ok(())
     }
 
+    /// Returns the DNS aliases for this container on its isolation group network.
+    fn network_aliases(&self) -> Vec<String> {
+        match self.provisioning {
+            Provisioning::OnCreate => self.config.network_aliases.clone(),
+            Provisioning::Prepared => {
+                let mut aliases = vec![self.config.driver_id.clone()];
+                aliases.extend(
+                    self.config
+                        .network_aliases
+                        .iter()
+                        .filter(|alias| *alias != &self.config.driver_id)
+                        .cloned(),
+                );
+                aliases
+            }
+        }
+    }
+
     async fn create_container_inner(
         &self, container_name: String, image: String, entrypoint: Option<Vec<String>>, cmd: Option<Vec<String>>,
         binds: Vec<String>, env: Option<Vec<String>>,
     ) -> Result<String, GenericError> {
         let binds = self.config.container_binds_from(&self.isolation_group_name, binds);
 
-        // Set up NetworkingConfig to apply aliases on the primary network, if any are configured.
-        let networking_config = if !self.config.network_aliases.is_empty() {
+        // Apply DNS aliases on the primary network.
+        let aliases = self.network_aliases();
+        let networking_config = if !aliases.is_empty() {
             let mut endpoints = HashMap::new();
             endpoints.insert(
                 self.isolation_group_name.clone(),
                 EndpointSettings {
-                    aliases: Some(self.config.network_aliases.clone()),
+                    aliases: Some(aliases),
                     ..Default::default()
                 },
             );
@@ -819,7 +838,7 @@ impl Driver {
             .then_some(HostConfigCgroupnsModeEnum::HOST);
 
         let container_config = ContainerCreateBody {
-            hostname: Some(self.config.driver_id.to_string()),
+            hostname: Some(self.config.driver_id.clone()),
             env,
             image: Some(image),
             entrypoint,
@@ -951,7 +970,7 @@ impl Driver {
                 log_dir.display()
             );
 
-            self.capture_container_logs(log_dir, self.config.driver_id, &self.container_name)
+            self.capture_container_logs(log_dir, &self.config.driver_id, &self.container_name)
                 .await?;
         }
 
@@ -1826,6 +1845,38 @@ mod tests {
                 "GET /containers/airlock-ab12cd34-target/json",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn a_prepared_driver_answers_to_its_participant_name_and_a_legacy_driver_gains_no_alias() {
+        let daemon = FakeDaemon::start(|_, _| (500, r#"{"message":"unexpected request"}"#)).await;
+        let config = DriverConfig::from_image("alpha", "local:latest".to_string());
+        for (provisioning, config, expected) in [
+            (Provisioning::Prepared, config.clone(), vec!["alpha"]),
+            (
+                Provisioning::Prepared,
+                config.clone().with_network_alias("extra"),
+                vec!["alpha", "extra"],
+            ),
+            (
+                Provisioning::Prepared,
+                config.clone().with_network_alias("alpha"),
+                vec!["alpha"],
+            ),
+            (
+                Provisioning::OnCreate,
+                config.clone().with_network_alias("extra"),
+                vec!["extra"],
+            ),
+            (Provisioning::OnCreate, config, vec![]),
+        ] {
+            let driver = Driver {
+                provisioning,
+                ..Driver::in_group(daemon.docker.clone(), GROUP.to_string(), config)
+            };
+            assert_eq!(driver.network_aliases(), expected);
+        }
+        assert!(daemon.requests.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

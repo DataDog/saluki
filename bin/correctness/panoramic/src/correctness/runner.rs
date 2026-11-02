@@ -512,16 +512,16 @@ impl GroupRunner {
     async fn spawn_into(self) -> Result<Vec<SpawnedDriver>, GenericError> {
         let mut spawned = Vec::with_capacity(self.drivers.len());
         for mut driver in self.drivers {
-            let driver_id = driver.driver_id();
-            debug!(driver_id, "Starting container...");
+            let driver_id = driver.driver_id().to_string();
+            debug!(driver_id = %driver_id, "Starting container...");
             let details = self
                 .ledger
                 .start_container(&driver, &self.isolation_group_id, &self.stop)
                 .await?;
-            debug!(driver_id, "Container started. Waiting for it to become healthy...");
+            debug!(driver_id = %driver_id, "Container started. Waiting for it to become healthy...");
 
             driver.wait_for_container_healthy().await?;
-            debug!(driver_id, "Container is healthy. Proceeding...");
+            debug!(driver_id = %driver_id, "Container is healthy. Proceeding...");
             spawned.push(SpawnedDriver { driver, details });
         }
         Ok(spawned)

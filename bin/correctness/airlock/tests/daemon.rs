@@ -147,7 +147,7 @@ async fn a_prepared_group_creates_its_participants_concurrently_on_one_network_a
                 );
                 group
                     .driver(
-                        DriverConfig::from_image(participant, image.clone()).with_entrypoint(vec![
+                        DriverConfig::from_image(*participant, image.clone()).with_entrypoint(vec![
                             "sh".to_string(),
                             "-c".to_string(),
                             script,
@@ -178,6 +178,56 @@ async fn a_prepared_group_creates_its_participants_concurrently_on_one_network_a
                 details.container_name()
             );
         }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_prepared_participant_reaches_another_by_its_participant_name() {
+    let docker = daemon().await;
+    let id = unique_id();
+    in_group(id.clone(), async move {
+        let names: Vec<String> = ["server", "client"].into_iter().map(String::from).collect();
+        let image = test_image();
+        let group = IsolationGroup::prepare(docker.clone(), &id, &names, &image)
+            .await
+            .unwrap();
+        let server = group
+            .driver(
+                DriverConfig::from_image(names[0].clone(), image.clone()).with_entrypoint(vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    "nc -l -p 9000 -e echo reached".to_string(),
+                ]),
+            )
+            .unwrap();
+        let client = group
+            .driver(DriverConfig::from_image(names[1].clone(), image).with_entrypoint(vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                r#"[ "$(hostname)" = client ] || exit 2
+for i in $(seq 50); do
+    out=$(nc -w 2 server 9000 2>/dev/null) && [ "$out" = reached ] && exit 0
+    sleep 0.1
+done
+exit 1"#
+                    .to_string(),
+            ]))
+            .unwrap();
+
+        tokio::try_join!(server.create(), client.create()).unwrap();
+        tokio::try_join!(server.start_container(), client.start_container()).unwrap();
+        let (server_status, client_status) =
+            tokio::try_join!(server.wait_for_container_exit(), client.wait_for_container_exit()).unwrap();
+        assert!(matches!(server_status, ExitStatus::Success), "server: {server_status}");
+        assert!(matches!(client_status, ExitStatus::Success), "client: {client_status}");
+
+        let name = format!("airlock-{id}");
+        let inspected = docker.inspect_container(&format!("{name}-server"), None).await.unwrap();
+        assert_eq!(inspected.config.unwrap().hostname.as_deref(), Some("server"));
+        let networks = inspected.network_settings.unwrap().networks.unwrap();
+        let aliases = networks[&name].aliases.as_ref().unwrap();
+        assert!(aliases.iter().any(|alias| alias == "server"), "{aliases:?}");
     })
     .await;
 }
