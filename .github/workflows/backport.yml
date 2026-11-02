@@ -174,8 +174,9 @@ jobs:
             const sha = pr.merge_commit_sha;
 
             // The target release branch must exist.
+            let base;
             try {
-              await github.rest.repos.getBranch({ owner, repo, branch: targetBranch });
+              ({ data: base } = await github.rest.repos.getBranch({ owner, repo, branch: targetBranch }));
             } catch (error) {
               if (error.status !== 404) throw error;
               await stop(
@@ -188,7 +189,6 @@ jobs:
 
             // Only squash-merged PRs are supported: the merge commit must be a single non-merge commit on `main`.
             const { data: mergeCommit } = await github.rest.repos.getCommit({ owner, repo, ref: sha });
-            const subject = mergeCommit.commit.message.split('\n')[0];
             if (mergeCommit.parents.length !== 1) {
               await stop(
                 `⚠️ Cannot automatically backport to \`${targetBranch}\`: \`${sha}\` is a merge commit. ` +
@@ -197,15 +197,26 @@ jobs:
               );
               return;
             }
-            if (pr.commits > 1 && !subject.endsWith(`(#${prNumber})`)) {
-              await stop(
-                `⚠️ Cannot automatically backport to \`${targetBranch}\`: this PR has ${pr.commits} commits ` +
-                  'but does not look squash-merged (it may have been rebase-merged). Cherry-picking only the ' +
-                  `final commit \`${sha}\` would silently drop the rest, so no backport was attempted. ` +
-                  'Backport the individual commits manually.',
-                { fail: true },
-              );
-              return;
+
+            // A PR with several commits must not have been rebase-merged: cherry-picking only the final commit would
+            // silently drop the rest. A rebase merge replays each PR commit onto `main` and keeps its author and author
+            // date, so the tip matches the PR head. A squash commit is created at merge time, so its author date never
+            // matches. This deliberately ignores the commit message, which reviewers edit and which proves nothing.
+            if (pr.commits > 1) {
+              const { data: headCommit } = await github.rest.repos.getCommit({ owner, repo, ref: pr.head.sha });
+              const replayed =
+                headCommit.commit.author.date === mergeCommit.commit.author.date &&
+                headCommit.commit.author.email === mergeCommit.commit.author.email;
+              if (replayed) {
+                await stop(
+                  `⚠️ Cannot automatically backport to \`${targetBranch}\`: this PR has ${pr.commits} commits and ` +
+                    `\`${sha}\` looks like the last of them (it was probably rebase-merged). Cherry-picking only ` +
+                    'that commit would silently drop the rest, so no backport was attempted. ' +
+                    'Backport the individual commits manually.',
+                  { fail: true },
+                );
+                return;
+              }
             }
 
             // The merge commit must be reachable from `main`.
@@ -229,8 +240,8 @@ jobs:
             if (open || merged) {
               const existing = open ?? merged;
               await stop(
-                `A backport of this PR to \`${targetBranch}\` already ` +
-                  `${open ? 'exists' : 'was merged'}: #${existing.number}. Skipping.`,
+                `A backport of this PR to \`${targetBranch}\` ` +
+                  `${open ? 'already exists' : 'was already merged'}: #${existing.number}. Skipping.`,
                 { fail: false, notify: !quiet },
               );
               return;
@@ -257,8 +268,6 @@ jobs:
               core.info(`Deleting stale branch ${backportBranch} from a previously closed backport PR.`);
               await github.rest.git.deleteRef({ owner, repo, ref: `heads/${backportBranch}` });
             }
-
-            const { data: base } = await github.rest.repos.getBranch({ owner, repo, branch: targetBranch });
 
             core.setOutput('proceed', 'true');
             core.setOutput('fail', 'false');
