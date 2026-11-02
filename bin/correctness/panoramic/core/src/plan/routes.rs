@@ -4,7 +4,7 @@
 
 use super::{endpoints::ParticipantEndpoints, ports::RunnerHostPorts, scope::check_consumed_socket};
 use crate::{
-    endpoint::{Endpoint, EndpointKind, Listener, Port, ResolvedAddress},
+    endpoint::{Endpoint, EndpointKind, EndpointOperation, Listener, Port, ResolvedAddress},
     layout::{Realization, RealizationKind},
 };
 
@@ -23,18 +23,25 @@ pub(super) enum RunnerHostAccess {
     Courier,
 }
 
-/// Chooses runner-host access from the endpoint kind and server realization.
-pub(super) fn runner_host_route(kind: EndpointKind, server: Realization) -> Result<RunnerHostAccess, &'static str> {
+/// Chooses runner-host access for the operation, endpoint kind and server realization.
+/// Container port proxies accept connections even when the server has no listener, so only requests
+/// that observe an HTTP or gRPC response use their published ports.
+pub(super) fn runner_host_route(
+    kind: EndpointKind, server: Realization, operation: EndpointOperation,
+) -> Result<RunnerHostAccess, &'static str> {
     use EndpointKind::{Grpc, Http, NamedPipe, Tcp, Udp, UnixDatagram, UnixStream};
     use RealizationKind::{HostProcessGroup, KubernetesPod, LinuxContainer, WindowsContainer};
     use RunnerHostAccess::{Courier, Direct};
 
+    if operation == EndpointOperation::Request && !matches!(kind, Http | Grpc) {
+        return Err("request/response operations require an http or grpc endpoint");
+    }
     match (kind, server.kind) {
-        (Tcp | Udp | Http | Grpc, LinuxContainer) | (Tcp | Http | Grpc, KubernetesPod) => {
+        (Http | Grpc, LinuxContainer | KubernetesPod) if operation == EndpointOperation::Request => {
             Ok(Direct(Route::RunnerHostPort))
         }
         (Tcp | Udp | Http | Grpc, HostProcessGroup) => Ok(Direct(Route::Loopback)),
-        (Tcp | Udp | Http | Grpc, WindowsContainer) | (Udp, KubernetesPod) => Ok(Courier),
+        (Tcp | Udp | Http | Grpc, LinuxContainer | WindowsContainer | KubernetesPod) => Ok(Courier),
         (UnixDatagram | UnixStream, HostProcessGroup) => Ok(Direct(Route::SharedFilesystem)),
         (UnixDatagram | UnixStream, LinuxContainer | KubernetesPod) | (NamedPipe, WindowsContainer) => Ok(Courier),
         (UnixDatagram | UnixStream, WindowsContainer) => Err("unix sockets are not supported in a windows-container"),
@@ -194,17 +201,16 @@ mod tests {
     const REALIZATIONS: [Realization; 5] = [LINUX_CONTAINER, LINUX_HOST, MACOS_HOST, WINDOWS_CONTAINER, LINUX_POD];
 
     #[test]
-    fn every_endpoint_kind_and_server_realization_has_exactly_the_runner_host_route_the_table_names() {
+    fn every_operation_kind_and_server_realization_has_the_runner_host_route_the_table_names() {
         use RunnerHostAccess::{Courier, Direct};
 
         let network = [
-            Some(Direct(Route::RunnerHostPort)),
+            Some(Courier),
             Some(Direct(Route::Loopback)),
             Some(Direct(Route::Loopback)),
             Some(Courier),
-            Some(Direct(Route::RunnerHostPort)),
+            Some(Courier),
         ];
-        let udp = [network[0], network[1], network[2], network[3], Some(Courier)];
         let sockets = [
             Some(Courier),
             Some(Direct(Route::SharedFilesystem)),
@@ -212,17 +218,37 @@ mod tests {
             None,
             Some(Courier),
         ];
-        for (kind, expected) in [
-            (EndpointKind::Tcp, network),
-            (EndpointKind::Http, network),
-            (EndpointKind::Grpc, network),
-            (EndpointKind::Udp, udp),
-            (EndpointKind::UnixDatagram, sockets),
-            (EndpointKind::UnixStream, sockets),
-            (EndpointKind::NamedPipe, [None, None, None, Some(Courier), None]),
+        for operation in [
+            EndpointOperation::Probe,
+            EndpointOperation::Send,
+            EndpointOperation::Request,
         ] {
-            for (server, expected) in REALIZATIONS.into_iter().zip(expected) {
-                assert_eq!(runner_host_route(kind, server).ok(), expected, "{kind:?}: {server:?}");
+            for (kind, expected) in [
+                (EndpointKind::Tcp, network),
+                (EndpointKind::Udp, network),
+                (EndpointKind::Http, network),
+                (EndpointKind::Grpc, network),
+                (EndpointKind::UnixDatagram, sockets),
+                (EndpointKind::UnixStream, sockets),
+                (EndpointKind::NamedPipe, [None, None, None, Some(Courier), None]),
+            ] {
+                for (server, mut expected) in REALIZATIONS.into_iter().zip(expected) {
+                    if operation == EndpointOperation::Request {
+                        expected = match (kind, server.kind) {
+                            (
+                                EndpointKind::Http | EndpointKind::Grpc,
+                                RealizationKind::LinuxContainer | RealizationKind::KubernetesPod,
+                            ) => Some(Direct(Route::RunnerHostPort)),
+                            (EndpointKind::Http | EndpointKind::Grpc, _) => expected,
+                            _ => None,
+                        };
+                    }
+                    assert_eq!(
+                        runner_host_route(kind, server, operation).ok(),
+                        expected,
+                        "{operation:?}: {kind:?}: {server:?}"
+                    );
+                }
             }
         }
     }
@@ -231,14 +257,26 @@ mod tests {
     fn runner_host_route_errors_name_the_constraint() {
         for kind in [EndpointKind::UnixDatagram, EndpointKind::UnixStream] {
             assert_eq!(
-                runner_host_route(kind, WINDOWS_CONTAINER),
+                runner_host_route(kind, WINDOWS_CONTAINER, EndpointOperation::Probe),
                 Err("unix sockets are not supported in a windows-container")
             );
         }
         for server in [LINUX_CONTAINER, LINUX_HOST, MACOS_HOST, LINUX_POD] {
             assert_eq!(
-                runner_host_route(EndpointKind::NamedPipe, server),
+                runner_host_route(EndpointKind::NamedPipe, server, EndpointOperation::Probe),
                 Err("a named pipe is reachable only in a windows-container")
+            );
+        }
+        for kind in [
+            EndpointKind::Tcp,
+            EndpointKind::Udp,
+            EndpointKind::UnixStream,
+            EndpointKind::UnixDatagram,
+            EndpointKind::NamedPipe,
+        ] {
+            assert_eq!(
+                runner_host_route(kind, LINUX_CONTAINER, EndpointOperation::Request),
+                Err("request/response operations require an http or grpc endpoint")
             );
         }
     }

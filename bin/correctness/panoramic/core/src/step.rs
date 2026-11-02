@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, fmt};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::backend::LateFact;
+use crate::{backend::LateFact, endpoint::EndpointOperation};
 
 /// A step's fields as written in the case file, keyed by field name.
 pub type StepFields = BTreeMap<String, Value>;
@@ -24,8 +24,8 @@ pub enum Need {
     Fact(String, String),
     /// A late fact of a participant: (participant, fact). Known only once the participant exists or runs.
     Late(String, LateFact),
-    /// An endpoint the step reaches from the runner host: (participant, endpoint).
-    Endpoint(String, String),
+    /// An endpoint operation from the runner host: (participant, endpoint, operation).
+    Endpoint(String, String, EndpointOperation),
 }
 
 /// A step built from its case-file fields.

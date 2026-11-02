@@ -388,7 +388,8 @@ impl DriverConfig {
     /// Adds an exposed port to the container.
     ///
     /// Linux containers publish it to an ephemeral host port on every interface, readable from [`DriverDetails`]
-    /// after start. Windows containers expose it without publishing.
+    /// after start. Windows containers expose it internally. Drivers built with [`Driver::from_config`]
+    /// accept this setting; prepared drivers require [`Self::with_published_port`].
     pub fn with_exposed_port(mut self, protocol: Protocol, internal_port: u16) -> Self {
         self.ports.push(ContainerPort {
             protocol,
@@ -450,6 +451,9 @@ impl DriverConfig {
         }
         if self.log_dir.is_some() {
             settings.push("with_logging");
+        }
+        if self.ports.iter().any(|port| port.host_port.is_none()) {
+            settings.push("with_exposed_port");
         }
         settings
     }
@@ -1982,6 +1986,42 @@ mod tests {
                     host_port: Some("24100".to_string())
                 }]),
             )]))
+        );
+    }
+
+    #[test]
+    fn two_host_ports_for_one_container_port_are_both_bound_on_loopback() {
+        let config = DriverConfig::from_image("server", "example:latest".into())
+            .with_published_port(Protocol::Tcp, 9000, 20000)
+            .with_published_port(Protocol::Tcp, 9000, 20001)
+            .with_published_port(Protocol::Udp, 9001, 20002);
+        assert_eq!(
+            config.port_publication().unwrap(),
+            (
+                Some(vec!["9000/tcp".into(), "9001/udp".into()]),
+                Some(HashMap::from([
+                    (
+                        "9000/tcp".into(),
+                        Some(vec![
+                            PortBinding {
+                                host_ip: Some("127.0.0.1".into()),
+                                host_port: Some("20000".into())
+                            },
+                            PortBinding {
+                                host_ip: Some("127.0.0.1".into()),
+                                host_port: Some("20001".into())
+                            },
+                        ])
+                    ),
+                    (
+                        "9001/udp".into(),
+                        Some(vec![PortBinding {
+                            host_ip: Some("127.0.0.1".into()),
+                            host_port: Some("20002".into())
+                        },])
+                    ),
+                ])),
+            )
         );
     }
 

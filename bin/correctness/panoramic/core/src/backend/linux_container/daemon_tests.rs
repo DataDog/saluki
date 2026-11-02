@@ -1,4 +1,11 @@
-use std::{collections::HashMap, future::Future, net::Ipv4Addr, path::Path, sync::Arc};
+use std::{
+    collections::HashMap,
+    future::Future,
+    net::Ipv4Addr,
+    path::Path,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use airlock::{
     docker::{image_id, Docker},
@@ -6,16 +13,34 @@ use airlock::{
 };
 use bollard::{
     errors::Error,
+    models::PortBinding,
     query_parameters::{ListContainersOptionsBuilder, ListNetworksOptionsBuilder, ListVolumesOptionsBuilder},
 };
 use tokio::time::{sleep, timeout, Instant};
 
 use super::*;
-use crate::{backend::COURIER_LINUX_BINARY, endpoint::EndpointKind, ledger, probe::ProbeAnswer, recipe::HostMount};
+use crate::{
+    backend::COURIER_LINUX_BINARY,
+    endpoint::{EndpointKind, EndpointOperation, RunnerHostRoute},
+    handle::{probe_from_runner_host, send_from_runner_host},
+    ledger,
+    probe::ProbeAnswer,
+    recipe::HostMount,
+};
 
-/// Test and fix-up image with BusyBox's `sh`, `syslogd`, `sleep`, `grep`, `cat`, `true`, `mkdir` and `chmod`.
+/// Test and fix-up image with BusyBox's `sh`, `syslogd`, `sleep`, `grep`, `cat`, `true`, `mkdir`, `chmod` and `nc`.
 fn test_image() -> String {
     std::env::var("PANORAMIC_TEST_IMAGE").unwrap_or_else(|_| "alpine:latest".into())
+}
+
+fn host_ports(count: usize) -> Vec<u16> {
+    // Stay above panoramic's runner-host pool (20000–29999) and below default ephemeral ranges
+    // (Linux 32768+, macOS/Windows 49152+). The clock separates nextest's per-test processes.
+    assert!(count <= 2700);
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let seed = nanos ^ u128::from(std::process::id());
+    let base = 30000 + (seed % (2701 - count) as u128) as u16;
+    (0..count).map(|offset| base + offset as u16).collect()
 }
 
 fn courier_bytes() -> Vec<u8> {
@@ -149,7 +174,7 @@ fn recipe(script: &str) -> ContainerRecipe {
 }
 
 async fn start_participant(scope: &LinuxScope, name: &str, recipe: &ContainerRecipe) -> LinuxParticipant {
-    let participant = scope.participant(name, &test_image(), recipe).unwrap();
+    let participant = scope.participant(name, &test_image(), recipe, &[]).unwrap();
     participant.create().await.unwrap();
     participant.start().await.unwrap();
     participant
@@ -207,7 +232,7 @@ async fn a_participant_is_created_from_its_recipe_and_shares_the_host_pid_namesp
             mode: 0o600,
             contents: b"placed".to_vec(),
         });
-        let participant = scope.participant("p", &test_image(), &recipe).unwrap();
+        let participant = scope.participant("p", &test_image(), &recipe, &[]).unwrap();
         let id = participant.create().await.unwrap();
         assert_eq!(id.len(), 64);
         assert!(id
@@ -484,7 +509,9 @@ async fn a_courier_that_cannot_run_is_a_harness_error_saying_it_never_ran() {
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn a_container_reference_removes_its_participant_after_the_participant_is_dropped() {
     in_scope(&["p"], courier_bytes(), |scope| async move {
-        let participant = scope.participant("p", &test_image(), &recipe("exec sleep 60")).unwrap();
+        let participant = scope
+            .participant("p", &test_image(), &recipe("exec sleep 60"), &[])
+            .unwrap();
         let reference = participant.container_ref();
         let id = participant.create().await.unwrap();
         participant.start().await.unwrap();
@@ -512,10 +539,195 @@ async fn a_container_reference_removes_its_participant_after_the_participant_is_
 async fn a_participant_outside_the_prepared_scope_is_rejected_before_docker() {
     in_scope(&["p"], courier_bytes(), |scope| async move {
         let error = scope
-            .participant("other", &test_image(), &recipe("exec sleep 60"))
+            .participant("other", &test_image(), &recipe("exec sleep 60"), &[])
             .err()
             .unwrap();
         assert!(error.to_string().contains("other"), "{error:#}");
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn the_runner_host_receives_an_http_response_through_a_published_port() {
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpStream,
+    };
+
+    in_scope(&["srv"], courier_bytes(), |scope| async move {
+        let ports = host_ports(2);
+        let ports = [
+            RunnerHostPort {
+                transport: Transport::Tcp,
+                container_port: 9000,
+                host_port: ports[0],
+            },
+            RunnerHostPort {
+                transport: Transport::Udp,
+                container_port: 9001,
+                host_port: ports[1],
+            },
+        ];
+        let recipe = recipe(
+            r#"nc -lk -s 0.0.0.0 -p 9000 -e sh -c '
+while IFS= read -r line; do
+    printf "%s\n" "$line" >> /airlock/srv/log/http
+    [ "$line" = "$(printf "\r")" ] && break
+done
+printf "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello"
+' &
+while ! grep -q ':2328 ' /proc/net/tcp; do sleep 0.05; done
+echo ready > /airlock/srv/shared/ready
+wait"#,
+        );
+        let participant = scope.participant("srv", &test_image(), &recipe, &ports).unwrap();
+        assert_eq!(participant.ports, ports);
+        let id = participant.create().await.unwrap();
+        participant.start().await.unwrap();
+        wait_for_file(&participant, "/airlock/srv/shared/ready", b"ready").await;
+        let docker = airlock::docker::connect().unwrap();
+        let config = docker.inspect_container(&id, None).await.unwrap().host_config.unwrap();
+        assert_ne!(config.publish_all_ports, Some(true));
+        assert_eq!(
+            config.port_bindings,
+            Some(
+                ports
+                    .iter()
+                    .map(|port| (
+                        format!("{}/{}", port.container_port, port.transport.name()),
+                        Some(vec![PortBinding {
+                            host_ip: Some("127.0.0.1".into()),
+                            host_port: Some(port.host_port.to_string())
+                        }]),
+                    ))
+                    .collect()
+            )
+        );
+        timeout(Duration::from_secs(10), async {
+            loop {
+                let response = timeout(Duration::from_secs(1), async {
+                    let mut stream = TcpStream::connect(("127.0.0.1", ports[0].host_port)).await?;
+                    stream
+                        .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                        .await?;
+                    let mut response = Vec::new();
+                    stream.read_to_end(&mut response).await?;
+                    Ok::<_, std::io::Error>(response)
+                })
+                .await;
+                if let Ok(Ok(response)) = response {
+                    assert_eq!(
+                        response,
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello"
+                    );
+                    break;
+                }
+                sleep(Duration::from_millis(200)).await;
+            }
+        })
+        .await
+        .expect("the published port should return the HTTP server's response");
+        wait_for_file(&participant, "/airlock/srv/log/http", b"GET / HTTP/1.1").await;
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn a_participant_whose_runner_host_port_is_held_fails_to_start_naming_its_ports() {
+    in_scope(&["first", "second"], courier_bytes(), |scope| async move {
+        let ports = host_ports(2);
+        let ports = [
+            RunnerHostPort { transport: Transport::Tcp, container_port: 9000, host_port: ports[0] },
+            RunnerHostPort { transport: Transport::Udp, container_port: 9001, host_port: ports[1] },
+        ];
+        let recipe = recipe("exec sleep 60");
+        let first = scope.participant("first", &test_image(), &recipe, &ports).unwrap();
+        let second = scope.participant("second", &test_image(), &recipe, &ports).unwrap();
+        first.create().await.unwrap();
+        second.create().await.unwrap();
+        first.start().await.unwrap();
+        let error = second.start().await.unwrap_err();
+        assert_eq!(error.to_string(), format!(
+            "Failed to start participant 'second', which publishes runner-host ports 127.0.0.1:{}/tcp, 127.0.0.1:{}/udp; run one panoramic invocation per runner host and Docker daemon at a time", ports[0].host_port, ports[1].host_port));
+    }).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn the_courier_route_to_a_socket_of_an_exited_participant_is_a_harness_error() {
+    in_scope(&["p"], courier_bytes(), |scope| async move {
+        let participant = start_participant(&scope, "p", &recipe("exit 0")).await;
+        timeout(Duration::from_secs(10), participant.driver.wait_exit())
+            .await
+            .unwrap()
+            .unwrap();
+        let route = RunnerHostRoute::Courier(socket_address(EndpointKind::UnixStream, "/run/server.sock"));
+        let limits = AttemptLimits::new(Duration::from_secs(10));
+        for error in [
+            probe_from_runner_host(&route, &participant, &limits).await.unwrap_err(),
+            send_from_runner_host(&route, &participant, b"payload", &limits)
+                .await
+                .unwrap_err(),
+        ] {
+            assert!(matches!(error, HandleError::Harness { message } if message.contains("exec failed")));
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn a_probe_of_an_unlistened_published_port_is_not_listening() {
+    use crate::{
+        case::fixtures::{minimal_procedure, LOADER, PARTICIPANT_FIELDS, REGISTRIES},
+        plan::Planner,
+    };
+
+    in_scope(&["subject"], courier_bytes(), |scope| async move {
+        let yaml = PARTICIPANT_FIELDS
+            .replace("subject: true", "subject: true, config: {env: {PORT: '9000'}, endpoints: {extra: {port: 9000}}}")
+            .replace(
+                minimal_procedure!(),
+                "procedure: [{step: reach, endpoint: subject.api}, {step: reach, endpoint: subject.extra, operation: send}]",
+            );
+        let case = LOADER
+            .load_content(&yaml, "probe", Path::new("cases/probe/config.yaml"))
+            .unwrap()
+            .remove(0);
+        let plan = Planner::with_run(REGISTRIES, "testrun0")
+            .compile(case, Os::Linux)
+            .unwrap()
+            .into_plan()
+            .unwrap();
+        let port = RunnerHostPort {
+            transport: Transport::Tcp,
+            container_port: 9000,
+            host_port: host_ports(1)[0],
+        };
+        let participant = scope
+            .participant("subject", &test_image(), &recipe("exec sleep 60"), &[port])
+            .unwrap();
+        participant.create().await.unwrap();
+        participant.start().await.unwrap();
+        let mut route = plan
+            .runner_host_route("subject", "api", EndpointOperation::Probe)
+            .unwrap()
+            .clone();
+        // Daemon tests use separate host ports because nextest runs each test in its own process.
+        if let RunnerHostRoute::Direct(address) = &mut route {
+            address.port = Some(port.host_port);
+            address.url = format!("http://127.0.0.1:{}", port.host_port);
+        }
+        let answer = probe_from_runner_host(&route, &participant, &AttemptLimits::new(Duration::from_secs(10)))
+            .await
+            .unwrap();
+        assert!(matches!(answer, ProbeAnswer::NotListening { .. }), "{answer:?}");
+        let route = plan.runner_host_route("subject", "extra", EndpointOperation::Send).unwrap();
+        let error = send_from_runner_host(route, &participant, b"payload", &AttemptLimits::new(Duration::from_secs(10))).await.unwrap_err();
+        assert!(matches!(error, HandleError::Product { .. }), "{error:?}");
+        assert!(plan.runner_host_ports("subject").is_empty());
     })
     .await;
 }

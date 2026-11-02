@@ -1,8 +1,7 @@
-use panoramic_courier::{Report, Target};
-
 use crate::net::{bind_udp, connect_tcp};
+use crate::{Report, Target};
 
-pub(super) async fn probe(to: &Target) -> Report {
+pub(crate) async fn probe(to: &Target) -> Report {
     let result = async {
         match to {
             Target::Tcp { host, port } => {

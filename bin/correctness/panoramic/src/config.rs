@@ -691,8 +691,8 @@ pub(crate) fn discover_in_scope(
     let mut errors = Vec::new();
     for case in cases.into_iter().filter(|case| !case.is_disabled()) {
         match planner.compile(case, subject_os) {
-            Ok(Compiled::Planned(plan)) => plans.push(plan),
-            Ok(Compiled::Excluded(case)) => excluded.push(case),
+            Ok(Compiled::Planned(plan)) => plans.push(*plan),
+            Ok(Compiled::Excluded(case)) => excluded.push(*case),
             Err(error) => errors.push(format!("{error:#}").replace('\n', "\n    ")),
         }
     }

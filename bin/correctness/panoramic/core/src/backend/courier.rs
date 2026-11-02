@@ -1,4 +1,4 @@
-//! Bounded courier calls and their endpoint outcomes, with execution supplied by the backend.
+//! Shared endpoint outcomes for courier execs and in-process network calls.
 
 use std::{fmt, future::Future};
 
@@ -74,17 +74,22 @@ where
     F: Future<Output = Result<ExecOutput, GenericError>>,
 {
     let command = Command::Probe { to: target(address)? };
-    let (Command::Probe { to } | Command::Send { to }) = &command;
-    match invoke(exec, executable, &command, None, limits).await? {
+    let report = invoke(exec, executable, &command, None, limits).await?;
+    probe_answer(&command, report)
+}
+
+fn probe_answer(command: &Command, report: Report) -> Result<ProbeAnswer, HandleError> {
+    let (Command::Probe { to } | Command::Send { to }) = command;
+    match report {
         Report::Listening => Ok(ProbeAnswer::Listening),
         Report::Addressable => Ok(ProbeAnswer::Addressable),
         Report::Unreachable { reason } => Ok(ProbeAnswer::NotListening { reason }),
         Report::TimedOut { limit_ms } => Ok(ProbeAnswer::NotListening {
             reason: format!("{to}: no answer within {limit_ms} ms"),
         }),
-        Report::Usage { reason } | Report::Failed { reason } => Err(harness_error(&command, reason)),
+        Report::Usage { reason } | Report::Failed { reason } => Err(harness_error(command, reason)),
         report @ (Report::Sent { .. } | Report::SendFailed { .. }) => {
-            Err(harness_error(&command, format!("unexpected outcome {report:?}")))
+            Err(harness_error(command, format!("unexpected outcome {report:?}")))
         }
     }
 }
@@ -104,6 +109,12 @@ where
     E: FnOnce(ExecCommand) -> F,
     F: Future<Output = Result<ExecOutput, GenericError>>,
 {
+    let command = send_command(address)?;
+    let report = invoke(exec, executable, &command, Some(payload.to_vec()), limits).await?;
+    send_outcome(&command, report, payload.len())
+}
+
+fn send_command(address: &ResolvedAddress) -> Result<Command, HandleError> {
     if matches!(
         address.kind,
         EndpointKind::Http | EndpointKind::Grpc | EndpointKind::NamedPipe
@@ -116,23 +127,50 @@ where
             ),
         });
     }
-    let command = Command::Send { to: target(address)? };
-    let (Command::Probe { to } | Command::Send { to }) = &command;
-    match invoke(exec, executable, &command, Some(payload.to_vec()), limits).await? {
-        Report::Sent { bytes } if bytes == payload.len() as u64 => Ok(()),
+    Ok(Command::Send { to: target(address)? })
+}
+
+fn send_outcome(command: &Command, report: Report, payload_len: usize) -> Result<(), HandleError> {
+    let (Command::Probe { to } | Command::Send { to }) = command;
+    match report {
+        Report::Sent { bytes } if bytes == payload_len as u64 => Ok(()),
         Report::Sent { bytes } => Err(harness_error(
-            &command,
-            format!("reported {bytes} bytes sent, expected {}", payload.len()),
+            command,
+            format!("reported {bytes} bytes sent, expected {}", payload_len),
         )),
         Report::Unreachable { reason } | Report::SendFailed { reason } => Err(HandleError::Product { message: reason }),
         Report::TimedOut { limit_ms } => Err(HandleError::Product {
             message: format!("{to}: the send did not finish within {limit_ms} ms"),
         }),
-        Report::Usage { reason } | Report::Failed { reason } => Err(harness_error(&command, reason)),
+        Report::Usage { reason } | Report::Failed { reason } => Err(harness_error(command, reason)),
         report @ (Report::Listening | Report::Addressable) => {
-            Err(harness_error(&command, format!("unexpected outcome {report:?}")))
+            Err(harness_error(command, format!("unexpected outcome {report:?}")))
         }
     }
+}
+
+/// Probes directly from the runner host with the courier's execution and outcome mapping.
+pub(crate) async fn probe_in_process(
+    address: &ResolvedAddress, limits: &AttemptLimits,
+) -> Result<ProbeAnswer, HandleError> {
+    let invocation = Invocation {
+        command: Command::Probe { to: target(address)? },
+        timeout: limits.request,
+    };
+    let report = panoramic_courier::execute(&invocation, tokio::io::empty()).await;
+    probe_answer(&invocation.command, report)
+}
+
+/// Sends directly from the runner host with the courier's execution and outcome mapping.
+pub(crate) async fn send_in_process(
+    address: &ResolvedAddress, payload: &[u8], limits: &AttemptLimits,
+) -> Result<(), HandleError> {
+    let invocation = Invocation {
+        command: send_command(address)?,
+        timeout: limits.request,
+    };
+    let report = panoramic_courier::execute(&invocation, payload).await;
+    send_outcome(&invocation.command, report, payload.len())
 }
 
 async fn invoke<E, F>(
@@ -288,6 +326,126 @@ mod tests {
         );
         assert!(message.contains(problem), "{message}");
         assert_private_message(error);
+    }
+
+    fn local_address(kind: EndpointKind, port: u16) -> ResolvedAddress {
+        ResolvedAddress {
+            kind,
+            url: format!("{}://127.0.0.1:{port}", kind.name()),
+            host: Some("127.0.0.1".into()),
+            port: Some(port),
+            path: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn an_in_process_probe_reports_listening_and_not_listening_like_the_courier() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = local_address(EndpointKind::Tcp, listener.local_addr().unwrap().port());
+        let limits = AttemptLimits::new(Duration::from_secs(10));
+        assert_eq!(probe_in_process(&address, &limits).await, Ok(ProbeAnswer::Listening));
+        drop(listener);
+        assert!(matches!(
+            probe_in_process(&address, &limits).await.unwrap(),
+            ProbeAnswer::NotListening { .. }
+        ));
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let address = local_address(EndpointKind::Udp, socket.local_addr().unwrap().port());
+        drop(socket);
+        assert_eq!(probe_in_process(&address, &limits).await, Ok(ProbeAnswer::Addressable));
+    }
+
+    #[tokio::test]
+    async fn an_in_process_send_delivers_the_payload_on_its_own_connection() {
+        use tokio::io::AsyncReadExt;
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let limits = AttemptLimits::new(Duration::from_secs(10));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = local_address(EndpointKind::Tcp, listener.local_addr().unwrap().port());
+            for payload in [PAYLOAD, b"second"] {
+                send_in_process(&address, payload, &limits).await.unwrap();
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                stream.read_to_end(&mut bytes).await.unwrap();
+                assert_eq!(bytes, payload);
+            }
+            let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let address = local_address(EndpointKind::Udp, socket.local_addr().unwrap().port());
+            send_in_process(&address, PAYLOAD, &limits).await.unwrap();
+            let mut bytes = [0; 128];
+            let read = socket.recv(&mut bytes).await.unwrap();
+            assert_eq!(&bytes[..read], PAYLOAD);
+            #[cfg(unix)]
+            {
+                let dir = tempfile::tempdir().unwrap();
+                for kind in [EndpointKind::UnixStream, EndpointKind::UnixDatagram] {
+                    let path = dir.path().join(kind.name());
+                    let path = path.to_str().unwrap();
+                    let scheme = if kind == EndpointKind::UnixStream {
+                        "unix"
+                    } else {
+                        "unixgram"
+                    };
+                    let address = ResolvedAddress {
+                        kind,
+                        url: format!("{scheme}://{path}"),
+                        host: None,
+                        port: None,
+                        path: Some(path.into()),
+                    };
+                    if kind == EndpointKind::UnixStream {
+                        let listener = tokio::net::UnixListener::bind(path).unwrap();
+                        for payload in [PAYLOAD, b"second"] {
+                            send_in_process(&address, payload, &limits).await.unwrap();
+                            let (mut stream, _) = listener.accept().await.unwrap();
+                            let mut bytes = Vec::new();
+                            stream.read_to_end(&mut bytes).await.unwrap();
+                            assert_eq!(bytes, payload);
+                        }
+                    } else {
+                        let socket = tokio::net::UnixDatagram::bind(path).unwrap();
+                        send_in_process(&address, PAYLOAD, &limits).await.unwrap();
+                        let read = socket.recv(&mut bytes).await.unwrap();
+                        assert_eq!(&bytes[..read], PAYLOAD);
+                    }
+                }
+            }
+        })
+        .await
+        .expect("local sends should complete within ten seconds");
+    }
+
+    #[tokio::test]
+    async fn an_in_process_send_to_nothing_listening_is_a_product_error() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = local_address(EndpointKind::Tcp, listener.local_addr().unwrap().port());
+        drop(listener);
+        let error = send_in_process(&address, PAYLOAD, &AttemptLimits::new(Duration::from_secs(10)))
+            .await
+            .unwrap_err();
+        assert!(matches!(&error, HandleError::Product { message } if message.contains(&address.url)));
+        assert_private_message(&error);
+    }
+
+    #[tokio::test]
+    async fn an_in_process_send_to_an_http_endpoint_is_a_harness_error() {
+        for kind in [EndpointKind::Http, EndpointKind::Grpc, EndpointKind::NamedPipe] {
+            let address = address(kind);
+            let error = send_in_process(&address, PAYLOAD, &AttemptLimits::new(Duration::from_secs(1)))
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error,
+                HandleError::Harness {
+                    message: format!(
+                        "The courier can't send raw bytes to {} endpoints ({})",
+                        kind.name(),
+                        address.url
+                    ),
+                }
+            );
+        }
     }
 
     #[tokio::test]

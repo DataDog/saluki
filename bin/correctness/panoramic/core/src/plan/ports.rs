@@ -167,14 +167,15 @@ mod tests {
     fn runner_host_port_exhaustion_in_a_step_names_the_step() {
         let yaml = PARTICIPANT_FIELDS.replace(
             minimal_procedure!(),
-            "procedure: [{step: reach, endpoint: subject.api}, {parallel: [{step: reach, endpoint: subject.metrics}]}]",
+            "procedure: [{step: reach, endpoint: subject.http, operation: request}, {parallel: [{step: reach, endpoint: subject.grpc, operation: request}]}]",
         );
+        let yaml = yaml.replace("type: server", "type: every-kind-server");
         let mut planner = Planner {
             ports: PortRegistry::over(21000..=21000),
             ..planner()
         };
         assert_eq!(compile_with(&mut planner, &yaml, Os::Linux).err().unwrap().to_string(),
-            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 2.1 reaches endpoint 'metrics' of participant 'subject', which needs a runner-host port: all 1 runner-host ports are allocated");
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 2.1 reaches endpoint 'grpc' of participant 'subject', which needs a runner-host port: all 1 runner-host ports are allocated");
     }
 
     #[test]

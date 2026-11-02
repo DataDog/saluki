@@ -1,9 +1,9 @@
-use panoramic_courier::{Report, Target};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 use crate::net::{bind_udp, connect_tcp};
+use crate::{Report, Target};
 
-pub(super) async fn send(to: &Target, payload: &[u8]) -> Report {
+pub(crate) async fn send(to: &Target, payload: &[u8]) -> Report {
     let result = async {
         match to {
             Target::Tcp { host, port } => {

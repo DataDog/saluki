@@ -104,12 +104,13 @@ impl IsolationGroup {
     ///
     /// The container is named `airlock-<id>-<participant>`, with the participant name as its hostname and DNS alias
     /// on the group network. Its only default mount is the group volume. It keeps its own PID namespace unless
-    /// [`DriverConfig::with_host_pid_namespace`] is set to `true`.
+    /// [`DriverConfig::with_host_pid_namespace`] is set to `true`. Published ports require an explicit host port.
     ///
     /// # Errors
     ///
     /// Returns an error for a participant outside this group, Windows containers, or settings only
-    /// [`Driver::from_config`] supports: `with_alpine_image`, `with_network`, `with_volume_mount`, and `with_logging`.
+    /// [`Driver::from_config`] supports: `with_alpine_image`, `with_network`, `with_volume_mount`, `with_logging`,
+    /// and `with_exposed_port`.
     /// The fix-up image comes from [`Self::prepare`].
     pub fn driver(&self, config: DriverConfig) -> Result<Driver, GenericError> {
         if !self.participants.contains(&config.driver_id) {
@@ -310,13 +311,18 @@ mod tests {
             (config.clone().with_volume_mount("other", "/other"), "with_volume_mount"),
             (config.clone().with_logging("logs".into()), "with_logging"),
             (
+                config.clone().with_exposed_port(Protocol::Udp, 9001),
+                "with_exposed_port",
+            ),
+            (
                 config
                     .clone()
                     .with_alpine_image("alpine:latest")
                     .with_network("other")
                     .with_volume_mount("other", "/other")
-                    .with_logging("logs".into()),
-                "with_alpine_image, with_network, with_volume_mount, with_logging",
+                    .with_logging("logs".into())
+                    .with_exposed_port(Protocol::Udp, 9001),
+                "with_alpine_image, with_network, with_volume_mount, with_logging, with_exposed_port",
             ),
         ] {
             let error = group
@@ -332,7 +338,7 @@ mod tests {
                 config
                     .with_bind_mount("/host/config", "/etc/config")
                     .with_published_port(Protocol::Tcp, 9000, 24100)
-                    .with_exposed_port(Protocol::Udp, 9001)
+                    .with_published_port(Protocol::Udp, 9001, 24101)
                     .with_network_alias("extra")
                     .with_host_cgroup_namespace(true)
                     .with_host_pid_namespace(true),

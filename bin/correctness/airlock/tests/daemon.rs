@@ -344,12 +344,10 @@ async fn a_participant_publishes_tcp_and_udp_on_given_host_ports() {
                 DriverConfig::from_image("server", image.clone())
                     .with_published_port(Protocol::Tcp, 9000, tcp)
                     .with_published_port(Protocol::Udp, 9001, udp)
-                    .with_exposed_port(Protocol::Tcp, 9002)
                     .with_entrypoint(vec![
                         "sh".to_string(),
                         "-c".to_string(),
                         r#"(while true; do nc -l -p 9000 -e echo tcp-reached; done) &
-(while true; do nc -l -p 9002 -e echo ephemeral-reached; done) &
 out=$(nc -u -l -p 9001 -w 1); [ "$out" = udp-reached ]"#
                             .to_string(),
                     ]),
@@ -360,10 +358,6 @@ out=$(nc -u -l -p 9001 -w 1); [ "$out" = udp-reached ]"#
         let details = server.start_container().await.unwrap();
         assert_eq!(details.try_get_exposed_port(Protocol::Tcp, 9000), Some(tcp));
         assert_eq!(details.try_get_exposed_port(Protocol::Udp, 9001), Some(udp));
-        let ephemeral = details
-            .try_get_exposed_port(Protocol::Tcp, 9002)
-            .expect("an ephemeral host port");
-        assert!(!ports.contains(&ephemeral));
 
         let inspected = docker
             .inspect_container(&format!("airlock-{id}-server"), None)
@@ -388,17 +382,9 @@ out=$(nc -u -l -p 9001 -w 1); [ "$out" = udp-reached ]"#
                         host_port: Some(udp.to_string()),
                     }])
                 ),
-                (
-                    "9002/tcp".to_string(),
-                    Some(vec![PortBinding {
-                        host_ip: Some(String::new()),
-                        host_port: Some(String::new()),
-                    }])
-                ),
             ]))
         );
         assert_eq!(read_from_host(tcp).await, "tcp-reached\n");
-        assert_eq!(read_from_host(ephemeral).await, "ephemeral-reached\n");
 
         // VM-to-host port forwarders need not carry UDP, so check it from a host-network sibling.
         let code = run_on_host_network(

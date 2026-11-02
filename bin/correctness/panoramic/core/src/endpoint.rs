@@ -21,6 +21,18 @@ pub enum EndpointKind {
     NamedPipe,
 }
 
+/// What a step does with an endpoint from the runner host.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EndpointOperation {
+    /// Tests whether the endpoint is listening or addressable.
+    Probe,
+    /// Sends raw bytes on a stream or in a datagram.
+    Send,
+    /// Makes an HTTP or gRPC request and observes the server's response.
+    Request,
+}
+
 impl EndpointKind {
     /// Spelling used in diagnostics.
     pub(crate) fn name(self) -> &'static str {
@@ -163,7 +175,7 @@ pub struct ResolvedAddress {
     pub(crate) path: Option<String>,
 }
 
-/// How the runner host reaches an endpoint, directly or through the courier in its serving participant.
+/// How the runner host performs one endpoint operation, directly or through the server participant's courier.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum RunnerHostRoute {
     Direct(ResolvedAddress),

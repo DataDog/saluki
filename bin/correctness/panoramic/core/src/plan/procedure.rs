@@ -11,7 +11,7 @@ use super::{
 };
 use crate::{
     case::{declared_names, CaseFile, ProcedureNode},
-    endpoint::RunnerHostRoute,
+    endpoint::{EndpointOperation, RunnerHostRoute},
     layout::Layout,
     participant::{find_type, ParticipantType},
     record::step_label,
@@ -29,7 +29,7 @@ pub(super) fn check_step_references(
     file: &CaseFile, procedure: &[ProcedureNode<Box<dyn Step>>], layout: &Layout, types: &[&dyn ParticipantType],
     participants: &BTreeMap<String, PlannedParticipant>, endpoints: &BTreeMap<String, ParticipantEndpoints>,
     ports: &mut RunnerHostPorts<'_>,
-) -> Result<BTreeMap<(String, String), RunnerHostRoute>, String> {
+) -> Result<BTreeMap<(String, String, EndpointOperation), RunnerHostRoute>, String> {
     let mut routes = BTreeMap::new();
     for (index, node) in procedure.iter().enumerate() {
         let (steps, parallel) = match node {
@@ -56,9 +56,9 @@ pub(super) fn check_step_references(
                         let realization = layout.get(&participant).expect("step needs name laid-out participants");
                         late_fact_timing(&participant, realization.kind, fact).map(|_| ())
                     }
-                    Need::Endpoint(participant, endpoint) => {
-                        plan_endpoint_route(&participant, &endpoint, layout, endpoints, ports).map(|route| {
-                            routes.insert((participant, endpoint), route);
+                    Need::Endpoint(participant, endpoint, operation) => {
+                        plan_endpoint_route(&participant, &endpoint, operation, layout, endpoints, ports).map(|route| {
+                            routes.insert((participant, endpoint, operation), route);
                         })
                     }
                     Need::Handle(_) | Need::Process(_, _) => continue,
@@ -71,8 +71,8 @@ pub(super) fn check_step_references(
 }
 
 fn plan_endpoint_route(
-    participant: &str, name: &str, layout: &Layout, endpoints: &BTreeMap<String, ParticipantEndpoints>,
-    ports: &mut RunnerHostPorts<'_>,
+    participant: &str, name: &str, operation: EndpointOperation, layout: &Layout,
+    endpoints: &BTreeMap<String, ParticipantEndpoints>, ports: &mut RunnerHostPorts<'_>,
 ) -> Result<RunnerHostRoute, String> {
     let context = format!("reaches endpoint '{name}' of participant '{participant}'");
     let server = &endpoints[participant];
@@ -83,7 +83,7 @@ fn plan_endpoint_route(
         )
     })?;
     let realization = layout.get(participant).expect("step needs name laid-out participants");
-    let access = routes::runner_host_route(endpoint.kind, realization)
+    let access = routes::runner_host_route(endpoint.kind, realization, operation)
         .map_err(|constraint| format!("{context}, which the runner host cannot reach: {constraint}"))?;
     let route = match access {
         RunnerHostAccess::Direct(route) => route,
@@ -133,44 +133,66 @@ mod tests {
     }
 
     #[test]
-    fn a_step_reaching_a_linux_container_endpoint_gets_a_direct_route_on_a_runner_host_port() {
+    fn only_request_steps_to_containers_or_pods_allocate_runner_host_ports() {
         for realization in [RealizationKind::LinuxContainer, RealizationKind::KubernetesPod] {
-            for (endpoint, kind, scheme, port) in [
-                ("tcp", EndpointKind::Tcp, "tcp", 1001),
-                ("http", EndpointKind::Http, "http", 1003),
-                ("grpc", EndpointKind::Grpc, "grpc", 1004),
-                ("udp", EndpointKind::Udp, "udp", 1001),
+            for (operation, field) in [
+                (EndpointOperation::Probe, "probe"),
+                (EndpointOperation::Send, "send"),
+                (EndpointOperation::Request, "request"),
             ] {
-                if realization == RealizationKind::KubernetesPod && kind == EndpointKind::Udp {
-                    continue;
+                for (endpoint, kind, port) in [
+                    ("tcp", EndpointKind::Tcp, 1001),
+                    ("udp", EndpointKind::Udp, 1001),
+                    ("http", EndpointKind::Http, 1003),
+                    ("grpc", EndpointKind::Grpc, 1004),
+                ] {
+                    let yaml = reach_case(Os::Linux, realization, endpoint)
+                        .replace("step: reach,", &format!("step: reach, operation: {field},"));
+                    let mut planner = planner();
+                    if operation == EndpointOperation::Request
+                        && !matches!(kind, EndpointKind::Http | EndpointKind::Grpc)
+                    {
+                        assert_eq!(compile_with(&mut planner, &yaml, Os::Linux).err().unwrap().to_string(), format!(
+                            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 1 reaches endpoint '{endpoint}' of participant 'subject', which the runner host cannot reach: request/response operations require an http or grpc endpoint"));
+                        assert_eq!(planner.ports.allocate(), Ok(20000));
+                        continue;
+                    }
+                    let plan = compile_with(&mut planner, &yaml, Os::Linux).unwrap().unwrap();
+                    let expected = if operation == EndpointOperation::Request {
+                        RunnerHostRoute::Direct(ResolvedAddress {
+                            kind,
+                            url: format!("{endpoint}://127.0.0.1:20000"),
+                            host: Some("127.0.0.1".into()),
+                            port: Some(20000),
+                            path: None,
+                        })
+                    } else {
+                        RunnerHostRoute::Courier(ResolvedAddress {
+                            kind,
+                            url: format!("{endpoint}://subject:{port}"),
+                            host: Some("subject".into()),
+                            port: Some(port),
+                            path: None,
+                        })
+                    };
+                    assert_eq!(plan.runner_host_route("subject", endpoint, operation), Some(&expected));
+                    let ports = if operation == EndpointOperation::Request {
+                        vec![RunnerHostPort {
+                            transport: Transport::Tcp,
+                            container_port: port,
+                            host_port: 20000,
+                        }]
+                    } else {
+                        vec![]
+                    };
+                    assert_eq!(plan.runner_host_ports("subject"), ports);
+                    assert_eq!(
+                        planner.ports.allocate(),
+                        Ok(if ports.is_empty() { 20000 } else { 20001 })
+                    );
+                    assert_eq!(plan.runner_host_route("subject", "unused", operation), None);
+                    assert_eq!(plan.runner_host_route("missing", endpoint, operation), None);
                 }
-                let plan = compile(&reach_case(Os::Linux, realization, endpoint), Os::Linux)
-                    .unwrap()
-                    .unwrap();
-                assert_eq!(
-                    plan.runner_host_route("subject", endpoint),
-                    Some(&RunnerHostRoute::Direct(ResolvedAddress {
-                        kind,
-                        url: format!("{scheme}://127.0.0.1:20000"),
-                        host: Some("127.0.0.1".into()),
-                        port: Some(20000),
-                        path: None,
-                    }))
-                );
-                assert_eq!(
-                    plan.runner_host_ports("subject"),
-                    vec![RunnerHostPort {
-                        transport: if kind == EndpointKind::Udp {
-                            Transport::Udp
-                        } else {
-                            Transport::Tcp
-                        },
-                        container_port: port,
-                        host_port: 20000,
-                    }]
-                );
-                assert_eq!(plan.runner_host_route("subject", "unused"), None);
-                assert_eq!(plan.runner_host_route("missing", endpoint), None);
             }
         }
     }
@@ -187,7 +209,7 @@ mod tests {
             .unwrap()
             .unwrap();
             assert_eq!(
-                plan.runner_host_route("subject", "tcp"),
+                plan.runner_host_route("subject", "tcp", EndpointOperation::Probe),
                 Some(&RunnerHostRoute::Direct(ResolvedAddress {
                     kind: EndpointKind::Tcp,
                     url: "tcp://127.0.0.1:1001".into(),
@@ -210,7 +232,7 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(
-            plan.runner_host_route("subject", "stream"),
+            plan.runner_host_route("subject", "stream", EndpointOperation::Probe),
             Some(&RunnerHostRoute::Direct(ResolvedAddress {
                 kind: EndpointKind::UnixStream,
                 url: "unix:///run/every/stream.sock".into(),
@@ -291,7 +313,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(
-                plan.runner_host_route("subject", endpoint),
+                plan.runner_host_route("subject", endpoint, EndpointOperation::Probe),
                 Some(&RunnerHostRoute::Courier(ResolvedAddress {
                     kind,
                     url: url.into(),
@@ -349,7 +371,7 @@ mod tests {
     fn a_step_and_a_host_process_group_reaching_one_container_endpoint_share_its_runner_host_port() {
         let yaml = host_to_container_case()
             .replace("subject: true", "subject: true, config: {env: {REF: '{{server.endpoints.api.url}}'}}")
-            .replace(minimal_procedure!(), "procedure: [{step: reach, endpoint: server.api}, {step: reach, endpoint: server.metrics}, {step: reach, endpoint: server.api}]");
+            .replace(minimal_procedure!(), "procedure: [{step: reach, endpoint: server.api, operation: request}, {step: reach, endpoint: server.metrics}, {step: reach, endpoint: server.api}, {step: reach, endpoint: server.api, operation: send}, {step: reach, endpoint: server.api, operation: request}]");
         let mut planner = planner();
         let plan = compile_with(&mut planner, &yaml, Os::MacOs).unwrap().unwrap();
         let address = ResolvedAddress {
@@ -362,26 +384,31 @@ mod tests {
         assert_eq!(plan.connection_address("client", "upstream"), Some(&address));
         assert_eq!(plan.endpoint_address("client", "server", "api"), Some(&address));
         assert_eq!(
-            plan.runner_host_route("server", "api"),
+            plan.runner_host_route("server", "api", EndpointOperation::Request),
             Some(&RunnerHostRoute::Direct(address))
         );
-        assert_eq!(plan.runner_host_routes.len(), 2);
+        for operation in [EndpointOperation::Probe, EndpointOperation::Send] {
+            assert_eq!(
+                plan.runner_host_route("server", "api", operation),
+                Some(&RunnerHostRoute::Courier(ResolvedAddress {
+                    kind: EndpointKind::Http,
+                    url: "http://server:8080".into(),
+                    host: Some("server".into()),
+                    port: Some(8080),
+                    path: None,
+                }))
+            );
+        }
+        assert_eq!(plan.runner_host_routes.len(), 4);
         assert_eq!(
             plan.runner_host_ports("server"),
-            vec![
-                RunnerHostPort {
-                    transport: Transport::Tcp,
-                    container_port: 8080,
-                    host_port: 20000
-                },
-                RunnerHostPort {
-                    transport: Transport::Udp,
-                    container_port: 9000,
-                    host_port: 20001
-                },
-            ]
+            vec![RunnerHostPort {
+                transport: Transport::Tcp,
+                container_port: 8080,
+                host_port: 20000
+            },]
         );
-        assert_eq!(planner.ports.allocate(), Ok(20002));
+        assert_eq!(planner.ports.allocate(), Ok(20001));
     }
 
     #[test]
@@ -389,22 +416,22 @@ mod tests {
         let yaml = concat!(
             "timeout: 1s\nsubject_os: [linux, macos]\nparticipants:\n",
             "  subject: {type: every-kind-server, subject: true}\n  server: {type: server, os: linux}\n",
-            "procedure: [{step: reach, endpoint: subject.tcp}, {step: reach, endpoint: server.api}]\n",
+            "procedure: [{step: reach, endpoint: subject.http, operation: request}, {step: reach, endpoint: server.api, operation: request}]\n",
         );
         let mut selected_planner = planner();
         let plan = compile_with(&mut selected_planner, yaml, Os::MacOs).unwrap().unwrap();
         assert_eq!(
-            plan.runner_host_route("subject", "tcp"),
+            plan.runner_host_route("subject", "http", EndpointOperation::Request),
             Some(&RunnerHostRoute::Direct(ResolvedAddress {
-                kind: EndpointKind::Tcp,
-                url: "tcp://127.0.0.1:1001".into(),
+                kind: EndpointKind::Http,
+                url: "http://127.0.0.1:1003".into(),
                 host: Some("127.0.0.1".into()),
-                port: Some(1001),
+                port: Some(1003),
                 path: None,
             }))
         );
         assert_eq!(
-            plan.runner_host_route("server", "api"),
+            plan.runner_host_route("server", "api", EndpointOperation::Request),
             Some(&RunnerHostRoute::Direct(ResolvedAddress {
                 kind: EndpointKind::Http,
                 url: "http://127.0.0.1:20000".into(),

@@ -248,7 +248,7 @@ impl Inventory {
             let plans: Vec<_> = cases
                 .into_iter()
                 .filter_map(|case| match planner().compile(case, os).unwrap() {
-                    Compiled::Planned(plan) => Some(plan),
+                    Compiled::Planned(plan) => Some(*plan),
                     Compiled::Excluded(_) => None,
                 })
                 .collect();

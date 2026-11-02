@@ -42,8 +42,11 @@ The daemon suite runs separately from the Linux integration cases.
 
 Panoramic's daemon tests exercise the Linux container backend against a real Docker daemon: scope preparation and
 removal, creating participants from recipes with files, the courier and host mounts, command execution, file reads
-and status, and courier probes and sends. They are ignored by default. Run them with `make test-panoramic-daemon`,
-which builds the Linux courier first.
+and status, and courier probes and sends. They also check HTTP responses through published TCP ports,
+courier probes of published ports with no listener, explicit loopback bindings, held-port startup failures,
+and courier routes to exited participants. Container probes and raw sends run inside the server because port proxies can
+accept connections even when the server has no listener.
+They are ignored by default. Run them with `make test-panoramic-daemon`, which builds the Linux courier first.
 `PANORAMIC_TEST_IMAGE` defaults to `alpine:latest`; load it first, because these tests never pull images.
 They fail if the daemon, image or courier is missing.
 
@@ -75,7 +78,7 @@ All binaries live under `bin/correctness/`:
 | **millstone**         | Deterministic load generator.                                                                                                              |
 | **datadog-intake**    | Mock Datadog API: receives test output                                                                                                     |
 | **airlock**           | Library for running containers in isolated groups.                                                                                         |
-| **panoramic-courier** | Runs inside a participant's container to send bytes to, or probe, TCP, UDP and Unix socket endpoints the runner host can't reach directly. |
+| **panoramic-courier** | Sends to and probes TCP, UDP and Unix socket endpoints. Panoramic calls its library for direct access from the runner host, or its binary inside a participant's container. |
 
 Test case configs live in `test/correctness/cases/` (for example, `test/correctness/cases/dsd-plain/config.yaml`).
 
@@ -418,6 +421,20 @@ its environment defaults. A case pins the port by setting the type's variable in
 No two network listeners of a case's host process groups may share a port on one transport (TCP or UDP).
 A fixed or pinned host port must be outside the pool, `20000–29999`; avoiding collisions across concurrent
 cases is the case author's responsibility.
+Step routes depend on the operation. Probes and raw sends to containers and pods use the courier inside the
+server participant: a port proxy can accept a connection even when the server has no listener. HTTP and gRPC
+requests to Linux containers and pods use published or forwarded ports and must observe a server response.
+Host process group endpoints are reached directly. Only request/response step needs allocate runner-host ports;
+current steps declare none, so steps allocate no ports today. Connections and configuration references still
+allocate ports as described above.
+
+Run one panoramic invocation per runner host and Docker daemon at a time: each invocation allocates
+deterministically from 20000. Linux container participants publish exactly their planned ports on `127.0.0.1`.
+If a port is held on the daemon, startup fails with a message naming the participant's ports.
+On a VM-backed daemon, a port held on the runner host isn't detected; the runner host may reach the process
+holding it. Each CI job has its own Docker-in-Docker daemon. Drivers built from an isolation group require
+explicit host ports; drivers built with `Driver::from_config` also support ephemeral publication.
+
 A Unix socket is reached at the path its server listens on. Every served socket path must be absolute for its
 participant's OS, even when nobody consumes it. It may use fact references, but not references resolved later,
 such as late facts. Every listener port must be from 1 to 65535. `config.endpoints` gives the port of a listener
@@ -488,7 +505,7 @@ that `panoramic-core` names no product and that `panoramic-steps` names no reali
 To exempt an unavoidable core line, add `// north-star: <reason>` on that line with a non-empty reason; markers on lines
 without a match fail the check. Steps have no exemptions.
 The crate dependency test keeps core and steps independent of `panoramic-participants`. Core's only panoramic
-dependency is `panoramic-courier`, for the courier's calling contract.
+dependency is `panoramic-courier`, for shared endpoint execution and its calling contract.
 
 ### Step deadlines
 

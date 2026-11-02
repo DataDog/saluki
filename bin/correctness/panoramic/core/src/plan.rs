@@ -8,7 +8,7 @@ use crate::{
     artifact::{ArtifactBinding, ArtifactManifest, ArtifactRole},
     backend,
     case::{config_references::FileTemplates, CaseConfig, CaseFile, CaseSchema, ProcedureNode, Registries},
-    endpoint::{Endpoint, Listener, Port, ResolvedAddress, RunnerHostPort, RunnerHostRoute},
+    endpoint::{Endpoint, EndpointOperation, Listener, Port, ResolvedAddress, RunnerHostPort, RunnerHostRoute},
     layout::{describe_participant, lay_out, Layout, LayoutEntry, Os},
     participant::{find_type, CaseValues, EffectiveConfig, ParticipantType, SHARED_DIR_FACT},
     step::Step,
@@ -48,9 +48,9 @@ pub struct Planner<'a> {
 /// The result of compiling a case for one subject OS.
 pub enum Compiled<C> {
     /// The case declares the selected OS.
-    Planned(CasePlan<C>),
+    Planned(Box<CasePlan<C>>),
     /// The case's `subject_os` omits the selected OS.
-    Excluded(CaseConfig<C>),
+    Excluded(Box<CaseConfig<C>>),
 }
 
 impl<C> Compiled<C> {
@@ -58,7 +58,7 @@ impl<C> Compiled<C> {
     #[cfg(any(test, feature = "test-util"))]
     pub fn into_plan(self) -> Option<CasePlan<C>> {
         match self {
-            Self::Planned(plan) => Some(plan),
+            Self::Planned(plan) => Some(*plan),
             Self::Excluded(_) => None,
         }
     }
@@ -75,19 +75,19 @@ pub struct CasePlan<C> {
         expect(dead_code, reason = "Read when backends prepare isolation scopes.")
     )]
     scope: Option<ScopeLayout>,
-    order: Option<Box<DependencyOrder>>,
+    order: Option<DependencyOrder>,
     participants: BTreeMap<String, PlannedParticipant>,
     /// Ports published or forwarded for endpoints reached by connections, references or steps,
     /// keyed by serving participant and endpoint for the selected subject OS.
     runner_host_ports: BTreeMap<(String, String), u16>,
-    runner_host_routes: BTreeMap<(String, String), RunnerHostRoute>,
+    runner_host_routes: BTreeMap<(String, String, EndpointOperation), RunnerHostRoute>,
 }
 
 struct PlannedCase {
     participants: BTreeMap<String, PlannedParticipant>,
     order: DependencyOrder,
     runner_host_ports: BTreeMap<(String, String), u16>,
-    runner_host_routes: BTreeMap<(String, String), RunnerHostRoute>,
+    runner_host_routes: BTreeMap<(String, String, EndpointOperation), RunnerHostRoute>,
 }
 
 struct PlannedParticipant {
@@ -132,8 +132,8 @@ impl<'a> Planner<'a> {
     /// Only the selected OS draws runner-host ports from this planner; other OSes use separate registries.
     /// Ports are drawn in check order: assigned listeners per participant and endpoint in name order,
     /// then connections per consumer, then references per participant (`env`, `params`, template files),
-    /// then step endpoint needs in procedure order.
-    /// Connections, references and steps reaching one endpoint share its runner-host port.
+    /// then step request/response endpoint needs in procedure order.
+    /// Connections, references and step requests reaching one endpoint share its runner-host port.
     ///
     /// # Errors
     ///
@@ -157,7 +157,7 @@ impl<'a> Planner<'a> {
     ///       runner-host port allocation and address rendering.
     ///    7. Create order, then start order.
     ///    8. Step fact, late-fact and endpoint needs in procedure order, naming the step. Endpoint needs check
-    ///       the served endpoint and runner-host route, then allocate its runner-host port and render its address.
+    ///       the served endpoint and operation-specific route, then allocate any port it needs and render its address.
     pub fn compile<C>(&mut self, case: CaseConfig<C>, subject_os: Os) -> Result<Compiled<C>, GenericError> {
         let selected = case.subject_os().contains(&subject_os);
         let mut layout = None;
@@ -209,7 +209,7 @@ impl<'a> Planner<'a> {
                 if os == subject_os {
                     artifacts = artifacts::bind(file, &candidate, self.registries.participant_types, &self.bindings);
                     layout = Some(candidate);
-                    order = Some(Box::new(planned.order));
+                    order = Some(planned.order);
                     participants = planned.participants;
                     runner_host_ports = planned.runner_host_ports;
                     runner_host_routes = planned.runner_host_routes;
@@ -239,9 +239,9 @@ impl<'a> Planner<'a> {
             artifacts = artifacts::bind_roles(roles.iter().copied(), &self.bindings);
         }
         if !selected {
-            return Ok(Compiled::Excluded(case));
+            return Ok(Compiled::Excluded(Box::new(case)));
         }
-        Ok(Compiled::Planned(CasePlan {
+        Ok(Compiled::Planned(Box::new(CasePlan {
             case,
             subject_os,
             layout,
@@ -251,7 +251,7 @@ impl<'a> Planner<'a> {
             participants,
             runner_host_ports,
             runner_host_routes,
-        }))
+        })))
     }
 }
 
@@ -346,10 +346,13 @@ impl<C> CasePlan<C> {
             .get(&(server.into(), endpoint.into()))
     }
 
-    /// Returns the runner-host route for a step-needed endpoint, or `None` when no step needs it.
+    /// Returns the runner-host route for a step-needed endpoint operation.
     #[cfg_attr(not(test), expect(dead_code, reason = "Steps reach endpoints through these routes."))]
-    pub(crate) fn runner_host_route(&self, server: &str, endpoint: &str) -> Option<&RunnerHostRoute> {
-        self.runner_host_routes.get(&(server.into(), endpoint.into()))
+    pub(crate) fn runner_host_route(
+        &self, server: &str, endpoint: &str, operation: EndpointOperation,
+    ) -> Option<&RunnerHostRoute> {
+        self.runner_host_routes
+            .get(&(server.into(), endpoint.into(), operation))
     }
 
     /// Lists the participant's published or forwarded ports in endpoint-name order.
@@ -513,7 +516,7 @@ mod tests {
         let yaml = host_to_container_case()
             .replace(
                 "subject: true",
-                "subject: true, config: {env: {REF: '{{server.endpoints.metrics.url}}'}}",
+                "subject: true, config: {env: {REF: '{{server.endpoints.metrics.url}}', TCP: '{{server.endpoints.extra.url}}'}}",
             )
             .replace(
                 "type: server, os: linux}",
@@ -549,12 +552,15 @@ mod tests {
         for participant in ["client", "unused", "missing"] {
             assert!(plan.runner_host_ports(participant).is_empty());
         }
-        assert_eq!(plan.runner_host_route("server", "api"), None);
-        assert_eq!(plan.runner_host_route("server", "metrics"), None);
+        assert_eq!(plan.runner_host_route("server", "api", EndpointOperation::Probe), None);
+        assert_eq!(
+            plan.runner_host_route("server", "metrics", EndpointOperation::Probe),
+            None
+        );
         assert_eq!(planner.ports.allocate(), Ok(20003));
         let typed = compile("type: fixture", Os::MacOs).unwrap().unwrap();
         assert!(typed.runner_host_ports("server").is_empty());
-        assert_eq!(typed.runner_host_route("server", "api"), None);
+        assert_eq!(typed.runner_host_route("server", "api", EndpointOperation::Probe), None);
     }
 
     #[test]
@@ -961,7 +967,7 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
                 panic!("macOS is excluded");
             };
             assert_eq!(case.name(), "alpha");
-            let plan = planner.compile(case, os).unwrap().into_plan().unwrap();
+            let plan = planner.compile(*case, os).unwrap().into_plan().unwrap();
             assert_eq!(plan.case().name(), "alpha");
             assert_eq!(plan.subject_os(), os);
             assert_eq!(
@@ -981,7 +987,7 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
         let Compiled::Excluded(case) = planner.compile(case, Os::Linux).unwrap() else {
             panic!("Linux is excluded");
         };
-        let plan = planner.compile(case, Os::MacOs).unwrap().into_plan().unwrap();
+        let plan = planner.compile(*case, Os::MacOs).unwrap().into_plan().unwrap();
         assert_eq!(
             plan.scope.as_ref().unwrap().state_dir(Os::MacOs),
             "/tmp/panoramic-testrun0/0000"
@@ -1028,7 +1034,7 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
             let Compiled::Excluded(case) = planner.compile(case, Os::Linux).unwrap() else {
                 panic!("Linux is excluded");
             };
-            let plan = planner.compile(case, os).unwrap().into_plan().unwrap();
+            let plan = planner.compile(*case, os).unwrap().into_plan().unwrap();
             assert_eq!(plan.subject_os(), os);
             assert_eq!(plan.case().name(), "alpha");
             assert!(plan.layout().is_none());

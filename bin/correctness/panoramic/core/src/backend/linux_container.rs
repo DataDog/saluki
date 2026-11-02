@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use airlock::{
-    driver::{ContainerRef, Driver, DriverConfig},
+    driver::{ContainerRef, Driver, DriverConfig, Protocol},
     exec::{ExecOutput, ExecRequest},
     files::{ContainerFile, FileStat},
     group::IsolationGroup,
@@ -15,7 +15,7 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 
 use super::{courier, RunBackends};
 use crate::{
-    endpoint::ResolvedAddress,
+    endpoint::{ResolvedAddress, RunnerHostPort, Transport},
     handle::{ExecCommand, HandleError, Primitives},
     layout::Os,
     plan::ScopeLayout,
@@ -63,9 +63,9 @@ impl RunBackends {
 }
 
 impl LinuxScope {
-    /// Builds a participant from its image and recipe.
+    /// Builds a participant from its image and recipe, publishing each runner-host port on `127.0.0.1`.
     pub(crate) fn participant(
-        &self, name: &str, image: &str, recipe: &ContainerRecipe,
+        &self, name: &str, image: &str, recipe: &ContainerRecipe, ports: &[RunnerHostPort],
     ) -> Result<LinuxParticipant, GenericError> {
         let mut config = DriverConfig::from_image(name, image.to_owned());
         if let Some(entrypoint) = &recipe.entrypoint {
@@ -84,6 +84,9 @@ impl LinuxScope {
                 config.with_bind_mount(&mount.host_path, &mount.container_path)
             };
         }
+        for port in ports {
+            config = config.with_published_port(protocol(port.transport), port.container_port, port.host_port);
+        }
         // Linux container participants share the host PID namespace by default.
         config = config.with_host_pid_namespace(true);
         let driver = self.group.driver(config)?;
@@ -93,6 +96,7 @@ impl LinuxScope {
             name: name.into(),
             driver,
             files,
+            ports: ports.to_vec(),
         })
     }
 }
@@ -102,6 +106,7 @@ pub(crate) struct LinuxParticipant {
     name: String,
     driver: Driver,
     files: Vec<ContainerFile>,
+    ports: Vec<RunnerHostPort>,
 }
 
 impl LinuxParticipant {
@@ -132,7 +137,17 @@ impl LinuxParticipant {
             .driver
             .start_container()
             .await
-            .with_error_context(|| format!("Failed to start participant '{}'", self.name))?;
+            .with_error_context(|| {
+                let context = format!("Failed to start participant '{}'", self.name);
+                if self.ports.is_empty() {
+                    return context;
+                }
+                let ports = self.ports.iter()
+                    .map(|port| format!("127.0.0.1:{}/{}", port.host_port, port.transport.name()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{context}, which publishes runner-host ports {ports}; run one panoramic invocation per runner host and Docker daemon at a time")
+            })?;
         Ok(details.container_ip().map(str::to_owned))
     }
 }
@@ -187,6 +202,13 @@ impl Primitives for LinuxParticipant {
     }
 }
 
+fn protocol(transport: Transport) -> Protocol {
+    match transport {
+        Transport::Tcp => Protocol::Tcp,
+        Transport::Udp => Protocol::Udp,
+    }
+}
+
 fn exec_request(command: ExecCommand) -> ExecRequest {
     let mut request = ExecRequest::new(command.argv);
     for (key, value) in command.env {
@@ -225,6 +247,12 @@ mod daemon_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runner_host_ports_map_to_published_container_ports() {
+        assert_eq!(protocol(Transport::Tcp), Protocol::Tcp);
+        assert_eq!(protocol(Transport::Udp), Protocol::Udp);
+    }
 
     #[test]
     fn a_recipe_file_at_the_courier_path_is_rejected() {

@@ -1,10 +1,11 @@
 use std::{io, net::SocketAddr};
 
-use panoramic_courier::{Report, Target};
 use tokio::net::{lookup_host, TcpSocket, TcpStream, UdpSocket};
 
+use crate::{Report, Target};
+
 // Separate socket creation keeps local failures distinct from resolution and connection failures.
-pub(super) async fn connect_tcp(host: &str, port: u16, to: &Target) -> Result<TcpStream, Report> {
+pub(crate) async fn connect_tcp(host: &str, port: u16, to: &Target) -> Result<TcpStream, Report> {
     let addresses = lookup_host((host, port)).await.map_err(|error| Report::Unreachable {
         reason: format!("{to}: {error}"),
     })?;
@@ -52,7 +53,7 @@ async fn connect_tcp_addresses(
 
 // Separate socket creation keeps local failures distinct from connection failures.
 #[cfg(unix)]
-pub(super) async fn connect_unix(path: &str, to: &Target) -> Result<tokio::net::UnixStream, Report> {
+pub(crate) async fn connect_unix(path: &str, to: &Target) -> Result<tokio::net::UnixStream, Report> {
     let socket = tokio::net::UnixSocket::new_stream().map_err(|error| Report::Failed {
         reason: format!("{to}: {error}"),
     })?;
@@ -63,7 +64,7 @@ pub(super) async fn connect_unix(path: &str, to: &Target) -> Result<tokio::net::
 
 // Connecting first separates a missing or stale socket from a datagram the kernel refuses.
 #[cfg(unix)]
-pub(super) fn connect_unix_datagram(path: &str, to: &Target) -> Result<tokio::net::UnixDatagram, Report> {
+pub(crate) fn connect_unix_datagram(path: &str, to: &Target) -> Result<tokio::net::UnixDatagram, Report> {
     let socket = tokio::net::UnixDatagram::unbound().map_err(|error| Report::Failed {
         reason: format!("{to}: {error}"),
     })?;
@@ -74,11 +75,11 @@ pub(super) fn connect_unix_datagram(path: &str, to: &Target) -> Result<tokio::ne
 }
 
 #[cfg(not(unix))]
-pub(super) const UNSUPPORTED_UNIX_REASON: &str = "Unix sockets are not supported on this platform";
+pub(crate) const UNSUPPORTED_UNIX_REASON: &str = "Unix sockets are not supported on this platform";
 
 // UDP uses the first resolved address: it has no handshake to test the address family.
 // Use an IP literal when a name resolves to both IPv4 and IPv6.
-pub(super) async fn bind_udp(host: &str, port: u16, to: &Target) -> Result<(UdpSocket, SocketAddr), Report> {
+pub(crate) async fn bind_udp(host: &str, port: u16, to: &Target) -> Result<(UdpSocket, SocketAddr), Report> {
     let address = lookup_host((host, port))
         .await
         .map_err(|error| Report::Unreachable {

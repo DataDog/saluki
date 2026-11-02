@@ -75,13 +75,13 @@ fn build_step(
             | Need::Process(participant, _)
             | Need::Fact(participant, _)
             | Need::Late(participant, _)
-            | Need::Endpoint(participant, _) => participant,
+            | Need::Endpoint(participant, _, _) => participant,
         };
         let Some(entry) = file.participants.get(participant) else {
             let usage = match &need {
                 Need::Fact(_, fact) => format!("references fact '{fact}' of"),
                 Need::Late(_, fact) => format!("references late fact '{}' of", fact.name()),
-                Need::Endpoint(_, endpoint) => format!("reaches endpoint '{endpoint}' of"),
+                Need::Endpoint(_, endpoint, _) => format!("reaches endpoint '{endpoint}' of"),
                 Need::Handle(_) | Need::Process(_, _) => "runs on".into(),
             };
             return Err(error(format!(
@@ -217,7 +217,14 @@ mod tests {
         let [ProcedureNode::Step(step)] = procedure.as_slice() else {
             panic!("expected one built step");
         };
-        assert_eq!(step.needs(), [Need::Endpoint("subject".into(), "api".into())]);
+        assert_eq!(
+            step.needs(),
+            [Need::Endpoint(
+                "subject".into(),
+                "api".into(),
+                crate::endpoint::EndpointOperation::Probe
+            )]
+        );
     }
 
     #[test]

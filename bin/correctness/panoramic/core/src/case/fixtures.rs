@@ -14,7 +14,7 @@ use super::{case_name, CaseLoader, ConnectionTarget, Registries, Template, Typed
 use crate::{
     artifact::ArtifactRole,
     backend::LateFact,
-    endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind, Port},
+    endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind, EndpointOperation, Port},
     layout::{Os, Realization, RealizationKind},
     participant::{CaseValues, EffectiveConfig, FactDeclaration, ParticipantType},
     step::{decode_fields, Need, Step, StepFactory, StepFields},
@@ -113,6 +113,7 @@ impl StepFactory for NoopFactory {
 #[serde(deny_unknown_fields)]
 struct Reach {
     endpoint: ConnectionTarget,
+    operation: Option<EndpointOperation>,
 }
 
 impl Step for Reach {
@@ -120,6 +121,7 @@ impl Step for Reach {
         vec![Need::Endpoint(
             self.endpoint.participant.clone(),
             self.endpoint.endpoint.clone(),
+            self.operation.unwrap_or(EndpointOperation::Probe),
         )]
     }
 }
