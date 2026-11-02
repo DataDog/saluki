@@ -50,6 +50,8 @@ use tracing::{debug, error, info, warn};
 use crate::config::DataPlaneConfiguration;
 use crate::state::metrics::get_datadog_agent_remappings;
 
+mod forwarder_status;
+
 const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const REFRESH_FAILED_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -515,6 +517,7 @@ impl StatusProvider for RemoteAgentImpl {
                 }
 
                 self.write_dsd_metrics(&mut builder);
+                forwarder_status::write_forwarder_section(&mut builder, self.internal_metrics.state());
 
                 Ok(tonic::Response::new(builder.into_response()))
             })
