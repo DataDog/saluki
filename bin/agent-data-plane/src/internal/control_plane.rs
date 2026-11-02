@@ -24,7 +24,7 @@ use crate::{
     internal::{
         logging::get_translated_log_level_stream, AgentDataPlane, DogStatsDStatusSection, TopologyControlSurfaces,
     },
-    state::metrics::{get_compat_remappings, get_datadog_agent_remappings},
+    state::metrics::get_datadog_agent_remappings,
 };
 
 /// Creates the control plane supervisor.
@@ -50,7 +50,7 @@ pub async fn create_control_plane_supervisor(
 
     supervisor.add_worker(agent.health_registry().worker());
     supervisor.add_worker(ResourceTelemetryWorker::new(agent.component_registry()));
-    supervisor.add_worker(InternalTelemetryAPIWorker::new(Some(get_compat_remappings())));
+    supervisor.add_worker(InternalTelemetryAPIWorker);
     supervisor.add_worker(DynamicLogLevelWorker::new(
         get_translated_log_level_stream(config_system),
         logging_controller,

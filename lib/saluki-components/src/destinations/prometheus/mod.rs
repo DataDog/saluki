@@ -656,11 +656,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scrape_routes_serve_raw_compat_and_404() {
+    async fn scrape_routes_serve_raw_additional_and_404() {
         let payload = Arc::new(RwLock::new("raw".to_string()));
         let routes = vec![PrometheusAdditionalRoute {
-            path: "/compat/metrics".to_string(),
-            provider: Arc::new(|| "compat".to_string()),
+            path: "/additional/metrics".to_string(),
+            provider: Arc::new(|| "additional".to_string()),
         }];
 
         let raw_response = build_scrape_response("/metrics", &payload, &routes).await;
@@ -683,15 +683,15 @@ mod tests {
             .to_bytes();
         assert_eq!(&legacy_body[..], b"raw");
 
-        let compat_response = build_scrape_response("/compat/metrics", &payload, &routes).await;
-        assert_eq!(compat_response.status(), StatusCode::OK);
-        let compat_body = compat_response
+        let additional_response = build_scrape_response("/additional/metrics", &payload, &routes).await;
+        assert_eq!(additional_response.status(), StatusCode::OK);
+        let additional_body = additional_response
             .into_body()
             .collect()
             .await
             .expect("body should collect")
             .to_bytes();
-        assert_eq!(&compat_body[..], b"compat");
+        assert_eq!(&additional_body[..], b"additional");
 
         let missing_response = build_scrape_response("/missing", &payload, &routes).await;
         assert_eq!(missing_response.status(), StatusCode::NOT_FOUND);

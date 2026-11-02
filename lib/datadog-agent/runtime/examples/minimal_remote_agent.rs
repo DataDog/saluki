@@ -310,7 +310,7 @@ async fn create_control_plane(
 
     supervisor.add_worker(agent.health_registry().worker());
     supervisor.add_worker(ResourceTelemetryWorker::new(agent.component_registry()));
-    supervisor.add_worker(InternalTelemetryAPIWorker::new(None));
+    supervisor.add_worker(InternalTelemetryAPIWorker);
     supervisor.add_worker(DynamicLogLevelWorker::new(
         translator.translate_log_levels(config.log_levels()),
         logging_controller,
