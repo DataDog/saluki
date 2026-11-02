@@ -82,7 +82,7 @@ pub enum ContainerOs {
 /// This is the basic set of configuration options needed to spawn the container for a given driver.
 #[derive(Clone)]
 pub struct DriverConfig {
-    driver_id: &'static str,
+    pub(crate) driver_id: &'static str,
     image: String,
     entrypoint: Option<Vec<String>>,
     command: Option<Vec<String>>,
@@ -90,7 +90,7 @@ pub struct DriverConfig {
     binds: Vec<String>,
     healthcheck: Option<HealthConfig>,
     exposed_ports: Vec<(&'static str, u16)>,
-    container_os: ContainerOs,
+    pub(crate) container_os: ContainerOs,
     host_cgroup_namespace: bool,
     /// Additional named Docker volume mounts, in `volume_name:/container/path` format.
     ///
@@ -212,7 +212,9 @@ impl DriverConfig {
         }
     }
 
-    /// Sets the image used for the shared-volume permission fix-up container.
+    /// Sets the shared-volume fix-up image for drivers built with [`Driver::from_config`].
+    ///
+    /// Prepared groups use the image passed to [`IsolationGroup::prepare`](crate::group::IsolationGroup::prepare).
     pub fn with_alpine_image(mut self, alpine_image: impl Into<String>) -> Self {
         self.alpine_image = alpine_image.into();
         self
@@ -475,6 +477,14 @@ impl DriverDetails {
     }
 }
 
+/// What `Driver::create` makes besides the container.
+enum Provisioning {
+    /// Creates shared resources if missing, fixes volume permissions, and pulls images.
+    OnCreate,
+    /// Uses an [`IsolationGroup`](crate::group::IsolationGroup)'s resources and local images.
+    Prepared,
+}
+
 /// Container driver.
 pub struct Driver {
     isolation_group_id: String,
@@ -483,6 +493,7 @@ pub struct Driver {
     config: DriverConfig,
     docker: Docker,
     log_dir: Option<PathBuf>,
+    provisioning: Provisioning,
 }
 
 impl Driver {
@@ -509,13 +520,23 @@ impl Driver {
         let docker = crate::docker::connect()?;
 
         Ok(Self {
-            isolation_group_name: format!("airlock-{}", isolation_group_id),
-            container_name: format!("airlock-{}-{}", isolation_group_id, config.driver_id),
+            provisioning: Provisioning::OnCreate,
+            ..Self::in_group(docker, isolation_group_id, config)
+        })
+    }
+
+    /// Builds a driver that uses a prepared group's resources and a local image.
+    pub(crate) fn in_group(docker: Docker, isolation_group_id: String, config: DriverConfig) -> Self {
+        let isolation_group_name = group_resource_name(&isolation_group_id);
+        Self {
+            container_name: format!("{}-{}", isolation_group_name, config.driver_id),
+            isolation_group_name,
             isolation_group_id,
             config,
             docker,
             log_dir: None,
-        })
+            provisioning: Provisioning::Prepared,
+        }
     }
 
     /// Configures the driver to capture container logs.
@@ -549,7 +570,7 @@ impl Driver {
     }
 
     async fn remove_isolation_group(docker: &Docker, isolation_group_id: &str) -> Result<(), GenericError> {
-        let isolation_group_name = format!("airlock-{}", isolation_group_id);
+        let isolation_group_name = group_resource_name(isolation_group_id);
         let isolation_group_label = format!("airlock-isolation-group={}", isolation_group_id);
         let mut failures = Vec::new();
 
@@ -971,32 +992,35 @@ impl Driver {
         Ok(())
     }
 
-    /// Starts the container, creating any necessary resources.
+    /// Creates and starts the container, provisioning resources as described by [`Self::create`].
     ///
     /// # Errors
     ///
-    /// If there is an error while creating the network or shared volume, while pulling the container image, or while
-    /// creating or starting the container, it will be returned.
+    /// Returns any error from creation, starting, inspection, or log setup.
     pub async fn start(&mut self) -> Result<DriverDetails, GenericError> {
         self.create().await?;
         self.start_container().await
     }
 
-    /// Creates the container and the resources it needs, without starting it.
+    /// Creates the container and connects its networks; call [`Self::start_container`] to start it.
     ///
-    /// This makes every request that creates something in the isolation group, so once it returns, starting the
-    /// container creates nothing more.
+    /// Drivers built with [`Self::from_config`] also provision shared resources and pull images. Drivers from an
+    /// [`IsolationGroup`](crate::group::IsolationGroup) reuse its prepared resources and require a local image.
     ///
     /// # Errors
     ///
-    /// If there is an error while creating the network or shared volume, while pulling the container image, or while
-    /// creating the container, it will be returned.
+    /// Returns any error from provisioning, container creation, or network connection.
     pub async fn create(&self) -> Result<(), GenericError> {
-        self.create_network_if_missing().await?;
-        self.create_image_if_missing().await?;
-        self.create_volume_if_missing().await?;
-        if self.config.needs_shared_volume_permission_fixup() {
-            self.adjust_shared_volume_permissions().await?;
+        match self.provisioning {
+            Provisioning::OnCreate => {
+                self.create_network_if_missing().await?;
+                self.create_image_if_missing().await?;
+                self.create_volume_if_missing().await?;
+                if self.config.needs_shared_volume_permission_fixup() {
+                    self.adjust_shared_volume_permissions().await?;
+                }
+            }
+            Provisioning::Prepared => {}
         }
 
         self.create_container().await?;
@@ -1323,7 +1347,7 @@ fn strip_ansi_codes(input: &[u8]) -> Vec<u8> {
 }
 
 /// Returns whether Docker reported a missing resource.
-fn is_not_found(error: &Error) -> bool {
+pub(crate) fn is_not_found(error: &Error) -> bool {
     matches!(error, Error::DockerResponseServerError { status_code: 404, .. })
 }
 
@@ -1410,7 +1434,11 @@ where
     }
 }
 
-fn get_default_airlock_labels(isolation_group_id: &str) -> HashMap<String, String> {
+pub(crate) fn group_resource_name(id: &str) -> String {
+    format!("airlock-{id}")
+}
+
+pub(crate) fn get_default_airlock_labels(isolation_group_id: &str) -> HashMap<String, String> {
     let mut labels = HashMap::new();
     labels.insert("created_by".to_string(), "airlock".to_string());
     labels.insert("airlock-isolation-group".to_string(), isolation_group_id.to_string());
@@ -1419,11 +1447,8 @@ fn get_default_airlock_labels(isolation_group_id: &str) -> HashMap<String, Strin
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
-
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-
     use super::*;
+    use crate::fake_daemon::FakeDaemon;
 
     fn docker_server_error(status_code: u16, message: &str) -> GenericError {
         Error::DockerResponseServerError {
@@ -1681,73 +1706,13 @@ mod tests {
     /// Bounds isolation-group cleanup through the fake daemon.
     const BOUND: Duration = Duration::from_secs(5);
 
-    /// A fake Docker daemon with configurable responses and recorded requests.
-    struct FakeDaemon {
-        docker: Docker,
-        /// Each request's method and path.
-        requests: Arc<Mutex<Vec<String>>>,
-        server: tokio::task::JoinHandle<()>,
-    }
-
     impl FakeDaemon {
-        /// Starts a daemon using `respond` to map request methods and paths to HTTP statuses and JSON bodies.
-        async fn start(respond: fn(&str, &str) -> (u16, &'static str)) -> Self {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-                .await
-                .expect("the fake daemon should bind");
-            let address = listener.local_addr().expect("the listener should have an address");
-            let requests = Arc::new(Mutex::new(Vec::new()));
-            let recorded = requests.clone();
-            let server = tokio::spawn(async move {
-                loop {
-                    let (mut stream, _) = listener.accept().await.expect("the fake daemon should accept");
-                    let mut head = Vec::new();
-                    let mut buf = [0; 1024];
-                    while !head.windows(4).any(|window| window == b"\r\n\r\n") {
-                        let read = stream.read(&mut buf).await.expect("the request should be readable");
-                        if read == 0 {
-                            break;
-                        }
-                        head.extend_from_slice(&buf[..read]);
-                    }
-                    let head = String::from_utf8_lossy(&head);
-                    let mut request_line = head.lines().next().unwrap_or_default().split(' ');
-                    let method = request_line.next().unwrap_or_default().to_string();
-                    let path = request_line.next().unwrap_or_default().to_string();
-                    let (status, body) = respond(&method, &path);
-                    recorded.lock().unwrap().push(format!("{} {}", method, path));
-                    let response = format!(
-                        "HTTP/1.1 {} Fake\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
-                         Connection: close\r\n\r\n{}",
-                        status,
-                        body.len(),
-                        body
-                    );
-                    let _ = stream.write_all(response.as_bytes()).await;
-                    let _ = stream.shutdown().await;
-                }
-            });
-            let docker = Docker::connect_with_http(&format!("http://{}", address), 5, bollard::API_DEFAULT_VERSION)
-                .expect("bollard should accept the fake daemon's address");
-            Self {
-                docker,
-                requests,
-                server,
-            }
-        }
-
         /// Runs isolation-group cleanup and returns its result and recorded requests.
         async fn remove_isolation_group(&self) -> (Result<(), GenericError>, Vec<String>) {
             let removed = tokio::time::timeout(BOUND, Driver::remove_isolation_group(&self.docker, GROUP))
                 .await
                 .expect("removal should finish within the bound");
             (removed, self.requests.lock().unwrap().clone())
-        }
-    }
-
-    impl Drop for FakeDaemon {
-        fn drop(&mut self) {
-            self.server.abort();
         }
     }
 
@@ -1825,6 +1790,7 @@ mod tests {
                 .with_container_os(ContainerOs::Windows),
             docker: daemon.docker.clone(),
             log_dir: None,
+            provisioning: Provisioning::OnCreate,
         };
         let paths = || -> Vec<String> {
             let requests = daemon.requests.lock().unwrap();
@@ -1860,6 +1826,29 @@ mod tests {
                 "GET /containers/airlock-ab12cd34-target/json",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn a_driver_in_a_prepared_group_creates_only_its_container_without_pulling() {
+        let daemon = FakeDaemon::start(
+            |method, path| match (method, path.split('?').next().unwrap_or_default()) {
+                ("POST", "/containers/create") => (201, r#"{"Id": "c1", "Warnings": []}"#),
+                _ => (500, r#"{"message": "unexpected request"}"#),
+            },
+        )
+        .await;
+        let driver = Driver::in_group(
+            daemon.docker.clone(),
+            GROUP.to_string(),
+            DriverConfig::from_image("alpha", "local:latest".to_string()),
+        );
+
+        driver.create().await.expect("prepared creation should succeed");
+
+        let requests = daemon.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1, "{requests:?}");
+        assert_eq!(requests[0].split('?').next(), Some("POST /containers/create"));
+        assert!(requests[0].contains("name=airlock-ab12cd34-alpha"), "{requests:?}");
     }
 
     #[tokio::test]

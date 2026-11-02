@@ -16,12 +16,19 @@ fault-injected equivalence testing.
 
 ## Unit tests
 
-These are found throughout the Rust codebase as you would expect. You can run them with `cargo test` or you can use
-`make test` which will run them with `cargo nextest` for more parallelization. Platform-specific unit tests should be
+These are found throughout the Rust codebase as you would expect. You can run them with `cargo test --lib --bins` or
+use `make test`, which runs them with `cargo nextest` for more parallelization. Platform-specific unit tests should be
 skipped or compiled-out for platforms they're incompatible with. For conventions on test naming, table-driven tests,
 shared fixtures, and assertion density, see [Testing patterns](./testing-patterns.md).
 
 CI: `.gitlab/test.yml`—runs on both Linux (amd64/arm64) and macOS (amd64/arm64).
+
+### Airlock daemon tests
+
+Airlock's daemon tests exercise isolation groups and container creation against a real Docker daemon. Run them with
+`cargo nextest run -p airlock --test daemon`. `AIRLOCK_TEST_IMAGE` defaults to `alpine:latest`; load it first, because
+these tests use only local images. They fail if the daemon or image is unavailable. Plain `cargo test` or
+`cargo nextest run -p airlock` also runs them; use `make test` or select `--lib` to run only unit tests.
 
 ## Correctness tests (panoramic)
 
@@ -54,7 +61,8 @@ Test case configs live in `test/correctness/cases/` (for example, `test/correctn
 ### Program flow
 
 **panoramic** is the entry-point for running a test. When given a correctness test config, it orchestrates the
-containers using the `airlock` library (which talks to containerd via gRPC) and asserts the correctness of the output. It:
+containers using the `airlock` library (which talks to the Docker Engine API) and asserts the correctness of the output.
+It:
 - reads the test configuration files
 - starts two sets of containers
   - `millstone` -> ADP -> `datadog-intake`
