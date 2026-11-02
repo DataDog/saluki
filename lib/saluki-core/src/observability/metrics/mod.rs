@@ -241,6 +241,8 @@ struct RegistryMaps {
     counters: FastHashMap<Key, Arc<Handle<CounterInner>>>,
     gauges: FastHashMap<Key, Arc<Handle<GaugeInner>>>,
     histograms: FastHashMap<Key, Arc<Handle<HistogramInner>>>,
+    // Explicitly deleted counters whose resolver cache entries the next flush must retire.
+    deleted_counters: Vec<Key>,
 }
 
 impl MetricsRegistry {
@@ -264,7 +266,9 @@ impl MetricsRegistry {
 
     fn remove_counter(&self, key: &Key) -> Option<Arc<Handle<CounterInner>>> {
         let mut maps = self.maps.lock().unwrap();
-        maps.counters.remove(key)
+        let handle = maps.counters.remove(key)?;
+        maps.deleted_counters.push(key.clone());
+        Some(handle)
     }
 
     /// Returns a handle to the gauge for `key`, creating it at `level` if it doesn't yet exist.
@@ -556,6 +560,27 @@ fn flush_once(state: &State, context_resolver: &mut MetricsContextResolver, flus
 
     {
         let mut maps = state.registry.maps.lock().unwrap();
+
+        // `delete_counter` already sent its own eviction, but a flush that collected the counter just before the
+        // deletion can still publish it afterwards. Evicting again here, after that flush, also retires the cached
+        // context. Re-registered counters are live again and keep theirs.
+        let RegistryMaps {
+            counters,
+            gauges,
+            histograms,
+            deleted_counters,
+        } = &mut *maps;
+        for key in deleted_counters.drain(..) {
+            // The resolver cache is keyed by `Key` alone, so a gauge or histogram sharing the key still needs it.
+            if counters.contains_key(&key) || gauges.contains_key(&key) || histograms.contains_key(&key) {
+                continue;
+            }
+            if let Some(context) = context_resolver.take(&key) {
+                if has_listeners {
+                    snapshot.evictions.push(context);
+                }
+            }
+        }
 
         // Counters: a counter is never idle so long as it has a non-zero delta during a flush _or_ has
         // an active reference (strong count > 1).
@@ -921,6 +946,87 @@ mod tests {
             panic!("delete should emit a counter metric");
         };
         assert_eq!(points.into_iter().map(|(_, value)| value).sum::<f64>(), 7.0);
+    }
+
+    #[tokio::test]
+    async fn deleted_counters_retire_cached_contexts_on_next_flush() {
+        let (state, mut rx) = make_state(IDLE_EVICT_INTERVALS);
+        let mut resolver = resolver();
+        let mut flush_state = FlushState::default();
+        for i in 0..400 {
+            let key = Key::from_parts("deleted_counter", vec![Label::new("origin", i.to_string())]);
+            state.registry.get_or_create_counter(&key, Level::INFO).increment(1);
+            flush_once(&state, &mut resolver, &mut flush_state);
+            assert_eq!(resolver.key_context_cache.len(), 1);
+            delete_counter_from_state(&state, &key).expect("counter should be deleted");
+        }
+        flush_once(&state, &mut resolver, &mut flush_state);
+        drain(&mut rx);
+        assert!(resolver.key_context_cache.is_empty());
+        assert!(state.registry.maps.lock().unwrap().deleted_counters.is_empty());
+    }
+
+    #[tokio::test]
+    async fn counter_republished_by_concurrent_flush_is_evicted_on_next_flush() {
+        let (state, mut rx) = make_state(IDLE_EVICT_INTERVALS);
+        let mut resolver = resolver();
+        let mut flush_state = FlushState::default();
+        let processor = AggregatedMetricsProcessor;
+        let aggregated = processor.build_initial_state();
+        let key = Key::from_name("raced_counter");
+        state.registry.get_or_create_counter(&key, Level::INFO).increment(1);
+
+        // The deletion's eviction overtakes the upsert of a flush that collected the counter first.
+        flush_once(&state, &mut resolver, &mut flush_state);
+        let in_flight = drain(&mut rx);
+        processor.process(
+            delete_counter_from_state(&state, &key).expect("counter should be deleted"),
+            &aggregated,
+        );
+        for snapshot in in_flight {
+            processor.process(snapshot, &aggregated);
+        }
+        assert_eq!(metric_count(&aggregated, "raced_counter"), 1);
+
+        flush_once(&state, &mut resolver, &mut flush_state);
+        for snapshot in drain(&mut rx) {
+            processor.process(snapshot, &aggregated);
+        }
+        assert_eq!(metric_count(&aggregated, "raced_counter"), 0);
+    }
+
+    #[tokio::test]
+    async fn counter_reregistered_after_delete_keeps_cached_context() {
+        let (state, mut rx) = make_state(IDLE_EVICT_INTERVALS);
+        let mut resolver = resolver();
+        let mut flush_state = FlushState::default();
+        let key = Key::from_name("reused_counter");
+        state.registry.get_or_create_counter(&key, Level::INFO).increment(1);
+        flush_once(&state, &mut resolver, &mut flush_state);
+        drain(&mut rx);
+        delete_counter_from_state(&state, &key).expect("counter should be deleted");
+        let counter = state.registry.get_or_create_counter(&key, Level::INFO);
+        counter.increment(2);
+        flush_once(&state, &mut resolver, &mut flush_state);
+        assert!(drain(&mut rx).iter().all(|snapshot| snapshot.evictions.is_empty()));
+        assert_eq!(resolver.key_context_cache.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn deleted_counter_keeps_context_of_gauge_with_same_key() {
+        let (state, mut rx) = make_state(IDLE_EVICT_INTERVALS);
+        let mut resolver = resolver();
+        let mut flush_state = FlushState::default();
+        let key = Key::from_name("shared_key");
+        state.registry.get_or_create_counter(&key, Level::INFO).increment(1);
+        let gauge = state.registry.get_or_create_gauge(&key, Level::INFO);
+        gauge.set(1.0);
+        flush_once(&state, &mut resolver, &mut flush_state);
+        drain(&mut rx);
+        delete_counter_from_state(&state, &key).expect("counter should be deleted");
+        flush_once(&state, &mut resolver, &mut flush_state);
+        assert!(drain(&mut rx).iter().all(|snapshot| snapshot.evictions.is_empty()));
+        assert_eq!(resolver.key_context_cache.len(), 1);
     }
 
     #[tokio::test]
