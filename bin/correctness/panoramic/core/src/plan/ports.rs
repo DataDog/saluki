@@ -8,7 +8,7 @@ use std::{
 use super::endpoints::ParticipantEndpoints;
 use crate::{
     case::CaseFile,
-    endpoint::{EndpointKind, Listener, Port},
+    endpoint::{Listener, Port},
     layout::{describe_participant, Layout, RealizationKind},
 };
 
@@ -44,8 +44,8 @@ impl PortRegistry {
     }
 }
 
-/// Every host-process-group connection or configuration reference to one Linux container endpoint
-/// shares one runner-host port within a case and OS.
+/// Connections, configuration references and step needs reaching one endpoint through a runner-host port
+/// share that port within a case and OS.
 pub(super) struct RunnerHostPorts<'a> {
     registry: &'a mut PortRegistry,
     ports: BTreeMap<(String, String), u16>,
@@ -69,31 +69,6 @@ impl<'a> RunnerHostPorts<'a> {
 
     pub(super) fn into_ports(self) -> BTreeMap<(String, String), u16> {
         self.ports
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(super) enum Transport {
-    Tcp,
-    Udp,
-}
-
-impl Transport {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Tcp => "tcp",
-            Self::Udp => "udp",
-        }
-    }
-}
-
-impl EndpointKind {
-    pub(super) fn runner_host_transport(self) -> Option<Transport> {
-        match self {
-            Self::Tcp | Self::Http | Self::Grpc => Some(Transport::Tcp),
-            Self::Udp => Some(Transport::Udp),
-            Self::UnixDatagram | Self::UnixStream | Self::NamedPipe => None,
-        }
     }
 }
 
@@ -137,7 +112,8 @@ pub(super) fn check_host_listeners(
 mod tests {
     use super::*;
     use crate::{
-        case::fixtures::minimal_procedure,
+        case::fixtures::{minimal_procedure, PARTICIPANT_FIELDS},
+        endpoint::{EndpointKind, Transport},
         layout::Os,
         plan::{
             fixtures::{assigned_server_case, compile, compile_with, planner, CONNECTION_CASE},
@@ -185,6 +161,20 @@ mod tests {
         for _ in 0..2 {
             assert_eq!(registry.allocate(), Err("all 2 runner-host ports are allocated".into()));
         }
+    }
+
+    #[test]
+    fn runner_host_port_exhaustion_in_a_step_names_the_step() {
+        let yaml = PARTICIPANT_FIELDS.replace(
+            minimal_procedure!(),
+            "procedure: [{step: reach, endpoint: subject.api}, {parallel: [{step: reach, endpoint: subject.metrics}]}]",
+        );
+        let mut planner = Planner {
+            ports: PortRegistry::over(21000..=21000),
+            ..planner()
+        };
+        assert_eq!(compile_with(&mut planner, &yaml, Os::Linux).err().unwrap().to_string(),
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 2.1 reaches endpoint 'metrics' of participant 'subject', which needs a runner-host port: all 1 runner-host ports are allocated");
     }
 
     #[test]

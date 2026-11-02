@@ -7,10 +7,11 @@ use saluki_error::{generic_error, GenericError};
 use crate::{
     artifact::{ArtifactBinding, ArtifactManifest, ArtifactRole},
     backend,
-    case::{config_references::FileTemplates, CaseConfig, CaseFile, CaseSchema, Registries},
-    endpoint::ResolvedAddress,
+    case::{config_references::FileTemplates, CaseConfig, CaseFile, CaseSchema, ProcedureNode, Registries},
+    endpoint::{Endpoint, Listener, Port, ResolvedAddress, RunnerHostPort, RunnerHostRoute},
     layout::{describe_participant, lay_out, Layout, LayoutEntry, Os},
     participant::{find_type, CaseValues, EffectiveConfig, ParticipantType, SHARED_DIR_FACT},
+    step::Step,
 };
 
 mod artifacts;
@@ -74,29 +75,25 @@ pub struct CasePlan<C> {
         expect(dead_code, reason = "Read when backends prepare isolation scopes.")
     )]
     scope: Option<ScopeLayout>,
-    order: Option<DependencyOrder>,
+    order: Option<Box<DependencyOrder>>,
     participants: BTreeMap<String, PlannedParticipant>,
-    /// Ports the runner host publishes for Linux container endpoints reached by host process groups,
-    /// one per endpoint for the selected subject OS, keyed by serving participant and endpoint.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Read when the Linux container backend publishes runner-host ports."
-        )
-    )]
+    /// Ports published or forwarded for endpoints reached by connections, references or steps,
+    /// keyed by serving participant and endpoint for the selected subject OS.
     runner_host_ports: BTreeMap<(String, String), u16>,
+    runner_host_routes: BTreeMap<(String, String), RunnerHostRoute>,
 }
 
 struct PlannedCase {
     participants: BTreeMap<String, PlannedParticipant>,
     order: DependencyOrder,
     runner_host_ports: BTreeMap<(String, String), u16>,
+    runner_host_routes: BTreeMap<(String, String), RunnerHostRoute>,
 }
 
 struct PlannedParticipant {
     facts: BTreeMap<String, String>,
     config: EffectiveConfig,
+    served: BTreeMap<String, Endpoint>,
     connections: BTreeMap<String, ResolvedAddress>,
     endpoint_references: BTreeMap<(String, String), ResolvedAddress>,
 }
@@ -134,8 +131,9 @@ impl<'a> Planner<'a> {
     /// A participant case declaring the selected OS draws one isolation scope from this planner.
     /// Only the selected OS draws runner-host ports from this planner; other OSes use separate registries.
     /// Ports are drawn in check order: assigned listeners per participant and endpoint in name order,
-    /// then connections per consumer, then references per participant (`env`, `params`, template files).
-    /// Connections and references to one container endpoint share a runner-host port.
+    /// then connections per consumer, then references per participant (`env`, `params`, template files),
+    /// then step endpoint needs in procedure order.
+    /// Connections, references and steps reaching one endpoint share its runner-host port.
     ///
     /// # Errors
     ///
@@ -158,7 +156,8 @@ impl<'a> Planner<'a> {
     ///       then template files): served endpoint, route, socket location and length, address part, then
     ///       runner-host port allocation and address rendering.
     ///    7. Create order, then start order.
-    ///    8. Step fact and late-fact references in procedure order, naming the step.
+    ///    8. Step fact, late-fact and endpoint needs in procedure order, naming the step. Endpoint needs check
+    ///       the served endpoint and runner-host route, then allocate its runner-host port and render its address.
     pub fn compile<C>(&mut self, case: CaseConfig<C>, subject_os: Os) -> Result<Compiled<C>, GenericError> {
         let selected = case.subject_os().contains(&subject_os);
         let mut layout = None;
@@ -167,6 +166,7 @@ impl<'a> Planner<'a> {
         let mut order = None;
         let mut participants = BTreeMap::new();
         let mut runner_host_ports = BTreeMap::new();
+        let mut runner_host_routes = BTreeMap::new();
         if let CaseSchema::Participants { file, procedure } = case.schema() {
             let candidate_scope = if selected {
                 self.scopes.allocate().map_err(|error| {
@@ -198,27 +198,21 @@ impl<'a> Planner<'a> {
                 };
                 let planned = plan_participants(
                     file,
+                    procedure,
                     case.file_templates(),
                     &candidate,
                     &candidate_scope,
                     self.registries.participant_types,
                     os_ports,
                 )
-                .map_err(&error)?;
-                procedure::check_step_references(
-                    file,
-                    procedure,
-                    &candidate,
-                    self.registries.participant_types,
-                    &planned.participants,
-                )
                 .map_err(error)?;
                 if os == subject_os {
                     artifacts = artifacts::bind(file, &candidate, self.registries.participant_types, &self.bindings);
                     layout = Some(candidate);
-                    order = Some(planned.order);
+                    order = Some(Box::new(planned.order));
                     participants = planned.participants;
                     runner_host_ports = planned.runner_host_ports;
+                    runner_host_routes = planned.runner_host_routes;
                 }
             }
             if selected {
@@ -256,6 +250,7 @@ impl<'a> Planner<'a> {
             order,
             participants,
             runner_host_ports,
+            runner_host_routes,
         }))
     }
 }
@@ -351,6 +346,36 @@ impl<C> CasePlan<C> {
             .get(&(server.into(), endpoint.into()))
     }
 
+    /// Returns the runner-host route for a step-needed endpoint, or `None` when no step needs it.
+    #[cfg_attr(not(test), expect(dead_code, reason = "Steps reach endpoints through these routes."))]
+    pub(crate) fn runner_host_route(&self, server: &str, endpoint: &str) -> Option<&RunnerHostRoute> {
+        self.runner_host_routes.get(&(server.into(), endpoint.into()))
+    }
+
+    /// Lists the participant's published or forwarded ports in endpoint-name order.
+    /// Returns an empty list when the participant is unknown or needs no runner-host ports.
+    #[cfg_attr(not(test), expect(dead_code, reason = "Container backends publish these ports."))]
+    pub(crate) fn runner_host_ports(&self, participant: &str) -> Vec<RunnerHostPort> {
+        self.runner_host_ports
+            .iter()
+            .filter(|((server, _), _)| server == participant)
+            .map(|((_, name), &host_port)| {
+                let endpoint = &self.participants[participant].served[name];
+                let Listener::Port(Port::Fixed(container_port)) = endpoint.listener else {
+                    unreachable!("runner-host ports map to resolved network listeners");
+                };
+                RunnerHostPort {
+                    transport: endpoint
+                        .kind
+                        .runner_host_transport()
+                        .expect("network endpoints have a transport"),
+                    container_port,
+                    host_port,
+                }
+            })
+            .collect()
+    }
+
     /// Returns the participant's effective configuration for its planned realization.
     /// Returns `None` for unknown participants and typed cases.
     pub fn effective_config(&self, participant: &str) -> Option<&EffectiveConfig> {
@@ -363,10 +388,10 @@ impl<C> CasePlan<C> {
 /// Computes every participant's facts, including `shared_dir`, rejecting types that declare it.
 /// Then builds effective configurations (assigning host process group ports), checks endpoints, runner-host listeners
 /// and connections, merges connection deliveries and resolves configuration address references in participant name order.
-/// Then computes create and start orders.
+/// Then computes create and start orders and checks step needs, storing their runner-host routes.
 fn plan_participants(
-    file: &CaseFile, templates: &FileTemplates, layout: &Layout, scope: &ScopeLayout, types: &[&dyn ParticipantType],
-    ports: &mut PortRegistry,
+    file: &CaseFile, procedure: &[ProcedureNode<Box<dyn Step>>], templates: &FileTemplates, layout: &Layout,
+    scope: &ScopeLayout, types: &[&dyn ParticipantType], ports: &mut PortRegistry,
 ) -> Result<PlannedCase, String> {
     let mut facts: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
     for (name, realization) in layout.iter() {
@@ -415,11 +440,13 @@ fn plan_participants(
         .into_iter()
         .zip(configs.into_values())
         .map(|((name, facts), config)| {
+            let served = participant_endpoints[&name].served.clone();
             (
                 name,
                 PlannedParticipant {
                     facts,
                     config,
+                    served,
                     connections: BTreeMap::new(),
                     endpoint_references: BTreeMap::new(),
                 },
@@ -444,10 +471,20 @@ fn plan_participants(
         &mut runner_host_ports,
     )?;
     let order = dependency_order(file, templates, layout, &participant_endpoints)?;
+    let runner_host_routes = procedure::check_step_references(
+        file,
+        procedure,
+        layout,
+        types,
+        &participants,
+        &participant_endpoints,
+        &mut runner_host_ports,
+    )?;
     Ok(PlannedCase {
         participants,
         order,
         runner_host_ports: runner_host_ports.into_ports(),
+        runner_host_routes,
     })
 }
 
@@ -464,11 +501,61 @@ mod tests {
     };
     use crate::{
         case::{
-            fixtures::{FixtureTypes, LOADER, PARTICIPANT_FIELDS, REGISTRIES, STEPS},
+            fixtures::{minimal_procedure, FixtureTypes, LOADER, PARTICIPANT_FIELDS, REGISTRIES, STEPS},
             CaseLoader,
         },
+        endpoint::Transport,
         layout::{Realization, RealizationKind},
     };
+
+    #[test]
+    fn runner_host_ports_list_transport_container_port_and_host_port_per_endpoint() {
+        let yaml = host_to_container_case()
+            .replace(
+                "subject: true",
+                "subject: true, config: {env: {REF: '{{server.endpoints.metrics.url}}'}}",
+            )
+            .replace(
+                "type: server, os: linux}",
+                "type: server, os: linux, config: {env: {PORT: '9000'}, endpoints: {extra: {port: 9000}}}}",
+            )
+            .replace("participants:", "participants:\n  unused: {type: server, os: linux}")
+            .replace(
+                minimal_procedure!(),
+                "procedure: [{step: reach, endpoint: server.extra}]",
+            );
+        let mut planner = planner();
+        let plan = compile_with(&mut planner, &yaml, Os::MacOs).unwrap().unwrap();
+        assert_eq!(
+            plan.runner_host_ports("server"),
+            vec![
+                RunnerHostPort {
+                    transport: Transport::Tcp,
+                    container_port: 9000,
+                    host_port: 20000
+                },
+                RunnerHostPort {
+                    transport: Transport::Tcp,
+                    container_port: 9000,
+                    host_port: 20002
+                },
+                RunnerHostPort {
+                    transport: Transport::Udp,
+                    container_port: 9000,
+                    host_port: 20001
+                },
+            ]
+        );
+        for participant in ["client", "unused", "missing"] {
+            assert!(plan.runner_host_ports(participant).is_empty());
+        }
+        assert_eq!(plan.runner_host_route("server", "api"), None);
+        assert_eq!(plan.runner_host_route("server", "metrics"), None);
+        assert_eq!(planner.ports.allocate(), Ok(20003));
+        let typed = compile("type: fixture", Os::MacOs).unwrap().unwrap();
+        assert!(typed.runner_host_ports("server").is_empty());
+        assert_eq!(typed.runner_host_route("server", "api"), None);
+    }
 
     #[test]
     fn layout_entries_list_each_participant_with_its_type_os_and_realization_in_name_order() {

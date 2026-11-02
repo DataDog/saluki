@@ -17,6 +17,31 @@ pub(super) enum Route {
     NamedPipe,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum RunnerHostAccess {
+    Direct(Route),
+    Courier,
+}
+
+/// Chooses runner-host access from the endpoint kind and server realization.
+pub(super) fn runner_host_route(kind: EndpointKind, server: Realization) -> Result<RunnerHostAccess, &'static str> {
+    use EndpointKind::{Grpc, Http, NamedPipe, Tcp, Udp, UnixDatagram, UnixStream};
+    use RealizationKind::{HostProcessGroup, KubernetesPod, LinuxContainer, WindowsContainer};
+    use RunnerHostAccess::{Courier, Direct};
+
+    match (kind, server.kind) {
+        (Tcp | Udp | Http | Grpc, LinuxContainer) | (Tcp | Http | Grpc, KubernetesPod) => {
+            Ok(Direct(Route::RunnerHostPort))
+        }
+        (Tcp | Udp | Http | Grpc, HostProcessGroup) => Ok(Direct(Route::Loopback)),
+        (Tcp | Udp | Http | Grpc, WindowsContainer) | (Udp, KubernetesPod) => Ok(Courier),
+        (UnixDatagram | UnixStream, HostProcessGroup) => Ok(Direct(Route::SharedFilesystem)),
+        (UnixDatagram | UnixStream, LinuxContainer | KubernetesPod) | (NamedPipe, WindowsContainer) => Ok(Courier),
+        (UnixDatagram | UnixStream, WindowsContainer) => Err("unix sockets are not supported in a windows-container"),
+        (NamedPipe, _) => Err("a named pipe is reachable only in a windows-container"),
+    }
+}
+
 pub(super) enum Unreachable {
     NoRoute(&'static str),
     Socket { path: String, reason: String },
@@ -167,6 +192,56 @@ mod tests {
         kind: RealizationKind::KubernetesPod,
     };
     const REALIZATIONS: [Realization; 5] = [LINUX_CONTAINER, LINUX_HOST, MACOS_HOST, WINDOWS_CONTAINER, LINUX_POD];
+
+    #[test]
+    fn every_endpoint_kind_and_server_realization_has_exactly_the_runner_host_route_the_table_names() {
+        use RunnerHostAccess::{Courier, Direct};
+
+        let network = [
+            Some(Direct(Route::RunnerHostPort)),
+            Some(Direct(Route::Loopback)),
+            Some(Direct(Route::Loopback)),
+            Some(Courier),
+            Some(Direct(Route::RunnerHostPort)),
+        ];
+        let udp = [network[0], network[1], network[2], network[3], Some(Courier)];
+        let sockets = [
+            Some(Courier),
+            Some(Direct(Route::SharedFilesystem)),
+            Some(Direct(Route::SharedFilesystem)),
+            None,
+            Some(Courier),
+        ];
+        for (kind, expected) in [
+            (EndpointKind::Tcp, network),
+            (EndpointKind::Http, network),
+            (EndpointKind::Grpc, network),
+            (EndpointKind::Udp, udp),
+            (EndpointKind::UnixDatagram, sockets),
+            (EndpointKind::UnixStream, sockets),
+            (EndpointKind::NamedPipe, [None, None, None, Some(Courier), None]),
+        ] {
+            for (server, expected) in REALIZATIONS.into_iter().zip(expected) {
+                assert_eq!(runner_host_route(kind, server).ok(), expected, "{kind:?}: {server:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn runner_host_route_errors_name_the_constraint() {
+        for kind in [EndpointKind::UnixDatagram, EndpointKind::UnixStream] {
+            assert_eq!(
+                runner_host_route(kind, WINDOWS_CONTAINER),
+                Err("unix sockets are not supported in a windows-container")
+            );
+        }
+        for server in [LINUX_CONTAINER, LINUX_HOST, MACOS_HOST, LINUX_POD] {
+            assert_eq!(
+                runner_host_route(EndpointKind::NamedPipe, server),
+                Err("a named pipe is reachable only in a windows-container")
+            );
+        }
+    }
 
     #[test]
     fn every_kind_and_realization_pair_has_exactly_the_route_the_table_names() {

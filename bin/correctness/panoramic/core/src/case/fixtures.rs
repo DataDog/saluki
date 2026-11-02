@@ -10,7 +10,7 @@ use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{case_name, CaseLoader, Registries, Template, TypedCase, TypedCaseLoader};
+use super::{case_name, CaseLoader, ConnectionTarget, Registries, Template, TypedCase, TypedCaseLoader};
 use crate::{
     artifact::ArtifactRole,
     backend::LateFact,
@@ -109,7 +109,34 @@ impl StepFactory for NoopFactory {
     }
 }
 
-pub(crate) const STEPS: &[&dyn StepFactory] = &[&MarkerFactory, &ProbeFactory, &NoopFactory];
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Reach {
+    endpoint: ConnectionTarget,
+}
+
+impl Step for Reach {
+    fn needs(&self) -> Vec<Need> {
+        vec![Need::Endpoint(
+            self.endpoint.participant.clone(),
+            self.endpoint.endpoint.clone(),
+        )]
+    }
+}
+
+struct ReachFactory;
+
+impl StepFactory for ReachFactory {
+    fn name(&self) -> &'static str {
+        "reach"
+    }
+
+    fn build(&self, fields: &StepFields) -> Result<Box<dyn Step>, String> {
+        Ok(Box::new(decode_fields::<Reach>(fields)?))
+    }
+}
+
+pub(crate) const STEPS: &[&dyn StepFactory] = &[&MarkerFactory, &ProbeFactory, &NoopFactory, &ReachFactory];
 pub(crate) struct Server;
 
 impl ParticipantType for Server {

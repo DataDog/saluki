@@ -34,6 +34,29 @@ impl EndpointKind {
             Self::NamedPipe => "named-pipe",
         }
     }
+
+    pub(crate) fn runner_host_transport(self) -> Option<Transport> {
+        match self {
+            Self::Tcp | Self::Http | Self::Grpc => Some(Transport::Tcp),
+            Self::Udp => Some(Transport::Udp),
+            Self::UnixDatagram | Self::UnixStream | Self::NamedPipe => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum Transport {
+    Tcp,
+    Udp,
+}
+
+impl Transport {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Tcp => "tcp",
+            Self::Udp => "udp",
+        }
+    }
 }
 
 /// An endpoint a participant serves.
@@ -138,6 +161,21 @@ pub struct ResolvedAddress {
     pub(crate) host: Option<String>,
     pub(crate) port: Option<u16>,
     pub(crate) path: Option<String>,
+}
+
+/// How the runner host reaches an endpoint, directly or through the courier in its serving participant.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum RunnerHostRoute {
+    Direct(ResolvedAddress),
+    Courier(ResolvedAddress),
+}
+
+/// A network listener's port mapping on the runner host.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RunnerHostPort {
+    pub(crate) transport: Transport,
+    pub(crate) container_port: u16,
+    pub(crate) host_port: u16,
 }
 
 /// An endpoint a participant consumes: a key it accepts in `connect`.

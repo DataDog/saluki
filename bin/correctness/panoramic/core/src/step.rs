@@ -12,7 +12,8 @@ pub type StepFields = BTreeMap<String, Value>;
 
 /// A dependency of a built step.
 ///
-/// Loading checks participant and process names; planning checks fact and late-fact availability for each subject OS.
+/// Loading checks participant and process names. Planning checks facts, late facts and endpoint reachability
+/// on each subject OS.
 #[derive(Debug, PartialEq)]
 pub enum Need {
     /// The participant the step runs on.
@@ -23,18 +24,20 @@ pub enum Need {
     Fact(String, String),
     /// A late fact of a participant: (participant, fact). Known only once the participant exists or runs.
     Late(String, LateFact),
+    /// An endpoint the step reaches from the runner host: (participant, endpoint).
+    Endpoint(String, String),
 }
 
 /// A step built from its case-file fields.
 pub trait Step: fmt::Debug + Send + Sync {
-    /// Participants, processes, facts and late facts the step uses.
+    /// Participants, processes, facts, late facts and endpoints the step uses.
     fn needs(&self) -> Vec<Need>;
 }
 
 /// Builds a named step from its case-file fields at load time.
 ///
 /// The step crate registers factories for log and file assertions. The loader builds steps and checks
-/// participant and process names; planning checks fact and late-fact availability through [`Step::needs`].
+/// participant and process names; planning checks facts, late facts and endpoints through [`Step::needs`].
 pub trait StepFactory: Send + Sync {
     /// Registry name, as written in a node's `step`.
     fn name(&self) -> &'static str;

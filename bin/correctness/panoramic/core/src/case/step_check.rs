@@ -74,12 +74,14 @@ fn build_step(
             Need::Handle(participant)
             | Need::Process(participant, _)
             | Need::Fact(participant, _)
-            | Need::Late(participant, _) => participant,
+            | Need::Late(participant, _)
+            | Need::Endpoint(participant, _) => participant,
         };
         let Some(entry) = file.participants.get(participant) else {
             let usage = match &need {
                 Need::Fact(_, fact) => format!("references fact '{fact}' of"),
                 Need::Late(_, fact) => format!("references late fact '{}' of", fact.name()),
+                Need::Endpoint(_, endpoint) => format!("reaches endpoint '{endpoint}' of"),
                 Need::Handle(_) | Need::Process(_, _) => "runs on".into(),
             };
             return Err(error(format!(
@@ -172,7 +174,7 @@ mod tests {
         let message = build_error("- {step: missing, on: subject}");
         assert_eq!(
             message,
-            "case 'alpha' in cases/alpha/config.yaml: step 1 names unknown step 'missing'; registered steps: marker, probe, noop"
+            "case 'alpha' in cases/alpha/config.yaml: step 1 names unknown step 'missing'; registered steps: marker, probe, noop, reach"
         );
     }
 
@@ -205,6 +207,17 @@ mod tests {
                 "{message}"
             );
         }
+    }
+
+    #[test]
+    fn a_step_reaching_an_endpoint_of_an_unknown_participant_fails_loading() {
+        assert_eq!(build_error("- {step: reach, endpoint: missing.api}"),
+            "case 'alpha' in cases/alpha/config.yaml: step 1 'reach' reaches endpoint 'api' of unknown participant 'missing'; participants: other, subject");
+        let procedure = build("- {step: reach, endpoint: subject.api}").unwrap();
+        let [ProcedureNode::Step(step)] = procedure.as_slice() else {
+            panic!("expected one built step");
+        };
+        assert_eq!(step.needs(), [Need::Endpoint("subject".into(), "api".into())]);
     }
 
     #[test]
