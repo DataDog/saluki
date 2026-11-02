@@ -29,6 +29,15 @@ fn invocation(command: Command) -> Invocation {
     }
 }
 
+/// Windows retries a connection to a closed port for about two seconds before refusing it, so a
+/// closed-port check needs more time than [`LIMIT`] to see the refusal rather than the deadline.
+fn closed_port_invocation(command: Command) -> Invocation {
+    Invocation {
+        command,
+        timeout: Duration::from_secs(10),
+    }
+}
+
 async fn closed_tcp_target() -> Target {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     Target::parse(&format!("tcp://{}", listener.local_addr().unwrap())).unwrap()
@@ -186,7 +195,11 @@ async fn an_empty_stdin_sends_an_empty_datagram() {
 async fn a_send_to_nothing_listening_is_unreachable() {
     let to = closed_tcp_target().await;
     assert_unreachable(
-        execute(&invocation(Command::Send { to: to.clone() }), &b"payload"[..]).await,
+        execute(
+            &closed_port_invocation(Command::Send { to: to.clone() }),
+            &b"payload"[..],
+        )
+        .await,
         &to,
     );
     #[cfg(unix)]
@@ -289,7 +302,11 @@ async fn a_tcp_probe_connects_without_sending_data() {
 async fn a_probe_of_nothing_listening_is_unreachable() {
     let to = closed_tcp_target().await;
     assert_unreachable(
-        execute(&invocation(Command::Probe { to: to.clone() }), tokio::io::empty()).await,
+        execute(
+            &closed_port_invocation(Command::Probe { to: to.clone() }),
+            tokio::io::empty(),
+        )
+        .await,
         &to,
     );
     #[cfg(unix)]
