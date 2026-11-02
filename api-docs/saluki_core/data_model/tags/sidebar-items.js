@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["BorrowedTag","RawTags","RawTagsFilter","SharedTagSet","Tag","TagSet"],"trait":["RawTagsFilterPredicate"]};
+window.SIDEBAR_ITEMS = {"struct":["BorrowedTag","RawTags","SharedTagSet","Tag","TagSet"]};

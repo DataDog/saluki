@@ -403,7 +403,7 @@
 <a href=#403 id=403 data-nosnippet>403</a>        </span><span class="kw">let </span>raw_tags_input = <span class="string">"dd.internal.card:high"</span>;
 <a href=#404 id=404 data-nosnippet>404</a>        <span class="kw">let </span>raw_tags = RawTags::new(raw_tags_input, usize::MAX, usize::MAX);
 <a href=#405 id=405 data-nosnippet>405</a>
-<a href=#406 id=406 data-nosnippet>406</a>        <span class="kw">let </span>well_known_tags = WellKnownTags::from_raw_tags(<span class="kw-2">&amp;</span>raw_tags);
+<a href=#406 id=406 data-nosnippet>406</a>        <span class="kw">let </span>(well_known_tags, <span class="kw">_</span>) = WellKnownTags::split_raw_tags(<span class="kw-2">&amp;</span>raw_tags);
 <a href=#407 id=407 data-nosnippet>407</a>        <span class="macro">assert_eq!</span>(well_known_tags.cardinality, <span class="prelude-val">Some</span>(OriginTagCardinality::High));
 <a href=#408 id=408 data-nosnippet>408</a>
 <a href=#409 id=409 data-nosnippet>409</a>        <span class="kw">let </span>packet_with_card = MetricPacket {
@@ -446,7 +446,7 @@
 <a href=#446 id=446 data-nosnippet>446</a>        </span><span class="kw">let </span>raw_tags_input = <span class="string">"dd.internal.card:low"</span>;
 <a href=#447 id=447 data-nosnippet>447</a>        <span class="kw">let </span>raw_tags = RawTags::new(raw_tags_input, usize::MAX, usize::MAX);
 <a href=#448 id=448 data-nosnippet>448</a>
-<a href=#449 id=449 data-nosnippet>449</a>        <span class="kw">let </span>well_known_tags = WellKnownTags::from_raw_tags(<span class="kw-2">&amp;</span>raw_tags);
+<a href=#449 id=449 data-nosnippet>449</a>        <span class="kw">let </span>(well_known_tags, <span class="kw">_</span>) = WellKnownTags::split_raw_tags(<span class="kw-2">&amp;</span>raw_tags);
 <a href=#450 id=450 data-nosnippet>450</a>        <span class="macro">assert_eq!</span>(well_known_tags.cardinality, <span class="prelude-val">Some</span>(OriginTagCardinality::Low));
 <a href=#451 id=451 data-nosnippet>451</a>
 <a href=#452 id=452 data-nosnippet>452</a>        <span class="kw">let </span>packet_with_card = EventPacket {
@@ -495,7 +495,7 @@
 <a href=#495 id=495 data-nosnippet>495</a>        </span><span class="kw">let </span>raw_tags_input = <span class="string">"dd.internal.card:orchestrator"</span>;
 <a href=#496 id=496 data-nosnippet>496</a>        <span class="kw">let </span>raw_tags = RawTags::new(raw_tags_input, usize::MAX, usize::MAX);
 <a href=#497 id=497 data-nosnippet>497</a>
-<a href=#498 id=498 data-nosnippet>498</a>        <span class="kw">let </span>well_known_tags = WellKnownTags::from_raw_tags(<span class="kw-2">&amp;</span>raw_tags);
+<a href=#498 id=498 data-nosnippet>498</a>        <span class="kw">let </span>(well_known_tags, <span class="kw">_</span>) = WellKnownTags::split_raw_tags(<span class="kw-2">&amp;</span>raw_tags);
 <a href=#499 id=499 data-nosnippet>499</a>        <span class="macro">assert_eq!</span>(well_known_tags.cardinality, <span class="prelude-val">Some</span>(OriginTagCardinality::Orchestrator));
 <a href=#500 id=500 data-nosnippet>500</a>
 <a href=#501 id=501 data-nosnippet>501</a>        <span class="kw">let </span>packet_with_card = ServiceCheckPacket {
