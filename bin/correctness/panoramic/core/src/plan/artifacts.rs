@@ -20,8 +20,8 @@ use crate::{
 ///
 /// # Errors
 ///
-/// Returns an error for macOS images, invalid install main-binary paths or conflicting role declarations,
-/// then for unknown manifest roles, naming the manifest's origin.
+/// Returns an error for macOS images, non-Linux container binaries, invalid install main-binary paths
+/// or conflicting role declarations, then for unknown manifest roles, naming the manifest's origin.
 pub fn check_artifact_manifest(registries: Registries<'_>, manifest: &ArtifactManifest) -> Result<(), GenericError> {
     let catalog = role_catalog(registries).map_err(|error| generic_error!(error))?;
     check_manifest(&catalog, manifest).map_err(|error| generic_error!(error))
@@ -35,6 +35,16 @@ pub(super) fn role_catalog(registries: Registries<'_>) -> Result<BTreeMap<&'stat
                 "artifact role '{}' declared by {declarer} is a macos image; images run on linux or windows",
                 role.name
             ));
+        }
+        if let ArtifactKind::ContainerBinary { os } = role.kind {
+            if os != Os::Linux {
+                return Err(format!(
+                    "artifact role '{}' declared by {declarer} is a {} container binary; \
+                     only linux container binaries can be verified",
+                    role.name,
+                    os.name()
+                ));
+            }
         }
         if let ArtifactKind::Install { main_binary } = role.kind {
             if main_binary.is_empty()
@@ -484,6 +494,40 @@ mod tests {
             "artifact role 'tool' declared by participant type 'server' as linux-container on linux \
              is a macos image; images run on linux or windows"
         );
+    }
+
+    #[test]
+    fn a_container_binary_role_for_another_os_is_rejected_naming_its_declarer() {
+        for (os, roles) in [
+            (
+                Os::Windows,
+                &[ArtifactRole {
+                    kind: ArtifactKind::ContainerBinary { os: Os::Windows },
+                    ..TOOL
+                }][..],
+            ),
+            (
+                Os::MacOs,
+                &[ArtifactRole {
+                    kind: ArtifactKind::ContainerBinary { os: Os::MacOs },
+                    ..TOOL
+                }][..],
+            ),
+        ] {
+            let message = catalog_error(&[&Type {
+                name: "server",
+                roles,
+                windows_roles: &[],
+            }]);
+            assert_eq!(
+                message,
+                format!(
+                    "artifact role 'tool' declared by participant type 'server' as linux-container on linux \
+                     is a {} container binary; only linux container binaries can be verified",
+                    os.name()
+                )
+            );
+        }
     }
 
     #[test]

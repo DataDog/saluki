@@ -262,7 +262,8 @@ Typed integration and correctness cases map their containers and host processes 
 
 Each case also needs the roles its backend declares: Linux containers need `fixup-image` and `courier-linux-binary`,
 the static courier. On aarch64 and x86_64, its local default is `target/<arch>-unknown-linux-musl/release/panoramic-courier`,
-where `<arch>` is the architecture panoramic was built for. Other runner architectures require a manifest binding.
+where `<arch>` is the architecture panoramic was built for. Verification checks that the build matches the Docker
+daemon's architecture. Other runner architectures require a manifest binding.
 `make build-courier-linux` builds it, installing the Rust target with `rustup` on first use.
 The `test-integration`, `test-integration-quick`, `test-correctness` and `test-correctness-case` targets build it first.
 For a Docker daemon of another architecture, build with `COURIER_LINUX_TARGET=<arch>-unknown-linux-musl` and bind
@@ -348,13 +349,16 @@ role once, sorted by name, with its reference, source and identity or failure:
 - An image must exist on the Docker daemon, and the daemon must run containers of the image's OS (Linux images on
   a Linux daemon, Windows images on a Windows daemon). Its identity is the image ID.
 - A binary must be a file, executable on Unix. Its identity is the SHA-256 of its contents.
+- A container binary must be a file, executable on Unix, and a static 64-bit little-endian ELF executable for the
+  Docker daemon's architecture, x86_64 or aarch64, on a Linux daemon. Its identity is the SHA-256 of its contents.
 - An install must be a directory containing the role's main binary, a file executable on Unix. Its identity is the
   SHA-256 of that binary. For `agent-host-install`, the main binary is `bin/agent/agent` inside the install.
 
 File checks follow symlinks. Verification never pulls images or creates containers, and contacts the Docker daemon
-only when an image is needed. It reports every verification failure and exits 2 if any fails, or if no test directory
-is given, the manifest is invalid or cases fail discovery or planning. It exits 0 when all artifacts verify, including
-when none are needed. Participant, integration and correctness cases contribute artifact roles.
+only when an image or a container binary is needed. It reports every verification failure and exits 2 if any fails,
+or if no test directory is given, the manifest is invalid or cases fail discovery or planning. It exits 0 when all
+artifacts verify, including when none are needed. Participant, integration and correctness cases contribute
+artifact roles.
 
 Use `panoramic artifacts pull -d <cases> [--subject-os linux|macos|windows] [--artifacts <file>]` to fetch only the
 images those cases need, in role-name order. Check binary and install roles with `verify`;
@@ -442,7 +446,8 @@ layouts:
 | Kubernetes pod | The participant runs Linux, `kind` and `docker` are on `PATH`, and a Docker daemon answers and reports Linux containers |
 
 `artifacts verify`, `artifacts pull`, and the host and artifact checks `run` makes before starting cases share one
-Docker daemon connection and ask its OS type once. A connection failure fails every such check that needs the daemon.
+Docker daemon connection and ask its OS type and architecture once. A connection failure fails every such check
+that needs the daemon.
 
 A case whose realization the host can't provide is `errored` with error kind `setup`, appears in `run.json`, and
 makes the run exit 2. `list` never checks host availability.

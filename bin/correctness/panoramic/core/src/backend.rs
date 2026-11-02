@@ -22,11 +22,11 @@ pub const FIXUP_IMAGE: ArtifactRole = ArtifactRole {
 
 /// Static `panoramic-courier` executable (`bin/correctness/courier`) for Linux containers.
 ///
-/// On aarch64 and x86_64, the default assumes the Docker daemon runs the runner host's architecture.
-/// Other hosts or a daemon of another architecture require a manifest binding to a matching build.
+/// On aarch64 and x86_64, the default is the build for panoramic's own architecture. Verification fails
+/// if the Docker daemon runs another architecture; bind a matching build in a manifest.
 pub(crate) const COURIER_LINUX_BINARY: ArtifactRole = ArtifactRole {
     name: "courier-linux-binary",
-    kind: ArtifactKind::Binary,
+    kind: ArtifactKind::ContainerBinary { os: Os::Linux },
     local_default: if cfg!(target_arch = "aarch64") {
         "target/aarch64-unknown-linux-musl/release/panoramic-courier"
     } else if cfg!(target_arch = "x86_64") {
@@ -235,7 +235,10 @@ mod tests {
             }
         );
         assert_eq!(COURIER_LINUX_BINARY.name, "courier-linux-binary");
-        assert_eq!(COURIER_LINUX_BINARY.kind, ArtifactKind::Binary);
+        assert_eq!(
+            COURIER_LINUX_BINARY.kind,
+            ArtifactKind::ContainerBinary { os: Os::Linux }
+        );
         assert_eq!(
             COURIER_LINUX_BINARY.local_default,
             match std::env::consts::ARCH {

@@ -1,16 +1,27 @@
-//! One lazy Docker connection and OS query shared by a command's runtime checks.
+//! One lazy Docker connection and info query shared by a command's runtime checks.
+//!
+//! Container binaries are checked against the daemon's OS and architecture.
 
 use airlock::docker::DOCKER_DAEMON_TIMEOUT;
 use async_trait::async_trait;
 use saluki_error::GenericError;
 use tokio::sync::OnceCell;
 
-use crate::layout::Os;
+use crate::{artifact::elf::Architecture, layout::Os};
+
+/// The fields of the daemon's `GET /info` answer that runtime checks use.
+#[derive(Clone, Debug)]
+pub(crate) struct DaemonInfo {
+    /// Container OS reported by the daemon.
+    pub(crate) os_type: Option<String>,
+    /// Native CPU architecture reported by the daemon.
+    pub(crate) architecture: Option<String>,
+}
 
 /// The Docker daemon operations runtime checks need, replaceable in tests.
 #[async_trait]
 pub(crate) trait DockerApi: Send + Sync {
-    async fn os_type(&self) -> Result<Option<String>, String>;
+    async fn info(&self) -> Result<DaemonInfo, String>;
     async fn image_id(&self, reference: &str) -> Result<Option<String>, String>;
     async fn pull(&self, reference: &str) -> Result<(), String>;
 }
@@ -19,11 +30,14 @@ struct Docker(airlock::docker::Docker);
 
 #[async_trait]
 impl DockerApi for Docker {
-    async fn os_type(&self) -> Result<Option<String>, String> {
+    async fn info(&self) -> Result<DaemonInfo, String> {
         self.0
             .info()
             .await
-            .map(|info| info.os_type)
+            .map(|info| DaemonInfo {
+                os_type: info.os_type,
+                architecture: info.architecture,
+            })
             .map_err(|error| format!("{:#}", GenericError::new(error)))
     }
 
@@ -42,8 +56,8 @@ impl DockerApi for Docker {
 
 /// The Docker connection shared by a command's runtime checks.
 ///
-/// Connects and asks the daemon's OS type on first use, caching the result, including failures.
-/// An unanswered OS query costs one timeout across all checks sharing this connection.
+/// Connects and asks the daemon's OS type and architecture on first use, caching the result, including failures.
+/// An unanswered info query costs one timeout across all checks sharing this connection.
 pub(crate) struct DockerDaemon {
     connect: Box<dyn Fn() -> Result<Box<dyn DockerApi>, String> + Send + Sync>,
     connection: OnceCell<Result<Connection, String>>,
@@ -51,7 +65,7 @@ pub(crate) struct DockerDaemon {
 
 struct Connection {
     api: Box<dyn DockerApi>,
-    os_type: Option<String>,
+    info: DaemonInfo,
 }
 
 impl Default for DockerDaemon {
@@ -81,6 +95,24 @@ impl DockerDaemon {
     /// Returns the connection if the daemon runs containers of `os`.
     /// macOS is refused without connecting; an OS mismatch affects only that caller.
     pub(crate) async fn for_os(&self, os: Os) -> Result<&dyn DockerApi, String> {
+        Ok(self.connection(os).await?.api.as_ref())
+    }
+
+    /// Returns the daemon's native architecture if it runs containers of `os`.
+    pub(crate) async fn architecture(&self, os: Os) -> Result<Architecture, String> {
+        let connection = self.connection(os).await?;
+        match connection.info.architecture.as_deref() {
+            None | Some("") => Err("the Docker daemon did not report its architecture".into()),
+            Some(value) => parse_architecture(value).ok_or_else(|| {
+                format!(
+                    "the Docker daemon runs on '{value}'; \
+                     container binaries can be verified only for x86_64 and aarch64"
+                )
+            }),
+        }
+    }
+
+    async fn connection(&self, os: Os) -> Result<&Connection, String> {
         if os == Os::MacOs {
             return Err("no Docker daemon runs macos containers".into());
         }
@@ -88,7 +120,7 @@ impl DockerDaemon {
             .connection
             .get_or_init(|| async {
                 let api = (self.connect)().map_err(|error| format!("cannot connect to a Docker daemon: {error}"))?;
-                let os_type = tokio::time::timeout(DOCKER_DAEMON_TIMEOUT, api.os_type())
+                let info = tokio::time::timeout(DOCKER_DAEMON_TIMEOUT, api.info())
                     .await
                     .map_err(|_| {
                         format!(
@@ -97,13 +129,22 @@ impl DockerDaemon {
                         )
                     })?
                     .map_err(|error| format!("the Docker daemon did not answer: {error}"))?;
-                Ok(Connection { api, os_type })
+                Ok(Connection { api, info })
             })
             .await
             .as_ref()
             .map_err(Clone::clone)?;
-        check_daemon_os(connection.os_type.as_deref(), os.name())?;
-        Ok(connection.api.as_ref())
+        check_daemon_os(connection.info.os_type.as_deref(), os.name())?;
+        Ok(connection)
+    }
+}
+
+/// Maps Docker Engine (`uname -m`) and Go (`GOARCH`) spellings to an architecture.
+fn parse_architecture(value: &str) -> Option<Architecture> {
+    match value {
+        "x86_64" | "amd64" => Some(Architecture::X86_64),
+        "aarch64" | "arm64" => Some(Architecture::Aarch64),
+        _ => None,
     }
 }
 
@@ -150,15 +191,19 @@ pub(crate) mod test_util {
     #[derive(Clone)]
     pub(crate) struct FakeDocker {
         pub(crate) calls: Arc<Mutex<Vec<String>>>,
-        pub(crate) os_type: Result<Option<String>, String>,
+        pub(crate) info: Result<DaemonInfo, String>,
         pub(crate) pending_info: bool,
     }
 
     impl FakeDocker {
+        /// Reports architecture `x86_64`; override it in `info`.
         pub(crate) fn new(os_type: Option<&str>) -> Self {
             Self {
                 calls: Arc::default(),
-                os_type: Ok(os_type.map(str::to_string)),
+                info: Ok(DaemonInfo {
+                    os_type: os_type.map(str::to_string),
+                    architecture: Some("x86_64".into()),
+                }),
                 pending_info: false,
             }
         }
@@ -170,12 +215,12 @@ pub(crate) mod test_util {
 
     #[async_trait]
     impl DockerApi for FakeDocker {
-        async fn os_type(&self) -> Result<Option<String>, String> {
-            self.calls.lock().unwrap().push("os_type".into());
+        async fn info(&self) -> Result<DaemonInfo, String> {
+            self.calls.lock().unwrap().push("info".into());
             if self.pending_info {
                 std::future::pending().await
             } else {
-                self.os_type.clone()
+                self.info.clone()
             }
         }
 
@@ -197,6 +242,79 @@ mod tests {
 
     use super::{test_util::FakeDocker, *};
 
+    #[test]
+    fn docker_and_go_architecture_names_map_to_architectures() {
+        for (value, expected) in [
+            ("x86_64", Some(Architecture::X86_64)),
+            ("amd64", Some(Architecture::X86_64)),
+            ("aarch64", Some(Architecture::Aarch64)),
+            ("arm64", Some(Architecture::Aarch64)),
+            ("riscv64", None),
+            ("", None),
+            ("X86_64", None),
+        ] {
+            assert_eq!(parse_architecture(value), expected, "{value}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_architecture_comes_from_the_same_info_query_as_the_os_type() {
+        for (value, expected) in [
+            ("x86_64", Architecture::X86_64),
+            ("amd64", Architecture::X86_64),
+            ("aarch64", Architecture::Aarch64),
+            ("arm64", Architecture::Aarch64),
+        ] {
+            let mut api = FakeDocker::new(Some("linux"));
+            api.info.as_mut().unwrap().architecture = Some(value.into());
+            let docker = api.daemon();
+            let (os, architecture) = tokio::join!(docker.for_os(Os::Linux), docker.architecture(Os::Linux));
+            assert!(os.is_ok());
+            assert_eq!(architecture.unwrap(), expected);
+            assert_eq!(docker.architecture(Os::Linux).await.unwrap(), expected);
+            assert_eq!(*api.calls.lock().unwrap(), ["connect", "info"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_daemon_without_a_supported_architecture_cannot_verify_container_binaries() {
+        for (value, expected) in [
+            (None, "the Docker daemon did not report its architecture"),
+            (Some(""), "the Docker daemon did not report its architecture"),
+            (
+                Some("riscv64"),
+                "the Docker daemon runs on 'riscv64'; container binaries can be verified only for x86_64 and aarch64",
+            ),
+        ] {
+            let mut api = FakeDocker::new(Some("linux"));
+            api.info.as_mut().unwrap().architecture = value.map(str::to_string);
+            let docker = api.daemon();
+            for _ in 0..2 {
+                assert_eq!(docker.architecture(Os::Linux).await, Err(expected.into()));
+            }
+            assert!(docker.for_os(Os::Linux).await.is_ok());
+            assert_eq!(*api.calls.lock().unwrap(), ["connect", "info"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn architecture_applies_the_os_checks_of_for_os() {
+        for (actual, expected) in [
+            (Some("windows"), "the Docker daemon runs windows containers, not linux"),
+            (Some("unknown"), "the Docker daemon runs unknown containers, not linux"),
+            (None, "the Docker daemon did not report its OS type"),
+            (Some(""), "the Docker daemon did not report its OS type"),
+        ] {
+            let api = FakeDocker::new(actual);
+            assert_eq!(api.daemon().architecture(Os::Linux).await, Err(expected.into()));
+        }
+        let docker = DockerDaemon::with_connect(|| panic!("macos must not connect"));
+        assert_eq!(
+            docker.architecture(Os::MacOs).await,
+            Err("no Docker daemon runs macos containers".into())
+        );
+    }
+
     #[tokio::test]
     async fn callers_share_one_connection_and_one_os_query() {
         let api = FakeDocker::new(Some("linux"));
@@ -205,7 +323,7 @@ mod tests {
         assert!(first.is_ok());
         assert!(second.is_ok());
         assert!(docker.for_os(Os::Linux).await.is_ok());
-        assert_eq!(*api.calls.lock().unwrap(), ["connect", "os_type"]);
+        assert_eq!(*api.calls.lock().unwrap(), ["connect", "info"]);
     }
 
     #[tokio::test]
@@ -223,6 +341,10 @@ mod tests {
                 docker.for_os(os).await.err().unwrap(),
                 "cannot connect to a Docker daemon: unavailable"
             );
+            assert_eq!(
+                docker.architecture(os).await,
+                Err("cannot connect to a Docker daemon: unavailable".into())
+            );
         }
         assert_eq!(*calls.lock().unwrap(), ["connect"]);
     }
@@ -238,23 +360,31 @@ mod tests {
                 docker.for_os(os).await.err().unwrap(),
                 "the Docker daemon did not answer within 30s"
             );
+            assert_eq!(
+                docker.architecture(os).await,
+                Err("the Docker daemon did not answer within 30s".into())
+            );
         }
         assert_eq!(start.elapsed(), DOCKER_DAEMON_TIMEOUT);
-        assert_eq!(*api.calls.lock().unwrap(), ["connect", "os_type"]);
+        assert_eq!(*api.calls.lock().unwrap(), ["connect", "info"]);
     }
 
     #[tokio::test]
     async fn a_failed_info_query_is_reported_without_querying_again() {
         let mut api = FakeDocker::new(None);
-        api.os_type = Err("info failed".into());
+        api.info = Err("info failed".into());
         let docker = api.daemon();
         for os in [Os::Linux, Os::Windows] {
             assert_eq!(
                 docker.for_os(os).await.err().unwrap(),
                 "the Docker daemon did not answer: info failed"
             );
+            assert_eq!(
+                docker.architecture(os).await,
+                Err("the Docker daemon did not answer: info failed".into())
+            );
         }
-        assert_eq!(*api.calls.lock().unwrap(), ["connect", "os_type"]);
+        assert_eq!(*api.calls.lock().unwrap(), ["connect", "info"]);
     }
 
     #[tokio::test]
@@ -296,7 +426,7 @@ mod tests {
             for _ in 0..2 {
                 assert_eq!(docker.for_os(os).await.map(|_| ()), expected.map_err(str::to_string));
             }
-            assert_eq!(*api.calls.lock().unwrap(), ["connect", "os_type"]);
+            assert_eq!(*api.calls.lock().unwrap(), ["connect", "info"]);
         }
     }
 
@@ -309,7 +439,7 @@ mod tests {
             "the Docker daemon runs windows containers, not linux"
         );
         assert!(docker.for_os(Os::Windows).await.is_ok());
-        assert_eq!(*api.calls.lock().unwrap(), ["connect", "os_type"]);
+        assert_eq!(*api.calls.lock().unwrap(), ["connect", "info"]);
     }
 
     #[tokio::test]

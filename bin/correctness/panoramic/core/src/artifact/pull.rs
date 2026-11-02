@@ -89,7 +89,7 @@ mod tests {
     use super::*;
     use crate::{
         artifact::{ArtifactRole, BindingSource},
-        backend::docker::test_util::recording_daemon,
+        backend::docker::{test_util::recording_daemon, DaemonInfo},
         layout::Os,
     };
 
@@ -118,9 +118,12 @@ mod tests {
 
     #[async_trait]
     impl DockerApi for FakeImages {
-        async fn os_type(&self) -> Result<Option<String>, String> {
-            self.calls.lock().unwrap().push("os_type".into());
-            Ok(Some("linux".into()))
+        async fn info(&self) -> Result<DaemonInfo, String> {
+            self.calls.lock().unwrap().push("info".into());
+            Ok(DaemonInfo {
+                os_type: Some("linux".into()),
+                architecture: Some("x86_64".into()),
+            })
         }
 
         // Ordinary references are present, so skipping pulls or falling back to local images changes the call log.
@@ -179,7 +182,7 @@ mod tests {
             *calls.lock().unwrap(),
             [
                 "connect",
-                "os_type",
+                "info",
                 "pull:tool:first",
                 "inspect:tool:first",
                 "pull:tool:second",
@@ -201,7 +204,7 @@ mod tests {
         assert_eq!(results[0].identity, Ok("sha256:tool:present".into()));
         assert_eq!(
             *calls.lock().unwrap(),
-            ["connect", "os_type", "pull:tool:present", "inspect:tool:present"]
+            ["connect", "info", "pull:tool:present", "inspect:tool:present"]
         );
     }
 
@@ -224,7 +227,7 @@ mod tests {
             *calls.lock().unwrap(),
             [
                 "connect",
-                "os_type",
+                "info",
                 "pull:tool:pull-error",
                 "pull:tool:present",
                 "inspect:tool:present"
@@ -248,7 +251,7 @@ mod tests {
         );
         assert_eq!(
             *calls.lock().unwrap(),
-            ["connect", "os_type", "pull:tool:missing", "inspect:tool:missing"]
+            ["connect", "info", "pull:tool:missing", "inspect:tool:missing"]
         );
     }
 
@@ -268,7 +271,7 @@ mod tests {
             *calls.lock().unwrap(),
             [
                 "connect",
-                "os_type",
+                "info",
                 "pull:tool:inspect-error",
                 "inspect:tool:inspect-error",
                 "pull:tool:present",
@@ -303,7 +306,7 @@ mod tests {
             "tool:pull-timeout",
             IMAGE_PULL_TIMEOUT,
             "the Docker daemon did not finish pulling image 'tool:pull-timeout' within 300s",
-            &["connect", "os_type", "pull:tool:pull-timeout"],
+            &["connect", "info", "pull:tool:pull-timeout"],
         )
         .await;
     }
@@ -316,7 +319,7 @@ mod tests {
             "the Docker daemon did not answer within 30s inspecting image 'tool:inspect-timeout'",
             &[
                 "connect",
-                "os_type",
+                "info",
                 "pull:tool:inspect-timeout",
                 "inspect:tool:inspect-timeout",
             ],
@@ -356,6 +359,11 @@ mod tests {
         let files = [
             binding("binary", ArtifactKind::Binary, "bin/tool"),
             binding(
+                "courier",
+                ArtifactKind::ContainerBinary { os: Os::Linux },
+                "bin/courier",
+            ),
+            binding(
                 "install",
                 ArtifactKind::Install {
                     main_binary: "bin/tool",
@@ -391,7 +399,7 @@ mod tests {
         assert_eq!(results[1].identity, Ok("sha256:tool:present".into()));
         assert_eq!(
             *images.calls.lock().unwrap(),
-            ["connect", "os_type", "pull:tool:present", "inspect:tool:present"]
+            ["connect", "info", "pull:tool:present", "inspect:tool:present"]
         );
     }
 

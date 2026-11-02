@@ -91,6 +91,7 @@ impl RunBackends {
     }
 
     /// Verifies bindings in input order, resolving relative file paths against `base`.
+    /// Container binaries must match the Docker daemon's OS and architecture.
     /// A daemon timeout fails the remaining images in this call; file checks continue.
     pub async fn verify(&self, bindings: &[ArtifactBinding], base: &Path) -> Vec<ArtifactVerification> {
         artifact::verify(&self.docker, bindings, base).await
@@ -157,7 +158,7 @@ mod tests {
             *api.calls.lock().unwrap(),
             [
                 "connect",
-                "os_type",
+                "info",
                 "inspect:tool:latest",
                 "pull:tool:latest",
                 "inspect:tool:latest"
@@ -191,7 +192,7 @@ mod tests {
             *backends.providability_checks.lock().unwrap(),
             BTreeMap::from([(host, 1), (linux, 1), (windows, 1)])
         );
-        assert_eq!(*api.calls.lock().unwrap(), ["connect", "os_type"]);
+        assert_eq!(*api.calls.lock().unwrap(), ["connect", "info"]);
     }
 
     #[tokio::test]
@@ -274,7 +275,7 @@ mod tests {
                     expected
                 );
             }
-            assert_eq!(*api.calls.lock().unwrap(), ["connect", "os_type"]);
+            assert_eq!(*api.calls.lock().unwrap(), ["connect", "info"]);
         }
     }
 

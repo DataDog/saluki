@@ -3,6 +3,7 @@
 //! Plans carry resolved bindings with the source of each reference.
 //! [`crate::backend::RunBackends`] verifies availability and identities, and pulls images.
 //! Images are inspected and pulled on the command's Docker daemon, which must run the image role's OS.
+//! Container binaries must match the daemon's OS and architecture.
 
 use std::{collections::BTreeMap, path::Path};
 
@@ -11,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::layout::Os;
 
+pub(crate) mod elf;
 mod pull;
 mod verify;
 pub(crate) use pull::pull;
@@ -30,6 +32,11 @@ pub enum ArtifactKind {
     },
     /// A path to an executable file.
     Binary,
+    /// A path to a static executable copied into containers.
+    ContainerBinary {
+        /// OS the executable runs on.
+        os: Os,
+    },
     /// A path to an installed directory tree.
     Install {
         /// Executable path relative to the install directory, used to identify the install.
@@ -42,7 +49,7 @@ impl ArtifactKind {
     pub fn name(self) -> &'static str {
         match self {
             Self::Image { .. } => "image",
-            Self::Binary => "binary",
+            Self::Binary | Self::ContainerBinary { .. } => "binary",
             Self::Install { .. } => "install",
         }
     }
@@ -64,6 +71,7 @@ impl ArtifactRole {
         let description = format!("{} '{}'", self.kind.name(), self.local_default);
         match self.kind {
             ArtifactKind::Image { os } => format!("{} {description}", os.name()),
+            ArtifactKind::ContainerBinary { os } => format!("{} container {description}", os.name()),
             ArtifactKind::Install { main_binary } => format!("{description} with main binary '{main_binary}'"),
             _ => description,
         }
@@ -197,6 +205,11 @@ mod tests {
             ),
             (ArtifactKind::Binary, "bin/tool", "binary 'bin/tool'"),
             (
+                ArtifactKind::ContainerBinary { os: Os::Linux },
+                "bin/tool",
+                "linux container binary 'bin/tool'",
+            ),
+            (
                 ArtifactKind::Install {
                     main_binary: "bin/tool",
                 },
@@ -211,6 +224,19 @@ mod tests {
             };
             assert_eq!(role.describe(), expected);
         }
+    }
+
+    #[test]
+    fn container_binaries_are_named_binary_in_reports() {
+        let kind = ArtifactKind::ContainerBinary { os: Os::Linux };
+        assert_eq!(kind.name(), "binary");
+        let artifact = VerifiedArtifact {
+            role: "tool",
+            reference: "bin/tool".into(),
+            identity: "sha256:123".into(),
+            kind,
+        };
+        assert_eq!(serde_json::to_value(artifact).unwrap()["kind"], "binary");
     }
 
     #[test]
