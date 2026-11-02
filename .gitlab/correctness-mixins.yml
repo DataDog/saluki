@@ -15,7 +15,7 @@
     expire_in: 1 week
     paths: [panoramic-logs/]
     when: always
-  # Pull panoramic binary built once in the parent pipeline.
+  # Download panoramic and the Linux courier from the parent pipeline.
   needs:
     - pipeline: $PARENT_PIPELINE_ID
       job: build-panoramic-binary
@@ -37,6 +37,7 @@
       --set agent-adp-linux-image=${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${PARENT_PIPELINE_ID}
       --set tools-linux-image=${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA}
       --set fixup-image=registry.ddbuild.io/alpine:latest
+      --set courier-linux-binary=target/x86_64-unknown-linux-musl/release/panoramic-courier
       --output target/panoramic-artifacts.toml
     - target/release/panoramic artifacts pull -d $(pwd)/test/correctness/cases --subject-os linux --artifacts target/panoramic-artifacts.toml
     - target/release/panoramic run -d $(pwd)/test/correctness/cases -t ${CORRECTNESS_TEST_CASE} --subject-os linux --artifacts target/panoramic-artifacts.toml --no-tui

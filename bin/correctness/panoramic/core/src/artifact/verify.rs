@@ -76,11 +76,15 @@ async fn verify_with(
 ) -> Vec<ArtifactVerification> {
     let mut store = bindings
         .iter()
-        .any(|binding| binding.role.kind == ArtifactKind::Image)
+        .any(|binding| binding.role.kind == ArtifactKind::Image && !binding.reference.is_empty())
         .then(|| connect().map_err(|error| format!("cannot connect to a Docker daemon: {error}")));
     let mut results = Vec::with_capacity(bindings.len());
     for binding in bindings {
         let identity = match binding.role.kind {
+            _ if binding.reference.is_empty() => Err(format!(
+                "role '{}' requires a binding in an artifact manifest",
+                binding.role.name
+            )),
             ArtifactKind::Image => match store.as_ref().expect("image bindings initialize the store") {
                 Ok(images) => match image_id_within_deadline(images.as_ref(), &binding.reference).await {
                     Ok(result) => result.and_then(|id| {
@@ -167,6 +171,31 @@ mod tests {
             },
             reference: reference.into(),
             source: BindingSource::Manifest,
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_artifact_references_require_manifest_bindings_without_io() {
+        let bindings = [ArtifactKind::Image, ArtifactKind::Binary, INSTALL].map(|kind| ArtifactBinding {
+            role: ArtifactRole {
+                name: "required",
+                kind,
+                local_default: "",
+            },
+            reference: String::new(),
+            source: BindingSource::LocalDefault,
+        });
+        let results = verify_with(&bindings, Path::new("missing"), || {
+            panic!("unbound roles must not connect")
+        })
+        .await;
+        assert_eq!(results.len(), bindings.len());
+        for (result, binding) in results.iter().zip(&bindings) {
+            assert_eq!(&result.binding, binding);
+            assert_eq!(
+                result.identity.as_deref().map_err(String::as_str),
+                Err("role 'required' requires a binding in an artifact manifest")
+            );
         }
     }
 

@@ -4,5 +4,12 @@ rustflags = ["--cfg", "tokio_unstable"]
 [target.'cfg(all(windows, target_env = "msvc"))']
 rustflags = ["--cfg", "tokio_unstable", "-C", "target-feature=+crt-static"]
 
+# Link these musl targets, including the static Linux courier, with rust-lld and their bundled C runtime.
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"
+
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
+
 [env]
 JEMALLOC_SYS_WITH_MALLOC_CONF = "abort_conf:true,max_background_threads:1,narenas:1,tcache:false,thp:never,oversize_threshold:32768,dirty_decay_ms:1000,muzzy_decay_ms:0"

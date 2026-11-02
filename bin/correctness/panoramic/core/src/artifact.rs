@@ -49,7 +49,7 @@ pub struct ArtifactRole {
     pub name: &'static str,
     /// What the role's reference names.
     pub kind: ArtifactKind,
-    /// Reference used when a run binds nothing to this role.
+    /// Fallback reference. An empty value requires a manifest binding for verification.
     pub local_default: &'static str,
 }
 
@@ -161,7 +161,7 @@ impl BindingSource {
 pub struct ArtifactBinding {
     /// The role needed by the selected layout.
     pub role: ArtifactRole,
-    /// The resolved reference, preserved as written.
+    /// The resolved reference, preserved as written. An empty value requires a manifest binding for verification.
     pub reference: String,
     /// Where the resolved reference came from.
     pub source: BindingSource,

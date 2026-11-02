@@ -25,6 +25,22 @@ pub const FIXUP_IMAGE: ArtifactRole = ArtifactRole {
     local_default: airlock::driver::DEFAULT_ALPINE_IMAGE,
 };
 
+/// Static `panoramic-courier` executable (`bin/correctness/courier`) for Linux containers.
+///
+/// On aarch64 and x86_64, the default assumes the Docker daemon runs the runner host's architecture.
+/// Other hosts or a daemon of another architecture require a manifest binding to a matching build.
+pub(crate) const COURIER_LINUX_BINARY: ArtifactRole = ArtifactRole {
+    name: "courier-linux-binary",
+    kind: ArtifactKind::Binary,
+    local_default: if cfg!(target_arch = "aarch64") {
+        "target/aarch64-unknown-linux-musl/release/panoramic-courier"
+    } else if cfg!(target_arch = "x86_64") {
+        "target/x86_64-unknown-linux-musl/release/panoramic-courier"
+    } else {
+        ""
+    },
+};
+
 /// A value known once a participant exists or runs.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum LateFact {
@@ -158,7 +174,7 @@ impl Backend for LinuxContainers {
     }
 
     fn artifacts(&self) -> &'static [ArtifactRole] {
-        &[FIXUP_IMAGE]
+        &[FIXUP_IMAGE, COURIER_LINUX_BINARY]
     }
 
     fn shared_root(&self, _os: Os, _scope: &ScopeLayout) -> String {
@@ -319,14 +335,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_linux_containers_declare_the_fixup_image_with_airlocks_default() {
+    fn only_linux_containers_declare_the_fixup_image_and_the_courier() {
+        assert_eq!(
+            FIXUP_IMAGE,
+            ArtifactRole {
+                name: "fixup-image",
+                kind: ArtifactKind::Image,
+                local_default: airlock::driver::DEFAULT_ALPINE_IMAGE,
+            }
+        );
+        assert_eq!(COURIER_LINUX_BINARY.name, "courier-linux-binary");
+        assert_eq!(COURIER_LINUX_BINARY.kind, ArtifactKind::Binary);
+        assert_eq!(
+            COURIER_LINUX_BINARY.local_default,
+            match std::env::consts::ARCH {
+                "aarch64" => "target/aarch64-unknown-linux-musl/release/panoramic-courier",
+                "x86_64" => "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+                _ => "",
+            }
+        );
         for backend in BACKENDS {
             let expected: &[ArtifactRole] = if backend.kind() == RealizationKind::LinuxContainer {
-                &[ArtifactRole {
-                    name: "fixup-image",
-                    kind: ArtifactKind::Image,
-                    local_default: airlock::driver::DEFAULT_ALPINE_IMAGE,
-                }]
+                &[FIXUP_IMAGE, COURIER_LINUX_BINARY]
             } else {
                 &[]
             };

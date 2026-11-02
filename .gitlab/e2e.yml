@@ -55,8 +55,7 @@ build-bundled-agent-adp-image:
       --push
       .
 
-# Compile panoramic once. The dynamically generated child pipeline below
-# pulls this artifact instead of rebuilding per test.
+# Compile panoramic and the static Linux courier once for the correctness child pipeline.
 build-panoramic-binary:
   extends: .build-common-variables
   stage: e2e
@@ -67,9 +66,12 @@ build-panoramic-binary:
   image: "${SALUKI_BUILD_CI_IMAGE}"
   artifacts:
     expire_in: 1 day
-    paths: [target/release/panoramic]
+    paths:
+      - target/release/panoramic
+      - target/x86_64-unknown-linux-musl/release/panoramic-courier
   script:
     - make build-panoramic
+    - make build-courier-linux
 
 # Scan test/correctness/cases/ and emit a child-pipeline YAML with one job per test
 # directory. Each emitted job extends mixins from .gitlab/correctness-mixins.yml.
@@ -136,12 +138,14 @@ test-integration:
     - docker tag ${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA} saluki-images/correctness-tools:latest
     # Compare these IDs with run.json's artifact identities.
     - docker image ls --no-trunc --format '{{.Repository}}:{{.Tag}} {{.ID}}'
-    # Bind and pull pipeline images. PANORAMIC_ALPINE_IMAGE must agree with fixup-image.
+    # Bind artifacts and pull pipeline images. PANORAMIC_ALPINE_IMAGE must agree with fixup-image.
+    # test-integration-quick builds courier-linux-binary before the run verifies it.
     - make build-panoramic
     - target/release/panoramic artifacts render
       --set agent-adp-linux-image=${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${CI_PIPELINE_ID}
       --set tools-linux-image=${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA}
       --set fixup-image=registry.ddbuild.io/alpine:latest
+      --set courier-linux-binary=target/x86_64-unknown-linux-musl/release/panoramic-courier
       --output target/panoramic-artifacts.toml
     - target/release/panoramic artifacts pull -d test/integration/cases --subject-os linux --artifacts target/panoramic-artifacts.toml
     # A rootless daemon lists `name=rootless` among its security options.

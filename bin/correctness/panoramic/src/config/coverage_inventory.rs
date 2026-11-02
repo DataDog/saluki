@@ -911,7 +911,7 @@ fn ci_line_pins_reject_commands_moved_to_another_job_or_target() {
         (".gitlab/e2e.yml", "test-integration:", "- make build-panoramic"),
         (
             "Makefile",
-            "test-integration: build-panoramic build-datadog-agent-image build-correctness-tools-image",
+            "test-integration: build-panoramic build-courier-linux build-datadog-agent-image build-correctness-tools-image",
             r#"@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/integration/cases $(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR)) $(PANORAMIC_ARTIFACTS_ARG)"#,
         ),
     ] {
@@ -1018,6 +1018,35 @@ fn every_selected_correctness_case_declares_a_local_baseline_image() {
 }
 
 #[test]
+fn ci_binds_the_courier_its_jobs_build() {
+    let root = repository_root();
+    let e2e: Value = serde_saphyr::from_str(&read_text(&root.join(".gitlab/e2e.yml"))).unwrap();
+    let mixins: Value = serde_saphyr::from_str(&read_text(&root.join(".gitlab/correctness-mixins.yml"))).unwrap();
+    let expected_path = "target/x86_64-unknown-linux-musl/release/panoramic-courier";
+    assert_eq!(
+        e2e["build-panoramic-binary"]["artifacts"]["paths"],
+        json!(["target/release/panoramic", expected_path])
+    );
+    for job in [&e2e["test-integration"], &mixins[".test-correctness-definition"]] {
+        let bindings: Vec<_> = job["script"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|command| command.as_str().unwrap())
+            .filter(|command| command.starts_with("target/release/panoramic artifacts render "))
+            .flat_map(str::split_whitespace)
+            .filter_map(|argument| argument.strip_prefix("courier-linux-binary="))
+            .collect();
+        assert_eq!(bindings, [expected_path]);
+    }
+    assert_lines_in_order(
+        "Makefile",
+        &read_text(&root.join("Makefile")),
+        &[r#"COURIER_LINUX_TARGET ?= $(shell rustc -vV | sed -n 's/^host: \([^-]*\)-.*/\1/p')-unknown-linux-musl"#],
+    );
+}
+
+#[test]
 fn ci_jobs_in_the_inventory_are_defined() {
     let root = repository_root();
     let inventory = Inventory::generate(&root);
@@ -1052,12 +1081,31 @@ fn ci_jobs_in_the_inventory_are_defined() {
         ".gitlab/e2e.yml",
         &e2e,
         &[
+            "build-panoramic-binary:",
+            "- make build-panoramic",
+            "- make build-courier-linux",
+        ],
+    );
+    assert_ci_block_lines_in_order(
+        "Makefile",
+        &makefile,
+        &[
+            "build-courier-linux: check-rust-build-tools",
+            "@rustup target add $(COURIER_LINUX_TARGET)",
+            "@cargo build --profile release --package panoramic-courier --bin panoramic-courier --target $(COURIER_LINUX_TARGET)",
+        ],
+    );
+    assert_ci_block_lines_in_order(
+        ".gitlab/e2e.yml",
+        &e2e,
+        &[
             r#"test-integration:"#,
             r#"- make build-panoramic"#,
             r#"- target/release/panoramic artifacts render"#,
             r#"--set agent-adp-linux-image=${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${CI_PIPELINE_ID}"#,
             r#"--set tools-linux-image=${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA}"#,
             r#"--set fixup-image=registry.ddbuild.io/alpine:latest"#,
+            r#"--set courier-linux-binary=target/x86_64-unknown-linux-musl/release/panoramic-courier"#,
             r#"--output target/panoramic-artifacts.toml"#,
             r#"- target/release/panoramic artifacts pull -d test/integration/cases --subject-os linux --artifacts target/panoramic-artifacts.toml"#,
             r#"- make test-integration-quick PANORAMIC_ARTIFACTS=target/panoramic-artifacts.toml"#,
@@ -1072,6 +1120,7 @@ fn ci_jobs_in_the_inventory_are_defined() {
             r#"--set agent-adp-linux-image=${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${PARENT_PIPELINE_ID}"#,
             r#"--set tools-linux-image=${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA}"#,
             r#"--set fixup-image=registry.ddbuild.io/alpine:latest"#,
+            r#"--set courier-linux-binary=target/x86_64-unknown-linux-musl/release/panoramic-courier"#,
             r#"--output target/panoramic-artifacts.toml"#,
             r#"- target/release/panoramic artifacts pull -d $(pwd)/test/correctness/cases --subject-os linux --artifacts target/panoramic-artifacts.toml"#,
             r#"- target/release/panoramic run -d $(pwd)/test/correctness/cases -t ${CORRECTNESS_TEST_CASE} --subject-os linux --artifacts target/panoramic-artifacts.toml --no-tui"#,
@@ -1088,7 +1137,7 @@ fn ci_jobs_in_the_inventory_are_defined() {
         "Makefile",
         &makefile,
         &[
-            r#"test-correctness: build-panoramic build-correctness-tools-image build-datadog-agent-image-release"#,
+            r#"test-correctness: build-panoramic build-courier-linux build-correctness-tools-image build-datadog-agent-image-release"#,
             r#"@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/correctness/cases $(if $(PANORAMIC_PARALLELISM),-p $(PANORAMIC_PARALLELISM)) $(PANORAMIC_ARTIFACTS_ARG)"#,
         ],
     );
@@ -1096,7 +1145,7 @@ fn ci_jobs_in_the_inventory_are_defined() {
         "Makefile",
         &makefile,
         &[
-            r#"test-correctness-case: build-panoramic build-correctness-tools-image build-datadog-agent-image-release"#,
+            r#"test-correctness-case: build-panoramic build-courier-linux build-correctness-tools-image build-datadog-agent-image-release"#,
             r#"@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/correctness/cases -t $(CASE) --no-tui $(PANORAMIC_ARTIFACTS_ARG)"#,
         ],
     );
@@ -1104,7 +1153,7 @@ fn ci_jobs_in_the_inventory_are_defined() {
         "Makefile",
         &makefile,
         &[
-            r#"test-integration: build-panoramic build-datadog-agent-image build-correctness-tools-image"#,
+            r#"test-integration: build-panoramic build-courier-linux build-datadog-agent-image build-correctness-tools-image"#,
             r#"@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/integration/cases $(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR)) $(PANORAMIC_ARTIFACTS_ARG)"#,
         ],
     );
@@ -1112,7 +1161,7 @@ fn ci_jobs_in_the_inventory_are_defined() {
         "Makefile",
         &makefile,
         &[
-            r#"test-integration-quick: build-panoramic"#,
+            r#"test-integration-quick: build-panoramic build-courier-linux"#,
             r#"@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/integration/cases $(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR)) $(PANORAMIC_ARTIFACTS_ARG)"#,
         ],
     );

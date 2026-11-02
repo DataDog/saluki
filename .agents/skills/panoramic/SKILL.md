@@ -46,10 +46,9 @@ before selecting them.
 
 ## Run non-interactively
 
-The Panoramic test targets write artifacts beneath `{{saluki}}/target/test-output/panoramic/` by
-default. This in-tree path is visible to Docker on macOS. Set `SALUKI_TEST_OUTPUT_DIR` to relocate the
-shared test-output root or `PANORAMIC_LOG_DIR` to override Panoramic only. Use the same base for direct
-runs.
+Test targets write artifacts to `{{saluki}}/target/test-output/panoramic/` by default, a path Docker
+can access on macOS. Use the same base for direct runs. See `docs/development/testing.md` for
+output-directory overrides.
 
 ```bash
 make build-panoramic
@@ -59,6 +58,8 @@ target/release/panoramic run \
   -t <case-name> \
   --no-tui -o json -l "$(pwd)/target/test-output/panoramic"
 ```
+
+For `--artifacts` verification and Linux courier prerequisites, see `docs/development/testing.md`.
 
 Use comma-separated names with `-t` and `-p 1` when one case needs attributable output. Each run
 creates a timestamped `panoramic-*` directory beneath the base. `make clean-test-logs` deletes the

@@ -54,6 +54,9 @@ export PANORAMIC_LOG_DIR ?= $(SALUKI_TEST_OUTPUT_DIR)/panoramic
 # Environment values, including empty ones, stop make when a run target expands this argument.
 PANORAMIC_ARTIFACTS_ARG = $(if $(filter environment%,$(origin PANORAMIC_ARTIFACTS)),$(error PANORAMIC_ARTIFACTS must be set on the make command line, not in the environment),$(if $(PANORAMIC_ARTIFACTS),--artifacts "$(PANORAMIC_ARTIFACTS)"))
 
+# Match the runner host's architecture; override for a Docker daemon of another architecture.
+COURIER_LINUX_TARGET ?= $(shell rustc -vV | sed -n 's/^host: \([^-]*\)-.*/\1/p')-unknown-linux-musl
+
 # Pinned nightly toolchain shared by the Miri tests and API-doc generation, both of which rely on
 # nightly-only features. Keeping it in one variable ensures the two stay in lockstep; bump here to
 # move both at once.
@@ -622,13 +625,13 @@ test-all: ## Test everything
 test-all: test test-property test-docs test-miri test-loom
 
 .PHONY: test-correctness
-test-correctness: build-panoramic build-correctness-tools-image build-datadog-agent-image-release
+test-correctness: build-panoramic build-courier-linux build-correctness-tools-image build-datadog-agent-image-release
 test-correctness: ## Runs the complete correctness suite (all test cases in parallel)
 	@echo "[*] Running correctness test suite..."
 	@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/correctness/cases $(if $(PANORAMIC_PARALLELISM),-p $(PANORAMIC_PARALLELISM)) $(PANORAMIC_ARTIFACTS_ARG)
 
 .PHONY: test-correctness-case
-test-correctness-case: build-panoramic build-correctness-tools-image build-datadog-agent-image-release
+test-correctness-case: build-panoramic build-courier-linux build-correctness-tools-image build-datadog-agent-image-release
 test-correctness-case: ## Runs a single correctness test case by name (usage: make test-correctness-case CASE=dsd-plain)
 	@echo "[*] Running '$(CASE)' correctness test case..."
 	@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/correctness/cases -t $(CASE) --no-tui $(PANORAMIC_ARTIFACTS_ARG)
@@ -639,14 +642,24 @@ build-panoramic: ## Builds the panoramic binary (ADP integration test runner)
 	@echo "[*] Building panoramic..."
 	@cargo build --profile release --package panoramic
 
+.PHONY: build-courier-linux
+build-courier-linux: check-rust-build-tools
+build-courier-linux: ## Builds the static Linux courier for the runner host's architecture
+ifeq ($(shell command -v rustup >/dev/null || echo not-found), not-found)
+	$(error "Rustup must be present to install the Linux musl target: https://www.rust-lang.org/tools/install")
+endif
+	@echo "[*] Building the Linux courier for $(COURIER_LINUX_TARGET)..."
+	@rustup target add $(COURIER_LINUX_TARGET)
+	@cargo build --profile release --package panoramic-courier --bin panoramic-courier --target $(COURIER_LINUX_TARGET)
+
 .PHONY: test-integration
-test-integration: build-panoramic build-datadog-agent-image build-correctness-tools-image
+test-integration: build-panoramic build-courier-linux build-datadog-agent-image build-correctness-tools-image
 test-integration: ## Runs all ADP integration tests
 	@echo "[*] Running ADP integration tests..."
 	@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/integration/cases $(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR)) $(PANORAMIC_ARTIFACTS_ARG)
 
 .PHONY: test-integration-quick
-test-integration-quick: build-panoramic
+test-integration-quick: build-panoramic build-courier-linux
 test-integration-quick: ## Runs ADP integration tests (assumes images already built)
 	@echo "[*] Running ADP integration tests (quick mode)..."
 	@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/integration/cases $(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR)) $(PANORAMIC_ARTIFACTS_ARG)

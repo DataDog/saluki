@@ -317,7 +317,8 @@ mod tests {
         assert_render_rejected(
             &[("z", "z"), ("a", "a")],
             "--set: no participant type or backend declares role 'a', 'z'; declared roles: \
-             adp-host-binary, agent-adp-linux-image, agent-adp-windows-image, agent-host-install, fixup-image",
+             adp-host-binary, agent-adp-linux-image, agent-adp-windows-image, agent-host-install, \
+             courier-linux-binary, fixup-image",
         );
         assert_render_rejected(&[("", "x")], "--set: no participant type or backend declares role '';");
     }
@@ -585,7 +586,12 @@ mod tests {
         for (os, expected) in [
             (
                 Os::Linux,
-                vec!["agent-adp-linux-image", "fixup-image", "tools-linux-image"],
+                vec![
+                    "agent-adp-linux-image",
+                    "courier-linux-binary",
+                    "fixup-image",
+                    "tools-linux-image",
+                ],
             ),
             (Os::MacOs, vec!["adp-host-binary", "agent-host-install"]),
             (Os::Windows, vec!["agent-adp-windows-image"]),

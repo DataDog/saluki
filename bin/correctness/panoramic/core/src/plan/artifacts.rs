@@ -164,6 +164,7 @@ mod tests {
 
     use crate::{
         artifact::{ArtifactBinding, ArtifactKind, ArtifactManifest, ArtifactRole, BindingSource},
+        backend::COURIER_LINUX_BINARY,
         case::{
             fixtures::{minimal_procedure, FixtureConfig, FixtureTypesWithRoles, PARTICIPANT_FIELDS},
             CaseConfig, CaseLoader, Registries,
@@ -295,7 +296,10 @@ mod tests {
         let plan = compile_with(&mut role_planner(&[&SERVER]), &yaml, Os::MacOs)
             .unwrap()
             .unwrap();
-        assert_eq!(plan.artifacts(), local_bindings(&[FIXUP, RESOURCES, TOOL]).as_slice());
+        assert_eq!(
+            plan.artifacts(),
+            local_bindings(&[COURIER_LINUX_BINARY, FIXUP, RESOURCES, TOOL]).as_slice()
+        );
     }
 
     #[test]
@@ -315,7 +319,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             needed_artifacts([&windows, &typed, &linux, &another]),
-            local_bindings(&[FIXUP, RESOURCES, TOOL, WINDOWS_TOOL])
+            local_bindings(&[COURIER_LINUX_BINARY, FIXUP, RESOURCES, TOOL, WINDOWS_TOOL])
         );
         assert_eq!(needed_artifacts([&typed]), local_bindings(&[TOOL]));
     }
@@ -604,7 +608,10 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(plan.artifacts(), local_bindings(&[FIXUP]).as_slice());
+        assert_eq!(
+            plan.artifacts(),
+            local_bindings(&[COURIER_LINUX_BINARY, FIXUP]).as_slice()
+        );
     }
 
     #[test]
@@ -627,7 +634,7 @@ mod tests {
         assert_eq!(
             message,
             "artifact manifest artifacts.toml: no participant type or backend declares role 'a', 'z'; \
-             declared roles: fixup-image, resources, tool, windows-tool"
+             declared roles: courier-linux-binary, fixup-image, resources, tool, windows-tool"
         );
     }
 
@@ -653,7 +660,7 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "--set: no participant type or backend declares role 'a', 'z'; \
-             declared roles: fixup-image, resources, tool, windows-tool"
+             declared roles: courier-linux-binary, fixup-image, resources, tool, windows-tool"
         );
     }
 
@@ -736,6 +743,11 @@ mod tests {
             plan.artifacts(),
             [
                 ArtifactBinding {
+                    role: COURIER_LINUX_BINARY,
+                    reference: COURIER_LINUX_BINARY.local_default.into(),
+                    source: BindingSource::LocalDefault
+                },
+                ArtifactBinding {
                     role: FIXUP,
                     reference: "registry.example/tools:3".into(),
                     source: BindingSource::Manifest
@@ -752,6 +764,55 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn a_binary_without_a_local_default_verifies_only_with_a_manifest_binding() {
+        const REQUIRED_TOOL: ArtifactRole = ArtifactRole {
+            local_default: "",
+            ..TOOL
+        };
+        let dir = tempfile::tempdir().unwrap();
+        crate::artifact::test_util::write_executable(&dir.path().join("bin/tool"));
+        for (roles, reference, source, identity) in [
+            (
+                BTreeMap::new(),
+                "",
+                BindingSource::LocalDefault,
+                Err("role 'tool' requires a binding in an artifact manifest"),
+            ),
+            (
+                BTreeMap::from([("tool".into(), "bin/tool".into())]),
+                "bin/tool",
+                BindingSource::Manifest,
+                Ok("sha256:7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d"),
+            ),
+        ] {
+            let mut planner = Planner::new(
+                Registries {
+                    typed_case_roles: &[REQUIRED_TOOL],
+                    ..Default::default()
+                },
+                ArtifactManifest::new("test", roles).unwrap(),
+            )
+            .unwrap();
+            let case = typed_case(BTreeMap::from([
+                (Os::MacOs, vec![REQUIRED_TOOL]),
+                (Os::Windows, vec![]),
+            ]));
+            let plan = planner.compile(case, Os::MacOs).unwrap().into_plan().unwrap();
+            assert_eq!(
+                plan.artifacts(),
+                &[ArtifactBinding {
+                    role: REQUIRED_TOOL,
+                    reference: reference.into(),
+                    source,
+                }]
+            );
+            let results = crate::artifact::verify(plan.artifacts(), dir.path()).await;
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].identity.as_deref().map_err(String::as_str), identity);
+        }
     }
 
     #[test]
@@ -779,7 +840,10 @@ mod tests {
         let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[linux, windows]");
         let mut planner = role_planner(&[&SERVER]);
         let linux = compile_with(&mut planner, &yaml, Os::Linux).unwrap().unwrap();
-        assert_eq!(linux.artifacts(), local_bindings(&[FIXUP, RESOURCES, TOOL]).as_slice());
+        assert_eq!(
+            linux.artifacts(),
+            local_bindings(&[COURIER_LINUX_BINARY, FIXUP, RESOURCES, TOOL]).as_slice()
+        );
         let windows = compile_with(&mut planner, &yaml, Os::Windows).unwrap().unwrap();
         assert_eq!(windows.artifacts(), local_bindings(&[WINDOWS_TOOL]).as_slice());
     }

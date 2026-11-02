@@ -260,9 +260,16 @@ Typed integration and correctness cases map their containers and host processes 
 | Correctness, Linux, Docker or Kubernetes-in-Docker | Baseline and comparison | `agent-adp-linux-image` |
 | Correctness, Linux, Docker or Kubernetes-in-Docker | Datadog intake and millstone | `tools-linux-image` |
 
-Each case also needs the roles its backend declares, such as `fixup-image` for Linux containers. Integration cases need the
-intake role only on Linux, where the sidecar runs. Correctness cases run only for subject OS `linux`;
-their roles appear in text listings, `artifacts verify`/`pull`, and `run --artifacts` verification only when you
+Each case also needs the roles its backend declares: Linux containers need `fixup-image` and `courier-linux-binary`,
+the static courier. On aarch64 and x86_64, its local default is `target/<arch>-unknown-linux-musl/release/panoramic-courier`,
+where `<arch>` is the architecture panoramic was built for. Other runner architectures require a manifest binding.
+`make build-courier-linux` builds it, installing the Rust target with `rustup` on first use.
+The `test-integration`, `test-integration-quick`, `test-correctness` and `test-correctness-case` targets build it first.
+For a Docker daemon of another architecture, build with `COURIER_LINUX_TARGET=<arch>-unknown-linux-musl` and bind
+`courier-linux-binary` to that build in a manifest.
+
+Integration cases need the intake role only on Linux, where the sidecar runs. Correctness cases run only for subject OS
+`linux`; their roles appear in text listings, `artifacts verify`/`pull`, and `run --artifacts` verification only when you
 select Linux. Only runnable cases contribute artifact roles.
 
 Both correctness targets bind to `agent-adp-linux-image`, as CI supplies the same bundled image to both sides.
@@ -312,7 +319,8 @@ binds the same references, including `fixup-image` for `PANORAMIC_ALPINE_IMAGE`.
 
 The image roles feed the containers listed in the case table above. `adp-host-binary` supplies the host ADP executable;
 `agent-host-install` supplies the Core Agent executable at `bin/agent/agent` beneath that directory. `fixup-image`
-supplies the shared-volume permission fix-up container. Kind loads the runners' bound images into its cluster.
+supplies the shared-volume permission fix-up container. `courier-linux-binary` supplies the static courier executable
+for Linux containers. Kind loads the runners' bound images into its cluster.
 `--mounts-dir`, kind options, `-l` and TUI options remain available. In `list --json`, `images` and `runtime` report
 the case files' images and runtime regardless of `--artifacts`, while `roles` shows the bound references and their sources.
 
@@ -326,6 +334,8 @@ separates the role from its reference.
 `--artifacts`, so its `run.json` records what it tested in `artifacts`. Linux integration and correctness jobs bind
 `agent-adp-linux-image` and `tools-linux-image` to the pipeline's images and `fixup-image` to
 `registry.ddbuild.io/alpine:latest`, then run `panoramic artifacts pull` before testing.
+Linux jobs also bind `courier-linux-binary` to the courier that `build-panoramic-binary` builds for correctness jobs
+or `test-integration` builds for integration tests.
 `make test-integration-macos-ci` binds the ADP binary and Agent install it builds and provisions;
 `ci/tooling/windows-integration-tests.ps1` binds the image it builds. Image and binary overrides must agree with
 the manifest. Every selected correctness case must use a `saluki-images/` baseline, because both sides take

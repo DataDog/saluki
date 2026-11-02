@@ -231,20 +231,33 @@ mod tests {
                     .collect::<Vec<_>>(),
                 ["images", "layout", "roles", "runtime", "status", "timeout", "type"]
             );
-            let expected_roles: Vec<_> = plan
-                .artifacts()
-                .iter()
-                .map(|binding| {
-                    serde_json::json!({
-                        "role": binding.role.name,
+            assert_eq!(
+                entry["roles"],
+                serde_json::json!([
+                    {
+                        "role": "agent-adp-linux-image",
                         "kind": "image",
-                        "reference": binding.reference,
+                        "reference": "saluki-images/datadog-agent:testing-devel",
                         "source": "local_default",
-                    })
-                })
-                .collect();
-            assert!(!expected_roles.is_empty());
-            assert_eq!(entry["roles"], serde_json::json!(expected_roles));
+                    },
+                    {
+                        "role": "courier-linux-binary",
+                        "kind": "binary",
+                        "reference": match std::env::consts::ARCH {
+                            "aarch64" => "target/aarch64-unknown-linux-musl/release/panoramic-courier",
+                            "x86_64" => "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+                            _ => "",
+                        },
+                        "source": "local_default",
+                    },
+                    {
+                        "role": "fixup-image",
+                        "kind": "image",
+                        "reference": "alpine:latest",
+                        "source": "local_default",
+                    },
+                ])
+            );
         }
     }
 
@@ -499,6 +512,11 @@ mod tests {
 
     #[test]
     fn listing_text_prints_participant_layouts_and_artifact_bindings_for_every_case() {
+        let courier = match std::env::consts::ARCH {
+            "aarch64" => "target/aarch64-unknown-linux-musl/release/panoramic-courier",
+            "x86_64" => "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+            _ => "",
+        };
         let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[macos]").replace(
             "  adp:",
             "  zebra: {type: agent-adp}\n  alpha: {type: agent-adp, os: linux}\n  adp:",
@@ -520,32 +538,41 @@ mod tests {
             .unwrap();
         assert_eq!(
             listing_text(&plan),
-            "  participant\n    Timeout: 1s\n    Status: runnable\n    \
+            format!(
+                "  participant\n    Timeout: 1s\n    Status: runnable\n    \
              Layout: adp on macos as host-process-group; alpha on linux as linux-container; \
              zebra on macos as host-process-group\n    \
              Artifact roles:\n      \
              adp-host-binary = target/release/agent-data-plane (local default)\n      \
              agent-adp-linux-image = saluki-images/datadog-agent:testing-devel (local default)\n      \
              agent-host-install = /tmp/saluki-dda/datadog-agent (local default)\n      \
+             courier-linux-binary = {courier} (local default)\n      \
              fixup-image = registry.example/alpine:3 (manifest)\n    \
              Create order: adp, alpha, zebra\n    \
              Start order: adp, alpha, zebra\n\n"
+            )
         );
         for (yaml, expected) in [
             (
                 "type: integration\nname: typed\ndescription: A typed case\n\
                  timeout: 7s\nruntimes: [linux]\nprocedure: []\n"
                     .to_string(),
-                "  typed\n    A typed case\n    Timeout: 7s\n    Status: runnable\n    Artifact roles:\n      \
+                format!(
+                    "  typed\n    A typed case\n    Timeout: 7s\n    Status: runnable\n    Artifact roles:\n      \
                  agent-adp-linux-image = saluki-images/datadog-agent:testing-devel (local default)\n      \
-                 fixup-image = alpine:latest (local default)\n\n",
+                 courier-linux-binary = {courier} (local default)\n      \
+                 fixup-image = alpine:latest (local default)\n\n"
+                ),
             ),
             (
                 format!("type: correctness\n{CORRECTNESS_FIELDS}"),
-                "  typed\n    Timeout: 1200s\n    Status: runnable\n    Artifact roles:\n      \
+                format!(
+                    "  typed\n    Timeout: 1200s\n    Status: runnable\n    Artifact roles:\n      \
                  agent-adp-linux-image = saluki-images/datadog-agent:testing-devel (local default)\n      \
+                 courier-linux-binary = {courier} (local default)\n      \
                  fixup-image = alpine:latest (local default)\n      \
-                 tools-linux-image = saluki-images/correctness-tools:latest (local default)\n\n",
+                 tools-linux-image = saluki-images/correctness-tools:latest (local default)\n\n"
+                ),
             ),
         ] {
             let case = crate::CASE_LOADER
