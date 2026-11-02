@@ -188,9 +188,9 @@ checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 
 [[package]]
 name = "antithesis-instrumentation"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb6b548668212c6d3a942a4ac7be13bc4fc25715bf661328438f30e3fd342cf0"
+checksum = "009bd9354d773dea6b85c08fa0d929ff6c52003cbe3cf496614eff79d2895eb5"
 dependencies = [
  "cc",
 ]
@@ -1502,7 +1502,7 @@ dependencies = [
  "ndarray-stats",
  "noisy_float",
  "num-traits",
- "ordered-float 5.5.0",
+ "ordered-float 5.5.1",
  "proptest",
  "protobuf",
  "rand 0.10.3",
@@ -4094,7 +4094,7 @@ dependencies = [
  "hashbrown 0.16.1",
  "indexmap",
  "metrics",
- "ordered-float 5.5.0",
+ "ordered-float 5.5.1",
  "quanta",
  "rand 0.9.4",
  "rand_xoshiro",
@@ -4433,9 +4433,9 @@ dependencies = [
 
 [[package]]
 name = "ordered-float"
-version = "5.5.0"
+version = "5.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c7c9e0d9b23589f26070720bac724174bfec1083e82f7854cdd0267518343c0"
+checksum = "7f59006ce1e204c30956638535b74d317bca99477b9356dfaec54c37f6f600ab"
 dependencies = [
  "num-traits",
 ]
@@ -5742,7 +5742,7 @@ dependencies = [
  "memchr",
  "metrics",
  "metrics-util",
- "ordered-float 5.5.0",
+ "ordered-float 5.5.1",
  "papaya",
  "pastey",
  "pin-project",
@@ -6474,7 +6474,7 @@ dependencies = [
  "datadog-protos",
  "ddsketch",
  "float-cmp",
- "ordered-float 5.5.0",
+ "ordered-float 5.5.1",
  "protobuf",
  "saluki-common",
  "saluki-error",
@@ -6772,9 +6772,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.53.3"
+version = "1.54.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
+checksum = "b52fd3255258d26fac7264ab5a76b53c13367136dc011d3d6ad4f8ed070396a3"
 dependencies = [
  "backtrace",
  "bytes",
@@ -7355,9 +7355,9 @@ checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 
 [[package]]
 name = "uuid"
-version = "1.28.0"
+version = "1.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cc1186384beb7dd8eedea376413fd654937285ea6c9cfbb928dc3043ea4b606"
+checksum = "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
 dependencies = [
  "getrandom 0.4.2",
 ]
