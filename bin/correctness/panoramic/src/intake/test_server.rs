@@ -1,9 +1,10 @@
 //! A stand-in `datadog-intake` server for unit tests.
 
-use std::net::TcpListener as StdTcpListener;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use socket2::{Domain, Protocol, Socket, Type};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
@@ -15,10 +16,36 @@ pub(crate) fn install_crypto_provider() {
 
 /// Returns a local port with no listener, so every request to it fails to connect.
 ///
+/// The port lies below the default ephemeral range of Linux (32768), macOS and Windows (49152), so a concurrently
+/// running test that binds port 0 can't be handed it. Taking the port from the ephemeral range instead would let such
+/// a test start listening on it, and connections that should be refused would succeed.
+///
 /// Windows retries a refused connection for about two seconds before failing.
 pub(crate) fn closed_port() -> u16 {
-    let listener = StdTcpListener::bind("127.0.0.1:0").expect("should bind an ephemeral port");
-    listener.local_addr().expect("should have a local address").port()
+    use rand::RngExt as _;
+
+    let mut rng = rand::rng();
+    for _ in 0..100 {
+        let port = rng.random_range(CLOSED_PORT_RANGE);
+        if is_unbound(port) {
+            return port;
+        }
+    }
+    panic!("should find an unbound port in {CLOSED_PORT_RANGE:?}");
+}
+
+/// The ports `closed_port` picks from, all below every platform's default ephemeral range.
+const CLOSED_PORT_RANGE: std::ops::Range<u16> = 20000..32768;
+
+/// Returns whether `127.0.0.1:port` is free, so nothing would accept a connection to it.
+///
+/// The probe doesn't set `SO_REUSEADDR`, which on macOS would let it bind `127.0.0.1` alongside a wildcard listener
+/// that still accepts connections to that address.
+fn is_unbound(port: u16) -> bool {
+    let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).expect("should create a TCP socket");
+    socket
+        .bind(&SocketAddr::from((Ipv4Addr::LOCALHOST, port)).into())
+        .is_ok()
 }
 
 /// A local HTTP server answering the `datadog-intake` dump endpoints. It stops when dropped.
@@ -142,4 +169,31 @@ async fn respond(mut stream: TcpStream, metrics: String) {
     );
     let _ = stream.write_all(response.as_bytes()).await;
     let _ = stream.shutdown().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::ErrorKind;
+    use std::net::{TcpListener as StdTcpListener, TcpStream as StdTcpStream};
+
+    use super::*;
+
+    #[test]
+    fn a_closed_port_is_outside_the_ephemeral_range_and_refuses_connections() {
+        let port = closed_port();
+
+        assert!(CLOSED_PORT_RANGE.contains(&port), "{port}");
+        let connect =
+            StdTcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect_err("nothing should accept a connection");
+        assert_eq!(connect.kind(), ErrorKind::ConnectionRefused, "{connect}");
+    }
+
+    #[test]
+    fn a_port_with_a_wildcard_listener_is_not_unbound() {
+        // A standard listener sets `SO_REUSEADDR` on Unix, as most servers do.
+        let listener = StdTcpListener::bind((Ipv4Addr::UNSPECIFIED, 0)).expect("should bind an ephemeral port");
+        let port = listener.local_addr().expect("should have a local address").port();
+
+        assert!(!is_unbound(port));
+    }
 }
