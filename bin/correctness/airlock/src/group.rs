@@ -84,7 +84,7 @@ impl IsolationGroup {
     /// Builds a container driver for one of this group's prepared participants.
     ///
     /// The container is named `airlock-<id>-<participant>`, with the participant name as its hostname and DNS alias
-    /// on the group network.
+    /// on the group network. Its only default mount is the group volume, and it keeps its own PID namespace.
     ///
     /// # Errors
     ///

@@ -59,7 +59,7 @@ impl FakeDaemon {
                 recorded_bodies
                     .lock()
                     .unwrap()
-                    .push(String::from_utf8(head[header_end..header_end + body_len].to_vec()).unwrap());
+                    .push(String::from_utf8_lossy(&head[header_end..header_end + body_len]).into_owned());
                 let (status, body) = respond(&method, &path);
                 recorded.lock().unwrap().push(format!("{} {}", method, path));
                 let response = format!(

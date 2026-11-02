@@ -33,6 +33,7 @@ use tracing::{debug, error, trace, warn};
 use crate::{
     config::{DatadogIntakeConfig, MillstoneConfig, TargetConfig},
     exec::{self, ExecOutput, ExecRequest, ExecStream},
+    files::{self, ContainerFile},
 };
 
 const MILLSTONE_CONFIG_PATH_INTERNAL: &str = "/etc/millstone/config.toml";
@@ -480,21 +481,22 @@ impl DriverConfig {
         Ok((Some(exposed_ports), port_bindings))
     }
 
-    /// Returns the full set of bind mounts to apply to this container, including OS-specific
-    /// defaults and any additional named volume mounts.
+    /// Adds default mounts and configured named volumes to the supplied binds.
     ///
-    /// Linux containers receive the shared `/airlock` volume plus read-only mounts of host
-    /// paths needed for origin detection (`/proc`, `/sys/fs/cgroup`, the Docker socket).
-    /// Windows containers receive only the shared `C:\airlock` volume; the host-resource
-    /// mounts have no Windows-container equivalent and the `:z` shared-relabel mount option is
-    /// Linux-specific.
-    fn container_binds_from(&self, isolation_group_name: &str, mut binds: Vec<String>) -> Vec<String> {
+    /// Prepared Linux drivers mount only the shared `/airlock` volume by default. Linux drivers built with
+    /// [`Driver::from_config`] also receive read-only host mounts for origin detection (`/proc`, `/sys/fs/cgroup`,
+    /// the Docker socket). Windows containers use the shared `C:\airlock` volume.
+    fn container_binds_from(
+        &self, isolation_group_name: &str, mut binds: Vec<String>, host_resources: bool,
+    ) -> Vec<String> {
         match self.container_os {
             ContainerOs::Linux => {
                 binds.push(format!("{}:/airlock:z", isolation_group_name));
-                binds.push("/proc:/host/proc:ro".to_string());
-                binds.push("/sys/fs/cgroup:/host/sys/fs/cgroup:ro".to_string());
-                binds.push("/var/run/docker.sock:/var/run/docker.sock:ro".to_string());
+                if host_resources {
+                    binds.push("/proc:/host/proc:ro".to_string());
+                    binds.push("/sys/fs/cgroup:/host/sys/fs/cgroup:ro".to_string());
+                    binds.push("/var/run/docker.sock:/var/run/docker.sock:ro".to_string());
+                }
             }
             ContainerOs::Windows => {
                 binds.push(format!("{}:C:\\airlock", isolation_group_name));
@@ -550,6 +552,7 @@ impl DriverDetails {
 }
 
 /// What `Driver::create` makes besides the container.
+#[derive(Eq, PartialEq)]
 enum Provisioning {
     /// Creates shared resources if missing, fixes volume permissions, and pulls images.
     OnCreate,
@@ -881,7 +884,11 @@ impl Driver {
         &self, container_name: String, image: String, entrypoint: Option<Vec<String>>, cmd: Option<Vec<String>>,
         binds: Vec<String>, env: Option<Vec<String>>, with_ports: bool,
     ) -> Result<String, GenericError> {
-        let binds = self.config.container_binds_from(&self.isolation_group_name, binds);
+        let binds = self.config.container_binds_from(
+            &self.isolation_group_name,
+            binds,
+            self.provisioning == Provisioning::OnCreate,
+        );
 
         // Apply DNS aliases on the primary network.
         let aliases = self.network_aliases();
@@ -910,14 +917,10 @@ impl Driver {
             (None, None)
         };
 
-        // Linux test containers run with `pid_mode=host` so origin-detection logic in ADP and
-        // the Core Agent can see processes on the runner. Windows containers do not support
-        // host PID mode, so we leave it unset and accept that Windows-runtime tests don't
-        // exercise the host-pid origin-detection path.
-        let pid_mode = match self.config.container_os {
-            ContainerOs::Linux => Some("host".to_string()),
-            ContainerOs::Windows => None,
-        };
+        // Linux drivers built with Driver::from_config share host PIDs for origin detection.
+        // Drivers from a prepared group keep their own PID namespace.
+        let pid_mode = (self.config.container_os == ContainerOs::Linux && self.provisioning == Provisioning::OnCreate)
+            .then(|| "host".to_string());
         let cgroupns_mode = (self.config.container_os == ContainerOs::Linux && self.config.host_cgroup_namespace)
             .then_some(HostConfigCgroupnsModeEnum::HOST);
 
@@ -1108,8 +1111,10 @@ impl Driver {
 
     /// Creates the container and connects its networks; call [`Self::start_container`] to start it.
     ///
-    /// Drivers built with [`Self::from_config`] also provision shared resources and pull images. Drivers from an
-    /// [`IsolationGroup`](crate::group::IsolationGroup) reuse its prepared resources and require a local image.
+    /// Drivers built with [`Self::from_config`] also provision shared resources and pull images. On Linux, they
+    /// mount host resources for origin detection and share the host PID namespace. Drivers from an
+    /// [`IsolationGroup`](crate::group::IsolationGroup) reuse its prepared resources, require a local image, and
+    /// keep their own PID namespace. Their only default mount is the group volume.
     ///
     /// # Errors
     ///
@@ -1257,6 +1262,45 @@ impl Driver {
         );
 
         Ok(exit_status)
+    }
+
+    /// Places files in a Linux container between create and start.
+    ///
+    /// Files are owned by root and keep their mode. Missing parent directories are created with mode `0755`,
+    /// owned by root. Existing files are replaced, but a file cannot replace a directory. Paths resolve inside
+    /// the container, including through symlinks. An empty slice sends no request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for Windows containers, invalid or duplicate paths, modes beyond `07777`, archive
+    /// construction failures, or Docker API failures. Every file is validated before contacting Docker.
+    pub async fn place_files(&self, files: &[ContainerFile]) -> Result<(), GenericError> {
+        self.ensure_linux_for_files()?;
+        files::place(&self.docker, &self.container_name, files).await
+    }
+
+    /// Reads a regular file from a created, running, or exited Linux container, including its mounted volumes.
+    ///
+    /// Returns `None` if the path is missing and the container exists. Paths follow [`ContainerFile`]'s rules.
+    /// The entire file is read into memory without a size cap. Callers can impose their own timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for Windows containers, invalid paths, a missing container, Docker API failures,
+    /// empty or malformed archives, or a path naming a directory, symbolic link, or other non-regular file.
+    pub async fn read_file(&self, path: &str) -> Result<Option<Vec<u8>>, GenericError> {
+        self.ensure_linux_for_files()?;
+        files::read(&self.docker, &self.container_name, path).await
+    }
+
+    fn ensure_linux_for_files(&self) -> Result<(), GenericError> {
+        if self.config.container_os == ContainerOs::Windows {
+            return Err(generic_error!(
+                "Participant '{}' runs in a Windows container; airlock places and reads files only in Linux containers",
+                self.config.driver_id
+            ));
+        }
+        Ok(())
     }
 
     /// Executes a command and collects stdout and stderr bytes with its exit code.
@@ -1718,10 +1762,10 @@ mod tests {
     }
 
     #[test]
-    fn default_linux_container_binds_include_airlock_and_linux_host_resources() {
+    fn legacy_linux_container_binds_include_airlock_and_linux_host_resources() {
         let config = DriverConfig::from_image("target", "example:latest".to_string());
 
-        let binds = config.container_binds_from("airlock-test", config.binds.clone());
+        let binds = config.container_binds_from("airlock-test", config.binds.clone(), true);
 
         assert!(binds.contains(&"airlock-test:/airlock:z".to_string()));
         assert!(binds.contains(&"/proc:/host/proc:ro".to_string()));
@@ -1730,11 +1774,29 @@ mod tests {
     }
 
     #[test]
+    fn prepared_linux_container_binds_include_only_airlock_and_configured_mounts() {
+        let config = DriverConfig::from_image("target", "example:latest".to_string());
+        assert_eq!(
+            config.container_binds_from("airlock-test", config.binds.clone(), false),
+            ["airlock-test:/airlock:z"]
+        );
+
+        let config = config
+            .with_readonly_bind_mount("/host/config", "/etc/config")
+            .with_volume_mount("extra", "/extra");
+        assert_eq!(
+            config.container_binds_from("airlock-test", config.binds.clone(), false),
+            ["/host/config:/etc/config:ro", "airlock-test:/airlock:z", "extra:/extra"]
+        );
+    }
+
+    #[test]
     fn windows_container_binds_use_windows_airlock_and_skip_linux_host_resources() {
         let config =
             DriverConfig::from_image("target", "example:latest".to_string()).with_container_os(ContainerOs::Windows);
 
-        let binds = config.container_binds_from("airlock-test", config.binds.clone());
+        // Host-resource selection applies only to Linux containers.
+        let binds = config.container_binds_from("airlock-test", config.binds.clone(), false);
 
         assert!(binds.contains(&"airlock-test:C:\\airlock".to_string()));
         assert!(!binds.iter().any(|bind| bind.contains("/proc")));
@@ -2038,7 +2100,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_legacy_driver_assigns_ports_only_to_its_participant() {
+    async fn a_windows_container_neither_places_nor_reads_files() {
+        let daemon = FakeDaemon::start(|_, _| (500, r#"{"message":"unexpected request"}"#)).await;
+        let driver = Driver::in_group(
+            daemon.docker.clone(),
+            GROUP.to_string(),
+            DriverConfig::from_image("subject", "example:latest".to_string()).with_container_os(ContainerOs::Windows),
+        );
+        let placement = driver.place_files(&[ContainerFile::new("/file", "secret")]).await;
+        let empty_placement = driver.place_files(&[]).await;
+        let read = driver.read_file("/file").await;
+        for error in [placement.unwrap_err(), empty_placement.unwrap_err(), read.unwrap_err()] {
+            let message = error.to_string();
+            assert!(message.contains("Participant 'subject'"), "{message}");
+            assert!(message.contains("Windows"), "{message}");
+            assert!(!format!("{error:?}").contains("secret"));
+        }
+        assert!(daemon.requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_legacy_driver_shares_host_resources_and_assigns_ports_only_to_its_participant() {
         // The volume-permission helper shares the driver's configuration; host-port bindings belong to the participant.
         let daemon = FakeDaemon::start(
             |method, path| match (method, path.split('?').next().unwrap_or_default()) {
@@ -2089,6 +2171,17 @@ mod tests {
         assert!(!fix_up_body.contains("\"PortBindings\""), "{fix_up_body}");
         let (participant_request, participant_body) = creates[1];
         assert!(participant_request.contains("name=airlock-ab12cd34-target"));
+        for body in [fix_up_body, participant_body] {
+            assert!(body.contains(r#""PidMode":"host""#), "{body}");
+            assert!(
+                body.contains(concat!(
+                    r#""Binds":["airlock-ab12cd34:/airlock:z","#,
+                    r#""/proc:/host/proc:ro","/sys/fs/cgroup:/host/sys/fs/cgroup:ro","#,
+                    r#""/var/run/docker.sock:/var/run/docker.sock:ro"]"#,
+                )),
+                "{body}"
+            );
+        }
         for expected in [
             "\"ExposedPorts\"",
             "\"PortBindings\"",
@@ -2153,6 +2246,10 @@ mod tests {
         assert_eq!(requests.len(), 1, "{requests:?}");
         assert_eq!(requests[0].split('?').next(), Some("POST /containers/create"));
         assert!(requests[0].contains("name=airlock-ab12cd34-alpha"), "{requests:?}");
+        let bodies = daemon.bodies.lock().unwrap();
+        let body = &bodies[0];
+        assert!(body.contains(r#""Binds":["airlock-ab12cd34:/airlock:z"]"#), "{body}");
+        assert!(!body.contains("\"PidMode\""), "{body}");
     }
 
     #[tokio::test]

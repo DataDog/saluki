@@ -14,6 +14,7 @@ bytes = { workspace = true }
 futures = { workspace = true }
 home = { workspace = true }
 saluki-error = { workspace = true }
+tar = { workspace = true }
 tokio = { workspace = true, features = [
   "fs",
   "io-util",

@@ -8,6 +8,7 @@ use airlock::{
     docker::{connect, image_id, Docker},
     driver::{Driver, DriverConfig, ExitStatus, Protocol},
     exec::{ExecOutput, ExecRequest, OutputChunk},
+    files::ContainerFile,
     group::IsolationGroup,
 };
 use bollard::{
@@ -15,7 +16,7 @@ use bollard::{
     models::{ContainerCreateBody, HostConfig, PortBinding},
     query_parameters::{
         CreateContainerOptionsBuilder, ListContainersOptionsBuilder, ListNetworksOptionsBuilder,
-        ListVolumesOptionsBuilder,
+        ListVolumesOptionsBuilder, RemoveContainerOptionsBuilder,
     },
 };
 use futures::{future::try_join_all, StreamExt as _};
@@ -498,6 +499,105 @@ async fn creating_from_an_absent_image_fails_with_no_such_image() {
             "{error}"
         );
         assert!(group_resources(&docker, &id).await.unwrap().containers.is_empty());
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn files_placed_before_start_keep_their_mode_and_are_read_after_exit() {
+    let docker = daemon().await;
+    let id = unique_id();
+    in_group(id.clone(), async move {
+        let image = test_image();
+        let group = IsolationGroup::prepare(docker, &id, &["subject"], &image)
+            .await
+            .unwrap();
+        let long = format!("/opt/airlock-test/{}/file", "a".repeat(210));
+        let script = format!(
+            r#"set -e
+[ "$(stat -c '%a %u:%g' /opt/airlock-test/bin/greet)" = '755 0:0' ]
+[ "$(stat -c '%a %u:%g' /airlock/subject/shared/config.yaml)" = '600 0:0' ]
+[ "$(stat -c %a /airlock/subject/shared)" = 777 ]
+[ "$(stat -c %a /tmp)" = 1777 ]
+[ "$(cat /tmp/placed)" = placed ]
+[ "$(/opt/airlock-test/bin/greet)" = hello ]
+[ "$(cat /airlock/subject/shared/config.yaml)" = 'key: value' ]
+[ "$(cat '{long}')" = 'long path' ]
+printf '7 0\n' > /airlock/subject/exit/record
+printf layer > /tmp/output"#
+        );
+        let driver = group
+            .driver(DriverConfig::from_image("subject", image).with_entrypoint(vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                script,
+            ]))
+            .unwrap();
+        driver.create().await.unwrap();
+        let config_path = "/airlock/subject/shared/config.yaml";
+        let config = "key: value\n";
+        driver
+            .place_files(&[
+                ContainerFile::new("/opt/airlock-test/bin/greet", "#!/bin/sh\nprintf hello\n").with_mode(0o755),
+                ContainerFile::new(config_path, config).with_mode(0o600),
+                ContainerFile::new(&long, "long path"),
+                ContainerFile::new("/tmp/placed", "placed"),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(driver.read_file(config_path).await.unwrap().unwrap(), config.as_bytes());
+        assert_eq!(driver.read_file(&long).await.unwrap().unwrap(), b"long path");
+        let error = driver
+            .place_files(&[ContainerFile::new("/etc", "file")])
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("cannot overwrite directory"), "{error:#}");
+
+        driver.start_container().await.unwrap();
+        let status = driver.wait_for_container_exit().await.unwrap();
+        assert!(matches!(status, ExitStatus::Success), "{status}");
+        for (path, expected) in [
+            ("/airlock/subject/exit/record", &b"7 0\n"[..]),
+            ("/tmp/output", &b"layer"[..]),
+            (config_path, config.as_bytes()),
+        ] {
+            assert_eq!(driver.read_file(path).await.unwrap().unwrap(), expected);
+        }
+        for path in ["/airlock/subject/missing", "/no/such/dir/file"] {
+            assert_eq!(driver.read_file(path).await.unwrap(), None);
+        }
+        let error = driver.read_file("/airlock/subject/exit").await.unwrap_err();
+        assert!(error.to_string().contains("directory"), "{error}");
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_is_read_while_its_container_runs_and_reading_a_removed_container_fails() {
+    let docker = daemon().await;
+    let id = unique_id();
+    in_group(id.clone(), async move {
+        let driver = start_exec_participant(docker.clone(), &id, "printf running > /tmp/state; exec sleep 60").await;
+        timeout(Duration::from_secs(10), async {
+            while driver.read_file("/tmp/state").await.unwrap().as_deref() != Some(b"running") {
+                sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("the container should write its state within 10 seconds");
+        docker
+            .remove_container(
+                &format!("airlock-{id}-subject"),
+                Some(RemoveContainerOptionsBuilder::default().force(true).build()),
+            )
+            .await
+            .unwrap();
+        let error = driver.read_file("/tmp/state").await.unwrap_err();
+        assert!(error.to_string().contains("no such container"), "{error}");
+        assert!(driver
+            .place_files(&[ContainerFile::new("/file", "contents")])
+            .await
+            .is_err());
     })
     .await;
 }
