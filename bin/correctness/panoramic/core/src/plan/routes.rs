@@ -1,7 +1,8 @@
-//! The route table for endpoint kinds and consumer/server realizations.
+//! Resolves consumer-visible endpoint addresses through the realization route table.
 //!
-//! Each supported cell selects one route. Filesystem routes require a shared namespace.
+//! Each supported cell selects one route. Filesystem routes between participants require a shared namespace.
 
+use super::{endpoints::ParticipantEndpoints, ports::RunnerHostPorts, scope::check_consumed_socket};
 use crate::{
     endpoint::{Endpoint, EndpointKind, Listener, Port, ResolvedAddress},
     layout::{Realization, RealizationKind},
@@ -13,10 +14,59 @@ pub(super) enum Route {
     Loopback,
     RunnerHostPort,
     SharedFilesystem,
+    NamedPipe,
+}
+
+pub(super) enum Unreachable {
+    NoRoute(&'static str),
+    Socket { path: String, reason: String },
+}
+
+/// Chooses a route and checks socket location and length when reaching another participant.
+pub(super) fn reach(
+    holder: &str, holder_realization: Realization, server: &str, server_realization: Realization,
+    server_endpoints: &ParticipantEndpoints, endpoint: &Endpoint,
+) -> Result<Route, Unreachable> {
+    if holder == server {
+        match endpoint.kind {
+            EndpointKind::UnixDatagram | EndpointKind::UnixStream
+                if holder_realization.kind != RealizationKind::WindowsContainer =>
+            {
+                return Ok(Route::SharedFilesystem)
+            }
+            EndpointKind::NamedPipe => return Ok(Route::NamedPipe),
+            _ => {}
+        }
+    }
+    let route = route(endpoint.kind, holder_realization, server_realization).map_err(Unreachable::NoRoute)?;
+    if route == Route::SharedFilesystem {
+        let Listener::Path(path) = &endpoint.listener else {
+            unreachable!("shared-filesystem routes use socket paths");
+        };
+        check_consumed_socket(path, &server_endpoints.shared_dir, server_endpoints.os).map_err(|reason| {
+            Unreachable::Socket {
+                path: path.clone(),
+                reason,
+            }
+        })?;
+    }
+    Ok(route)
+}
+
+/// Allocates any runner-host port a checked route needs and renders the consumer-visible address.
+pub(super) fn resolve(
+    route: Route, server: &str, endpoint_name: &str, endpoint: &Endpoint, ports: &mut RunnerHostPorts<'_>,
+) -> Result<ResolvedAddress, String> {
+    let runner_host_port = if route == Route::RunnerHostPort {
+        Some(ports.for_endpoint(server, endpoint_name)?)
+    } else {
+        None
+    };
+    Ok(address(route, server, endpoint, runner_host_port))
 }
 
 /// Returns the cell's route, or the constraint preventing the connection.
-pub(super) fn route(kind: EndpointKind, consumer: Realization, server: Realization) -> Result<Route, &'static str> {
+fn route(kind: EndpointKind, consumer: Realization, server: Realization) -> Result<Route, &'static str> {
     use EndpointKind::{Grpc, Http, NamedPipe, Tcp, Udp, UnixDatagram, UnixStream};
     use RealizationKind::{HostProcessGroup, KubernetesPod, LinuxContainer, WindowsContainer};
 
@@ -36,20 +86,16 @@ pub(super) fn route(kind: EndpointKind, consumer: Realization, server: Realizati
 }
 
 /// Renders a checked route using the server's resolved listener and any allocated runner-host port.
-pub(super) fn address(
-    route: Route, server_name: &str, endpoint: &Endpoint, runner_host_port: Option<u16>,
-) -> ResolvedAddress {
-    let scheme = match endpoint.kind {
-        EndpointKind::Tcp => "tcp",
-        EndpointKind::Udp => "udp",
-        EndpointKind::Http => "http",
-        EndpointKind::Grpc => "grpc",
-        EndpointKind::UnixDatagram => "unixgram",
-        EndpointKind::UnixStream => "unix",
-        EndpointKind::NamedPipe => unreachable!("named pipes have no route between participants"),
-    };
+fn address(route: Route, server_name: &str, endpoint: &Endpoint, runner_host_port: Option<u16>) -> ResolvedAddress {
     let (url, host, port, path) = match route {
         Route::ByName | Route::Loopback | Route::RunnerHostPort => {
+            let scheme = match endpoint.kind {
+                EndpointKind::Tcp => "tcp",
+                EndpointKind::Udp => "udp",
+                EndpointKind::Http => "http",
+                EndpointKind::Grpc => "grpc",
+                _ => unreachable!("network routes use network endpoint kinds"),
+            };
             let Listener::Port(Port::Fixed(server_port)) = endpoint.listener else {
                 unreachable!("network routes use ports resolved during endpoint planning");
             };
@@ -66,10 +112,22 @@ pub(super) fn address(
             (format!("{scheme}://{host}:{port}"), Some(host.into()), Some(port), None)
         }
         Route::SharedFilesystem => {
+            let scheme = match endpoint.kind {
+                EndpointKind::UnixDatagram => "unixgram",
+                EndpointKind::UnixStream => "unix",
+                _ => unreachable!("shared-filesystem routes use Unix socket endpoint kinds"),
+            };
             let Listener::Path(path) = &endpoint.listener else {
                 unreachable!("shared-filesystem routes use socket paths");
             };
             (format!("{scheme}://{path}"), None, None, Some(path.clone()))
+        }
+        Route::NamedPipe => {
+            let Listener::Pipe(name) = &endpoint.listener else {
+                unreachable!("named-pipe routes use pipe names");
+            };
+            let path = format!(r"\\.\pipe\{name}");
+            (path.clone(), None, None, Some(path))
         }
     };
     ResolvedAddress {
@@ -271,6 +329,20 @@ mod tests {
                 host: Some("127.0.0.1".into()),
                 port: Some(20000),
                 path: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_named_pipe_address_is_its_pipe_path() {
+        assert_eq!(
+            address(Route::NamedPipe, "server", &Endpoint::named_pipe("events"), None),
+            ResolvedAddress {
+                kind: EndpointKind::NamedPipe,
+                url: r"\\.\pipe\events".into(),
+                host: None,
+                port: None,
+                path: Some(r"\\.\pipe\events".into()),
             }
         );
     }

@@ -23,7 +23,7 @@ use crate::{
 /// Returns the first error in this order: participant names, subject count, subject OS override;
 /// then, per participant in name order, registered type, realization options, file names and sources,
 /// parameter key syntax then declarations, OS overlays (reachable OS, file names and sources, parameter key syntax
-/// then declarations), connection targets (existing participant, not self), and configuration reference syntax
+/// then declarations), connection targets (existing participant), and configuration reference syntax
 /// and names (base, then overlays; `env`, `params`, then template files). Sources must be nonempty relative paths
 /// within the case directory that resolve to existing files or directories. Template sources must be regular UTF-8 files;
 /// each template source is read and parsed once. Other sources are not read.
@@ -146,9 +146,6 @@ pub(super) fn check_participants(
                     "{holder} connects '{consumed}' to unknown participant '{}'",
                     target.participant
                 )));
-            }
-            if target.participant == *participant {
-                return Err(error(format!("{holder} connects '{consumed}' to itself")));
             }
         }
         check_config_references(file, participant, entry, &sources, &mut templates).map_err(&error)?;
@@ -708,25 +705,18 @@ mod tests {
     }
 
     #[test]
-    fn a_connection_must_name_another_participant() {
+    fn a_connection_must_name_an_existing_participant_including_itself() {
         let yaml = case_yaml(
             "  client: {type: client, subject: true, connect: {upstream: server.api}}\n  server: {type: server}",
             "linux",
         );
-        for (invalid, expected) in [
-            (
-                yaml.replace("server.api", "missing.api"),
-                "participant 'client' connects 'upstream' to unknown participant 'missing'",
-            ),
-            (
-                yaml.replace("server.api", "client.api"),
-                "participant 'client' connects 'upstream' to itself",
-            ),
-        ] {
-            let message = check_error(&invalid);
-            assert!(message.contains(expected), "{message}");
-        }
+        let message = check_error(&yaml.replace("server.api", "missing.api"));
+        assert_eq!(
+            message.split_once("config.yaml: ").unwrap().1,
+            "participant 'client' connects 'upstream' to unknown participant 'missing'"
+        );
         check(&yaml).unwrap();
+        check(&yaml.replace("server.api", "client.api")).unwrap();
     }
 
     #[test]
@@ -819,19 +809,14 @@ mod tests {
         assert!(message.contains("has an 'os' overlay for 'windows'"), "{message}");
         check(&yaml.replace("windows: {files: {typo: x}, params: {typo: true}}", "linux: {}")).unwrap();
 
-        let mut yaml = case_yaml(
+        let yaml = case_yaml(
             "  z: {type: server}\n  a: {type: client, subject: true, connect: {typo: missing.api}}",
             "linux",
         );
-        for (bad, fix, expected) in [
-            ("missing.api", "a.typo", "unknown participant 'missing'"),
-            ("a.typo", "z.typo", "to itself"),
-        ] {
-            let message = check_error(&yaml);
-            assert!(message.contains(expected), "{message}");
-            yaml = yaml.replace(bad, fix);
-        }
-        check(&yaml).unwrap();
+        let message = check_error(&yaml);
+        assert!(message.contains("unknown participant 'missing'"), "{message}");
+        check(&yaml.replace("missing.api", "a.typo")).unwrap();
+        check(&yaml.replace("missing.api", "z.typo")).unwrap();
     }
 
     fn loader() -> CaseLoader<'static, FixtureTypes> {

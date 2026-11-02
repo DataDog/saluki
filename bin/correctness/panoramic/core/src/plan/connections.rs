@@ -6,27 +6,27 @@ use std::collections::BTreeMap;
 use super::{
     endpoints::ParticipantEndpoints,
     ports::RunnerHostPorts,
-    routes::{address, route, Route},
-    scope::check_consumed_socket,
+    routes::{self, Unreachable},
+    PlannedParticipant,
 };
 use crate::{
     case::{declared_names, CaseFile},
-    endpoint::{Delivery, Listener},
+    endpoint::Delivery,
     layout::{describe_participant, Layout},
 };
 
 /// Checks each consumer's connections, then its required endpoints, all in name order.
 /// Resolves each connection's address, drawing runner-host ports from `ports` in check order,
-/// and returns each consumer's delivered environment variables by participant name.
+/// and stores each consumer's addresses and delivered environment variables.
 pub(super) fn check_connections(
     file: &CaseFile, layout: &Layout, endpoints: &BTreeMap<String, ParticipantEndpoints>,
-    ports: &mut RunnerHostPorts<'_>,
-) -> Result<BTreeMap<String, BTreeMap<String, String>>, String> {
-    let mut deliveries = BTreeMap::new();
+    participants: &mut BTreeMap<String, PlannedParticipant>, ports: &mut RunnerHostPorts<'_>,
+) -> Result<(), String> {
     for (name, entry) in &file.participants {
         let realization = layout.get(name).expect("loaded participants have a layout");
         let type_name = &entry.participant_type;
         let holder = describe_participant(name, type_name, realization);
+        let participant = participants.get_mut(name).expect("consumers are planned participants");
         let consumer_endpoints = &endpoints[name];
         let consumes = &consumer_endpoints.consumed;
         let mut delivered_keys = BTreeMap::new();
@@ -57,22 +57,18 @@ pub(super) fn check_connections(
                     declared_names(&endpoint.accepts.iter().map(|kind| kind.name()).collect::<Vec<_>>()),
                 ));
             }
-            let route = route(served_endpoint.kind, realization, target_realization).map_err(|constraint| {
-                format!(
+            let route = routes::reach(
+                name, realization, target_name, target_realization, &endpoints[target_name], served_endpoint,
+            ).map_err(|error| match error {
+                Unreachable::NoRoute(constraint) => format!(
                     "participant '{name}' connects '{connection}' to '{target_name}.{target_endpoint}', an endpoint of kind {}; {holder} cannot reach {target_holder}: {constraint}",
                     served_endpoint.kind.name(),
-                )
-            })?;
-            if route == Route::SharedFilesystem && target_name != name {
-                let Listener::Path(path) = &served_endpoint.listener else {
-                    unreachable!("shared-filesystem routes use socket paths");
-                };
-                let server = &endpoints[target_name];
-                check_consumed_socket(path, &server.shared_dir, server.os).map_err(|reason| format!(
+                ),
+                Unreachable::Socket { path, reason } => format!(
                     "participant '{name}' connects '{connection}' to '{target_name}.{target_endpoint}', a {} socket that {target_holder} serves at '{path}'{reason}",
-                    served_endpoint.kind.name()
-                ))?;
-            }
+                    served_endpoint.kind.name(),
+                ),
+            })?;
             let Delivery::Env { keys, value } = &endpoint.delivery;
             for key in keys {
                 if consumer_endpoints.values.env.contains_key(key) {
@@ -91,14 +87,9 @@ pub(super) fn check_connections(
                     ));
                 }
             }
-            let runner_host_port = if route == Route::RunnerHostPort {
-                Some(ports.for_endpoint(target_name, target_endpoint).map_err(|error| {
-                    format!("{holder} cannot resolve connection '{connection}' to '{target_name}.{target_endpoint}': {error}")
-                })?)
-            } else {
-                None
-            };
-            let resolved = address(route, target_name, served_endpoint, runner_host_port);
+            let resolved = routes::resolve(route, target_name, target_endpoint, served_endpoint, ports).map_err(|error| {
+                format!("{holder} cannot resolve connection '{connection}' to '{target_name}.{target_endpoint}': {error}")
+            })?;
             let env = value(&resolved);
             if !env.keys().eq(keys.iter()) {
                 return Err(format!(
@@ -108,6 +99,7 @@ pub(super) fn check_connections(
                 ));
             }
             delivered_env.extend(env);
+            participant.connections.insert(connection.clone(), resolved);
         }
         for (connection, endpoint) in consumes {
             if endpoint.required && !entry.connect.contains_key(connection) {
@@ -116,9 +108,9 @@ pub(super) fn check_connections(
                 ));
             }
         }
-        deliveries.insert(name.clone(), delivered_env);
+        participant.config.env.extend(delivered_env);
     }
-    Ok(deliveries)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -127,6 +119,7 @@ mod tests {
 
     use crate::{
         case::fixtures::minimal_procedure,
+        endpoint::{EndpointKind, ResolvedAddress},
         layout::Os,
         plan::{
             fixtures::{
@@ -136,6 +129,72 @@ mod tests {
             Planner, PortRegistry,
         },
     };
+
+    #[test]
+    fn a_connection_stores_the_address_its_delivery_received() {
+        for (yaml, os, host, port) in [
+            (CONNECTION_CASE.to_string(), Os::Linux, "server", 8080),
+            (
+                CONNECTION_CASE.replace("[linux]", "[macos]"),
+                Os::MacOs,
+                "127.0.0.1",
+                8080,
+            ),
+            (host_to_container_case(), Os::MacOs, "127.0.0.1", 20000),
+        ] {
+            let reference = "{{ self.connections.upstream.url }}";
+            let yaml = yaml.replace(
+                "subject: true",
+                &format!("subject: true, config: {{env: {{KEY: '{reference}'}}}}"),
+            );
+            let plan = compile(&yaml, os).unwrap().unwrap();
+            let address = plan.connection_address("client", "upstream").unwrap();
+            assert_eq!(
+                address,
+                &ResolvedAddress {
+                    kind: EndpointKind::Http,
+                    url: format!("http://{host}:{port}"),
+                    host: Some(host.into()),
+                    port: Some(port),
+                    path: None,
+                }
+            );
+            let config = plan.effective_config("client").unwrap();
+            assert_eq!(address.url, config.env["UPSTREAM_URL"]);
+            assert_eq!(config.env["KEY"], reference);
+            assert!(plan.participants["client"].endpoint_references.is_empty());
+            assert_eq!(plan.connection_address("client", "side"), None);
+            assert_eq!(plan.connection_address("server", "upstream"), None);
+            assert_eq!(plan.connection_address("missing", "upstream"), None);
+        }
+    }
+
+    #[test]
+    fn a_connection_and_a_reference_from_one_holder_to_one_endpoint_store_the_same_address() {
+        let yaml = host_to_container_case().replace(
+            "subject: true",
+            "subject: true, config: {env: {KEY: '{{ server.endpoints.api.url }} {{ self.connections.upstream.port }}'}}",
+        );
+        let mut planner = planner();
+        let plan = compile_with(&mut planner, &yaml, Os::MacOs).unwrap().unwrap();
+        let address = plan.connection_address("client", "upstream").unwrap();
+        assert_eq!(
+            address,
+            &ResolvedAddress {
+                kind: EndpointKind::Http,
+                url: "http://127.0.0.1:20000".into(),
+                host: Some("127.0.0.1".into()),
+                port: Some(20000),
+                path: None,
+            }
+        );
+        assert_eq!(plan.endpoint_address("client", "server", "api"), Some(address));
+        assert_eq!(
+            plan.effective_config("client").unwrap().env["KEY"],
+            "{{ server.endpoints.api.url }} {{ self.connections.upstream.port }}"
+        );
+        assert_eq!(planner.ports.allocate(), Ok(20001));
+    }
 
     #[test]
     fn a_connection_delivering_an_assigned_port_key_fails() {

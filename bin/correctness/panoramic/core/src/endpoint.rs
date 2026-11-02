@@ -47,7 +47,7 @@ pub struct Endpoint {
 pub(crate) enum Listener {
     Port(Port),
     Path(String),
-    Pipe(#[expect(dead_code, reason = "Named-pipe listener names are retained for address rendering.")] String),
+    Pipe(String),
 }
 
 /// Where a network listener's port comes from.

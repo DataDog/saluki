@@ -206,9 +206,11 @@ configuration. A host process group's `ip` is `127.0.0.1` for itself and for oth
 and is substituted the same way. Another participant's `container_id` is allowed when that participant is a Linux or
 Windows container. A participant's own late facts are allowed only in environment variables, and only when its type
 substitutes them after start; `agent-adp` substitutes none. Other late facts are rejected. An endpoint reference needs
-an endpoint the participant serves and a route from the referencing participant, and a connection reference needs a
-matching `connect` key. `host` and `port` apply to network endpoints, `path` to sockets and pipes, and `url` to every
-kind. The integration runner rejects any reference in an environment variable, and `agent-adp` accepts no parameters.
+an endpoint the participant serves and a supported route from the referencing participant. A connection reference
+needs a matching `connect` key. Planning stores each connection's and endpoint reference's address as seen by its
+holder; the configuration keeps the reference text until recipe rendering. `host` and `port` apply to network
+endpoints, `path` to sockets and pipes, and `url` to every kind. The integration runner rejects any reference in an
+environment variable, and `agent-adp` accepts no parameters.
 
 A `config.files` source can be a map with `from` and `template: true`. Panoramic reads that file when the case
 loads: it must be a regular UTF-8 file, and every double opening brace in it must start a reference.
@@ -389,9 +391,11 @@ error exits 2. Registry access is unauthenticated, and platform selection follow
 Connections and endpoint overrides are checked the same way: on every OS in `subject_os`, each `connect` key
 must be an endpoint the participant consumes, the target must serve the named endpoint with its configuration,
 and the endpoint's kind must be one the consumer accepts. A connection also fails when its participants'
-realizations have no route for the endpoint's kind. Network endpoints connect participants with the same
-realization, or a host process group to a Linux container. Unix sockets need the same realization and can't use
-Windows containers. Named pipes don't connect participants.
+realizations have no route for the endpoint's kind. A participant can connect to or reference its own endpoints,
+including named pipes and, outside Windows containers, Unix sockets. Startup dependencies link distinct
+participants. Between different participants, network endpoints connect the same realization, or a host process
+group to a Linux container. Unix sockets need the same realization and can't use Windows containers.
+Named pipes are reachable only within their own participant.
 
 Every participant has a `shared_dir` fact: its directory for sockets it serves. It is
 `/airlock/<participant>/shared` in Linux containers and pods, `C:\airlock\<participant>\shared` in Windows

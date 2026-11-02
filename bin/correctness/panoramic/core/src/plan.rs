@@ -8,6 +8,7 @@ use crate::{
     artifact::{ArtifactBinding, ArtifactManifest, ArtifactRole},
     backend,
     case::{config_references::FileTemplates, CaseConfig, CaseFile, CaseSchema, Registries},
+    endpoint::ResolvedAddress,
     layout::{describe_participant, lay_out, Layout, LayoutEntry, Os},
     participant::{find_type, CaseValues, EffectiveConfig, ParticipantType, SHARED_DIR_FACT},
 };
@@ -96,6 +97,8 @@ struct PlannedCase {
 struct PlannedParticipant {
     facts: BTreeMap<String, String>,
     config: EffectiveConfig,
+    connections: BTreeMap<String, ResolvedAddress>,
+    endpoint_references: BTreeMap<(String, String), ResolvedAddress>,
 }
 
 impl<'a> Planner<'a> {
@@ -153,7 +156,7 @@ impl<'a> Planner<'a> {
     ///       allocation and delivered values. Then required endpoints in name order.
     ///    6. Endpoint and connection references in configuration, per participant in name order (`env`, `params`,
     ///       then template files): served endpoint, route, socket location and length, address part, then
-    ///       runner-host port allocation.
+    ///       runner-host port allocation and address rendering.
     ///    7. Create order, then start order.
     ///    8. Step fact and late-fact references in procedure order, naming the step.
     pub fn compile<C>(&mut self, case: CaseConfig<C>, subject_os: Os) -> Result<Compiled<C>, GenericError> {
@@ -308,7 +311,7 @@ impl<C> CasePlan<C> {
 
     /// Returns start dependency levels for participant cases, or `None` for typed cases.
     ///
-    /// A participant follows every participant it connects to. A pod also follows every other participant
+    /// A participant follows every other participant it connects to. A pod also follows every other participant
     /// whose late fact its template files reference when that fact becomes available only after start.
     /// Each level lists independent participants in name order.
     pub fn start_order(&self) -> Option<&[Vec<String>]> {
@@ -319,6 +322,33 @@ impl<C> CasePlan<C> {
     /// Returns `None` for unknown participants or facts, and for typed cases.
     pub fn fact(&self, participant: &str, fact: &str) -> Option<&str> {
         self.participants.get(participant)?.facts.get(fact).map(String::as_str)
+    }
+
+    /// Returns the address delivered for a participant's connection.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Recipes substitute endpoint and connection references with these addresses."
+        )
+    )]
+    pub(crate) fn connection_address(&self, participant: &str, key: &str) -> Option<&ResolvedAddress> {
+        self.participants.get(participant)?.connections.get(key)
+    }
+
+    /// Returns a referenced endpoint's address as seen by the holder, using resolved participant names.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Recipes substitute endpoint and connection references with these addresses."
+        )
+    )]
+    pub(crate) fn endpoint_address(&self, holder: &str, server: &str, endpoint: &str) -> Option<&ResolvedAddress> {
+        self.participants
+            .get(holder)?
+            .endpoint_references
+            .get(&(server.into(), endpoint.into()))
     }
 
     /// Returns the participant's effective configuration for its planned realization.
@@ -332,7 +362,7 @@ impl<C> CasePlan<C> {
 
 /// Computes every participant's facts, including `shared_dir`, rejecting types that declare it.
 /// Then builds effective configurations (assigning host process group ports), checks endpoints, runner-host listeners
-/// and connections, merges connection deliveries and checks configuration address references in participant name order.
+/// and connections, merges connection deliveries and resolves configuration address references in participant name order.
 /// Then computes create and start orders.
 fn plan_participants(
     file: &CaseFile, templates: &FileTemplates, layout: &Layout, scope: &ScopeLayout, types: &[&dyn ParticipantType],
@@ -384,20 +414,35 @@ fn plan_participants(
     let mut participants: BTreeMap<_, _> = facts
         .into_iter()
         .zip(configs.into_values())
-        .map(|((name, facts), config)| (name, PlannedParticipant { facts, config }))
+        .map(|((name, facts), config)| {
+            (
+                name,
+                PlannedParticipant {
+                    facts,
+                    config,
+                    connections: BTreeMap::new(),
+                    endpoint_references: BTreeMap::new(),
+                },
+            )
+        })
         .collect();
     check_host_listeners(file, layout, &participant_endpoints)?;
     let mut runner_host_ports = RunnerHostPorts::new(ports);
-    let deliveries = check_connections(file, layout, &participant_endpoints, &mut runner_host_ports)?;
-    for (name, env) in deliveries {
-        participants
-            .get_mut(&name)
-            .expect("consumers are planned participants")
-            .config
-            .env
-            .extend(env);
-    }
-    references::check_address_references(file, templates, layout, &participant_endpoints, &mut runner_host_ports)?;
+    check_connections(
+        file,
+        layout,
+        &participant_endpoints,
+        &mut participants,
+        &mut runner_host_ports,
+    )?;
+    references::check_address_references(
+        file,
+        templates,
+        layout,
+        &participant_endpoints,
+        &mut participants,
+        &mut runner_host_ports,
+    )?;
     let order = dependency_order(file, templates, layout, &participant_endpoints)?;
     Ok(PlannedCase {
         participants,

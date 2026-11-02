@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use super::{
     endpoints::ParticipantEndpoints,
     ports::RunnerHostPorts,
-    routes::{route, Route},
-    scope::check_consumed_socket,
+    routes::{self, Unreachable},
+    PlannedParticipant,
 };
 use crate::{
     backend::{late_facts, writes_late_files, LateFact, LateFactTiming},
@@ -16,7 +16,7 @@ use crate::{
         template::{AddressPart, Reference, Template},
         CaseFile,
     },
-    endpoint::{EndpointKind, Listener},
+    endpoint::EndpointKind,
     layout::{describe_participant, describe_realizations, Layout, Realization, RealizationKind},
     participant::{find_type, CaseValues, ParticipantType},
 };
@@ -175,14 +175,17 @@ fn resolve_reference(
 
 pub(super) fn check_address_references(
     file: &CaseFile, templates: &FileTemplates, layout: &Layout, endpoints: &BTreeMap<String, ParticipantEndpoints>,
-    ports: &mut RunnerHostPorts<'_>,
+    participants: &mut BTreeMap<String, PlannedParticipant>, ports: &mut RunnerHostPorts<'_>,
 ) -> Result<(), String> {
     for (name, participant) in endpoints {
+        let planned = participants
+            .get_mut(name)
+            .expect("reference holders are planned participants");
         walk_config_strings(&participant.values.env, &participant.values.params, |field, text| {
             let template: Template = text
                 .parse()
                 .expect("substituted configuration retains valid references");
-            check_template_addresses(file, layout, endpoints, name, field, &template, ports)
+            check_template_addresses(file, layout, endpoints, name, field, &template, planned, ports)
         })?;
         for (file_name, source) in participant.values.files.iter().filter(|(_, source)| source.template) {
             check_template_addresses(
@@ -192,6 +195,7 @@ pub(super) fn check_address_references(
                 name,
                 ConfigField::File(file_name),
                 templates.get(&source.from),
+                planned,
                 ports,
             )?;
         }
@@ -201,14 +205,14 @@ pub(super) fn check_address_references(
 
 fn check_template_addresses(
     file: &CaseFile, layout: &Layout, endpoints: &BTreeMap<String, ParticipantEndpoints>, name: &str,
-    field: ConfigField<'_>, template: &Template, ports: &mut RunnerHostPorts<'_>,
+    field: ConfigField<'_>, template: &Template, planned: &mut PlannedParticipant, ports: &mut RunnerHostPorts<'_>,
 ) -> Result<(), String> {
     let realization = layout.get(name).expect("loaded participants have a layout");
     let entry = &file.participants[name];
     let holder = describe_participant(name, &entry.participant_type, realization);
     for (written, reference) in template.written_references() {
         let context = format!("{holder} {field} '{written}'");
-        let (kind, part, allocation_target) = match reference {
+        let (kind, part, resolution_target) = match reference {
             Reference::Endpoint {
                 participant,
                 endpoint,
@@ -222,31 +226,25 @@ fn check_template_addresses(
                         declared_names(&served.keys().map(String::as_str).collect::<Vec<_>>()),
                     ));
                 };
-                let allocation_target = if target != name {
-                    let target_realization = layout.get(target).expect("referenced participants have a layout");
-                    let route = route(served_endpoint.kind, realization, target_realization).map_err(|constraint| format!(
+                let target_realization = layout.get(target).expect("referenced participants have a layout");
+                let route = routes::reach(
+                    name, realization, target, target_realization, &endpoints[target], served_endpoint,
+                ).map_err(|error| match error {
+                    Unreachable::NoRoute(constraint) => format!(
                         "{context} references endpoint '{endpoint}' of participant '{target}', which it cannot reach: {constraint}"
-                    ))?;
-                    if route == Route::SharedFilesystem {
-                        let Listener::Path(path) = &served_endpoint.listener else {
-                            unreachable!("shared-filesystem routes use socket paths");
-                        };
-                        let server = &endpoints[target];
-                        check_consumed_socket(path, &server.shared_dir, server.os).map_err(|reason| format!(
-                            "{context} references endpoint '{endpoint}' of participant '{target}', a {} socket served at '{path}'{reason}",
-                            served_endpoint.kind.name()
-                        ))?;
-                    }
-                    (route == Route::RunnerHostPort).then_some((target, endpoint))
-                } else {
-                    None
-                };
-                (served_endpoint.kind, part, allocation_target)
+                    ),
+                    Unreachable::Socket { path, reason } => format!(
+                        "{context} references endpoint '{endpoint}' of participant '{target}', a {} socket served at '{path}'{reason}",
+                        served_endpoint.kind.name(),
+                    ),
+                })?;
+                (
+                    served_endpoint.kind,
+                    part,
+                    Some((target, endpoint, served_endpoint, route)),
+                )
             }
-            Reference::Connection { consumed, part } => {
-                let target = &entry.connect[consumed];
-                (endpoints[&target.participant].served[&target.endpoint].kind, part, None)
-            }
+            Reference::Connection { consumed, part } => (planned.connections[consumed].kind, part, None),
             _ => continue,
         };
         let (allowed, parts) = match kind {
@@ -264,10 +262,13 @@ fn check_template_addresses(
                 kind.name()
             ));
         }
-        if let Some((target, endpoint)) = allocation_target {
-            ports.for_endpoint(target, endpoint).map_err(|error| format!(
+        if let Some((target, endpoint, served_endpoint, route)) = resolution_target {
+            let resolved = routes::resolve(route, target, endpoint, served_endpoint, ports).map_err(|error| format!(
                 "{context} references endpoint '{endpoint}' of participant '{target}', which needs a runner-host port: {error}"
             ))?;
+            planned
+                .endpoint_references
+                .insert((target.into(), endpoint.clone()), resolved);
         }
     }
     Ok(())
@@ -286,11 +287,11 @@ mod tests {
             fixtures::{minimal_procedure, FixtureTypes, Server, STEPS},
             CaseLoader, Registries,
         },
-        endpoint::{ConsumedEndpoint, Endpoint},
+        endpoint::{ConsumedEndpoint, Endpoint, ResolvedAddress},
         layout::{Os, RealizationKind},
         participant::{EffectiveConfig, FactDeclaration},
         plan::{
-            fixtures::{compile, compile_files, FILE_CONFIG},
+            fixtures::{compile, compile_files, compile_with, host_to_container_reference_case, planner, FILE_CONFIG},
             Planner,
         },
     };
@@ -666,7 +667,220 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_references_to_the_holder_skip_the_route_check() {
+    fn an_endpoint_reference_stores_the_address_its_holder_sees() {
+        for (os, server, endpoint, kind, url, host, port, path) in [
+            (
+                Os::Linux,
+                "type: server",
+                "api",
+                EndpointKind::Http,
+                "http://server:8080",
+                Some("server"),
+                Some(8080),
+                None,
+            ),
+            (
+                Os::MacOs,
+                "type: server",
+                "api",
+                EndpointKind::Http,
+                "http://127.0.0.1:8080",
+                Some("127.0.0.1"),
+                Some(8080),
+                None,
+            ),
+            (
+                Os::MacOs,
+                "type: server, os: linux",
+                "api",
+                EndpointKind::Http,
+                "http://127.0.0.1:20000",
+                Some("127.0.0.1"),
+                Some(20000),
+                None,
+            ),
+            (
+                Os::Linux,
+                "type: file-server, config: {env: {SOCKET_DIR: '{{self.facts.shared_dir}}'}}",
+                "stream",
+                EndpointKind::UnixStream,
+                "unix:///airlock/server/shared/stream.sock",
+                None,
+                None,
+                Some("/airlock/server/shared/stream.sock"),
+            ),
+        ] {
+            let reference = format!("{{{{ server.endpoints.{endpoint}.url }}}}");
+            for config in [
+                format!("{{env: {{KEY: '{reference}'}}}}"),
+                format!("{{params: {{mode: [{{nested: '{reference}'}}]}}}}"),
+            ] {
+                let yaml = host_to_container_reference_case(&config)
+                    .replace("[macos]", &format!("[{}]", os.name()))
+                    .replace("type: server, os: linux", server);
+                let plan = compile(&yaml, os).unwrap().unwrap();
+                assert_eq!(
+                    plan.endpoint_address("subject", "server", endpoint),
+                    Some(&ResolvedAddress {
+                        kind,
+                        url: url.into(),
+                        host: host.map(String::from),
+                        port,
+                        path: path.map(String::from),
+                    })
+                );
+                let config = plan.effective_config("subject").unwrap();
+                if config.env.contains_key("KEY") {
+                    assert_eq!(config.env["KEY"], reference);
+                } else {
+                    assert_eq!(config.params["mode"][0]["nested"], reference);
+                }
+                assert_eq!(plan.participants["subject"].endpoint_references.len(), 1);
+                assert_eq!(plan.endpoint_address("subject", "server", "metrics"), None);
+                assert_eq!(plan.endpoint_address("server", "server", endpoint), None);
+                assert_eq!(plan.endpoint_address("missing", "server", endpoint), None);
+            }
+        }
+    }
+
+    #[test]
+    fn a_reference_in_a_template_file_stores_its_address() {
+        let yaml = host_to_container_reference_case(FILE_CONFIG);
+        let text = "url: {{server.endpoints.api.url}}\nport: {{server.endpoints.api.port}}";
+        let plan = compile_files(&yaml, &[("source.yaml", text)], Os::MacOs).unwrap();
+        assert_eq!(
+            plan.endpoint_address("subject", "server", "api"),
+            Some(&ResolvedAddress {
+                kind: EndpointKind::Http,
+                url: "http://127.0.0.1:20000".into(),
+                host: Some("127.0.0.1".into()),
+                port: Some(20000),
+                path: None,
+            })
+        );
+        assert_eq!(plan.participants["subject"].endpoint_references.len(), 1);
+        assert_eq!(
+            plan.case().file_templates().get(Path::new("source.yaml")),
+            &text.parse().unwrap()
+        );
+    }
+
+    #[test]
+    fn a_participant_reaching_its_own_socket_or_named_pipe_needs_no_route() {
+        for (os, endpoint, kind, url, path) in [
+            (
+                Os::Linux,
+                "stream",
+                EndpointKind::UnixStream,
+                "unix:///run/every/stream.sock",
+                "/run/every/stream.sock",
+            ),
+            (
+                Os::MacOs,
+                "datagram",
+                EndpointKind::UnixDatagram,
+                "unixgram:///run/every/datagram.sock",
+                "/run/every/datagram.sock",
+            ),
+            (
+                Os::Windows,
+                "pipe",
+                EndpointKind::NamedPipe,
+                r"\\.\pipe\every-pipe",
+                r"\\.\pipe\every-pipe",
+            ),
+        ] {
+            for target in ["self", "subject"] {
+                for connection in [false, true] {
+                    let reference = format!("{{{{{target}.endpoints.{endpoint}.path}}}}");
+                    let mut yaml = case(&format!("{{env: {{KEY: '{reference}'}}}}"), os.name())
+                        .replace("type: server", "type: file-server");
+                    if connection {
+                        yaml = yaml.replace(
+                            "subject: true",
+                            &format!("subject: true, connect: {{target: subject.{endpoint}}}"),
+                        );
+                    }
+                    let plan = compile(&yaml, os).unwrap().unwrap();
+                    let address = plan.endpoint_address("subject", "subject", endpoint).unwrap();
+                    assert_eq!(
+                        address,
+                        &ResolvedAddress {
+                            kind,
+                            url: url.into(),
+                            host: None,
+                            port: None,
+                            path: Some(path.into()),
+                        }
+                    );
+                    assert_eq!(plan.endpoint_address("subject", "self", endpoint), None);
+                    assert_eq!(
+                        plan.connection_address("subject", "target"),
+                        connection.then_some(address)
+                    );
+                    if connection {
+                        assert_eq!(plan.effective_config("subject").unwrap().env["TARGET"], url);
+                    }
+                    assert_eq!(plan.effective_config("subject").unwrap().env["KEY"], reference);
+                    assert_eq!(plan.start_order().unwrap(), &[vec!["subject".to_string()]]);
+                    assert!(plan.runner_host_ports.is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_windows_container_cannot_reference_or_connect_to_its_own_unix_socket() {
+        let holder = "participant 'subject' of type 'file-server' as windows-container on windows";
+        let constraint = "unix sockets connect only participants with the same realization, other than windows-container, because they need one shared filesystem";
+        for (endpoint, kind) in [("stream", "unix-stream"), ("datagram", "unix-datagram")] {
+            for target in ["self", "subject"] {
+                let reference = format!("{{{{{target}.endpoints.{endpoint}.path}}}}");
+                let yaml = case(&format!("{{env: {{KEY: '{reference}'}}}}"), "windows")
+                    .replace("type: server", "type: file-server");
+                assert_eq!(compile(&yaml, Os::Windows).err().unwrap().to_string(), format!(
+                    "case 'alpha' in cases/alpha/config.yaml: on subject OS 'windows', {holder} environment variable 'KEY' '{reference}' references endpoint '{endpoint}' of participant 'subject', which it cannot reach: {constraint}"
+                ));
+                let yaml = yaml.replace(
+                    "subject: true",
+                    &format!("subject: true, connect: {{target: subject.{endpoint}}}"),
+                );
+                assert_eq!(compile(&yaml, Os::Windows).err().unwrap().to_string(), format!(
+                    "case 'alpha' in cases/alpha/config.yaml: on subject OS 'windows', participant 'subject' connects 'target' to 'subject.{endpoint}', an endpoint of kind {kind}; {holder} cannot reach {holder}: {constraint}"
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn references_on_an_unselected_subject_os_store_nothing() {
+        let yaml = host_to_container_reference_case("{os: {macos: {env: {KEY: '{{server.endpoints.api.url}}'}}}}")
+            .replace("[macos]", "[macos, linux]");
+        for os in [Os::Linux, Os::MacOs] {
+            let mut planner = planner();
+            let plan = compile_with(&mut planner, &yaml, os).unwrap().unwrap();
+            if os == Os::Linux {
+                assert_eq!(plan.endpoint_address("subject", "server", "api"), None);
+                assert!(plan.participants["subject"].endpoint_references.is_empty());
+                assert_eq!(planner.ports.allocate(), Ok(20000));
+            } else {
+                assert_eq!(
+                    plan.endpoint_address("subject", "server", "api"),
+                    Some(&ResolvedAddress {
+                        kind: EndpointKind::Http,
+                        url: "http://127.0.0.1:20000".into(),
+                        host: Some("127.0.0.1".into()),
+                        port: Some(20000),
+                        path: None,
+                    })
+                );
+                assert_eq!(planner.ports.allocate(), Ok(20001));
+            }
+        }
+    }
+
+    #[test]
+    fn endpoint_references_to_the_holder_need_no_route_between_realizations() {
         for name in ["self", "subject"] {
             let yaml = case(
                 &format!("{{env: {{KEY: '{{{{{name}.endpoints.pipe.path}}}}'}}}}"),

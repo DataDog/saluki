@@ -22,7 +22,7 @@ pub(super) struct DependencyOrder {
 /// Builds create and start orders for one OS from validated configuration.
 ///
 /// A participant is created after each other participant whose late fact its `env`, `params` or template
-/// files reference, when that fact becomes available at creation. It starts after participants it connects
+/// files reference, when that fact becomes available at creation. It starts after other participants it connects
 /// to and those whose late facts, available only after start, its pod template files reference. Own late facts
 /// are filled in by init hooks or late files; fixed late facts are known before creation. Addresses use names
 /// and ports allocated before creation, so `connect` declares their startup dependencies.
@@ -36,6 +36,9 @@ pub(super) fn dependency_order(
         let realization = layout.get(name).expect("loaded participants have a layout");
         let holder = describe_participant(name, &entry.participant_type, realization);
         for (connection, target) in &entry.connect {
+            if target.participant == *name {
+                continue;
+            }
             start.add(
                 name,
                 &target.participant,
