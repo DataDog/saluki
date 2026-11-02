@@ -34,8 +34,9 @@ Run these tests with `make test-airlock-daemon`, which runs `cargo nextest run -
 They fail if the daemon or image is unavailable. Plain `cargo test` or `cargo nextest run -p airlock` also runs them;
 use `make test` or select `--lib` to run only unit tests.
 
-CI: the `test-integration` job in `.gitlab/e2e.yml` runs them on its Docker-in-Docker runner, with
-`AIRLOCK_TEST_IMAGE` set to the Alpine image the job pulls.
+CI: the `test-container-daemon` job in `.gitlab/e2e.yml` runs them on its Docker-in-Docker runner, with
+`AIRLOCK_TEST_IMAGE` set to `registry.ddbuild.io/alpine:latest`, which the job pulls before testing.
+The daemon suite runs separately from the Linux integration cases.
 
 ### Panoramic daemon tests
 
@@ -46,7 +47,8 @@ which builds the Linux courier first.
 `PANORAMIC_TEST_IMAGE` defaults to `alpine:latest`; load it first, because these tests never pull images.
 They fail if the daemon, image or courier is missing.
 
-CI: the `test-integration` job in `.gitlab/e2e.yml` runs them after airlock's daemon tests.
+CI: the `test-container-daemon` job in `.gitlab/e2e.yml` runs them after airlock's daemon tests, with
+`PANORAMIC_TEST_IMAGE` set to the same local Alpine image.
 
 ## Correctness tests (panoramic)
 

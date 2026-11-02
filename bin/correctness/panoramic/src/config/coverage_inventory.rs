@@ -1018,6 +1018,22 @@ fn every_selected_correctness_case_declares_a_local_baseline_image() {
 }
 
 #[test]
+fn container_daemon_tests_run_in_a_separate_ci_job() {
+    let e2e: Value = serde_saphyr::from_str(&read_text(&repository_root().join(".gitlab/e2e.yml"))).unwrap();
+    let daemon = &e2e["test-container-daemon"];
+    assert_eq!(daemon["needs"], json!([]));
+    let image = daemon["variables"]["AIRLOCK_TEST_IMAGE"].as_str().unwrap();
+    assert_eq!(daemon["variables"]["PANORAMIC_TEST_IMAGE"], image);
+    let script = daemon["script"].as_array().unwrap();
+    assert!(script.contains(&json!(format!("docker pull {image}"))));
+    let integration = e2e["test-integration"]["script"].as_array().unwrap();
+    for command in ["make test-airlock-daemon", "make test-panoramic-daemon"] {
+        assert!(script.contains(&json!(command)), "{command}");
+        assert!(!integration.contains(&json!(command)), "{command}");
+    }
+}
+
+#[test]
 fn ci_binds_the_courier_its_jobs_build() {
     let root = repository_root();
     let e2e: Value = serde_saphyr::from_str(&read_text(&root.join(".gitlab/e2e.yml"))).unwrap();

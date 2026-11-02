@@ -106,6 +106,24 @@ run-correctness-tests:
     # folds child status into the parent
     strategy: depend
 
+test-container-daemon:
+  stage: e2e
+  tags: ["docker-in-docker:amd64"]
+  image: "${SALUKI_BUILD_CI_IMAGE}"
+  needs: []
+  retry: {max: 2, when: [runner_system_failure, stuck_or_timeout_failure, scheduler_failure, api_failure]}
+  timeout: 15m
+  variables:
+    # Daemon tests require a preloaded image.
+    AIRLOCK_TEST_IMAGE: registry.ddbuild.io/alpine:latest
+    PANORAMIC_TEST_IMAGE: registry.ddbuild.io/alpine:latest
+  script:
+    - docker pull registry.ddbuild.io/alpine:latest
+    # A rootless daemon lists `name=rootless` among its security options.
+    - docker info --format 'Docker {{.ServerVersion}} {{.OSType}}/{{.Architecture}} security={{json .SecurityOptions}}'
+    - make test-airlock-daemon
+    - make test-panoramic-daemon
+
 test-integration:
   stage: e2e
   tags: ["docker-in-docker:amd64"]
@@ -126,11 +144,6 @@ test-integration:
     # Docker Hub so the default of `alpine:latest` is insufficient.
     PANORAMIC_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
     PANORAMIC_LOG_DIR: integration-logs
-    # Image for airlock's daemon tests, which never pull: `panoramic artifacts pull` loads it
-    # below as the `fixup-image` binding.
-    AIRLOCK_TEST_IMAGE: registry.ddbuild.io/alpine:latest
-    # Panoramic's daemon tests use the same local fixup-image binding.
-    PANORAMIC_TEST_IMAGE: registry.ddbuild.io/alpine:latest
   script:
     # Also tag pipeline images with the Makefile's local names; the image list below shows their IDs.
     # correctness-tools provides the optional intake sidecar.
@@ -150,10 +163,6 @@ test-integration:
       --set courier-linux-binary=target/x86_64-unknown-linux-musl/release/panoramic-courier
       --output target/panoramic-artifacts.toml
     - target/release/panoramic artifacts pull -d test/integration/cases --subject-os linux --artifacts target/panoramic-artifacts.toml
-    # A rootless daemon lists `name=rootless` among its security options.
-    - docker info --format 'Docker {{.ServerVersion}} {{.OSType}}/{{.Architecture}} security={{json .SecurityOptions}}'
-    - make test-airlock-daemon
-    - make test-panoramic-daemon
     - make test-integration-quick PANORAMIC_ARTIFACTS=target/panoramic-artifacts.toml
 
 # Runs the subset of integration tests that have opted in to the `mac` runtime
