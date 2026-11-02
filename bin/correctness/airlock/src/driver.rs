@@ -30,7 +30,10 @@ use tokio::{
 };
 use tracing::{debug, error, trace, warn};
 
-use crate::config::{DatadogIntakeConfig, MillstoneConfig, TargetConfig};
+use crate::{
+    config::{DatadogIntakeConfig, MillstoneConfig, TargetConfig},
+    exec::{self, ExecOutput, ExecRequest, ExecStream},
+};
 
 const MILLSTONE_CONFIG_PATH_INTERNAL: &str = "/etc/millstone/config.toml";
 // Test clients use loopback; binding there keeps published ports off other interfaces.
@@ -1254,6 +1257,41 @@ impl Driver {
         );
 
         Ok(exit_status)
+    }
+
+    /// Executes a command and collects stdout and stderr bytes with its exit code.
+    ///
+    /// Every exit code is data, including a missing program (127) or a killed command (137). See
+    /// [`Self::exec_stream`] for command settings, stdin, completion, cancellation, and timeout behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty command, an empty environment key or one containing `=`, Docker API failures
+    /// (including a container that isn't running), output read or framing errors, or an exit inspection that reports
+    /// a running command or omits its state or code. A command closing stdin early is handled through its output
+    /// and exit code.
+    pub async fn exec(&self, request: ExecRequest) -> Result<ExecOutput, GenericError> {
+        self.exec_stream(request).await?.collect_output().await
+    }
+
+    /// Executes a command and returns stdout and stderr frames as they arrive.
+    ///
+    /// The command uses the container's default user and working directory, without a TTY. Request environment
+    /// variables extend the container's environment. Polling the stream also writes stdin and closes it after the
+    /// supplied bytes. Every exit code is data; read it with [`ExecStream::exit_code`] once the stream has ended.
+    ///
+    /// The stream ends when output closes; a background child holding stdout or stderr open keeps it open. Dropping
+    /// this future or the stream stops reading and writing, but the command runs until it exits or the container
+    /// stops. Callers can impose their own timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty command, an empty environment key or one containing `=`, or Docker creation or
+    /// start failures (including a container that isn't running). The stream yields output read or framing errors;
+    /// exit inspection errors are returned by [`ExecStream::exit_code`]. A command closing stdin early is handled
+    /// through its output and exit code.
+    pub async fn exec_stream(&self, request: ExecRequest) -> Result<ExecStream, GenericError> {
+        exec::start(&self.docker, &self.container_name, request).await
     }
 
     /// Executes a command inside the running container and returns its stdout.

@@ -130,6 +130,7 @@ name = "airlock"
 version = "0.1.0"
 dependencies = [
  "bollard",
+ "bytes",
  "futures",
  "home",
  "libc",

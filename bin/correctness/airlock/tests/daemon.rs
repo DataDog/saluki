@@ -7,6 +7,7 @@ use std::{
 use airlock::{
     docker::{connect, image_id, Docker},
     driver::{Driver, DriverConfig, ExitStatus, Protocol},
+    exec::{ExecOutput, ExecRequest, OutputChunk},
     group::IsolationGroup,
 };
 use bollard::{
@@ -197,6 +198,21 @@ async fn group_resources(docker: &Docker, id: &str) -> Result<GroupResources, Ge
         volumes,
         networks,
     })
+}
+
+async fn start_exec_participant(docker: Docker, id: &str, script: &str) -> Driver {
+    let image = test_image();
+    let group = IsolationGroup::prepare(docker, id, &["subject"], &image).await.unwrap();
+    let driver = group
+        .driver(DriverConfig::from_image("subject", image).with_entrypoint(vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            script.to_string(),
+        ]))
+        .unwrap();
+    driver.create().await.unwrap();
+    driver.start_container().await.unwrap();
+    driver
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -482,6 +498,253 @@ async fn creating_from_an_absent_image_fails_with_no_such_image() {
             "{error}"
         );
         assert!(group_resources(&docker, &id).await.unwrap().containers.is_empty());
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn exec_feeds_stdin_and_env_and_returns_both_streams_and_a_nonzero_exit_as_data() {
+    let docker = daemon().await;
+    let id = unique_id();
+    in_group(id.clone(), async move {
+        let driver = start_exec_participant(docker, &id, "exec sleep 60").await;
+        let stdin = b"payload\nwithout-eol".to_vec();
+        let greeting = "hello from exec";
+        let output = driver
+            .exec(
+                ExecRequest::new(vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    "cat; printf %s \"$GREETING\" >&2; exit 3".to_string(),
+                ])
+                .with_env_var("GREETING", greeting)
+                .with_stdin(stdin.clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            output,
+            ExecOutput {
+                stdout: stdin,
+                stderr: greeting.as_bytes().to_vec(),
+                exit_code: 3
+            }
+        );
+
+        let empty = driver
+            .exec(ExecRequest::new(vec!["cat".to_string()]).with_stdin(Vec::new()))
+            .await
+            .unwrap();
+        assert_eq!(
+            empty,
+            ExecOutput {
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+                exit_code: 0
+            }
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn exec_echoes_a_large_stdin_whole() {
+    let docker = daemon().await;
+    let id = unique_id();
+    in_group(id.clone(), async move {
+        let driver = start_exec_participant(docker, &id, "exec sleep 60").await;
+        // Input must exceed connection buffering to catch a write-before-read deadlock.
+        let stdin: Vec<_> = (0..32 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+        let output = timeout(
+            Duration::from_secs(30),
+            driver.exec(ExecRequest::new(vec!["cat".to_string()]).with_stdin(stdin.clone())),
+        )
+        .await
+        .expect("cat should echo 32 MiB within 30 seconds")
+        .unwrap();
+        assert_eq!(output.stdout, stdin);
+        assert!(output.stderr.is_empty());
+        assert_eq!(output.exit_code, 0);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn exec_returns_when_a_command_exits_without_reading_its_stdin() {
+    let docker = daemon().await;
+    let id = unique_id();
+    in_group(id.clone(), async move {
+        let driver = start_exec_participant(docker, &id, "exec sleep 60").await;
+        // Input must exceed connection buffering to catch waiting for a blocked writer after output closes.
+        let output = timeout(
+            Duration::from_secs(30),
+            driver.exec(
+                ExecRequest::new(vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    "echo done; exit 4".to_string(),
+                ])
+                .with_stdin(vec![b'x'; 32 * 1024 * 1024]),
+            ),
+        )
+        .await
+        .expect("exec should finish within 30 seconds even with unread stdin")
+        .unwrap();
+        assert_eq!(
+            output,
+            ExecOutput {
+                stdout: b"done\n".to_vec(),
+                stderr: Vec::new(),
+                exit_code: 4
+            }
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_missing_program_or_a_killed_command_exits_as_data() {
+    let docker = daemon().await;
+    let id = unique_id();
+    in_group(id.clone(), async move {
+        let driver = start_exec_participant(docker, &id, "exec sleep 60").await;
+        let output = driver
+            .exec(ExecRequest::new(vec!["/no/such/program".to_string()]))
+            .await
+            .unwrap();
+        assert_eq!(output.exit_code, 127);
+        let output = driver
+            .exec(ExecRequest::new(vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "kill -9 $$".to_string(),
+            ]))
+            .await
+            .unwrap();
+        assert_eq!(output.exit_code, 137);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn exec_in_a_container_that_is_not_running_is_an_error() {
+    let docker = daemon().await;
+    let id = unique_id();
+    in_group(id.clone(), async move {
+        let image = test_image();
+        let group = IsolationGroup::prepare(docker, &id, &["subject"], &image)
+            .await
+            .unwrap();
+        let driver = group
+            .driver(DriverConfig::from_image("subject", image).with_entrypoint(vec!["true".to_string()]))
+            .unwrap();
+        driver.create().await.unwrap();
+        let name = format!("airlock-{id}-subject");
+        let error = driver
+            .exec(ExecRequest::new(vec!["true".to_string()]))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(&name), "{error}");
+        assert!(error.to_string().contains("not running"), "{error}");
+        let error = driver
+            .exec_stream(ExecRequest::new(vec!["true".to_string()]))
+            .await
+            .err()
+            .expect("a container that has never started cannot run exec");
+        assert!(error.to_string().contains(&name), "{error}");
+        assert!(error.to_string().contains("not running"), "{error}");
+
+        driver.start_container().await.unwrap();
+        assert!(matches!(
+            driver.wait_for_container_exit().await.unwrap(),
+            ExitStatus::Success
+        ));
+        let error = driver
+            .exec(ExecRequest::new(vec!["true".to_string()]))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(&name), "{error}");
+        assert!(error.to_string().contains("not running"), "{error}");
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dropped_exec_stream_leaves_its_process_running_until_the_container_stops() {
+    let docker = daemon().await;
+    let id = unique_id();
+    in_group(id.clone(), async move {
+        let driver = start_exec_participant(
+            docker.clone(),
+            &id,
+            "trap 'exit 0' TERM; i=0; while true; do i=$((i+1)); echo line$i >> /tmp/lines; sleep 0.1; done",
+        )
+        .await;
+        let mut stream = driver
+            .exec_stream(ExecRequest::new(vec![
+                "tail".to_string(),
+                "-F".to_string(),
+                "/tmp/lines".to_string(),
+            ]))
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(20), async {
+            let mut stdout = Vec::new();
+            loop {
+                match stream.next().await.expect("tail should keep running").unwrap() {
+                    OutputChunk::Stdout(bytes) => stdout.extend_from_slice(&bytes),
+                    OutputChunk::Stderr(bytes) => panic!("unexpected stderr from tail: {bytes:?}"),
+                }
+                if stdout.windows(b"line3\n".len()).any(|window| window == b"line3\n") {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("tail should stream line3 within 20 seconds");
+        let error = stream.exit_code().await.unwrap_err();
+        assert!(error.to_string().contains("still running"), "{error}");
+
+        let name = format!("airlock-{id}-subject");
+        let exec_ids = docker.inspect_container(&name, None).await.unwrap().exec_ids.unwrap();
+        assert_eq!(exec_ids.len(), 1);
+        let exec_id = &exec_ids[0];
+        drop(stream);
+        assert_eq!(docker.inspect_exec(exec_id).await.unwrap().running, Some(true));
+        docker.stop_container(&name, None).await.unwrap();
+        let inspected = docker.inspect_exec(exec_id).await.unwrap();
+        assert_eq!(inspected.running, Some(false));
+        assert_eq!(inspected.exit_code, Some(137));
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_streamed_command_that_ends_reports_its_exit_code() {
+    let docker = daemon().await;
+    let id = unique_id();
+    in_group(id.clone(), async move {
+        let driver = start_exec_participant(docker, &id, "exec sleep 60").await;
+        let mut stream = driver
+            .exec_stream(ExecRequest::new(vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "echo out; echo err >&2; exit 5".to_string(),
+            ]))
+            .await
+            .unwrap();
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            match chunk.unwrap() {
+                OutputChunk::Stdout(bytes) => stdout.extend_from_slice(&bytes),
+                OutputChunk::Stderr(bytes) => stderr.extend_from_slice(&bytes),
+            }
+        }
+        assert_eq!(stdout, b"out\n");
+        assert_eq!(stderr, b"err\n");
+        assert!(stream.next().await.is_none());
+        assert_eq!(stream.exit_code().await.unwrap(), 5);
     })
     .await;
 }
