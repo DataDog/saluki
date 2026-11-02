@@ -10,6 +10,8 @@ pub(crate) struct FakeDaemon {
     pub(crate) docker: Docker,
     /// Each request's method and path.
     pub(crate) requests: Arc<Mutex<Vec<String>>>,
+    /// Request bodies in the same order as `requests`.
+    pub(crate) bodies: Arc<Mutex<Vec<String>>>,
     server: tokio::task::JoinHandle<()>,
 }
 
@@ -22,6 +24,8 @@ impl FakeDaemon {
         let address = listener.local_addr().expect("the listener should have an address");
         let requests = Arc::new(Mutex::new(Vec::new()));
         let recorded = requests.clone();
+        let bodies = Arc::new(Mutex::new(Vec::new()));
+        let recorded_bodies = bodies.clone();
         let server = tokio::spawn(async move {
             loop {
                 let (mut stream, _) = listener.accept().await.expect("the fake daemon should accept");
@@ -34,10 +38,28 @@ impl FakeDaemon {
                     }
                     head.extend_from_slice(&buf[..read]);
                 }
-                let head = String::from_utf8_lossy(&head);
-                let mut request_line = head.lines().next().unwrap_or_default().split(' ');
+                let header_end = head.windows(4).position(|window| window == b"\r\n\r\n").unwrap() + 4;
+                let headers = String::from_utf8_lossy(&head[..header_end]);
+                let body_len = headers
+                    .lines()
+                    .filter_map(|line| line.split_once(':'))
+                    .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                    .map_or(0, |(_, length)| length.trim().parse::<usize>().unwrap());
+                let mut request_line = headers.lines().next().unwrap_or_default().split(' ');
                 let method = request_line.next().unwrap_or_default().to_string();
                 let path = request_line.next().unwrap_or_default().to_string();
+                while head.len() < header_end + body_len {
+                    let read = stream
+                        .read(&mut buf)
+                        .await
+                        .expect("the request body should be readable");
+                    assert_ne!(read, 0, "the request body should be complete");
+                    head.extend_from_slice(&buf[..read]);
+                }
+                recorded_bodies
+                    .lock()
+                    .unwrap()
+                    .push(String::from_utf8(head[header_end..header_end + body_len].to_vec()).unwrap());
                 let (status, body) = respond(&method, &path);
                 recorded.lock().unwrap().push(format!("{} {}", method, path));
                 let response = format!(
@@ -56,6 +78,7 @@ impl FakeDaemon {
         Self {
             docker,
             requests,
+            bodies,
             server,
         }
     }

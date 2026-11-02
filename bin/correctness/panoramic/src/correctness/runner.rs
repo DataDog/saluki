@@ -6,7 +6,7 @@ use std::{
 
 use airlock::{
     config::{DatadogIntakeConfig, MillstoneConfig},
-    driver::{Driver, DriverConfig, DriverDetails, ExitStatus},
+    driver::{Driver, DriverConfig, DriverDetails, ExitStatus, Protocol},
 };
 use panoramic_core::ledger::ResourceLedger;
 use panoramic_core::record::{AssertionResult, AssertionStatus};
@@ -544,7 +544,7 @@ impl AgentGroupCollector {
         let datadog_intake_port = spawned
             .iter()
             .find(|spawned| spawned.driver.driver_id() == "datadog-intake")
-            .and_then(|spawned| spawned.details.try_get_exposed_port("tcp", 2049))
+            .and_then(|spawned| spawned.details.try_get_exposed_port(Protocol::Tcp, 2049))
             .ok_or_else(|| generic_error!("Failed to get exposed port details for datadog-intake container."))?;
 
         Ok(Self { datadog_intake_port })

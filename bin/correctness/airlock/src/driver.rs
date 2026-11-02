@@ -13,7 +13,8 @@ use bollard::{
     exec::{CreateExecOptions, StartExecResults},
     models::{
         ContainerCreateBody, ContainerStateStatusEnum, EndpointSettings, HealthConfig, HealthStatusEnum, HostConfig,
-        HostConfigCgroupnsModeEnum, Ipam, NetworkConnectRequest, NetworkCreateRequest, VolumeCreateRequest,
+        HostConfigCgroupnsModeEnum, Ipam, NetworkConnectRequest, NetworkCreateRequest, PortBinding, PortMap,
+        VolumeCreateRequest,
     },
     query_parameters::{
         CreateContainerOptionsBuilder, CreateImageOptions, ListContainersOptionsBuilder, LogsOptions,
@@ -32,6 +33,8 @@ use tracing::{debug, error, trace, warn};
 use crate::config::{DatadogIntakeConfig, MillstoneConfig, TargetConfig};
 
 const MILLSTONE_CONFIG_PATH_INTERNAL: &str = "/etc/millstone/config.toml";
+// Test clients use loopback; binding there keeps published ports off other interfaces.
+const PUBLISHED_HOST_IP: &str = "127.0.0.1";
 
 /// Default image for the shared-volume permission fix-up container.
 pub const DEFAULT_ALPINE_IMAGE: &str = "alpine:latest";
@@ -77,6 +80,32 @@ pub enum ContainerOs {
     Windows,
 }
 
+/// Transport protocol for a container port.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Protocol {
+    /// TCP transport.
+    Tcp,
+    /// UDP transport.
+    Udp,
+}
+
+impl fmt::Display for Protocol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Tcp => "tcp",
+            Self::Udp => "udp",
+        })
+    }
+}
+
+#[derive(Clone)]
+struct ContainerPort {
+    protocol: Protocol,
+    internal_port: u16,
+    /// Linux host port on loopback; `None` uses an ephemeral port on every interface.
+    host_port: Option<u16>,
+}
+
 /// Driver configuration.
 ///
 /// This is the basic set of configuration options needed to spawn the container for a given driver.
@@ -89,7 +118,7 @@ pub struct DriverConfig {
     env: Vec<String>,
     binds: Vec<String>,
     healthcheck: Option<HealthConfig>,
-    exposed_ports: Vec<(&'static str, u16)>,
+    ports: Vec<ContainerPort>,
     pub(crate) container_os: ContainerOs,
     host_cgroup_namespace: bool,
     /// Additional named Docker volume mounts, in `volume_name:/container/path` format.
@@ -174,9 +203,8 @@ impl DriverConfig {
                 DATADOG_INTAKE_HEALTHCHECK_START_PERIOD,
                 DATADOG_INTAKE_HEALTHCHECK_START_INTERVAL,
             )
-            // Map our intake port to an ephemeral port on the host side, which we'll query once the container has been
-            // started so that we can connect to it.
-            .with_exposed_port("tcp", 2049);
+            // The intake gets an ephemeral host port; callers read it from DriverDetails after start.
+            .with_exposed_port(Protocol::Tcp, 2049);
 
         Ok(driver_config)
     }
@@ -202,7 +230,7 @@ impl DriverConfig {
             env: vec![],
             binds: vec![],
             healthcheck: None,
-            exposed_ports: vec![],
+            ports: vec![],
             container_os: ContainerOs::Linux,
             host_cgroup_namespace: false,
             additional_volume_mounts: vec![],
@@ -341,11 +369,27 @@ impl DriverConfig {
 
     /// Adds an exposed port to the container.
     ///
-    /// The `protocol` should be either `tcp` or `udp`. Linux containers publish exposed ports to ephemeral host ports,
-    /// which are returned in [`DriverDetails`] after starting the driver. Windows containers keep exposed ports internal
-    /// to the container network because Panoramic probes them from inside the container or via the container IP.
-    pub fn with_exposed_port(mut self, protocol: &'static str, internal_port: u16) -> Self {
-        self.exposed_ports.push((protocol, internal_port));
+    /// Linux containers publish it to an ephemeral host port on every interface, readable from [`DriverDetails`]
+    /// after start. Windows containers expose it without publishing.
+    pub fn with_exposed_port(mut self, protocol: Protocol, internal_port: u16) -> Self {
+        self.ports.push(ContainerPort {
+            protocol,
+            internal_port,
+            host_port: None,
+        });
+        self
+    }
+
+    /// Publishes a container port on `127.0.0.1:<host_port>` of the Docker host.
+    ///
+    /// The caller chooses a free host port. A port already held fails [`Driver::start_container`], not
+    /// [`Driver::create`]. Windows containers reject published ports at create.
+    pub fn with_published_port(mut self, protocol: Protocol, internal_port: u16, host_port: u16) -> Self {
+        self.ports.push(ContainerPort {
+            protocol,
+            internal_port,
+            host_port: Some(host_port),
+        });
         self
     }
 
@@ -389,22 +433,48 @@ impl DriverConfig {
         }
     }
 
-    fn port_publishing_options(&self) -> (Option<bool>, Option<Vec<String>>) {
-        if self.exposed_ports.is_empty() {
-            return (None, None);
+    fn port_publication(&self) -> Result<(Option<Vec<String>>, Option<PortMap>), GenericError> {
+        if self.ports.is_empty() {
+            return Ok((None, None));
         }
 
-        let exposed_ports = self
-            .exposed_ports
-            .iter()
-            .map(|(protocol, internal_port)| format!("{}/{}", internal_port, protocol))
-            .collect();
-        let publish_all_ports = match self.container_os {
-            ContainerOs::Linux => Some(true),
+        let mut exposed_ports = Vec::new();
+        let mut port_bindings = match self.container_os {
+            ContainerOs::Linux => Some(PortMap::new()),
             ContainerOs::Windows => None,
         };
+        for port in &self.ports {
+            let key = format!("{}/{}", port.internal_port, port.protocol);
+            if !exposed_ports.contains(&key) {
+                exposed_ports.push(key.clone());
+            }
+            if let Some(port_bindings) = &mut port_bindings {
+                let binding = match port.host_port {
+                    Some(host_port) => PortBinding {
+                        host_ip: Some(PUBLISHED_HOST_IP.to_string()),
+                        host_port: Some(host_port.to_string()),
+                    },
+                    None => PortBinding {
+                        host_ip: Some(String::new()),
+                        host_port: Some(String::new()),
+                    },
+                };
+                port_bindings
+                    .entry(key)
+                    .or_default()
+                    .get_or_insert_with(Vec::new)
+                    .push(binding);
+            } else if let Some(host_port) = port.host_port {
+                return Err(generic_error!(
+                    "Participant '{}' publishes {} to host port {}, but Windows containers don't publish ports",
+                    self.driver_id,
+                    key,
+                    host_port
+                ));
+            }
+        }
 
-        (publish_all_ports, Some(exposed_ports))
+        Ok((Some(exposed_ports), port_bindings))
     }
 
     /// Returns the full set of bind mounts to apply to this container, including OS-specific
@@ -465,12 +535,11 @@ impl DriverDetails {
         self.container_ip.as_deref()
     }
 
-    /// Attempts to look up a mapped ephemeral port for the given exposed port.
+    /// Returns the host port of an exposed or published port, if mapped.
     ///
-    /// The same `protocol` and internal port values used to expose the port must be used here. If the given
-    /// protocol/port combination wasn't exposed, `None` is returned. Otherwise, the mapped ephemeral port is returned.
-    /// This port is exposed on `0.0.0.0` on the host side.
-    pub fn try_get_exposed_port(&self, protocol: &str, internal_port: u16) -> Option<u16> {
+    /// Use the same protocol and internal port as in the configuration. Published ports listen on `127.0.0.1`;
+    /// ephemeral ports listen on every interface.
+    pub fn try_get_exposed_port(&self, protocol: Protocol, internal_port: u16) -> Option<u16> {
         self.port_mappings
             .as_ref()
             .and_then(|port_mappings| port_mappings.get(&format!("{}/{}", internal_port, protocol)).copied())
@@ -769,7 +838,15 @@ impl Driver {
             "/airlock".to_string(),
         ];
         let _ = self
-            .create_container_inner(container_name.clone(), image, Some(entrypoint), None, vec![], None)
+            .create_container_inner(
+                container_name.clone(),
+                image,
+                Some(entrypoint),
+                None,
+                vec![],
+                None,
+                false,
+            )
             .await?;
 
         self.start_container_inner(&container_name).await?;
@@ -799,7 +876,7 @@ impl Driver {
 
     async fn create_container_inner(
         &self, container_name: String, image: String, entrypoint: Option<Vec<String>>, cmd: Option<Vec<String>>,
-        binds: Vec<String>, env: Option<Vec<String>>,
+        binds: Vec<String>, env: Option<Vec<String>>, with_ports: bool,
     ) -> Result<String, GenericError> {
         let binds = self.config.container_binds_from(&self.isolation_group_name, binds);
 
@@ -824,7 +901,11 @@ impl Driver {
             None
         };
 
-        let (publish_all_ports, exposed_ports) = self.config.port_publishing_options();
+        let (exposed_ports, port_bindings) = if with_ports {
+            self.config.port_publication()?
+        } else {
+            (None, None)
+        };
 
         // Linux test containers run with `pid_mode=host` so origin-detection logic in ADP and
         // the Core Agent can see processes on the runner. Windows containers do not support
@@ -846,7 +927,7 @@ impl Driver {
             host_config: Some(HostConfig {
                 binds: Some(binds),
                 network_mode: Some(self.isolation_group_name.clone()),
-                publish_all_ports,
+                port_bindings,
                 pid_mode,
                 cgroupns_mode,
                 ..Default::default()
@@ -884,6 +965,7 @@ impl Driver {
                 self.config.command.clone(),
                 self.config.binds.clone(),
                 Some(self.config.env.clone()),
+                true,
             )
             .await?;
 
@@ -1691,25 +1773,95 @@ mod tests {
     }
 
     #[test]
-    fn windows_container_exposes_ports_without_publishing_to_host() {
-        let config = DriverConfig::from_image("target", "example:latest".to_string())
-            .with_container_os(ContainerOs::Windows)
-            .with_exposed_port("udp", 58125);
+    fn a_container_without_ports_exposes_and_publishes_nothing() {
+        for os in [ContainerOs::Linux, ContainerOs::Windows] {
+            let config = DriverConfig::from_image("target", "example:latest".to_string()).with_container_os(os);
 
-        let (publish_all_ports, exposed_ports) = config.port_publishing_options();
-
-        assert_eq!(publish_all_ports, None);
-        assert_eq!(exposed_ports, Some(vec!["58125/udp".to_string()]));
+            assert_eq!(config.port_publication().unwrap(), (None, None));
+        }
     }
 
     #[test]
-    fn linux_container_exposes_ports_and_publishes_to_host() {
-        let config = DriverConfig::from_image("target", "example:latest".to_string()).with_exposed_port("tcp", 55100);
+    fn a_linux_exposed_port_is_published_to_an_ephemeral_host_port() {
+        let config =
+            DriverConfig::from_image("target", "example:latest".to_string()).with_exposed_port(Protocol::Tcp, 55100);
 
-        let (publish_all_ports, exposed_ports) = config.port_publishing_options();
+        let (exposed_ports, port_bindings) = config.port_publication().unwrap();
 
-        assert_eq!(publish_all_ports, Some(true));
         assert_eq!(exposed_ports, Some(vec!["55100/tcp".to_string()]));
+        assert_eq!(
+            port_bindings,
+            Some(HashMap::from([(
+                "55100/tcp".to_string(),
+                Some(vec![PortBinding {
+                    host_ip: Some(String::new()),
+                    host_port: Some(String::new())
+                }]),
+            )]))
+        );
+    }
+
+    #[test]
+    fn a_linux_published_port_is_bound_to_its_host_port_on_loopback() {
+        let config = DriverConfig::from_image("target", "example:latest".to_string()).with_published_port(
+            Protocol::Udp,
+            8125,
+            24100,
+        );
+
+        let (exposed_ports, port_bindings) = config.port_publication().unwrap();
+
+        assert_eq!(exposed_ports, Some(vec!["8125/udp".to_string()]));
+        assert_eq!(
+            port_bindings,
+            Some(HashMap::from([(
+                "8125/udp".to_string(),
+                Some(vec![PortBinding {
+                    host_ip: Some("127.0.0.1".to_string()),
+                    host_port: Some("24100".to_string())
+                }]),
+            )]))
+        );
+    }
+
+    #[test]
+    fn windows_container_exposes_ports_without_publishing_to_host() {
+        let config = DriverConfig::from_image("target", "example:latest".to_string())
+            .with_container_os(ContainerOs::Windows)
+            .with_exposed_port(Protocol::Udp, 58125);
+
+        assert_eq!(
+            config.port_publication().unwrap(),
+            (Some(vec!["58125/udp".to_string()]), None)
+        );
+    }
+
+    #[test]
+    fn a_windows_container_rejects_a_published_port() {
+        let config = DriverConfig::from_image("target", "example:latest".to_string())
+            .with_container_os(ContainerOs::Windows)
+            .with_published_port(Protocol::Tcp, 9000, 24100);
+
+        let error = config.port_publication().unwrap_err().to_string();
+        assert_eq!(
+            error,
+            "Participant 'target' publishes 9000/tcp to host port 24100, but Windows containers don't publish ports"
+        );
+    }
+
+    #[test]
+    fn container_ports_are_exposed_once_in_first_seen_order() {
+        let config = DriverConfig::from_image("target", "example:latest".to_string())
+            .with_exposed_port(Protocol::Udp, 9001)
+            .with_exposed_port(Protocol::Tcp, 9000)
+            .with_exposed_port(Protocol::Udp, 9001);
+
+        let (exposed_ports, _) = config.port_publication().unwrap();
+
+        assert_eq!(
+            exposed_ports,
+            Some(vec!["9001/udp".to_string(), "9000/tcp".to_string()])
+        );
     }
 
     #[test]
@@ -1845,6 +1997,69 @@ mod tests {
                 "GET /containers/airlock-ab12cd34-target/json",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn a_legacy_driver_assigns_ports_only_to_its_participant() {
+        // The volume-permission helper shares the driver's configuration; host-port bindings belong to the participant.
+        let daemon = FakeDaemon::start(
+            |method, path| match (method, path.split('?').next().unwrap_or_default()) {
+                ("GET", "/networks") => (200, r#"[{"Name": "airlock-ab12cd34"}]"#),
+                ("POST", "/images/create") => (200, "{}"),
+                ("GET", "/volumes") => (
+                    200,
+                    r#"{"Volumes": [{"Name": "airlock-ab12cd34", "Driver": "local", "Mountpoint": "/x",
+                        "Labels": {}, "Options": {}, "Scope": "local"}]}"#,
+                ),
+                ("POST", "/containers/create") => (201, r#"{"Id": "c1", "Warnings": []}"#),
+                ("POST", "/containers/airlock-ab12cd34-volume-fix-up/start")
+                | ("POST", "/containers/airlock-ab12cd34-volume-fix-up/stop")
+                | ("DELETE", "/containers/airlock-ab12cd34-volume-fix-up") => (204, ""),
+                ("GET", "/containers/airlock-ab12cd34-volume-fix-up/json") => (200, "{}"),
+                ("POST", "/containers/airlock-ab12cd34-volume-fix-up/wait") => (200, r#"{"StatusCode": 0}"#),
+                _ => (500, r#"{"message": "unexpected request"}"#),
+            },
+        )
+        .await;
+        let driver = Driver {
+            provisioning: Provisioning::OnCreate,
+            ..Driver::in_group(
+                daemon.docker.clone(),
+                GROUP.to_string(),
+                DriverConfig::from_image("target", "example:latest".to_string())
+                    .with_published_port(Protocol::Tcp, 9000, 24100)
+                    .with_exposed_port(Protocol::Udp, 9001),
+            )
+        };
+
+        tokio::time::timeout(BOUND, driver.create())
+            .await
+            .expect("creation should finish within the bound")
+            .expect("creation should succeed");
+
+        let requests = daemon.requests.lock().unwrap();
+        let bodies = daemon.bodies.lock().unwrap();
+        let creates: Vec<_> = requests
+            .iter()
+            .zip(bodies.iter())
+            .filter(|(request, _)| request.starts_with("POST /containers/create?"))
+            .collect();
+        assert_eq!(creates.len(), 2, "{requests:?}");
+        let (fix_up_request, fix_up_body) = creates[0];
+        assert!(fix_up_request.contains("name=airlock-ab12cd34-volume-fix-up"));
+        assert!(!fix_up_body.contains("\"ExposedPorts\""), "{fix_up_body}");
+        assert!(!fix_up_body.contains("\"PortBindings\""), "{fix_up_body}");
+        let (participant_request, participant_body) = creates[1];
+        assert!(participant_request.contains("name=airlock-ab12cd34-target"));
+        for expected in [
+            "\"ExposedPorts\"",
+            "\"PortBindings\"",
+            "\"9000/tcp\"",
+            "\"9001/udp\"",
+            "\"24100\"",
+        ] {
+            assert!(participant_body.contains(expected), "{participant_body}");
+        }
     }
 
     #[tokio::test]

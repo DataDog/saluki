@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use airlock::driver::{ContainerOs, Driver, DriverConfig, DriverDetails};
+use airlock::driver::{ContainerOs, Driver, DriverConfig, DriverDetails, Protocol};
 use bollard::{container::LogOutput, errors::Error as DockerError};
 use futures::stream::{self, StreamExt as _};
 use panoramic_core::deadline::{Budget, Deadline};
@@ -958,12 +958,6 @@ impl IntegrationRunner {
         // Add exposed ports.
         for port_spec in &container.exposed_ports {
             let (port, protocol) = parse_port_spec(port_spec)?;
-            // Protocol must be a static string for airlock API.
-            let protocol: &'static str = match protocol {
-                "tcp" => "tcp",
-                "udp" => "udp",
-                _ => return Err(generic_error!("Invalid protocol: {}.", protocol)),
-            };
             config = config.with_exposed_port(protocol, port);
         }
 
@@ -1009,7 +1003,7 @@ impl IntegrationRunner {
         .error_context("Intake sidecar failed its health check.")?;
 
         let host_port = details
-            .try_get_exposed_port("tcp", crate::config::INTAKE_HTTP_PORT)
+            .try_get_exposed_port(Protocol::Tcp, crate::config::INTAKE_HTTP_PORT)
             .ok_or_else(|| generic_error!("Intake container did not publish its HTTP port."))?;
 
         Ok((driver, host_port))

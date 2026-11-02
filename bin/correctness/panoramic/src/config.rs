@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+use airlock::driver::Protocol;
 use panoramic_core::case::{deserialize_case, deserialize_env_map, CaseDuration};
 use panoramic_core::{
     artifact::ArtifactManifest,
@@ -750,7 +751,7 @@ where
 }
 
 /// Parse a port specification (for example, "8125/udp") into port number and protocol.
-pub fn parse_port_spec(spec: &str) -> Result<(u16, &str), GenericError> {
+pub fn parse_port_spec(spec: &str) -> Result<(u16, Protocol), GenericError> {
     let parts: Vec<&str> = spec.split('/').collect();
     if parts.len() != 2 {
         return Err(generic_error!(
@@ -763,13 +764,16 @@ pub fn parse_port_spec(spec: &str) -> Result<(u16, &str), GenericError> {
         .parse()
         .map_err(|_| generic_error!("Invalid port number: {}", parts[0]))?;
 
-    let protocol = parts[1];
-    if protocol != "tcp" && protocol != "udp" {
-        return Err(generic_error!(
-            "Invalid protocol '{}': expected 'tcp' or 'udp'",
-            protocol
-        ));
-    }
+    let protocol = match parts[1] {
+        "tcp" => Protocol::Tcp,
+        "udp" => Protocol::Udp,
+        protocol => {
+            return Err(generic_error!(
+                "Invalid protocol '{}': expected 'tcp' or 'udp'",
+                protocol
+            ));
+        }
+    };
 
     Ok((port, protocol))
 }
@@ -999,11 +1003,11 @@ procedure:
     fn parse_port_spec_parses_valid_specs_and_rejects_invalid_ones() {
         let (port, protocol) = parse_port_spec("8125/udp").unwrap();
         assert_eq!(port, 8125);
-        assert_eq!(protocol, "udp");
+        assert_eq!(protocol, Protocol::Udp);
 
         let (port, protocol) = parse_port_spec("443/tcp").unwrap();
         assert_eq!(port, 443);
-        assert_eq!(protocol, "tcp");
+        assert_eq!(protocol, Protocol::Tcp);
 
         assert!(parse_port_spec("invalid").is_err());
         assert!(parse_port_spec("8125/http").is_err());

@@ -6,12 +6,24 @@ use std::{
 
 use airlock::{
     docker::{connect, image_id, Docker},
-    driver::{Driver, DriverConfig, ExitStatus},
+    driver::{Driver, DriverConfig, ExitStatus, Protocol},
     group::IsolationGroup,
 };
-use bollard::query_parameters::{ListContainersOptionsBuilder, ListNetworksOptionsBuilder, ListVolumesOptionsBuilder};
-use futures::future::try_join_all;
+use bollard::{
+    errors::Error,
+    models::{ContainerCreateBody, HostConfig, PortBinding},
+    query_parameters::{
+        CreateContainerOptionsBuilder, ListContainersOptionsBuilder, ListNetworksOptionsBuilder,
+        ListVolumesOptionsBuilder,
+    },
+};
+use futures::{future::try_join_all, StreamExt as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use tokio::{
+    io::AsyncReadExt as _,
+    net::TcpStream,
+    time::{sleep, timeout},
+};
 
 fn test_image() -> String {
     std::env::var("AIRLOCK_TEST_IMAGE").unwrap_or_else(|_| "alpine:latest".to_string())
@@ -39,6 +51,66 @@ fn unique_id() -> String {
     let mut id = format!("t{}x{nanos:x}", std::process::id());
     id.truncate(63);
     id
+}
+
+fn host_ports(count: usize) -> Vec<u16> {
+    // Stay above panoramic's runner-host pool (20000–29999) and below default ephemeral ranges
+    // (Linux 32768+, macOS/Windows 49152+). The clock separates nextest's per-test processes.
+    assert!(count <= 2700);
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let seed = nanos ^ u128::from(std::process::id());
+    let base = 30000 + (seed % (2701 - count) as u128) as u16;
+    (0..count).map(|offset| base + offset as u16).collect()
+}
+
+async fn read_from_host(port: u16) -> String {
+    timeout(Duration::from_secs(20), async {
+        loop {
+            let attempt = timeout(Duration::from_secs(2), async {
+                let mut stream = TcpStream::connect(("127.0.0.1", port)).await?;
+                let mut reply = String::new();
+                stream.read_to_string(&mut reply).await?;
+                Ok::<_, std::io::Error>(reply)
+            })
+            .await;
+            // A VM port forwarder may accept and close before the container is listening.
+            match attempt {
+                Ok(Ok(reply)) if !reply.is_empty() => return reply,
+                _ => sleep(Duration::from_millis(100)).await,
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("no reply from 127.0.0.1:{port} within 20 seconds"))
+}
+
+async fn run_on_host_network(docker: &Docker, id: &str, image: &str, script: String) -> Result<i64, GenericError> {
+    let name = format!("airlock-{id}-host");
+    docker
+        .create_container(
+            Some(CreateContainerOptionsBuilder::default().name(&name).build()),
+            ContainerCreateBody {
+                image: Some(image.to_string()),
+                entrypoint: Some(vec!["sh".to_string(), "-c".to_string(), script]),
+                host_config: Some(HostConfig {
+                    network_mode: Some("host".to_string()),
+                    ..Default::default()
+                }),
+                labels: Some(HashMap::from([
+                    ("created_by".to_string(), "airlock".to_string()),
+                    ("airlock-isolation-group".to_string(), id.to_string()),
+                ])),
+                ..Default::default()
+            },
+        )
+        .await?;
+    docker.start_container(&name, None).await?;
+    match docker.wait_container(&name, None).next().await {
+        Some(Ok(response)) => Ok(response.status_code),
+        Some(Err(Error::DockerContainerWaitError { code, .. })) => Ok(code),
+        Some(Err(error)) => Err(error.into()),
+        None => Err(generic_error!("Wait stream ended without an exit code for '{name}'")),
+    }
 }
 
 async fn in_group(id: String, scenario: impl Future<Output = ()> + Send + 'static) {
@@ -228,6 +300,136 @@ exit 1"#
         let networks = inspected.network_settings.unwrap().networks.unwrap();
         let aliases = networks[&name].aliases.as_ref().unwrap();
         assert!(aliases.iter().any(|alias| alias == "server"), "{aliases:?}");
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_participant_publishes_tcp_and_udp_on_given_host_ports() {
+    let docker = daemon().await;
+    let id = unique_id();
+    in_group(id.clone(), async move {
+        let image = test_image();
+        let group = IsolationGroup::prepare(docker.clone(), &id, &["server"], &image)
+            .await
+            .unwrap();
+        let ports = host_ports(2);
+        let (tcp, udp) = (ports[0], ports[1]);
+        let server = group
+            .driver(
+                DriverConfig::from_image("server", image.clone())
+                    .with_published_port(Protocol::Tcp, 9000, tcp)
+                    .with_published_port(Protocol::Udp, 9001, udp)
+                    .with_exposed_port(Protocol::Tcp, 9002)
+                    .with_entrypoint(vec![
+                        "sh".to_string(),
+                        "-c".to_string(),
+                        r#"(while true; do nc -l -p 9000 -e echo tcp-reached; done) &
+(while true; do nc -l -p 9002 -e echo ephemeral-reached; done) &
+out=$(nc -u -l -p 9001 -w 1); [ "$out" = udp-reached ]"#
+                            .to_string(),
+                    ]),
+            )
+            .unwrap();
+
+        server.create().await.unwrap();
+        let details = server.start_container().await.unwrap();
+        assert_eq!(details.try_get_exposed_port(Protocol::Tcp, 9000), Some(tcp));
+        assert_eq!(details.try_get_exposed_port(Protocol::Udp, 9001), Some(udp));
+        let ephemeral = details
+            .try_get_exposed_port(Protocol::Tcp, 9002)
+            .expect("an ephemeral host port");
+        assert!(!ports.contains(&ephemeral));
+
+        let inspected = docker
+            .inspect_container(&format!("airlock-{id}-server"), None)
+            .await
+            .unwrap();
+        let host_config = inspected.host_config.unwrap();
+        assert_ne!(host_config.publish_all_ports, Some(true));
+        assert_eq!(
+            host_config.port_bindings,
+            Some(HashMap::from([
+                (
+                    "9000/tcp".to_string(),
+                    Some(vec![PortBinding {
+                        host_ip: Some("127.0.0.1".to_string()),
+                        host_port: Some(tcp.to_string()),
+                    }])
+                ),
+                (
+                    "9001/udp".to_string(),
+                    Some(vec![PortBinding {
+                        host_ip: Some("127.0.0.1".to_string()),
+                        host_port: Some(udp.to_string()),
+                    }])
+                ),
+                (
+                    "9002/tcp".to_string(),
+                    Some(vec![PortBinding {
+                        host_ip: Some(String::new()),
+                        host_port: Some(String::new()),
+                    }])
+                ),
+            ]))
+        );
+        assert_eq!(read_from_host(tcp).await, "tcp-reached\n");
+        assert_eq!(read_from_host(ephemeral).await, "ephemeral-reached\n");
+
+        // VM-to-host port forwarders need not carry UDP, so check it from a host-network sibling.
+        let code = run_on_host_network(
+            &docker,
+            &id,
+            &image,
+            format!(
+                r#"tcp_status=1
+for i in $(seq 50); do
+    out=$(nc -w 2 127.0.0.1 {tcp} 2>/dev/null) && [ "$out" = tcp-reached ] && tcp_status=0 && break
+    sleep 0.1
+done
+# BusyBox nc waits for a reply after sending, even with -w 0; timeout bounds each send.
+for i in $(seq 50); do
+    echo udp-reached | timeout 0.1 nc -u -w 0 127.0.0.1 {udp}
+    sleep 0.1
+done
+exit "$tcp_status""#,
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(code, 0);
+        let status = server.wait_for_container_exit().await.unwrap();
+        assert!(matches!(status, ExitStatus::Success), "server: {status}");
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_port_already_published_fails_the_second_start() {
+    let docker = daemon().await;
+    let id = unique_id();
+    in_group(id.clone(), async move {
+        let image = test_image();
+        let group = IsolationGroup::prepare(docker, &id, &["first", "second"], &image)
+            .await
+            .unwrap();
+        let port = host_ports(1)[0];
+        let [first, second] = ["first", "second"].map(|name| {
+            group
+                .driver(
+                    DriverConfig::from_image(name, image.clone())
+                        .with_published_port(Protocol::Tcp, 9000, port)
+                        .with_entrypoint(vec!["sleep".to_string(), "30".to_string()]),
+                )
+                .unwrap()
+        });
+
+        // A host-port conflict surfaces at start, not create.
+        first.create().await.unwrap();
+        second.create().await.unwrap();
+        first.start_container().await.unwrap();
+        let error = second.start_container().await.expect_err("the port is already held");
+        assert!(error.to_string().contains(&format!("127.0.0.1:{port}")), "{error}");
     })
     .await;
 }
