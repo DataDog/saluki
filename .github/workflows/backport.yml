@@ -267,6 +267,7 @@ jobs:
             core.setOutput('target_branch', targetBranch);
             core.setOutput('backport_branch', backportBranch);
             core.setOutput('pr_title', pr.title);
+            core.setOutput('manual_steps', manualSteps(sha));
 
       # CodeQL flags this checkout (`actions/untrusted-checkout`) because it can't trace step outputs. It is not
       # untrusted code: `base_sha` is the tip of the protected `releases/X.Y.x` branch (with X.Y.x regex-validated),
@@ -380,9 +381,8 @@ jobs:
         if: failure() && steps.octo-sts.outcome == 'success' && steps.preflight.outputs.fail != 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          MERGE_SHA: ${{ steps.preflight.outputs.merge_sha }}
           TARGET_BRANCH: ${{ steps.preflight.outputs.target_branch }}
-          BACKPORT_BRANCH: ${{ steps.preflight.outputs.backport_branch }}
+          MANUAL_STEPS: ${{ steps.preflight.outputs.manual_steps }}
           PICK_REASON: ${{ steps.pick.outputs.reason }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         with:
@@ -392,8 +392,6 @@ jobs:
             const prNumber = Number(process.env.PR_NUMBER);
             const target = process.env.TARGET;
             const targetBranch = process.env.TARGET_BRANCH || `releases/${target}`;
-            const backportBranch = process.env.BACKPORT_BRANCH || `backport-${prNumber}-to-${target}`;
-            const sha = process.env.MERGE_SHA;
             const reason = process.env.PICK_REASON;
             const runUrl = process.env.RUN_URL;
 
@@ -405,22 +403,8 @@ jobs:
               const lead = reason === 'conflict'
                 ? `⚠️ Automatic backport to \`${targetBranch}\` failed: the cherry-pick has merge conflicts.`
                 : `⚠️ Automatic backport to \`${targetBranch}\` failed.`;
-              const steps = sha
-                ? [
-                    'To backport manually, run:',
-                    '```bash',
-                    'git fetch origin',
-                    `git worktree add -b ${backportBranch} .worktrees/backport-${target} origin/${targetBranch}`,
-                    `cd .worktrees/backport-${target}`,
-                    `git cherry-pick -x ${sha}`,
-                    '# Resolve any conflicts, then: git cherry-pick --continue',
-                    `git push --set-upstream origin ${backportBranch}`,
-                    'cd ../..',
-                    `git worktree remove .worktrees/backport-${target}`,
-                    '```',
-                    '',
-                  ].join('\n')
-                : '';
+              // Built once by the preflight step. Empty when preflight failed before it knew the merge commit.
+              const steps = process.env.MANUAL_STEPS ? `${process.env.MANUAL_STEPS}\n\n` : '';
               message = `${lead}\n\n${steps}Workflow logs: ${runUrl}`;
             }
 
