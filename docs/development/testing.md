@@ -26,8 +26,9 @@ CI: `.gitlab/test.yml`—runs on both Linux (amd64/arm64) and macOS (amd64/arm64
 ### Airlock daemon tests
 
 Airlock's daemon tests exercise isolation groups, container creation, name resolution, port publication, structured
-and streaming exec, file placement and reads, container logs, exit waits, and container and group removal against a
-real Docker daemon. The port tests publish on host ports in `30000`–`32699` of the Docker host and need host networking.
+and streaming exec, placing, inspecting, and reading files, sharing the host PID namespace, container logs, exit waits, and
+container and group removal against a real Docker daemon. The port tests publish on host ports in `30000`–`32699` of the
+Docker host and need host networking.
 Run these tests with `make test-airlock-daemon`, which runs `cargo nextest run -p airlock --test daemon`.
 `AIRLOCK_TEST_IMAGE` defaults to `alpine:latest`; load it first, because these tests use only local images.
 They fail if the daemon or image is unavailable. Plain `cargo test` or `cargo nextest run -p airlock` also runs them;

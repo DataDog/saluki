@@ -15,6 +15,11 @@ use crate::{
     observe, removal,
 };
 
+/// The path where every Linux container in a group mounts the group volume.
+///
+/// Participant directories are `<SHARED_ROOT>/<participant>/{exit,log,shared}`.
+pub const SHARED_ROOT: &str = "/airlock";
+
 /// A prepared isolation group with a network, shared volume, and per-participant directories.
 pub struct IsolationGroup {
     docker: Docker,
@@ -98,11 +103,14 @@ impl IsolationGroup {
     /// Builds a container driver for one of this group's prepared participants.
     ///
     /// The container is named `airlock-<id>-<participant>`, with the participant name as its hostname and DNS alias
-    /// on the group network. Its only default mount is the group volume, and it keeps its own PID namespace.
+    /// on the group network. Its only default mount is the group volume. It keeps its own PID namespace unless
+    /// [`DriverConfig::with_host_pid_namespace`] is set to `true`.
     ///
     /// # Errors
     ///
-    /// Returns an error for a participant outside this group or a configuration selecting Windows containers.
+    /// Returns an error for a participant outside this group, Windows containers, or settings only
+    /// [`Driver::from_config`] supports: `with_alpine_image`, `with_network`, `with_volume_mount`, and `with_logging`.
+    /// The fix-up image comes from [`Self::prepare`].
     pub fn driver(&self, config: DriverConfig) -> Result<Driver, GenericError> {
         if !self.participants.contains(&config.driver_id) {
             return Err(generic_error!(
@@ -119,6 +127,15 @@ impl IsolationGroup {
                 self.id
             ));
         }
+        let legacy_only_settings = config.legacy_only_settings();
+        if !legacy_only_settings.is_empty() {
+            return Err(generic_error!(
+                "Participant '{}' in isolation group '{}' sets {}, which only drivers built with Driver::from_config support",
+                config.driver_id,
+                self.id,
+                legacy_only_settings.join(", ")
+            ));
+        }
         Ok(Driver::in_group(self.docker.clone(), self.id.clone(), config))
     }
 
@@ -129,12 +146,12 @@ impl IsolationGroup {
         let mut entrypoint = vec![
             "sh".to_string(),
             "-c".to_string(),
-            "mkdir -p \"$@\" && chmod -R 777 /airlock".to_string(),
+            format!("mkdir -p \"$@\" && chmod -R 777 {SHARED_ROOT}"),
             "fix-up".to_string(),
         ];
         for participant in &self.participants {
             for directory in ["exit", "log", "shared"] {
-                entrypoint.push(format!("/airlock/{participant}/{directory}"));
+                entrypoint.push(format!("{SHARED_ROOT}/{participant}/{directory}"));
             }
         }
         self.docker
@@ -144,7 +161,7 @@ impl IsolationGroup {
                     image: Some(image.to_string()),
                     entrypoint: Some(entrypoint),
                     host_config: Some(HostConfig {
-                        binds: Some(vec![format!("{name}:/airlock:z")]),
+                        binds: Some(vec![format!("{name}:{SHARED_ROOT}:z")]),
                         network_mode: Some("none".to_string()),
                         ..Default::default()
                     }),
@@ -222,7 +239,7 @@ fn is_dns_label(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fake_daemon::FakeDaemon;
+    use crate::{driver::Protocol, fake_daemon::FakeDaemon};
 
     #[test]
     fn group_identities_and_participant_names_must_be_dns_labels() {
@@ -273,6 +290,53 @@ mod tests {
         assert!(error.contains("'alpha'") && error.contains("Windows"), "{error}");
         let driver = group
             .driver(DriverConfig::from_image("alpha", "local:latest".to_string()))
+            .unwrap();
+        assert_eq!(driver.driver_id(), "alpha");
+        assert!(daemon.requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_driver_with_settings_only_legacy_drivers_support_is_rejected() {
+        let daemon = FakeDaemon::start(|_, _| (500, r#"{"message":"unexpected request"}"#)).await;
+        let group = IsolationGroup {
+            docker: daemon.docker.clone(),
+            id: "group".to_string(),
+            participants: vec!["alpha".to_string()],
+        };
+        let config = DriverConfig::from_image("alpha", "local:latest".to_string());
+        for (config, settings) in [
+            (config.clone().with_alpine_image("alpine:latest"), "with_alpine_image"),
+            (config.clone().with_network("other"), "with_network"),
+            (config.clone().with_volume_mount("other", "/other"), "with_volume_mount"),
+            (config.clone().with_logging("logs".into()), "with_logging"),
+            (
+                config
+                    .clone()
+                    .with_alpine_image("alpine:latest")
+                    .with_network("other")
+                    .with_volume_mount("other", "/other")
+                    .with_logging("logs".into()),
+                "with_alpine_image, with_network, with_volume_mount, with_logging",
+            ),
+        ] {
+            let error = group
+                .driver(config)
+                .err()
+                .expect("legacy-only settings must be rejected");
+            assert_eq!(error.to_string(), format!(
+                "Participant 'alpha' in isolation group 'group' sets {settings}, which only drivers built with Driver::from_config support"
+            ));
+        }
+        let driver = group
+            .driver(
+                config
+                    .with_bind_mount("/host/config", "/etc/config")
+                    .with_published_port(Protocol::Tcp, 9000, 24100)
+                    .with_exposed_port(Protocol::Udp, 9001)
+                    .with_network_alias("extra")
+                    .with_host_cgroup_namespace(true)
+                    .with_host_pid_namespace(true),
+            )
             .unwrap();
         assert_eq!(driver.driver_id(), "alpha");
         assert!(daemon.requests.lock().unwrap().is_empty());

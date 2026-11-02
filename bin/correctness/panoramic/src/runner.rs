@@ -982,10 +982,10 @@ impl IntegrationRunner {
         })
         .await?
         .with_network_alias(crate::config::INTAKE_NETWORK_ALIAS)
-        .with_alpine_image(&self.tctx.settings.alpine_image);
+        .with_alpine_image(&self.tctx.settings.alpine_image)
+        .with_logging(self.tctx.log_dir().to_path_buf());
 
-        let mut driver = Driver::from_config(self.isolation_group_id.clone(), config)?
-            .with_logging(self.tctx.log_dir().to_path_buf());
+        let mut driver = Driver::from_config(self.isolation_group_id.clone(), config)?;
         let details = self
             .tctx
             .ledger

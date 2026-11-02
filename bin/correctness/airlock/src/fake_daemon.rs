@@ -67,7 +67,7 @@ impl FakeDaemon {
                      Connection: close\r\n\r\n{}",
                     status,
                     body.len(),
-                    body
+                    if method == "HEAD" { "" } else { body }
                 );
                 let _ = stream.write_all(response.as_bytes()).await;
                 let _ = stream.shutdown().await;

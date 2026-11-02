@@ -1,4 +1,4 @@
-//! File placement and reads through the Docker archive API for Linux containers.
+//! File placement, status, and reads through the Docker archive API for Linux containers.
 
 use std::{
     collections::HashSet,
@@ -8,14 +8,48 @@ use std::{
 
 use bollard::{
     body_full,
+    container::PathStatResponse,
     errors::Error,
-    query_parameters::{DownloadFromContainerOptionsBuilder, UploadToContainerOptionsBuilder},
+    query_parameters::{
+        ContainerArchiveInfoOptionsBuilder, DownloadFromContainerOptionsBuilder, UploadToContainerOptionsBuilder,
+    },
     Docker,
 };
 use bytes::Bytes;
 use futures::StreamExt as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tar::{Archive, Builder, EntryType, Header};
+
+/// A container path's kind, permission bits, and size.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileStat {
+    /// The kind of path Docker reports.
+    pub kind: FileKind,
+    /// Unix permission bits, including `setuid`, `setgid`, and sticky bits (`0000`–`7777`).
+    pub mode: u32,
+    /// The size in bytes.
+    pub size: u64,
+}
+
+/// The kind of a container path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FileKind {
+    /// A regular file.
+    File,
+    /// A directory.
+    Directory,
+    /// A symbolic link.
+    Symlink {
+        /// The target as Docker resolves it: an absolute container path.
+        target: String,
+    },
+    /// A Unix socket.
+    Socket,
+    /// A named pipe (FIFO).
+    NamedPipe,
+    /// A device or another unrecognized kind.
+    Other,
+}
 
 /// A file's absolute container path, permission bits, and contents.
 ///
@@ -77,17 +111,9 @@ pub(crate) async fn read(docker: &Docker, container: &str, path: &str) -> Result
     while let Some(chunk) = stream.next().await {
         match chunk {
             Ok(bytes) => archive.extend_from_slice(&bytes),
-            // Docker uses 404 for both a missing path and a missing container.
             Err(Error::DockerResponseServerError { status_code: 404, .. }) => {
-                return match docker.inspect_container(container, None).await {
-                    Ok(_) => Ok(None),
-                    Err(Error::DockerResponseServerError { status_code: 404, .. }) => {
-                        Err(generic_error!("no such container '{container}'"))
-                    }
-                    Err(error) => Err(generic_error!(error).context(format!(
-                        "Failed to inspect container '{container}' after reading '{path}'"
-                    ))),
-                };
+                ensure_container_exists(docker, container, path, "reading").await?;
+                return Ok(None);
             }
             Err(error) => {
                 return Err(
@@ -97,6 +123,84 @@ pub(crate) async fn read(docker: &Docker, container: &str, path: &str) -> Result
         }
     }
     read_archive(&archive, container, path).map(Some)
+}
+
+pub(crate) async fn stat(docker: &Docker, container: &str, path: &str) -> Result<Option<FileStat>, GenericError> {
+    validate_path(path)?;
+    match docker
+        .get_container_archive_info(
+            container,
+            Some(ContainerArchiveInfoOptionsBuilder::default().path(path).build()),
+        )
+        .await
+    {
+        Ok(response) => file_stat(path, response)
+            .map(Some)
+            .with_error_context(|| format!("Failed to stat '{path}' in container '{container}'")),
+        Err(Error::DockerResponseServerError { status_code: 404, .. }) => {
+            ensure_container_exists(docker, container, path, "checking").await?;
+            Ok(None)
+        }
+        Err(error) => Err(generic_error!(error).context(format!("Failed to stat '{path}' in container '{container}'"))),
+    }
+}
+
+async fn ensure_container_exists(
+    docker: &Docker, container: &str, path: &str, operation: &str,
+) -> Result<(), GenericError> {
+    // Docker uses 404 for both a missing path and a missing container.
+    match docker.inspect_container(container, None).await {
+        Ok(_) => Ok(()),
+        Err(Error::DockerResponseServerError { status_code: 404, .. }) => {
+            Err(generic_error!("no such container '{container}'"))
+        }
+        Err(error) => Err(generic_error!(error).context(format!(
+            "Failed to inspect container '{container}' after {operation} '{path}'"
+        ))),
+    }
+}
+
+fn file_stat(path: &str, response: PathStatResponse) -> Result<FileStat, GenericError> {
+    // Docker encodes mode using Go's io/fs.FileMode bit layout.
+    const MODE_DIR: u32 = 1 << 31;
+    const MODE_SYMLINK: u32 = 1 << 27;
+    const MODE_DEVICE: u32 = 1 << 26;
+    const MODE_NAMED_PIPE: u32 = 1 << 25;
+    const MODE_SOCKET: u32 = 1 << 24;
+    const MODE_SETUID: u32 = 1 << 23;
+    const MODE_SETGID: u32 = 1 << 22;
+    const MODE_CHAR_DEVICE: u32 = 1 << 21;
+    const MODE_STICKY: u32 = 1 << 20;
+    const MODE_IRREGULAR: u32 = 1 << 19;
+
+    let mode = response.file_mode;
+    let kind = if mode & MODE_DIR != 0 {
+        FileKind::Directory
+    } else if mode & MODE_SYMLINK != 0 {
+        FileKind::Symlink {
+            target: response.link_target,
+        }
+    } else if mode & MODE_SOCKET != 0 {
+        FileKind::Socket
+    } else if mode & MODE_NAMED_PIPE != 0 {
+        FileKind::NamedPipe
+    } else if mode & (MODE_DEVICE | MODE_CHAR_DEVICE | MODE_IRREGULAR) != 0 {
+        FileKind::Other
+    } else {
+        FileKind::File
+    };
+    let mut permissions = mode & 0o777;
+    for (go_bit, unix_bit) in [(MODE_SETUID, 0o4000), (MODE_SETGID, 0o2000), (MODE_STICKY, 0o1000)] {
+        if mode & go_bit != 0 {
+            permissions |= unix_bit;
+        }
+    }
+    let size = u64::try_from(response.size).with_error_context(|| format!("Negative file size for '{path}'"))?;
+    Ok(FileStat {
+        kind,
+        mode: permissions,
+        size,
+    })
 }
 
 fn validate_path(path: &str) -> Result<&str, GenericError> {
@@ -329,6 +433,7 @@ mod tests {
             assert!(!format!("{error:?}").contains("secret"));
         }
         assert!(read(&daemon.docker, "container", "/a/../b").await.is_err());
+        assert!(stat(&daemon.docker, "container", "/a/../b").await.is_err());
         assert!(daemon.requests.lock().unwrap().is_empty());
     }
 
@@ -395,5 +500,112 @@ mod tests {
                 "GET /containers/broken/archive",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn a_missing_path_stats_as_none_only_when_the_container_exists() {
+        let daemon = FakeDaemon::start(
+            |method, path| match (method, path.split('?').next().unwrap_or_default()) {
+                (
+                    "HEAD",
+                    "/containers/present/archive" | "/containers/missing/archive" | "/containers/uninspectable/archive",
+                ) => (404, r#"{"message":"unavailable"}"#),
+                ("GET", "/containers/present/json") => (200, "{}"),
+                ("GET", "/containers/missing/json") => (404, r#"{"message":"unavailable"}"#),
+                _ => (500, r#"{"message":"failed"}"#),
+            },
+        )
+        .await;
+        assert_eq!(stat(&daemon.docker, "present", "/file").await.unwrap(), None);
+        let error = stat(&daemon.docker, "missing", "/file").await.unwrap_err();
+        assert_eq!(error.to_string(), "no such container 'missing'");
+        let error = stat(&daemon.docker, "uninspectable", "/file").await.unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Failed to inspect container 'uninspectable' after checking '/file'"
+        );
+        assert!(error.downcast_ref::<Error>().is_some());
+        let error = stat(&daemon.docker, "broken", "/file").await.unwrap_err();
+        assert_eq!(error.to_string(), "Failed to stat '/file' in container 'broken'");
+        assert!(error.downcast_ref::<Error>().is_some());
+        let requests = daemon.requests.lock().unwrap();
+        let paths: Vec<_> = requests
+            .iter()
+            .map(|request| request.split('?').next().unwrap())
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                "HEAD /containers/present/archive",
+                "GET /containers/present/json",
+                "HEAD /containers/missing/archive",
+                "GET /containers/missing/json",
+                "HEAD /containers/uninspectable/archive",
+                "GET /containers/uninspectable/json",
+                "HEAD /containers/broken/archive",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stat_without_a_path_stat_header_is_an_error() {
+        let daemon = FakeDaemon::start(|_, _| (200, "")).await;
+        let error = stat(&daemon.docker, "container", "/file").await.unwrap_err();
+        assert_eq!(error.to_string(), "Failed to stat '/file' in container 'container'");
+        assert!(error.downcast_ref::<Error>().is_some());
+        assert_eq!(
+            *daemon.requests.lock().unwrap(),
+            ["HEAD /containers/container/archive?path=%2Ffile"]
+        );
+    }
+
+    #[test]
+    fn docker_file_modes_map_to_kinds_and_permission_bits() {
+        let link = FileKind::Symlink {
+            target: "/airlock/x/f".to_string(),
+        };
+        for (file_mode, kind, mode) in [
+            (416, FileKind::File, 0o640),
+            (2147484141, FileKind::Directory, 0o755),
+            (33554852, FileKind::NamedPipe, 0o644),
+            (134218239, link.clone(), 0o777),
+            (16777654, FileKind::Socket, 0o666),
+            (1 << 23 | 0o755, FileKind::File, 0o4755),
+            (1 << 31 | 1 << 20 | 0o777, FileKind::Directory, 0o1777),
+            (1 << 22 | 0o2755, FileKind::File, 0o2755),
+            (1 << 26 | 1 << 21 | 0o666, FileKind::Other, 0o666),
+            (1 << 26 | 0o660, FileKind::Other, 0o660),
+            (1 << 21, FileKind::Other, 0),
+            (1 << 19, FileKind::Other, 0),
+            (1 << 31 | 1 << 27, FileKind::Directory, 0),
+            (1 << 27 | 1 << 24, link, 0),
+            (1 << 24 | 1 << 25, FileKind::Socket, 0),
+            (1 << 25 | 1 << 26, FileKind::NamedPipe, 0),
+        ] {
+            let response = PathStatResponse {
+                name: "path".to_string(),
+                size: 11,
+                file_mode,
+                modification_time: Default::default(),
+                link_target: "/airlock/x/f".to_string(),
+            };
+            assert_eq!(
+                file_stat("/path", response).unwrap(),
+                FileStat { kind, mode, size: 11 },
+                "{file_mode:#x}"
+            );
+        }
+        let error = file_stat(
+            "/negative",
+            PathStatResponse {
+                name: "negative".to_string(),
+                size: -1,
+                file_mode: 0o644,
+                modification_time: Default::default(),
+                link_target: String::new(),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "Negative file size for '/negative'");
     }
 }

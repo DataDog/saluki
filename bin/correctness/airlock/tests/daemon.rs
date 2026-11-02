@@ -8,7 +8,7 @@ use airlock::{
     docker::{connect, image_id, Docker},
     driver::{Driver, DriverConfig, ExitStatus, Protocol},
     exec::{ExecOutput, ExecRequest, OutputChunk},
-    files::ContainerFile,
+    files::{ContainerFile, FileKind, FileStat},
     group::IsolationGroup,
     observe::ContainerExit,
 };
@@ -17,7 +17,7 @@ use bollard::{
     models::{ContainerCreateBody, HostConfig, PortBinding},
     query_parameters::{
         CreateContainerOptionsBuilder, ListContainersOptionsBuilder, ListNetworksOptionsBuilder,
-        ListVolumesOptionsBuilder, RemoveContainerOptionsBuilder,
+        ListVolumesOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
     },
 };
 use futures::{future::try_join_all, StreamExt as _};
@@ -610,6 +610,173 @@ async fn a_file_is_read_while_its_container_runs_and_reading_a_removed_container
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn stat_reports_kinds_modes_and_sizes_before_start_while_running_and_after_exit() {
+    let docker = daemon().await;
+    let id = unique_id();
+    in_group(id.clone(), async move {
+        let image = test_image();
+        let group = IsolationGroup::prepare(docker.clone(), &id, &["subject"], &image)
+            .await
+            .unwrap();
+        // Alpine's built-in syslogd supplies a Unix socket for the status checks. It binds the path /dev/log
+        // resolves to, so a symlink puts its socket on the shared volume.
+        let script = r#"set -e
+cd /airlock/subject/shared
+mkfifo pipe
+ln -s config link
+rm -f /dev/log
+ln -s /airlock/subject/shared/socket /dev/log
+syslogd -n -O /dev/null &
+while [ ! -S socket ]; do sleep 0.1; done
+touch ready
+exec sleep 60"#;
+        let driver = group
+            .driver(DriverConfig::from_image("subject", image).with_entrypoint(vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                script.to_string(),
+            ]))
+            .unwrap();
+        driver.create().await.unwrap();
+        let config_path = "/airlock/subject/shared/config";
+        let socket_path = "/airlock/subject/shared/socket";
+        driver
+            .place_files(&[
+                ContainerFile::new(config_path, "key: value\n").with_mode(0o600),
+                ContainerFile::new("/opt/airlock-test/tool", "#!/bin/sh\n").with_mode(0o4755),
+            ])
+            .await
+            .unwrap();
+        let config_stat = FileStat {
+            kind: FileKind::File,
+            mode: 0o600,
+            size: 11,
+        };
+        assert_eq!(driver.stat(config_path).await.unwrap(), Some(config_stat.clone()));
+        assert_eq!(
+            driver.stat("/opt/airlock-test/tool").await.unwrap(),
+            Some(FileStat {
+                kind: FileKind::File,
+                mode: 0o4755,
+                size: 10,
+            })
+        );
+        let tmp = driver.stat("/tmp").await.unwrap().unwrap();
+        assert_eq!(tmp.kind, FileKind::Directory);
+        assert_eq!(tmp.mode, 0o1777);
+        assert_eq!(driver.stat("/airlock/subject/shared/missing").await.unwrap(), None);
+        let error = driver.stat("/etc/passwd/x").await.unwrap_err();
+        assert!(error.to_string().contains("Failed to stat '/etc/passwd/x'"), "{error}");
+
+        driver.start_container().await.unwrap();
+        timeout(Duration::from_secs(10), async {
+            while driver.stat("/airlock/subject/shared/ready").await.unwrap().is_none() {
+                sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("the container should create its socket within 10 seconds");
+        let socket_stat = driver.stat(socket_path).await.unwrap().unwrap();
+        assert_eq!(socket_stat.kind, FileKind::Socket);
+        assert_eq!(
+            driver.stat("/airlock/subject/shared/pipe").await.unwrap().unwrap().kind,
+            FileKind::NamedPipe
+        );
+        assert_eq!(
+            driver.stat("/airlock/subject/shared/link").await.unwrap().unwrap().kind,
+            FileKind::Symlink {
+                target: config_path.to_string(),
+            }
+        );
+        assert_eq!(driver.stat(config_path).await.unwrap(), Some(config_stat.clone()));
+
+        let name = format!("airlock-{id}-subject");
+        docker
+            .stop_container(&name, Some(StopContainerOptionsBuilder::default().t(0).build()))
+            .await
+            .unwrap();
+        let exit = driver.wait_exit().await.unwrap();
+        assert_eq!(exit.code, 137);
+        assert_eq!(exit.error, None);
+        assert_eq!(driver.stat(socket_path).await.unwrap(), Some(socket_stat));
+        assert_eq!(driver.stat(config_path).await.unwrap(), Some(config_stat));
+        docker.remove_container(&name, None).await.unwrap();
+        let error = driver.stat(config_path).await.unwrap_err();
+        assert_eq!(error.to_string(), format!("no such container '{name}'"));
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_prepared_participant_shares_the_host_pid_namespace_only_when_asked() {
+    let docker = daemon().await;
+    let id = unique_id();
+    in_group(id.clone(), async move {
+        let image = test_image();
+        let group = IsolationGroup::prepare(docker, &id, &["shared", "own"], &image)
+            .await
+            .unwrap();
+        let drivers: Vec<_> = ["shared", "own"]
+            .into_iter()
+            .map(|participant| {
+                let config = DriverConfig::from_image(participant, image.clone()).with_entrypoint(vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    format!("echo $$ > /airlock/{participant}/shared/pid; exec sleep 60"),
+                ]);
+                let config = if participant == "shared" {
+                    config.with_host_pid_namespace(true)
+                } else {
+                    config
+                };
+                group.driver(config).unwrap()
+            })
+            .collect();
+        for driver in &drivers {
+            driver.create().await.unwrap();
+        }
+        let path = "/airlock/shared/shared/config";
+        drivers[0]
+            .place_files(&[ContainerFile::new(path, "placed").with_mode(0o600)])
+            .await
+            .unwrap();
+        assert_eq!(
+            drivers[0].stat(path).await.unwrap(),
+            Some(FileStat {
+                kind: FileKind::File,
+                mode: 0o600,
+                size: 6,
+            })
+        );
+        for driver in &drivers {
+            driver.start_container().await.unwrap();
+        }
+        for driver in &drivers {
+            let path = format!("/airlock/{}/shared/pid", driver.driver_id());
+            let pid = timeout(Duration::from_secs(10), async {
+                loop {
+                    if let Some(bytes) = driver.read_file(&path).await.unwrap() {
+                        if !bytes.is_empty() {
+                            return String::from_utf8(bytes).unwrap().trim().parse::<u32>().unwrap();
+                        }
+                    }
+                    sleep(Duration::from_millis(100)).await;
+                }
+            })
+            .await
+            .expect("the container should write its PID within 10 seconds");
+            if driver.driver_id() == "shared" {
+                assert!(pid > 1, "host PID should not be 1: {pid}");
+            } else {
+                assert_eq!(pid, 1);
+            }
+        }
+        assert_eq!(drivers[0].read_file(path).await.unwrap().unwrap(), b"placed");
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn exec_feeds_stdin_and_env_and_returns_both_streams_and_a_nonzero_exit_as_data() {
     let docker = daemon().await;
     let id = unique_id();
@@ -958,6 +1125,35 @@ async fn assert_group_removed(docker: &Docker, id: &str) {
     assert!(resources.containers.is_empty(), "{resources:?}");
     assert!(resources.volumes.is_empty(), "{resources:?}");
     assert!(resources.networks.is_empty(), "{resources:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_container_ref_removes_its_container_after_the_driver_is_dropped() {
+    let docker = daemon().await;
+    let id = unique_id();
+    in_group(id.clone(), async move {
+        let driver = start_exec_participant(docker.clone(), &id, "exec sleep 1000").await;
+        let container = driver.container_ref();
+        drop(driver);
+        let spawned = container.clone();
+        tokio::spawn(async move {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            timeout_at(deadline, spawned.stop_and_remove(Duration::from_secs(1), deadline))
+                .await
+                .expect("removal should finish before the deadline")
+                .unwrap();
+        })
+        .await
+        .unwrap();
+        assert_container_removed(&docker, &format!("airlock-{id}-subject")).await;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        timeout_at(deadline, container.stop_and_remove(Duration::from_secs(1), deadline))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_container_removed(&docker, &format!("airlock-{id}-subject")).await;
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

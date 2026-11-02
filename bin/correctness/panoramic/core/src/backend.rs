@@ -144,7 +144,7 @@ impl Backend for LinuxContainers {
     }
 
     fn shared_root(&self, _os: Os, _scope: &ScopeLayout) -> String {
-        "/airlock".into()
+        airlock::group::SHARED_ROOT.into()
     }
 
     fn late_facts(&self) -> &'static [(LateFact, LateFactTiming)] {

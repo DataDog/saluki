@@ -30,8 +30,8 @@ use tracing::{debug, error, trace, warn};
 use crate::{
     config::{DatadogIntakeConfig, MillstoneConfig, TargetConfig},
     exec::{self, ExecOutput, ExecRequest, ExecStream},
-    files::{self, ContainerFile},
-    group::IsolationGroup,
+    files::{self, ContainerFile, FileStat},
+    group::{IsolationGroup, SHARED_ROOT},
     observe::{self, ContainerExit, LogStream},
     removal,
 };
@@ -125,6 +125,8 @@ pub struct DriverConfig {
     ports: Vec<ContainerPort>,
     pub(crate) container_os: ContainerOs,
     host_cgroup_namespace: bool,
+    host_pid_namespace: bool,
+    log_dir: Option<PathBuf>,
     /// Additional named Docker volume mounts, in `volume_name:/container/path` format.
     ///
     /// Unlike bind mounts specified via [`with_bind_mount`][Self::with_bind_mount], these reference
@@ -151,8 +153,8 @@ pub struct DriverConfig {
 
     /// Image used for the shared-volume permission fix-up container.
     ///
-    /// Defaults to [`DEFAULT_ALPINE_IMAGE`].
-    alpine_image: String,
+    /// `None` uses [`DEFAULT_ALPINE_IMAGE`]; `Some` means [`Self::with_alpine_image`] set the image explicitly.
+    alpine_image: Option<String>,
 }
 
 impl DriverConfig {
@@ -237,18 +239,32 @@ impl DriverConfig {
             ports: vec![],
             container_os: ContainerOs::Linux,
             host_cgroup_namespace: false,
+            host_pid_namespace: false,
+            log_dir: None,
             additional_volume_mounts: vec![],
             network_aliases: vec![],
             additional_networks: vec![],
-            alpine_image: DEFAULT_ALPINE_IMAGE.to_string(),
+            alpine_image: None,
         }
     }
 
     /// Sets the shared-volume fix-up image for drivers built with [`Driver::from_config`].
     ///
-    /// Prepared groups use the image passed to [`IsolationGroup::prepare`](crate::group::IsolationGroup::prepare).
+    /// [`IsolationGroup::driver`] rejects this setting; prepared groups take their fix-up image from
+    /// [`IsolationGroup::prepare`].
     pub fn with_alpine_image(mut self, alpine_image: impl Into<String>) -> Self {
-        self.alpine_image = alpine_image.into();
+        self.alpine_image = Some(alpine_image.into());
+        self
+    }
+
+    /// Configures the driver to capture container logs.
+    ///
+    /// Standard output and standard error are written to `<log_dir>/<driver id>.stdout.log` and
+    /// `<log_dir>/<driver id>.stderr.log` when the container starts.
+    ///
+    /// [`IsolationGroup::driver`] rejects log capture.
+    pub fn with_logging(mut self, log_dir: PathBuf) -> Self {
+        self.log_dir = Some(log_dir);
         self
     }
 
@@ -350,9 +366,9 @@ impl DriverConfig {
 
     /// Connects this container to an additional Docker network after creation.
     ///
-    /// The primary network is always the container's isolation group network. Each network added
-    /// here is joined via `docker network connect` after the container is created but before it
-    /// is started, so the container is reachable on all listed networks from the moment it runs.
+    /// The isolation group network is the primary network. Each additional network is joined before start.
+    ///
+    /// [`IsolationGroup::driver`] rejects this setting.
     pub fn with_network(mut self, network: impl Into<String>) -> Self {
         self.additional_networks.push(network.into());
         self
@@ -360,11 +376,9 @@ impl DriverConfig {
 
     /// Mounts a named Docker volume into the container at the given path.
     ///
-    /// Unlike [`with_bind_mount`][Self::with_bind_mount], this references a named Docker volume
-    /// rather than a host filesystem path. The volume must already exist when the container starts.
-    /// This is useful for mounting volumes that belong to other isolation groups: for example,
-    /// a shared millstone container that needs to reach the DogStatsD sockets of both the baseline
-    /// and comparison agent containers.
+    /// The volume must exist when the container starts. This lets containers share volumes across isolation groups.
+    ///
+    /// [`IsolationGroup::driver`] rejects this setting.
     pub fn with_volume_mount(mut self, volume_name: impl Into<String>, container_path: impl AsRef<Path>) -> Self {
         self.additional_volume_mounts
             .push(format!("{}:{}", volume_name.into(), container_path.as_ref().display()));
@@ -412,6 +426,32 @@ impl DriverConfig {
     pub fn with_host_cgroup_namespace(mut self, host_cgroup_namespace: bool) -> Self {
         self.host_cgroup_namespace = host_cgroup_namespace;
         self
+    }
+
+    /// Sets whether a prepared Linux container shares the Docker host's PID namespace; defaults to `false`.
+    ///
+    /// Drivers built with [`Driver::from_config`] always share it on Linux, regardless of this setting.
+    /// Windows containers ignore it.
+    pub fn with_host_pid_namespace(mut self, host_pid_namespace: bool) -> Self {
+        self.host_pid_namespace = host_pid_namespace;
+        self
+    }
+
+    pub(crate) fn legacy_only_settings(&self) -> Vec<&'static str> {
+        let mut settings = Vec::new();
+        if self.alpine_image.is_some() {
+            settings.push("with_alpine_image");
+        }
+        if !self.additional_networks.is_empty() {
+            settings.push("with_network");
+        }
+        if !self.additional_volume_mounts.is_empty() {
+            settings.push("with_volume_mount");
+        }
+        if self.log_dir.is_some() {
+            settings.push("with_logging");
+        }
+        settings
     }
 
     /// Whether the shared `/airlock` volume needs a one-shot world-writable chmod fix-up.
@@ -491,7 +531,7 @@ impl DriverConfig {
     ) -> Vec<String> {
         match self.container_os {
             ContainerOs::Linux => {
-                binds.push(format!("{}:/airlock:z", isolation_group_name));
+                binds.push(format!("{isolation_group_name}:{SHARED_ROOT}:z"));
                 if host_resources {
                     binds.push("/proc:/host/proc:ro".to_string());
                     binds.push("/sys/fs/cgroup:/host/sys/fs/cgroup:ro".to_string());
@@ -560,6 +600,37 @@ enum Provisioning {
     Prepared,
 }
 
+/// A created container that can be stopped and removed without its driver.
+#[derive(Clone)]
+pub struct ContainerRef {
+    docker: Docker,
+    name: String,
+}
+
+impl fmt::Debug for ContainerRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContainerRef").field("name", &self.name).finish()
+    }
+}
+
+impl ContainerRef {
+    /// Stops the container with a grace period, then force-removes it and its anonymous volumes.
+    ///
+    /// Docker sends SIGKILL after `grace`, cut to whole seconds that end at least two seconds before `deadline`.
+    /// A stop still pending two seconds before `deadline` is abandoned, and the container is force-removed.
+    /// Run this future under `tokio::time::timeout_at(deadline, ...)` to bound the entire operation.
+    ///
+    /// This future is cancel-safe: once Docker receives the stop, dropping it leaves the container stopping or
+    /// removed. A later [`IsolationGroup::remove`] force-removes any remaining container.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if removal fails. A missing container counts as removed; stop failures still lead to removal.
+    pub async fn stop_and_remove(&self, grace: Duration, deadline: tokio::time::Instant) -> Result<(), GenericError> {
+        removal::stop_and_remove(&self.docker, &self.name, grace, deadline).await
+    }
+}
+
 /// Container driver.
 pub struct Driver {
     isolation_group_id: String,
@@ -567,7 +638,6 @@ pub struct Driver {
     container_name: String,
     config: DriverConfig,
     docker: Docker,
-    log_dir: Option<PathBuf>,
     provisioning: Provisioning,
 }
 
@@ -609,19 +679,18 @@ impl Driver {
             isolation_group_id,
             config,
             docker,
-            log_dir: None,
             provisioning: Provisioning::Prepared,
         }
     }
 
-    /// Configures the driver to capture container logs.
+    /// Returns a reference to this driver's container, by name, that outlives the driver.
     ///
-    /// The logs will be stored in the given directory, under a subdirectory named after the isolation group ID. Each
-    /// container will get a log for standard output and standard error, following the pattern of `<container
-    /// name>.[stdout|stderr].log`.
-    pub fn with_logging(mut self, log_dir: PathBuf) -> Self {
-        self.log_dir = Some(log_dir);
-        self
+    /// It can be taken before or after [`Self::create`].
+    pub fn container_ref(&self) -> ContainerRef {
+        ContainerRef {
+            docker: self.docker.clone(),
+            name: self.container_name.clone(),
+        }
     }
 
     /// Returns the string identifier of the driver.
@@ -780,7 +849,12 @@ impl Driver {
         );
 
         // We spin up a minimal Alpine container, chmod the directory bind-mounted to the shared volume, and that's it.
-        let image = self.config.alpine_image.clone();
+        let image = self
+            .config
+            .alpine_image
+            .as_deref()
+            .unwrap_or(DEFAULT_ALPINE_IMAGE)
+            .to_string();
         self.create_image_if_missing_inner(&image).await?;
 
         let container_name = format!("airlock-{}-volume-fix-up", self.isolation_group_id);
@@ -788,7 +862,7 @@ impl Driver {
             "chmod".to_string(),
             "-R".to_string(),
             "777".to_string(),
-            "/airlock".to_string(),
+            SHARED_ROOT.to_string(),
         ];
         let _ = self
             .create_container_inner(
@@ -865,9 +939,9 @@ impl Driver {
             (None, None)
         };
 
-        // Linux drivers built with Driver::from_config share host PIDs for origin detection.
-        // Drivers from a prepared group keep their own PID namespace.
-        let pid_mode = (self.config.container_os == ContainerOs::Linux && self.provisioning == Provisioning::OnCreate)
+        // Host PIDs support origin detection; prepared Linux containers opt in explicitly.
+        let pid_mode = (self.config.container_os == ContainerOs::Linux
+            && (self.provisioning == Provisioning::OnCreate || self.config.host_pid_namespace))
             .then(|| "host".to_string());
         let cgroupns_mode = (self.config.container_os == ContainerOs::Linux && self.config.host_cgroup_namespace)
             .then_some(HostConfigCgroupnsModeEnum::HOST);
@@ -999,7 +1073,7 @@ impl Driver {
 
         let details = self.start_container_inner(&self.container_name).await?;
 
-        if let Some(log_dir) = self.log_dir.clone() {
+        if let Some(log_dir) = self.config.log_dir.clone() {
             debug!(
                 "Capturing logs for container '{}' to {}...",
                 self.container_name,
@@ -1063,8 +1137,9 @@ impl Driver {
     ///
     /// Drivers built with [`Self::from_config`] also provision shared resources and pull images. On Linux, they
     /// mount host resources for origin detection and share the host PID namespace. Drivers from an
-    /// [`IsolationGroup`](crate::group::IsolationGroup) reuse its prepared resources, require a local image, and
-    /// keep their own PID namespace. Their only default mount is the group volume.
+    /// [`IsolationGroup`] reuse its prepared resources, require a local image, and
+    /// keep their own PID namespace unless [`DriverConfig::with_host_pid_namespace`] is set to `true`.
+    /// Their only default mount is the group volume.
     ///
     /// # Errors
     ///
@@ -1247,10 +1322,25 @@ impl Driver {
         files::read(&self.docker, &self.container_name, path).await
     }
 
+    /// Reports a path's status in a created, running, or exited Linux container, including mounted volumes.
+    ///
+    /// Reports a final symlink itself. Returns `None` for a missing path in an existing container.
+    /// Paths follow [`ContainerFile`]'s rules. Paths on the container's own `tmpfs` or `proc` mounts, such as
+    /// `/dev` and `/proc`, can appear missing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for Windows containers, invalid paths, a missing container, a path through a
+    /// non-directory, Docker API failures, negative file sizes, or header-decoding failures.
+    pub async fn stat(&self, path: &str) -> Result<Option<FileStat>, GenericError> {
+        self.ensure_linux_for_files()?;
+        files::stat(&self.docker, &self.container_name, path).await
+    }
+
     fn ensure_linux_for_files(&self) -> Result<(), GenericError> {
         if self.config.container_os == ContainerOs::Windows {
             return Err(generic_error!(
-                "Participant '{}' runs in a Windows container; airlock places and reads files only in Linux containers",
+                "Participant '{}' runs in a Windows container; airlock places, reads, and stats files only in Linux containers",
                 self.config.driver_id
             ));
         }
@@ -1695,13 +1785,41 @@ mod tests {
         assert_eq!(attempts.get(), 1);
     }
 
-    #[test]
-    fn alpine_image_defaults_to_docker_hub_and_can_be_overridden() {
+    #[tokio::test]
+    async fn alpine_image_defaults_to_docker_hub_and_can_be_overridden() {
+        let daemon = FakeDaemon::start(
+            |method, path| match (method, path.split('?').next().unwrap_or_default()) {
+                ("POST", "/images/create") => (200, "{}"),
+                ("POST", "/containers/create") => (201, r#"{"Id":"fix-up","Warnings":[]}"#),
+                ("POST", "/containers/airlock-ab12cd34-volume-fix-up/start")
+                | ("POST", "/containers/airlock-ab12cd34-volume-fix-up/stop")
+                | ("DELETE", "/containers/airlock-ab12cd34-volume-fix-up") => (204, ""),
+                ("GET", "/containers/airlock-ab12cd34-volume-fix-up/json") => (200, r#"{"State":{"Status":"exited"}}"#),
+                ("POST", "/containers/airlock-ab12cd34-volume-fix-up/wait") => (200, r#"{"StatusCode":0}"#),
+                _ => (500, r#"{"message":"unexpected request"}"#),
+            },
+        )
+        .await;
         let config = DriverConfig::from_image("target", "example:latest".to_string());
-        assert_eq!(config.alpine_image, "alpine:latest");
-
-        let config = config.with_alpine_image("registry.example/alpine:3.20");
-        assert_eq!(config.alpine_image, "registry.example/alpine:3.20");
+        assert_eq!(config.alpine_image, None);
+        let overridden = config.clone().with_alpine_image("registry.example/alpine:3.20");
+        assert_eq!(overridden.alpine_image.as_deref(), Some("registry.example/alpine:3.20"));
+        for (config, expected) in [(config, "alpine:latest"), (overridden, "registry.example/alpine:3.20")] {
+            let driver = Driver {
+                provisioning: Provisioning::OnCreate,
+                ..Driver::in_group(daemon.docker.clone(), GROUP.to_string(), config)
+            };
+            driver.adjust_shared_volume_permissions().await.unwrap();
+            let requests = daemon.requests.lock().unwrap();
+            let bodies = daemon.bodies.lock().unwrap();
+            let (_, body) = requests
+                .iter()
+                .zip(bodies.iter())
+                .rev()
+                .find(|(request, _)| request.starts_with("POST /containers/create?"))
+                .unwrap();
+            assert!(body.contains(&format!(r#""Image":"{expected}""#)), "{body}");
+        }
     }
 
     #[test]
@@ -1949,7 +2067,6 @@ mod tests {
             config: DriverConfig::from_image("target", "example:latest".to_string())
                 .with_container_os(ContainerOs::Windows),
             docker: daemon.docker.clone(),
-            log_dir: None,
             provisioning: Provisioning::OnCreate,
         };
         let paths = || -> Vec<String> {
@@ -1989,7 +2106,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_windows_container_neither_places_nor_reads_files() {
+    async fn a_windows_container_neither_places_reads_nor_stats_files() {
         let daemon = FakeDaemon::start(|_, _| (500, r#"{"message":"unexpected request"}"#)).await;
         let driver = Driver::in_group(
             daemon.docker.clone(),
@@ -1999,7 +2116,13 @@ mod tests {
         let placement = driver.place_files(&[ContainerFile::new("/file", "secret")]).await;
         let empty_placement = driver.place_files(&[]).await;
         let read = driver.read_file("/file").await;
-        for error in [placement.unwrap_err(), empty_placement.unwrap_err(), read.unwrap_err()] {
+        let stat = driver.stat("/file").await;
+        for error in [
+            placement.unwrap_err(),
+            empty_placement.unwrap_err(),
+            read.unwrap_err(),
+            stat.unwrap_err(),
+        ] {
             let message = error.to_string();
             assert!(message.contains("Participant 'subject'"), "{message}");
             assert!(message.contains("Windows"), "{message}");
@@ -2112,6 +2235,42 @@ mod tests {
             assert_eq!(driver.network_aliases(), expected);
         }
         assert!(daemon.requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_prepared_driver_shares_the_host_pid_namespace_only_when_asked() {
+        let daemon = FakeDaemon::start(
+            |method, path| match (method, path.split('?').next().unwrap_or_default()) {
+                ("POST", "/containers/create") => (201, r#"{"Id":"c1","Warnings":[]}"#),
+                _ => (500, r#"{"message":"unexpected request"}"#),
+            },
+        )
+        .await;
+        for (os, host_pid_namespace, expected) in [
+            (ContainerOs::Linux, true, true),
+            (ContainerOs::Linux, false, false),
+            (ContainerOs::Windows, true, false),
+        ] {
+            let driver = Driver::in_group(
+                daemon.docker.clone(),
+                GROUP.to_string(),
+                DriverConfig::from_image("alpha", "local:latest".to_string())
+                    .with_container_os(os)
+                    .with_host_pid_namespace(host_pid_namespace),
+            );
+            driver.create().await.unwrap();
+            let bodies = daemon.bodies.lock().unwrap();
+            let body = bodies.last().unwrap();
+            assert_eq!(body.contains(r#""PidMode":"host""#), expected, "{body}");
+            if !expected {
+                assert!(!body.contains("\"PidMode\""), "{body}");
+            }
+        }
+        let requests = daemon.requests.lock().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert!(requests
+            .iter()
+            .all(|request| request.starts_with("POST /containers/create?")));
     }
 
     #[tokio::test]

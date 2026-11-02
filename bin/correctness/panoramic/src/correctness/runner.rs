@@ -486,9 +486,10 @@ impl GroupRunner {
     }
 
     fn with_driver(&mut self, config: DriverConfig) -> Result<&mut Self, GenericError> {
-        let config = config.with_alpine_image(self.alpine_image.clone());
-        let driver =
-            Driver::from_config(self.isolation_group_id.clone(), config)?.with_logging(self.runner_log_dir.clone());
+        let config = config
+            .with_alpine_image(self.alpine_image.clone())
+            .with_logging(self.runner_log_dir.clone());
+        let driver = Driver::from_config(self.isolation_group_id.clone(), config)?;
         self.drivers.push(driver);
         Ok(self)
     }
