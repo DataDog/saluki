@@ -615,7 +615,10 @@ mod tests {
         );
         assert_eq!(find("transactions.retries"), Some("Transaction retry count"));
         assert_eq!(find("transactions.requeued"), Some("Transaction requeue count"));
-        assert_eq!(find("transactions.retry_queue_size"), Some("Retry queue size"));
+        assert_eq!(
+            find("transactions.retry_queue_size"),
+            Some("Current transaction retry queue size")
+        );
         assert_eq!(
             find("dogstatsd.uds_origin_detection_error"),
             Some("Dogstatsd UDS origin detection error count")
