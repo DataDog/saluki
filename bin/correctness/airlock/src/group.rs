@@ -12,7 +12,7 @@ use tracing::warn;
 
 use crate::{
     driver::{get_default_airlock_labels, group_resource_name, is_not_found, ContainerOs, Driver, DriverConfig},
-    observe,
+    observe, removal,
 };
 
 /// A prepared isolation group with a network, shared volume, and per-participant directories.
@@ -30,7 +30,7 @@ impl IsolationGroup {
     ///
     /// `fixup_image` must already be on the daemon and provide `sh`, `mkdir`, and `chmod`. Register the supplied ID
     /// for cleanup before calling: errors or cancellation can leave partial resources. Remove them with
-    /// [`Driver::clean_related_resources`].
+    /// [`IsolationGroup::remove`].
     ///
     /// # Errors
     ///
@@ -80,6 +80,19 @@ impl IsolationGroup {
         };
         group.prepare_directories(fixup_image).await?;
         Ok(group)
+    }
+
+    /// Force-removes a group's containers and their anonymous volumes, then its shared volume and network.
+    ///
+    /// Attempts every removal despite failures and treats missing resources as removed. The group may be partly
+    /// prepared or never prepared. This future is cancel-safe: dropping it leaves completed removals in place,
+    /// and calling it again removes remaining resources. Use `tokio::time::timeout_at` to bound the operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a combined error listing all resource-listing and removal failures.
+    pub async fn remove(docker: &Docker, id: &str) -> Result<(), GenericError> {
+        removal::remove_group(docker, id).await
     }
 
     /// Builds a container driver for one of this group's prepared participants.
@@ -159,7 +172,7 @@ impl IsolationGroup {
             .docker
             .remove_container(
                 &container_name,
-                Some(RemoveContainerOptionsBuilder::default().force(true).build()),
+                Some(RemoveContainerOptionsBuilder::default().force(true).v(true).build()),
             )
             .await;
         if let Err(error) = &removed {
@@ -311,6 +324,7 @@ mod tests {
         assert!(requests[4].contains("name=airlock-group_fix-up"), "{requests:?}");
         assert!(requests[7].contains("condition=not-running"), "{requests:?}");
         assert!(requests[8].contains("force=true"), "{requests:?}");
+        assert!(requests[8].contains("v=true"), "{requests:?}");
     }
 
     #[tokio::test]

@@ -25,7 +25,7 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::{
     io::AsyncReadExt as _,
     net::TcpStream,
-    time::{sleep, timeout},
+    time::{sleep, timeout, timeout_at, Instant},
 };
 
 fn test_image() -> String {
@@ -124,8 +124,14 @@ async fn in_group(id: String, scenario: impl Future<Output = ()> + Send + 'stati
     })
     .await;
     let mut problems = Vec::new();
-    if let Err(error) = Driver::clean_related_resources(id.clone()).await {
-        problems.push(format!("group cleanup failed: {error:#}"));
+    let cleanup = timeout(Duration::from_secs(30), async {
+        IsolationGroup::remove(&connect()?, &id).await
+    })
+    .await;
+    match cleanup {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => problems.push(format!("group cleanup failed: {error:#}")),
+        Err(_) => problems.push("group cleanup exceeded 30 seconds".to_string()),
     }
     let resources = match connect() {
         Ok(docker) => group_resources(&docker, &id).await,
@@ -589,7 +595,7 @@ async fn a_file_is_read_while_its_container_runs_and_reading_a_removed_container
         docker
             .remove_container(
                 &format!("airlock-{id}-subject"),
-                Some(RemoveContainerOptionsBuilder::default().force(true).build()),
+                Some(RemoveContainerOptionsBuilder::default().force(true).v(true).build()),
             )
             .await
             .unwrap();
@@ -930,6 +936,212 @@ async fn a_container_that_never_started_or_failed_to_start_has_no_exit_or_output
                 format!("Container 'airlock-{id}-{participant}' has not started")
             );
         }
+    })
+    .await;
+}
+
+async fn assert_container_removed(docker: &Docker, name: &str) {
+    let error = docker.inspect_container(name, None).await.unwrap_err();
+    assert!(
+        matches!(error, Error::DockerResponseServerError { status_code: 404, .. }),
+        "{error}"
+    );
+}
+
+async fn assert_group_removed(docker: &Docker, id: &str) {
+    let resources = group_resources(docker, id).await.unwrap();
+    assert!(resources.containers.is_empty(), "{resources:?}");
+    assert!(resources.volumes.is_empty(), "{resources:?}");
+    assert!(resources.networks.is_empty(), "{resources:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_container_ignoring_sigterm_is_killed_and_removed_by_the_deadline() {
+    let docker = daemon().await;
+    let id = unique_id();
+    in_group(id.clone(), async move {
+        let image = test_image();
+        let group = IsolationGroup::prepare(docker.clone(), &id, &["subject"], &image)
+            .await
+            .unwrap();
+        let driver = group
+            .driver(
+                DriverConfig::from_image("subject", image)
+                    .with_entrypoint(vec!["sleep".to_string(), "1000".to_string()]),
+            )
+            .unwrap();
+        driver.create().await.unwrap();
+        driver.start_container().await.unwrap();
+
+        let start = Instant::now();
+        let deadline = start + Duration::from_secs(5);
+        timeout_at(deadline, driver.stop_and_remove(Duration::from_secs(60), deadline))
+            .await
+            .expect("removal should finish before the deadline")
+            .unwrap();
+        assert!(start.elapsed() >= Duration::from_secs(2));
+        assert_container_removed(&docker, &format!("airlock-{id}-subject")).await;
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_container_that_exits_on_sigterm_is_removed_without_waiting_out_its_grace() {
+    let docker = daemon().await;
+    let id = unique_id();
+    in_group(id.clone(), async move {
+        let driver = start_exec_participant(
+            docker.clone(),
+            &id,
+            "trap 'echo terminated; exit 3' TERM; echo ready; while :; do sleep 0.1; done",
+        )
+        .await;
+        // Observe readiness so SIGTERM cannot arrive before the shell installs its trap.
+        let mut logs = driver.logs().await.unwrap();
+        let mut stdout = Vec::new();
+        while !stdout.windows(b"ready\n".len()).any(|window| window == b"ready\n") {
+            match logs
+                .next()
+                .await
+                .expect("the container should announce readiness")
+                .unwrap()
+            {
+                OutputChunk::Stdout(bytes) => stdout.extend_from_slice(&bytes),
+                OutputChunk::Stderr(bytes) => panic!("unexpected stderr: {bytes:?}"),
+            }
+        }
+        let start = Instant::now();
+        let deadline = start + Duration::from_secs(40);
+        timeout_at(deadline, driver.stop_and_remove(Duration::from_secs(30), deadline))
+            .await
+            .unwrap()
+            .unwrap();
+        while let Some(chunk) = logs.next().await {
+            match chunk.unwrap() {
+                OutputChunk::Stdout(bytes) => stdout.extend_from_slice(&bytes),
+                OutputChunk::Stderr(bytes) => panic!("unexpected stderr: {bytes:?}"),
+            }
+        }
+        assert!(stdout
+            .windows(b"terminated\n".len())
+            .any(|window| window == b"terminated\n"));
+        assert!(start.elapsed() < Duration::from_secs(10));
+        assert_container_removed(&docker, &format!("airlock-{id}-subject")).await;
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn removing_an_unstarted_or_already_removed_participant_succeeds() {
+    let docker = daemon().await;
+    let id = unique_id();
+    in_group(id.clone(), async move {
+        let image = test_image();
+        let group = IsolationGroup::prepare(docker.clone(), &id, &["subject"], &image)
+            .await
+            .unwrap();
+        let driver = group
+            .driver(DriverConfig::from_image("subject", image).with_entrypoint(vec!["true".to_string()]))
+            .unwrap();
+        driver.create().await.unwrap();
+        for _ in 0..2 {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            timeout_at(deadline, driver.stop_and_remove(Duration::from_secs(5), deadline))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_container_removed(&docker, &format!("airlock-{id}-subject")).await;
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_participant_removal_cut_short_leaves_the_group_removable() {
+    let docker = daemon().await;
+    let id = unique_id();
+    in_group(id.clone(), async move {
+        let driver = start_exec_participant(docker.clone(), &id, "exec sleep 1000").await;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let result = timeout(
+            Duration::from_secs(1),
+            driver.stop_and_remove(Duration::from_secs(30), deadline),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "participant removal should still be stopping: {result:?}"
+        );
+        timeout(Duration::from_secs(20), IsolationGroup::remove(&docker, &id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_group_removed(&docker, &id).await;
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn removing_a_group_removes_its_containers_their_anonymous_volumes_its_volume_and_network() {
+    let docker = daemon().await;
+    let id = unique_id();
+    in_group(id.clone(), async move {
+        let image = test_image();
+        let group = IsolationGroup::prepare(docker.clone(), &id, &["running", "created"], &image)
+            .await
+            .unwrap();
+        for participant in ["running", "created"] {
+            let driver = group
+                .driver(
+                    DriverConfig::from_image(participant, image.clone())
+                        .with_entrypoint(vec!["sleep".to_string(), "1000".to_string()]),
+                )
+                .unwrap();
+            driver.create().await.unwrap();
+            if participant == "running" {
+                driver.start_container().await.unwrap();
+            }
+        }
+
+        // The `/anon` volume stands in for an image's VOLUME instruction; group removal must delete it.
+        let name = format!("airlock-{id}-anonymous");
+        docker
+            .create_container(
+                Some(CreateContainerOptionsBuilder::default().name(&name).build()),
+                ContainerCreateBody {
+                    image: Some(image),
+                    entrypoint: Some(vec!["sleep".to_string(), "1000".to_string()]),
+                    volumes: Some(vec!["/anon".to_string()]),
+                    labels: Some(HashMap::from([
+                        ("created_by".to_string(), "airlock".to_string()),
+                        ("airlock-isolation-group".to_string(), id.clone()),
+                    ])),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        docker.start_container(&name, None).await.unwrap();
+        let inspected = docker.inspect_container(&name, None).await.unwrap();
+        let anonymous = inspected
+            .mounts
+            .unwrap()
+            .into_iter()
+            .find(|mount| mount.destination.as_deref() == Some("/anon"))
+            .expect("the container should have an anonymous volume")
+            .name
+            .unwrap();
+        docker.inspect_volume(&anonymous).await.unwrap();
+
+        IsolationGroup::remove(&docker, &id).await.unwrap();
+        assert_group_removed(&docker, &id).await;
+        let error = docker.inspect_volume(&anonymous).await.unwrap_err();
+        assert!(
+            matches!(error, Error::DockerResponseServerError { status_code: 404, .. }),
+            "{error}"
+        );
+        IsolationGroup::remove(&docker, &id).await.unwrap();
+        IsolationGroup::remove(&docker, &unique_id()).await.unwrap();
     })
     .await;
 }
