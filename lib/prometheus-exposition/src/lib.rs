@@ -255,7 +255,16 @@ impl PrometheusRenderer {
             if has_labels {
                 self.labels_buffer.push(',');
             }
-            let _ = write!(self.labels_buffer, "{}=\"{}\"", key.as_ref(), val.as_ref());
+            let _ = write!(self.labels_buffer, "{}=\"", key.as_ref());
+            for character in val.as_ref().chars() {
+                match character {
+                    '\\' => self.labels_buffer.push_str("\\\\"),
+                    '"' => self.labels_buffer.push_str("\\\""),
+                    '\n' => self.labels_buffer.push_str("\\n"),
+                    character => self.labels_buffer.push(character),
+                }
+            }
+            self.labels_buffer.push('"');
             has_labels = true;
         }
 
@@ -375,6 +384,30 @@ mod tests {
         assert!(output.contains("# TYPE requests_total counter\n"));
         assert!(output.contains("requests_total{method=\"GET\"} 42\n"));
         assert!(output.contains("requests_total{method=\"POST\"} 17\n"));
+    }
+
+    #[test]
+    fn render_labels_escapes_values_without_changing_their_identity() {
+        let mut renderer = PrometheusRenderer::new();
+        renderer.render_scalar_group(
+            "origins",
+            MetricType::Gauge,
+            None,
+            vec![(
+                [
+                    ("origin", "container_id://abc\\path\"quoted\"\n雪"),
+                    ("image", "gcr.io/foo/bar%20"),
+                ],
+                1.0,
+            )],
+        );
+        assert!(
+            renderer.output().contains(
+                "origins{origin=\"container_id://abc\\\\path\\\"quoted\\\"\\n雪\",image=\"gcr.io/foo/bar%20\"} 1\n"
+            ),
+            "{}",
+            renderer.output()
+        );
     }
 
     #[test]
