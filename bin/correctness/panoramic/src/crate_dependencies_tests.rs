@@ -10,6 +10,7 @@ const PERMITTED: &[(&str, &[&str])] = &[
         &["panoramic-core", "panoramic-participants", "panoramic-steps"],
     ),
     ("panoramic-core", &[]),
+    ("panoramic-courier", &[]),
     ("panoramic-participants", &["panoramic-core"]),
     ("panoramic-steps", &["panoramic-core"]),
 ];
@@ -100,6 +101,10 @@ fn workspace_metadata() -> Value {
             {
                 "name": "panoramic-steps",
                 "dependencies": [{"name": "panoramic-core", "kind": null}]
+            },
+            {
+                "name": "panoramic-courier",
+                "dependencies": []
             }
         ]
     })

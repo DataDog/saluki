@@ -4540,6 +4540,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "panoramic-courier"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "snafu",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "panoramic-participants"
 version = "0.1.0"
 dependencies = [

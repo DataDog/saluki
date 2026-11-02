@@ -55,12 +55,13 @@ only `test/correctness/cases/`.
 
 All binaries live under `bin/correctness/`:
 
-| Binary             | Purpose                                                                                  |
-|--------------------|------------------------------------------------------------------------------------------|
-| **panoramic**      | Unified test runner for both correctness and integration tests.                          |
-| **millstone**      | Deterministic load generator.                                                            |
-| **datadog-intake** | Mock Datadog API: receives test output                                                   |
-| **airlock**        | Library for running containers in isolated groups.                                       |
+| Binary                | Purpose                                                                                                                                    |
+|-----------------------|--------------------------------------------------------------------------------------------------------------------------------------------|
+| **panoramic**         | Unified test runner for both correctness and integration tests.                                                                            |
+| **millstone**         | Deterministic load generator.                                                                                                              |
+| **datadog-intake**    | Mock Datadog API: receives test output                                                                                                     |
+| **airlock**           | Library for running containers in isolated groups.                                                                                         |
+| **panoramic-courier** | Runs inside a participant's container to send bytes to, or probe, TCP, UDP and Unix socket endpoints the runner host can't reach directly. |
 
 Test case configs live in `test/correctness/cases/` (for example, `test/correctness/cases/dsd-plain/config.yaml`).
 

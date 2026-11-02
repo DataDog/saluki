@@ -9,6 +9,8 @@ consists of the following components:
 - `panoramic`: unified test runner for both correctness tests and integration tests. For correctness tests, it drives
   an identical, deterministic telemetry workload into a baseline and comparison target (for example, Datadog Agent vs
   ADP), and compares the outputs they forward to their configured intake, highlighting any discrepancies
+- `courier` (binary `panoramic-courier`): runs inside a participant's container to send bytes to, or probe, TCP, UDP
+  and Unix socket endpoints the runner host can't reach directly
 - `datadog-intake`: a mock intake in the spirit of [`fakeintake`][fakeintake_gh] that provides a more ergonomic
   approach to dumping the captured data
 - `millstone`: a deterministic load generator, in the spirit of [Lading][lading_gh], that allow provides determinism
