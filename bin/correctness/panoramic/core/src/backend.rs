@@ -3,6 +3,11 @@
 //! The static backend list describes what each kind needs for planning.
 //! [`RunBackends`] checks and uses the runner host.
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Container backends run the courier through this module.")
+)]
+pub(crate) mod courier;
 pub(crate) mod docker;
 mod run;
 pub use run::RunBackends;

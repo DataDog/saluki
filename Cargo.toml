@@ -72,6 +72,7 @@ containerd-protos = { path = "lib/protos/containerd" }
 ddsketch = { path = "lib/ddsketch" }
 go-duration = { path = "lib/go-duration" }
 panoramic-core = { path = "bin/correctness/panoramic/core" }
+panoramic-courier = { path = "bin/correctness/courier" }
 panoramic-participants = { path = "bin/correctness/panoramic/participants" }
 panoramic-steps = { path = "bin/correctness/panoramic/steps" }
 process-memory = { path = "lib/process-memory" }

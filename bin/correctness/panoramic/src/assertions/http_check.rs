@@ -7,7 +7,7 @@ use saluki_error::GenericError;
 use tokio::time::Instant;
 use tracing::trace;
 
-use crate::actions::docker_exec;
+use crate::actions::{curl_max_time_arg, docker_exec};
 use crate::assertions::{Assertion, AssertionContext, Attempts};
 use crate::config::HttpStatusMatcher;
 
@@ -261,7 +261,7 @@ fn curl_status_command(endpoint: &str, insecure_skip_verify: bool, limits: &Atte
     }
     cmd.extend([
         "--max-time".to_string(),
-        limits.curl_max_time(),
+        curl_max_time_arg(limits),
         "-s".to_string(),
         "-o".to_string(),
         "NUL".to_string(),
@@ -295,7 +295,7 @@ mod tests {
     use panoramic_core::record::{AssertionResult, AssertionStatus};
     use tokio_util::sync::CancellationToken;
 
-    use super::{curl_status_command, HttpCheckAssertion};
+    use super::{curl_max_time_arg, curl_status_command, HttpCheckAssertion};
     use crate::actions::test_docker::{curl_max_time, Exec, FakeDocker};
     use crate::assertions::test_support::host_context;
     use crate::assertions::Assertion as _;
@@ -329,7 +329,7 @@ mod tests {
                 .position(|arg| arg == "--max-time")
                 .and_then(|index| cmd.get(index + 1))
                 .unwrap_or_else(|| panic!("curl should bound itself: {cmd:?}"));
-            assert_eq!(*max_time, limits.curl_max_time(), "{remaining:?}");
+            assert_eq!(*max_time, curl_max_time_arg(&limits), "{remaining:?}");
             assert_eq!(cmd.last().map(String::as_str), Some("https://127.0.0.1:5001/health"));
         }
     }

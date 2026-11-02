@@ -12,7 +12,9 @@ mod target_exec;
 #[cfg(test)]
 pub(crate) mod test_docker;
 
-pub(crate) use target_exec::{docker_exec, execute_target_command, CommandDiagnostics, CommandError};
+pub(crate) use target_exec::{
+    curl_max_time_arg, docker_exec, execute_target_command, CommandDiagnostics, CommandError,
+};
 
 const DEFAULT_CORE_AGENT_CONFIG_ENDPOINT_TEMPLATE: &str = "https://localhost:55001/agent/config/{key}";
 

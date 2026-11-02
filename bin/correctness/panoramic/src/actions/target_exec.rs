@@ -6,7 +6,10 @@ use bollard::{
     exec::{CreateExecOptions, StartExecResults},
 };
 use futures::TryStreamExt as _;
-use panoramic_core::record::{AssertionResult, AssertionStatus};
+use panoramic_core::{
+    probe::AttemptLimits,
+    record::{AssertionResult, AssertionStatus},
+};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::process::Command;
 use tokio::time::Instant;
@@ -335,6 +338,11 @@ fn connect() -> Result<bollard::Docker, GenericError> {
     docker::connect().error_context("Failed to connect to Docker.")
 }
 
+/// Formats the request limit for curl's `--max-time`; zero would disable curl's limit.
+pub(crate) fn curl_max_time_arg(limits: &AttemptLimits) -> String {
+    format!("{:.3}", limits.request.as_secs_f64())
+}
+
 /// Runs `cmd` in `container_name` and collects its output.
 ///
 /// # Errors
@@ -384,8 +392,20 @@ pub(crate) async fn docker_exec(container_name: &str, cmd: Vec<String>) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use super::{exec_on_host_collect, exec_on_host_with_timeout, CommandDiagnostics, TargetExecAction};
+    use std::time::Duration;
+
+    use panoramic_core::probe::AttemptLimits;
+
+    use super::{
+        curl_max_time_arg, exec_on_host_collect, exec_on_host_with_timeout, CommandDiagnostics, TargetExecAction,
+    };
     use crate::actions::Action as _;
+
+    #[test]
+    fn curl_max_time_arg_uses_request_seconds_with_millisecond_precision_and_is_never_zero() {
+        assert_eq!(curl_max_time_arg(&AttemptLimits::new(Duration::from_secs(3))), "1.500");
+        assert_eq!(curl_max_time_arg(&AttemptLimits::new(Duration::ZERO)), "0.001");
+    }
 
     #[test]
     fn description_includes_command() {

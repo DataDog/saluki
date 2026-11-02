@@ -4521,6 +4521,7 @@ dependencies = [
  "futures",
  "k8s-openapi",
  "kube",
+ "panoramic-courier",
  "rand 0.10.3",
  "rustls",
  "rustls-cng-crypto",

@@ -13,21 +13,21 @@ pub const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Pause between polling attempts.
 pub const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Shortest request limit, so curl never gets `--max-time 0`, which disables its limit.
+/// Minimum request limit; some tools treat zero as unlimited.
 const MIN_REQUEST: Duration = Duration::from_millis(1);
 
 /// Limits for one polling attempt.
 ///
-/// A timed-out attempt abandons its Docker exec without stopping it, so a request sent from inside the target container
-/// bounds itself with `request`. The request gets half of the attempt, reserving the rest for Docker, so a target that
-/// accepts the connection but never answers normally fails the request before the attempt times out. This is not
-/// guaranteed: Docker overhead can exceed the reserve, and the 1 ms floor can exceed an attempt that is nearly spent.
+/// The request gets half of the attempt, reserving the rest for transport overhead so a slow endpoint can report its
+/// own timeout. Overhead can exceed the reserve, and the request's minimum can exceed a nearly spent attempt.
 #[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct AttemptLimits {
     /// Limit for the whole attempt.
     pub attempt: Duration,
-    /// Limit for a request sent from inside the target container.
-    pub(crate) request: Duration,
+    /// Limit for a request sent from inside a participant. The request bounds itself because it can keep running
+    /// after the attempt is abandoned.
+    pub request: Duration,
 }
 
 impl AttemptLimits {
@@ -38,11 +38,6 @@ impl AttemptLimits {
             attempt,
             request: (attempt / 2).max(MIN_REQUEST),
         }
-    }
-
-    /// Returns `request` as a curl `--max-time` value.
-    pub fn curl_max_time(&self) -> String {
-        format!("{:.3}", self.request.as_secs_f64())
     }
 }
 
@@ -116,11 +111,10 @@ mod tests {
         let short = AttemptLimits::new(Duration::from_secs(3));
         assert_eq!(short.attempt, Duration::from_secs(3));
         assert_eq!(short.request, Duration::from_millis(1500));
-        assert_eq!(short.curl_max_time(), "1.500");
 
         let spent = AttemptLimits::new(Duration::ZERO);
         assert_eq!(spent.attempt, Duration::ZERO);
-        assert_eq!(spent.curl_max_time(), "0.001", "curl treats a zero limit as no limit");
+        assert_eq!(spent.request, Duration::from_millis(1));
     }
 
     #[tokio::test]

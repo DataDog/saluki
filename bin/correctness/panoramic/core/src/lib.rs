@@ -11,6 +11,7 @@ pub mod case;
 pub mod deadline;
 pub mod endpoint;
 pub mod events;
+mod handle;
 pub mod interrupts;
 pub mod layout;
 pub mod ledger;

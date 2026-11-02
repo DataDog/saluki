@@ -8,7 +8,7 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde_json::Value;
 use tokio::time::Instant;
 
-use super::{docker_exec, Action};
+use super::{curl_max_time_arg, docker_exec, Action};
 use crate::assertions::{AssertionContext, Attempts};
 
 pub(super) struct CoreAgentConfigSetAction {
@@ -254,7 +254,7 @@ impl Setter {
 impl ContainerRequest {
     /// Returns the script that sends the request, bounded by `limits`.
     fn command(&self, limits: &AttemptLimits) -> Vec<String> {
-        let max_time = limits.curl_max_time();
+        let max_time = curl_max_time_arg(limits);
         if self.windows {
             let script = format!(
                 "$tok = Get-Content -Raw 'C:\\ProgramData\\Datadog\\auth_token'; curl.exe -ks --max-time {} -X POST -H \"Authorization: Bearer $tok\" --data-urlencode \"value={}\" \"{}\" -o NUL -w \"%{{http_code}}\"",
@@ -348,7 +348,7 @@ mod tests {
     use serde_json::Value;
     use tokio_util::sync::CancellationToken;
 
-    use super::{CoreAgentConfigSetAction, Setter};
+    use super::{curl_max_time_arg, CoreAgentConfigSetAction, Setter};
     use crate::actions::test_docker::{curl_max_time, Exec, FakeDocker};
     use crate::actions::Action as _;
     use crate::assertions::test_support::host_context;
@@ -395,7 +395,7 @@ mod tests {
                 let limits = AttemptLimits::new(remaining);
                 let command = request.command(&limits);
                 let script = command.last().expect("the command should end with its script");
-                let max_time = format!(" --max-time {} ", limits.curl_max_time());
+                let max_time = format!(" --max-time {} ", curl_max_time_arg(&limits));
                 assert!(script.contains(&max_time), "{target_os:?}, {remaining:?}: {script}");
             }
         }

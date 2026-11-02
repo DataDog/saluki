@@ -9,7 +9,7 @@ const PERMITTED: &[(&str, &[&str])] = &[
         "panoramic",
         &["panoramic-core", "panoramic-participants", "panoramic-steps"],
     ),
-    ("panoramic-core", &[]),
+    ("panoramic-core", &["panoramic-courier"]),
     ("panoramic-courier", &[]),
     ("panoramic-participants", &["panoramic-core"]),
     ("panoramic-steps", &["panoramic-core"]),
@@ -92,7 +92,10 @@ fn workspace_metadata() -> Value {
             },
             {
                 "name": "panoramic-core",
-                "dependencies": [{"name": "airlock", "kind": null}]
+                "dependencies": [
+                    {"name": "airlock", "kind": null},
+                    {"name": "panoramic-courier", "kind": null}
+                ]
             },
             {
                 "name": "panoramic-participants",
@@ -147,6 +150,7 @@ fn a_forbidden_panoramic_dependency_is_reported_for_every_dependency_kind() {
         ),
         (1, "panoramic-steps", "normal", None, None),
         (2, "panoramic-steps", "build", None, None),
+        (4, "panoramic-core", "normal", None, None),
     ] {
         metadata["packages"][index]["dependencies"]
             .as_array_mut()
@@ -162,7 +166,8 @@ fn a_forbidden_panoramic_dependency_is_reported_for_every_dependency_kind() {
     assert_eq!(
         violations(&metadata),
         [
-            "panoramic-core has a normal dependency on panoramic-steps; permitted panoramic dependencies: []",
+            "panoramic-core has a normal dependency on panoramic-steps; permitted panoramic dependencies: [\"panoramic-courier\"]",
+            "panoramic-courier has a normal dependency on panoramic-core; permitted panoramic dependencies: []",
             "panoramic-participants has a build dependency on panoramic-steps; permitted panoramic dependencies: [\"panoramic-core\"]",
             "panoramic-steps has a dev dependency on panoramic-participants; permitted panoramic dependencies: [\"panoramic-core\"]",
         ]

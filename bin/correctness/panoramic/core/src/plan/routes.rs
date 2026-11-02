@@ -83,8 +83,10 @@ pub(super) fn address(
 
 #[cfg(test)]
 mod tests {
+    use panoramic_courier::Target;
+
     use super::*;
-    use crate::layout::Os;
+    use crate::{backend::courier, layout::Os};
 
     const LINUX_CONTAINER: Realization = Realization {
         os: Os::Linux,
@@ -187,6 +189,42 @@ mod tests {
             let resolved = address(route, "server", &endpoint, None);
             assert_eq!(resolved.kind, endpoint.kind);
             assert_eq!(resolved.url, expected);
+        }
+    }
+
+    #[test]
+    fn rendered_addresses_agree_with_courier_targets() {
+        for route in [Route::ByName, Route::Loopback, Route::RunnerHostPort] {
+            for endpoint in [
+                Endpoint::tcp(Port::Fixed(80)),
+                Endpoint::udp(Port::Fixed(80)),
+                Endpoint::http(Port::Fixed(80)),
+                Endpoint::grpc(Port::Fixed(80)),
+            ] {
+                let resolved = address(route, "server", &endpoint, Some(20000));
+                let expected = if matches!(endpoint.kind, EndpointKind::Http | EndpointKind::Grpc) {
+                    assert!(Target::parse(&resolved.url).is_err());
+                    Target::parse(&format!(
+                        "tcp://{}:{}",
+                        resolved.host.as_ref().unwrap(),
+                        resolved.port.unwrap(),
+                    ))
+                    .unwrap()
+                } else {
+                    Target::parse(&resolved.url).unwrap()
+                };
+                assert_eq!(courier::target(&resolved).unwrap(), expected, "{route:?}");
+            }
+        }
+        for endpoint in [
+            Endpoint::unix_datagram("/airlock/srv/shared/a.sock"),
+            Endpoint::unix_stream("/airlock/srv/shared/a.sock"),
+        ] {
+            let resolved = address(Route::SharedFilesystem, "server", &endpoint, None);
+            assert_eq!(
+                courier::target(&resolved).unwrap(),
+                Target::parse(&resolved.url).unwrap()
+            );
         }
     }
 
