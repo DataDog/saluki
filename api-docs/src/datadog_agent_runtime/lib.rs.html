@@ -57,73 +57,71 @@
 <a href=#57 id=57 data-nosnippet>57</a>//!
 <a href=#58 id=58 data-nosnippet>58</a>//! - the health registry's worker, and [`ResourceTelemetryWorker`][saluki_app::accounting::ResourceTelemetryWorker]
 <a href=#59 id=59 data-nosnippet>59</a>//! - [`InternalTelemetryAPIWorker`][saluki_core::observability::metrics::InternalTelemetryAPIWorker], for `/metrics`
-<a href=#60 id=60 data-nosnippet>60</a>//!   and `/compat/metrics`
-<a href=#61 id=61 data-nosnippet>61</a>//! - [`DynamicLogLevelWorker`][saluki_app::logging::DynamicLogLevelWorker], fed by
-<a href=#62 id=62 data-nosnippet>62</a>//!   [`LoggingTranslator::translate_log_levels`][logging::LoggingTranslator::translate_log_levels]
-<a href=#63 id=63 data-nosnippet>63</a>//! - [`ConfigWorker`][saluki_app::config::ConfigWorker] for `/config`, and
-<a href=#64 id=64 data-nosnippet>64</a>//!   [`ConfigRuntimeWorker`][control_plane::ConfigRuntimeWorker] for `/config/runtime`
-<a href=#65 id=65 data-nosnippet>65</a>//! - the unprivileged and privileged API endpoints, built with [`APIBuilder`][saluki_app::api::APIBuilder], where the
-<a href=#66 id=66 data-nosnippet>66</a>//!   privileged endpoint requires the Agent IPC certificate
-<a href=#67 id=67 data-nosnippet>67</a>//! - the `remote-agent` supervisor from [`RemoteAgent::create_remote_agent_supervisor`][facade::RemoteAgent::create_remote_agent_supervisor]
-<a href=#68 id=68 data-nosnippet>68</a>//!
-<a href=#69 id=69 data-nosnippet>69</a>//! These workers publish their routes as dynamic routes, so whichever API endpoint runs in the same supervision tree
-<a href=#70 id=70 data-nosnippet>70</a>//! serves them.
-<a href=#71 id=71 data-nosnippet>71</a>//!
-<a href=#72 id=72 data-nosnippet>72</a>//! # Hooks
-<a href=#73 id=73 data-nosnippet>73</a>//!
-<a href=#74 id=74 data-nosnippet>74</a>//! A remote agent can:
-<a href=#75 id=75 data-nosnippet>75</a>//!
-<a href=#76 id=76 data-nosnippet>76</a>//! - add sections to the status output with [`StatusSectionProvider`][remote_agent::StatusSectionProvider]
-<a href=#77 id=77 data-nosnippet>77</a>//! - select and rename the internal metrics reported to the Datadog Agent as telemetry
-<a href=#78 id=78 data-nosnippet>78</a>//! - serve `/compat/metrics` with its own remapping rules
-<a href=#79 id=79 data-nosnippet>79</a>//! - serve its own routes on the unprivileged and privileged API endpoints
-<a href=#80 id=80 data-nosnippet>80</a>//!
-<a href=#81 id=81 data-nosnippet>81</a>//! Its [`LoggingTranslator`][logging::LoggingTranslator] sets its default log file and adds its own crates to the
-<a href=#82 id=82 data-nosnippet>82</a>//! first-party log targets that a plain log level applies to.
+<a href=#60 id=60 data-nosnippet>60</a>//! - [`DynamicLogLevelWorker`][saluki_app::logging::DynamicLogLevelWorker], fed by
+<a href=#61 id=61 data-nosnippet>61</a>//!   [`LoggingTranslator::translate_log_levels`][logging::LoggingTranslator::translate_log_levels]
+<a href=#62 id=62 data-nosnippet>62</a>//! - [`ConfigWorker`][saluki_app::config::ConfigWorker] for `/config`, and
+<a href=#63 id=63 data-nosnippet>63</a>//!   [`ConfigRuntimeWorker`][control_plane::ConfigRuntimeWorker] for `/config/runtime`
+<a href=#64 id=64 data-nosnippet>64</a>//! - the unprivileged and privileged API endpoints, built with [`APIBuilder`][saluki_app::api::APIBuilder], where the
+<a href=#65 id=65 data-nosnippet>65</a>//!   privileged endpoint requires the Agent IPC certificate
+<a href=#66 id=66 data-nosnippet>66</a>//! - the `remote-agent` supervisor from [`RemoteAgent::create_remote_agent_supervisor`][facade::RemoteAgent::create_remote_agent_supervisor]
+<a href=#67 id=67 data-nosnippet>67</a>//!
+<a href=#68 id=68 data-nosnippet>68</a>//! These workers publish their routes as dynamic routes, so whichever API endpoint runs in the same supervision tree
+<a href=#69 id=69 data-nosnippet>69</a>//! serves them.
+<a href=#70 id=70 data-nosnippet>70</a>//!
+<a href=#71 id=71 data-nosnippet>71</a>//! # Hooks
+<a href=#72 id=72 data-nosnippet>72</a>//!
+<a href=#73 id=73 data-nosnippet>73</a>//! A remote agent can:
+<a href=#74 id=74 data-nosnippet>74</a>//!
+<a href=#75 id=75 data-nosnippet>75</a>//! - add sections to the status output with [`StatusSectionProvider`][remote_agent::StatusSectionProvider]
+<a href=#76 id=76 data-nosnippet>76</a>//! - select and rename the internal metrics reported to the Datadog Agent as telemetry
+<a href=#77 id=77 data-nosnippet>77</a>//! - serve its own routes on the unprivileged and privileged API endpoints
+<a href=#78 id=78 data-nosnippet>78</a>//!
+<a href=#79 id=79 data-nosnippet>79</a>//! Its [`LoggingTranslator`][logging::LoggingTranslator] sets its default log file and adds its own crates to the
+<a href=#80 id=80 data-nosnippet>80</a>//! first-party log targets that a plain log level applies to.
+<a href=#81 id=81 data-nosnippet>81</a>//!
+<a href=#82 id=82 data-nosnippet>82</a>//! # Building blocks
 <a href=#83 id=83 data-nosnippet>83</a>//!
-<a href=#84 id=84 data-nosnippet>84</a>//! # Building blocks
+<a href=#84 id=84 data-nosnippet>84</a>//! Each module can also be used on its own, without the facade:
 <a href=#85 id=85 data-nosnippet>85</a>//!
-<a href=#86 id=86 data-nosnippet>86</a>//! Each module can also be used on its own, without the facade:
-<a href=#87 id=87 data-nosnippet>87</a>//!
-<a href=#88 id=88 data-nosnippet>88</a>//! - [`remote_agent`]: registration, the configuration stream, and the workers that serve the status, flare, and
-<a href=#89 id=89 data-nosnippet>89</a>//!   telemetry services
-<a href=#90 id=90 data-nosnippet>90</a>//! - [`logging`]: translation of the Datadog Agent's logging settings and runtime log level changes
-<a href=#91 id=91 data-nosnippet>91</a>//! - [`env`](mod@env): the host, autodiscovery, and workload providers
-<a href=#92 id=92 data-nosnippet>92</a>//! - [`control_plane`]: workers that serve the internal APIs and keep the configuration current
+<a href=#86 id=86 data-nosnippet>86</a>//! - [`remote_agent`]: registration, the configuration stream, and the workers that serve the status, flare, and
+<a href=#87 id=87 data-nosnippet>87</a>//!   telemetry services
+<a href=#88 id=88 data-nosnippet>88</a>//! - [`logging`]: translation of the Datadog Agent's logging settings and runtime log level changes
+<a href=#89 id=89 data-nosnippet>89</a>//! - [`env`](mod@env): the host, autodiscovery, and workload providers
+<a href=#90 id=90 data-nosnippet>90</a>//! - [`control_plane`]: workers that serve the internal APIs and keep the configuration current
+<a href=#91 id=91 data-nosnippet>91</a>//!
+<a href=#92 id=92 data-nosnippet>92</a>//! # Conventions
 <a href=#93 id=93 data-nosnippet>93</a>//!
-<a href=#94 id=94 data-nosnippet>94</a>//! # Conventions
-<a href=#95 id=95 data-nosnippet>95</a>//!
-<a href=#96 id=96 data-nosnippet>96</a>//! Constructors don't spawn tasks. Long-running work is returned as a
-<a href=#97 id=97 data-nosnippet>97</a>//! [`Supervisable`][saluki_core::runtime::Supervisable] worker or [`Supervisor`][saluki_core::runtime::Supervisor] for
-<a href=#98 id=98 data-nosnippet>98</a>//! the caller to place in its supervision tree.
-<a href=#99 id=99 data-nosnippet>99</a>//!
-<a href=#100 id=100 data-nosnippet>100</a>//! [`RemoteAgentBootstrap`][remote_agent::RemoteAgentBootstrap] is the one exception for now. Registration has to
-<a href=#101 id=101 data-nosnippet>101</a>//! finish before the supervision tree exists, so [`RemoteAgentBootstrap::new`][remote_agent::RemoteAgentBootstrap::new]
-<a href=#102 id=102 data-nosnippet>102</a>//! spawns the registration loop, and
-<a href=#103 id=103 data-nosnippet>103</a>//! [`RemoteAgentBootstrap::create_config_stream`][remote_agent::RemoteAgentBootstrap::create_config_stream] spawns the
-<a href=#104 id=104 data-nosnippet>104</a>//! configuration stream loop. Neither task is supervised, and neither stops on shutdown.
-<a href=#105 id=105 data-nosnippet>105</a>//!
-<a href=#106 id=106 data-nosnippet>106</a>//! Each subsystem that talks to the Datadog Agent opens its own connection with
-<a href=#107 id=107 data-nosnippet>107</a>//! [`RemoteAgentClient::connect`][datadog_agent_commons::ipc::client::RemoteAgentClient::connect], rather than sharing a
-<a href=#108 id=108 data-nosnippet>108</a>//! clone of another subsystem's client.
-<a href=#109 id=109 data-nosnippet>109</a>//!
-<a href=#110 id=110 data-nosnippet>110</a>//! Code in this crate logs under the `datadog_agent_runtime` target, which the `datadog_agent` prefix in
-<a href=#111 id=111 data-nosnippet>111</a>//! [`FIRST_PARTY_LOG_TARGETS`][logging::FIRST_PARTY_LOG_TARGETS] covers.
+<a href=#94 id=94 data-nosnippet>94</a>//! Constructors don't spawn tasks. Long-running work is returned as a
+<a href=#95 id=95 data-nosnippet>95</a>//! [`Supervisable`][saluki_core::runtime::Supervisable] worker or [`Supervisor`][saluki_core::runtime::Supervisor] for
+<a href=#96 id=96 data-nosnippet>96</a>//! the caller to place in its supervision tree.
+<a href=#97 id=97 data-nosnippet>97</a>//!
+<a href=#98 id=98 data-nosnippet>98</a>//! [`RemoteAgentBootstrap`][remote_agent::RemoteAgentBootstrap] is the one exception for now. Registration has to
+<a href=#99 id=99 data-nosnippet>99</a>//! finish before the supervision tree exists, so [`RemoteAgentBootstrap::new`][remote_agent::RemoteAgentBootstrap::new]
+<a href=#100 id=100 data-nosnippet>100</a>//! spawns the registration loop, and
+<a href=#101 id=101 data-nosnippet>101</a>//! [`RemoteAgentBootstrap::create_config_stream`][remote_agent::RemoteAgentBootstrap::create_config_stream] spawns the
+<a href=#102 id=102 data-nosnippet>102</a>//! configuration stream loop. Neither task is supervised, and neither stops on shutdown.
+<a href=#103 id=103 data-nosnippet>103</a>//!
+<a href=#104 id=104 data-nosnippet>104</a>//! Each subsystem that talks to the Datadog Agent opens its own connection with
+<a href=#105 id=105 data-nosnippet>105</a>//! [`RemoteAgentClient::connect`][datadog_agent_commons::ipc::client::RemoteAgentClient::connect], rather than sharing a
+<a href=#106 id=106 data-nosnippet>106</a>//! clone of another subsystem's client.
+<a href=#107 id=107 data-nosnippet>107</a>//!
+<a href=#108 id=108 data-nosnippet>108</a>//! Code in this crate logs under the `datadog_agent_runtime` target, which the `datadog_agent` prefix in
+<a href=#109 id=109 data-nosnippet>109</a>//! [`FIRST_PARTY_LOG_TARGETS`][logging::FIRST_PARTY_LOG_TARGETS] covers.
+<a href=#110 id=110 data-nosnippet>110</a>//!
+<a href=#111 id=111 data-nosnippet>111</a>//! # Features
 <a href=#112 id=112 data-nosnippet>112</a>//!
-<a href=#113 id=113 data-nosnippet>113</a>//! # Features
-<a href=#114 id=114 data-nosnippet>114</a>//!
-<a href=#115 id=115 data-nosnippet>115</a>//! - `taskdump`: includes a Tokio task dump (`runtime-dump.txt`) in flares. Tokio only supports task dumps on Linux, on
-<a href=#116 id=116 data-nosnippet>116</a>//!   `aarch64`, `x86`, `x86_64`, and `s390x`, so the feature does nothing on any other target. On those targets, the
-<a href=#117 id=117 data-nosnippet>117</a>//!   build also requires `--cfg tokio_unstable`.
-<a href=#118 id=118 data-nosnippet>118</a></span><span class="attr">#![deny(missing_docs)]
+<a href=#113 id=113 data-nosnippet>113</a>//! - `taskdump`: includes a Tokio task dump (`runtime-dump.txt`) in flares. Tokio only supports task dumps on Linux, on
+<a href=#114 id=114 data-nosnippet>114</a>//!   `aarch64`, `x86`, `x86_64`, and `s390x`, so the feature does nothing on any other target. On those targets, the
+<a href=#115 id=115 data-nosnippet>115</a>//!   build also requires `--cfg tokio_unstable`.
+<a href=#116 id=116 data-nosnippet>116</a></span><span class="attr">#![deny(missing_docs)]
+<a href=#117 id=117 data-nosnippet>117</a>
+<a href=#118 id=118 data-nosnippet>118</a></span><span class="kw">pub mod </span>control_plane;
 <a href=#119 id=119 data-nosnippet>119</a>
-<a href=#120 id=120 data-nosnippet>120</a></span><span class="kw">pub mod </span>control_plane;
+<a href=#120 id=120 data-nosnippet>120</a><span class="kw">pub mod </span>env;
 <a href=#121 id=121 data-nosnippet>121</a>
-<a href=#122 id=122 data-nosnippet>122</a><span class="kw">pub mod </span>env;
+<a href=#122 id=122 data-nosnippet>122</a><span class="kw">pub mod </span>facade;
 <a href=#123 id=123 data-nosnippet>123</a>
-<a href=#124 id=124 data-nosnippet>124</a><span class="kw">pub mod </span>facade;
+<a href=#124 id=124 data-nosnippet>124</a><span class="kw">pub mod </span>logging;
 <a href=#125 id=125 data-nosnippet>125</a>
-<a href=#126 id=126 data-nosnippet>126</a><span class="kw">pub mod </span>logging;
-<a href=#127 id=127 data-nosnippet>127</a>
-<a href=#128 id=128 data-nosnippet>128</a><span class="kw">pub mod </span>remote_agent;
+<a href=#126 id=126 data-nosnippet>126</a><span class="kw">pub mod </span>remote_agent;
 </code></pre></div></section></main></body></html>

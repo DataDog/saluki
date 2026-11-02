@@ -656,11 +656,11 @@
 <a href=#656 id=656 data-nosnippet>656</a>    }
 <a href=#657 id=657 data-nosnippet>657</a>
 <a href=#658 id=658 data-nosnippet>658</a>    <span class="attr">#[tokio::test]
-<a href=#659 id=659 data-nosnippet>659</a>    </span><span class="kw">async fn </span>scrape_routes_serve_raw_compat_and_404() {
+<a href=#659 id=659 data-nosnippet>659</a>    </span><span class="kw">async fn </span>scrape_routes_serve_raw_additional_and_404() {
 <a href=#660 id=660 data-nosnippet>660</a>        <span class="kw">let </span>payload = Arc::new(RwLock::new(<span class="string">"raw"</span>.to_string()));
 <a href=#661 id=661 data-nosnippet>661</a>        <span class="kw">let </span>routes = <span class="macro">vec!</span>[PrometheusAdditionalRoute {
-<a href=#662 id=662 data-nosnippet>662</a>            path: <span class="string">"/compat/metrics"</span>.to_string(),
-<a href=#663 id=663 data-nosnippet>663</a>            provider: Arc::new(|| <span class="string">"compat"</span>.to_string()),
+<a href=#662 id=662 data-nosnippet>662</a>            path: <span class="string">"/additional/metrics"</span>.to_string(),
+<a href=#663 id=663 data-nosnippet>663</a>            provider: Arc::new(|| <span class="string">"additional"</span>.to_string()),
 <a href=#664 id=664 data-nosnippet>664</a>        }];
 <a href=#665 id=665 data-nosnippet>665</a>
 <a href=#666 id=666 data-nosnippet>666</a>        <span class="kw">let </span>raw_response = build_scrape_response(<span class="string">"/metrics"</span>, <span class="kw-2">&amp;</span>payload, <span class="kw-2">&amp;</span>routes).<span class="kw">await</span>;
@@ -683,15 +683,15 @@
 <a href=#683 id=683 data-nosnippet>683</a>            .to_bytes();
 <a href=#684 id=684 data-nosnippet>684</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;</span>legacy_body[..], <span class="string">b"raw"</span>);
 <a href=#685 id=685 data-nosnippet>685</a>
-<a href=#686 id=686 data-nosnippet>686</a>        <span class="kw">let </span>compat_response = build_scrape_response(<span class="string">"/compat/metrics"</span>, <span class="kw-2">&amp;</span>payload, <span class="kw-2">&amp;</span>routes).<span class="kw">await</span>;
-<a href=#687 id=687 data-nosnippet>687</a>        <span class="macro">assert_eq!</span>(compat_response.status(), StatusCode::OK);
-<a href=#688 id=688 data-nosnippet>688</a>        <span class="kw">let </span>compat_body = compat_response
+<a href=#686 id=686 data-nosnippet>686</a>        <span class="kw">let </span>additional_response = build_scrape_response(<span class="string">"/additional/metrics"</span>, <span class="kw-2">&amp;</span>payload, <span class="kw-2">&amp;</span>routes).<span class="kw">await</span>;
+<a href=#687 id=687 data-nosnippet>687</a>        <span class="macro">assert_eq!</span>(additional_response.status(), StatusCode::OK);
+<a href=#688 id=688 data-nosnippet>688</a>        <span class="kw">let </span>additional_body = additional_response
 <a href=#689 id=689 data-nosnippet>689</a>            .into_body()
 <a href=#690 id=690 data-nosnippet>690</a>            .collect()
 <a href=#691 id=691 data-nosnippet>691</a>            .<span class="kw">await
 <a href=#692 id=692 data-nosnippet>692</a>            </span>.expect(<span class="string">"body should collect"</span>)
 <a href=#693 id=693 data-nosnippet>693</a>            .to_bytes();
-<a href=#694 id=694 data-nosnippet>694</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;</span>compat_body[..], <span class="string">b"compat"</span>);
+<a href=#694 id=694 data-nosnippet>694</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;</span>additional_body[..], <span class="string">b"additional"</span>);
 <a href=#695 id=695 data-nosnippet>695</a>
 <a href=#696 id=696 data-nosnippet>696</a>        <span class="kw">let </span>missing_response = build_scrape_response(<span class="string">"/missing"</span>, <span class="kw-2">&amp;</span>payload, <span class="kw-2">&amp;</span>routes).<span class="kw">await</span>;
 <a href=#697 id=697 data-nosnippet>697</a>        <span class="macro">assert_eq!</span>(missing_response.status(), StatusCode::NOT_FOUND);
