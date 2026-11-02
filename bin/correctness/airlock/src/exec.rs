@@ -19,6 +19,8 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::io::AsyncWriteExt as _;
 use tracing::debug;
 
+use crate::docker::redacted_docker_error;
+
 /// A command, additional environment variables, and optional stdin bytes.
 pub struct ExecRequest {
     cmd: Vec<String>,
@@ -240,12 +242,12 @@ fn create_options(request: &ExecRequest) -> Result<CreateExecOptions<String>, Ge
     })
 }
 
-fn chunk(frame: LogOutput) -> Result<OutputChunk, GenericError> {
+pub(crate) fn chunk(frame: LogOutput) -> Result<OutputChunk, GenericError> {
     match frame {
         LogOutput::StdOut { message } => Ok(OutputChunk::Stdout(message)),
         LogOutput::StdErr { message } => Ok(OutputChunk::Stderr(message)),
-        LogOutput::StdIn { .. } => Err(generic_error!("Unexpected stdin frame in exec output")),
-        LogOutput::Console { .. } => Err(generic_error!("Unexpected console frame in exec output")),
+        LogOutput::StdIn { .. } => Err(generic_error!("Unexpected stdin frame in output")),
+        LogOutput::Console { .. } => Err(generic_error!("Unexpected console frame in output")),
     }
 }
 
@@ -266,26 +268,11 @@ fn exit_code(container: &str, exec_id: &str, inspect: &ExecInspectResponse) -> R
 fn docker_error(action: &str, container: &str, exec_id: Option<&str>, error: Error) -> GenericError {
     let exec = exec_id.map_or_else(|| "exec".to_string(), |id| format!("exec '{id}'"));
     let context = format!("Failed to {action} {exec} in container '{container}'");
-    // Response bodies and stream errors can echo command arguments, environment values, or stdin.
     match error {
         Error::DockerResponseServerError { status_code: 409, .. } => {
             generic_error!("{context}: container is not running (Docker HTTP 409)")
         }
-        Error::DockerResponseServerError { status_code: 404, .. } => {
-            generic_error!("{context}: no such container or exec (Docker HTTP 404)")
-        }
-        Error::DockerResponseServerError { status_code, .. } => {
-            generic_error!("{context}: Docker HTTP {status_code}")
-        }
-        Error::JsonDataError { .. } => generic_error!("{context}: Docker returned invalid JSON data"),
-        Error::DockerStreamError { .. } => generic_error!("{context}: Docker output stream failed"),
-        Error::IOError { .. }
-        | Error::HyperResponseError { .. }
-        | Error::RequestTimeoutError
-        | Error::HttpClientError { .. }
-        | Error::HyperLegacyError { .. }
-        | Error::SocketNotFoundError { .. } => generic_error!(error).context(context),
-        _ => generic_error!("{context}: Docker communication failed"),
+        error => redacted_docker_error(context, "no such container or exec", error),
     }
 }
 

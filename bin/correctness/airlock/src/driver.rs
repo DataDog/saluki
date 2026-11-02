@@ -34,6 +34,7 @@ use crate::{
     config::{DatadogIntakeConfig, MillstoneConfig, TargetConfig},
     exec::{self, ExecOutput, ExecRequest, ExecStream},
     files::{self, ContainerFile},
+    observe::{self, ContainerExit, LogStream},
 };
 
 const MILLSTONE_CONFIG_PATH_INTERNAL: &str = "/etc/millstone/config.toml";
@@ -856,7 +857,8 @@ impl Driver {
             .await?;
 
         self.start_container_inner(&container_name).await?;
-        self.wait_for_container_exit_inner(&container_name).await?;
+        // The legacy permission fix-up ignores the exit code.
+        let _exit = observe::wait(&self.docker, &container_name).await?;
         self.cleanup_inner(&container_name).await?;
 
         Ok(())
@@ -955,7 +957,7 @@ impl Driver {
         Ok(response.id)
     }
 
-    async fn create_container(&self) -> Result<(), GenericError> {
+    async fn create_container(&self) -> Result<String, GenericError> {
         debug!(
             driver_id = self.config.driver_id,
             isolation_group = self.isolation_group_id,
@@ -983,7 +985,7 @@ impl Driver {
             container_id
         );
 
-        Ok(())
+        Ok(container_id)
     }
 
     async fn start_container_inner(&self, container_name: &str) -> Result<DriverDetails, GenericError> {
@@ -1111,6 +1113,8 @@ impl Driver {
 
     /// Creates the container and connects its networks; call [`Self::start_container`] to start it.
     ///
+    /// Returns the full container ID from Docker.
+    ///
     /// Drivers built with [`Self::from_config`] also provision shared resources and pull images. On Linux, they
     /// mount host resources for origin detection and share the host PID namespace. Drivers from an
     /// [`IsolationGroup`](crate::group::IsolationGroup) reuse its prepared resources, require a local image, and
@@ -1118,8 +1122,9 @@ impl Driver {
     ///
     /// # Errors
     ///
-    /// Returns any error from provisioning, container creation, or network connection.
-    pub async fn create(&self) -> Result<(), GenericError> {
+    /// Returns any error from provisioning, container creation, or network connection, even if the container
+    /// was created before the network connection failed.
+    pub async fn create(&self) -> Result<String, GenericError> {
         match self.provisioning {
             Provisioning::OnCreate => {
                 self.create_network_if_missing().await?;
@@ -1132,8 +1137,9 @@ impl Driver {
             Provisioning::Prepared => {}
         }
 
-        self.create_container().await?;
-        self.connect_to_additional_networks().await
+        let container_id = self.create_container().await?;
+        self.connect_to_additional_networks().await?;
+        Ok(container_id)
     }
 
     /// Waits until the container is marked as healthy.
@@ -1203,47 +1209,41 @@ impl Driver {
         }
     }
 
-    async fn wait_for_container_exit_inner(&self, container_name: &str) -> Result<ExitStatus, GenericError> {
-        let mut wait_stream = self.docker.wait_container(container_name, None);
-        match wait_stream.next().await {
-            Some(result) => match result {
-                Ok(response) => {
-                    // When the exit code is non-zero, `bollard` transforms the normal `ContainerWaitResponse` into
-                    // `Error::DockerContainerWaitError`, which is why we have these asserts here to catch any scenario
-                    // where there's _somehow_ an error condition being indicated without it having been transformed into
-                    // `Error::DockerContainerWaitError`.
-                    //
-                    // Essentially, getting to this point should imply successfully exiting, but the API isn't very
-                    // ergonomic in that regard, so we're just making sure.
-                    assert_eq!(response.error, None);
-                    assert_eq!(response.status_code, 0);
-
-                    Ok(ExitStatus::Success)
-                }
-
-                Err(Error::DockerContainerWaitError { error, code }) => {
-                    let error = if error.is_empty() {
-                        String::from("<no error message provided>")
-                    } else {
-                        error
-                    };
-                    Ok(ExitStatus::Failed { code, error })
-                }
-
-                Err(e) => Err(generic_error!("Failed to wait for container to finish: {:?}", e)),
-            },
-            None => unreachable!("Docker wait stream ended unexpectedly."),
-        }
-    }
-
-    /// Waits for the container to finish successfully.
+    /// Returns stdout and stderr from the container's start, followed until it stops.
     ///
-    /// The container's exit status is returned, indicating success (exit code 0) or failure (exit code != 0), including
-    /// any error message related to the failure.
+    /// The container must have been started. Output replays even after exit. The stream also ends when the
+    /// container is removed; use [`Self::wait_exit`] to observe its exit separately. The stream owns its read
+    /// and sends the logs request when first polled. Dropping it cancels only the read, not the container.
     ///
     /// # Errors
     ///
-    /// If an error is encountered while waiting for the container to exit, it will be returned.
+    /// Returns an error if the container has not started, has no state or status, is missing, or inspection fails.
+    /// The stream yields one error and ends if the container is missing, reading logs fails, or Docker sends a
+    /// stdin or console frame. Errors name the container and omit log bytes.
+    pub async fn logs(&self) -> Result<LogStream, GenericError> {
+        observe::logs(&self.docker, &self.container_name).await
+    }
+
+    /// Waits for the container's exit code and Docker error message, including nonzero codes as data.
+    ///
+    /// The container must have been started. Waiting after exit reports the same exit again. The future owns
+    /// its read and sends no request until polled. Dropping it cancels only the read, not the container.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the container has not started, has no state or status, is missing, inspection or
+    /// waiting fails, or the wait ends without an exit status. A Docker exit error message is data, even for code 0.
+    pub fn wait_exit(&self) -> impl Future<Output = Result<ContainerExit, GenericError>> + Send + 'static {
+        observe::wait(&self.docker, &self.container_name)
+    }
+
+    /// Waits for the container to finish and returns its success or failure status.
+    ///
+    /// Success requires exit code 0 and no Docker error message; every other exit is a failed status.
+    ///
+    /// # Errors
+    ///
+    /// Returns any observation error from [`Self::wait_exit`], including a container that has not started.
     pub async fn wait_for_container_exit(&self) -> Result<ExitStatus, GenericError> {
         debug!(
             driver_id = self.config.driver_id,
@@ -1252,12 +1252,20 @@ impl Driver {
             &self.container_name
         );
 
-        let exit_status = self.wait_for_container_exit_inner(&self.container_name).await?;
+        let exit = self.wait_exit().await?;
+        let exit_status = if exit.code == 0 && exit.error.is_none() {
+            ExitStatus::Success
+        } else {
+            ExitStatus::Failed {
+                code: exit.code,
+                error: exit.error.unwrap_or_else(|| "<no error message provided>".to_string()),
+            }
+        };
 
         debug!(
             driver_id = self.config.driver_id,
             isolation_group = self.isolation_group_id,
-            "Container '{}' finished successfully.",
+            "Container '{}' finished: {exit_status}",
             &self.container_name
         );
 
@@ -2135,7 +2143,7 @@ mod tests {
                 ("POST", "/containers/airlock-ab12cd34-volume-fix-up/start")
                 | ("POST", "/containers/airlock-ab12cd34-volume-fix-up/stop")
                 | ("DELETE", "/containers/airlock-ab12cd34-volume-fix-up") => (204, ""),
-                ("GET", "/containers/airlock-ab12cd34-volume-fix-up/json") => (200, "{}"),
+                ("GET", "/containers/airlock-ab12cd34-volume-fix-up/json") => (200, r#"{"State":{"Status":"exited"}}"#),
                 ("POST", "/containers/airlock-ab12cd34-volume-fix-up/wait") => (200, r#"{"StatusCode": 0}"#),
                 _ => (500, r#"{"message": "unexpected request"}"#),
             },

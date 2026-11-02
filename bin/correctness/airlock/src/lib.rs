@@ -4,6 +4,7 @@ pub mod driver;
 pub mod exec;
 pub mod files;
 pub mod group;
+pub mod observe;
 pub mod unix;
 
 #[cfg(test)]

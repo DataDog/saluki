@@ -10,6 +10,7 @@ use airlock::{
     exec::{ExecOutput, ExecRequest, OutputChunk},
     files::ContainerFile,
     group::IsolationGroup,
+    observe::ContainerExit,
 };
 use bollard::{
     errors::Error,
@@ -845,6 +846,90 @@ async fn a_streamed_command_that_ends_reports_its_exit_code() {
         assert_eq!(stderr, b"err\n");
         assert!(stream.next().await.is_none());
         assert_eq!(stream.exit_code().await.unwrap(), 5);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_created_container_reports_its_id_and_streams_its_output_and_exit_code() {
+    let docker = daemon().await;
+    let id = unique_id();
+    in_group(id.clone(), async move {
+        let image = test_image();
+        let group = IsolationGroup::prepare(docker.clone(), &id, &["subject"], &image)
+            .await
+            .unwrap();
+        let driver = group
+            .driver(DriverConfig::from_image("subject", image).with_entrypoint(vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "echo out1; echo err1 >&2; sleep 0.5; echo out2; exit 7".to_string(),
+            ]))
+            .unwrap();
+        let container_id = driver.create().await.unwrap();
+        let inspected = docker
+            .inspect_container(&format!("airlock-{id}-subject"), None)
+            .await
+            .unwrap();
+        assert_eq!(inspected.id.as_ref(), Some(&container_id));
+        assert_eq!(container_id.len(), 64);
+        assert!(container_id.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        driver.start_container().await.unwrap();
+
+        // The second observation starts after exit and must replay the complete output and status.
+        for _ in 0..2 {
+            let mut stream = driver.logs().await.unwrap();
+            let output = async move {
+                let mut stdout = Vec::new();
+                let mut stderr = Vec::new();
+                while let Some(chunk) = stream.next().await {
+                    match chunk.unwrap() {
+                        OutputChunk::Stdout(bytes) => stdout.extend_from_slice(&bytes),
+                        OutputChunk::Stderr(bytes) => stderr.extend_from_slice(&bytes),
+                    }
+                }
+                assert!(stream.next().await.is_none());
+                (stdout, stderr)
+            };
+            let ((stdout, stderr), exit) = tokio::join!(output, driver.wait_exit());
+            assert_eq!(stdout, b"out1\nout2\n");
+            assert_eq!(stderr, b"err1\n");
+            assert_eq!(exit.unwrap(), ContainerExit { code: 7, error: None });
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_container_that_never_started_or_failed_to_start_has_no_exit_or_output() {
+    let docker = daemon().await;
+    let id = unique_id();
+    in_group(id.clone(), async move {
+        let image = test_image();
+        let group = IsolationGroup::prepare(docker, &id, &["unstarted", "failed"], &image)
+            .await
+            .unwrap();
+        for (participant, program) in [("unstarted", "true"), ("failed", "/no/such/program")] {
+            let driver = group
+                .driver(DriverConfig::from_image(participant, image.clone()).with_entrypoint(vec![program.to_string()]))
+                .unwrap();
+            driver.create().await.unwrap();
+            if participant == "failed" {
+                let error = driver.start_container().await.unwrap_err();
+                let diagnostic = format!("{error:#}");
+                assert!(diagnostic.contains("no/such/program"), "{diagnostic}");
+            }
+            let error = driver.wait_exit().await.unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("Container 'airlock-{id}-{participant}' has not started")
+            );
+            let error = driver.logs().await.unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("Container 'airlock-{id}-{participant}' has not started")
+            );
+        }
     })
     .await;
 }

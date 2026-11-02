@@ -1,4 +1,4 @@
-//! Docker daemon connection, image inspection and pull helpers.
+//! Docker daemon connections, image operations, and redacted errors.
 
 use std::time::Duration;
 #[cfg(unix)]
@@ -87,6 +87,27 @@ pub async fn image_id(docker: &Docker, reference: &str) -> Result<Option<String>
 /// Returns an error if the daemon rejects the pull or reports an error in the progress stream.
 pub async fn pull_image(docker: &Docker, reference: &str) -> Result<(), GenericError> {
     finish_pull(docker.create_image(Some(pull_options(reference)), None, None)).await
+}
+
+/// Redacts daemon payloads while retaining operation context and transport error sources.
+pub(crate) fn redacted_docker_error(context: String, not_found: &str, error: Error) -> GenericError {
+    match error {
+        Error::DockerResponseServerError { status_code: 404, .. } => {
+            generic_error!("{context}: {not_found} (Docker HTTP 404)")
+        }
+        Error::DockerResponseServerError { status_code, .. } => {
+            generic_error!("{context}: Docker HTTP {status_code}")
+        }
+        Error::JsonDataError { .. } => generic_error!("{context}: Docker returned invalid JSON data"),
+        Error::DockerStreamError { .. } => generic_error!("{context}: Docker output stream failed"),
+        Error::IOError { .. }
+        | Error::HyperResponseError { .. }
+        | Error::RequestTimeoutError
+        | Error::HttpClientError { .. }
+        | Error::HyperLegacyError { .. }
+        | Error::SocketNotFoundError { .. } => generic_error!(error).context(context),
+        _ => generic_error!("{context}: Docker communication failed"),
+    }
 }
 
 fn pull_options(reference: &str) -> CreateImageOptions {

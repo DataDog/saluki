@@ -3,16 +3,17 @@
 use std::collections::HashSet;
 
 use bollard::{
-    errors::Error,
-    models::{ContainerCreateBody, ContainerWaitResponse, HostConfig, Ipam, NetworkCreateRequest, VolumeCreateRequest},
+    models::{ContainerCreateBody, HostConfig, Ipam, NetworkCreateRequest, VolumeCreateRequest},
     query_parameters::{CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder},
     Docker,
 };
-use futures::StreamExt as _;
 use saluki_error::{generic_error, GenericError};
 use tracing::warn;
 
-use crate::driver::{get_default_airlock_labels, group_resource_name, is_not_found, ContainerOs, Driver, DriverConfig};
+use crate::{
+    driver::{get_default_airlock_labels, group_resource_name, is_not_found, ContainerOs, Driver, DriverConfig},
+    observe,
+};
 
 /// A prepared isolation group with a network, shared volume, and per-participant directories.
 pub struct IsolationGroup {
@@ -142,18 +143,15 @@ impl IsolationGroup {
 
         let result: Result<(), GenericError> = async {
             self.docker.start_container(&container_name, None).await?;
-            match self.docker.wait_container(&container_name, None).next().await {
-                Some(Ok(response)) if response.status_code == 0 => Ok(()),
-                Some(Ok(ContainerWaitResponse { status_code: code, .. }))
-                | Some(Err(Error::DockerContainerWaitError { code, .. })) => Err(generic_error!(
-                    "Isolation group '{}' fix-up exited with code {code}",
-                    self.id
-                )),
-                Some(Err(error)) => Err(error.into()),
-                None => Err(generic_error!(
-                    "Isolation group '{}' fix-up wait ended without a status",
-                    self.id
-                )),
+            let exit = observe::wait(&self.docker, &container_name).await?;
+            if exit.code == 0 {
+                Ok(())
+            } else {
+                Err(generic_error!(
+                    "Isolation group '{}' fix-up exited with code {}",
+                    self.id,
+                    exit.code
+                ))
             }
         }
         .await;
@@ -279,6 +277,7 @@ mod tests {
             ),
             ("POST", "/containers/create") => (201, r#"{"Id":"fix-up","Warnings":[]}"#),
             ("POST", "/containers/airlock-group_fix-up/start") => (204, ""),
+            ("GET", "/containers/airlock-group_fix-up/json") => (200, r#"{"State":{"Status":"exited"}}"#),
             ("POST", "/containers/airlock-group_fix-up/wait") => (200, r#"{"StatusCode":1}"#),
             ("DELETE", "/containers/airlock-group_fix-up") => (204, ""),
             _ => (500, r#"{"message":"unexpected request"}"#),
@@ -304,12 +303,14 @@ mod tests {
                 "POST /volumes/create",
                 "POST /containers/create",
                 "POST /containers/airlock-group_fix-up/start",
+                "GET /containers/airlock-group_fix-up/json",
                 "POST /containers/airlock-group_fix-up/wait",
                 "DELETE /containers/airlock-group_fix-up",
             ]
         );
         assert!(requests[4].contains("name=airlock-group_fix-up"), "{requests:?}");
-        assert!(requests[7].contains("force=true"), "{requests:?}");
+        assert!(requests[7].contains("condition=not-running"), "{requests:?}");
+        assert!(requests[8].contains("force=true"), "{requests:?}");
     }
 
     #[tokio::test]
