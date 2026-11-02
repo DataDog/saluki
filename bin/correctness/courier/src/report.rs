@@ -29,12 +29,12 @@ pub enum Report {
         /// I/O error and destination URL, excluding payload bytes.
         reason: String,
     },
-    /// The command exceeded its whole-process budget.
+    /// Resolving, connecting or writing exceeded the budget shared with reading stdin.
     TimedOut {
         /// Requested budget in milliseconds.
         limit_ms: u64,
     },
-    /// Local I/O, such as reading stdin or creating a socket, failed.
+    /// Local I/O failed, or stdin remained open past the command's budget.
     Failed {
         /// Local failure and destination URL, when applicable.
         reason: String,

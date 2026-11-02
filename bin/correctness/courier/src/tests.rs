@@ -8,7 +8,7 @@ use std::{
 
 use panoramic_courier::Target;
 use tokio::{
-    io::ReadBuf,
+    io::{AsyncWriteExt, ReadBuf},
     net::{TcpListener, UdpSocket},
 };
 
@@ -243,19 +243,53 @@ async fn a_send_the_server_never_reads_times_out_within_its_limit() {
 }
 
 #[tokio::test]
-async fn stdin_that_never_ends_times_out_within_its_limit() {
+async fn stdin_left_open_past_the_limit_is_a_local_failure() {
+    // An exec transport leaving stdin open must fail locally, rather than blame the endpoint for timing out.
     let (reader, _writer) = tokio::io::duplex(64);
     let to = closed_tcp_target().await;
     let invocation = Invocation {
-        command: Command::Send { to },
+        command: Command::Send { to: to.clone() },
         timeout: Duration::from_millis(100),
     };
     let started = Instant::now();
+    let report = within(execute(&invocation, reader)).await;
     assert_eq!(
-        within(execute(&invocation, reader)).await,
-        Report::TimedOut { limit_ms: 100 }
+        report,
+        Report::Failed {
+            reason: format!("{to}: stdin was still open after the 100 ms limit")
+        }
     );
+    assert_eq!(report.exit_code(), 13);
     assert!(started.elapsed() < LIMIT);
+}
+
+// The send must still be blocked when the limit expires. Windows loopback accepts the whole payload
+// without the peer reading it, so the send finishes first there.
+#[cfg(not(windows))]
+#[tokio::test]
+async fn stdin_and_the_send_share_one_time_limit() {
+    within(async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let to = Target::parse(&format!("tcp://{}", listener.local_addr().unwrap())).unwrap();
+        let invocation = Invocation {
+            command: Command::Send { to },
+            timeout: Duration::from_millis(200),
+        };
+        let payload = vec![b'x'; 16 * 1024 * 1024];
+        let (reader, mut writer) = tokio::io::duplex(payload.len());
+        writer.write_all(&payload).await.unwrap();
+        let started = Instant::now();
+        let (report, connection, ()) = tokio::join!(execute(&invocation, reader), listener.accept(), async {
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            drop(writer);
+        });
+        let _connection = connection.unwrap();
+        assert_eq!(report, Report::TimedOut { limit_ms: 200 });
+        let elapsed = started.elapsed();
+        assert!(elapsed < LIMIT);
+        assert!(elapsed < Duration::from_millis(300), "elapsed: {elapsed:?}");
+    })
+    .await;
 }
 
 #[tokio::test]

@@ -412,8 +412,9 @@ its environment defaults. A case pins the port by setting the type's variable in
 No two network listeners of a case's host process groups may share a port on one transport (TCP or UDP).
 A fixed or pinned host port must be outside the pool, `20000–29999`; avoiding collisions across concurrent
 cases is the case author's responsibility.
-A Unix socket is reached at the path its server listens on. A served socket path may use fact references,
-but not references resolved later, such as late facts. `config.endpoints` gives the nonzero port of a listener
+A Unix socket is reached at the path its server listens on. Every served socket path must be absolute for its
+participant's OS, even when nobody consumes it. It may use fact references, but not references resolved later,
+such as late facts. Every listener port must be from 1 to 65535. `config.endpoints` gives the port of a listener
 whose port the type can't derive from configuration. Overriding any other endpoint fails, as does leaving
 such a port out.
 

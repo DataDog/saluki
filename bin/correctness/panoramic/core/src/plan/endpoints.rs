@@ -59,7 +59,7 @@ pub(super) fn derive_endpoints(
         check_rederived(holder, &served, &rederived, &assigned_ports, &assigned_keys)?;
         served = rederived;
     }
-    resolve_listeners(holder, &config, &mut served)?;
+    resolve_listeners(holder, realization.os, &config, &mut served)?;
     let consumed = participant_type.consumes(realization, &config);
     Ok((
         config,
@@ -179,9 +179,9 @@ fn assignment_error(
     format!("{header}: {detail}; a type reports an assigned port only when its configuration sets none")
 }
 
-/// Checks overrides, then fills case-supplied ports and validates socket paths in endpoint name order.
+/// Checks overrides, then resolves and validates listener ports and socket paths in endpoint name order.
 fn resolve_listeners(
-    holder: &str, config: &EffectiveConfig, endpoints: &mut BTreeMap<String, Endpoint>,
+    holder: &str, os: Os, config: &EffectiveConfig, endpoints: &mut BTreeMap<String, Endpoint>,
 ) -> Result<(), String> {
     for (name, overridden) in &config.endpoints {
         let Some(endpoint) = endpoints.get(name) else {
@@ -216,6 +216,11 @@ fn resolve_listeners(
                 };
                 endpoint.listener = Listener::Port(Port::Fixed(overridden.port));
             }
+            Listener::Port(Port::Fixed(0)) => {
+                return Err(format!(
+                    "{holder} serves endpoint '{name}' on port 0; a listener needs a port from 1 to 65535"
+                ));
+            }
             Listener::Path(path) => {
                 if !path
                     .parse::<Template>()
@@ -223,6 +228,18 @@ fn resolve_listeners(
                 {
                     return Err(format!(
                         "{holder} serves endpoint '{name}' at '{path}', which holds a reference resolved only after planning"
+                    ));
+                }
+                let absolute = match os {
+                    Os::Linux | Os::MacOs => path.starts_with('/'),
+                    Os::Windows => {
+                        path.starts_with(['\\', '/'])
+                            || matches!(path.as_bytes(), [drive, b':', b'\\' | b'/', ..] if drive.is_ascii_alphabetic())
+                    }
+                };
+                if !absolute {
+                    return Err(format!(
+                        "{holder} serves endpoint '{name}' at relative path '{path}'; socket paths must be absolute"
                     ));
                 }
             }
@@ -677,6 +694,76 @@ participants:
             plan.effective_config("client").unwrap().env["TARGET"],
             "unix:///airlock/server/shared/stream.sock"
         );
+    }
+
+    #[test]
+    fn a_relative_socket_path_fails_planning_naming_the_endpoint() {
+        for (os, kind, path) in [
+            (Os::Linux, "linux-container", "metrics.sock"),
+            (Os::MacOs, "host-process-group", "metrics.sock"),
+            (Os::Windows, "windows-container", r"run\x.sock"),
+            (Os::Windows, "windows-container", r"C:a.sock"),
+            (Os::Windows, "windows-container", r"1:\a.sock"),
+            (Os::Linux, "linux-container", r"C:\a.sock"),
+            (Os::MacOs, "host-process-group", r"\a.sock"),
+            (Os::Windows, "windows-container", ""),
+        ] {
+            let yaml = PARTICIPANT_FIELDS
+                .replace("[linux]", &format!("[{}]", os.name()))
+                .replace(
+                    "type: server",
+                    &format!("type: file-server, config: {{env: {{SOCKET_PATH: '{path}'}}}}"),
+                );
+            assert_eq!(compile(&yaml, os).err().unwrap().to_string(), format!(
+                "case 'alpha' in cases/alpha/config.yaml: on subject OS '{os}', participant 'subject' of type 'file-server' as {kind} on {os} serves endpoint 'stream' at relative path '{path}'; socket paths must be absolute",
+                os = os.name(),
+            ));
+        }
+    }
+
+    #[test]
+    fn absolute_socket_paths_pass_planning_on_every_os() {
+        for (os, path) in [
+            (Os::Linux, "/a.sock"),
+            (Os::MacOs, "/a.sock"),
+            (Os::Windows, "/a.sock"),
+            (Os::Windows, r"C:\a.sock"),
+            (Os::Windows, r"\a.sock"),
+            (Os::Windows, "c:/a.sock"),
+            (Os::Linux, "/dev/null/metrics.sock"),
+        ] {
+            let yaml = PARTICIPANT_FIELDS
+                .replace("[linux]", &format!("[{}]", os.name()))
+                .replace(
+                    "type: server",
+                    &format!("type: file-server, config: {{env: {{SOCKET_PATH: '{path}'}}}}"),
+                );
+            let plan = compile(&yaml, os).unwrap().unwrap();
+            assert_eq!(plan.effective_config("subject").unwrap().env["SOCKET_PATH"], path);
+        }
+    }
+
+    #[test]
+    fn a_listener_port_of_0_fails_planning() {
+        let yaml = PARTICIPANT_FIELDS.replace("type: server", "type: server, config: {env: {PORT: '0'}}");
+        assert_eq!(compile(&yaml, Os::Linux).err().unwrap().to_string(),
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'subject' of type 'server' as linux-container on linux serves endpoint 'api' on port 0; a listener needs a port from 1 to 65535");
+        for port in [1, u16::MAX] {
+            let plan = compile(&yaml.replace("PORT: '0'", &format!("PORT: '{port}'")), Os::Linux)
+                .unwrap()
+                .unwrap();
+            assert_eq!(plan.effective_config("subject").unwrap().env["PORT"], port.to_string());
+        }
+    }
+
+    #[test]
+    fn a_listener_port_check_runs_on_an_unselected_subject_os() {
+        let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[linux, windows]").replace(
+            "type: server",
+            "type: server, config: {os: {windows: {env: {PORT: '0'}}}}",
+        );
+        assert_eq!(compile(&yaml, Os::Linux).err().unwrap().to_string(),
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'windows', participant 'subject' of type 'server' as windows-container on windows serves endpoint 'api' on port 0; a listener needs a port from 1 to 65535");
     }
 
     #[test]

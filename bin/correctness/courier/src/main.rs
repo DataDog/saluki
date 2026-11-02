@@ -39,21 +39,30 @@ async fn run(args: Vec<OsString>, stdin: impl AsyncRead + Unpin, stderr: &mut im
 
 async fn execute(invocation: &Invocation, mut stdin: impl AsyncRead + Unpin) -> Report {
     let limit_ms = invocation.timeout_ms();
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(limit_ms);
+    let mut payload = Vec::new();
+    if let Command::Send { to } = &invocation.command {
+        match tokio::time::timeout_at(deadline, stdin.read_to_end(&mut payload)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                return Report::Failed {
+                    reason: format!("{to}: reading stdin: {error}"),
+                };
+            }
+            Err(_) => {
+                return Report::Failed {
+                    reason: format!("{to}: stdin was still open after the {limit_ms} ms limit"),
+                };
+            }
+        }
+    }
     let command = async {
         match &invocation.command {
-            Command::Send { to } => {
-                let mut payload = Vec::new();
-                if let Err(error) = stdin.read_to_end(&mut payload).await {
-                    return Report::Failed {
-                        reason: format!("{to}: reading stdin: {error}"),
-                    };
-                }
-                send::send(to, &payload).await
-            }
+            Command::Send { to } => send::send(to, &payload).await,
             Command::Probe { to } => probe::probe(to).await,
         }
     };
-    tokio::time::timeout(Duration::from_millis(limit_ms), command)
+    tokio::time::timeout_at(deadline, command)
         .await
         .unwrap_or(Report::TimedOut { limit_ms })
 }

@@ -146,7 +146,7 @@ impl<'a> Planner<'a> {
     ///    2. Participant facts: no type may declare `shared_dir`.
     ///    3. Per participant in name order: fact and late-fact references in `env`, `params`, then template files;
     ///       configuration; endpoint derivation; port assignment and re-derivation; endpoint overrides; then
-    ///       case-supplied ports and socket paths in endpoint name order.
+    ///       listener ports and socket paths in endpoint name order.
     ///    4. Runner-host listener range and transport uniqueness, per participant and endpoint in name order.
     ///    5. Connections per consumer in name order. For each `connect` key in name order: consumed endpoint,
     ///       served endpoint, accepted kind, route, socket location and length, delivered env keys, then address
