@@ -5,10 +5,10 @@ set -eu
 # Updates Protocol Buffers definitions from their source repositories.
 #
 # Expected environment variables:
-# - DD_AGENT_GIT_TAG: Git tag for the `DataDog/datadog-agent` repository to pull Protocol Buffers definitions from.
-# - AGENT_PAYLOAD_GIT_TAG: Git tag for the `DataDog/agent-payload` repository to pull Protocol Buffers definitions from.
-# - CONTAINERD_GIT_TAG: Git tag for the `containerd/containerd` repository to pull Protocol Buffers definitions from.
-# - SKETCHES_GO_GIT_TAG: Git tag for the `DataDog/sketches-go` repository to pull Protocol Buffers definitions from.
+# - DD_AGENT_GIT_TAG: Git tag, branch, or full commit SHA for the `DataDog/datadog-agent` repository to pull Protocol Buffers definitions from.
+# - AGENT_PAYLOAD_GIT_TAG: Git tag, branch, or full commit SHA for the `DataDog/agent-payload` repository to pull Protocol Buffers definitions from.
+# - CONTAINERD_GIT_TAG: Git tag, branch, or full commit SHA for the `containerd/containerd` repository to pull Protocol Buffers definitions from.
+# - SKETCHES_GO_GIT_TAG: Git tag, branch, or full commit SHA for the `DataDog/sketches-go` repository to pull Protocol Buffers definitions from.
 
 DD_AGENT_GIT_URL="https://github.com/DataDog/datadog-agent.git"
 AGENT_PAYLOAD_GIT_URL="https://github.com/DataDog/agent-payload.git"
@@ -24,18 +24,37 @@ fi
 # Create a temporary directory to clone the repositories into.
 TMP_DIR=$(mktemp -d)
 
-# Clone the repositories at their respective tags. Do a shallow clone.
+# Clones `url` into `${TMP_DIR}` at `ref`, which is a branch, a tag, or a full commit SHA. Does a shallow clone.
+#
+# A commit SHA can't be passed to `git clone --branch`, so those are fetched directly instead. This lets a pin
+# reference a commit that no branch or tag contains yet.
+clone_at_ref() {
+    url="$1"
+    ref="$2"
+    name=$(basename "${url}" .git)
+
+    if printf '%s' "${ref}" | grep -Eq '^[0-9a-f]{40}$'; then
+        git -C "${TMP_DIR}" init --quiet "${name}"
+        git -C "${TMP_DIR}/${name}" remote add origin "${url}"
+        git -C "${TMP_DIR}/${name}" fetch --quiet --depth 1 origin "${ref}"
+        git -C "${TMP_DIR}/${name}" -c advice.detachedHead=false checkout --quiet FETCH_HEAD
+    else
+        git -C "${TMP_DIR}" -c advice.detachedHead=false clone --quiet --depth 1 --branch "${ref}" "${url}"
+    fi
+}
+
+# Clone the repositories at their respective refs.
 echo "[*] Checking out the Datadog Agent repository (${DD_AGENT_GIT_TAG})..."
-git -C ${TMP_DIR} -c advice.detachedHead=false clone --quiet --depth 1 --branch ${DD_AGENT_GIT_TAG} ${DD_AGENT_GIT_URL}
+clone_at_ref ${DD_AGENT_GIT_URL} ${DD_AGENT_GIT_TAG}
 
 echo "[*] Checking out the agent-payload repository (${AGENT_PAYLOAD_GIT_TAG})..."
-git -C ${TMP_DIR} -c advice.detachedHead=false clone --quiet --depth 1 --branch ${AGENT_PAYLOAD_GIT_TAG} ${AGENT_PAYLOAD_GIT_URL}
+clone_at_ref ${AGENT_PAYLOAD_GIT_URL} ${AGENT_PAYLOAD_GIT_TAG}
 
 echo "[*] Checking out the containerd repository (${CONTAINERD_GIT_TAG})..."
-git -C ${TMP_DIR} -c advice.detachedHead=false clone --quiet --depth 1 --branch ${CONTAINERD_GIT_TAG} ${CONTAINERD_GIT_URL}
+clone_at_ref ${CONTAINERD_GIT_URL} ${CONTAINERD_GIT_TAG}
 
 echo "[*] Checking out the sketches-go repository (${SKETCHES_GO_GIT_TAG})..."
-git -C ${TMP_DIR} -c advice.detachedHead=false clone --quiet --depth 1 --branch ${SKETCHES_GO_GIT_TAG} ${SKETCHES_GO_GIT_URL}
+clone_at_ref ${SKETCHES_GO_GIT_URL} ${SKETCHES_GO_GIT_TAG}
 
 # Copy the relevant Protocol Buffers definitions to the appropriate locations.
 echo "[*] Copying Protocol Buffers definitions to lib/protos/*..."
@@ -52,6 +71,11 @@ find lib/protos/datadog/proto/datadog-agent/datadog/ -type f ! -name "*.proto" -
 
 mkdir -p lib/protos/datadog/proto/agent-payload
 cp ${TMP_DIR}/agent-payload/proto/metrics/agent_payload.proto lib/protos/datadog/proto/agent-payload/
+
+## The Datadog Agent's `api.proto` imports `datadog/healthplatform/healthplatform.proto`, which the Agent takes from this
+## repository. Keep the import path so that it resolves with `proto/agent-payload` as an include path.
+mkdir -p lib/protos/datadog/proto/agent-payload/datadog/healthplatform
+cp ${TMP_DIR}/agent-payload/proto/healthplatform/healthplatform.proto lib/protos/datadog/proto/agent-payload/datadog/healthplatform/
 
 ## containerd and containerd-related definitions.
 ##
@@ -75,7 +99,7 @@ This directory contains Protocol Buffers definitions for the Datadog Agent.
 ## Source
 
 **Repository:** ${DD_AGENT_GIT_URL}
-**Branch / Tag**: ${DD_AGENT_GIT_TAG}
+**Branch / Tag / Commit**: ${DD_AGENT_GIT_TAG}
 EOF
 
 cat <<EOF > lib/protos/datadog/proto/agent-payload/README.md
@@ -87,7 +111,7 @@ Agent/Agent Data Plane send telemetry payloads to.
 ## Source
 
 **Repository:** ${AGENT_PAYLOAD_GIT_URL}
-**Branch / Tag**: ${AGENT_PAYLOAD_GIT_TAG}
+**Branch / Tag / Commit**: ${AGENT_PAYLOAD_GIT_TAG}
 EOF
 
 cat <<EOF > lib/protos/containerd/proto/github.com/containerd/containerd/README.md
@@ -98,7 +122,7 @@ This directory contains Protocol Buffers definitions for containerd.
 ## Source
 
 **Repository:** ${CONTAINERD_GIT_URL}
-**Branch / Tag**: ${CONTAINERD_GIT_TAG}
+**Branch / Tag / Commit**: ${CONTAINERD_GIT_TAG}
 EOF
 
 cat <<EOF > lib/protos/datadog/proto/sketches-go/README.md
@@ -109,7 +133,7 @@ This directory contains Protocol Buffers definitions for DDSketch.
 ## Source
 
 **Repository:** ${SKETCHES_GO_GIT_URL}
-**Branch / Tag**: ${SKETCHES_GO_GIT_TAG}
+**Branch / Tag / Commit**: ${SKETCHES_GO_GIT_TAG}
 EOF
 
 # Clean up the temporary directory.

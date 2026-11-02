@@ -192,6 +192,8 @@ impl RemoteAgentClient {
                 display_name: display_name.to_string(),
                 api_endpoint_uri: api_endpoint.to_string(),
                 services,
+                // `process_instance_id` is optional and not sent yet.
+                ..Default::default()
             })
             .await?;
         Ok(response)
