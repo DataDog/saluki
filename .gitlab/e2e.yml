@@ -129,6 +129,8 @@ test-integration:
     # Image for airlock's daemon tests, which never pull: `panoramic artifacts pull` loads it
     # below as the `fixup-image` binding.
     AIRLOCK_TEST_IMAGE: registry.ddbuild.io/alpine:latest
+    # Panoramic's daemon tests use the same local fixup-image binding.
+    PANORAMIC_TEST_IMAGE: registry.ddbuild.io/alpine:latest
   script:
     # Also tag pipeline images with the Makefile's local names; the image list below shows their IDs.
     # correctness-tools provides the optional intake sidecar.
@@ -151,6 +153,7 @@ test-integration:
     # A rootless daemon lists `name=rootless` among its security options.
     - docker info --format 'Docker {{.ServerVersion}} {{.OSType}}/{{.Architecture}} security={{json .SecurityOptions}}'
     - make test-airlock-daemon
+    - make test-panoramic-daemon
     - make test-integration-quick PANORAMIC_ARTIFACTS=target/panoramic-artifacts.toml
 
 # Runs the subset of integration tests that have opted in to the `mac` runtime

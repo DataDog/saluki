@@ -16,6 +16,17 @@ pub const POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// Minimum request limit; some tools treat zero as unlimited.
 const MIN_REQUEST: Duration = Duration::from_millis(1);
 
+/// What a probe learned about an endpoint.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ProbeAnswer {
+    /// The endpoint accepted a connection.
+    Listening,
+    /// A UDP connect succeeded; listener availability remains unknown.
+    Addressable,
+    /// The endpoint was unreachable or the probe timed out.
+    NotListening { reason: String },
+}
+
 /// Limits for one polling attempt.
 ///
 /// The request gets half of the attempt, reserving the rest for transport overhead so a slow endpoint can report its

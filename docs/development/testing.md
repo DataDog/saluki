@@ -37,6 +37,17 @@ use `make test` or select `--lib` to run only unit tests.
 CI: the `test-integration` job in `.gitlab/e2e.yml` runs them on its Docker-in-Docker runner, with
 `AIRLOCK_TEST_IMAGE` set to the Alpine image the job pulls.
 
+### Panoramic daemon tests
+
+Panoramic's daemon tests exercise the Linux container backend against a real Docker daemon: scope preparation and
+removal, creating participants from recipes with files, the courier and host mounts, command execution, file reads
+and status, and courier probes and sends. They are ignored by default. Run them with `make test-panoramic-daemon`,
+which builds the Linux courier first.
+`PANORAMIC_TEST_IMAGE` defaults to `alpine:latest`; load it first, because these tests never pull images.
+They fail if the daemon, image or courier is missing.
+
+CI: the `test-integration` job in `.gitlab/e2e.yml` runs them after airlock's daemon tests.
+
 ## Correctness tests (panoramic)
 
 These tests serve to answer the question: *Does ADP produce the same output as the Datadog Agent for a given workload?*

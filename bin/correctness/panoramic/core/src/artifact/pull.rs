@@ -145,6 +145,10 @@ mod tests {
                 _ => Ok(()),
             }
         }
+
+        fn client(&self) -> Option<airlock::docker::Docker> {
+            None
+        }
     }
 
     #[tokio::test]

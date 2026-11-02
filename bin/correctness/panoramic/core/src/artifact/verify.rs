@@ -639,6 +639,10 @@ mod tests {
         async fn pull(&self, _reference: &str) -> Result<(), String> {
             panic!("verification must not pull")
         }
+
+        fn client(&self) -> Option<airlock::docker::Docker> {
+            None
+        }
     }
 
     #[tokio::test]
@@ -704,6 +708,10 @@ mod tests {
 
         async fn pull(&self, _reference: &str) -> Result<(), String> {
             panic!("verification must not pull")
+        }
+
+        fn client(&self) -> Option<airlock::docker::Docker> {
+            None
         }
     }
 

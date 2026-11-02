@@ -59,6 +59,11 @@ pub(crate) struct ScopeLayout {
 }
 
 impl ScopeLayout {
+    /// The scope's isolation group ID: the run ID and a four-digit index.
+    pub(crate) fn id(&self) -> String {
+        format!("{}-{:04}", self.run, self.index)
+    }
+
     /// Renders the scope's host state directory in the participant OS's path style.
     pub(crate) fn state_dir(&self, os: Os) -> String {
         // Fixed roots leave room for socket names even on hosts with long temporary-directory paths.
@@ -128,6 +133,17 @@ mod tests {
         },
         step::Need,
     };
+
+    #[test]
+    fn a_scope_id_joins_the_run_and_a_four_digit_index() {
+        for (index, expected) in [(0, "abcd1234-0000"), (42, "abcd1234-0042"), (9999, "abcd1234-9999")] {
+            let scope = ScopeLayout {
+                run: "abcd1234".into(),
+                index,
+            };
+            assert_eq!(scope.id(), expected);
+        }
+    }
 
     #[test]
     fn scopes_are_numbered_in_allocation_order_under_one_run_directory() {

@@ -19,6 +19,7 @@ pub mod machine_output;
 pub mod participant;
 pub mod plan;
 pub mod probe;
+mod recipe;
 pub mod record;
 pub mod result;
 pub mod step;

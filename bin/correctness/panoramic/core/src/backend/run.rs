@@ -12,10 +12,10 @@ use crate::{
     layout::{Os, Realization, RealizationKind},
 };
 
-/// Host and artifact checks sharing one lazily connected Docker daemon.
+/// Runtime checks, artifact verification and Linux container scopes sharing one lazily connected Docker daemon.
 #[derive(Default)]
 pub struct RunBackends {
-    docker: DockerDaemon,
+    pub(super) docker: DockerDaemon,
     #[cfg(test)]
     providability_checks: std::sync::Mutex<BTreeMap<Realization, usize>>,
 }
@@ -126,6 +126,28 @@ mod tests {
         artifact::{ArtifactKind, ArtifactRole, BindingSource},
         backend::docker::test_util::FakeDocker,
     };
+
+    #[tokio::test]
+    async fn a_linux_scope_needs_a_daemon_running_linux_containers() {
+        let scope = crate::plan::ScopeLayout {
+            run: "abcd1234".into(),
+            index: 0,
+        };
+        for (os, expected) in [
+            ("windows", "the Docker daemon runs windows containers, not linux"),
+            ("linux", "this Docker connection cannot create containers"),
+        ] {
+            let api = FakeDocker::new(Some(os));
+            let backends = RunBackends::with_docker(api.daemon());
+            let error = backends
+                .prepare_linux_scope(&scope, &["p"], "local:latest", Vec::new())
+                .await
+                .err()
+                .unwrap();
+            assert_eq!(error.to_string(), expected);
+            assert_eq!(*api.calls.lock().unwrap(), ["connect", "info"]);
+        }
+    }
 
     #[tokio::test]
     async fn one_connection_serves_providability_verification_and_pulling() {

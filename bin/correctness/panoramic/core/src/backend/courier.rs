@@ -8,31 +8,9 @@ use saluki_error::GenericError;
 
 use crate::{
     endpoint::{EndpointKind, ResolvedAddress},
-    handle::HandleError,
-    probe::AttemptLimits,
+    handle::{ExecCommand, HandleError},
+    probe::{AttemptLimits, ProbeAnswer},
 };
-
-/// One courier process for a backend to run.
-pub(crate) struct CourierExec {
-    /// The courier's executable path followed by its arguments.
-    pub(crate) argv: Vec<String>,
-    /// Send payload, or `None` for a probe.
-    ///
-    /// The backend must write all bytes and then close stdin, even for an empty payload; leaving stdin open
-    /// exhausts the courier's time limit.
-    pub(crate) stdin: Option<Vec<u8>>,
-}
-
-/// What a probe learned about an endpoint.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum ProbeAnswer {
-    /// The endpoint accepted a connection.
-    Listening,
-    /// A UDP connect succeeded; listener availability remains unknown.
-    Addressable,
-    /// The endpoint was unreachable or the probe timed out.
-    NotListening { reason: String },
-}
 
 /// Builds a courier target from an address's typed parts. HTTP and gRPC use a TCP connect.
 ///
@@ -92,7 +70,7 @@ pub(crate) async fn probe<E, F>(
     exec: E, executable: &str, address: &ResolvedAddress, limits: &AttemptLimits,
 ) -> Result<ProbeAnswer, HandleError>
 where
-    E: FnOnce(CourierExec) -> F,
+    E: FnOnce(ExecCommand) -> F,
     F: Future<Output = Result<ExecOutput, GenericError>>,
 {
     let command = Command::Probe { to: target(address)? };
@@ -123,7 +101,7 @@ pub(crate) async fn send<E, F>(
     exec: E, executable: &str, address: &ResolvedAddress, payload: &[u8], limits: &AttemptLimits,
 ) -> Result<(), HandleError>
 where
-    E: FnOnce(CourierExec) -> F,
+    E: FnOnce(ExecCommand) -> F,
     F: Future<Output = Result<ExecOutput, GenericError>>,
 {
     if matches!(
@@ -161,7 +139,7 @@ async fn invoke<E, F>(
     exec: E, executable: &str, command: &Command, stdin: Option<Vec<u8>>, limits: &AttemptLimits,
 ) -> Result<Report, HandleError>
 where
-    E: FnOnce(CourierExec) -> F,
+    E: FnOnce(ExecCommand) -> F,
     F: Future<Output = Result<ExecOutput, GenericError>>,
 {
     let invocation = Invocation {
@@ -170,18 +148,25 @@ where
     };
     let mut argv = vec![executable.to_owned()];
     argv.extend(invocation.args());
-    let output = tokio::time::timeout(limits.attempt, exec(CourierExec { argv, stdin }))
-        .await
-        .map_err(|_| {
-            harness_error(
-                command,
-                format!(
-                    "abandoned the courier after {:?} without an exit; it may still be running",
-                    limits.attempt,
-                ),
-            )
-        })?
-        .map_err(|error| harness_error(command, format!("exec failed: {error:#}")))?;
+    let output = tokio::time::timeout(
+        limits.attempt,
+        exec(ExecCommand {
+            argv,
+            env: Vec::new(),
+            stdin,
+        }),
+    )
+    .await
+    .map_err(|_| {
+        harness_error(
+            command,
+            format!(
+                "abandoned the courier after {:?} without an exit; it may still be running",
+                limits.attempt,
+            ),
+        )
+    })?
+    .map_err(|error| harness_error(command, format!("exec failed: {error:#}")))?;
     Report::from_exec(output.exit_code, &output.stderr).map_err(|error| match error {
         ReportError::NoReport { .. } => {
             let tail = &output.stderr[output.stderr.len().saturating_sub(1024)..];
@@ -282,7 +267,7 @@ mod tests {
         .await
     }
 
-    fn unexpected_exec(_: CourierExec) -> std::future::Ready<Result<ExecOutput, GenericError>> {
+    fn unexpected_exec(_: ExecCommand) -> std::future::Ready<Result<ExecOutput, GenericError>> {
         panic!("an unsupported or invalid endpoint must not run the courier")
     }
 
@@ -333,6 +318,7 @@ mod tests {
             ]
         );
         assert_eq!(request.stdin, None);
+        assert!(request.env.is_empty());
     }
 
     #[tokio::test]
@@ -362,6 +348,7 @@ mod tests {
                 ["/courier", "send", "--to", "udp://server:80", "--timeout-ms", "1500"]
             );
             assert_eq!(request.stdin.as_deref(), Some(payload));
+            assert!(request.env.is_empty());
         }
     }
 

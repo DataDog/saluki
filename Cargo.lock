@@ -4517,6 +4517,7 @@ version = "0.1.0"
 dependencies = [
  "airlock",
  "async-trait",
+ "bollard",
  "chrono",
  "futures",
  "k8s-openapi",

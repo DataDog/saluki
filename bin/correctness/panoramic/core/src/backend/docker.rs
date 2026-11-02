@@ -1,4 +1,4 @@
-//! One lazy Docker connection and info query shared by a command's runtime checks.
+//! One lazy Docker connection and info query shared by a command's runtime checks and container scopes.
 //!
 //! Container binaries are checked against the daemon's OS and architecture.
 
@@ -18,12 +18,14 @@ pub(crate) struct DaemonInfo {
     pub(crate) architecture: Option<String>,
 }
 
-/// The Docker daemon operations runtime checks need, replaceable in tests.
+/// The Docker operations needed by runtime checks and container backends, replaceable in tests.
 #[async_trait]
 pub(crate) trait DockerApi: Send + Sync {
     async fn info(&self) -> Result<DaemonInfo, String>;
     async fn image_id(&self, reference: &str) -> Result<Option<String>, String>;
     async fn pull(&self, reference: &str) -> Result<(), String>;
+
+    fn client(&self) -> Option<airlock::docker::Docker>;
 }
 
 struct Docker(airlock::docker::Docker);
@@ -52,9 +54,13 @@ impl DockerApi for Docker {
             .await
             .map_err(|error| format!("cannot pull image '{reference}': {error:#}"))
     }
+
+    fn client(&self) -> Option<airlock::docker::Docker> {
+        Some(self.0.clone())
+    }
 }
 
-/// The Docker connection shared by a command's runtime checks.
+/// The Docker connection shared by a command's runtime checks and container scopes.
 ///
 /// Connects and asks the daemon's OS type and architecture on first use, caching the result, including failures.
 /// An unanswered info query costs one timeout across all checks sharing this connection.
@@ -110,6 +116,15 @@ impl DockerDaemon {
                 )
             }),
         }
+    }
+
+    /// Returns a container-capable client after checking the daemon's OS.
+    pub(crate) async fn client(&self, os: Os) -> Result<airlock::docker::Docker, String> {
+        self.connection(os)
+            .await?
+            .api
+            .client()
+            .ok_or_else(|| "this Docker connection cannot create containers".into())
     }
 
     async fn connection(&self, os: Os) -> Result<&Connection, String> {
@@ -232,6 +247,10 @@ pub(crate) mod test_util {
         async fn pull(&self, reference: &str) -> Result<(), String> {
             self.calls.lock().unwrap().push(format!("pull:{reference}"));
             Ok(())
+        }
+
+        fn client(&self) -> Option<airlock::docker::Docker> {
+            None
         }
     }
 }
