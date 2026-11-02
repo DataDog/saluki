@@ -6,10 +6,8 @@ use std::{fs::File, path::Path};
 use serde::{Serialize, Serializer};
 use sha2::{Digest, Sha256};
 
-use super::{
-    image_store::{connect, image_id_within_deadline, ImageStore},
-    ArtifactBinding, ArtifactKind,
-};
+use super::{ArtifactBinding, ArtifactKind};
+use crate::backend::docker::{image_id_within_deadline, DockerDaemon};
 
 /// One binding's verification or pull outcome.
 #[derive(Debug)]
@@ -65,19 +63,13 @@ pub fn verified_artifacts(results: &[ArtifactVerification]) -> Result<Vec<Verifi
 }
 
 /// Verifies each binding, resolving relative paths against `base`, in input order.
-/// Images use the same Docker daemon as backends; files are identified by their SHA-256 digest.
+/// Images are inspected on the command's Docker daemon, which must run the image role's OS.
+/// Files are identified by their SHA-256 digest.
 /// A daemon timeout fails the remaining image bindings; file checks continue.
-pub async fn verify(bindings: &[ArtifactBinding], base: &Path) -> Vec<ArtifactVerification> {
-    verify_with(bindings, base, connect).await
-}
-
-async fn verify_with(
-    bindings: &[ArtifactBinding], base: &Path, connect: impl FnOnce() -> Result<Box<dyn ImageStore>, String>,
+pub(crate) async fn verify(
+    docker: &DockerDaemon, bindings: &[ArtifactBinding], base: &Path,
 ) -> Vec<ArtifactVerification> {
-    let mut store = bindings
-        .iter()
-        .any(|binding| binding.role.kind == ArtifactKind::Image && !binding.reference.is_empty())
-        .then(|| connect().map_err(|error| format!("cannot connect to a Docker daemon: {error}")));
+    let mut timeout: Option<String> = None;
     let mut results = Vec::with_capacity(bindings.len());
     for binding in bindings {
         let identity = match binding.role.kind {
@@ -85,17 +77,22 @@ async fn verify_with(
                 "role '{}' requires a binding in an artifact manifest",
                 binding.role.name
             )),
-            ArtifactKind::Image => match store.as_ref().expect("image bindings initialize the store") {
-                Ok(images) => match image_id_within_deadline(images.as_ref(), &binding.reference).await {
-                    Ok(result) => result.and_then(|id| {
-                        id.ok_or_else(|| format!("image '{}' was not found on the Docker daemon", binding.reference))
-                    }),
-                    Err(error) => {
-                        store = Some(Err(error.clone()));
-                        Err(error)
-                    }
+            ArtifactKind::Image { os } => match &timeout {
+                Some(error) => Err(error.clone()),
+                None => match docker.for_os(os).await {
+                    Ok(images) => match image_id_within_deadline(images, &binding.reference).await {
+                        Ok(result) => result.and_then(|id| {
+                            id.ok_or_else(|| {
+                                format!("image '{}' was not found on the Docker daemon", binding.reference)
+                            })
+                        }),
+                        Err(error) => {
+                            timeout = Some(error.clone());
+                            Err(error)
+                        }
+                    },
+                    Err(error) => Err(error),
                 },
-                Err(error) => Err(error.clone()),
             },
             kind => {
                 let path = base.join(&binding.reference);
@@ -155,7 +152,18 @@ mod tests {
     use async_trait::async_trait;
 
     use super::*;
-    use crate::artifact::{test_util::write_executable, ArtifactRole, BindingSource};
+    use crate::{
+        artifact::{test_util::write_executable, ArtifactRole, BindingSource},
+        backend::docker::{test_util::recording_daemon, DockerApi},
+        layout::Os,
+    };
+
+    async fn verify_with(
+        bindings: &[ArtifactBinding], base: &Path,
+        connect: impl Fn() -> Result<Box<dyn DockerApi>, String> + Send + Sync + 'static,
+    ) -> Vec<ArtifactVerification> {
+        verify(&DockerDaemon::with_connect(connect), bindings, base).await
+    }
 
     const TOOL_DIGEST: &str = "sha256:7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d";
     const INSTALL: ArtifactKind = ArtifactKind::Install {
@@ -176,15 +184,16 @@ mod tests {
 
     #[tokio::test]
     async fn missing_artifact_references_require_manifest_bindings_without_io() {
-        let bindings = [ArtifactKind::Image, ArtifactKind::Binary, INSTALL].map(|kind| ArtifactBinding {
-            role: ArtifactRole {
-                name: "required",
-                kind,
-                local_default: "",
-            },
-            reference: String::new(),
-            source: BindingSource::LocalDefault,
-        });
+        let bindings =
+            [ArtifactKind::Image { os: Os::Linux }, ArtifactKind::Binary, INSTALL].map(|kind| ArtifactBinding {
+                role: ArtifactRole {
+                    name: "required",
+                    kind,
+                    local_default: "",
+                },
+                reference: String::new(),
+                source: BindingSource::LocalDefault,
+            });
         let results = verify_with(&bindings, Path::new("missing"), || {
             panic!("unbound roles must not connect")
         })
@@ -263,7 +272,7 @@ mod tests {
     #[test]
     fn verified_artifacts_serialize_role_reference_identity_and_kind_in_order_with_kind_as_its_name() {
         for (kind, name) in [
-            (ArtifactKind::Image, "image"),
+            (ArtifactKind::Image { os: Os::Linux }, "image"),
             (ArtifactKind::Binary, "binary"),
             (INSTALL, "install"),
         ] {
@@ -325,7 +334,7 @@ mod tests {
             ),
         ];
         let bindings: Vec<_> = cases.iter().map(|(binding, _, _)| binding.clone()).collect();
-        let results = verify(&bindings, dir.path()).await;
+        let results = verify_with(&bindings, dir.path(), || panic!("files must not connect")).await;
         assert_eq!(results.len(), cases.len());
         for (result, (binding, path, problem)) in results.iter().zip(&cases) {
             assert_eq!(&result.binding, binding);
@@ -344,6 +353,7 @@ mod tests {
         write_executable(&binary);
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o644)).unwrap();
         let results = verify(
+            &DockerDaemon::with_connect(|| panic!("files must not connect")),
             &[
                 binding("tool", ArtifactKind::Binary, "bin/tool"),
                 binding("install", INSTALL, dir.path().to_str().unwrap()),
@@ -369,6 +379,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("install/bin")).unwrap();
         std::os::unix::fs::symlink("../../tool", dir.path().join("install/bin/tool")).unwrap();
         let results = verify(
+            &DockerDaemon::with_connect(|| panic!("files must not connect")),
             &[
                 binding("tool", ArtifactKind::Binary, "link"),
                 binding("install", INSTALL, "install"),
@@ -382,11 +393,20 @@ mod tests {
         }
     }
 
-    struct FakeImages;
+    #[derive(Clone, Default)]
+    struct FakeImages {
+        calls: Arc<Mutex<Vec<String>>>,
+    }
 
     #[async_trait]
-    impl ImageStore for FakeImages {
+    impl DockerApi for FakeImages {
+        async fn os_type(&self) -> Result<Option<String>, String> {
+            self.calls.lock().unwrap().push("os_type".into());
+            Ok(Some("linux".into()))
+        }
+
         async fn image_id(&self, reference: &str) -> Result<Option<String>, String> {
+            self.calls.lock().unwrap().push(format!("inspect:{reference}"));
             match reference {
                 "tool:present" => Ok(Some("sha256:123".into())),
                 "tool:missing" => Ok(None),
@@ -401,23 +421,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn images_report_the_store_identity_missing_reference_or_error_with_one_connection() {
+    async fn images_report_the_identity_missing_reference_or_error_with_one_connection_and_one_os_query() {
         let dir = tempfile::tempdir().unwrap();
         write_executable(&dir.path().join("tool"));
         let bindings = [
-            binding("image", ArtifactKind::Image, "tool:present"),
-            binding("missing", ArtifactKind::Image, "tool:missing"),
+            binding("image", ArtifactKind::Image { os: Os::Linux }, "tool:present"),
+            binding("missing", ArtifactKind::Image { os: Os::Linux }, "tool:missing"),
             binding("binary", ArtifactKind::Binary, "tool"),
-            binding("error", ArtifactKind::Image, "tool:error"),
-            binding("last", ArtifactKind::Image, "tool:present"),
+            binding("error", ArtifactKind::Image { os: Os::Linux }, "tool:error"),
+            binding("last", ArtifactKind::Image { os: Os::Linux }, "tool:present"),
         ];
-        let connections = Mutex::new(0);
-        let results = verify_with(&bindings, dir.path(), || {
-            *connections.lock().unwrap() += 1;
-            Ok(Box::new(FakeImages))
-        })
-        .await;
-        assert_eq!(*connections.lock().unwrap(), 1);
+        let images = FakeImages::default();
+        let calls = images.calls.clone();
+        let results = verify(&recording_daemon(images, calls.clone()), &bindings, dir.path()).await;
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [
+                "connect",
+                "os_type",
+                "inspect:tool:present",
+                "inspect:tool:missing",
+                "inspect:tool:error",
+                "inspect:tool:present"
+            ]
+        );
         assert_eq!(results.len(), bindings.len());
         assert_eq!(
             results.iter().map(|result| &result.binding).collect::<Vec<_>>(),
@@ -441,7 +468,11 @@ mod tests {
     struct UnresponsiveImages(Arc<AtomicUsize>);
 
     #[async_trait]
-    impl ImageStore for UnresponsiveImages {
+    impl DockerApi for UnresponsiveImages {
+        async fn os_type(&self) -> Result<Option<String>, String> {
+            Ok(Some("linux".into()))
+        }
+
         async fn image_id(&self, _reference: &str) -> Result<Option<String>, String> {
             self.0.fetch_add(1, Ordering::Relaxed);
             std::future::pending().await
@@ -457,16 +488,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_executable(&dir.path().join("bin/tool"));
         let bindings = [
-            binding("one", ArtifactKind::Image, "one:latest"),
+            binding("one", ArtifactKind::Image { os: Os::Linux }, "one:latest"),
             binding("tool", ArtifactKind::Binary, "bin/tool"),
-            binding("two", ArtifactKind::Image, "two:latest"),
+            binding("two", ArtifactKind::Image { os: Os::Linux }, "two:latest"),
             binding("install", INSTALL, "."),
-            binding("three", ArtifactKind::Image, "three:latest"),
+            binding("three", ArtifactKind::Image { os: Os::Linux }, "three:latest"),
         ];
         let inspections = Arc::new(AtomicUsize::new(0));
         let start = tokio::time::Instant::now();
-        let results = verify_with(&bindings, dir.path(), || {
-            Ok(Box::new(UnresponsiveImages(inspections.clone())))
+        let results = verify_with(&bindings, dir.path(), {
+            let inspections = inspections.clone();
+            move || Ok(Box::new(UnresponsiveImages(inspections.clone())))
         })
         .await;
         assert_eq!(start.elapsed(), DOCKER_DAEMON_TIMEOUT);
@@ -478,7 +510,7 @@ mod tests {
         );
         for (result, binding) in results.iter().zip(&bindings) {
             assert_eq!(&result.binding, binding);
-            let expected = if binding.role.kind == ArtifactKind::Image {
+            let expected = if matches!(binding.role.kind, ArtifactKind::Image { .. }) {
                 Err(timeout.as_str())
             } else {
                 Ok(TOOL_DIGEST)
@@ -492,16 +524,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_executable(&dir.path().join("bin/tool"));
         let bindings = [
-            binding("one", ArtifactKind::Image, "one:latest"),
+            binding("one", ArtifactKind::Image { os: Os::Linux }, "one:latest"),
             binding("tool", ArtifactKind::Binary, "bin/tool"),
-            binding("two", ArtifactKind::Image, "two:latest"),
+            binding("two", ArtifactKind::Image { os: Os::Linux }, "two:latest"),
             binding("install", INSTALL, "."),
         ];
         let results = verify_with(&bindings, dir.path(), || Err("unavailable".into())).await;
         assert_eq!(results.len(), bindings.len());
         for (result, binding) in results.iter().zip(&bindings) {
             assert_eq!(&result.binding, binding);
-            let expected = if binding.role.kind == ArtifactKind::Image {
+            let expected = if matches!(binding.role.kind, ArtifactKind::Image { .. }) {
                 Err("cannot connect to a Docker daemon: unavailable")
             } else {
                 Ok(TOOL_DIGEST)
@@ -511,9 +543,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_bindings_need_no_image_store() {
+    async fn no_bindings_need_no_daemon() {
         let results = verify_with(&[], Path::new("."), || panic!("no bindings must not connect")).await;
         assert!(results.is_empty());
         assert_eq!(verified_artifacts(&results), Ok(Vec::new()));
+    }
+
+    #[tokio::test]
+    async fn an_image_for_another_os_fails_without_inspection_and_other_images_are_verified() {
+        let images = FakeImages::default();
+        let calls = images.calls.clone();
+        let bindings = [
+            binding("windows", ArtifactKind::Image { os: Os::Windows }, "tool:windows"),
+            binding("linux", ArtifactKind::Image { os: Os::Linux }, "tool:present"),
+        ];
+        let results = verify(&recording_daemon(images, calls.clone()), &bindings, Path::new(".")).await;
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].binding, bindings[0]);
+        assert_eq!(
+            results[0].identity,
+            Err("the Docker daemon runs linux containers, not windows".into())
+        );
+        assert_eq!(results[1].binding, bindings[1]);
+        assert_eq!(results[1].identity, Ok("sha256:123".into()));
+        assert_eq!(*calls.lock().unwrap(), ["connect", "os_type", "inspect:tool:present"]);
     }
 }

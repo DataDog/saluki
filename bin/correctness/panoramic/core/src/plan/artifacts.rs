@@ -12,7 +12,7 @@ use crate::{
     artifact::{ArtifactBinding, ArtifactKind, ArtifactManifest, ArtifactRole, BindingSource},
     backend,
     case::{CaseFile, Registries},
-    layout::{Layout, Realization},
+    layout::{Layout, Os, Realization},
     participant::{find_type, ParticipantType},
 };
 
@@ -20,7 +20,7 @@ use crate::{
 ///
 /// # Errors
 ///
-/// Returns an error for invalid install main-binary paths or conflicting role declarations,
+/// Returns an error for macOS images, invalid install main-binary paths or conflicting role declarations,
 /// then for unknown manifest roles, naming the manifest's origin.
 pub fn check_artifact_manifest(registries: Registries<'_>, manifest: &ArtifactManifest) -> Result<(), GenericError> {
     let catalog = role_catalog(registries).map_err(|error| generic_error!(error))?;
@@ -30,6 +30,12 @@ pub fn check_artifact_manifest(registries: Registries<'_>, manifest: &ArtifactMa
 pub(super) fn role_catalog(registries: Registries<'_>) -> Result<BTreeMap<&'static str, ArtifactRole>, String> {
     let mut roles: BTreeMap<_, (ArtifactRole, String)> = BTreeMap::new();
     let mut declare = |role: ArtifactRole, declarer: String| {
+        if role.kind == (ArtifactKind::Image { os: Os::MacOs }) {
+            return Err(format!(
+                "artifact role '{}' declared by {declarer} is a macos image; images run on linux or windows",
+                role.name
+            ));
+        }
         if let ArtifactKind::Install { main_binary } = role.kind {
             if main_binary.is_empty()
                 || !Path::new(main_binary).components().all(|part| matches!(part, Component::Normal(_)))
@@ -197,7 +203,7 @@ mod tests {
     };
     const FIXUP: ArtifactRole = ArtifactRole {
         name: "fixup-image",
-        kind: ArtifactKind::Image,
+        kind: ArtifactKind::Image { os: Os::Linux },
         local_default: airlock::driver::DEFAULT_ALPINE_IMAGE,
     };
 
@@ -378,10 +384,10 @@ mod tests {
             ),
             (
                 ArtifactRole {
-                    kind: ArtifactKind::Image,
+                    kind: ArtifactKind::Image { os: Os::Linux },
                     ..TOOL
                 },
-                "artifact role 'tool' is image 'bin/tool' but declared as binary 'bin/tool'",
+                "artifact role 'tool' is linux image 'bin/tool' but declared as binary 'bin/tool'",
             ),
         ] {
             let case = typed_case(BTreeMap::from([(Os::MacOs, vec![role]), (Os::Windows, vec![])]));
@@ -418,7 +424,7 @@ mod tests {
     #[test]
     fn a_typed_schema_artifact_role_cannot_disagree_with_a_participant_type() {
         let roles = [ArtifactRole {
-            kind: ArtifactKind::Image,
+            kind: ArtifactKind::Image { os: Os::Linux },
             ..TOOL
         }];
         let registries = Registries {
@@ -429,7 +435,7 @@ mod tests {
         let manifest = ArtifactManifest::default();
         let checked = check_artifact_manifest(registries, &manifest).unwrap_err();
         let planned = Planner::new(registries, manifest).err().unwrap();
-        let expected = "artifact role 'tool' is declared as image 'bin/tool' by typed case schemas, \
+        let expected = "artifact role 'tool' is declared as linux image 'bin/tool' by typed case schemas, \
                         but as binary 'bin/tool' by participant type 'server' as linux-container on linux";
         assert_eq!(checked.to_string(), expected);
         assert_eq!(planned.to_string(), expected);
@@ -449,7 +455,7 @@ mod tests {
             &Type {
                 name: "configured",
                 roles: &[ArtifactRole {
-                    kind: ArtifactKind::Image,
+                    kind: ArtifactKind::Image { os: Os::Linux },
                     ..TOOL
                 }],
                 windows_roles: &[],
@@ -457,8 +463,46 @@ mod tests {
         ]);
         assert_eq!(
             message,
-            "artifact role 'tool' is declared as image 'bin/tool' by participant type 'configured' \
+            "artifact role 'tool' is declared as linux image 'bin/tool' by participant type 'configured' \
              as linux-container on linux, but as binary 'bin/tool' by participant type 'server' \
+             as linux-container on linux"
+        );
+    }
+
+    #[test]
+    fn a_planner_rejects_an_image_role_for_macos_before_compiling_cases() {
+        let message = catalog_error(&[&Type {
+            name: "server",
+            roles: &[ArtifactRole {
+                kind: ArtifactKind::Image { os: Os::MacOs },
+                ..TOOL
+            }],
+            windows_roles: &[],
+        }]);
+        assert_eq!(
+            message,
+            "artifact role 'tool' declared by participant type 'server' as linux-container on linux \
+             is a macos image; images run on linux or windows"
+        );
+    }
+
+    #[test]
+    fn a_planner_rejects_image_roles_with_different_oses_naming_both() {
+        let message = catalog_error(&[&Type {
+            name: "server",
+            roles: &[ArtifactRole {
+                kind: ArtifactKind::Image { os: Os::Linux },
+                ..TOOL
+            }],
+            windows_roles: &[ArtifactRole {
+                kind: ArtifactKind::Image { os: Os::Windows },
+                ..TOOL
+            }],
+        }]);
+        assert_eq!(
+            message,
+            "artifact role 'tool' is declared as windows image 'bin/tool' by participant type 'server' \
+             as windows-container on windows, but as linux image 'bin/tool' by participant type 'server' \
              as linux-container on linux"
         );
     }
@@ -592,8 +636,8 @@ mod tests {
         assert_eq!(
             message,
             format!(
-                "artifact role 'fixup-image' is declared as image '{}' by the linux-container backend, \
-             but as image 'other:latest' by participant type 'server' as linux-container on linux",
+                "artifact role 'fixup-image' is declared as linux image '{}' by the linux-container backend, \
+             but as linux image 'other:latest' by participant type 'server' as linux-container on linux",
                 airlock::driver::DEFAULT_ALPINE_IMAGE,
             )
         );
@@ -671,7 +715,7 @@ mod tests {
             name: "server",
             roles: &[TOOL],
             windows_roles: &[ArtifactRole {
-                kind: ArtifactKind::Image,
+                kind: ArtifactKind::Image { os: Os::Linux },
                 ..TOOL
             }],
         };
@@ -694,7 +738,7 @@ mod tests {
             name: "server",
             roles: &[TOOL],
             windows_roles: &[ArtifactRole {
-                kind: ArtifactKind::Image,
+                kind: ArtifactKind::Image { os: Os::Linux },
                 ..TOOL
             }],
         }];
@@ -809,7 +853,9 @@ mod tests {
                     source,
                 }]
             );
-            let results = crate::artifact::verify(plan.artifacts(), dir.path()).await;
+            let results = crate::backend::RunBackends::default()
+                .verify(plan.artifacts(), dir.path())
+                .await;
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].identity.as_deref().map_err(String::as_str), identity);
         }

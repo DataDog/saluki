@@ -1,18 +1,21 @@
 //! Artifact roles name the images, binaries and installs that participants and backends run.
 //! Manifests bind roles to references for a run and can be rendered from bindings; omitted roles use their local defaults.
 //! Plans carry resolved bindings with the source of each reference.
-//! Verification checks availability and records identities; pulling fetches images and records their IDs.
+//! [`crate::backend::RunBackends`] verifies availability and identities, and pulls images.
+//! Images are inspected and pulled on the command's Docker daemon, which must run the image role's OS.
 
 use std::{collections::BTreeMap, path::Path};
 
 use saluki_error::{generic_error, GenericError};
 use serde::{Deserialize, Serialize};
 
-mod image_store;
+use crate::layout::Os;
+
 mod pull;
 mod verify;
-pub use pull::pull;
-pub use verify::{verified_artifacts, verify, ArtifactVerification, VerifiedArtifact};
+pub(crate) use pull::pull;
+pub(crate) use verify::verify;
+pub use verify::{verified_artifacts, ArtifactVerification, VerifiedArtifact};
 
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util;
@@ -21,7 +24,10 @@ pub mod test_util;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ArtifactKind {
     /// A container image reference.
-    Image,
+    Image {
+        /// OS the image runs on.
+        os: Os,
+    },
     /// A path to an executable file.
     Binary,
     /// A path to an installed directory tree.
@@ -35,7 +41,7 @@ impl ArtifactKind {
     /// Returns the kind's display name.
     pub fn name(self) -> &'static str {
         match self {
-            Self::Image => "image",
+            Self::Image { .. } => "image",
             Self::Binary => "binary",
             Self::Install { .. } => "install",
         }
@@ -57,6 +63,7 @@ impl ArtifactRole {
     pub(crate) fn describe(self) -> String {
         let description = format!("{} '{}'", self.kind.name(), self.local_default);
         match self.kind {
+            ArtifactKind::Image { os } => format!("{} {description}", os.name()),
             ArtifactKind::Install { main_binary } => format!("{description} with main binary '{main_binary}'"),
             _ => description,
         }
@@ -183,7 +190,11 @@ mod tests {
     #[test]
     fn roles_describe_their_kind_local_default_and_main_binary() {
         for (kind, local_default, expected) in [
-            (ArtifactKind::Image, "tool:latest", "image 'tool:latest'"),
+            (
+                ArtifactKind::Image { os: Os::Linux },
+                "tool:latest",
+                "linux image 'tool:latest'",
+            ),
             (ArtifactKind::Binary, "bin/tool", "binary 'bin/tool'"),
             (
                 ArtifactKind::Install {

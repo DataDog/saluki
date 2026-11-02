@@ -1,6 +1,7 @@
 use std::{collections::BTreeMap, path::Path, process::ExitCode};
 
-use panoramic_core::artifact::{self, verified_artifacts, ArtifactBinding, VerifiedArtifact};
+use panoramic_core::artifact::{verified_artifacts, ArtifactBinding, VerifiedArtifact};
+use panoramic_core::backend::RunBackends;
 use panoramic_core::events::create_event_channel;
 use panoramic_core::interrupts::Interrupts;
 use panoramic_core::layout::{Os, Realization};
@@ -78,8 +79,9 @@ async fn prepare_run(cmd: &cli::RunCommand, console: &Console) -> Result<Prepare
     let (mut built, settings, artifacts) = build_cases(cmd, subject_os, plans)?;
     check_legacy_inputs(cmd, subject_os, &built, &settings, &artifacts)?;
     select_cases(cmd, console, subject_os, &mut built, &mut excluded)?;
-    let unprovidable = check_providability(console, &mut built).await?;
-    let verified = verify_artifacts(cmd, console, subject_os, &built, &unprovidable).await?;
+    let backends = RunBackends::default();
+    let unprovidable = check_providability(&backends, console, &mut built).await?;
+    let verified = verify_artifacts(&backends, cmd, console, subject_os, &built, &unprovidable).await?;
     Ok(PreparedRun {
         subject_os,
         built,
@@ -183,27 +185,29 @@ fn select_cases(
 
 /// Checks whether the host can provide each selected case's realizations.
 async fn check_providability(
-    console: &Console, built: &mut [BuiltCase],
+    backends: &RunBackends, console: &Console, built: &mut [BuiltCase],
 ) -> Result<BTreeMap<Realization, String>, SetupFailure> {
     let unprovidable = if built.is_empty() {
         BTreeMap::new()
     } else {
         console.info("Checking that this host can provide the selected cases...");
-        providability::check(built).await
+        providability::check(backends, built).await
     };
     Ok(unprovidable)
 }
 
 /// Verifies artifacts for selected cases the host can run when a manifest was supplied.
 async fn verify_artifacts(
-    cmd: &cli::RunCommand, console: &Console, subject_os: Os, built: &[BuiltCase],
+    backends: &RunBackends, cmd: &cli::RunCommand, console: &Console, subject_os: Os, built: &[BuiltCase],
     unprovidable: &BTreeMap<Realization, String>,
 ) -> Result<Option<Vec<VerifiedArtifact>>, SetupFailure> {
     if cmd.artifacts.is_some() {
         let bindings = run_artifacts(built, unprovidable);
         let base = std::env::current_dir()
             .map_err(|error| SetupFailure::harness(format!("Cannot read the current directory: {error}")))?;
-        Ok(Some(verify_run_artifacts(&bindings, subject_os, &base, console).await?))
+        Ok(Some(
+            verify_run_artifacts(backends, &bindings, subject_os, &base, console).await?,
+        ))
     } else {
         Ok(None)
     }
@@ -414,10 +418,10 @@ fn run_artifacts(built: &[BuiltCase], unprovidable: &BTreeMap<Realization, Strin
 
 /// Reports artifact verification results and returns their verified identities.
 async fn verify_run_artifacts(
-    bindings: &[ArtifactBinding], subject_os: Os, base: &Path, console: &Console,
+    backends: &RunBackends, bindings: &[ArtifactBinding], subject_os: Os, base: &Path, console: &Console,
 ) -> Result<Vec<VerifiedArtifact>, SetupFailure> {
     console.info("Verifying the artifacts the selected cases need…");
-    let results = artifact::verify(bindings, base).await;
+    let results = backends.verify(bindings, base).await;
     let verified = verified_artifacts(&results);
     let report = artifact_commands::verification_text(subject_os, &results, ("Artifacts", "artifacts"));
     let report = report.trim_end();
@@ -799,7 +803,7 @@ mod tests {
             source: BindingSource::Manifest,
         })
         .collect();
-        let results = artifact::verify(&bindings, dir.path()).await;
+        let results = RunBackends::default().verify(&bindings, dir.path()).await;
         let report = artifact_commands::verification_text(Os::MacOs, &results, ("Artifacts", "artifacts"));
         assert_eq!(verified_artifacts(&results), Err(2), "{report}");
         assert_eq!(report.matches("FAILED:").count(), 2, "{report}");
@@ -853,9 +857,15 @@ mod tests {
         write_executable(&dir.path().join("install/bin/main"));
         for use_tui in [false, true] {
             write_executable(&dir.path().join("present"));
-            let verified = verify_run_artifacts(&bindings, Os::MacOs, dir.path(), &Console { use_tui })
-                .await
-                .unwrap();
+            let verified = verify_run_artifacts(
+                &RunBackends::default(),
+                &bindings,
+                Os::MacOs,
+                dir.path(),
+                &Console { use_tui },
+            )
+            .await
+            .unwrap();
             assert_eq!(
                 serde_json::to_value(verified).unwrap(),
                 serde_json::json!([
@@ -874,9 +884,15 @@ mod tests {
                 ])
             );
             std::fs::remove_file(dir.path().join("present")).unwrap();
-            let failure = verify_run_artifacts(&bindings, Os::MacOs, dir.path(), &Console { use_tui })
-                .await
-                .unwrap_err();
+            let failure = verify_run_artifacts(
+                &RunBackends::default(),
+                &bindings,
+                Os::MacOs,
+                dir.path(),
+                &Console { use_tui },
+            )
+            .await
+            .unwrap_err();
             assert_eq!(failure.exit, ExitCode::from(2));
             assert_eq!(failure.message, "1 of 2 artifact(s) failed verification.");
         }

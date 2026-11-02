@@ -345,7 +345,8 @@ Use `panoramic artifacts verify -d <cases> [--subject-os linux|macos|windows] [-
 artifact the selected cases need. The subject OS defaults to the host's OS. Verification prints each
 role once, sorted by name, with its reference, source and identity or failure:
 
-- An image must exist on the Docker daemon Panoramic connects to. Its identity is the daemon's image ID.
+- An image must exist on the Docker daemon, and the daemon must run containers of the image's OS (Linux images on
+  a Linux daemon, Windows images on a Windows daemon). Its identity is the image ID.
 - A binary must be a file, executable on Unix. Its identity is the SHA-256 of its contents.
 - An install must be a directory containing the role's main binary, a file executable on Unix. Its identity is the
   SHA-256 of that binary. For `agent-host-install`, the main binary is `bin/agent/agent` inside the install.
@@ -359,6 +360,8 @@ Use `panoramic artifacts pull -d <cases> [--subject-os linux|macos|windows] [--a
 images those cases need, in role-name order. Check binary and install roles with `verify`;
 `pull` reports only images. Images are always pulled again, even if present, so moving tags are refreshed. A failed
 pull fails even if a local copy exists: use `verify` for locally built images. An untagged reference pulls `latest`.
+An image for an OS the daemon doesn't run fails without pulling. An image role with no reference fails without
+contacting the daemon.
 Each pull has a five-minute limit; the inspection afterwards has a 30-second limit. Either timeout fails that image
 and all remaining images without contacting the daemon again; other failures affect only that image. Pulling logs
 each reference and role before starting, and prints each role's reference, source and image ID or failure under
@@ -438,6 +441,9 @@ layouts:
 | Host process group | The host runs the participant's OS |
 | Kubernetes pod | The participant runs Linux, `kind` and `docker` are on `PATH`, and a Docker daemon answers and reports Linux containers |
 
+`artifacts verify`, `artifacts pull`, and the host and artifact checks `run` makes before starting cases share one
+Docker daemon connection and ask its OS type once. A connection failure fails every such check that needs the daemon.
+
 A case whose realization the host can't provide is `errored` with error kind `setup`, appears in `run.json`, and
 makes the run exit 2. `list` never checks host availability.
 
@@ -447,6 +453,7 @@ The source documents each part:
 - `bin/correctness/panoramic/core/src/artifact.rs`: artifact roles and the manifest.
 - `bin/correctness/panoramic/core/src/artifact/verify.rs`: artifact verification and identities.
 - `bin/correctness/panoramic/core/src/artifact/pull.rs`: image pulling and identities.
+- `bin/correctness/panoramic/core/src/backend/run.rs`: host availability checks, artifact verification and image pulls over one Docker connection.
 - `bin/correctness/panoramic/core/src/layout.rs`: how participants are placed on an OS and realization.
 - `bin/correctness/panoramic/participants/src/agent_adp.rs`: what `agent-adp` declares, including its facts and artifact roles.
 - `bin/correctness/panoramic/steps/src/`: each step's fields.

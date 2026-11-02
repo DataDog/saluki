@@ -4,6 +4,7 @@ use std::{collections::BTreeMap, time::Duration};
 
 use async_trait::async_trait;
 use panoramic_core::{
+    backend::RunBackends,
     layout::Realization,
     result::{ErrorKind, TestResult},
 };
@@ -15,13 +16,13 @@ use crate::{
 
 /// Checks all selected plans together, replacing cases the host cannot provide with setup errors.
 /// Returns each realization the host cannot provide, with the reason.
-pub(crate) async fn check(built: &mut [BuiltCase]) -> BTreeMap<Realization, String> {
+pub(crate) async fn check(backends: &RunBackends, built: &mut [BuiltCase]) -> BTreeMap<Realization, String> {
     let needed = built.iter().flat_map(|built| {
         realizations(&built.plan)
             .into_iter()
             .map(|(_, realization)| realization)
     });
-    let unprovidable = panoramic_core::backend::unprovidable(needed).await;
+    let unprovidable = backends.unprovidable(needed).await;
     apply(built, &unprovidable);
     unprovidable
 }
@@ -100,7 +101,7 @@ mod tests {
             plan: plan(&PARTICIPANT_FIELDS.replace("[linux]", "[macos]"), Os::MacOs),
             runner: Box::new(ImageTest),
         }];
-        let unprovidable = check(&mut built).await;
+        let unprovidable = check(&RunBackends::default(), &mut built).await;
         if Os::host() == Os::MacOs {
             assert!(unprovidable.is_empty());
             assert_eq!(built[0].runner.images(), ImageTest.images());

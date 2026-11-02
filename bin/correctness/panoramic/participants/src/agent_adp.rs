@@ -14,14 +14,14 @@ impl AgentAdp {
     /// Image providing the Core Agent and ADP in Linux containers.
     pub const LINUX_IMAGE: ArtifactRole = ArtifactRole {
         name: "agent-adp-linux-image",
-        kind: ArtifactKind::Image,
+        kind: ArtifactKind::Image { os: Os::Linux },
         local_default: "saluki-images/datadog-agent:testing-devel",
     };
 
     /// Image providing the Core Agent and ADP in Windows containers.
     pub const WINDOWS_IMAGE: ArtifactRole = ArtifactRole {
         name: "agent-adp-windows-image",
-        kind: ArtifactKind::Image,
+        kind: ArtifactKind::Image { os: Os::Windows },
         local_default: "saluki-images/agent-data-plane:testing-windows",
     };
 
@@ -112,7 +112,7 @@ mod tests {
                 RealizationKind::LinuxContainer,
                 vec![ArtifactRole {
                     name: "agent-adp-linux-image",
-                    kind: ArtifactKind::Image,
+                    kind: ArtifactKind::Image { os: Os::Linux },
                     local_default: "saluki-images/datadog-agent:testing-devel",
                 }],
             ),
@@ -139,7 +139,7 @@ mod tests {
                 RealizationKind::WindowsContainer,
                 vec![ArtifactRole {
                     name: "agent-adp-windows-image",
-                    kind: ArtifactKind::Image,
+                    kind: ArtifactKind::Image { os: Os::Windows },
                     local_default: "saluki-images/agent-data-plane:testing-windows",
                 }],
             ),

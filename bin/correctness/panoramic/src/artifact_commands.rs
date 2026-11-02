@@ -10,6 +10,7 @@ use std::{
 
 use panoramic_core::{
     artifact::{self, ArtifactBinding, ArtifactManifest, ArtifactVerification},
+    backend::RunBackends,
     layout::Os,
     plan::{check_artifact_manifest, needed_artifacts},
 };
@@ -74,7 +75,7 @@ pub(crate) async fn verify(cmd: ArtifactCasesCommand, output: &mut impl Write) -
         Ok(selection) => selection,
         Err(failure) => return failure.report(&Console { use_tui: false }),
     };
-    let results = artifact::verify(&bindings, &base).await;
+    let results = RunBackends::default().verify(&bindings, &base).await;
     if let Err(error) = output.write_all(verification_text(subject_os, &results, ("Artifacts", "artifacts")).as_bytes())
     {
         error!("Cannot write artifact verification report: {error}");
@@ -98,7 +99,7 @@ pub(crate) async fn pull(cmd: ArtifactCasesCommand, output: &mut impl Write) -> 
         Ok(selection) => selection,
         Err(failure) => return failure.report(&Console { use_tui: false }),
     };
-    let results = artifact::pull(&bindings).await;
+    let results = RunBackends::default().pull(&bindings).await;
     if let Err(error) = output.write_all(verification_text(subject_os, &results, ("Images", "images")).as_bytes()) {
         error!("Cannot write image pull report: {error}");
         return ExitCode::from(EXIT_HARNESS_ERROR);
@@ -722,7 +723,7 @@ mod tests {
                 binding: ArtifactBinding {
                     role: ArtifactRole {
                         name: "agent-adp-linux-image",
-                        kind: ArtifactKind::Image,
+                        kind: ArtifactKind::Image { os: Os::Linux },
                         local_default: "unused",
                     },
                     reference: "busybox:1.36.1".into(),
@@ -734,7 +735,7 @@ mod tests {
                 binding: ArtifactBinding {
                     role: ArtifactRole {
                         name: "fixup-image",
-                        kind: ArtifactKind::Image,
+                        kind: ArtifactKind::Image { os: Os::Linux },
                         local_default: "unused",
                     },
                     reference: "busybox:nope".into(),
@@ -787,7 +788,7 @@ mod tests {
                 binding: ArtifactBinding {
                     role: ArtifactRole {
                         name: "fixup-image",
-                        kind: ArtifactKind::Image,
+                        kind: ArtifactKind::Image { os: Os::Linux },
                         local_default: "alpine:latest",
                     },
                     reference: "alpine:latest".into(),

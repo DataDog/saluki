@@ -1144,7 +1144,7 @@ mod tests {
             role: "tool",
             reference: "tool:latest".into(),
             identity: "sha256:123".into(),
-            kind: crate::artifact::ArtifactKind::Image,
+            kind: crate::artifact::ArtifactKind::Image { os: Os::Linux },
         }]);
         assert_eq!(
             serde_json::to_value(&report).unwrap()["artifacts"],
