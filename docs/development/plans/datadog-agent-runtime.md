@@ -94,7 +94,7 @@ Every pull request in the stack checks its changes against these.
 
 - `/workload/remote_agent/tags/dump` and `/workload/remote_agent/external_data/dump`, which the ADP `debug workload`
   command calls.
-- `/metrics`, `/compat/metrics`, `/config`, and `/config/runtime`.
+- `/metrics`, `/config`, and `/config/runtime`.
 - The status, flare, and telemetry gRPC services on the privileged API endpoint.
 
 ### Unchanged behavior
