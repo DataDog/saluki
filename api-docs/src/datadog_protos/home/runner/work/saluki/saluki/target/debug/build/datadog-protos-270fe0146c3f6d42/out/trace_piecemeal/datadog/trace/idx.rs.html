@@ -254,8 +254,8 @@
 <a href=#254 id=254 data-nosnippet>254</a>        <span class="self">Self </span>{ writer }
 <a href=#255 id=255 data-nosnippet>255</a>    }
 <a href=#256 id=256 data-nosnippet>256</a>
-<a href=#257 id=257 data-nosnippet>257</a>    <span class="kw">pub fn </span>error(<span class="kw-2">&amp;mut </span><span class="self">self</span>, value: <span class="kw-2">&amp;</span>str) -&gt; std::io::Result&lt;<span class="kw-2">&amp;mut </span><span class="self">Self</span>&gt; {
-<a href=#258 id=258 data-nosnippet>258</a>        <span class="self">self</span>.writer.write_with_tag(<span class="number">10</span>, |w| w.write_string(value))<span class="question-mark">?</span>;
+<a href=#257 id=257 data-nosnippet>257</a>    <span class="kw">pub fn </span>error_ref(<span class="kw-2">&amp;mut </span><span class="self">self</span>, value: u32) -&gt; std::io::Result&lt;<span class="kw-2">&amp;mut </span><span class="self">Self</span>&gt; {
+<a href=#258 id=258 data-nosnippet>258</a>        <span class="self">self</span>.writer.write_with_tag(<span class="number">8</span>, |w| w.write_uint32(value))<span class="question-mark">?</span>;
 <a href=#259 id=259 data-nosnippet>259</a>        <span class="prelude-val">Ok</span>(<span class="self">self</span>)
 <a href=#260 id=260 data-nosnippet>260</a>    }
 <a href=#261 id=261 data-nosnippet>261</a>
@@ -274,8 +274,8 @@
 <a href=#274 id=274 data-nosnippet>274</a>        <span class="prelude-val">Ok</span>(<span class="self">self</span>)
 <a href=#275 id=275 data-nosnippet>275</a>    }
 <a href=#276 id=276 data-nosnippet>276</a>
-<a href=#277 id=277 data-nosnippet>277</a>    <span class="kw">pub fn </span>buffer_eviction_reason(<span class="kw-2">&amp;mut </span><span class="self">self</span>, value: <span class="kw-2">&amp;</span>str) -&gt; std::io::Result&lt;<span class="kw-2">&amp;mut </span><span class="self">Self</span>&gt; {
-<a href=#278 id=278 data-nosnippet>278</a>        <span class="self">self</span>.writer.write_with_tag(<span class="number">42</span>, |w| w.write_string(value))<span class="question-mark">?</span>;
+<a href=#277 id=277 data-nosnippet>277</a>    <span class="kw">pub fn </span>buffer_eviction_reason_ref(<span class="kw-2">&amp;mut </span><span class="self">self</span>, value: u32) -&gt; std::io::Result&lt;<span class="kw-2">&amp;mut </span><span class="self">Self</span>&gt; {
+<a href=#278 id=278 data-nosnippet>278</a>        <span class="self">self</span>.writer.write_with_tag(<span class="number">40</span>, |w| w.write_uint32(value))<span class="question-mark">?</span>;
 <a href=#279 id=279 data-nosnippet>279</a>        <span class="prelude-val">Ok</span>(<span class="self">self</span>)
 <a href=#280 id=280 data-nosnippet>280</a>    }
 <a href=#281 id=281 data-nosnippet>281</a>
