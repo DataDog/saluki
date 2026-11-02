@@ -57,7 +57,6 @@
 //!
 //! - the health registry's worker, and [`ResourceTelemetryWorker`][saluki_app::accounting::ResourceTelemetryWorker]
 //! - [`InternalTelemetryAPIWorker`][saluki_core::observability::metrics::InternalTelemetryAPIWorker], for `/metrics`
-//!   and `/compat/metrics`
 //! - [`DynamicLogLevelWorker`][saluki_app::logging::DynamicLogLevelWorker], fed by
 //!   [`LoggingTranslator::translate_log_levels`][logging::LoggingTranslator::translate_log_levels]
 //! - [`ConfigWorker`][saluki_app::config::ConfigWorker] for `/config`, and
@@ -75,7 +74,6 @@
 //!
 //! - add sections to the status output with [`StatusSectionProvider`][remote_agent::StatusSectionProvider]
 //! - select and rename the internal metrics reported to the Datadog Agent as telemetry
-//! - serve `/compat/metrics` with its own remapping rules
 //! - serve its own routes on the unprivileged and privileged API endpoints
 //!
 //! Its [`LoggingTranslator`][logging::LoggingTranslator] sets its default log file and adds its own crates to the
