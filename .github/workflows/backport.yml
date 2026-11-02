@@ -268,12 +268,19 @@ jobs:
             core.setOutput('backport_branch', backportBranch);
             core.setOutput('pr_title', pr.title);
 
+      # CodeQL flags this checkout (`actions/untrusted-checkout`) because it can't trace step outputs. It is not
+      # untrusted code: `base_sha` is the tip of the protected `releases/X.Y.x` branch (with X.Y.x regex-validated),
+      # and the commit fetched below is the PR's merge commit, which preflight verified is reachable from `main`. The
+      # PR head is never checked out, and the steps after this only run git, never code from the tree.
+      #
+      # Checking out `base_sha` rather than the branch name pins the commit preflight inspected, so a concurrent push to
+      # the release branch can't leak into the backport.
       - name: Checkout release branch
         if: steps.preflight.outputs.proceed == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ steps.octo-sts.outputs.token }}
-          ref: ${{ steps.preflight.outputs.target_branch }}
+          ref: ${{ steps.preflight.outputs.base_sha }}
 
       - name: Cherry-pick merge commit
         id: pick
@@ -308,18 +315,17 @@ jobs:
           body="$(git log -1 --format=%B | tail -n +2)"
           printf '%s (backport %s)\n%s\n' "$PR_TITLE" "$TARGET" "$body" | git commit --amend --quiet -F -
 
-          echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
+      # Creates the backport branch at `base_sha` and pushes the commits in `base_sha..HEAD` (the single cherry-pick) as
+      # signed commits. v3 preserves file modes (for example, executable scripts) by falling back to the REST API.
       - name: Push signed commit
         if: steps.preflight.outputs.proceed == 'true'
-        uses: DataDog/commit-headless@5a0f3876e0fbdd3a86b3e008acf4ec562db59eee # v2.0.1
+        uses: DataDog/commit-headless@d6afabfd690ea1dbdd7d368acbefd71304928699 # action/v3.4.1
         with:
           token: ${{ steps.octo-sts.outputs.token }}
           branch: ${{ steps.preflight.outputs.backport_branch }}
           head-sha: ${{ steps.preflight.outputs.base_sha }}
           create-branch: true
           command: push
-          commits: ${{ steps.pick.outputs.commit_sha }}
 
       - name: Create pull request
         if: steps.preflight.outputs.proceed == 'true'
