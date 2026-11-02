@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use stringtheory::{CheapMetaString, MetaString};
 
 mod raw;
-pub use self::raw::{RawTags, RawTagsFilter, RawTagsFilterPredicate};
+pub use self::raw::RawTags;
 
 mod tagset;
 pub use self::tagset::{SharedTagSet, TagSet};

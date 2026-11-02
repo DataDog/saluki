@@ -403,7 +403,7 @@ mod tests {
         let raw_tags_input = "dd.internal.card:high";
         let raw_tags = RawTags::new(raw_tags_input, usize::MAX, usize::MAX);
 
-        let well_known_tags = WellKnownTags::from_raw_tags(&raw_tags);
+        let (well_known_tags, _) = WellKnownTags::split_raw_tags(&raw_tags);
         assert_eq!(well_known_tags.cardinality, Some(OriginTagCardinality::High));
 
         let packet_with_card = MetricPacket {
@@ -446,7 +446,7 @@ mod tests {
         let raw_tags_input = "dd.internal.card:low";
         let raw_tags = RawTags::new(raw_tags_input, usize::MAX, usize::MAX);
 
-        let well_known_tags = WellKnownTags::from_raw_tags(&raw_tags);
+        let (well_known_tags, _) = WellKnownTags::split_raw_tags(&raw_tags);
         assert_eq!(well_known_tags.cardinality, Some(OriginTagCardinality::Low));
 
         let packet_with_card = EventPacket {
@@ -495,7 +495,7 @@ mod tests {
         let raw_tags_input = "dd.internal.card:orchestrator";
         let raw_tags = RawTags::new(raw_tags_input, usize::MAX, usize::MAX);
 
-        let well_known_tags = WellKnownTags::from_raw_tags(&raw_tags);
+        let (well_known_tags, _) = WellKnownTags::split_raw_tags(&raw_tags);
         assert_eq!(well_known_tags.cardinality, Some(OriginTagCardinality::Orchestrator));
 
         let packet_with_card = ServiceCheckPacket {
