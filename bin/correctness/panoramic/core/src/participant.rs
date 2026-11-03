@@ -6,7 +6,7 @@ use crate::{
     artifact::ArtifactRole,
     backend::LateFact,
     case::{EndpointOverride, FileSource, ParticipantConfig},
-    endpoint::{ConsumedEndpoint, Endpoint},
+    endpoint::{ConsumedEndpoint, Endpoint, Evidence},
     layout::{Os, Realization, RealizationKind},
     recipe::Recipe,
 };
@@ -55,9 +55,10 @@ impl CaseValues {
 /// A participant's configuration: type defaults, connection deliveries, then case values, with later layers winning.
 ///
 /// Type defaults include assigned-port values. Case environment variables can pin those ports.
-/// The `validate_config`, `default_env`, `endpoints` and `consumes` hooks see configuration
+/// The `validate_config`, `default_env`, `endpoints`, `readiness` and `consumes` hooks see configuration
 /// before connection deliveries.
-/// After port assignment, `endpoints` and `consumes` see the reassembled configuration including assigned values.
+/// After port assignment, `endpoints`, `readiness` and `consumes` see the reassembled configuration,
+/// including assigned values.
 /// A type must derive what it serves and consumes independently of where it connects.
 /// Case references follow the substitution and checking rules of [`CaseValues`].
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -186,6 +187,14 @@ pub trait ParticipantType: Send + Sync {
         &self, _realization: Realization, _config: &EffectiveConfig,
     ) -> Result<BTreeMap<String, Endpoint>, String> {
         Ok(BTreeMap::new())
+    }
+
+    /// Readiness evidence applying to every endpoint this participant serves. Defaults to none.
+    /// Called after [`Self::validate_config`], only with realizations from [`Self::supports`].
+    /// Receives the same configuration [`Self::endpoints`] last saw, after port assignment and before
+    /// connection deliveries; see [`EffectiveConfig`].
+    fn readiness(&self, _realization: Realization, _config: &EffectiveConfig) -> Vec<Evidence> {
+        Vec::new()
     }
 
     /// Endpoints this participant consumes with its configuration, by name: the keys a case may `connect`.

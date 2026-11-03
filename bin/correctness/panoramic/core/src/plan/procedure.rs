@@ -6,11 +6,11 @@ use super::{
     endpoints::ParticipantEndpoints,
     ports::RunnerHostPorts,
     references::{late_fact_timing, planned_fact},
-    routes::{self, RunnerHostAccess},
+    routes::plan_runner_host_route,
     PlannedParticipant,
 };
 use crate::{
-    case::{declared_names, CaseFile, ProcedureNode},
+    case::{CaseFile, ProcedureNode},
     endpoint::{EndpointOperation, RunnerHostRoute},
     layout::Layout,
     participant::{find_type, ParticipantType},
@@ -56,11 +56,18 @@ pub(super) fn check_step_references(
                         let realization = layout.get(&participant).expect("step needs name laid-out participants");
                         late_fact_timing(&participant, realization.kind, fact).map(|_| ())
                     }
-                    Need::Endpoint(participant, endpoint, operation) => {
-                        plan_endpoint_route(&participant, &endpoint, operation, layout, endpoints, ports).map(|route| {
-                            routes.insert((participant, endpoint, operation), route);
-                        })
-                    }
+                    Need::Endpoint(participant, endpoint, operation) => plan_runner_host_route(
+                        &format!("reaches endpoint '{endpoint}' of participant '{participant}'"),
+                        &participant,
+                        &endpoint,
+                        operation,
+                        layout,
+                        endpoints,
+                        ports,
+                    )
+                    .map(|route| {
+                        routes.insert((participant, endpoint, operation), route);
+                    }),
                     Need::Handle(_) | Need::Process(_, _) => continue,
                 };
                 result.map_err(|reason| format!("step {} {reason}", step_label(index, parallel.then_some(member))))?;
@@ -68,36 +75,6 @@ pub(super) fn check_step_references(
         }
     }
     Ok(routes)
-}
-
-fn plan_endpoint_route(
-    participant: &str, name: &str, operation: EndpointOperation, layout: &Layout,
-    endpoints: &BTreeMap<String, ParticipantEndpoints>, ports: &mut RunnerHostPorts<'_>,
-) -> Result<RunnerHostRoute, String> {
-    let context = format!("reaches endpoint '{name}' of participant '{participant}'");
-    let server = &endpoints[participant];
-    let endpoint = server.served.get(name).ok_or_else(|| {
-        format!(
-            "{context}, which it does not serve; it serves {}",
-            declared_names(&server.served.keys().map(String::as_str).collect::<Vec<_>>()),
-        )
-    })?;
-    let realization = layout.get(participant).expect("step needs name laid-out participants");
-    let access = routes::runner_host_route(endpoint.kind, realization, operation)
-        .map_err(|constraint| format!("{context}, which the runner host cannot reach: {constraint}"))?;
-    let route = match access {
-        RunnerHostAccess::Direct(route) => route,
-        RunnerHostAccess::Courier => {
-            routes::reach(participant, realization, participant, realization, server, endpoint)
-                .unwrap_or_else(|_| unreachable!("a participant can reach its own endpoint"))
-        }
-    };
-    let address = routes::resolve(route, participant, name, endpoint, ports)
-        .map_err(|error| format!("{context}, which needs a runner-host port: {error}"))?;
-    Ok(match access {
-        RunnerHostAccess::Direct(_) => RunnerHostRoute::Direct(address),
-        RunnerHostAccess::Courier => RunnerHostRoute::Courier(address),
-    })
 }
 
 #[cfg(test)]

@@ -2,10 +2,13 @@
 //!
 //! Each supported cell selects one route. Filesystem routes between participants require a shared namespace.
 
+use std::collections::BTreeMap;
+
 use super::{endpoints::ParticipantEndpoints, ports::RunnerHostPorts, scope::check_consumed_socket};
 use crate::{
-    endpoint::{Endpoint, EndpointKind, EndpointOperation, Listener, Port, ResolvedAddress},
-    layout::{Realization, RealizationKind},
+    case::declared_names,
+    endpoint::{Endpoint, EndpointKind, EndpointOperation, Listener, Port, ResolvedAddress, RunnerHostRoute},
+    layout::{Layout, Realization, RealizationKind},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,6 +50,36 @@ pub(super) fn runner_host_route(
         (UnixDatagram | UnixStream, WindowsContainer) => Err("unix sockets are not supported in a windows-container"),
         (NamedPipe, _) => Err("a named pipe is reachable only in a windows-container"),
     }
+}
+
+/// Resolves a runner-host operation, using the caller's diagnostic context.
+pub(super) fn plan_runner_host_route(
+    context: &str, participant: &str, name: &str, operation: EndpointOperation, layout: &Layout,
+    endpoints: &BTreeMap<String, ParticipantEndpoints>, ports: &mut RunnerHostPorts<'_>,
+) -> Result<RunnerHostRoute, String> {
+    let server = &endpoints[participant];
+    let endpoint = server.served.get(name).ok_or_else(|| {
+        format!(
+            "{context}, which it does not serve; it serves {}",
+            declared_names(&server.served.keys().map(String::as_str).collect::<Vec<_>>()),
+        )
+    })?;
+    let realization = layout
+        .get(participant)
+        .expect("runner-host routes name laid-out participants");
+    let access = runner_host_route(endpoint.kind, realization, operation)
+        .map_err(|constraint| format!("{context}, which the runner host cannot reach: {constraint}"))?;
+    let route = match access {
+        RunnerHostAccess::Direct(route) => route,
+        RunnerHostAccess::Courier => reach(participant, realization, participant, realization, server, endpoint)
+            .unwrap_or_else(|_| unreachable!("a participant can reach its own endpoint")),
+    };
+    let address = resolve(route, participant, name, endpoint, ports)
+        .map_err(|error| format!("{context}, which needs a runner-host port: {error}"))?;
+    Ok(match access {
+        RunnerHostAccess::Direct(_) => RunnerHostRoute::Direct(address),
+        RunnerHostAccess::Courier => RunnerHostRoute::Courier(address),
+    })
 }
 
 pub(super) enum Unreachable {

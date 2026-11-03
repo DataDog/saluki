@@ -20,12 +20,12 @@ mod endpoints;
 mod order;
 mod ports;
 mod procedure;
+mod readiness;
 mod references;
 mod routes;
 mod scope;
 
 pub use self::artifacts::{check_artifact_manifest, needed_artifacts};
-pub(crate) use self::scope::ScopeLayout;
 use self::{
     connections::check_connections,
     endpoints::derive_endpoints,
@@ -33,6 +33,7 @@ use self::{
     ports::{check_host_listeners, PortRegistry, RunnerHostPorts},
     scope::{participant_shared_dir, ScopeRegistry},
 };
+pub(crate) use self::{readiness::StartGate, scope::ScopeLayout};
 
 /// Holds the registries and artifact bindings shared across one run's plans.
 ///
@@ -73,10 +74,11 @@ pub struct CasePlan<C> {
     scope: Option<ScopeLayout>,
     order: Option<DependencyOrder>,
     participants: BTreeMap<String, PlannedParticipant>,
-    /// Ports published or forwarded for endpoints reached by connections, references or steps,
+    /// Ports published or forwarded for endpoints reached by connections, references, readiness checks or steps,
     /// keyed by serving participant and endpoint for the selected subject OS.
     runner_host_ports: BTreeMap<(String, String), u16>,
     runner_host_routes: BTreeMap<(String, String, EndpointOperation), RunnerHostRoute>,
+    start_gates: BTreeMap<String, Vec<StartGate>>,
 }
 
 struct PlannedCase {
@@ -84,6 +86,7 @@ struct PlannedCase {
     order: DependencyOrder,
     runner_host_ports: BTreeMap<(String, String), u16>,
     runner_host_routes: BTreeMap<(String, String, EndpointOperation), RunnerHostRoute>,
+    start_gates: BTreeMap<String, Vec<StartGate>>,
 }
 
 struct PlannedParticipant {
@@ -128,8 +131,8 @@ impl<'a> Planner<'a> {
     /// Only the selected OS draws runner-host ports from this planner; other OSes use separate registries.
     /// Ports are drawn in check order: assigned listeners per participant and endpoint in name order,
     /// then connections per consumer, then references per participant (`env`, `params`, template files),
-    /// then step request/response endpoint needs in procedure order.
-    /// Connections, references and step requests reaching one endpoint share its runner-host port.
+    /// then start gates per consumer, then step request/response endpoint needs in procedure order.
+    /// Connections, references, start gates and step requests reaching one endpoint share its runner-host port.
     ///
     /// # Errors
     ///
@@ -143,7 +146,8 @@ impl<'a> Planner<'a> {
     ///    2. Participant facts: no type may declare `shared_dir`.
     ///    3. Per participant in name order: fact and late-fact references in `env`, `params`, then template files;
     ///       configuration; endpoint derivation; port assignment and re-derivation; endpoint overrides; then
-    ///       listener ports and socket paths in endpoint name order.
+    ///       listener ports and socket paths in endpoint name order, then readiness evidence (endpoint evidence
+    ///       in endpoint name order, then participant evidence).
     ///    4. Runner-host listener range and transport uniqueness, per participant and endpoint in name order.
     ///    5. Connections per consumer in name order. For each `connect` key in name order: consumed endpoint,
     ///       served endpoint, accepted kind, route, socket location and length, delivered env keys, then address
@@ -152,7 +156,11 @@ impl<'a> Planner<'a> {
     ///       then template files): served endpoint, route, socket location and length, address part, then
     ///       runner-host port allocation and address rendering.
     ///    7. Create order, then start order.
-    ///    8. Step fact, late-fact and endpoint needs in procedure order, naming the step. Endpoint needs check
+    ///    8. Start gates per consumer in name order: connected endpoint evidence in connection-key order, then
+    ///       distinct servers in name order and their participant evidence in declaration order. Each resolves
+    ///       its operation's route and draws any runner-host port. Self-connections add no gates; equal gates
+    ///       within a consumer are kept once.
+    ///    9. Step fact, late-fact and endpoint needs in procedure order, naming the step. Endpoint needs check
     ///       the served endpoint and operation-specific route, then allocate any port it needs and render its address.
     pub fn compile<C>(&mut self, case: CaseConfig<C>, subject_os: Os) -> Result<Compiled<C>, GenericError> {
         let selected = case.subject_os().contains(&subject_os);
@@ -163,6 +171,7 @@ impl<'a> Planner<'a> {
         let mut participants = BTreeMap::new();
         let mut runner_host_ports = BTreeMap::new();
         let mut runner_host_routes = BTreeMap::new();
+        let mut start_gates = BTreeMap::new();
         if let CaseSchema::Participants { file, procedure } = case.schema() {
             let candidate_scope = if selected {
                 self.scopes.allocate().map_err(|error| {
@@ -209,6 +218,7 @@ impl<'a> Planner<'a> {
                     participants = planned.participants;
                     runner_host_ports = planned.runner_host_ports;
                     runner_host_routes = planned.runner_host_routes;
+                    start_gates = planned.start_gates;
                 }
             }
             if selected {
@@ -247,6 +257,7 @@ impl<'a> Planner<'a> {
             participants,
             runner_host_ports,
             runner_host_routes,
+            start_gates,
         })))
     }
 }
@@ -313,6 +324,16 @@ impl<C> CasePlan<C> {
         self.order.as_ref().map(|order| order.start.as_slice())
     }
 
+    /// Returns the readiness checks a consumer waits for before starting.
+    /// Unknown participants and typed cases have no gates.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "The lifecycle waits for these before starting consumers.")
+    )]
+    pub(crate) fn start_gates(&self, participant: &str) -> &[StartGate] {
+        self.start_gates.get(participant).map(Vec::as_slice).unwrap_or(&[])
+    }
+
     /// Returns a fact from the participant's planned realization, including `shared_dir`.
     /// Returns `None` for unknown participants or facts, and for typed cases.
     pub fn fact(&self, participant: &str, fact: &str) -> Option<&str> {
@@ -376,7 +397,8 @@ impl<C> CasePlan<C> {
 /// Computes every participant's facts, including `shared_dir`, rejecting types that declare it.
 /// Then builds effective configurations (assigning host process group ports), checks endpoints, runner-host listeners
 /// and connections, merges connection deliveries and resolves configuration address references in participant name order.
-/// Then computes create and start orders and checks step needs, storing their runner-host routes.
+/// Then computes create and start orders, plans readiness gates and checks step needs,
+/// storing their runner-host routes.
 fn plan_participants(
     file: &CaseFile, procedure: &[ProcedureNode<Box<dyn Step>>], templates: &FileTemplates, layout: &Layout,
     scope: &ScopeLayout, types: &[&dyn ParticipantType], ports: &mut PortRegistry,
@@ -459,6 +481,7 @@ fn plan_participants(
         &mut runner_host_ports,
     )?;
     let order = dependency_order(file, templates, layout, &participant_endpoints)?;
+    let start_gates = readiness::plan_start_gates(file, layout, &participant_endpoints, &mut runner_host_ports)?;
     let runner_host_routes = procedure::check_step_references(
         file,
         procedure,
@@ -473,6 +496,7 @@ fn plan_participants(
         order,
         runner_host_ports: runner_host_ports.into_ports(),
         runner_host_routes,
+        start_gates,
     })
 }
 

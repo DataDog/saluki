@@ -1,6 +1,9 @@
 //! Served listeners, consumer-visible addresses and connection delivery declarations.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Duration,
+};
 
 use crate::case::template::AddressPart;
 
@@ -78,6 +81,7 @@ impl Transport {
 pub struct Endpoint {
     pub(crate) kind: EndpointKind,
     pub(crate) listener: Listener,
+    pub(crate) ready: Option<Evidence>,
 }
 
 #[derive(Clone, Debug)]
@@ -110,11 +114,18 @@ pub(crate) enum Port {
     expect(dead_code, reason = "Endpoints are constructed by core's test participant types.")
 )]
 impl Endpoint {
+    /// Attaches readiness evidence to this endpoint.
+    pub(crate) fn with_ready(mut self, evidence: Evidence) -> Self {
+        self.ready = Some(evidence);
+        self
+    }
+
     /// Declares a TCP listener at the given port.
     pub(crate) fn tcp(port: Port) -> Self {
         Self {
             kind: EndpointKind::Tcp,
             listener: Listener::Port(port),
+            ready: None,
         }
     }
 
@@ -123,6 +134,7 @@ impl Endpoint {
         Self {
             kind: EndpointKind::Udp,
             listener: Listener::Port(port),
+            ready: None,
         }
     }
 
@@ -131,6 +143,7 @@ impl Endpoint {
         Self {
             kind: EndpointKind::Http,
             listener: Listener::Port(port),
+            ready: None,
         }
     }
 
@@ -139,6 +152,7 @@ impl Endpoint {
         Self {
             kind: EndpointKind::Grpc,
             listener: Listener::Port(port),
+            ready: None,
         }
     }
 
@@ -147,6 +161,7 @@ impl Endpoint {
         Self {
             kind: EndpointKind::UnixDatagram,
             listener: Listener::Path(path.into()),
+            ready: None,
         }
     }
 
@@ -155,6 +170,7 @@ impl Endpoint {
         Self {
             kind: EndpointKind::UnixStream,
             listener: Listener::Path(path.into()),
+            ready: None,
         }
     }
 
@@ -163,6 +179,82 @@ impl Endpoint {
         Self {
             kind: EndpointKind::NamedPipe,
             listener: Listener::Pipe(name.into()),
+            ready: None,
+        }
+    }
+}
+
+/// Evidence that a participant, or one of its endpoints, is ready, checked within a bound.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Evidence {
+    pub(crate) check: Check,
+    pub(crate) within: Duration,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Check {
+    TcpAccepts { endpoint: String },
+    HttpOk { endpoint: String, path: String },
+    SocketExists { endpoint: String },
+    FileExists { path: String },
+}
+
+/// Default time allowed to observe readiness evidence.
+const DEFAULT_READINESS_BOUND: Duration = Duration::from_secs(60);
+
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Only core's test participant types declare readiness evidence.")
+)]
+impl Evidence {
+    pub(crate) fn tcp_accepts(endpoint: impl Into<String>) -> Self {
+        Self {
+            check: Check::TcpAccepts {
+                endpoint: endpoint.into(),
+            },
+            within: DEFAULT_READINESS_BOUND,
+        }
+    }
+
+    pub(crate) fn http_ok(endpoint: impl Into<String>, path: impl Into<String>) -> Self {
+        Self {
+            check: Check::HttpOk {
+                endpoint: endpoint.into(),
+                path: path.into(),
+            },
+            within: DEFAULT_READINESS_BOUND,
+        }
+    }
+
+    pub(crate) fn socket_exists(endpoint: impl Into<String>) -> Self {
+        Self {
+            check: Check::SocketExists {
+                endpoint: endpoint.into(),
+            },
+            within: DEFAULT_READINESS_BOUND,
+        }
+    }
+
+    pub(crate) fn file_exists(path: impl Into<String>) -> Self {
+        Self {
+            check: Check::FileExists { path: path.into() },
+            within: DEFAULT_READINESS_BOUND,
+        }
+    }
+
+    pub(crate) fn within(mut self, within: Duration) -> Self {
+        self.within = within;
+        self
+    }
+}
+
+impl Evidence {
+    pub(crate) fn describe(&self) -> String {
+        match &self.check {
+            Check::TcpAccepts { endpoint } => format!("tcp-accepts on '{endpoint}'"),
+            Check::HttpOk { endpoint, path } => format!("http-ok on '{endpoint}' at '{path}'"),
+            Check::SocketExists { endpoint } => format!("socket-exists on '{endpoint}'"),
+            Check::FileExists { path } => format!("file-exists at '{path}'"),
         }
     }
 }
@@ -229,6 +321,43 @@ pub enum Delivery {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn readiness_evidence_has_a_default_bound_and_describes_its_check() {
+        for (evidence, description) in [
+            (Evidence::tcp_accepts("api"), "tcp-accepts on 'api'"),
+            (Evidence::http_ok("api", "/ready"), "http-ok on 'api' at '/ready'"),
+            (Evidence::socket_exists("log"), "socket-exists on 'log'"),
+            (Evidence::file_exists("/ready"), "file-exists at '/ready'"),
+        ] {
+            assert_eq!(evidence.describe(), description);
+            assert_eq!(evidence.within, Duration::from_secs(60));
+            let check = evidence.check.clone();
+            let bounded = evidence.within(Duration::from_secs(2));
+            assert_eq!(
+                bounded,
+                Evidence {
+                    check,
+                    within: Duration::from_secs(2)
+                }
+            );
+            assert_eq!(
+                Endpoint::http(Port::Fixed(80)).with_ready(bounded.clone()).ready,
+                Some(bounded)
+            );
+        }
+        for endpoint in [
+            Endpoint::tcp(Port::Fixed(80)),
+            Endpoint::udp(Port::Fixed(80)),
+            Endpoint::http(Port::Fixed(80)),
+            Endpoint::grpc(Port::Fixed(80)),
+            Endpoint::unix_datagram("/log.sock"),
+            Endpoint::unix_stream("/log.sock"),
+            Endpoint::named_pipe("log"),
+        ] {
+            assert_eq!(endpoint.ready, None);
+        }
+    }
 
     #[test]
     fn endpoint_kinds_use_their_diagnostic_spellings() {
