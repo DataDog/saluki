@@ -4528,6 +4528,7 @@ dependencies = [
  "kube",
  "panoramic-courier",
  "rand 0.10.3",
+ "regex",
  "rustls",
  "rustls-cng-crypto",
  "saluki-error",

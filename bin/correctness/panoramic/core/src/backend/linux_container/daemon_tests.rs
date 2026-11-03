@@ -27,6 +27,7 @@ use crate::{
     handle::{probe_from_runner_host, send_from_runner_host},
     ledger,
     observe::ExitStatus,
+    participant::{OutputChannel, OutputStream},
     probe::ProbeAnswer,
     recipe::HostMount,
     tasks::TASK_STOP_TIME,
@@ -800,10 +801,15 @@ const EXIT_SPECS: &[ProcessSpec] = &[
     ProcessSpec {
         name: "main",
         exit: ExitChannel::Container,
+        output: OutputChannel::Container,
     },
     ProcessSpec {
         name: "svc",
         exit: ExitChannel::Record { file: "svc" },
+        output: OutputChannel::File {
+            file: "output",
+            stream: OutputStream::Merged,
+        },
     },
 ];
 
@@ -907,6 +913,166 @@ async fn a_container_that_stops_without_a_record_leaves_its_process_undetermined
         assert_eq!(
             svc,
             ExitObservation::Undetermined("participant 'p' stopped without an exit record for process 'svc'".into())
+        );
+    })
+    .await;
+}
+
+async fn wait_for_capture(output: &ProcessOutput) {
+    timeout(Duration::from_secs(15), async {
+        while output.current() == Capture::Following {
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("output capture must settle after exit");
+    assert_eq!(output.current(), Capture::Complete);
+}
+
+async fn wait_for_output_lines(observation: &ParticipantObservation, process: &str, count: usize) {
+    timeout(Duration::from_secs(15), async {
+        loop {
+            let (lines, _) = observation.lines.since(0);
+            if lines.iter().filter(|line| line.process == Some(process)).count() >= count {
+                break;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("lines must arrive while the participant runs");
+    assert_eq!(observation.exit(), ParticipantExit::Running);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn a_processs_output_file_is_followed_while_it_runs_and_completed_after_it_exits() {
+    in_scope(&["p"], courier_bytes(), |scope, tasks| async move {
+        let script = "echo before > /airlock/p/log/output; while [ ! -f /airlock/p/shared/continue ]; do sleep 0.1; done; echo during >> /airlock/p/log/output; while [ ! -f /airlock/p/shared/finish ]; do sleep 0.1; done; printf last >> /airlock/p/log/output";
+        let participant = Arc::new(start_participant(&scope, "p", &recipe(script)).await);
+        let dir = tempfile::tempdir().unwrap();
+        let observation = participant.observe(EXIT_SPECS, &tasks, dir.path()).await;
+        wait_for_output_lines(&observation, "svc", 1).await;
+        participant.exec(command(&["touch", "/airlock/p/shared/continue"]), Duration::from_secs(5)).await.unwrap();
+        wait_for_output_lines(&observation, "svc", 2).await;
+        participant.exec(command(&["touch", "/airlock/p/shared/finish"]), Duration::from_secs(5)).await.unwrap();
+        let output = &observation.outputs["svc"];
+        wait_for_capture(output).await;
+        assert_eq!(output.paths, [dir.path().join("svc.log")]);
+        assert_eq!(std::fs::read(&output.paths[0]).unwrap(), b"before\nduring\nlast");
+        let (lines, _) = observation.lines.since(0);
+        let lines: Vec<_> = lines.iter().filter(|line| line.process == Some("svc")).collect();
+        assert_eq!(lines.iter().map(|line| line.text.as_str()).collect::<Vec<_>>(), ["before", "during", "last"]);
+        assert!(lines.iter().all(|line| &*line.participant == "p" && line.stream == OutputStream::Merged));
+    }).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn a_log_file_created_after_following_starts_is_followed_from_its_first_byte() {
+    in_scope(&["p"], courier_bytes(), |scope, tasks| async move {
+        let participant = Arc::new(start_participant(&scope, "p", &recipe("exec sleep 60")).await);
+        let dir = tempfile::tempdir().unwrap();
+        let observation = participant.observe(EXIT_SPECS, &tasks, dir.path()).await;
+        // Inspect the exec's command line before creating the file, so this exercises the missing-file retry.
+        let script = "for p in /proc/[0-9]*/cmdline; do tr '\\000' ' ' < \"$p\" 2>/dev/null; echo; done";
+        timeout(Duration::from_secs(10), async {
+            loop {
+                let output = participant
+                    .exec(command(&["sh", "-c", script]), Duration::from_secs(5))
+                    .await
+                    .unwrap();
+                if String::from_utf8_lossy(&output.stdout).contains("tail -n +1 -F /airlock/p/log/output") {
+                    break;
+                }
+                sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .unwrap();
+        participant
+            .exec(
+                command(&["sh", "-c", "printf 'first\\nsecond\\n' > /airlock/p/log/output"]),
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+        wait_for_output_lines(&observation, "svc", 2).await;
+        assert_eq!(
+            std::fs::read(&observation.outputs["svc"].paths[0]).unwrap(),
+            b"first\nsecond\n"
+        );
+        assert_eq!(observation.outputs["svc"].current(), Capture::Following);
+        let (lines, _) = observation.lines.since(0);
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.process == Some("svc"))
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn the_output_of_a_process_that_exits_before_its_follower_starts_is_read_after_exit() {
+    in_scope(&["p"], courier_bytes(), |scope, tasks| async move {
+        let participant =
+            Arc::new(start_participant(&scope, "p", &recipe("printf 'early\\nlast' > /airlock/p/log/output")).await);
+        timeout(Duration::from_secs(5), participant.driver.wait_exit())
+            .await
+            .unwrap()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let observation = participant.observe(EXIT_SPECS, &tasks, dir.path()).await;
+        wait_for_capture(&observation.outputs["svc"]).await;
+        assert_eq!(
+            std::fs::read(&observation.outputs["svc"].paths[0]).unwrap(),
+            b"early\nlast"
+        );
+        let (lines, _) = observation.lines.since(0);
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.process == Some("svc"))
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
+            ["early", "last"]
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn container_output_lines_are_tagged_with_their_process_and_stream() {
+    in_scope(&["p"], courier_bytes(), |scope, tasks| async move {
+        let participant = Arc::new(start_participant(&scope, "p", &recipe("echo out; printf err >&2")).await);
+        let dir = tempfile::tempdir().unwrap();
+        let observation = participant.observe(EXIT_SPECS, &tasks, dir.path()).await;
+        let output = &observation.outputs["main"];
+        wait_for_capture(output).await;
+        assert_eq!(
+            output.paths,
+            [observation.stdout_path.clone(), observation.stderr_path.clone()]
+        );
+        assert!(!dir.path().join("main.stdout.log").exists());
+        assert_eq!(std::fs::read(&output.paths[0]).unwrap(), b"out\n");
+        assert_eq!(std::fs::read(&output.paths[1]).unwrap(), b"err");
+        let (lines, _) = observation.lines.since(0);
+        assert_eq!(lines.len(), 2);
+        assert!(lines
+            .iter()
+            .all(|line| line.process == Some("main") && &*line.participant == "p"));
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| (line.stream, line.text.as_str()))
+                .collect::<Vec<_>>(),
+            [(OutputStream::Stdout, "out"), (OutputStream::Stderr, "err")]
         );
     })
     .await;

@@ -8,6 +8,7 @@ use crate::{
     case::{EndpointOverride, FileSource, ParticipantConfig},
     endpoint::{ConsumedEndpoint, Endpoint, Evidence},
     layout::{Os, Realization, RealizationKind},
+    observe::output::host_output_file,
     recipe::Recipe,
 };
 
@@ -107,13 +108,15 @@ pub struct FactDeclaration {
     pub value: &'static str,
 }
 
-/// How a named process's exit is observed on one realization.
+/// How a named process's exit and output are observed on one realization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProcessSpec {
     /// A name declared by [`ParticipantType::processes`].
     pub name: &'static str,
     /// The source of the process's first exit observation.
     pub exit: ExitChannel,
+    /// The source of the process's output.
+    pub output: OutputChannel,
 }
 
 /// The source of a process's exit status.
@@ -131,6 +134,31 @@ pub enum ExitChannel {
         /// A plain file name: nonempty, other than `.` or `..`, and containing neither `/` nor `\`.
         file: &'static str,
     },
+}
+
+/// The source of a process's output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputChannel {
+    /// The container's log, owned by at most one process per participant.
+    Container,
+    /// A file the process writes in the participant's log directory.
+    File {
+        /// A plain file name: nonempty, other than `.` or `..`, and containing neither `/` nor `\`.
+        file: &'static str,
+        /// The streams the file contains.
+        stream: OutputStream,
+    },
+}
+
+/// The stream a process's output came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputStream {
+    /// Standard output.
+    Stdout,
+    /// Standard error.
+    Stderr,
+    /// Standard output and standard error combined by the producer.
+    Merged,
 }
 
 /// A participant type a case may name, and what it accepts and provides.
@@ -249,14 +277,14 @@ pub trait ParticipantType: Send + Sync {
     /// Named processes steps may address with `process`, in sorted order.
     fn processes(&self) -> &'static [&'static str];
 
-    /// Exit channels for this realization. Defaults to none.
-    /// Native preparation requires exactly one channel for every name in [`Self::processes`].
+    /// Exit and output channels for this realization. Defaults to none.
+    /// Native preparation requires exactly one specification for every name in [`Self::processes`].
     fn process_specs(&self, _realization: Realization) -> &'static [ProcessSpec] {
         &[]
     }
 }
 
-/// Checks exit channels in process declaration order, returning the validated specifications.
+/// Checks exit and output channels in process declaration order, returning the validated specifications.
 pub(crate) fn check_process_specs(
     participant: &str, participant_type: &dyn ParticipantType, realization: Realization,
 ) -> Result<&'static [ProcessSpec], String> {
@@ -269,8 +297,19 @@ pub(crate) fn check_process_specs(
     let processes = participant_type.processes();
     let specs = participant_type.process_specs(realization);
     let mut container_owner = None;
+    let mut output_owner = None;
+    let mut output_files: Vec<(&str, &str)> = Vec::new();
+    let mut host_files: BTreeMap<String, Option<&str>> = BTreeMap::from([
+        ("container.stdout.log".into(), None),
+        ("container.stderr.log".into(), None),
+    ]);
     let mut record_files: Vec<(&str, &str)> = Vec::new();
     for &process in processes {
+        if matches!(process, "" | "." | "..") || process.contains(['/', '\\']) {
+            return Err(format!(
+                "{prefix} declares process '{process}'; process names must be plain file names"
+            ));
+        }
         let mut channels = specs.iter().filter(|spec| spec.name == process);
         let Some(spec) = channels.next() else {
             return Err(format!("{prefix} declares no exit channel for process '{process}'"));
@@ -302,6 +341,44 @@ pub(crate) fn check_process_specs(
                     ));
                 }
                 record_files.push((file, process));
+            }
+        }
+        match spec.output {
+            OutputChannel::Container => {
+                if let Some(owner) = output_owner {
+                    return Err(format!(
+                        "{prefix} gives the container's output to processes '{owner}' and '{process}'; \
+                         only one process can own it"
+                    ));
+                }
+                output_owner = Some(process);
+            }
+            OutputChannel::File { file, stream } => {
+                if matches!(file, "" | "." | "..") || file.contains(['/', '\\']) {
+                    return Err(format!(
+                        "{prefix} declares output file '{file}' for process '{process}'; \
+                         output files must be plain file names"
+                    ));
+                }
+                if let Some((_, owner)) = output_files.iter().find(|(seen, _)| *seen == file) {
+                    return Err(format!(
+                        "{prefix} declares output file '{file}' for processes '{owner}' and '{process}'; \
+                         each process needs its own output file"
+                    ));
+                }
+                let host_file = host_output_file(process, spec.output).expect("file output has a host file name");
+                if let Some(owner) = host_files.get(&host_file) {
+                    let owner = match owner {
+                        Some(owner) => format!("output of process '{owner}'"),
+                        None => "the container's own output".into(),
+                    };
+                    return Err(format!(
+                        "{prefix} declares file output for process '{process}' with stream {stream:?}; \
+                         its host file would replace {owner} at '{host_file}'"
+                    ));
+                }
+                host_files.insert(host_file, Some(process));
+                output_files.push((file, process));
             }
         }
     }

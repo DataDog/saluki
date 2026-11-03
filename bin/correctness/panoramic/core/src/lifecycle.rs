@@ -357,7 +357,7 @@ mod tests {
     use crate::{
         backend::docker::test_util::FakeDocker,
         case::fixtures,
-        participant::{ExitChannel, RenderedConfig},
+        participant::{ExitChannel, OutputChannel, OutputStream, RenderedConfig},
         plan::Planner,
     };
 
@@ -451,7 +451,11 @@ mod tests {
                 &[]
             }
             fn processes(&self) -> &'static [&'static str] {
-                fixtures::Server.processes()
+                match self.0 {
+                    [spec] if !["server", "worker"].contains(&spec.name) => std::slice::from_ref(&spec.name),
+                    [ProcessSpec { name: "a", .. }, ProcessSpec { name: "a.stdout", .. }] => &["a", "a.stdout"],
+                    _ => fixtures::Server.processes(),
+                }
             }
             fn process_specs(&self, _: Realization) -> &'static [ProcessSpec] {
                 self.0
@@ -460,10 +464,15 @@ mod tests {
         const SERVER: ProcessSpec = ProcessSpec {
             name: "server",
             exit: ExitChannel::Container,
+            output: OutputChannel::Container,
         };
         const WORKER: ProcessSpec = ProcessSpec {
             name: "worker",
             exit: ExitChannel::Record { file: "worker" },
+            output: OutputChannel::File {
+                file: "output",
+                stream: OutputStream::Merged,
+            },
         };
         const CASES: &[(&[ProcessSpec], &str)] = &[
             (&[], "declares no exit channel for process 'server'"),
@@ -490,6 +499,7 @@ mod tests {
                     ProcessSpec {
                         name: "extra",
                         exit: ExitChannel::Record { file: "extra" },
+                        ..WORKER
                     },
                 ],
                 "declares an exit channel for process 'extra', which the type does not run",
@@ -502,8 +512,8 @@ mod tests {
             (
                 &[
                     ProcessSpec {
-                        name: "worker",
                         exit: ExitChannel::Container,
+                        ..WORKER
                     },
                     SERVER,
                 ],
@@ -513,8 +523,8 @@ mod tests {
                 &[
                     SERVER,
                     ProcessSpec {
-                        name: "worker",
                         exit: ExitChannel::Record { file: "" },
+                        ..WORKER
                     },
                 ],
                 "declares exit record file '' for process 'worker'; record files must be plain file names",
@@ -523,8 +533,8 @@ mod tests {
                 &[
                     SERVER,
                     ProcessSpec {
-                        name: "worker",
                         exit: ExitChannel::Record { file: "." },
+                        ..WORKER
                     },
                 ],
                 "declares exit record file '.' for process 'worker'; record files must be plain file names",
@@ -533,8 +543,8 @@ mod tests {
                 &[
                     SERVER,
                     ProcessSpec {
-                        name: "worker",
                         exit: ExitChannel::Record { file: ".." },
+                        ..WORKER
                     },
                 ],
                 "declares exit record file '..' for process 'worker'; record files must be plain file names",
@@ -543,8 +553,8 @@ mod tests {
                 &[
                     SERVER,
                     ProcessSpec {
-                        name: "worker",
                         exit: ExitChannel::Record { file: "nested/file" },
+                        ..WORKER
                     },
                 ],
                 "declares exit record file 'nested/file' for process 'worker'; record files must be plain file names",
@@ -553,11 +563,137 @@ mod tests {
                 &[
                     SERVER,
                     ProcessSpec {
-                        name: "worker",
                         exit: ExitChannel::Record { file: "nested\\file" },
+                        ..WORKER
                     },
                 ],
                 "declares exit record file 'nested\\file' for process 'worker'; record files must be plain file names",
+            ),
+            (
+                &[
+                    SERVER,
+                    ProcessSpec { output: OutputChannel::Container, ..WORKER },
+                ],
+                "gives the container's output to processes 'server' and 'worker'; only one process can own it",
+            ),
+            (
+                &[
+                    ProcessSpec {
+                        output: OutputChannel::File { file: "output", stream: OutputStream::Stdout },
+                        ..SERVER
+                    },
+                    WORKER,
+                ],
+                "declares output file 'output' for processes 'server' and 'worker'; each process needs its own output file",
+            ),
+            (
+                &[
+                    SERVER,
+                    ProcessSpec {
+                        output: OutputChannel::File { file: "", stream: OutputStream::Merged },
+                        ..WORKER
+                    },
+                ],
+                "declares output file '' for process 'worker'; output files must be plain file names",
+            ),
+            (
+                &[
+                    SERVER,
+                    ProcessSpec {
+                        output: OutputChannel::File { file: ".", stream: OutputStream::Merged },
+                        ..WORKER
+                    },
+                ],
+                "declares output file '.' for process 'worker'; output files must be plain file names",
+            ),
+            (
+                &[
+                    SERVER,
+                    ProcessSpec {
+                        output: OutputChannel::File { file: "..", stream: OutputStream::Merged },
+                        ..WORKER
+                    },
+                ],
+                "declares output file '..' for process 'worker'; output files must be plain file names",
+            ),
+            (
+                &[
+                    SERVER,
+                    ProcessSpec {
+                        output: OutputChannel::File { file: "nested/file", stream: OutputStream::Merged },
+                        ..WORKER
+                    },
+                ],
+                "declares output file 'nested/file' for process 'worker'; output files must be plain file names",
+            ),
+            (
+                &[
+                    SERVER,
+                    ProcessSpec {
+                        output: OutputChannel::File { file: "nested\\file", stream: OutputStream::Merged },
+                        ..WORKER
+                    },
+                ],
+                "declares output file 'nested\\file' for process 'worker'; output files must be plain file names",
+            ),
+            (
+                &[ProcessSpec {
+                    name: "container",
+                    output: OutputChannel::File { file: "output", stream: OutputStream::Stdout },
+                    ..SERVER
+                }],
+                "declares file output for process 'container' with stream Stdout; its host file would replace the container's own output at 'container.stdout.log'",
+            ),
+            (
+                &[ProcessSpec {
+                    name: "container",
+                    output: OutputChannel::File { file: "output", stream: OutputStream::Stderr },
+                    ..SERVER
+                }],
+                "declares file output for process 'container' with stream Stderr; its host file would replace the container's own output at 'container.stderr.log'",
+            ),
+            (
+                &[
+                    ProcessSpec {
+                        name: "a",
+                        output: OutputChannel::File { file: "a", stream: OutputStream::Stdout },
+                        ..SERVER
+                    },
+                    ProcessSpec { name: "a.stdout", ..WORKER },
+                ],
+                "declares file output for process 'a.stdout' with stream Merged; its host file would replace output of process 'a' at 'a.stdout.log'",
+            ),
+            (
+                &[ProcessSpec { name: "container.stdout", ..WORKER }],
+                "declares file output for process 'container.stdout' with stream Merged; its host file would replace the container's own output at 'container.stdout.log'",
+            ),
+            (
+                &[ProcessSpec { name: "container.stderr", ..WORKER }],
+                "declares file output for process 'container.stderr' with stream Merged; its host file would replace the container's own output at 'container.stderr.log'",
+            ),
+            (
+                &[ProcessSpec { name: "", ..WORKER }],
+                "declares process ''; process names must be plain file names",
+            ),
+            (
+                &[ProcessSpec { name: ".", ..WORKER }],
+                "declares process '.'; process names must be plain file names",
+            ),
+            (
+                &[ProcessSpec { name: "..", ..WORKER }],
+                "declares process '..'; process names must be plain file names",
+            ),
+            (
+                &[ProcessSpec { name: "../escape", ..WORKER }],
+                "declares process '../escape'; process names must be plain file names",
+            ),
+            (
+                &[ProcessSpec { name: "nested\\file", ..WORKER }],
+                "declares process 'nested\\file'; process names must be plain file names",
+            ),
+            (
+                &[ProcessSpec { name: "nested/file", ..SERVER }],
+                "declares process 'nested/file'; process names must be plain file names",
             ),
         ];
         for (specs, message) in CASES {

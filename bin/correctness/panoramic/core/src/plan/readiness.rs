@@ -2,6 +2,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use regex::Regex;
+
 use super::{
     endpoints::{check_absolute_path, holds_no_reference, ParticipantEndpoints, PathError},
     ports::RunnerHostPorts,
@@ -34,24 +36,50 @@ pub(crate) enum PlannedCheck {
     Socket { path: String },
     /// A path in the server's filesystem.
     File { path: String },
+    /// A compiled pattern searched in one process's tagged lines.
+    Output { process: String, pattern: OutputPattern },
+}
+
+/// Pattern identity is its source text, so equivalent declarations share a wait.
+#[derive(Clone)]
+pub(crate) struct OutputPattern(pub(crate) Regex);
+
+impl std::fmt::Debug for OutputPattern {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.as_str().fmt(formatter)
+    }
+}
+
+impl PartialEq for OutputPattern {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.as_str() == other.0.as_str()
+    }
+}
+
+impl Eq for OutputPattern {}
+
+impl From<Regex> for OutputPattern {
+    fn from(pattern: Regex) -> Self {
+        Self(pattern)
+    }
 }
 
 pub(super) fn check_readiness(
-    holder: &str, os: Os, served: &BTreeMap<String, Endpoint>, readiness: &[Evidence],
+    holder: &str, os: Os, served: &BTreeMap<String, Endpoint>, readiness: &[Evidence], processes: &[&str],
 ) -> Result<(), String> {
     for (name, endpoint) in served {
         if let Some(evidence) = &endpoint.ready {
-            check_evidence(holder, &format!("endpoint '{name}'"), evidence, served, os)?;
+            check_evidence(holder, &format!("endpoint '{name}'"), evidence, served, os, processes)?;
         }
     }
     for evidence in readiness {
-        check_evidence(holder, "the participant", evidence, served, os)?;
+        check_evidence(holder, "the participant", evidence, served, os, processes)?;
     }
     Ok(())
 }
 
 fn check_evidence(
-    holder: &str, owner: &str, evidence: &Evidence, served: &BTreeMap<String, Endpoint>, os: Os,
+    holder: &str, owner: &str, evidence: &Evidence, served: &BTreeMap<String, Endpoint>, os: Os, processes: &[&str],
 ) -> Result<(), String> {
     let context = format!("{holder} declares {} for {owner}", evidence.describe());
     let target: Option<(&str, &[EndpointKind])> = match &evidence.check {
@@ -60,7 +88,7 @@ fn check_evidence(
         }
         Check::HttpOk { endpoint, .. } => Some((endpoint, &[EndpointKind::Http])),
         Check::SocketExists { endpoint } => Some((endpoint, &[EndpointKind::UnixDatagram, EndpointKind::UnixStream])),
-        Check::FileExists { .. } => None,
+        Check::FileExists { .. } | Check::OutputMatches { .. } => None,
     };
     if let Some((name, accepts)) = target {
         let endpoint = served.get(name).ok_or_else(|| {
@@ -78,6 +106,15 @@ fn check_evidence(
         }
     }
     match &evidence.check {
+        Check::OutputMatches { process, pattern } => {
+            if !processes.contains(&process.as_str()) {
+                return Err(format!(
+                    "{context}, but its type runs no process '{process}'; it runs {}",
+                    declared_names(processes)
+                ));
+            }
+            Regex::new(pattern).map_err(|error| format!("{context}, but its pattern is not a valid regex: {error}"))?;
+        }
         Check::HttpOk { path, .. } => {
             if !path.starts_with('/') || !path.bytes().all(|byte| byte.is_ascii_graphic()) || !holds_no_reference(path)
             {
@@ -146,6 +183,10 @@ pub(super) fn plan_start_gates(
                     PlannedCheck::Socket { path: path.clone() }
                 }
                 Check::FileExists { path } => PlannedCheck::File { path: path.clone() },
+                Check::OutputMatches { process, pattern } => PlannedCheck::Output {
+                    process: process.clone(),
+                    pattern: Regex::new(pattern).expect("output patterns were validated").into(),
+                },
             };
             let gate = StartGate {
                 server: server.clone(),
@@ -205,6 +246,54 @@ mod tests {
             port: Some(port),
             path: None,
         }
+    }
+
+    #[test]
+    fn output_evidence_must_name_a_process_its_type_runs() {
+        assert_error(&ready_case("READY_OUTPUT: ready, READY_OUTPUT_PROCESS: unknown"), Os::Linux,
+            "participant 'server' of type 'ready-server' as linux-container on linux declares output-matches 'ready' on process 'unknown' for the participant, but its type runs no process 'unknown'; it runs main");
+    }
+
+    #[test]
+    fn output_evidence_must_have_a_valid_regex() {
+        #[expect(
+            clippy::invalid_regex,
+            reason = "The declaration error must include the regex parser's diagnostic."
+        )]
+        let error = Regex::new("[").unwrap_err();
+        assert_error(&ready_case("READY_OUTPUT: '['"), Os::Linux,
+            &format!("participant 'server' of type 'ready-server' as linux-container on linux declares output-matches '[' on process 'main' for the participant, but its pattern is not a valid regex: {error}"));
+    }
+
+    #[test]
+    fn output_evidence_on_a_udp_endpoint_is_accepted() {
+        let endpoints = BTreeMap::from([(
+            "metrics".into(),
+            Endpoint::udp(crate::endpoint::Port::Fixed(9000)).with_ready(Evidence::output_matches("main", "ready")),
+        )]);
+        assert_eq!(check_readiness("server", Os::Linux, &endpoints, &[], &["main"]), Ok(()));
+    }
+
+    #[test]
+    fn output_evidence_plans_a_gate_without_a_route_or_runner_host_port() {
+        let mut planner = planner();
+        let plan = compile_with(&mut planner, &ready_case("READY_OUTPUT: '^ready$'"), Os::Linux)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            plan.start_gates("consumer"),
+            [StartGate {
+                server: "server".into(),
+                endpoint: None,
+                evidence: Evidence::output_matches("main", "^ready$"),
+                check: PlannedCheck::Output {
+                    process: "main".into(),
+                    pattern: OutputPattern(Regex::new("^ready$").unwrap())
+                },
+            }]
+        );
+        assert!(plan.runner_host_ports("server").is_empty());
+        assert_eq!(planner.ports.allocate(), Ok(20000));
     }
 
     #[test]
@@ -283,7 +372,7 @@ mod tests {
             )]);
             let expected =
                 format!("{holder} declares http-ok on 'api' at '{path}' for endpoint 'api', but {constraint}");
-            assert_eq!(check_readiness(holder, Os::Linux, &endpoints, &[]), Err(expected));
+            assert_eq!(check_readiness(holder, Os::Linux, &endpoints, &[], &[]), Err(expected));
         }
         for path in ["ready", "", "http://server/ready", "/a b", "/a\tb"] {
             let expected =
@@ -358,6 +447,11 @@ mod tests {
             ("READY_HTTP: /ready", "http-ok on 'api' at '/ready'", "endpoint 'api'"),
             ("READY_SOCKET: /log.sock", "socket-exists on 'log'", "endpoint 'log'"),
             ("READY_FILE: /ready", "file-exists at '/ready'", "the participant"),
+            (
+                "READY_OUTPUT: ready",
+                "output-matches 'ready' on process 'main'",
+                "the participant",
+            ),
         ] {
             assert_error(&ready_case(&format!("{env}, READY_WITHIN: '0'")), Os::Linux, &format!(
                 "participant 'server' of type 'ready-server' as linux-container on linux declares {description} for {owner}, but its readiness bound must be nonzero",

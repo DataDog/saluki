@@ -197,6 +197,7 @@ pub(crate) enum Check {
     HttpOk { endpoint: String, path: String },
     SocketExists { endpoint: String },
     FileExists { path: String },
+    OutputMatches { process: String, pattern: String },
 }
 
 /// Default time allowed to observe readiness evidence.
@@ -242,6 +243,16 @@ impl Evidence {
         }
     }
 
+    pub(crate) fn output_matches(process: impl Into<String>, pattern: impl Into<String>) -> Self {
+        Self {
+            check: Check::OutputMatches {
+                process: process.into(),
+                pattern: pattern.into(),
+            },
+            within: DEFAULT_READINESS_BOUND,
+        }
+    }
+
     pub(crate) fn within(mut self, within: Duration) -> Self {
         self.within = within;
         self
@@ -255,6 +266,7 @@ impl Evidence {
             Check::HttpOk { endpoint, path } => format!("http-ok on '{endpoint}' at '{path}'"),
             Check::SocketExists { endpoint } => format!("socket-exists on '{endpoint}'"),
             Check::FileExists { path } => format!("file-exists at '{path}'"),
+            Check::OutputMatches { process, pattern } => format!("output-matches '{pattern}' on process '{process}'"),
         }
     }
 }

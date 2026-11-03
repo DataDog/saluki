@@ -16,7 +16,7 @@ use crate::{
     },
     endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind, Evidence, Port},
     layout::Realization,
-    participant::{EffectiveConfig, RenderedConfig},
+    participant::{EffectiveConfig, ExitChannel, OutputChannel, RenderedConfig},
     plan::{
         fixtures::{attach_endpoint_evidence, participant_evidence},
         Planner,
@@ -99,7 +99,14 @@ impl ParticipantType for Fixture {
         )])
     }
     fn processes(&self) -> &'static [&'static str] {
-        &[]
+        &["main"]
+    }
+    fn process_specs(&self, _: Realization) -> &'static [ProcessSpec] {
+        &[ProcessSpec {
+            name: "main",
+            exit: ExitChannel::Container,
+            output: OutputChannel::Container,
+        }]
     }
 }
 
@@ -649,5 +656,19 @@ async fn a_started_participants_output_is_observed_even_when_its_sibling_fails_t
             assert_eq!(view.container("second").await.state.unwrap().running, Some(true));
         },
     )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn a_consumer_starts_only_after_its_servers_output_matches() {
+    let case = readiness_case(
+        "api",
+        &[("READY_OUTPUT", "^listening$")],
+        "sleep 1; touch /airlock/server/shared/marker; echo listening; exec sleep 60",
+    );
+    with_case(&case, |view| async move {
+        view.assert_consumer_saw_marker().await;
+    })
     .await;
 }

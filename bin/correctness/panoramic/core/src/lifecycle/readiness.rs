@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     handle::{http_status_from_runner_host, probe_from_runner_host, HandleError, Primitives},
-    observe::ParticipantObservation,
+    observe::{Capture, ParticipantObservation},
     plan::{PlannedCheck, StartGate},
     probe::{probe, AttemptLimits, ProbeAnswer, ProbeError, POLL_INTERVAL},
 };
@@ -72,9 +72,10 @@ impl Waiting<'_> {
         let mut reason = "no check completed".to_string();
         let result = {
             let poll = async {
+                let mut cursor = 0;
                 loop {
                     let limits = AttemptLimits::new(deadline.saturating_duration_since(Instant::now()));
-                    match check_once(&self.gate.check, server, &limits).await {
+                    match check_once(&self.gate.check, server, &limits, observation, &mut cursor).await {
                         Ok(None) => return Ok(()),
                         Ok(Some(not_ready)) | Err(HandleError::Product { message: not_ready }) => reason = not_ready,
                         Err(HandleError::Harness { message }) => return Err(message),
@@ -109,9 +110,34 @@ impl Waiting<'_> {
 
 /// Returns `None` when ready, otherwise the reason to retry; mechanism failures are errors.
 async fn check_once(
-    check: &PlannedCheck, server: &dyn Primitives, limits: &AttemptLimits,
+    check: &PlannedCheck, server: &dyn Primitives, limits: &AttemptLimits, observation: &ParticipantObservation,
+    cursor: &mut usize,
 ) -> Result<Option<String>, HandleError> {
     match check {
+        PlannedCheck::Output { process, pattern } => {
+            let output = observation
+                .outputs
+                .get(process.as_str())
+                .ok_or_else(|| HandleError::Harness {
+                    message: format!("process '{process}' has no output capture"),
+                })?;
+            // A terminal capture state is published after its last lines, so snapshot it before reading them.
+            let capture = output.current();
+            let (lines, next) = observation.lines.since(*cursor);
+            *cursor = next;
+            if lines
+                .iter()
+                .any(|line| line.process == Some(process.as_str()) && pattern.0.is_match(&line.text))
+            {
+                return Ok(None);
+            }
+            if let Capture::Failed { reason } = capture {
+                return Err(HandleError::Harness {
+                    message: format!("output capture of process '{process}' failed: {reason}"),
+                });
+            }
+            Ok(Some(format!("no line of process '{process}' has matched yet")))
+        }
         PlannedCheck::Accepts(route) => match probe_from_runner_host(route, server, limits).await? {
             ProbeAnswer::Listening => Ok(None),
             ProbeAnswer::NotListening { reason } => Ok(Some(reason)),
@@ -157,7 +183,8 @@ mod tests {
     use tokio::sync::watch;
 
     use super::*;
-    use crate::observe::{Capture, ParticipantExit};
+    use crate::observe::{output::OutputLine, ParticipantExit, ProcessOutput};
+    use crate::participant::OutputStream;
     use crate::{
         endpoint::{EndpointKind, Evidence, ResolvedAddress, RunnerHostRoute},
         handle::ExecCommand,
@@ -174,15 +201,26 @@ mod tests {
         calls: Mutex<Vec<String>>,
         observation: ParticipantObservation,
         exit_tx: watch::Sender<ParticipantExit>,
+        capture_tx: watch::Sender<Capture>,
     }
 
     impl Server {
         fn new(answers: impl IntoIterator<Item = Answer>) -> Self {
             let (exit_tx, exit_rx) = watch::channel(ParticipantExit::Running);
-            let (_, capture_rx) = watch::channel(Capture::Following);
+            let (capture_tx, capture_rx) = watch::channel(Capture::Following);
+            let mut observation =
+                ParticipantObservation::new(exit_rx, capture_rx.clone(), Default::default(), Default::default());
+            observation.outputs.insert(
+                "main",
+                ProcessOutput {
+                    capture: capture_rx,
+                    paths: vec![],
+                },
+            );
             Self {
                 exit_tx,
-                observation: ParticipantObservation::new(exit_rx, capture_rx, Default::default(), Default::default()),
+                capture_tx,
+                observation,
                 answers: Mutex::new(answers.into_iter().collect()),
                 calls: Mutex::default(),
             }
@@ -242,6 +280,132 @@ mod tests {
                 path: None,
             })),
         }
+    }
+
+    fn output_gate() -> StartGate {
+        StartGate {
+            server: "server".into(),
+            endpoint: None,
+            evidence: Evidence::output_matches("main", "^ready$"),
+            check: PlannedCheck::Output {
+                process: "main".into(),
+                pattern: regex::Regex::new("^ready$").unwrap().into(),
+            },
+        }
+    }
+
+    fn push_line(server: &Server, process: Option<&'static str>, text: &str) {
+        server.observation.lines.push(OutputLine {
+            participant: "server".into(),
+            process,
+            stream: OutputStream::Stdout,
+            received: std::time::SystemTime::now(),
+            text: text.into(),
+        });
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_output_gate_passes_once_a_line_of_its_process_matches() {
+        let server = Server::new([]);
+        let gate = output_gate();
+        let cancel = CancellationToken::new();
+        push_line(&server, Some("other"), "ready");
+        push_line(&server, None, "ready");
+        push_line(&server, Some("main"), "not ready");
+        let started = Instant::now();
+        let ((), result) = tokio::join!(
+            async {
+                sleep(2 * POLL_INTERVAL).await;
+                push_line(&server, Some("main"), "ready");
+            },
+            wait_for_level(
+                [("consumer", &gate)],
+                |_| (&server as &dyn Primitives, &server.observation),
+                &cancel
+            ),
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(started.elapsed(), 2 * POLL_INTERVAL);
+        assert!(server.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_output_gate_fails_at_once_when_its_processs_capture_fails() {
+        let server = Server::new([]);
+        server.capture_tx.send_replace(Capture::Failed {
+            reason: "disk full".into(),
+        });
+        let started = Instant::now();
+        assert_eq!(wait_for_level([("consumer", &output_gate())], |_| (&server as &dyn Primitives, &server.observation), &CancellationToken::new()).await,
+            Err("participant 'consumer' cannot start: checking output-matches '^ready$' on process 'main' of participant 'server' failed: output capture of process 'main' failed: disk full".into()));
+        assert_eq!(started.elapsed(), Duration::ZERO);
+        push_line(&server, Some("main"), "ready");
+        assert_eq!(
+            wait_for_level(
+                [("consumer", &output_gate())],
+                |_| (&server as &dyn Primitives, &server.observation),
+                &CancellationToken::new()
+            )
+            .await,
+            Ok(())
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn output_gates_with_the_same_process_and_pattern_are_checked_once_for_every_consumer() {
+        let server = Server::new([]);
+        server.capture_tx.send_replace(Capture::Failed {
+            reason: "disk full".into(),
+        });
+        let gate = output_gate();
+        let alias = StartGate {
+            endpoint: Some("other".into()),
+            ..output_gate()
+        };
+        assert_eq!(wait_for_level([("a", &gate), ("a", &alias), ("b", &alias)], |_| (&server as &dyn Primitives, &server.observation), &CancellationToken::new()).await,
+            Err("participants 'a', 'b' cannot start: checking output-matches '^ready$' on process 'main' of participant 'server' failed: output capture of process 'main' failed: disk full".into()));
+    }
+
+    #[tokio::test]
+    async fn an_output_gate_with_no_capture_is_a_harness_error() {
+        let mut server = Server::new([]);
+        server.observation.outputs.clear();
+        let gate = output_gate();
+        assert_eq!(
+            check_once(
+                &gate.check,
+                &server,
+                &AttemptLimits::new(Duration::from_secs(1)),
+                &server.observation,
+                &mut 0
+            )
+            .await,
+            Err(HandleError::Harness {
+                message: "process 'main' has no output capture".into()
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn output_checks_advance_their_cursor_and_preserve_other_readers() {
+        let server = Server::new([]);
+        let gate = output_gate();
+        let limits = AttemptLimits::new(Duration::from_secs(1));
+        let mut cursor = 0;
+        push_line(&server, Some("main"), "ready");
+        assert_eq!(
+            check_once(&gate.check, &server, &limits, &server.observation, &mut cursor).await,
+            Ok(None)
+        );
+        assert_eq!(cursor, 1);
+        assert_eq!(
+            check_once(&gate.check, &server, &limits, &server.observation, &mut cursor).await,
+            Ok(Some("no line of process 'main' has matched yet".into()))
+        );
+        assert_eq!(
+            check_once(&gate.check, &server, &limits, &server.observation, &mut 0).await,
+            Ok(None)
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -481,7 +645,14 @@ mod tests {
                 );
                 let server = Server::new([Answer::Stat(kind.clone())]);
                 assert_eq!(
-                    check_once(&check, &server, &AttemptLimits::new(Duration::from_secs(1))).await,
+                    check_once(
+                        &check,
+                        &server,
+                        &AttemptLimits::new(Duration::from_secs(1)),
+                        &server.observation,
+                        &mut 0
+                    )
+                    .await,
                     Ok((!ready).then(|| description.to_string()))
                 );
                 assert_eq!(*server.calls.lock().unwrap(), ["stat /ready"]);

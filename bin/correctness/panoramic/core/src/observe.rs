@@ -1,6 +1,6 @@
 //! Participant exit and output observations maintained by case-owned tasks.
 
-use std::{collections::BTreeMap, future::Future, path::PathBuf, time::SystemTime};
+use std::{collections::BTreeMap, future::Future, path::PathBuf, sync::Arc, time::SystemTime};
 
 use airlock::{exec::OutputChunk, observe::ContainerExit};
 use futures::{Stream, StreamExt as _};
@@ -8,6 +8,11 @@ use saluki_error::{ErrorContext as _, GenericError};
 use tokio::{fs::File, io::AsyncWriteExt as _, sync::watch};
 
 pub(crate) mod exit_record;
+pub(crate) mod output;
+
+use output::{LineBuffer, OutputLines};
+
+use crate::participant::OutputStream;
 
 /// A process exit reported by its declared channel.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -128,7 +133,47 @@ pub(crate) struct ParticipantObservation {
     capture_rx: watch::Receiver<Capture>,
     pub stdout_path: PathBuf,
     pub stderr_path: PathBuf,
+    pub outputs: BTreeMap<&'static str, ProcessOutput>,
+    pub lines: OutputLines,
     pub processes: BTreeMap<&'static str, ProcessObservation>,
+}
+
+/// Capture progress and host output files for a named process.
+pub(crate) struct ProcessOutput {
+    pub capture: watch::Receiver<Capture>,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Log steps and reports read process output paths.")
+    )]
+    pub paths: Vec<PathBuf>,
+}
+
+impl ProcessOutput {
+    pub(crate) fn current(&self) -> Capture {
+        capture_state(&self.capture)
+    }
+}
+
+fn exit_state(receiver: &watch::Receiver<ParticipantExit>) -> ParticipantExit {
+    let current = receiver.borrow();
+    if *current == ParticipantExit::Running && receiver.has_changed().is_err() {
+        ParticipantExit::Undetermined {
+            reason: "exit observation ended without a status".into(),
+        }
+    } else {
+        current.clone()
+    }
+}
+
+fn capture_state(receiver: &watch::Receiver<Capture>) -> Capture {
+    let current = receiver.borrow();
+    if *current == Capture::Following && receiver.has_changed().is_err() {
+        Capture::Failed {
+            reason: "output capture ended before the stream completed".into(),
+        }
+    } else {
+        current.clone()
+    }
 }
 
 impl ParticipantObservation {
@@ -143,19 +188,14 @@ impl ParticipantObservation {
             stdout_path,
             stderr_path,
             processes: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+            lines: OutputLines::default(),
         }
     }
 
     /// Returns the participant's exit state, or an undetermined state if its unsettled channel closes.
     pub(crate) fn exit(&self) -> ParticipantExit {
-        let current = self.exit_rx.borrow();
-        if *current == ParticipantExit::Running && self.exit_rx.has_changed().is_err() {
-            ParticipantExit::Undetermined {
-                reason: "exit observation ended without a status".into(),
-            }
-        } else {
-            current.clone()
-        }
+        exit_state(&self.exit_rx)
     }
 
     /// Resolves only when the participant is known to have exited.
@@ -175,18 +215,11 @@ impl ParticipantObservation {
 
     #[cfg_attr(
         not(test),
-        expect(dead_code, reason = "Output evidence and log steps fail on a capture error.")
+        expect(dead_code, reason = "Log steps fail on a participant capture error.")
     )]
     /// Returns capture progress, reporting a closed, unfinished channel as failed.
     pub(crate) fn capture(&self) -> Capture {
-        let current = self.capture_rx.borrow();
-        if *current == Capture::Following && self.capture_rx.has_changed().is_err() {
-            Capture::Failed {
-                reason: "output capture ended before the stream completed".into(),
-            }
-        } else {
-            current.clone()
-        }
+        capture_state(&self.capture_rx)
     }
 
     #[cfg_attr(
@@ -216,8 +249,10 @@ pub(crate) async fn watch_exit(
 /// Publishes `Complete` at stream end or `Failed` on the first stream or file error.
 pub(crate) async fn follow_output(
     stream: impl Stream<Item = Result<OutputChunk, GenericError>>, stdout_path: PathBuf, stderr_path: PathBuf,
-    tx: watch::Sender<Capture>,
+    tx: watch::Sender<Capture>, lines: OutputLines, participant: Arc<str>, process: Option<&'static str>,
 ) {
+    let mut stdout_lines = LineBuffer::new(lines.clone(), participant.clone(), process, OutputStream::Stdout);
+    let mut stderr_lines = LineBuffer::new(lines, participant, process, OutputStream::Stderr);
     let capture: Result<(), GenericError> = async {
         let mut stdout = File::create(&stdout_path)
             .await
@@ -227,9 +262,10 @@ pub(crate) async fn follow_output(
             .with_error_context(|| format!("cannot create output file '{}'", stderr_path.display()))?;
         let mut stream = std::pin::pin!(stream);
         while let Some(chunk) = stream.next().await {
-            let (file, path, bytes) = match chunk? {
-                OutputChunk::Stdout(bytes) => (&mut stdout, &stdout_path, bytes),
-                OutputChunk::Stderr(bytes) => (&mut stderr, &stderr_path, bytes),
+            let received = SystemTime::now();
+            let (file, path, lines, bytes) = match chunk? {
+                OutputChunk::Stdout(bytes) => (&mut stdout, &stdout_path, &mut stdout_lines, bytes),
+                OutputChunk::Stderr(bytes) => (&mut stderr, &stderr_path, &mut stderr_lines, bytes),
             };
             file.write_all(&bytes)
                 .await
@@ -237,10 +273,13 @@ pub(crate) async fn follow_output(
             file.flush()
                 .await
                 .with_error_context(|| format!("cannot flush output file '{}'", path.display()))?;
+            lines.push(&bytes, received);
         }
         Ok(())
     }
     .await;
+    stdout_lines.finish();
+    stderr_lines.finish();
     tx.send_replace(match capture {
         Ok(()) => Capture::Complete,
         Err(error) => Capture::Failed {
@@ -292,6 +331,9 @@ mod tests {
                 self.observation.stdout_path.clone(),
                 self.observation.stderr_path.clone(),
                 self.capture_tx.clone(),
+                self.observation.lines.clone(),
+                "p".into(),
+                None,
             )
             .await;
         }
@@ -496,6 +538,9 @@ mod tests {
             fixture.observation.stdout_path.clone(),
             fixture.observation.stderr_path.clone(),
             fixture.capture_tx.clone(),
+            fixture.observation.lines.clone(),
+            "p".into(),
+            None,
         ));
         let stdout = b"out\x00\xff\n";
         let stderr = b"err\xfe\n";
@@ -523,6 +568,38 @@ mod tests {
         assert_eq!(std::fs::read(&fixture.observation.stderr_path).unwrap(), stderr);
         assert_eq!(fixture.observation.capture(), Capture::Complete);
         assert_eq!(tasks.stop_all(Instant::now() + TASK_STOP_TIME).await, 0);
+    }
+
+    #[tokio::test]
+    async fn container_log_lines_are_tagged_with_the_process_owning_the_container_output_or_none() {
+        for process in [Some("main"), None] {
+            let fixture = Fixture::new();
+            follow_output(
+                stream::iter([
+                    Ok(OutputChunk::Stdout(b"out\n".as_slice().into())),
+                    Ok(OutputChunk::Stderr(b"err".as_slice().into())),
+                ]),
+                fixture.observation.stdout_path.clone(),
+                fixture.observation.stderr_path.clone(),
+                fixture.capture_tx.clone(),
+                fixture.observation.lines.clone(),
+                "p".into(),
+                process,
+            )
+            .await;
+            let (lines, cursor) = fixture.observation.lines.since(0);
+            assert_eq!(cursor, 2);
+            for (line, text, stream) in [
+                (&lines[0], "out", OutputStream::Stdout),
+                (&lines[1], "err", OutputStream::Stderr),
+            ] {
+                assert_eq!(&*line.participant, "p");
+                assert_eq!(line.process, process);
+                assert_eq!(line.stream, stream);
+                assert_eq!(line.text, text);
+            }
+            assert_eq!(fixture.observation.capture(), Capture::Complete);
+        }
     }
 
     #[tokio::test]

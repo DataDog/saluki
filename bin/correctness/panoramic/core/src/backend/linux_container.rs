@@ -21,10 +21,13 @@ use crate::{
     handle::{ExecCommand, HandleError, Primitives},
     layout::Os,
     observe::{
-        exit_record::watch_record, follow_output, watch_exit, Capture, ExitObservation, ParticipantExit,
-        ParticipantObservation, ProcessObservation,
+        exit_record::watch_record,
+        follow_output,
+        output::{host_output_file, FileOutput, FILE_OUTPUT_START},
+        watch_exit, Capture, ExitObservation, ParticipantExit, ParticipantObservation, ProcessObservation,
+        ProcessOutput,
     },
-    participant::{ExitChannel, ProcessSpec},
+    participant::{ExitChannel, OutputChannel, ProcessSpec},
     plan::ScopeLayout,
     probe::{AttemptLimits, ProbeAnswer},
     recipe::{ContainerRecipe, RecipeFile},
@@ -179,11 +182,12 @@ impl LinuxParticipant {
         let (capture_tx, capture_rx) = watch::channel(Capture::Following);
         let mut observation = ParticipantObservation::new(
             exit_rx.clone(),
-            capture_rx,
+            capture_rx.clone(),
             output_dir.join("container.stdout.log"),
             output_dir.join("container.stderr.log"),
         );
         tasks.spawn(watch_exit(self.driver.wait_exit(), exit_tx));
+        let mut container_output = None;
         for spec in specs {
             let process = match spec.exit {
                 ExitChannel::Container => ProcessObservation::Container(exit_rx.clone()),
@@ -208,6 +212,53 @@ impl LinuxParticipant {
                 }
             };
             observation.processes.insert(spec.name, process);
+            let output = match spec.output {
+                OutputChannel::Container => {
+                    container_output = Some(spec.name);
+                    ProcessOutput {
+                        capture: capture_rx.clone(),
+                        paths: vec![observation.stdout_path.clone(), observation.stderr_path.clone()],
+                    }
+                }
+                OutputChannel::File { file, stream } => {
+                    let path = format!("{SHARED_ROOT}/{}/log/{file}", self.name);
+                    let filename = host_output_file(spec.name, spec.output).expect("file output has a host file name");
+                    let host_path = output_dir.join(filename);
+                    let output = FileOutput {
+                        participant: self.name.clone().into(),
+                        process: spec.name,
+                        stream,
+                        source_path: path.clone(),
+                        host_path: host_path.clone(),
+                        lines: observation.lines.clone(),
+                    };
+                    let participant = self.clone();
+                    let exit = exit_rx.clone();
+                    let (tx, rx) = watch::channel(Capture::Following);
+                    tasks.spawn(async move {
+                        output
+                            .follow(
+                                participant.driver.exec_stream(ExecRequest::new(vec![
+                                    "sh".into(),
+                                    "-c".into(),
+                                    "printf '%s' \"$1\"; exec tail -n +1 -F \"$2\"".into(),
+                                    "sh".into(),
+                                    FILE_OUTPUT_START.into(),
+                                    path.clone(),
+                                ])),
+                                || participant.driver.read_file(&path),
+                                exit,
+                                tx,
+                            )
+                            .await;
+                    });
+                    ProcessOutput {
+                        capture: rx,
+                        paths: vec![host_path],
+                    }
+                }
+            };
+            observation.outputs.insert(spec.name, output);
         }
         match self.driver.logs().await {
             Ok(stream) => {
@@ -216,6 +267,9 @@ impl LinuxParticipant {
                     observation.stdout_path.clone(),
                     observation.stderr_path.clone(),
                     capture_tx,
+                    observation.lines.clone(),
+                    self.name.clone().into(),
+                    container_output,
                 ));
             }
             Err(error) => {

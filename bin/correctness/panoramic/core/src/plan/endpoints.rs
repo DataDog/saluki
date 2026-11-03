@@ -63,7 +63,13 @@ pub(super) fn derive_endpoints(
     }
     resolve_listeners(holder, realization.os, &config, &mut served)?;
     let readiness = participant_type.readiness(realization, &config);
-    check_readiness(holder, realization.os, &served, &readiness)?;
+    check_readiness(
+        holder,
+        realization.os,
+        &served,
+        &readiness,
+        participant_type.processes(),
+    )?;
     let consumed = participant_type.consumes(realization, &config);
     Ok((
         config,

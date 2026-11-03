@@ -16,7 +16,10 @@ use crate::{
     backend::LateFact,
     endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind, EndpointOperation, Port},
     layout::{Os, Realization, RealizationKind},
-    participant::{CaseValues, EffectiveConfig, ExitChannel, FactDeclaration, ParticipantType, ProcessSpec},
+    participant::{
+        CaseValues, EffectiveConfig, ExitChannel, FactDeclaration, OutputChannel, OutputStream, ParticipantType,
+        ProcessSpec,
+    },
     step::{decode_fields, Need, Step, StepFactory, StepFields},
 };
 
@@ -228,10 +231,15 @@ impl ParticipantType for Server {
             ProcessSpec {
                 name: "server",
                 exit: ExitChannel::Container,
+                output: OutputChannel::Container,
             },
             ProcessSpec {
                 name: "worker",
                 exit: ExitChannel::Record { file: "worker" },
+                output: OutputChannel::File {
+                    file: "output",
+                    stream: OutputStream::Merged,
+                },
             },
         ]
     }

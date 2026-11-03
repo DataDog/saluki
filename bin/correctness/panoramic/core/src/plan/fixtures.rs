@@ -51,9 +51,9 @@ pub(crate) fn attach_endpoint_evidence(config: &EffectiveConfig, endpoints: &mut
     }
 }
 
-/// Returns participant evidence from the fixture's `READY_FILE*` variables.
+/// Returns participant evidence from the fixture's `READY_*` variables.
 pub(crate) fn participant_evidence(config: &EffectiveConfig) -> Vec<Evidence> {
-    ["READY_FILE", "READY_FILE_2"]
+    let mut evidence: Vec<_> = ["READY_FILE", "READY_FILE_2"]
         .into_iter()
         .filter_map(|key| {
             config.env.get(key).map(|path| {
@@ -69,7 +69,20 @@ pub(crate) fn participant_evidence(config: &EffectiveConfig) -> Vec<Evidence> {
                 }
             })
         })
-        .collect()
+        .collect();
+    if let Some(pattern) = config.env.get("READY_OUTPUT") {
+        let process = config
+            .env
+            .get("READY_OUTPUT_PROCESS")
+            .map(String::as_str)
+            .unwrap_or("main");
+        let mut output = Evidence::output_matches(process, pattern);
+        if let Some(within) = config.env.get("READY_WITHIN") {
+            output = output.within(Duration::from_secs(within.parse().unwrap()));
+        }
+        evidence.push(output);
+    }
+    evidence
 }
 
 pub(super) struct ReadyServer;
@@ -136,7 +149,7 @@ impl ParticipantType for ReadyServer {
     }
 
     fn processes(&self) -> &'static [&'static str] {
-        &[]
+        &["main"]
     }
 }
 
