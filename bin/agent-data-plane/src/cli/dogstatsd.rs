@@ -108,9 +108,6 @@ const fn default_replay_loops() -> u32 {
     DEFAULT_REPLAY_LOOPS
 }
 
-/// Number of replay packets sent before yielding to the control runtime.
-const REPLAY_RUNTIME_YIELD_INTERVAL: u64 = 128;
-
 /// Replays DogStatsD traffic from a capture file.
 #[derive(FromArgs, Debug)]
 #[argh(subcommand, name = "replay")]
@@ -662,6 +659,9 @@ async fn run_dogstatsd_replay(
         }
         iteration = iteration.saturating_add(1);
         reader.rewind();
+        // Consume budget per iteration as well as per packet, so that replaying an empty capture forever still
+        // yields to the control runtime.
+        tokio::task::coop::consume_budget().await;
 
         tokio::select! {
             biased;
@@ -709,9 +709,7 @@ async fn replay_one_iteration(
 
         sender.send(&msg.payload, msg.pid).await?;
         packets_sent += 1;
-        if packets_sent.is_multiple_of(REPLAY_RUNTIME_YIELD_INTERVAL) {
-            tokio::task::yield_now().await;
-        }
+        tokio::task::coop::consume_budget().await;
     }
 }
 
