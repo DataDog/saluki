@@ -113,10 +113,6 @@ pub(crate) fn build_events(corpus: &Corpus, case_name: &str, base: i32) -> Resul
 
 /// Converts one corpus [`Setting`] for `key` into the wire `ConfigSetting`.
 fn config_setting(case_name: &str, key: &str, setting: &Setting) -> Result<ConfigSetting, String> {
-    // record.md §5.1: the real Agent proto has an `unset_source` field (proto field 4) that
-    // saluki's vendored proto does not define; prost silently skips unknown fields when decoding,
-    // so the loader leaves `unset_source` out of the setting it builds here, to match what ADP
-    // actually sees on the wire.
     let value = match &setting.value {
         Some(value) => {
             Some(json_to_prost_value(value).map_err(|e| format!("case {case_name:?} key {key:?}: value: {e}"))?)
@@ -128,6 +124,7 @@ fn config_setting(case_name: &str, key: &str, setting: &Setting) -> Result<Confi
         source: setting.source.as_str().to_string(),
         key: key.to_string(),
         value,
+        unset_source: setting.unset_source.map_or("", |source| source.as_str()).to_string(),
     })
 }
 
@@ -269,7 +266,7 @@ mod tests {
         const BASE: i32 = 1_000_000;
         // One entry per (case, key) that had at least one `unset_source` in the corpus, counted
         // once regardless of how many events on that key line carried it.
-        let mut unset_source_dropped: std::collections::HashSet<(&str, &str)> = std::collections::HashSet::new();
+        let mut unset_source_retained: std::collections::HashSet<(&str, &str)> = std::collections::HashSet::new();
 
         for case in &corpus.cases {
             let outcome =
@@ -308,24 +305,28 @@ mod tests {
                 "case {:?}: snapshot key count",
                 case.name
             );
-            let rebuilt: BTreeMap<&str, (String, Option<JsonValue>)> = snapshot
-                .settings
-                .iter()
-                .map(|s| (s.key.as_str(), config_setting_to_pair(s)))
-                .collect();
+            let rebuilt: BTreeMap<&str, &ConfigSetting> =
+                snapshot.settings.iter().map(|s| (s.key.as_str(), s)).collect();
             for (key, expected) in &expected_snapshot {
-                let (source, value) = rebuilt
+                let setting = rebuilt
                     .get(*key)
                     .unwrap_or_else(|| panic!("case {:?} key {key:?}: missing from rebuilt snapshot", case.name));
+                let (source, value) = config_setting_to_pair(setting);
                 assert_eq!(source, expected.source.as_str(), "case {:?} key {key:?}", case.name);
+                assert_eq!(
+                    setting.unset_source,
+                    expected.unset_source.map_or("", |source| source.as_str()),
+                    "case {:?} key {key:?}: unset source",
+                    case.name
+                );
                 assert!(
-                    json_options_match(value, &expected.value),
+                    json_options_match(&value, &expected.value),
                     "case {:?} key {key:?}: value {value:?} != {:?}",
                     case.name,
                     expected.value
                 );
                 if expected.unset_source.is_some() {
-                    unset_source_dropped.insert((case.name.as_str(), key));
+                    unset_source_retained.insert((case.name.as_str(), key));
                 }
             }
 
@@ -379,8 +380,14 @@ mod tests {
                     case.name,
                     expected_setting.value
                 );
+                assert_eq!(
+                    setting.unset_source,
+                    expected_setting.unset_source.map_or("", |source| source.as_str()),
+                    "case {:?} position {position}: unset source",
+                    case.name
+                );
                 if expected_setting.unset_source.is_some() {
-                    unset_source_dropped.insert((case.name.as_str(), *expected_key));
+                    unset_source_retained.insert((case.name.as_str(), *expected_key));
                 }
             }
         }
@@ -388,9 +395,9 @@ mod tests {
         // A change to this count means the corpus started (or stopped) recording `unset_source`
         // settings; it does not mean the loader is wrong, but it should be looked at.
         assert_eq!(
-            unset_source_dropped.len(),
+            unset_source_retained.len(),
             5,
-            "count of settings whose unset_source the loader dropped"
+            "count of settings whose unset_source the loader retained"
         );
     }
 

@@ -102,6 +102,7 @@ mod tests {
             value: Some(prost_types::Value {
                 kind: Some(Kind::StringValue(value.to_string())),
             }),
+            ..Default::default()
         }
     }
 
@@ -124,6 +125,7 @@ mod tests {
             source: "schema".to_string(),
             key: "api_key".to_string(),
             value: None,
+            ..Default::default()
         });
 
         assert_eq!(setting.value, Value::Null);
@@ -139,6 +141,7 @@ mod tests {
                 value: Some(prost_types::Value {
                     kind: Some(Kind::NullValue(0)),
                 }),
+                ..Default::default()
             });
 
             let expected_provenance = if [AGENT_DEFAULT_SOURCE, "schema"].contains(&source) {
