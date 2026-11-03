@@ -23,6 +23,7 @@ use crate::{
     },
     recipe::{ContainerRecipe, RecipeFile},
     result::ReclaimResult,
+    tasks::TASK_STOP_TIME,
 };
 
 const IMAGE: ArtifactRole = ArtifactRole {
@@ -108,6 +109,7 @@ struct Observed {
     result: TestResult,
     image_id: String,
     courier: Vec<u8>,
+    log_dir: PathBuf,
 }
 impl Observed {
     async fn container(&self, name: &str) -> ContainerInspectResponse {
@@ -146,6 +148,22 @@ impl Observed {
         let state = self.container("consumer").await.state.unwrap();
         assert_eq!(state.running, Some(false));
         assert!(state.started_at.unwrap().starts_with("0001"));
+    }
+
+    async fn output(&self, name: &str, stream: &str, expected: &str) -> String {
+        let path = self.log_dir.join(name).join(format!("container.{stream}.log"));
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(output) = std::fs::read_to_string(&path) {
+                    if output.contains(expected) {
+                        return output;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{} must contain {expected:?}", path.display()))
     }
 
     fn driver(&self, name: &str) -> Driver {
@@ -225,10 +243,15 @@ async fn with_case_on_ports<F: Future<Output = ()> + Send + 'static>(
     ];
     let inputs = NativeInputs::new(backends, &verified, files.path()).unwrap();
     let ledger = ResourceLedger::default();
+    let cancel = CancellationToken::new();
+    let tasks = CaseTasks::new(&cancel);
+    let logs = tempfile::tempdir().unwrap();
     let control = CaseControl {
-        cancel: CancellationToken::new(),
+        cancel,
         phases: PhaseTracker::default(),
         ledger: ledger.clone(),
+        tasks: tasks.clone(),
+        log_dir: logs.path().to_owned(),
     };
     let test_docker = docker.clone();
     let outcome = tokio::spawn(async move {
@@ -240,6 +263,7 @@ async fn with_case_on_ports<F: Future<Output = ()> + Send + 'static>(
                 result,
                 image_id,
                 courier,
+                log_dir: control.log_dir.clone(),
             })
             .await;
         })
@@ -247,11 +271,13 @@ async fn with_case_on_ports<F: Future<Output = ()> + Send + 'static>(
         .expect("native scenario exceeded one minute");
     })
     .await;
+    let remaining_tasks = tasks.stop_all(TokioInstant::now() + TASK_STOP_TIME).await;
     let (reclaimed, issues) = ledger.reclaim(TokioInstant::now() + Duration::from_secs(30)).await;
     let remaining = timeout(Duration::from_secs(30), remaining_resources(&docker, &id))
         .await
         .unwrap()
         .unwrap();
+    assert_eq!(remaining_tasks, 0, "{id}: observation tasks must stop before reclaim");
     assert!(remaining.is_empty(), "{id}: {remaining:?}");
     assert!(issues.is_empty(), "{id}: {issues:?}");
     assert_eq!(reclaimed.len(), 1);
@@ -556,15 +582,60 @@ async fn a_server_that_exits_before_accepting_fails_its_consumers_start_without_
     with_case(&case, |view| async move {
         view.assert_consumer_never_started().await;
         let message = &view.result.error.as_ref().unwrap().message;
-        let expected = "participant 'consumer' cannot start: checking tcp-accepts on 'api' of participant 'server' \
-                        failed: The courier probe to tcp://server:8080 failed: ";
-        let failure = message.strip_prefix(expected).unwrap_or_else(|| panic!("{message}"));
-        // Docker can refuse the exec or report exit 126 if the container exits after exec creation.
-        let exited = "The courier never ran (exit 126); check that the binary is installed, executable \
-                      and built for the container architecture";
-        assert!(failure.starts_with("exec failed: ") || failure == exited, "{message}");
+        assert!(
+            message.starts_with("participant 'consumer' cannot start: "),
+            "{message}"
+        );
+        assert!(message.contains("participant 'server'"), "{message}");
         let phase = view.result.phase_timings.last().unwrap();
         assert!(phase.duration < Duration::from_secs(10), "{phase:?}");
     })
     .await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn a_started_participants_output_reaches_its_log_files_while_it_runs() {
+    with_case(
+        "  subject: {type: fixture, subject: true, config: {env: {SCRIPT: 'echo out-1; echo err-1 >&2; exec sleep 60'}}}",
+        |view| async move {
+            assert_eq!(view.result.error.as_ref().unwrap().kind, ErrorKind::Evaluation);
+            assert_eq!(view.output("subject", "stdout", "out-1").await, "out-1\n");
+            assert_eq!(view.output("subject", "stderr", "err-1").await, "err-1\n");
+            assert_eq!(view.container("subject").await.state.unwrap().running, Some(true));
+        },
+    ).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn a_consumer_waiting_for_an_http_endpoint_stops_when_its_server_exits() {
+    let case = readiness_case("api", &[("READY_HTTP", "/ready")], "echo bye; exit 3");
+    let port = host_ports(1)[0];
+    with_case_on_ports(&case, port..=port, |view| async move {
+        view.assert_consumer_never_started().await;
+        let message = &view.result.error.as_ref().unwrap().message;
+        assert!(
+            message.contains("participant 'server' exited with code 3 before http-ok on 'api'"),
+            "{message}"
+        );
+        let phase = view.result.phase_timings.last().unwrap();
+        assert!(phase.duration < Duration::from_secs(10), "{phase:?}");
+        assert_eq!(view.output("server", "stdout", "bye").await, "bye\n");
+    })
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn a_started_participants_output_is_observed_even_when_its_sibling_fails_to_start() {
+    with_case(
+        "  first: {type: fixture, subject: true, config: {env: {BAD_START: '1'}}}\n  second: {type: fixture, config: {env: {SCRIPT: 'echo started; exec sleep 60'}}}",
+        |view| async move {
+            assert_eq!(view.result.error.as_ref().unwrap().kind, ErrorKind::Setup);
+            assert!(view.result.error.as_ref().unwrap().message.contains("participant 'first'"));
+            assert_eq!(view.output("second", "stdout", "started").await, "started\n");
+            assert_eq!(view.container("second").await.state.unwrap().running, Some(true));
+        },
+    ).await;
 }

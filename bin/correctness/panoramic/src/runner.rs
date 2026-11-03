@@ -471,6 +471,8 @@ impl Runner {
                             cancel: tctx.test_cancel_token(),
                             phases: tctx.phases.clone(),
                             ledger: tctx.ledger.clone(),
+                            tasks: tctx.tasks.clone(),
+                            log_dir: log_dir.clone(),
                         };
                         lifecycle::run(plan, native.types, &native.inputs, &control).await
                     }

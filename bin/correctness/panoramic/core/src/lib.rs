@@ -17,6 +17,7 @@ pub mod layout;
 pub mod ledger;
 pub mod lifecycle;
 pub mod machine_output;
+mod observe;
 pub mod participant;
 pub mod plan;
 pub mod probe;

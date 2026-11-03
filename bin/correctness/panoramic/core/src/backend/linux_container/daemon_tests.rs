@@ -17,6 +17,7 @@ use bollard::{
     query_parameters::{ListContainersOptionsBuilder, ListNetworksOptionsBuilder, ListVolumesOptionsBuilder},
 };
 use tokio::time::{sleep, timeout, Instant};
+use tokio_util::sync::CancellationToken;
 
 use super::*;
 use crate::{
@@ -26,6 +27,7 @@ use crate::{
     ledger,
     probe::ProbeAnswer,
     recipe::HostMount,
+    tasks::TASK_STOP_TIME,
 };
 
 /// Test and fix-up image with BusyBox's `sh`, `syslogd`, `sleep`, `grep`, `cat`, `true`, `mkdir`, `chmod` and `nc`.
@@ -57,7 +59,7 @@ pub(crate) fn courier_bytes() -> Vec<u8> {
 async fn in_scope<F, S>(participants: &[&str], courier: Vec<u8>, scenario: S)
 where
     F: Future<Output = ()> + Send + 'static,
-    S: FnOnce(LinuxScope) -> F + Send + 'static,
+    S: FnOnce(LinuxScope, CaseTasks) -> F + Send + 'static,
 {
     let backends = Arc::new(RunBackends::default());
     let scope = Arc::new(ScopeLayout {
@@ -66,7 +68,9 @@ where
     });
     let participants: Vec<_> = participants.iter().map(|name| (*name).to_owned()).collect();
     eprintln!("Daemon test scope: {}", scope.id());
+    let tasks = CaseTasks::new(&CancellationToken::new());
     let outcome = tokio::spawn({
+        let tasks = tasks.clone();
         let backends = backends.clone();
         let scope = scope.clone();
         async move {
@@ -89,7 +93,7 @@ where
                     .prepare_linux_scope(&scope, &participants, &image, courier.into())
                     .await
                     .unwrap();
-                scenario(prepared).await;
+                scenario(prepared, tasks).await;
             })
             .await
             .expect("the daemon scenario should finish within a minute");
@@ -98,6 +102,9 @@ where
     .await;
 
     let mut problems = Vec::new();
+    if tasks.stop_all(Instant::now() + TASK_STOP_TIME).await != 0 {
+        problems.push("observation tasks did not stop before reclaim".into());
+    }
     match timeout(Duration::from_secs(30), backends.remove_linux_scope(&scope)).await {
         Ok(Ok(())) => {}
         Ok(Err(error)) => problems.push(format!("scope cleanup failed: {error:#}")),
@@ -224,7 +231,7 @@ fn socket_address(kind: EndpointKind, path: &str) -> ResolvedAddress {
 async fn a_participant_is_created_from_its_recipe_and_shares_the_host_pid_namespace() {
     let courier = courier_bytes();
     let courier_size = courier.len() as u64;
-    in_scope(&["p"], courier.clone(), move |scope| async move {
+    in_scope(&["p"], courier.clone(), move |scope, _tasks| async move {
         let mut recipe =
             recipe("echo \"$GREETING\" > /airlock/p/shared/env; echo $$ > /airlock/p/shared/pid; exec sleep 60");
         recipe.env.insert("GREETING".into(), "hello".into());
@@ -288,7 +295,7 @@ async fn a_participant_is_created_from_its_recipe_and_shares_the_host_pid_namesp
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn recipe_host_mounts_are_bound_read_only_or_read_write() {
-    in_scope(&["p"], courier_bytes(), |scope| async move {
+    in_scope(&["p"], courier_bytes(), |scope, _tasks| async move {
         let mut recipe = recipe("exec sleep 60");
         recipe.mounts = vec![
             HostMount {
@@ -328,7 +335,7 @@ async fn recipe_host_mounts_are_bound_read_only_or_read_write() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn exec_passes_env_and_stdin_and_returns_both_streams_and_a_nonzero_exit_as_data() {
-    in_scope(&["p"], courier_bytes(), |scope| async move {
+    in_scope(&["p"], courier_bytes(), |scope, _tasks| async move {
         let participant = start_participant(&scope, "p", &recipe("exec sleep 60")).await;
         let primitives: &dyn Primitives = &participant;
         let mut command = command(&["sh", "-c", "cat; printf %s \"$KEY\" >&2; exit 3"]);
@@ -349,7 +356,7 @@ async fn exec_passes_env_and_stdin_and_returns_both_streams_and_a_nonzero_exit_a
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn an_exec_that_outlasts_its_limit_is_abandoned_as_a_harness_error() {
-    in_scope(&["p"], courier_bytes(), |scope| async move {
+    in_scope(&["p"], courier_bytes(), |scope, _tasks| async move {
         let participant = start_participant(&scope, "p", &recipe("exec sleep 60")).await;
         let primitives: &dyn Primitives = &participant;
         let started = Instant::now();
@@ -373,7 +380,7 @@ async fn an_exec_that_outlasts_its_limit_is_abandoned_as_a_harness_error() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn an_exec_that_closes_its_output_still_returns_its_exit_code() {
-    in_scope(&["p"], courier_bytes(), |scope| async move {
+    in_scope(&["p"], courier_bytes(), |scope, _tasks| async move {
         let participant = start_participant(&scope, "p", &recipe("exec sleep 60")).await;
         let primitives: &dyn Primitives = &participant;
         // Docker keeps the attached output stream open until the exec exits.
@@ -399,7 +406,7 @@ async fn an_exec_that_closes_its_output_still_returns_its_exit_code() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn files_are_read_and_stated_after_the_participant_exits_and_exec_then_fails() {
-    in_scope(&["p"], courier_bytes(), |scope| async move {
+    in_scope(&["p"], courier_bytes(), |scope, _tasks| async move {
         let participant = start_participant(&scope, "p", &recipe("echo 3 > /airlock/p/exit/done; exit 3")).await;
         let primitives: &dyn Primitives = &participant;
         timeout(Duration::from_secs(10), async {
@@ -440,7 +447,7 @@ async fn files_are_read_and_stated_after_the_participant_exits_and_exec_then_fai
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn the_courier_probes_and_sends_to_a_unix_datagram_socket_inside_its_participant() {
-    in_scope(&["srv"], courier_bytes(), |scope| async move {
+    in_scope(&["srv"], courier_bytes(), |scope, _tasks| async move {
         let participant =
             start_participant(&scope, "srv", &recipe("exec syslogd -n -O /airlock/srv/log/messages")).await;
         let primitives: &dyn Primitives = &participant;
@@ -478,7 +485,7 @@ async fn the_courier_probes_and_sends_to_a_unix_datagram_socket_inside_its_parti
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn a_courier_that_cannot_run_is_a_harness_error_saying_it_never_ran() {
-    in_scope(&["p"], courier_bytes(), |scope| async move {
+    in_scope(&["p"], courier_bytes(), |scope, _tasks| async move {
         let participant = start_participant(&scope, "p", &recipe("exec sleep 60")).await;
         let primitives: &dyn Primitives = &participant;
         // Removing execute permission makes the courier fail Docker's launch checks.
@@ -509,7 +516,7 @@ async fn a_courier_that_cannot_run_is_a_harness_error_saying_it_never_ran() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn a_container_reference_removes_its_participant_after_the_participant_is_dropped() {
-    in_scope(&["p"], courier_bytes(), |scope| async move {
+    in_scope(&["p"], courier_bytes(), |scope, _tasks| async move {
         let participant = scope
             .participant("p", &test_image(), &recipe("exec sleep 60"), &[])
             .unwrap();
@@ -538,7 +545,7 @@ async fn a_container_reference_removes_its_participant_after_the_participant_is_
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn a_participant_outside_the_prepared_scope_is_rejected_before_docker() {
-    in_scope(&["p"], courier_bytes(), |scope| async move {
+    in_scope(&["p"], courier_bytes(), |scope, _tasks| async move {
         let error = scope
             .participant("other", &test_image(), &recipe("exec sleep 60"), &[])
             .err()
@@ -556,7 +563,7 @@ async fn the_runner_host_receives_an_http_response_through_a_published_port() {
         net::TcpStream,
     };
 
-    in_scope(&["srv"], courier_bytes(), |scope| async move {
+    in_scope(&["srv"], courier_bytes(), |scope, _tasks| async move {
         let ports = host_ports(2);
         let ports = [
             RunnerHostPort {
@@ -637,7 +644,7 @@ wait"#,
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn a_participant_whose_runner_host_port_is_held_fails_to_start_naming_its_ports() {
-    in_scope(&["first", "second"], courier_bytes(), |scope| async move {
+    in_scope(&["first", "second"], courier_bytes(), |scope, _tasks| async move {
         let ports = host_ports(2);
         let ports = [
             RunnerHostPort { transport: Transport::Tcp, container_port: 9000, host_port: ports[0] },
@@ -658,7 +665,7 @@ async fn a_participant_whose_runner_host_port_is_held_fails_to_start_naming_its_
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn the_courier_route_to_a_socket_of_an_exited_participant_is_a_harness_error() {
-    in_scope(&["p"], courier_bytes(), |scope| async move {
+    in_scope(&["p"], courier_bytes(), |scope, _tasks| async move {
         let participant = start_participant(&scope, "p", &recipe("exit 0")).await;
         timeout(Duration::from_secs(10), participant.driver.wait_exit())
             .await
@@ -686,7 +693,7 @@ async fn a_probe_of_an_unlistened_published_port_is_not_listening() {
         plan::Planner,
     };
 
-    in_scope(&["subject"], courier_bytes(), |scope| async move {
+    in_scope(&["subject"], courier_bytes(), |scope, _tasks| async move {
         let yaml = PARTICIPANT_FIELDS
             .replace("subject: true", "subject: true, config: {env: {PORT: '9000'}, endpoints: {extra: {port: 9000}}}")
             .replace(
@@ -731,4 +738,48 @@ async fn a_probe_of_an_unlistened_published_port_is_not_listening() {
         assert!(plan.runner_host_ports("subject").is_empty());
     })
     .await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn a_stopped_containers_exit_and_output_are_observed() {
+    in_scope(&["p"], courier_bytes(), |scope, tasks| async move {
+        let participant = start_participant(&scope, "p", &recipe("echo out; echo err >&2; exit 3")).await;
+        timeout(Duration::from_secs(10), participant.driver.wait_exit())
+            .await
+            .unwrap()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let observation = participant.observe(&tasks, dir.path()).await;
+        let exit = timeout(Duration::from_secs(5), observation.stopped()).await.unwrap();
+        assert_eq!(exit, ParticipantExit::Exited { code: 3, error: None });
+        let mut capture = observation.capture_rx.clone();
+        timeout(
+            Duration::from_secs(5),
+            capture.wait_for(|value| *value != Capture::Following),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(observation.capture(), Capture::Complete);
+        assert_eq!(std::fs::read(&observation.stdout_path).unwrap(), b"out\n");
+        assert_eq!(std::fs::read(&observation.stderr_path).unwrap(), b"err\n");
+    })
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn a_removed_container_leaves_exit_and_capture_errors() {
+    in_scope(&["p"], courier_bytes(), |scope, tasks| async move {
+        let participant = start_participant(&scope, "p", &recipe("exec sleep 60")).await;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        tokio::time::timeout_at(deadline, participant.container_ref().stop_and_remove(Duration::ZERO, deadline)).await.unwrap().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let observation = participant.observe(&tasks, dir.path()).await;
+        let mut exit = observation.exit_rx.clone();
+        timeout(Duration::from_secs(5), exit.wait_for(|value| *value != ParticipantExit::Running)).await.unwrap().unwrap();
+        assert!(matches!(observation.exit(), ParticipantExit::Undetermined { reason } if reason.contains("no such container")));
+        assert!(matches!(observation.capture(), Capture::Failed { reason } if reason.contains("no such container")));
+    }).await;
 }

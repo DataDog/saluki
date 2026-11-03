@@ -32,7 +32,7 @@ serde_json = { workspace = true }
 serde_path_to_error = { workspace = true }
 sha2 = { workspace = true }
 snafu = { workspace = true }
-tokio = { workspace = true, features = ["net", "rt", "signal", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "net", "rt", "signal", "sync", "time"] }
 tokio-util = { workspace = true, features = ["rt"] }
 toml = { workspace = true, features = ["display"] }
 tracing = { workspace = true }

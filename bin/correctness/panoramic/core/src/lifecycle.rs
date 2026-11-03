@@ -1,6 +1,11 @@
 //! Prepares native case scopes, creates participants from verified artifacts and starts their dependency levels.
 
-use std::{collections::BTreeMap, path::Path, sync::Arc, time::Instant};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Instant,
+};
 
 use bytes::Bytes;
 use futures::future::join_all;
@@ -16,10 +21,12 @@ use crate::{
     handle::Primitives,
     layout::{Os, Realization, RealizationKind},
     ledger::ResourceLedger,
+    observe::ParticipantObservation,
     participant::{find_type, ParticipantType},
     plan::CasePlan,
     recipe::Recipe,
     result::{ErrorKind, PhaseTracker, TestResult},
+    tasks::CaseTasks,
 };
 
 #[cfg(test)]
@@ -84,6 +91,10 @@ pub struct CaseControl {
     pub phases: PhaseTracker,
     /// Resources reclaimed by the runner after the case body finishes or is dropped.
     pub ledger: ResourceLedger,
+    /// Background tasks stopped by the runner before reclaim.
+    pub tasks: CaseTasks,
+    /// Case artifacts, with one output directory per participant.
+    pub log_dir: PathBuf,
 }
 
 /// The registered scope used to create every participant in a case.
@@ -91,6 +102,8 @@ struct Prepared {
     scope: LinuxScope,
     id: String,
 }
+
+type Started = (LinuxParticipant, Option<String>, ParticipantObservation);
 
 /// Prepares, creates and starts a native participant case using verified image IDs and container binaries.
 ///
@@ -118,6 +131,7 @@ pub async fn run<C>(
     };
     let mut created = BTreeMap::new();
     let mut participants = BTreeMap::new();
+    let mut running = BTreeMap::new();
     for level in plan.create_order().expect("participant plans have create orders") {
         for name in level {
             let phase = control.phases.enter(format!("create:{name}"));
@@ -126,7 +140,7 @@ pub async fn run<C>(
             match creation {
                 Ok((participant, container_id)) => {
                     created.insert(name.clone(), container_id);
-                    participants.insert(name.clone(), (participant, None));
+                    participants.insert(name.clone(), participant);
                 }
                 Err(error) => return fail(error),
             }
@@ -139,8 +153,16 @@ pub async fn run<C>(
                 .iter()
                 .flat_map(|name| plan.start_gates(name).iter().map(move |gate| (name.as_str(), gate)))
                 .collect::<Vec<_>>();
-            readiness::wait_for_level(gates, |name| &participants[name].0 as &dyn Primitives, &control.cancel).await?;
-            start_level(level, &mut participants, control).await
+            readiness::wait_for_level(
+                gates,
+                |name| {
+                    let started: &Started = &running[name];
+                    (&started.0 as &dyn Primitives, &started.2)
+                },
+                &control.cancel,
+            )
+            .await?;
+            start_level(level, &mut participants, &mut running, control).await
         }
         .await;
         phase.finish();
@@ -175,6 +197,11 @@ async fn prepare<C>(plan: &CasePlan<C>, inputs: &NativeInputs, control: &CaseCon
         .collect::<Vec<_>>();
     if !unsupported.is_empty() {
         return Err(unsupported.join("; "));
+    }
+    for name in file.participants.keys() {
+        let path = control.log_dir.join(name);
+        std::fs::create_dir_all(&path)
+            .map_err(|error| format!("cannot create the output directory '{}': {error}", path.display()))?;
     }
     let image = inputs.image(FIXUP_IMAGE)?;
     let courier = inputs.binaries.get(COURIER_LINUX_BINARY.name).ok_or_else(|| {
@@ -245,10 +272,13 @@ async fn create<C>(
 }
 
 async fn start_level(
-    level: &[String], participants: &mut BTreeMap<String, (LinuxParticipant, Option<String>)>, control: &CaseControl,
+    level: &[String], participants: &mut BTreeMap<String, LinuxParticipant>, running: &mut BTreeMap<String, Started>,
+    control: &CaseControl,
 ) -> Result<(), String> {
     let results = join_all(level.iter().map(|name| {
-        let participant = &participants[name].0;
+        let participant = participants
+            .remove(name)
+            .expect("start order names created participants");
         async move {
             let result = control
                 .cancel
@@ -256,6 +286,13 @@ async fn start_level(
                 .await
                 .ok_or_else(|| format!("cancelled while starting participant '{name}'"))
                 .and_then(|result| result.map_err(|error| format!("participant '{name}': {error:#}")));
+            let result = match result {
+                Ok(ip) => {
+                    let observation = participant.observe(&control.tasks, &control.log_dir.join(name)).await;
+                    Ok((participant, ip, observation))
+                }
+                Err(error) => Err(error),
+            };
             (name, result)
         }
     }))
@@ -263,7 +300,9 @@ async fn start_level(
     let mut failures = Vec::new();
     for (name, result) in results {
         match result {
-            Ok(ip) => participants.get_mut(name).unwrap().1 = ip,
+            Ok(started) => {
+                running.insert(name.clone(), started);
+            }
             Err(error) => failures.push(error),
         }
     }
@@ -348,8 +387,12 @@ mod tests {
             .unwrap()
             .into_plan()
             .unwrap();
+        let log_dir = tempfile::tempdir().unwrap();
+        let cancel = CancellationToken::new();
         let control = CaseControl {
-            cancel: CancellationToken::new(),
+            tasks: CaseTasks::new(&cancel),
+            cancel,
+            log_dir: log_dir.path().to_owned(),
             phases: PhaseTracker::default(),
             ledger: ResourceLedger::default(),
         };
@@ -360,6 +403,39 @@ mod tests {
             error.message,
             "panoramic cannot create host-process-group participants natively: 'subject' on macos"
         );
+        assert!(api.calls.lock().unwrap().is_empty());
+        assert!(control.ledger.labels().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_unwritable_output_directory_fails_preparation_before_any_docker_call() {
+        let api = FakeDocker::new(Some("linux"));
+        let mut inputs =
+            NativeInputs::new(Arc::new(RunBackends::with_docker(api.daemon())), &[], Path::new(".")).unwrap();
+        inputs.images.insert(FIXUP_IMAGE.name, "sha256:fixup".into());
+        inputs.binaries.insert(COURIER_LINUX_BINARY.name, Bytes::new());
+        let dir = tempfile::tempdir().unwrap();
+        let log_dir = dir.path().join("logs");
+        std::fs::write(&log_dir, b"regular file").unwrap();
+        let cancel = CancellationToken::new();
+        let control = CaseControl {
+            tasks: CaseTasks::new(&cancel),
+            cancel,
+            phases: PhaseTracker::default(),
+            ledger: ResourceLedger::default(),
+            log_dir: log_dir.clone(),
+        };
+        let result = run(&linux_plan(), fixtures::TYPES, &inputs, &control).await;
+        let error = result.error.unwrap();
+        assert_eq!(error.kind, ErrorKind::Setup);
+        let path = log_dir.join("subject");
+        let expected = std::fs::create_dir_all(&path).unwrap_err();
+        assert_eq!(
+            error.message,
+            format!("cannot create the output directory '{}': {expected}", path.display())
+        );
+        assert_eq!(result.phase_timings.len(), 1);
+        assert_eq!(result.phase_timings[0].phase, "prepare");
         assert!(api.calls.lock().unwrap().is_empty());
         assert!(control.ledger.labels().is_empty());
     }
@@ -377,8 +453,12 @@ mod tests {
                 inputs.binaries.insert(COURIER_LINUX_BINARY.name, Bytes::new());
             }
             let plan = linux_plan();
+            let log_dir = tempfile::tempdir().unwrap();
+            let cancel = CancellationToken::new();
             let control = CaseControl {
-                cancel: CancellationToken::new(),
+                tasks: CaseTasks::new(&cancel),
+                cancel,
+                log_dir: log_dir.path().to_owned(),
                 phases: PhaseTracker::default(),
                 ledger: ResourceLedger::default(),
             };
@@ -424,8 +504,12 @@ mod tests {
         inputs.images.insert(FIXUP_IMAGE.name, "sha256:fixup".into());
         inputs.binaries.insert(COURIER_LINUX_BINARY.name, Bytes::new());
         let plan = linux_plan();
+        let log_dir = tempfile::tempdir().unwrap();
+        let cancel = CancellationToken::new();
         let control = CaseControl {
-            cancel: CancellationToken::new(),
+            tasks: CaseTasks::new(&cancel),
+            cancel,
+            log_dir: log_dir.path().to_owned(),
             phases: PhaseTracker::default(),
             ledger: ResourceLedger::default(),
         };

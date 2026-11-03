@@ -2,7 +2,7 @@
 //!
 //! Exec and courier calls have their own limits. Other backend calls are safe to drop; callers bound them.
 
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 
 use airlock::{
     driver::{ContainerRef, Driver, DriverConfig, Protocol},
@@ -13,15 +13,18 @@ use airlock::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use tokio::sync::watch;
 
 use super::{courier, RunBackends};
 use crate::{
     endpoint::{ResolvedAddress, RunnerHostPort, Transport},
     handle::{ExecCommand, HandleError, Primitives},
     layout::Os,
+    observe::{follow_output, watch_exit, Capture, ParticipantExit, ParticipantObservation},
     plan::ScopeLayout,
     probe::{AttemptLimits, ProbeAnswer},
     recipe::{ContainerRecipe, RecipeFile},
+    tasks::CaseTasks,
 };
 
 /// A per-participant courier path in the container's own filesystem, separate from the shared volume.
@@ -161,6 +164,35 @@ impl LinuxParticipant {
                 format!("{context}, which publishes runner-host ports {ports}; run one panoramic invocation per runner host and Docker daemon at a time")
             })?;
         Ok(details.container_ip().map(str::to_owned))
+    }
+
+    /// Follows a started container's exit and output until the case stops its tasks.
+    pub(crate) async fn observe(&self, tasks: &CaseTasks, output_dir: &Path) -> ParticipantObservation {
+        let (exit_tx, exit_rx) = watch::channel(ParticipantExit::Running);
+        let (capture_tx, capture_rx) = watch::channel(Capture::Following);
+        let observation = ParticipantObservation {
+            exit_rx,
+            capture_rx,
+            stdout_path: output_dir.join("container.stdout.log"),
+            stderr_path: output_dir.join("container.stderr.log"),
+        };
+        tasks.spawn(watch_exit(self.driver.wait_exit(), exit_tx));
+        match self.driver.logs().await {
+            Ok(stream) => {
+                tasks.spawn(follow_output(
+                    stream,
+                    observation.stdout_path.clone(),
+                    observation.stderr_path.clone(),
+                    capture_tx,
+                ));
+            }
+            Err(error) => {
+                capture_tx.send_replace(Capture::Failed {
+                    reason: format!("{error:#}"),
+                });
+            }
+        }
+        observation
     }
 }
 

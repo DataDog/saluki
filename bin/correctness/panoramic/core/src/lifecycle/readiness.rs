@@ -7,6 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     handle::{http_status_from_runner_host, probe_from_runner_host, HandleError, Primitives},
+    observe::{ParticipantExit, ParticipantObservation},
     plan::{PlannedCheck, StartGate},
     probe::{probe, AttemptLimits, ProbeAnswer, ProbeError, POLL_INTERVAL},
 };
@@ -17,8 +18,8 @@ struct Waiting<'a> {
 }
 
 pub(super) async fn wait_for_level<'a>(
-    gates: impl IntoIterator<Item = (&'a str, &'a StartGate)>, server: impl Fn(&str) -> &'a dyn Primitives,
-    cancel: &CancellationToken,
+    gates: impl IntoIterator<Item = (&'a str, &'a StartGate)>,
+    server: impl Fn(&str) -> (&'a dyn Primitives, &'a ParticipantObservation), cancel: &CancellationToken,
 ) -> Result<(), String> {
     let mut waiting: Vec<Waiting<'_>> = Vec::new();
     for (consumer, gate) in gates {
@@ -40,11 +41,10 @@ pub(super) async fn wait_for_level<'a>(
             });
         }
     }
-    let failures = join_all(
-        waiting
-            .iter()
-            .map(|waiting| waiting.wait(server(&waiting.gate.server), cancel)),
-    )
+    let failures = join_all(waiting.iter().map(|waiting| {
+        let (server, observation) = server(&waiting.gate.server);
+        waiting.wait(server, observation, cancel)
+    }))
     .await
     .into_iter()
     .filter_map(Result::err)
@@ -57,7 +57,9 @@ pub(super) async fn wait_for_level<'a>(
 }
 
 impl Waiting<'_> {
-    async fn wait(&self, server: &dyn Primitives, cancel: &CancellationToken) -> Result<(), String> {
+    async fn wait(
+        &self, server: &dyn Primitives, observation: &ParticipantObservation, cancel: &CancellationToken,
+    ) -> Result<(), String> {
         let consumers = if self.consumers.len() == 1 {
             format!("participant '{}'", self.consumers[0])
         } else {
@@ -68,24 +70,40 @@ impl Waiting<'_> {
         let within = self.gate.evidence.within;
         let deadline = Instant::now() + within;
         let mut reason = "no check completed".to_string();
-        let poll = async {
-            loop {
-                let limits = AttemptLimits::new(deadline.saturating_duration_since(Instant::now()));
-                match check_once(&self.gate.check, server, &limits).await {
-                    Ok(None) => return Ok(()),
-                    Ok(Some(not_ready)) | Err(HandleError::Product { message: not_ready }) => reason = not_ready,
-                    Err(HandleError::Harness { message }) => return Err(message),
+        let result = {
+            let poll = async {
+                loop {
+                    let limits = AttemptLimits::new(deadline.saturating_duration_since(Instant::now()));
+                    match check_once(&self.gate.check, server, &limits).await {
+                        Ok(None) => return Ok(()),
+                        Ok(Some(not_ready)) | Err(HandleError::Product { message: not_ready }) => reason = not_ready,
+                        Err(HandleError::Harness { message }) => return Err(message),
+                    }
+                    sleep(POLL_INTERVAL).await;
                 }
-                sleep(POLL_INTERVAL).await;
+            };
+            tokio::select! {
+                biased;
+                exit = observation.stopped() => Err(exit),
+                checked = probe(&what, within, cancel, poll) => Ok(checked),
             }
         };
-        match probe(&what, within, cancel, poll).await {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(message)) => Err(format!("{consumers} cannot start: checking {what} failed: {message}")),
-            Err(ProbeError::TimedOut { .. }) => Err(format!(
+        match result {
+            Err(ParticipantExit::Exited { code, error }) => {
+                let docker = error.map(|error| format!(" (Docker: {error})")).unwrap_or_default();
+                Err(format!(
+                    "{consumers} cannot start: participant '{}' exited with code {code}{docker} \
+                     before {description} was ready; last check: {reason}",
+                    self.gate.server,
+                ))
+            }
+            Err(_) => unreachable!("stopped resolves only on an observed exit"),
+            Ok(Ok(Ok(()))) => Ok(()),
+            Ok(Ok(Err(message))) => Err(format!("{consumers} cannot start: checking {what} failed: {message}")),
+            Ok(Err(ProbeError::TimedOut { .. })) => Err(format!(
                 "{consumers} cannot start: {what} was not ready within {within:?}: {reason}"
             )),
-            Err(ProbeError::Cancelled { .. }) => Err(format!("cancelled while {consumers} waited for {what}")),
+            Ok(Err(ProbeError::Cancelled { .. })) => Err(format!("cancelled while {consumers} waited for {what}")),
         }
     }
 }
@@ -137,8 +155,10 @@ mod tests {
 
     use airlock::{exec::ExecOutput, files::FileStat};
     use async_trait::async_trait;
+    use tokio::sync::watch;
 
     use super::*;
+    use crate::observe::Capture;
     use crate::{
         endpoint::{EndpointKind, Evidence, ResolvedAddress, RunnerHostRoute},
         handle::ExecCommand,
@@ -153,11 +173,22 @@ mod tests {
     struct Server {
         answers: Mutex<VecDeque<Answer>>,
         calls: Mutex<Vec<String>>,
+        observation: ParticipantObservation,
+        exit_tx: watch::Sender<ParticipantExit>,
     }
 
     impl Server {
         fn new(answers: impl IntoIterator<Item = Answer>) -> Self {
+            let (exit_tx, exit_rx) = watch::channel(ParticipantExit::Running);
+            let (_, capture_rx) = watch::channel(Capture::Following);
             Self {
+                exit_tx,
+                observation: ParticipantObservation {
+                    exit_rx,
+                    capture_rx,
+                    stdout_path: Default::default(),
+                    stderr_path: Default::default(),
+                },
                 answers: Mutex::new(answers.into_iter().collect()),
                 calls: Mutex::default(),
             }
@@ -220,6 +251,92 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_gate_ends_when_its_server_exits_and_names_the_code_and_last_check() {
+        for error in [None, Some("runtime failure".to_string())] {
+            let server = Server::new([Answer::Probe(ProbeAnswer::NotListening {
+                reason: "connection refused".into(),
+            })]);
+            let gate = tcp_gate();
+            let cancel = CancellationToken::new();
+            let started = Instant::now();
+            let (_, result) = tokio::join!(
+                async {
+                    sleep(Duration::from_secs(1)).await;
+                    server.exit_tx.send_replace(ParticipantExit::Exited {
+                        code: 3,
+                        error: error.clone(),
+                    });
+                },
+                wait_for_level(
+                    [("consumer", &gate)],
+                    |_| (&server as &dyn Primitives, &server.observation),
+                    &cancel
+                ),
+            );
+            let docker = error.map(|error| format!(" (Docker: {error})")).unwrap_or_default();
+            assert_eq!(
+                result,
+                Err(format!(
+                    "participant 'consumer' cannot start: participant 'server' exited with code 3{docker} \
+                 before tcp-accepts on 'api' was ready; last check: connection refused"
+                ))
+            );
+            assert_eq!(started.elapsed(), Duration::from_secs(1));
+            assert!(started.elapsed() < gate.evidence.within);
+            assert_eq!(server.calls.lock().unwrap().len(), 2);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_server_that_exited_before_the_wait_fails_its_gate_without_a_check() {
+        let server = Server::new([Answer::Probe(ProbeAnswer::Listening)]);
+        server
+            .exit_tx
+            .send_replace(ParticipantExit::Exited { code: 0, error: None });
+        let started = Instant::now();
+        assert_eq!(
+            wait_for_level(
+                [("consumer", &tcp_gate())],
+                |_| (&server as &dyn Primitives, &server.observation),
+                &CancellationToken::new()
+            )
+            .await,
+            Err(
+                "participant 'consumer' cannot start: participant 'server' exited with code 0 \
+                 before tcp-accepts on 'api' was ready; last check: no check completed"
+                    .into()
+            ),
+        );
+        assert_eq!(started.elapsed(), Duration::ZERO);
+        assert!(server.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_undetermined_server_exit_leaves_the_gate_to_its_check() {
+        let server = Server::new([
+            Answer::Probe(ProbeAnswer::NotListening {
+                reason: "warming up".into(),
+            }),
+            Answer::Probe(ProbeAnswer::Listening),
+        ]);
+        server.exit_tx.send_replace(ParticipantExit::Undetermined {
+            reason: "wait connection lost".into(),
+        });
+        let started = Instant::now();
+        assert_eq!(
+            wait_for_level(
+                [("consumer", &tcp_gate())],
+                |_| (&server as &dyn Primitives, &server.observation),
+                &CancellationToken::new()
+            )
+            .await,
+            Ok(()),
+        );
+        assert_eq!(started.elapsed(), POLL_INTERVAL);
+        assert_eq!(server.calls.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn a_gate_retries_until_its_endpoint_accepts() {
         let server = Server::new([
             Answer::Probe(ProbeAnswer::NotListening {
@@ -233,7 +350,12 @@ mod tests {
         ]);
         let started = Instant::now();
         assert_eq!(
-            wait_for_level([("consumer", &tcp_gate())], |_| &server, &CancellationToken::new()).await,
+            wait_for_level(
+                [("consumer", &tcp_gate())],
+                |_| (&server as &dyn Primitives, &server.observation),
+                &CancellationToken::new()
+            )
+            .await,
             Ok(())
         );
         assert_eq!(started.elapsed(), 3 * POLL_INTERVAL);
@@ -259,7 +381,12 @@ mod tests {
             "participant 'consumer' cannot start: tcp-accepts on 'api' of participant 'server' was not ready \
             within 2s: connection refused";
         assert_eq!(
-            wait_for_level([("consumer", &gate)], |_| &server, &CancellationToken::new()).await,
+            wait_for_level(
+                [("consumer", &gate)],
+                |_| (&server as &dyn Primitives, &server.observation),
+                &CancellationToken::new()
+            )
+            .await,
             Err(expected.into()),
         );
         assert_eq!(started.elapsed(), Duration::from_secs(2));
@@ -273,7 +400,12 @@ mod tests {
             "participant 'consumer' cannot start: tcp-accepts on 'api' of participant 'server' was not ready \
             within 60s: no check completed";
         assert_eq!(
-            wait_for_level([("consumer", &tcp_gate())], |_| &server, &CancellationToken::new()).await,
+            wait_for_level(
+                [("consumer", &tcp_gate())],
+                |_| (&server as &dyn Primitives, &server.observation),
+                &CancellationToken::new()
+            )
+            .await,
             Err(expected.into()),
         );
         assert_eq!(started.elapsed(), Duration::from_secs(60));
@@ -289,7 +421,12 @@ mod tests {
         let expected = "participant 'consumer' cannot start: checking tcp-accepts on 'api' of participant 'server' \
             failed: exec failed: server has exited";
         assert_eq!(
-            wait_for_level([("consumer", &tcp_gate())], |_| &server, &CancellationToken::new()).await,
+            wait_for_level(
+                [("consumer", &tcp_gate())],
+                |_| (&server as &dyn Primitives, &server.observation),
+                &CancellationToken::new()
+            )
+            .await,
             Err(expected.into()),
         );
         assert_eq!(started.elapsed(), Duration::ZERO);
@@ -307,7 +444,11 @@ mod tests {
                 sleep(Duration::from_secs(1)).await;
                 cancel.cancel();
             },
-            wait_for_level([("consumer", &gate)], |_| &server, &cancel),
+            wait_for_level(
+                [("consumer", &gate)],
+                |_| (&server as &dyn Primitives, &server.observation),
+                &cancel
+            ),
         );
         assert_eq!(
             result,
@@ -364,7 +505,12 @@ mod tests {
         };
         let server = Server::new([Answer::Stat(None), Answer::Stat(Some(FileKind::File))]);
         assert_eq!(
-            wait_for_level([("consumer", &gate)], |_| &server, &CancellationToken::new()).await,
+            wait_for_level(
+                [("consumer", &gate)],
+                |_| (&server as &dyn Primitives, &server.observation),
+                &CancellationToken::new()
+            )
+            .await,
             Ok(())
         );
         assert_eq!(*server.calls.lock().unwrap(), ["stat /ready"; 2]);
@@ -374,7 +520,12 @@ mod tests {
         let expected = "participant 'consumer' cannot start: checking file-exists at '/ready' of participant 'server' \
             failed: archive unavailable";
         assert_eq!(
-            wait_for_level([("consumer", &gate)], |_| &server, &CancellationToken::new()).await,
+            wait_for_level(
+                [("consumer", &gate)],
+                |_| (&server as &dyn Primitives, &server.observation),
+                &CancellationToken::new()
+            )
+            .await,
             Err(expected.into()),
         );
     }
@@ -401,7 +552,7 @@ mod tests {
             assert_eq!(
                 wait_for_level(
                     [("a", &gate), ("a", &alias), ("b", &gate)],
-                    |_| &server,
+                    |_| (&server as &dyn Primitives, &server.observation),
                     &CancellationToken::new()
                 )
                 .await,
@@ -424,7 +575,12 @@ mod tests {
             "participants 'a', 'b' cannot start: tcp-accepts on 'api' of participant 'server' was not ready \
             within 1s: no check completed";
         assert_eq!(
-            wait_for_level([("a", &gate), ("b", &shorter)], |_| &server, &CancellationToken::new()).await,
+            wait_for_level(
+                [("a", &gate), ("b", &shorter)],
+                |_| (&server as &dyn Primitives, &server.observation),
+                &CancellationToken::new()
+            )
+            .await,
             Err(expected.into()),
         );
         assert_eq!(started.elapsed(), Duration::from_secs(1));
@@ -448,7 +604,12 @@ mod tests {
             2s: no check completed; participant 'b' cannot start: tcp-accepts on 'api' of participant \
             'other' was not ready within 2s: no check completed";
         assert_eq!(
-            wait_for_level([("a", &gate), ("b", &other)], |_| &server, &CancellationToken::new()).await,
+            wait_for_level(
+                [("a", &gate), ("b", &other)],
+                |_| (&server as &dyn Primitives, &server.observation),
+                &CancellationToken::new()
+            )
+            .await,
             Err(expected.into()),
         );
         assert_eq!(started.elapsed(), Duration::from_secs(2));
@@ -473,7 +634,12 @@ mod tests {
         let expected = "participant 'consumer' cannot start: checking http-ok on 'api' at '/ready' of participant \
             'server' failed: HTTP checks through the courier are not supported";
         assert_eq!(
-            wait_for_level([("consumer", &gate)], |_| &server, &CancellationToken::new()).await,
+            wait_for_level(
+                [("consumer", &gate)],
+                |_| (&server as &dyn Primitives, &server.observation),
+                &CancellationToken::new()
+            )
+            .await,
             Err(expected.into()),
         );
         assert!(server.calls.lock().unwrap().is_empty());
@@ -498,7 +664,12 @@ mod tests {
         let expected = "participant 'consumer' cannot start: checking http-ok on 'api' at '/a b' of participant \
             'server' failed: invalid uri character";
         assert_eq!(
-            wait_for_level([("consumer", &gate)], |_| &server, &CancellationToken::new()).await,
+            wait_for_level(
+                [("consumer", &gate)],
+                |_| (&server as &dyn Primitives, &server.observation),
+                &CancellationToken::new()
+            )
+            .await,
             Err(expected.into())
         );
         assert_eq!(started.elapsed(), Duration::ZERO);
@@ -527,7 +698,7 @@ mod tests {
         assert_eq!(
             wait_for_level(
                 gates.iter().map(|gate| ("consumer", gate)),
-                |_| &server,
+                |_| (&server as &dyn Primitives, &server.observation),
                 &CancellationToken::new()
             )
             .await,
