@@ -19,7 +19,7 @@ use crate::{
         runner_artifacts::{BoundArtifacts, RunnerArtifacts},
         runtime_for_os,
         typed_case::{case_dir, needs_pod, realizations, LoadedCase, LoadedPlan},
-        BuiltCase, Discovered,
+        BuiltCase, Discovered, Execution,
     },
     console::{Console, SetupFailure},
     discovery::{prepare_discovery, Selection},
@@ -113,7 +113,7 @@ fn check_legacy_inputs(
     artifacts: &RunnerArtifacts<'_>,
 ) -> Result<(), SetupFailure> {
     if let RunnerArtifacts::Bound(bound) = artifacts {
-        let runners: Vec<_> = built.iter().map(|built| built.runner.as_ref()).collect();
+        let runners: Vec<_> = built.iter().filter_map(BuiltCase::runner).collect();
         bound
             .check_legacy_inputs(&cmd.legacy_artifact_inputs(), subject_os, &runners)
             .map_err(SetupFailure::discovery)?;
@@ -440,10 +440,12 @@ async fn verify_run_artifacts(
 fn collect_kind_images(built: &[BuiltCase]) -> Vec<String> {
     use std::collections::BTreeSet;
     let mut images = BTreeSet::new();
-    for BuiltCase { plan, runner } in built {
-        if needs_pod(plan) {
-            for (_, image) in runner.images() {
-                images.insert(image);
+    for BuiltCase { plan, execution } in built {
+        if let Execution::Runner(runner) = execution {
+            if needs_pod(plan) {
+                for (_, image) in runner.images() {
+                    images.insert(image);
+                }
             }
         }
     }
@@ -1153,7 +1155,7 @@ mod tests {
             .plans;
             let artifacts = RunnerArtifacts::Bound(BoundArtifacts::new(needed_artifacts(&plans)));
             let built = build_runners(plans, os, &artifacts).unwrap();
-            let listing = listing(&built, &[], os);
+            let listing = listing(built.iter().map(|built| &built.plan), &built, &[], os);
             assert_eq!(
                 listing["integration"]["images"],
                 serde_json::json!({"container": target})
@@ -1215,7 +1217,16 @@ mod tests {
         let Command::Run(cmd) = cli.command else {
             panic!("expected run")
         };
-        assert_eq!(run_tests(cmd, false).await, ExitCode::from(2));
+        let console = Console { use_tui: false };
+        let prepared = prepare_run(&cmd, &console)
+            .await
+            .unwrap_or_else(|_| panic!("run should prepare"));
+        assert_eq!(prepared.built.len(), 1);
+        let Execution::Unprovidable(message) = &prepared.built[0].execution else {
+            panic!("unavailable realization must be an explicit execution state");
+        };
+        let message = message.clone();
+        assert_eq!(report_run(prepared, &cmd, &console).await, ExitCode::from(2));
         let run_dir = std::fs::read_dir(&logs).unwrap().next().unwrap().unwrap().path();
         let report: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(run_dir.join("run.json")).unwrap()).unwrap();
@@ -1225,6 +1236,7 @@ mod tests {
         assert_eq!(result["name"], "unprovidable");
         assert_eq!(result["outcome"], "errored");
         assert_eq!(result["error"]["kind"], "setup");
+        assert_eq!(result["error"]["message"], message);
         assert!(result["error"]["message"].as_str().unwrap().starts_with(&format!(
             "realization {kind} on {} for participant 'adp' cannot be provided on this host: ",
             os.name()
@@ -1275,19 +1287,25 @@ mod tests {
         let plans = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::Linux)
             .unwrap()
             .plans;
-        let built: Vec<_> = build_runners(plans, Os::Linux, &RunnerArtifacts::Overrides(&[]))
+        let mut built: Vec<_> = build_runners(plans, Os::Linux, &RunnerArtifacts::Overrides(&[]))
             .unwrap()
             .into_iter()
-            .map(|BuiltCase { plan, runner }| BuiltCase {
-                plan,
-                runner: Box::new(DefaultRuntime(runner)),
+            .map(|BuiltCase { plan, execution }| {
+                let Execution::Runner(runner) = execution else {
+                    panic!("expected a runner")
+                };
+                BuiltCase {
+                    plan,
+                    execution: Execution::Runner(Box::new(DefaultRuntime(runner))),
+                }
             })
             .collect();
         let expected: std::collections::BTreeSet<_> = built
             .iter()
             .find(|built| built.plan.case().name() == "pod")
             .unwrap()
-            .runner
+            .runner()
+            .unwrap()
             .images()
             .into_values()
             .collect();
@@ -1297,6 +1315,12 @@ mod tests {
         assert!(images.contains(&"comp:pod".to_string()));
         assert!(!images.contains(&"base:file".to_string()));
         assert!(!images.contains(&"comp:file".to_string()));
+        built
+            .iter_mut()
+            .find(|built| built.plan.case().name() == "pod")
+            .unwrap()
+            .execution = Execution::Unprovidable("kind unavailable".to_string());
+        assert!(collect_kind_images(&built).is_empty());
     }
 
     #[test]

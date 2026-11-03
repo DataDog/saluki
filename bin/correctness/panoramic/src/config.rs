@@ -1,5 +1,5 @@
 use std::borrow::Borrow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -7,7 +7,7 @@ use std::{
 };
 
 use airlock::driver::Protocol;
-use panoramic_core::case::{deserialize_case, deserialize_env_map, CaseDuration};
+use panoramic_core::case::{deserialize_case, deserialize_env_map, CaseDuration, CaseSchema};
 use panoramic_core::{
     artifact::ArtifactManifest,
     layout::Os,
@@ -705,14 +705,27 @@ pub(crate) fn discover_in_scope(
     Ok(Discovered { plans, excluded })
 }
 
-/// A compiled case and the runner built from it.
+/// A compiled case and its execution state.
 ///
 /// `P` is `LoadedPlan` when the runner task owns the plan, or `&LoadedPlan` when it borrows one.
 pub(crate) struct BuiltCase<P = LoadedPlan> {
     /// The plan supplying the case metadata and selected subject OS.
     pub(crate) plan: P,
-    /// The runner built for the selected runtime and artifact choices.
-    pub(crate) runner: Box<dyn Test>,
+    pub(crate) execution: Execution,
+}
+
+pub(crate) enum Execution {
+    Runner(Box<dyn Test>),
+    Unprovidable(String),
+}
+
+impl<P> BuiltCase<P> {
+    pub(crate) fn runner(&self) -> Option<&dyn Test> {
+        match &self.execution {
+            Execution::Runner(runner) => Some(runner.as_ref()),
+            Execution::Unprovidable(_) => None,
+        }
+    }
 }
 
 /// Builds a runner for each plan, in input order, and validates image overrides across the runners.
@@ -732,9 +745,38 @@ where
     let mut errors = Vec::new();
     for plan in plans {
         let borrowed = plan.borrow();
-        match borrowed.build_test(&settings, artifacts) {
-            Ok(runner) => built.push(BuiltCase { plan, runner }),
-            Err(error) => errors.push(format!("{error:#}").replace('\n', "\n    ")),
+        match route::route(borrowed) {
+            route::Route::Typed | route::Route::Bridge => match borrowed.build_test(&settings, artifacts) {
+                Ok(runner) => built.push(BuiltCase {
+                    plan,
+                    execution: Execution::Runner(runner),
+                }),
+                Err(error) => errors.push(format!("{error:#}").replace('\n', "\n    ")),
+            },
+            route::Route::Native => {
+                let case = borrowed.case();
+                let CaseSchema::Participants { file, .. } = case.schema() else {
+                    unreachable!("only participant cases have a native route");
+                };
+                let types: BTreeSet<_> = file
+                    .participants
+                    .values()
+                    .map(|entry| entry.participant_type.as_str())
+                    .filter(|name| !integration_bridge::BRIDGED_TYPES.contains(&(*name, borrowed.subject_os())))
+                    .collect();
+                errors.push(format!(
+                    "case '{}' in {}: on subject OS '{}', participant type(s) {} have no integration bridge route, \
+                     and panoramic cannot run them natively",
+                    case.name(),
+                    case.source().display(),
+                    borrowed.subject_os().name(),
+                    types
+                        .into_iter()
+                        .map(|name| format!("'{name}'"))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                ));
+            }
         }
     }
     if !errors.is_empty() {
@@ -744,7 +786,7 @@ where
         ));
     }
     if let RunnerArtifacts::Overrides(entries) = artifacts {
-        let runners: Vec<_> = built.iter().map(|b| b.runner.as_ref()).collect();
+        let runners: Vec<_> = built.iter().filter_map(BuiltCase::runner).collect();
         ImageOverrides::new(entries).validate(&runners)?;
     }
     Ok(built)
@@ -792,6 +834,7 @@ pub fn parse_file_spec(spec: &str) -> Result<(&str, &str), GenericError> {
 }
 
 mod integration_bridge;
+pub(crate) mod route;
 pub(crate) mod runner_artifacts;
 pub(crate) mod typed_case;
 
@@ -1585,11 +1628,11 @@ timeout: 30s
             ["integration", "correctness"]
         );
         assert_eq!(
-            runners[0].runner.images(),
+            runners[0].runner().unwrap().images(),
             BTreeMap::from([("container", "saluki-images/datadog-agent:testing-devel".to_string())])
         );
-        assert_eq!(runners[1].runner.images()["baseline"], "base:override");
-        assert_eq!(runners[1].runner.images()["comparison"], "comp");
+        assert_eq!(runners[1].runner().unwrap().images()["baseline"], "base:override");
+        assert_eq!(runners[1].runner().unwrap().images()["comparison"], "comp");
     }
 
     #[test]
@@ -1609,7 +1652,7 @@ procedure: []
 
         assert_eq!(runners.len(), 1);
         assert_eq!(runners[0].plan.case().name(), "windows-smoke");
-        assert_eq!(runners[0].runner.runtime(), "windows");
+        assert_eq!(runners[0].runner().unwrap().runtime(), "windows");
     }
 
     #[test]
@@ -1626,7 +1669,7 @@ procedure: []
         );
 
         let runners = discover_runners(&[base_dir.path().to_path_buf()], "windows", &[]).unwrap();
-        let images = runners[0].runner.images();
+        let images = runners[0].runner().unwrap().images();
 
         assert_eq!(
             images.get("container"),
@@ -1648,7 +1691,7 @@ procedure: []
         );
 
         let runners = discover_runners(&[base_dir.path().to_path_buf()], "linux", &[]).unwrap();
-        let images = runners[0].runner.images();
+        let images = runners[0].runner().unwrap().images();
 
         assert_eq!(
             images.get("container"),
@@ -2464,19 +2507,19 @@ comparison: {image: comp}
             let runners = discover_runners(&dirs, runtime, &[]).unwrap();
             if runtime == LINUX_RUNTIME {
                 assert_eq!(runners[0].plan.case().name(), "correctness");
-                assert_eq!(runners[0].runner.runtime(), "docker");
+                assert_eq!(runners[0].runner().unwrap().runtime(), "docker");
                 assert_eq!(runners.len(), 2);
             } else {
                 assert_eq!(runners.len(), 1);
             }
             let integration = runners.last().unwrap();
             assert_eq!(integration.plan.case().name(), "portable");
-            assert_eq!(integration.runner.runtime(), runtime);
+            assert_eq!(integration.runner().unwrap().runtime(), runtime);
             let expected: BTreeMap<&str, String> = target
                 .into_iter()
                 .map(|image| (TARGET_IMAGE_NAME, image.to_string()))
                 .collect();
-            assert_eq!(integration.runner.images(), expected);
+            assert_eq!(integration.runner().unwrap().images(), expected);
         }
         let override_entry = ["container=target:override".parse().unwrap()];
         let error = discover_runners(&dirs, MAC_RUNTIME, &override_entry)
@@ -2572,7 +2615,7 @@ comparison: {{image: comp}}
             let runners = discover_runners(&[dir.path().to_path_buf()], LINUX_RUNTIME, &entries).unwrap();
             assert_eq!(runners.len(), count);
             for built in runners {
-                let images = built.runner.images();
+                let images = built.runner().unwrap().images();
                 for entry in &entries {
                     assert_eq!(images[entry.name.as_str()], entry.image);
                 }

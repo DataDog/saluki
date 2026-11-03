@@ -742,7 +742,9 @@ mod tests {
                     assert!(plan.layout().is_none());
                 }
                 let runners = build_runners(discovered.plans, os, &RunnerArtifacts::Overrides(&[])).unwrap();
-                assert!(runners.iter().all(|built| built.runner.runtime() == "docker"));
+                assert!(runners
+                    .iter()
+                    .all(|built| built.runner().unwrap().runtime() == "docker"));
             }
         }
     }
@@ -810,8 +812,8 @@ mod tests {
             .collect();
         let overridden = build_runners(&plans, Os::Linux, &RunnerArtifacts::Overrides(&entries)).unwrap();
         let declared = build_runners(&plans, Os::Linux, &RunnerArtifacts::Overrides(&[])).unwrap();
-        assert_eq!(overridden[0].runner.images()["baseline"], "base:override");
-        assert_eq!(declared[0].runner.images()["baseline"], "base:file");
+        assert_eq!(overridden[0].runner().unwrap().images()["baseline"], "base:override");
+        assert_eq!(declared[0].runner().unwrap().images()["baseline"], "base:file");
     }
 
     #[test]

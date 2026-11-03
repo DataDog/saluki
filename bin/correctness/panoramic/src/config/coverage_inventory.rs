@@ -24,6 +24,7 @@ use serde_json::{json, Value};
 
 use super::{
     build_runners,
+    route::{route, Route},
     runner_artifacts::RunnerArtifacts,
     tests::{planner, write_case, LOGGING_INTEGRATION, LOGGING_PARTICIPANT, PARTICIPANT_FIELDS},
     typed_case::{LoadedCase, RunnableCase, TypedConfig},
@@ -253,14 +254,14 @@ impl Inventory {
                 })
                 .collect();
             let built = build_runners(plans, os, &RunnerArtifacts::Overrides(&[])).unwrap();
-            let listed = crate::list_command::listing(&built, &[], os);
+            let listed = crate::list_command::listing(built.iter().map(|built| &built.plan), &built, &[], os);
             for built in built {
                 let case = built.plan.case();
                 let status = if case.is_disabled() { DISABLED } else { SELECTED };
                 rows.push(Row::from_case(
                     root,
                     case,
-                    built.runner.as_ref(),
+                    built.runner().unwrap(),
                     os.name(),
                     status,
                     &schemas,
@@ -996,6 +997,26 @@ fn correctness_ci_mixins_reject_a_listed_row_without_roles() {
 #[should_panic(expected = "a correctness CI row must be runnable")]
 fn correctness_ci_mixins_reject_a_skipped_row() {
     correctness_ci_mixins(&json!({"status": "skipped", "layout": null, "roles": null}));
+}
+
+#[test]
+fn every_participant_case_in_the_repository_routes_to_the_bridge_on_each_declared_subject_os() {
+    let root = repository_root();
+    for os in [Os::Linux, Os::MacOs, Os::Windows] {
+        let cases = crate::CASE_LOADER
+            .discover_cases(&CASE_DIRS.map(|(dir, ..)| root.join(dir)))
+            .unwrap();
+        let mut participants = 0;
+        for case in cases {
+            if !matches!(case.schema(), CaseSchema::Participants { .. }) || !case.subject_os().contains(&os) {
+                continue;
+            }
+            let plan = planner().compile(case, os).unwrap().into_plan().unwrap();
+            assert_eq!(route(&plan), Route::Bridge, "{} on {}", plan.case().name(), os.name());
+            participants += 1;
+        }
+        assert!(participants > 0, "no participant cases checked on {}", os.name());
+    }
 }
 
 #[test]

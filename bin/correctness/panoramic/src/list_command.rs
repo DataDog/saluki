@@ -1,12 +1,14 @@
 use std::{borrow::Borrow, collections::BTreeMap, fmt::Write as _, process::ExitCode};
 
 use panoramic_core::{layout::Os, machine_output::skip_reason};
+use saluki_error::GenericError;
 use tracing::info;
 
 use crate::{
     cli,
     config::{
         build_runners,
+        route::{route, Route},
         runner_artifacts::RunnerArtifacts,
         typed_case::{layout_entries, LoadedCase, LoadedPlan},
         BuiltCase, Discovered,
@@ -28,14 +30,13 @@ pub(crate) async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
     };
 
     if cmd.json {
-        let runners = match build_runners(&plans, subject_os, &RunnerArtifacts::Overrides(&[])) {
-            Ok(runners) => runners,
+        let entries = match json_listing(&plans, &excluded, subject_os) {
+            Ok(entries) => entries,
             Err(error) => return SetupFailure::discovery(error).report(&console),
         };
         println!(
             "{}",
-            serde_json::to_string_pretty(&listing(&runners, &excluded, subject_os))
-                .expect("Unable to serialize a map of the tests")
+            serde_json::to_string_pretty(&entries).expect("Unable to serialize a map of the tests")
         )
     } else {
         if plans.is_empty() && excluded.is_empty() {
@@ -127,17 +128,31 @@ fn excluded_listing_text(case: &LoadedCase) -> String {
     text
 }
 
-/// Lists every enabled case's status, layout and roles, with runtime and images for runnable cases.
-pub(crate) fn listing<P>(
-    built: &[BuiltCase<P>], excluded: &[LoadedCase], subject_os: Os,
+fn json_listing(
+    plans: &[LoadedPlan], excluded: &[LoadedCase], subject_os: Os,
+) -> Result<BTreeMap<String, serde_json::Value>, GenericError> {
+    let runners = build_runners(
+        plans.iter().filter(|plan| route(plan) != Route::Native),
+        subject_os,
+        &RunnerArtifacts::Overrides(&[]),
+    )?;
+    Ok(listing(plans, &runners, excluded, subject_os))
+}
+
+/// Lists every enabled case's status, layout and roles, with runtime and images for cases using runners.
+pub(crate) fn listing<'a, P>(
+    plans: impl IntoIterator<Item = &'a LoadedPlan>, built: &[BuiltCase<P>], excluded: &[LoadedCase], subject_os: Os,
 ) -> BTreeMap<String, serde_json::Value>
 where
     P: Borrow<LoadedPlan>,
 {
-    built
+    let runners: BTreeMap<_, _> = built
         .iter()
-        .map(|BuiltCase { plan, runner }| {
-            let plan = plan.borrow();
+        .filter_map(|built| built.runner().map(|runner| (built.plan.borrow().case().name(), runner)))
+        .collect();
+    plans
+        .into_iter()
+        .map(|plan| {
             let case = plan.case();
             let roles: Vec<_> = plan
                 .artifacts()
@@ -151,18 +166,18 @@ where
                     })
                 })
                 .collect();
-            (
-                case.name().to_string(),
-                serde_json::json!({
-                    "type": case.suite(),
-                    "runtime": runner.runtime(),
-                    "timeout": case.timeout(),
-                    "images": runner.images(),
-                    "status": "runnable",
-                    "layout": layout_entries(plan),
-                    "roles": roles,
-                }),
-            )
+            let mut row = serde_json::json!({
+                "type": case.suite(),
+                "timeout": case.timeout(),
+                "status": "runnable",
+                "layout": layout_entries(plan),
+                "roles": roles,
+            });
+            if let Some(runner) = runners.get(case.name()) {
+                row["runtime"] = serde_json::json!(runner.runtime());
+                row["images"] = serde_json::json!(runner.images());
+            }
+            (case.name().to_string(), row)
         })
         .chain(excluded.iter().map(|case| {
             (
@@ -218,7 +233,7 @@ mod tests {
             ),
         ] {
             let built = build_runners([&plan], Os::Linux, &RunnerArtifacts::Overrides(&[])).unwrap();
-            let entries = listing(&built, &[], Os::Linux);
+            let entries = listing([&plan], &built, &[], Os::Linux);
             let entry = &entries["case"];
             assert_eq!(entry["status"], "runnable");
             assert_eq!(entry["layout"], expected_layout);
@@ -262,6 +277,50 @@ mod tests {
     }
 
     #[test]
+    fn list_json_reports_native_rows_without_runtime_or_images() {
+        let plans = [
+            crate::config::route::tests::plan_with_plain(
+                &PARTICIPANT_FIELDS.replace("agent-adp", "plain"),
+                "native",
+                Os::Linux,
+            ),
+            crate::config::tests::plan(PARTICIPANT_FIELDS, Os::Linux),
+        ];
+        let entries = json_listing(&plans, &[], Os::Linux).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries["case"]["runtime"], "linux");
+        assert!(entries["case"]["images"].get("container").is_some());
+        let native = &entries["native"];
+        assert_eq!(
+            native
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["layout", "roles", "status", "timeout", "type"]
+        );
+        assert_eq!(native["status"], "runnable");
+        assert_eq!(native["type"], "integration");
+        assert_eq!(native["timeout"], serde_json::json!({"secs": 1, "nanos": 0}));
+        assert_eq!(
+            native["layout"],
+            serde_json::json!([{
+                "participant": "adp", "type": "plain", "os": "linux", "realization": "linux-container",
+            }])
+        );
+        assert_eq!(
+            native["roles"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|role| role["role"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["courier-linux-binary", "fixup-image"]
+        );
+    }
+
+    #[test]
     fn listing_json_reports_skipped_cases_with_their_reason_and_without_runtime_or_images() {
         let dir = tempfile::tempdir().unwrap();
         write_case(dir.path(), "participant", PARTICIPANT_FIELDS);
@@ -273,8 +332,8 @@ mod tests {
         let Discovered { plans, excluded } =
             discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::MacOs).unwrap();
         assert!(plans.is_empty());
-        let built = build_runners(plans, Os::MacOs, &RunnerArtifacts::Overrides(&[])).unwrap();
-        let entries = listing(&built, &excluded, Os::MacOs);
+        let built = build_runners(&plans, Os::MacOs, &RunnerArtifacts::Overrides(&[])).unwrap();
+        let entries = listing(&plans, &built, &excluded, Os::MacOs);
         assert_eq!(entries.len(), 2);
         for case in &excluded {
             assert_eq!(
@@ -324,8 +383,8 @@ mod tests {
                     let Discovered { plans, excluded } =
                         discover_in_scope(&mut load_planner(manifest).unwrap(), &[dir.path().to_path_buf()], os)
                             .unwrap();
-                    let built = build_runners(plans, os, &RunnerArtifacts::Overrides(&[])).unwrap();
-                    listing(&built, &excluded, os)
+                    let built = build_runners(&plans, os, &RunnerArtifacts::Overrides(&[])).unwrap();
+                    listing(&plans, &built, &excluded, os)
                 })
                 .collect();
             for (name, before) in &listings[0] {
@@ -690,7 +749,7 @@ mod tests {
         );
         let cases = crate::CASE_LOADER.load_file(&path).unwrap();
         let runners = build_case_runners(cases, Os::Linux, &[]).unwrap();
-        let entries = listing(&runners, &[], Os::Linux);
+        let entries = listing(runners.iter().map(|built| &built.plan), &runners, &[], Os::Linux);
         assert_eq!(entries.len(), 1);
         let entry = &entries["correctness"];
         assert_eq!(entry["type"], "correctness");
@@ -705,7 +764,7 @@ mod tests {
         );
         let cases = crate::CASE_LOADER.load_file(&path).unwrap();
         let runners = build_case_runners(cases, Os::Windows, &[]).unwrap();
-        let entries = listing(&runners, &[], Os::Windows);
+        let entries = listing(runners.iter().map(|built| &built.plan), &runners, &[], Os::Windows);
         assert_eq!(entries.len(), 1);
         let entry = &entries["integration"];
         assert_eq!(entry["type"], "integration");
@@ -719,7 +778,7 @@ mod tests {
         let path = write_case(dir.path(), "participant", &PARTICIPANT_FIELDS.replace("1s", "9s"));
         let cases = crate::CASE_LOADER.load_file(&path).unwrap();
         let runners = build_case_runners(cases, Os::Linux, &[]).unwrap();
-        let entries = listing(&runners, &[], Os::Linux);
+        let entries = listing(runners.iter().map(|built| &built.plan), &runners, &[], Os::Linux);
         assert_eq!(entries.len(), 1);
         let entry = &entries["participant"];
         assert_eq!(entry["type"], "integration");

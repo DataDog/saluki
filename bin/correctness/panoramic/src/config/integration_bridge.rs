@@ -13,6 +13,7 @@
 use std::path::Path;
 
 use panoramic_core::case::{CaseFile, ParticipantConfig, ParticipantEntry, ProcedureNode, StepNode};
+use panoramic_core::layout::Os;
 use panoramic_core::participant::{EffectiveConfig, SHARED_DIR_FACT};
 use panoramic_core::record::step_label;
 use panoramic_core::step::{decode_fields, Need};
@@ -24,6 +25,13 @@ use super::{
     runtime_for_os, AssertionConfig, AssertionStep, ContainerConfig, IntakeConfig, IntegrationConfig, LogStream,
 };
 use crate::dynamic_vars::ENV_PREFIX;
+
+/// Participant types the integration runner runs, by subject OS.
+pub(super) const BRIDGED_TYPES: &[(&str, Os)] = &[
+    (AgentAdp::NAME, Os::Linux),
+    (AgentAdp::NAME, Os::MacOs),
+    (AgentAdp::NAME, Os::Windows),
+];
 
 /// Translates the case file's step fields, preserving step order and time budgets.
 ///
@@ -380,13 +388,19 @@ mod tests {
                 path.canonicalize().unwrap().parent().unwrap()
             );
             assert_eq!(participant.plan.case().timeout(), integration.plan.case().timeout());
-            assert_eq!(participant.runner.runtime(), integration.runner.runtime());
-            assert_eq!(participant.runner.runtime(), runtime);
-            assert_eq!(participant.runner.images(), integration.runner.images());
+            assert_eq!(
+                participant.runner().unwrap().runtime(),
+                integration.runner().unwrap().runtime()
+            );
+            assert_eq!(participant.runner().unwrap().runtime(), runtime);
+            assert_eq!(
+                participant.runner().unwrap().images(),
+                integration.runner().unwrap().images()
+            );
             if runtime == MAC_RUNTIME {
-                assert!(participant.runner.images().is_empty());
+                assert!(participant.runner().unwrap().images().is_empty());
             } else {
-                assert_eq!(participant.runner.images()["container"], "target:custom");
+                assert_eq!(participant.runner().unwrap().images()["container"], "target:custom");
             }
         }
     }

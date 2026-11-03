@@ -190,9 +190,11 @@ procedure:   # Required; at least one step.
     timeout: 30s
 ```
 
-These cases run on the integration runner. Panoramic translates each case into an integration case for every subject
-OS and runs it: in a Linux or Windows container with default settings, or as host processes on macOS. The translation
-supports this subset of the schema:
+Panoramic routes a participant case to the integration runner when every participant's type has an integration bridge
+route on the selected subject OS. `agent-adp` has one on Linux, macOS and Windows. The integration runner translates
+the case and runs it in a Linux or Windows container with default settings, or as host processes on macOS.
+A case with a type lacking a bridge route requires native execution; `run` rejects it because native execution is
+unavailable. Cases never fall back to another route. The translation supports this subset of the schema:
 
 - One participant, of type `agent-adp` with `subject: true`, configured only through `config.env`, optionally with
   `config.os` overlays of `env` whose values replace the base values on that OS. Environment values must be YAML strings;
@@ -462,8 +464,8 @@ A case whose `subject_os` omits the selected OS appears in `run.json` with outco
 Text listings show every enabled case's status: `runnable` or `skipped (subject_os)`.
 
 `list --json` includes every enabled case, keyed by name. Every row has `type`, `timeout` and `status`, which is
-`runnable` or `skipped`. Runnable rows also have `runtime` and `images`; skipped rows have `skip_reason`
-instead. Each row also has:
+`runnable` or `skipped`. Runnable rows that use a typed runner or the integration bridge also have `runtime` and
+`images`. Skipped rows have `skip_reason`. Each row also has:
 
 - `layout`: a list of `{participant, type, os, realization}` in participant-name order. `type` names the participant
   type, `os` is `linux`, `macos` or `windows`, and `realization` is `linux-container`, `windows-container`,

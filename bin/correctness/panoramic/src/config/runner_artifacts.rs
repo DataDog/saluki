@@ -283,7 +283,7 @@ mod tests {
         let RunnerArtifacts::Bound(bound) = artifacts else {
             unreachable!()
         };
-        let runners: Vec<_> = built.iter().map(|built| built.runner.as_ref()).collect();
+        let runners: Vec<_> = built.iter().map(|built| built.runner().unwrap()).collect();
         bound.check_legacy_inputs(inputs, os, &runners)
     }
 
@@ -613,7 +613,7 @@ mod tests {
             image_overrides: &overrides,
             ..Default::default()
         };
-        assert_eq!(bound.check_legacy_inputs(&inputs, Os::MacOs, &[built[0].runner.as_ref()]).unwrap_err().to_string(),
+        assert_eq!(bound.check_legacy_inputs(&inputs, Os::MacOs, &[built[0].runner().unwrap()]).unwrap_err().to_string(),
             "Legacy artifact inputs disagree with the --artifacts bindings:\n  - --image-override container (PANORAMIC_IMAGE_OVERRIDES) names no artifact role on macos"
         );
     }
@@ -639,10 +639,10 @@ mod tests {
             unreachable!()
         };
         bound
-            .check_legacy_inputs(&inputs, Os::Linux, &[built[0].runner.as_ref()])
+            .check_legacy_inputs(&inputs, Os::Linux, &[built[0].runner().unwrap()])
             .unwrap();
         assert_eq!(
-            built[0].runner.images(),
+            built[0].runner().unwrap().images(),
             BTreeMap::from([
                 ("millstone", "tools:bound".into()),
                 ("datadog-intake", "tools:bound".into()),
@@ -708,7 +708,7 @@ mod tests {
                     TOOLS_LINUX_IMAGE.local_default
                 };
                 assert_eq!(
-                    runners[0].runner.images(),
+                    runners[0].runner().unwrap().images(),
                     BTreeMap::from([
                         ("baseline", target.into()),
                         ("comparison", target.into()),
@@ -775,7 +775,7 @@ mod tests {
         ];
         let runners = build_runners(&plans, Os::Linux, &RunnerArtifacts::Overrides(&entries)).unwrap();
         assert_eq!(
-            runners[0].runner.images(),
+            runners[0].runner().unwrap().images(),
             BTreeMap::from([
                 ("baseline", "base:override".into()),
                 ("comparison", "comp:file".into()),
@@ -784,7 +784,7 @@ mod tests {
             ])
         );
         let defaults = build_runners(&plans, Os::Linux, &RunnerArtifacts::Overrides(&[])).unwrap();
-        assert_eq!(defaults[0].runner.images()["baseline"], "base:file");
+        assert_eq!(defaults[0].runner().unwrap().images()["baseline"], "base:file");
         for entries in [
             vec!["unused=x".parse().unwrap()],
             vec!["baseline=x".parse().unwrap(), "baseline=y".parse().unwrap()],
