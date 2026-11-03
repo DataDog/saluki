@@ -6,7 +6,10 @@ use saluki_metrics::{static_metrics, Counter, Histogram};
 use tokio::sync::mpsc;
 
 use super::Dispatchable;
-use crate::{components::ComponentContext, topology::OutputName};
+use crate::{
+    components::ComponentContext,
+    topology::{condition::EdgeGate, OutputName},
+};
 
 // TODO: When we have support for additional static labels on a per-metric basis, add `discard_reason` to
 // `events_discarded_total` metric to indicate that it's due to the destination component being disconnected.
@@ -17,6 +20,7 @@ struct DispatcherMetrics {
     #[metric(level = trace)]
     send_latency_seconds: Histogram,
     events_discarded_total: Counter,
+    events_elided_total: Counter,
 }
 
 impl DispatcherMetrics {
@@ -50,9 +54,22 @@ pub trait DispatchBuffer: Dispatchable + Default {
     fn try_push(&mut self, item: Self::Item) -> Option<Self::Item>;
 }
 
+/// A sender to a downstream component, optionally gated by a dynamic connection condition.
+struct GatedSender<T> {
+    sender: mpsc::Sender<T>,
+    gate: Option<EdgeGate>,
+}
+
+impl<T> GatedSender<T> {
+    #[inline]
+    fn is_active(&self) -> bool {
+        self.gate.as_ref().is_none_or(EdgeGate::is_active)
+    }
+}
+
 struct DispatchTarget<T> {
     metrics: DispatcherMetrics,
-    senders: Vec<mpsc::Sender<T>>,
+    senders: Vec<GatedSender<T>>,
 }
 
 impl<T> DispatchTarget<T>
@@ -73,8 +90,16 @@ where
         }
     }
 
-    fn add_sender(&mut self, sender: mpsc::Sender<T>) {
-        self.senders.push(sender);
+    fn add_sender(&mut self, sender: mpsc::Sender<T>, gate: Option<EdgeGate>) {
+        self.senders.push(GatedSender { sender, gate });
+    }
+
+    /// Returns the index of the first active sender at or after `start`.
+    fn next_active_sender(&self, start: usize) -> Option<usize> {
+        self.senders[start..]
+            .iter()
+            .position(GatedSender::is_active)
+            .map(|offset| start + offset)
     }
 
     async fn send(&self, item: T) -> Result<(), GenericError> {
@@ -95,31 +120,48 @@ where
         let start = Instant::now();
         let item_count = item.item_count();
 
-        // Send the item to all senders except the last one by cloning the item.
-        saluki_antithesis::always_gt!(self.senders.len(), 0, "dispatcher fanout has at least one sender");
-        let cloned_sends = self.senders.len() - 1;
-        for sender in &self.senders[0..cloned_sends] {
-            sender
-                .send(item.clone())
+        // Senders whose connection condition is currently false are skipped entirely: the item is neither cloned nor
+        // sent to them. Only gated senders can be skipped, so every ungated connection still receives every item.
+        //
+        // The item is cloned for every active sender except the last one, which gets the original.
+        let mut item = Some(item);
+        let mut active_sends = 0;
+        let mut next_active = self.next_active_sender(0);
+        while let Some(index) = next_active {
+            next_active = self.next_active_sender(index + 1);
+            let item = if next_active.is_some() {
+                item.clone()
+            } else {
+                item.take()
+            };
+            self.senders[index]
+                .sender
+                .send(item.expect("item is only taken for the last active sender"))
                 .await
                 .map_err(|_| generic_error!("Failed to send to output."))?;
+            active_sends += 1;
         }
 
-        // Send the item to the last sender without cloning.
-        let last_sender = &self.senders[cloned_sends];
-        last_sender
-            .send(item)
-            .await
-            .map_err(|_| generic_error!("Failed to send to output."))?;
+        let elided_sends = self.senders.len() - active_sends;
+        if elided_sends > 0 {
+            self.metrics
+                .events_elided_total()
+                .increment((elided_sends * item_count) as u64);
+            saluki_antithesis::sometimes!(
+                true,
+                "events elided on a connection whose condition is false",
+                { "items": item_count, "elided_sends": elided_sends }
+            );
+        }
 
-        let elapsed = start.elapsed();
-
-        // TODO: We should consider splitting this out per-sender somehow. We would need to carry around the
-        // destination component's ID, though, to properly associate it.
-        self.metrics.send_latency_seconds().record(elapsed);
-
-        let total_events_sent = (self.senders.len() * item_count) as u64;
-        self.metrics.events_sent_total().increment(total_events_sent);
+        if active_sends > 0 {
+            // TODO: We should consider splitting this out per-sender somehow. We would need to carry around the
+            // destination component's ID, though, to properly associate it.
+            self.metrics.send_latency_seconds().record(start.elapsed());
+            self.metrics
+                .events_sent_total()
+                .increment((active_sends * item_count) as u64);
+        }
 
         Ok(())
     }
@@ -289,6 +331,17 @@ where
     pub fn attach_sender_to_output(
         &mut self, output_name: &OutputName, sender: mpsc::Sender<T>,
     ) -> Result<(), GenericError> {
+        self.attach_gated_sender_to_output(output_name, sender, None)
+    }
+
+    /// Attaches a sender to the given output, only sending to it while `gate` is active.
+    ///
+    /// # Errors
+    ///
+    /// If the output doesn't exist, an error is returned.
+    pub(crate) fn attach_gated_sender_to_output(
+        &mut self, output_name: &OutputName, sender: mpsc::Sender<T>, gate: Option<EdgeGate>,
+    ) -> Result<(), GenericError> {
         let target = match output_name {
             OutputName::Default => self
                 .default
@@ -299,7 +352,7 @@ where
                 .get_mut(name)
                 .ok_or_else(|| generic_error!("Output '{}' does not exist.", name))?,
         };
-        target.add_sender(sender);
+        target.add_sender(sender, gate);
 
         Ok(())
     }
@@ -834,6 +887,114 @@ mod tests {
             assert_eq!(events_sent, 0);
             assert_eq!(events_discarded, multiple_items_count);
             assert!(send_latencies.is_empty());
+        }
+    }
+
+    /// Returns the elided, sent, and discarded event counts recorded since the last snapshot.
+    ///
+    /// Taking a snapshot resets the counters, so each call returns the counts since the previous call.
+    fn take_send_counts(snapshotter: &Snapshotter, output_name: &'static str) -> (u64, u64, u64) {
+        let metrics = snapshotter.snapshot().into_hashmap();
+        let get = |name| {
+            let key = get_dispatcher_metric_ckey(MetricKind::Counter, name, output_name, &[]);
+            match metrics.get(&key) {
+                Some((_, _, DebugValue::Counter(value))) => *value,
+                Some(_) => panic!("unexpected metric type for {name}"),
+                None => 0,
+            }
+        };
+        (
+            get(DispatcherMetrics::events_elided_total_name()),
+            get(DispatcherMetrics::events_sent_total_name()),
+            get(DispatcherMetrics::events_discarded_total_name()),
+        )
+    }
+
+    #[tokio::test]
+    async fn gated_sender_only_receives_while_active() {
+        // A gated sender only receives items while its gate is active, and items skipped for it are counted as elided.
+        // Ungated senders on the same output receive every item regardless.
+        for case in output_cases() {
+            let recorder = DebuggingRecorder::new();
+            let snapshotter = recorder.snapshotter();
+            let gate = EdgeGate::new(false);
+            let (ungated_tx, mut ungated_rx) = mpsc::channel(4);
+            let (gated_tx, mut gated_rx) = mpsc::channel(4);
+            let output = case.output.clone();
+            let dispatcher = metrics::with_local_recorder(&recorder, || {
+                let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
+                dispatcher.add_output(output.clone()).unwrap();
+                dispatcher.attach_sender_to_output(&output, ungated_tx).unwrap();
+                dispatcher
+                    .attach_gated_sender_to_output(&output, gated_tx, Some(gate.clone()))
+                    .unwrap();
+                dispatcher
+            });
+
+            let mut item = FixedUsizeVec::<4>::default();
+            assert_eq!(None, item.try_push(1));
+            assert_eq!(None, item.try_push(2));
+            let item_count = item.item_count() as u64;
+
+            // Inactive gate: only the ungated sender receives the item.
+            dispatch_to(&dispatcher, &case.output, item.clone()).await.unwrap();
+            assert_eq!(ungated_rx.try_recv().unwrap(), item);
+            assert!(gated_rx.try_recv().is_err());
+            assert_eq!(
+                take_send_counts(&snapshotter, case.metric_label),
+                (item_count, item_count, 0)
+            );
+
+            // Active gate: both senders receive the item.
+            gate.set(true);
+            dispatch_to(&dispatcher, &case.output, item.clone()).await.unwrap();
+            assert_eq!(ungated_rx.try_recv().unwrap(), item);
+            assert_eq!(gated_rx.try_recv().unwrap(), item);
+            assert_eq!(
+                take_send_counts(&snapshotter, case.metric_label),
+                (0, 2 * item_count, 0)
+            );
+
+            // Inactive again: back to only the ungated sender.
+            gate.set(false);
+            dispatch_to(&dispatcher, &case.output, item.clone()).await.unwrap();
+            assert_eq!(ungated_rx.try_recv().unwrap(), item);
+            assert!(gated_rx.try_recv().is_err());
+            assert_eq!(
+                take_send_counts(&snapshotter, case.metric_label),
+                (item_count, item_count, 0)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn output_with_only_inactive_senders_elides_items() {
+        // When every sender on an output is gated off, the item is elided rather than sent or discarded.
+        for case in output_cases() {
+            let recorder = DebuggingRecorder::new();
+            let snapshotter = recorder.snapshotter();
+            let (tx1, mut rx1) = mpsc::channel(1);
+            let (tx2, mut rx2) = mpsc::channel(1);
+            let output = case.output.clone();
+            let dispatcher = metrics::with_local_recorder(&recorder, || {
+                let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
+                dispatcher.add_output(output.clone()).unwrap();
+                for tx in [tx1, tx2] {
+                    dispatcher
+                        .attach_gated_sender_to_output(&output, tx, Some(EdgeGate::new(false)))
+                        .unwrap();
+                }
+                dispatcher
+            });
+
+            let mut item = FixedUsizeVec::<4>::default();
+            assert_eq!(None, item.try_push(7));
+            dispatch_to(&dispatcher, &case.output, item).await.unwrap();
+
+            assert!(rx1.try_recv().is_err());
+            assert!(rx2.try_recv().is_err());
+            assert!(is_output_connected(&dispatcher, &case.output));
+            assert_eq!(take_send_counts(&snapshotter, case.metric_label), (2, 0, 0));
         }
     }
 

@@ -41,10 +41,16 @@ use super::component_worker::{
     ComponentWorker, DecoderRunnable, DestinationRunnable, EncoderRunnable, ForwarderRunnable, RelayRunnable,
     RunnableComponent, SourceRunnable, TransformRunnable,
 };
-use super::{graph::Graph, EventsBuffer, EventsConsumer, OutputName, PayloadsConsumer, TypedComponentId};
+use super::{
+    condition::{EdgeConditions, EdgeGate, EdgeKey},
+    graph::Graph,
+    EventsBuffer, EventsConsumer, OutputName, PayloadsConsumer, TypedComponentId,
+};
 use crate::health::{Health, HealthRegistry};
 use crate::runtime::state::DataspaceRegistry;
-use crate::runtime::{self, ChildSpecification, RestartMode, RestartStrategy, Supervisor, UnadoptedScope, WorkerSpec};
+use crate::runtime::{
+    self, ChildSpecification, FnWorker, RestartMode, RestartStrategy, Supervisor, UnadoptedScope, WorkerSpec,
+};
 use crate::support::SubsystemIdentifier;
 use crate::topology::interconnect::{Consumer, Dispatchable};
 use crate::{
@@ -86,6 +92,7 @@ pub(crate) struct BuiltTopology {
     component_token: ResourceGroupToken,
     interconnect_capacity: NonZeroUsize,
     worker_pool_config: WorkerPoolConfiguration,
+    edge_conditions: EdgeConditions,
 }
 
 impl BuiltTopology {
@@ -101,6 +108,7 @@ impl BuiltTopology {
         forwarders: HashMap<ComponentContext, (Box<dyn Forwarder + Send>, ComponentRegistry)>,
         component_scopes: HashMap<ComponentContext, UnadoptedScope>, component_token: ResourceGroupToken,
         interconnect_capacity: NonZeroUsize, worker_pool_config: WorkerPoolConfiguration,
+        edge_conditions: EdgeConditions,
     ) -> Self {
         Self {
             name,
@@ -117,6 +125,7 @@ impl BuiltTopology {
             component_token,
             interconnect_capacity,
             worker_pool_config,
+            edge_conditions,
         }
     }
 
@@ -172,9 +181,13 @@ impl BuiltTopology {
         );
 
         // Build our interconnects, which we'll grab from piecemeal as we build our components.
-        let mut interconnects =
-            ComponentInterconnects::from_graph(self.interconnect_capacity, &self.topology_id, &self.graph)
-                .error_context("Failed to build component interconnects.")?;
+        let mut interconnects = ComponentInterconnects::from_graph(
+            self.interconnect_capacity,
+            &self.topology_id,
+            &self.graph,
+            &self.edge_conditions,
+        )
+        .error_context("Failed to build component interconnects.")?;
 
         // The worker of each component adopts the scope that the component was built in. Thus, the tasks that the
         // component spawned during its build start when the worker runs, and the worker owns them.
@@ -186,6 +199,24 @@ impl BuiltTopology {
         // everything it spawned.
         let mut topology_sup = Supervisor::new(self.topology_id.to_string())?
             .with_restart_strategy(RestartStrategy::new(RestartMode::OneForOne, 0, TOPOLOGY_RESTART_PERIOD));
+
+        // Drive any connections whose condition is resolved at runtime. The gates were already attached to their
+        // senders when the interconnects were built, so this only applies condition updates to them.
+        if !self.edge_conditions.is_empty() {
+            let edge_conditions = self.edge_conditions;
+            topology_sup.add_worker(FnWorker::with_shutdown("edge_conditions", |shutdown| async move {
+                let run = edge_conditions.run();
+                tokio::pin!(run);
+                tokio::pin!(shutdown);
+                tokio::select! {
+                    _ = &mut shutdown => return,
+                    _ = &mut run => {}
+                }
+
+                // Every condition's updates have ended, so the gates keep their last values until shutdown.
+                shutdown.await;
+            }));
+        }
 
         // Build our sources.
         for (component_context, (component, component_registry)) in self.sources {
@@ -370,6 +401,7 @@ struct ComponentInterconnects {
 impl ComponentInterconnects {
     fn from_graph(
         interconnect_capacity: NonZeroUsize, topology_id: &SubsystemIdentifier, graph: &Graph,
+        edge_conditions: &EdgeConditions,
     ) -> Result<Self, GenericError> {
         let mut interconnects = Self {
             interconnect_capacity,
@@ -380,7 +412,7 @@ impl ComponentInterconnects {
             payloads_consumers: HashMap::new(),
         };
 
-        interconnects.generate_interconnects(graph)?;
+        interconnects.generate_interconnects(graph, edge_conditions)?;
         Ok(interconnects)
     }
 
@@ -436,7 +468,7 @@ impl ComponentInterconnects {
             })
     }
 
-    fn generate_interconnects(&mut self, graph: &Graph) -> Result<(), GenericError> {
+    fn generate_interconnects(&mut self, graph: &Graph, edge_conditions: &EdgeConditions) -> Result<(), GenericError> {
         // Collect and iterate over each outbound edge in the topology graph.
         //
         // For each upstream component ("from" side of the edge), we attach each downstream component ("to" side of the edge) to it,
@@ -445,10 +477,10 @@ impl ComponentInterconnects {
         for (upstream_id, output_map) in outbound_edges {
             match upstream_id.component_type() {
                 ComponentType::Source | ComponentType::Decoder | ComponentType::Transform => {
-                    self.generate_event_interconnect(upstream_id, output_map)?;
+                    self.generate_event_interconnect(upstream_id, output_map, edge_conditions)?;
                 }
                 ComponentType::Relay | ComponentType::Encoder => {
-                    self.generate_payload_interconnect(upstream_id, output_map)?
+                    self.generate_payload_interconnect(upstream_id, output_map, edge_conditions)?
                 }
                 _ => panic!(
                     "Only sources, decoders, transforms, relays, and encoders can dispatch events/payloads to downstream components."
@@ -461,20 +493,22 @@ impl ComponentInterconnects {
 
     fn generate_event_interconnect(
         &mut self, upstream_id: TypedComponentId, output_map: HashMap<OutputName, Vec<TypedComponentId>>,
+        edge_conditions: &EdgeConditions,
     ) -> Result<(), GenericError> {
         for (upstream_output_id, downstream_ids) in output_map {
             let mut senders = Vec::new();
             for downstream_id in downstream_ids {
                 debug!(upstream_id = %upstream_id.component_id(), %upstream_output_id, downstream_id = %downstream_id.component_id(), "Adding dispatcher output.");
+                let gate = edge_gate(edge_conditions, &upstream_id, &upstream_output_id, &downstream_id);
                 let sender = self.get_or_create_events_sender(downstream_id);
-                senders.push(sender);
+                senders.push((sender, gate));
             }
 
             let dispatcher = self.get_or_create_events_dispatcher(upstream_id.clone());
             dispatcher.add_output(upstream_output_id.clone())?;
 
-            for sender in senders {
-                dispatcher.attach_sender_to_output(&upstream_output_id, sender)?;
+            for (sender, gate) in senders {
+                dispatcher.attach_gated_sender_to_output(&upstream_output_id, sender, gate)?;
             }
         }
 
@@ -483,20 +517,22 @@ impl ComponentInterconnects {
 
     fn generate_payload_interconnect(
         &mut self, upstream_id: TypedComponentId, output_map: HashMap<OutputName, Vec<TypedComponentId>>,
+        edge_conditions: &EdgeConditions,
     ) -> Result<(), GenericError> {
         for (upstream_output_id, downstream_ids) in output_map {
             let mut senders = Vec::new();
             for downstream_id in downstream_ids {
                 debug!(upstream_id = %upstream_id.component_id(), %upstream_output_id, downstream_id = %downstream_id.component_id(), "Adding dispatcher output.");
+                let gate = edge_gate(edge_conditions, &upstream_id, &upstream_output_id, &downstream_id);
                 let sender = self.get_or_create_payloads_sender(downstream_id);
-                senders.push(sender);
+                senders.push((sender, gate));
             }
 
             let dispatcher = self.get_or_create_payloads_dispatcher(upstream_id.clone());
             dispatcher.add_output(upstream_output_id.clone())?;
 
-            for sender in senders {
-                dispatcher.attach_sender_to_output(&upstream_output_id, sender)?;
+            for (sender, gate) in senders {
+                dispatcher.attach_gated_sender_to_output(&upstream_output_id, sender, gate)?;
             }
         }
 
@@ -566,6 +602,18 @@ impl ComponentInterconnects {
     }
 }
 
+/// Returns the gate for the connection from `upstream_id`'s `output` to `downstream_id`, if its condition is dynamic.
+fn edge_gate(
+    edge_conditions: &EdgeConditions, upstream_id: &TypedComponentId, output: &OutputName,
+    downstream_id: &TypedComponentId,
+) -> Option<EdgeGate> {
+    edge_conditions.gate(&EdgeKey {
+        upstream: upstream_id.component_id().clone(),
+        output: output.clone(),
+        downstream: downstream_id.component_id().clone(),
+    })
+}
+
 fn build_consumer_pair<T: Dispatchable>(
     component_context: ComponentContext, interconnect_capacity: NonZeroUsize,
 ) -> (mpsc::Sender<T>, Consumer<T>) {
@@ -621,10 +669,12 @@ fn build_health_handle(
 mod tests {
     use std::num::NonZeroUsize;
 
+    use futures::StreamExt as _;
+
     use super::*;
-    use crate::data_model::event::EventType;
-    use crate::data_model::payload::PayloadType;
-    use crate::topology::graph::Graph;
+    use crate::data_model::event::{metric::Metric, Event, EventType};
+    use crate::data_model::payload::{Payload, PayloadMetadata, PayloadType, RawPayload};
+    use crate::topology::{graph::Graph, ComponentId};
 
     #[test]
     fn component_interconnects_adds_output_before_attaching() {
@@ -646,8 +696,105 @@ mod tests {
         // Ensure we can properly build the interconnects for them, which requires adding the outputs
         // before attaching senders to them:
         let interconnect_capacity = NonZeroUsize::new(10).unwrap();
-        let _ = ComponentInterconnects::from_graph(interconnect_capacity, &topology_id, &graph)
-            .expect("should build interconnects successfully");
+        let _ =
+            ComponentInterconnects::from_graph(interconnect_capacity, &topology_id, &graph, &EdgeConditions::default())
+                .expect("should build interconnects successfully");
+    }
+
+    fn component_id(id: &str) -> ComponentId {
+        ComponentId::try_from(id).unwrap()
+    }
+
+    fn edge_key(upstream: &str, downstream: &str) -> EdgeKey {
+        EdgeKey {
+            upstream: component_id(upstream),
+            output: OutputName::Default,
+            downstream: component_id(downstream),
+        }
+    }
+
+    fn metric_buffer(name: &'static str) -> EventsBuffer {
+        let mut buffer = EventsBuffer::default();
+        assert!(buffer.try_push(Event::Metric(Metric::counter(name, 1.0))).is_none());
+        buffer
+    }
+
+    fn metric_name(buffer: EventsBuffer) -> String {
+        let event = buffer.into_iter().next().expect("buffer should have an event");
+        event.try_into_metric().unwrap().context().name().to_string()
+    }
+
+    fn raw_payload(data: &[u8]) -> Payload {
+        Payload::Raw(RawPayload::new(PayloadMetadata::from_event_count(1), data.to_vec()))
+    }
+
+    fn raw_payload_data(payload: Payload) -> Vec<u8> {
+        match payload {
+            Payload::Raw(raw) => raw.into_inner().1,
+            _ => panic!("expected raw payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn component_interconnects_attach_gates_for_dynamic_conditions() {
+        // Connections with a dynamic condition only receive items while their gate is active, for both event and
+        // payload connections. Connections without a condition always receive items.
+        let mut graph = Graph::default();
+        let topology_id = SubsystemIdentifier::from_segments(["test"]);
+        graph
+            .with_source("source", EventType::Metric)
+            .with_destination("always", EventType::Metric)
+            .with_destination("gated", EventType::Metric)
+            .with_encoder("encoder", EventType::Metric, PayloadType::Raw)
+            .with_forwarder("forwarder", PayloadType::Raw)
+            .with_edge("source", "always")
+            .with_edge("source", "gated")
+            .with_edge("source", "encoder")
+            .with_edge("encoder", "forwarder");
+
+        let mut edge_conditions = EdgeConditions::default();
+        edge_conditions.insert(edge_key("source", "gated"), false, futures::stream::empty().boxed());
+        edge_conditions.insert(
+            edge_key("encoder", "forwarder"),
+            false,
+            futures::stream::empty().boxed(),
+        );
+        let event_gate = edge_conditions.gate(&edge_key("source", "gated")).unwrap();
+        let payload_gate = edge_conditions.gate(&edge_key("encoder", "forwarder")).unwrap();
+
+        let capacity = NonZeroUsize::new(4).unwrap();
+        let mut interconnects =
+            ComponentInterconnects::from_graph(capacity, &topology_id, &graph, &edge_conditions).unwrap();
+        let events_out = interconnects
+            .take_events_dispatcher(&ComponentContext::source(&topology_id, component_id("source")))
+            .unwrap();
+        let mut always_in = interconnects
+            .take_events_consumer(&ComponentContext::destination(&topology_id, component_id("always")))
+            .unwrap();
+        let mut gated_in = interconnects
+            .take_events_consumer(&ComponentContext::destination(&topology_id, component_id("gated")))
+            .unwrap();
+        let payloads_out = interconnects
+            .take_payloads_dispatcher(&ComponentContext::encoder(&topology_id, component_id("encoder")))
+            .unwrap();
+        let mut forwarder_in = interconnects
+            .take_payloads_consumer(&ComponentContext::forwarder(&topology_id, component_id("forwarder")))
+            .unwrap();
+
+        // While the gates are inactive, only the ungated connection receives anything.
+        events_out.dispatch(metric_buffer("first")).await.unwrap();
+        payloads_out.dispatch(raw_payload(b"first")).await.unwrap();
+
+        // Once the gates are active, every connection receives items.
+        event_gate.set(true);
+        payload_gate.set(true);
+        events_out.dispatch(metric_buffer("second")).await.unwrap();
+        payloads_out.dispatch(raw_payload(b"second")).await.unwrap();
+
+        assert_eq!(metric_name(always_in.next().await.unwrap()), "first");
+        assert_eq!(metric_name(always_in.next().await.unwrap()), "second");
+        assert_eq!(metric_name(gated_in.next().await.unwrap()), "second");
+        assert_eq!(raw_payload_data(forwarder_in.next().await.unwrap()), b"second");
     }
 
     /// Builds a component-less `BuiltTopology` carrying only the given worker-pool configuration, for exercising
@@ -668,6 +815,7 @@ mod tests {
             ResourceGroupToken::root(),
             NonZeroUsize::new(128).unwrap(),
             worker_pool_config,
+            EdgeConditions::default(),
         )
     }
 

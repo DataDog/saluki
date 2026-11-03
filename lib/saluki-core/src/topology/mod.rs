@@ -11,6 +11,9 @@ pub use self::blueprint::{BlueprintError, TopologyBlueprint, TopologyReady};
 
 mod built;
 
+pub(crate) mod condition;
+pub use self::condition::EdgeCondition;
+
 pub(crate) mod component_worker;
 
 mod context;

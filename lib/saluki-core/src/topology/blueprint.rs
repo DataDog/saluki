@@ -1,4 +1,11 @@
-use std::{collections::HashMap, future::Future, num::NonZeroUsize, pin::Pin, sync::Mutex, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    future::Future,
+    num::NonZeroUsize,
+    pin::Pin,
+    sync::Mutex,
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use saluki_common::resource_tracking::Track as _;
@@ -10,10 +17,11 @@ use tracing::info;
 
 use super::{
     built::{BuiltTopology, WorkerPoolConfiguration},
+    condition::{ConditionKind, EdgeCondition, EdgeConditions, EdgeKey},
     graph::{Graph, GraphError},
-    ComponentId,
+    ComponentId, ComponentOutputId,
 };
-use crate::accounting::{ComponentRegistry, MemoryLimiter, UsageExpr};
+use crate::accounting::{ComponentRegistry, MemoryBounds, MemoryLimiter, UsageExpr};
 use crate::{
     components::{
         decoders::DecoderBuilder, destinations::DestinationBuilder, encoders::EncoderBuilder,
@@ -87,6 +95,12 @@ struct TopologyBuildState {
     worker_pool_config: WorkerPoolConfiguration,
     environment_ready: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
     ready_signal: Option<oneshot::Sender<()>>,
+    /// Components that lost an inbound connection because its condition was always false.
+    folded_targets: HashSet<ComponentId>,
+    /// Components that will be pruned when the topology is built, and whose memory bounds are cleared.
+    prunable_components: HashMap<ComponentId, ComponentType>,
+    /// Connections whose condition is resolved at runtime.
+    edge_conditions: EdgeConditions,
 }
 
 impl TopologyBlueprint {
@@ -111,6 +125,9 @@ impl TopologyBlueprint {
             worker_pool_config: WorkerPoolConfiguration::Dedicated,
             environment_ready: None,
             ready_signal: None,
+            folded_targets: HashSet::new(),
+            prunable_components: HashMap::new(),
+            edge_conditions: EdgeConditions::default(),
         };
 
         Self {
@@ -391,6 +408,36 @@ impl TopologyBlueprint {
         self.state_mut().connect_components_in_order(ordered_component_ids)?;
         Ok(self)
     }
+
+    /// Connects a component output to a downstream component, sending events over the connection only while
+    /// `condition` is true.
+    ///
+    /// A condition that's always false removes the connection when the topology is built. If the downstream component
+    /// is left without any inbound connections as a result, it's removed as well, along with any components that are
+    /// only reachable through it: they're never built or spawned.
+    ///
+    /// A condition that changes at runtime keeps the connection, but events are only sent to the downstream component
+    /// while the condition is true. Events dispatched while the condition is false are dropped for this connection
+    /// only, and aren't replayed when the condition becomes true.
+    ///
+    /// # Errors
+    ///
+    /// If either component ID is invalid or doesn't exist, or if the data types of the two components are incompatible,
+    /// an error is returned.
+    pub fn connect_components_when<F, T>(
+        &mut self, upstream_output_component_id: F, downstream_component_id: T, condition: EdgeCondition,
+    ) -> Result<&mut Self, GenericError>
+    where
+        F: AsRef<str>,
+        T: AsRef<str>,
+    {
+        self.state_mut().connect_components_when(
+            upstream_output_component_id.as_ref(),
+            downstream_component_id.as_ref(),
+            condition,
+        )?;
+        Ok(self)
+    }
 }
 
 /// A handle for awaiting the readiness of a running topology.
@@ -428,7 +475,62 @@ impl TopologyBuildState {
         self.recalculate_bounds();
     }
 
+    /// Clears the memory bounds of components that will be pruned when the topology is built.
+    ///
+    /// Memory bounds are verified before the topology is built, so pruning is simulated here, on a copy of the graph,
+    /// whenever the bounds are recalculated. A component whose bounds were cleared has them specified again if a later
+    /// connection means it will no longer be pruned.
+    fn sync_prunable_component_bounds(&mut self) {
+        let prunable: HashMap<_, _> = self
+            .graph
+            .clone()
+            .prune_components_without_inputs(self.folded_targets.iter().cloned())
+            .into_iter()
+            .collect();
+
+        for (id, component_type) in &prunable {
+            if !self.prunable_components.contains_key(id) {
+                let identity = self.component_identity(*component_type, id);
+                self.component_registry.bounds_builder(&identity).reset();
+            }
+        }
+        for (id, component_type) in &self.prunable_components {
+            if !prunable.contains_key(id) {
+                if let Some(bounds) = self.component_bounds(id, *component_type) {
+                    let identity = self.component_identity(*component_type, id);
+                    bounds.specify_bounds(&mut self.component_registry.bounds_builder(&identity));
+                }
+            }
+        }
+
+        self.prunable_components = prunable;
+    }
+
+    fn component_bounds(&self, id: &ComponentId, component_type: ComponentType) -> Option<&dyn MemoryBounds> {
+        match component_type {
+            ComponentType::Source => self.sources.get(id).map(|b| b.as_ref() as &dyn MemoryBounds),
+            ComponentType::Relay => self.relays.get(id).map(|b| b.as_ref() as &dyn MemoryBounds),
+            ComponentType::Decoder => self.decoders.get(id).map(|b| b.as_ref() as &dyn MemoryBounds),
+            ComponentType::Transform => self.transforms.get(id).map(|b| b.as_ref() as &dyn MemoryBounds),
+            ComponentType::Destination => self.destinations.get(id).map(|b| b.as_ref() as &dyn MemoryBounds),
+            ComponentType::Encoder => self.encoders.get(id).map(|b| b.as_ref() as &dyn MemoryBounds),
+            ComponentType::Forwarder => self.forwarders.get(id).map(|b| b.as_ref() as &dyn MemoryBounds),
+        }
+    }
+
     fn recalculate_bounds(&mut self) {
+        self.sync_prunable_component_bounds();
+        let live_transforms = self
+            .transforms
+            .keys()
+            .filter(|id| !self.prunable_components.contains_key(*id))
+            .count();
+        let live_destinations = self
+            .destinations
+            .keys()
+            .filter(|id| !self.prunable_components.contains_key(*id))
+            .count();
+
         let interconnect_capacity = self.interconnect_capacity.get();
 
         let mut bounds_builder = self.component_registry.bounds_builder(&self.topology_id);
@@ -439,7 +541,7 @@ impl TopologyBuildState {
         //
         // This deals with the minimum size of the interconnects themselves, since they're bounded and thus allocated
         // up-front. Every non-source component has an interconnect.
-        let total_interconnect_capacity = interconnect_capacity * (self.transforms.len() + self.destinations.len());
+        let total_interconnect_capacity = interconnect_capacity * (live_transforms + live_destinations);
         bounds_builder
             .minimum()
             .with_array::<EventsBuffer>("events", total_interconnect_capacity);
@@ -454,10 +556,10 @@ impl TopologyBuildState {
         //
         // TODO: Somewhat fragile. Need to revisit this.
         // TODO: Add a firm subitem for payloads when we have payload interconnects.
-        let max_in_flight_event_buffers = ((self.transforms.len() + self.destinations.len()) * interconnect_capacity)
+        let max_in_flight_event_buffers = ((live_transforms + live_destinations) * interconnect_capacity)
             + self.sources.len()
             + self.decoders.len()
-            + self.transforms.len();
+            + live_transforms;
 
         bounds_builder
             .firm()
@@ -636,6 +738,9 @@ impl TopologyBuildState {
             }
         }
 
+        // A new connection can give an input to a component that would otherwise have been pruned.
+        self.recalculate_bounds();
+
         Ok(())
     }
 
@@ -667,7 +772,68 @@ impl TopologyBuildState {
             ));
         }
 
+        // A new connection can give an input to a component that would otherwise have been pruned.
+        self.recalculate_bounds();
+
         Ok(())
+    }
+
+    fn connect_components_when(
+        &mut self, upstream_output_component_id: &str, downstream_component_id: &str, condition: EdgeCondition,
+    ) -> Result<(), GenericError> {
+        self.graph
+            .add_edge(upstream_output_component_id, downstream_component_id)
+            .error_context("Failed to add component connection to topology graph.")?;
+
+        // Adding the edge validated both identifiers.
+        let upstream_output = ComponentOutputId::try_from(upstream_output_component_id)
+            .map_err(|e| generic_error!("Invalid component output ID '{}': {}", upstream_output_component_id, e))?;
+        let downstream = ComponentId::try_from(downstream_component_id)
+            .map_err(|e| generic_error!("Invalid component ID '{}': {}", downstream_component_id, e))?;
+
+        match condition.0 {
+            ConditionKind::Fixed(true) => {}
+            ConditionKind::Fixed(false) => {
+                // The connection can never be active, so remove it now. The downstream component is pruned when the
+                // topology is built if this leaves it without inputs.
+                self.graph.remove_edge(&upstream_output, &downstream);
+                self.folded_targets.insert(downstream);
+            }
+            ConditionKind::Dynamic { initial, updates } => {
+                let key = EdgeKey {
+                    upstream: upstream_output.component_id(),
+                    output: upstream_output.output(),
+                    downstream,
+                };
+                self.edge_conditions.insert(key, initial, updates);
+            }
+        }
+
+        self.recalculate_bounds();
+
+        Ok(())
+    }
+
+    /// Removes components left without inputs because their inbound connections had conditions that were always false.
+    ///
+    /// Removed components are never built or spawned. Their memory bounds were already cleared when the connections
+    /// were made.
+    fn prune_folded_components(&mut self) {
+        let folded_targets = std::mem::take(&mut self.folded_targets);
+        for (id, component_type) in self.graph.prune_components_without_inputs(folded_targets) {
+            match component_type {
+                ComponentType::Source => drop(self.sources.remove(&id)),
+                ComponentType::Relay => drop(self.relays.remove(&id)),
+                ComponentType::Decoder => drop(self.decoders.remove(&id)),
+                ComponentType::Transform => drop(self.transforms.remove(&id)),
+                ComponentType::Destination => drop(self.destinations.remove(&id)),
+                ComponentType::Encoder => drop(self.encoders.remove(&id)),
+                ComponentType::Forwarder => drop(self.forwarders.remove(&id)),
+            }
+            self.edge_conditions.remove_component(&id);
+
+            info!(component_id = %id, component_type = component_type.as_str(), "Removed component with no active inputs.");
+        }
     }
 
     /// Builds the topology.
@@ -675,7 +841,10 @@ impl TopologyBuildState {
     /// # Errors
     ///
     /// If any of the components couldn't be built, an error is returned.
-    async fn build(self, name: String, resource_registry: &ResourceRegistry) -> Result<BuiltTopology, GenericError> {
+    async fn build(
+        mut self, name: String, resource_registry: &ResourceRegistry,
+    ) -> Result<BuiltTopology, GenericError> {
+        self.prune_folded_components();
         self.graph.validate().error_context("Failed to build topology graph.")?;
 
         let mut component_scopes = HashMap::new();
@@ -844,6 +1013,7 @@ impl TopologyBuildState {
             topology_token,
             self.interconnect_capacity,
             self.worker_pool_config,
+            self.edge_conditions,
         ))
     }
 }
@@ -989,7 +1159,7 @@ mod tests {
         support::SubsystemIdentifier,
         topology::{
             test_util::{TestDestinationBuilder, TestSourceBuilder, TestTransformBuilder},
-            OutputDefinition,
+            EdgeCondition, OutputDefinition,
         },
     };
 
@@ -1607,6 +1777,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn topology_with_dynamic_condition_shuts_down_cleanly() {
+        // A dynamic condition is driven by a worker that runs alongside the components. It has to stop when the
+        // topology shuts down, even though its condition's updates never end.
+        let (mut blueprint, source_started) = long_running_blueprint(None);
+        let (condition_tx, condition_rx) = tokio::sync::watch::channel(false);
+        blueprint
+            .add_destination(
+                "observer",
+                DrainingDestinationBuilder {
+                    input_event_ty: EventType::EventD,
+                },
+            )
+            .expect("should not fail to add destination")
+            .connect_components_when("source", "observer", EdgeCondition::from_watch(condition_rx))
+            .expect("should not fail to connect components");
+        let (tx, handle) = spawn_supervised_blueprint(blueprint);
+
+        wait_until("the source has started", || source_started.load(Ordering::SeqCst) == 1).await;
+        condition_tx
+            .send(true)
+            .expect("condition should still be watched while the topology runs");
+        tx.send(()).expect("should send shutdown signal");
+
+        let result = join_topology(handle).await;
+        assert!(result.is_ok(), "topology should shut down cleanly, got: {:?}", result);
+    }
+
+    #[tokio::test]
     async fn component_can_spawn_dynamic_child_via_spawn_handle() {
         // The source spawns a dynamic child through its context's spawn handle. The child records that it started and
         // then runs until torn down. We verify the child actually ran, then shut the topology down cleanly. The dynamic
@@ -1832,6 +2030,113 @@ mod tests {
                 "component worker process name must match the canonical identity"
             );
         }
+    }
+
+    /// Adds an `observer` destination to a blueprint from [`blueprint_with_components`], and connects the primary path.
+    fn blueprint_with_observer() -> TopologyBlueprint {
+        let mut blueprint = blueprint_with_components();
+        blueprint
+            .add_destination("observer", TestDestinationBuilder::with_input_type(EventType::EventD))
+            .unwrap()
+            .connect_components_in_order(["source", "transform", "destination"])
+            .unwrap();
+        blueprint
+    }
+
+    fn component_id(id: &str) -> ComponentId {
+        ComponentId::try_from(id).unwrap()
+    }
+
+    fn firm_bound_bytes(blueprint: &TopologyBlueprint) -> usize {
+        let guard = blueprint.build_state.lock().unwrap();
+        guard
+            .as_ref()
+            .unwrap()
+            .component_registry
+            .as_bounds()
+            .total_firm_limit_bytes()
+    }
+
+    #[test]
+    fn connection_with_false_condition_prunes_downstream_component() {
+        // A connection whose condition is always false is removed, and the observer it was the only input of is pruned
+        // before anything is built. Its share of the memory bounds is removed as soon as the connection is made, since
+        // bounds are verified before the topology is built.
+        let mut blueprint = blueprint_with_observer();
+        let firm_before = firm_bound_bytes(&blueprint);
+        blueprint
+            .connect_components_when("source", "observer", EdgeCondition::fixed(false))
+            .unwrap();
+        let firm_after = firm_bound_bytes(&blueprint);
+        assert!(firm_after < firm_before);
+
+        let mut guard = blueprint.build_state.lock().unwrap();
+        let state = guard.as_mut().unwrap();
+        state.prune_folded_components();
+
+        assert!(!state.destinations.contains_key(&component_id("observer")));
+        assert!(state.destinations.contains_key(&component_id("destination")));
+        assert!(state.graph.validate().is_ok());
+        assert_eq!(
+            state.component_registry.as_bounds().total_firm_limit_bytes(),
+            firm_after
+        );
+    }
+
+    #[test]
+    fn later_connection_keeps_folded_component() {
+        // A component that lost a connection to a false condition isn't pruned if another connection gives it an input,
+        // and its share of the memory bounds is restored.
+        let mut blueprint = blueprint_with_observer();
+        blueprint
+            .connect_components_when("source", "observer", EdgeCondition::fixed(false))
+            .unwrap();
+        let firm_folded = firm_bound_bytes(&blueprint);
+        blueprint.connect_components("transform", "observer").unwrap();
+        assert!(firm_bound_bytes(&blueprint) > firm_folded);
+
+        let mut guard = blueprint.build_state.lock().unwrap();
+        let state = guard.as_mut().unwrap();
+        state.prune_folded_components();
+
+        assert!(state.destinations.contains_key(&component_id("observer")));
+        assert!(state.graph.validate().is_ok());
+    }
+
+    #[test]
+    fn connection_with_true_condition_is_a_normal_connection() {
+        let mut blueprint = blueprint_with_observer();
+        blueprint
+            .connect_components_when("source", "observer", EdgeCondition::fixed(true))
+            .unwrap();
+
+        let mut guard = blueprint.build_state.lock().unwrap();
+        let state = guard.as_mut().unwrap();
+        state.prune_folded_components();
+
+        assert!(state.destinations.contains_key(&component_id("observer")));
+        assert!(state.edge_conditions.is_empty());
+        assert!(state.graph.validate().is_ok());
+    }
+
+    #[test]
+    fn connection_with_dynamic_condition_keeps_downstream_component() {
+        let mut blueprint = blueprint_with_observer();
+        blueprint
+            .connect_components_when(
+                "source",
+                "observer",
+                EdgeCondition::dynamic(false, futures::stream::empty()),
+            )
+            .unwrap();
+
+        let mut guard = blueprint.build_state.lock().unwrap();
+        let state = guard.as_mut().unwrap();
+        state.prune_folded_components();
+
+        assert!(state.destinations.contains_key(&component_id("observer")));
+        assert!(!state.edge_conditions.is_empty());
+        assert!(state.graph.validate().is_ok());
     }
 
     #[test]
