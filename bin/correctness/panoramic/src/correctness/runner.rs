@@ -644,18 +644,19 @@ mod tests {
     #[tokio::test]
     async fn a_stalled_collection_stops_when_the_test_is_cancelled() {
         install_crypto_provider();
-        let intake = MockIntake::unresponsive().await;
+        let (intake, connected) = MockIntake::unresponsive_with_connection_signal().await;
         let test_token = CancellationToken::new();
         let tasks = CaseTasks::new(&test_token);
         let port = intake.port();
         let collected = run_in_background(&tasks, &Span::none(), async move {
             CollectedData::collect(&IntakeClient::new(port)).await
         });
-        let canceller = test_token.clone();
-        tokio::spawn(async move {
-            sleep(Duration::from_millis(100)).await;
-            canceller.cancel();
-        });
+        // A timed sleep could cancel before collection reached the intake. Wait for an accepted connection instead.
+        timeout(BOUND, connected)
+            .await
+            .expect("the collection should reach the intake within the bound")
+            .expect("the intake should signal an accepted connection");
+        test_token.cancel();
 
         let collected = timeout(BOUND, collected)
             .await

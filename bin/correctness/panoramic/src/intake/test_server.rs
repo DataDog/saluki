@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 /// Installs the process-wide crypto provider, which building a `reqwest` client needs and `main` installs at startup.
@@ -72,14 +73,25 @@ impl MockIntake {
     /// With Tokio's clock paused, requests stay pending as time advances to the next timer, making timeout tests
     /// independent of response timing.
     pub(crate) async fn unresponsive() -> Self {
-        Self::spawn(|listener, connections| async move {
+        Self::unresponsive_with_connection_signal().await.0
+    }
+
+    /// Holds connections without answering and signals when the first connection is accepted.
+    pub(crate) async fn unresponsive_with_connection_signal() -> (Self, oneshot::Receiver<()>) {
+        let (connected_tx, connected_rx) = oneshot::channel();
+        let server = Self::spawn(move |listener, connections| async move {
+            let mut connected_tx = Some(connected_tx);
             let mut held = Vec::new();
             while let Ok((stream, _)) = listener.accept().await {
                 connections.fetch_add(1, Ordering::SeqCst);
                 held.push(stream);
+                if let Some(connected_tx) = connected_tx.take() {
+                    let _ = connected_tx.send(());
+                }
             }
         })
-        .await
+        .await;
+        (server, connected_rx)
     }
 
     async fn spawn<F, Fut>(serve: F) -> Self
