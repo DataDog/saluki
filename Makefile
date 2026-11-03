@@ -86,9 +86,12 @@ export WINDOWS_CROSS_TARGET ?= x86_64-pc-windows-msvc
 export WINDOWS_CROSS_LLVM_BIN ?= /opt/homebrew/opt/llvm/bin
 export WINDOWS_CROSS_CARGO_ARGS ?= --package agent-data-plane
 
-# Version of source repositories (Git tag) for vendored Protocol Buffers definitions.
-export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.81.x
-export PROTOBUF_SRC_REPO_AGENT_PAYLOAD ?= v5.0.164
+# Version of source repositories (Git tag, branch, or full commit SHA) for vendored Protocol Buffers definitions.
+#
+# The Datadog Agent is pinned to a commit on `main` until a release branch includes DataDog/datadog-agent#58951 (the
+# optional `process_instance_id` in remote-agent registration). Move this to that release branch when it exists.
+export PROTOBUF_SRC_REPO_DD_AGENT ?= b13554d0c66277f2f30ee190c2540d1d872ce14a
+export PROTOBUF_SRC_REPO_AGENT_PAYLOAD ?= v5.0.215
 export PROTOBUF_SRC_REPO_CONTAINERD ?= v2.2.0
 export PROTOBUF_SRC_REPO_SKETCHES_GO ?= v1.4.7
 
