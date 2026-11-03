@@ -8,7 +8,7 @@ use bollard::{
 use futures::TryStreamExt as _;
 use panoramic_core::{
     probe::AttemptLimits,
-    record::{AssertionResult, AssertionStatus},
+    record::{AssertionStatus, StepReport},
 };
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::process::Command;
@@ -103,14 +103,13 @@ impl Action for TargetExecAction {
         format!("Run command in target environment: {}", self.command.join(" "))
     }
 
-    async fn execute(&self, ctx: &AssertionContext) -> AssertionResult {
+    async fn execute(&self, ctx: &AssertionContext) -> StepReport {
         let started = Instant::now();
         let diagnostics = CommandDiagnostics::full(&self.command);
         let result = execute_target_command(ctx, &self.command, &diagnostics, self.timeout, None).await;
 
         match result {
-            Ok(output) => AssertionResult {
-                name: self.name().to_string(),
+            Ok(output) => StepReport {
                 status: AssertionStatus::Passed,
                 message: if output.trim().is_empty() {
                     self.description()
@@ -119,8 +118,7 @@ impl Action for TargetExecAction {
                 },
                 duration: started.elapsed(),
             },
-            Err(e) => AssertionResult {
-                name: self.name().to_string(),
+            Err(e) => StepReport {
                 status: e.status(),
                 message: e.to_string(),
                 duration: started.elapsed(),

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use panoramic_core::record::{AssertionResult, AssertionStatus};
+use panoramic_core::record::{AssertionStatus, StepReport};
 use saluki_error::generic_error;
 use tokio::time::Instant;
 
@@ -39,7 +39,7 @@ impl DogstatsdReplayAction {
     /// An earlier replay that reached ADP keeps the step `failed`, even when this error is the harness's.
     fn stats_failed(
         &self, started: Instant, error: CommandError, replay_ran: bool, last_missing_metrics: &[String],
-    ) -> AssertionResult {
+    ) -> StepReport {
         let status = if replay_ran {
             AssertionStatus::Failed
         } else {
@@ -52,7 +52,7 @@ impl DogstatsdReplayAction {
                 last_missing_metrics.join(", ")
             ));
         }
-        AssertionResult::new(self.name(), started, status, message)
+        StepReport::new(started, status, message)
     }
 }
 
@@ -66,7 +66,7 @@ impl Action for DogstatsdReplayAction {
         "Capture and replay DogStatsD traffic through the tested ADP process".to_string()
     }
 
-    async fn execute(&self, ctx: &AssertionContext) -> AssertionResult {
+    async fn execute(&self, ctx: &AssertionContext) -> StepReport {
         // Keep `ActionConfig::budget` in sync with this command and wait sequence.
         let started = Instant::now();
         let adp_cli = &ctx.adp_cli_command;
@@ -90,8 +90,7 @@ impl Action for DogstatsdReplayAction {
         {
             Ok(output) => output,
             Err(error) => {
-                return AssertionResult::new(
-                    self.name(),
+                return StepReport::new(
                     started,
                     error.status(),
                     format!("Failed to start DogStatsD capture: {error}"),
@@ -100,9 +99,7 @@ impl Action for DogstatsdReplayAction {
         };
         let capture_path = match capture_path_from_output(&capture_output) {
             Ok(path) => path,
-            Err(error) => {
-                return AssertionResult::new(self.name(), started, AssertionStatus::Failed, error.to_string())
-            }
+            Err(error) => return StepReport::new(started, AssertionStatus::Failed, error.to_string()),
         };
 
         if let Err(error) = execute_target_command(
@@ -114,8 +111,7 @@ impl Action for DogstatsdReplayAction {
         )
         .await
         {
-            return AssertionResult::new(
-                self.name(),
+            return StepReport::new(
                 started,
                 error.status(),
                 format!("Failed to send DogStatsD traffic for capture: {error}"),
@@ -190,15 +186,9 @@ impl Action for DogstatsdReplayAction {
                     AssertionStatus::Errored
                 };
                 if let Some(error) = last_replay_error {
-                    return AssertionResult::new(
-                        self.name(),
-                        started,
-                        status,
-                        format!("Failed to replay DogStatsD capture: {error}"),
-                    );
+                    return StepReport::new(started, status, format!("Failed to replay DogStatsD capture: {error}"));
                 }
-                return AssertionResult::new(
-                    self.name(),
+                return StepReport::new(
                     started,
                     status,
                     format!(
@@ -210,8 +200,7 @@ impl Action for DogstatsdReplayAction {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
 
-        AssertionResult {
-            name: self.name().to_string(),
+        StepReport {
             status: AssertionStatus::Passed,
             message: self.description(),
             duration: started.elapsed(),

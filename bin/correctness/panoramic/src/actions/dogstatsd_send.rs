@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use panoramic_core::record::{AssertionResult, AssertionStatus};
+use panoramic_core::record::{AssertionStatus, StepReport};
 use tokio::net::UdpSocket;
 use tokio::time::Instant;
 
@@ -33,7 +33,7 @@ impl Action for DogstatsdSendAction {
         format!("Send one DogStatsD datagram to port {}/udp.", self.port)
     }
 
-    async fn execute(&self, ctx: &AssertionContext) -> AssertionResult {
+    async fn execute(&self, ctx: &AssertionContext) -> StepReport {
         let started = Instant::now();
 
         // Windows containers keep their ports internal, and the runtime hands out identity port
@@ -41,8 +41,7 @@ impl Action for DogstatsdSendAction {
         // listener, so refuse instead of passing. Reaching a Windows listener needs an
         // in-container send, which we don't support yet.
         if ctx.target_is_windows() {
-            return AssertionResult::new(
-                self.name(),
+            return StepReport::new(
                 started,
                 AssertionStatus::Errored,
                 "Sending DogStatsD datagrams to a Windows target is not supported.",
@@ -52,8 +51,7 @@ impl Action for DogstatsdSendAction {
         // Docker publishes the target container's DogStatsD port on the test runner.
         let mapping_key = format!("{}/udp", self.port);
         let Some(published_port) = ctx.port_mappings.get(&mapping_key).copied() else {
-            return AssertionResult::new(
-                self.name(),
+            return StepReport::new(
                 started,
                 AssertionStatus::Errored,
                 format!(
@@ -72,14 +70,12 @@ impl Action for DogstatsdSendAction {
         };
 
         match tokio::time::timeout(self.timeout, send).await {
-            Ok(Ok(sent)) => AssertionResult::new(
-                self.name(),
+            Ok(Ok(sent)) => StepReport::new(
                 started,
                 AssertionStatus::Passed,
                 format!("Sent {} bytes to published port {}.", sent, published_port),
             ),
-            Ok(Err(error)) => AssertionResult::new(
-                self.name(),
+            Ok(Err(error)) => StepReport::new(
                 started,
                 AssertionStatus::Errored,
                 format!(
@@ -87,8 +83,7 @@ impl Action for DogstatsdSendAction {
                     published_port, error
                 ),
             ),
-            Err(_) => AssertionResult::new(
-                self.name(),
+            Err(_) => StepReport::new(
                 started,
                 AssertionStatus::Errored,
                 format!("Timed out sending datagram to published port {}.", published_port),

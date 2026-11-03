@@ -1,4 +1,4 @@
-use panoramic_core::record::AssertionResult;
+use panoramic_core::record::StepReport;
 use saluki_error::GenericError;
 
 use crate::assertions::AssertionContext;
@@ -27,11 +27,11 @@ pub trait Action: Send + Sync {
     /// Returns a human-readable description of what this action does.
     fn description(&self) -> String;
 
-    /// Executes the action and returns a result shaped like an assertion result.
+    /// Executes the action and reports its status, message and duration.
     ///
     /// Classify failures using [`AssertionStatus`](panoramic_core::record::AssertionStatus). Release resources on drop:
     /// the step driver may drop this future on cancellation or a budget overrun.
-    async fn execute(&self, ctx: &AssertionContext) -> AssertionResult;
+    async fn execute(&self, ctx: &AssertionContext) -> StepReport;
 }
 
 /// Creates an action from its configuration.

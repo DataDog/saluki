@@ -11,17 +11,15 @@ use std::time::Duration;
 /// the host-process path.
 pub type DockerExitCodeCell = Arc<OnceLock<i64>>;
 
-use futures::future;
-use panoramic_core::deadline::{Budget, Deadline};
+use panoramic_core::case::ProcedureNode;
+use panoramic_core::deadline::Deadline;
 use panoramic_core::probe::PROBE_TIMEOUT;
-use panoramic_core::record::{
-    step_label, AssertionResult, AssertionStatus, CaseRecord, RunningStep, StepResult, StepStatus, Verdict,
-};
+use panoramic_core::procedure::{Member, Procedure};
+use panoramic_core::record::{AssertionResult, AssertionStatus, CaseRecord, StepReport, Verdict};
 use panoramic_core::result::{ErrorKind, TestResult};
 use saluki_error::GenericError;
-use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error};
+use tracing::error;
 
 use crate::actions::Action;
 use crate::config::{AssertionConfig, AssertionStep, LogStream};
@@ -363,15 +361,10 @@ pub fn create_assertion(config: &AssertionConfig) -> Result<Box<dyn Assertion>, 
     }
 }
 
-/// Grace period for a step to report its own result after its deadline.
-const STEP_SLACK: Duration = Duration::from_secs(10);
-
-/// Runs the procedure from `test_case` against `ctx`, recording each step in `record`.
+/// Runs the procedure from `test_case` against `ctx` through core's procedure driver.
 ///
-/// Builds all steps before execution; a build error records a setup failure. Steps run in order, with parallel
-/// members running together. The driver stops on cancellation or after a non-passing step or parallel block, leaving
-/// later steps `not_run`. Completion or fail-fast records [`Verdict::Procedure`]; cancellation or interruption leaves
-/// the outcome to the runner.
+/// A build error records a setup failure. Core records each step, runs parallel members together, and enforces
+/// cancellation, budgets and fail-fast at block boundaries.
 ///
 /// Used by both the docker and `mac` integration runners; the only thing that differs
 /// between runtimes is how `ctx` is constructed (port mappings come from a Docker driver vs.
@@ -380,7 +373,7 @@ const STEP_SLACK: Duration = Duration::from_secs(10);
 pub(crate) async fn run_assertion_steps(
     test_case: &IntegrationTestCase, ctx: &AssertionContext, case: Deadline, record: &CaseRecord,
 ) {
-    let procedure = match build_procedure(&test_case.procedure) {
+    let procedure = match build_procedure(&test_case.procedure, ctx) {
         Ok(procedure) => procedure,
         Err(message) => {
             error!(error = %message, "Failed to create procedure step from configuration.");
@@ -395,103 +388,60 @@ pub(crate) async fn run_assertion_steps(
             return;
         }
     };
-    record.plan(procedure.iter().flatten().map(Member::not_run).collect());
-
-    let total_steps = procedure.len();
-    for (step_index, members) in procedure.iter().enumerate() {
-        if ctx.cancel_token.is_cancelled() {
-            return;
-        }
-
-        debug!(
-            step = step_index + 1,
-            step_total = total_steps,
-            member_count = members.len(),
-            "Starting procedure step..."
-        );
-        let statuses = future::join_all(members.iter().map(|member| run_step(record, member, case, ctx))).await;
-
-        if statuses.contains(&StepStatus::Interrupted) {
-            return;
-        }
-        if statuses.iter().any(|status| *status != StepStatus::Passed) {
-            debug!("Stopping procedure after a step that did not pass (fail-fast).");
-            break;
-        }
-    }
-
-    record.decide(Verdict::Procedure);
+    procedure.run(case, &ctx.cancel_token, record).await;
 }
 
-/// Builds the procedure as one list of members per step.
-///
-/// # Errors
-///
-/// Returns a message naming the first step whose configuration can't be built.
-fn build_procedure(procedure: &[AssertionStep]) -> Result<Vec<Vec<Member>>, String> {
-    let mut slot = 0;
-    let mut built = Vec::with_capacity(procedure.len());
-    for (step, config) in procedure.iter().enumerate() {
-        let configs: Vec<(Option<usize>, Result<Executable, GenericError>, Duration)> = match config {
-            AssertionStep::Action(action) => vec![(
-                None,
+/// Builds every step of `procedure` against `ctx`, naming the first that fails.
+fn build_procedure<'a>(procedure: &[AssertionStep], ctx: &'a AssertionContext) -> Result<Procedure<'a>, String> {
+    let bind = |executable: Result<Executable, GenericError>, budget| {
+        executable.map(|executable| {
+            Box::new(BoundStep {
+                executable,
+                budget,
+                ctx,
+            }) as Box<dyn Member + 'a>
+        })
+    };
+    Procedure::build(procedure.iter().map(|config| {
+        match config {
+            AssertionStep::Action(action) => ProcedureNode::Step(bind(
                 crate::actions::create_action(action).map(Executable::Action),
                 action.budget(),
-            )],
-            AssertionStep::Single(assertion) => vec![(
-                None,
+            )),
+            AssertionStep::Single(assertion) => ProcedureNode::Step(bind(
                 create_assertion(assertion).map(Executable::Assertion),
                 assertion.budget(),
-            )],
-            AssertionStep::Parallel { parallel } => parallel
-                .iter()
-                .enumerate()
-                .map(|(member, assertion)| {
-                    (
-                        Some(member),
-                        create_assertion(assertion).map(Executable::Assertion),
-                        assertion.budget(),
-                    )
-                })
-                .collect(),
-        };
-
-        let mut members = Vec::with_capacity(configs.len());
-        for (member, executable, budget) in configs {
-            let executable = executable
-                .map_err(|e| format!("Failed to create procedure step {}: {}.", step_label(step, member), e))?;
-            members.push(Member {
-                slot,
-                step,
-                member,
-                budget,
-                executable,
-            });
-            slot += 1;
+            )),
+            AssertionStep::Parallel { parallel } => ProcedureNode::Parallel(
+                parallel
+                    .iter()
+                    .map(|assertion| {
+                        bind(
+                            create_assertion(assertion).map(Executable::Assertion),
+                            assertion.budget(),
+                        )
+                    })
+                    .collect(),
+            ),
         }
-        built.push(members);
-    }
-    Ok(built)
+    }))
 }
 
-/// A procedure step, or one member of a parallel block, ready to run.
-struct Member {
-    /// Slot in the case record, counting parallel members separately.
-    slot: usize,
-    step: usize,
-    member: Option<usize>,
-    /// The step's own budget.
-    budget: Duration,
+/// An action or assertion bound to the context it runs against.
+struct BoundStep<'a> {
     executable: Executable,
+    budget: Duration,
+    ctx: &'a AssertionContext,
 }
 
-/// The action or assertion a [`Member`] runs.
+/// The action or assertion a [`BoundStep`] runs.
 enum Executable {
     Action(Box<dyn Action>),
     Assertion(Box<dyn Assertion>),
 }
 
-impl Member {
+#[async_trait::async_trait]
+impl Member for BoundStep<'_> {
     fn name(&self) -> &'static str {
         match &self.executable {
             Executable::Action(action) => action.name(),
@@ -506,63 +456,16 @@ impl Member {
         }
     }
 
-    /// The record entry for this member before it starts.
-    fn not_run(&self) -> StepResult {
-        StepResult {
-            step: self.step,
-            member: self.member,
-            name: self.name().to_string(),
-            status: StepStatus::NotRun,
-            message: "Not run.".to_string(),
-            duration: Duration::ZERO,
+    fn budget(&self) -> Duration {
+        self.budget
+    }
+
+    async fn run(&self) -> StepReport {
+        match &self.executable {
+            Executable::Action(action) => action.execute(self.ctx).await,
+            Executable::Assertion(assertion) => assertion.check(self.ctx).await.into(),
         }
     }
-}
-
-/// Runs a step until completion, cancellation, or its deadline plus [`STEP_SLACK`], recording it in `record`.
-///
-/// The earlier of the case and step deadlines applies. The step is polled first so a failure returned on
-/// cancellation keeps its message below the interruption line.
-async fn run_step(record: &CaseRecord, member: &Member, case: Deadline, ctx: &AssertionContext) -> StepStatus {
-    let running = RunningStep {
-        step: member.step,
-        member: member.member,
-        name: member.name(),
-        started: Instant::now(),
-        budget: member.budget,
-        deadline: case.narrow(Budget::Step, member.budget),
-    };
-    record.start(member.slot, running);
-    debug!(step_type = running.name, description = %member.description(), "Running procedure step...");
-
-    let step = match &member.executable {
-        Executable::Action(action) => action.execute(ctx),
-        Executable::Assertion(assertion) => assertion.check(ctx),
-    };
-    let result = tokio::select! {
-        biased;
-        result = step => if result.status != AssertionStatus::Passed && ctx.cancel_token.is_cancelled() {
-            running.interrupted(Some(result.message))
-        } else {
-            running.returned(result)
-        },
-        _ = ctx.cancel_token.cancelled() => running.interrupted(None),
-        _ = tokio::time::sleep_until(running.deadline.at + STEP_SLACK) => match running.deadline.budget {
-            Budget::Step => running.overran(),
-            Budget::Case => running.interrupted(None),
-        },
-    };
-
-    debug!(
-        step_type = %result.name,
-        status = ?result.status,
-        duration = ?result.duration,
-        message = %result.message,
-        "Procedure step finished."
-    );
-    let status = result.status;
-    record.finish(member.slot, result);
-    status
 }
 
 /// Fixtures for running a procedure through [`run_assertion_steps`] on the host.
@@ -605,7 +508,12 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use futures::future;
+    use panoramic_core::deadline::Budget;
+    use panoramic_core::record::{StepResult, StepStatus};
     use panoramic_core::result::TestOutcome;
+    use tokio::time::Instant;
 
     use super::test_support::{host_context, procedure};
     use super::*;
@@ -735,63 +643,8 @@ mod tests {
         );
     }
 
-    /// An assertion whose check never returns.
-    struct Stalled;
-
-    #[async_trait::async_trait]
-    impl Assertion for Stalled {
-        fn name(&self) -> &'static str {
-            "stalled"
-        }
-
-        fn description(&self) -> String {
-            "Never returns.".to_string()
-        }
-
-        async fn check(&self, _ctx: &AssertionContext) -> AssertionResult {
-            std::future::pending().await
-        }
-    }
-
     /// An intake assertion with enough time for multiple probes.
     const INTAKE_POLL: &str = "- assertion: intake_has_metric\n  name: some.metric\n  timeout: 30s\n";
-
-    #[tokio::test(start_paused = true)]
-    async fn a_step_stalled_past_its_own_budget_is_stopped_after_the_slack() {
-        let ctx = context(&CancellationToken::new(), None);
-        let member = Member {
-            slot: 0,
-            step: 0,
-            member: None,
-            budget: Duration::from_secs(1),
-            executable: Executable::Assertion(Box::new(Stalled)),
-        };
-        let record = CaseRecord::default();
-        record.plan(vec![member.not_run()]);
-        let case = Deadline::after(Budget::Case, Duration::from_secs(3600));
-        let started = Instant::now();
-
-        let status = tokio::time::timeout(BOUND, run_step(&record, &member, case, &ctx))
-            .await
-            .expect("the step driver should stop the step within the bound");
-
-        assert_eq!(status, StepStatus::Errored);
-        assert_eq!(started.elapsed(), Duration::from_secs(11));
-        let steps = record.steps();
-        assert_eq!(statuses(&steps), [("stalled", None, StepStatus::Errored)]);
-        assert_eq!(
-            steps[0].message,
-            "Did not finish within its 1s step budget; stopped after 11.0s."
-        );
-        let result = record.result("t", Duration::ZERO, Vec::new());
-        assert_eq!(result.outcome, TestOutcome::Errored);
-        let error = result.error.expect("an overrun should be a harness error");
-        assert_eq!(error.kind, ErrorKind::Evaluation);
-        assert_eq!(
-            error.message,
-            "Step 1 (stalled) could not be evaluated: Did not finish within its 1s step budget; stopped after 11.0s."
-        );
-    }
 
     #[tokio::test(start_paused = true)]
     async fn a_stalled_intake_poll_is_retried_until_the_step_errors() {

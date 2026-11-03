@@ -50,19 +50,19 @@ impl CaseRecord {
     }
 
     /// Registers the procedure's steps as `not_run`.
-    pub fn plan(&self, steps: Vec<StepResult>) {
+    pub(crate) fn plan(&self, steps: Vec<StepResult>) {
         self.lock().slots = steps.into_iter().map(Slot::Waiting).collect();
     }
 
     /// Marks the step in `slot` as running.
-    pub fn start(&self, slot: usize, step: RunningStep) {
+    pub(crate) fn start(&self, slot: usize, step: RunningStep) {
         if let Some(entry) = self.lock().slots.get_mut(slot) {
             *entry = Slot::Running(step);
         }
     }
 
     /// Records the result of the step in `slot`.
-    pub fn finish(&self, slot: usize, result: StepResult) {
+    pub(crate) fn finish(&self, slot: usize, result: StepResult) {
         if let Some(entry) = self.lock().slots.get_mut(slot) {
             *entry = Slot::Finished(result);
         }
@@ -162,9 +162,41 @@ impl AssertionResult {
     }
 }
 
+/// What a procedure step reported. The driver supplies its name and adds `interrupted` and `not_run`.
+#[derive(Clone, Debug)]
+pub struct StepReport {
+    /// How the step ended.
+    pub status: AssertionStatus,
+    /// Human-readable detail about the result.
+    pub message: String,
+    /// How long the step ran.
+    pub duration: Duration,
+}
+
+impl StepReport {
+    /// Creates a report with the elapsed time since `started`.
+    pub fn new(started: Instant, status: AssertionStatus, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            message: message.into(),
+            duration: started.elapsed(),
+        }
+    }
+}
+
+impl From<AssertionResult> for StepReport {
+    fn from(result: AssertionResult) -> Self {
+        Self {
+            status: result.status,
+            message: result.message,
+            duration: result.duration,
+        }
+    }
+}
+
 /// Identity and timing of a running step, retained in the case record until it finishes.
 #[derive(Clone, Copy, Debug)]
-pub struct RunningStep {
+pub(crate) struct RunningStep {
     /// Position of the step in the procedure, from zero.
     pub step: usize,
     /// Zero-based position within a parallel block, or `None` for a step that runs alone.
@@ -195,7 +227,7 @@ impl RunningStep {
     ///
     /// Reports elapsed time and any budget reduction imposed by the case deadline. The test result carries the
     /// interruption cause.
-    pub fn interrupted(&self, step_message: Option<String>) -> StepResult {
+    pub(crate) fn interrupted(&self, step_message: Option<String>) -> StepResult {
         let elapsed = self.started.elapsed();
         let mut message = format!("Interrupted after {elapsed:.1?}.");
         if self.deadline.budget == Budget::Case {
@@ -213,7 +245,7 @@ impl RunningStep {
     }
 
     /// Returns an `errored` result for a step that ran past its budget and the driver's grace period.
-    pub fn overran(&self) -> StepResult {
+    pub(crate) fn overran(&self) -> StepResult {
         let elapsed = self.started.elapsed();
         self.result(
             StepStatus::Errored,
@@ -226,8 +258,8 @@ impl RunningStep {
     }
 
     /// Returns the result the step reported itself.
-    pub fn returned(&self, result: AssertionResult) -> StepResult {
-        self.result(result.status.into(), result.message, result.duration)
+    pub(crate) fn returned(&self, report: StepReport) -> StepResult {
+        self.result(report.status.into(), report.message, report.duration)
     }
 
     fn result(&self, status: StepStatus, message: String, duration: Duration) -> StepResult {
@@ -420,7 +452,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_returned_result_keeps_its_status_message_and_duration() {
+    async fn a_returned_report_keeps_its_status_message_and_duration() {
         let running = RunningStep {
             step: 2,
             member: Some(1),
@@ -431,8 +463,7 @@ mod tests {
         };
 
         advance(Duration::from_secs(2)).await;
-        let result = running.returned(AssertionResult {
-            name: "reported name".to_string(),
+        let result = running.returned(StepReport {
             status: AssertionStatus::Failed,
             message: "own message".to_string(),
             duration: Duration::from_secs(1),

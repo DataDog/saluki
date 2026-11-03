@@ -21,6 +21,7 @@ mod observe;
 pub mod participant;
 pub mod plan;
 pub mod probe;
+pub mod procedure;
 pub mod recipe;
 pub mod record;
 pub mod result;

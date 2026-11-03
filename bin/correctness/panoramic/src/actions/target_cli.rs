@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use panoramic_core::record::{AssertionResult, AssertionStatus};
+use panoramic_core::record::{AssertionStatus, StepReport};
 use tokio::time::Instant;
 
 use super::{
@@ -68,7 +68,7 @@ impl Action for TargetCliAction {
         format!("Run {}", self.target.diagnostic_label())
     }
 
-    async fn execute(&self, ctx: &AssertionContext) -> AssertionResult {
+    async fn execute(&self, ctx: &AssertionContext) -> StepReport {
         let started = Instant::now();
         let target_command = self.target.command(ctx);
         let command = target_command.with_args(&self.args);
@@ -82,8 +82,7 @@ impl Action for TargetCliAction {
                     .as_ref()
                     .is_some_and(|expected| !output.contains(expected)) =>
             {
-                AssertionResult {
-                    name: self.name().to_string(),
+                StepReport {
                     status: AssertionStatus::Failed,
                     message: if output.trim().is_empty() {
                         format!(
@@ -100,8 +99,7 @@ impl Action for TargetCliAction {
                     duration: started.elapsed(),
                 }
             }
-            Ok(output) => AssertionResult {
-                name: self.name().to_string(),
+            Ok(output) => StepReport {
                 status: AssertionStatus::Passed,
                 message: if output.trim().is_empty() {
                     self.description()
@@ -110,8 +108,7 @@ impl Action for TargetCliAction {
                 },
                 duration: started.elapsed(),
             },
-            Err(e) => AssertionResult {
-                name: self.name().to_string(),
+            Err(e) => StepReport {
                 status: e.status(),
                 message: e.to_string(),
                 duration: started.elapsed(),

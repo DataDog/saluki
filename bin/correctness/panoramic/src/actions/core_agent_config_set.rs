@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use panoramic_core::probe::{probe, AttemptLimits, ProbeError, POLL_INTERVAL};
-use panoramic_core::record::{AssertionResult, AssertionStatus};
+use panoramic_core::record::{AssertionStatus, StepReport};
 use reqwest::ClientBuilder;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde_json::Value;
@@ -64,15 +64,15 @@ impl Action for CoreAgentConfigSetAction {
         format!("Set Core Agent runtime config '{}' to {}.", self.key, self.value)
     }
 
-    async fn execute(&self, ctx: &AssertionContext) -> AssertionResult {
+    async fn execute(&self, ctx: &AssertionContext) -> StepReport {
         let started = Instant::now();
 
         if let Err(e) = validate_runtime_key(&self.key) {
-            return AssertionResult::new(self.name(), started, AssertionStatus::Errored, e.to_string());
+            return StepReport::new(started, AssertionStatus::Errored, e.to_string());
         }
         let setter = match self.setter(ctx, &runtime_value_to_string(&self.value)).await {
             Ok(setter) => setter,
-            Err(e) => return AssertionResult::new(self.name(), started, AssertionStatus::Errored, format!("{e:#}")),
+            Err(e) => return StepReport::new(started, AssertionStatus::Errored, format!("{e:#}")),
         };
 
         // Preparing the setter can be slow on a busy machine, so the budget starts after it.
@@ -80,8 +80,7 @@ impl Action for CoreAgentConfigSetAction {
         let mut attempts = Attempts::default();
         loop {
             if ctx.cancel_token.is_cancelled() {
-                return AssertionResult::new(
-                    self.name(),
+                return StepReport::new(
                     started,
                     attempts.status(),
                     attempts.explain_cancelled("Action cancelled."),
@@ -89,16 +88,11 @@ impl Action for CoreAgentConfigSetAction {
             }
             if ctx.container_exit_token.is_cancelled() {
                 let message = attempts.explain_cancelled("Action cancelled because the target exited.");
-                return AssertionResult::new(self.name(), started, AssertionStatus::Failed, message);
+                return StepReport::new(started, AssertionStatus::Failed, message);
             }
             if Instant::now() > deadline {
                 let summary = format!("Timed out setting Core Agent runtime config '{}'.", self.key);
-                return AssertionResult::new(
-                    self.name(),
-                    started,
-                    attempts.status(),
-                    attempts.explain_expired(&summary),
-                );
+                return StepReport::new(started, attempts.status(), attempts.explain_expired(&summary));
             }
 
             let limits = AttemptLimits::new(deadline.saturating_duration_since(Instant::now()));
@@ -111,20 +105,13 @@ impl Action for CoreAgentConfigSetAction {
             .await
             {
                 Ok(SetOutcome::Set) => {
-                    return AssertionResult::new(self.name(), started, AssertionStatus::Passed, self.description());
+                    return StepReport::new(started, AssertionStatus::Passed, self.description());
                 }
-                Ok(SetOutcome::Rejected(message)) => {
-                    return AssertionResult::new(self.name(), started, AssertionStatus::Failed, message)
-                }
+                Ok(SetOutcome::Rejected(message)) => return StepReport::new(started, AssertionStatus::Failed, message),
                 Ok(SetOutcome::Unanswered(observation)) => attempts.observed(observation),
                 Ok(SetOutcome::Harness(error)) => attempts.errored(error),
                 Err(error @ ProbeError::Cancelled { .. }) => {
-                    return AssertionResult::new(
-                        self.name(),
-                        started,
-                        attempts.status(),
-                        attempts.explain_cancelled(error),
-                    );
+                    return StepReport::new(started, attempts.status(), attempts.explain_cancelled(error));
                 }
                 // Direct requests test the target; a stalled Docker exec prevents evaluation.
                 Err(error @ ProbeError::TimedOut { .. }) => match setter {
@@ -344,7 +331,7 @@ mod tests {
 
     use airlock::driver::ContainerOs;
     use panoramic_core::probe::AttemptLimits;
-    use panoramic_core::record::{AssertionResult, AssertionStatus};
+    use panoramic_core::record::{AssertionStatus, StepReport};
     use serde_json::Value;
     use tokio_util::sync::CancellationToken;
 
@@ -354,7 +341,7 @@ mod tests {
     use crate::assertions::test_support::host_context;
 
     /// Sets `log_level` in a `target_os` container within `timeout`, with its execs served by `docker`.
-    async fn set_in_container(docker: &FakeDocker, target_os: ContainerOs, timeout: Duration) -> AssertionResult {
+    async fn set_in_container(docker: &FakeDocker, target_os: ContainerOs, timeout: Duration) -> StepReport {
         let mut ctx = host_context(CancellationToken::new());
         ctx.is_host_process = false;
         ctx.target_os = Some(target_os);
