@@ -560,7 +560,9 @@ where
     tokio::select! {
         biased;
         _ = cancellation.cancelled() => {
-            let _ = task.await;
+            // A blocking task that has already started can't be interrupted, so it finishes in the background
+            // and its result is discarded. Aborting only prevents a task that hasn't started yet from running.
+            task.abort();
             Ok(None)
         }
         result = &mut task => match result {
@@ -1193,11 +1195,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancelled_replay_load_waits_for_its_blocking_task_to_finish() {
+    async fn cancelled_replay_load_returns_without_waiting_for_its_blocking_task() {
         let cancellation = CancellationToken::new();
         let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
         let (finish_tx, finish_rx) = std::sync::mpsc::sync_channel(1);
-        let mut task = tokio::spawn({
+        let task = tokio::spawn({
             let cancellation = cancellation.clone();
             async move {
                 super::run_cancellable_replay_load(&cancellation, move || {
@@ -1213,16 +1215,12 @@ mod tests {
             .await
             .expect("wait task should not panic");
         cancellation.cancel();
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), &mut task)
-                .await
-                .is_err(),
-            "cancellation must wait for the blocking task rather than detach it"
-        );
+        let result = tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("cancellation should not wait for the blocking task");
         finish_tx.send(()).expect("blocking task should still be running");
 
-        assert!(task
-            .await
+        assert!(result
             .expect("load task should not panic")
             .expect("load should not fail")
             .is_none());
