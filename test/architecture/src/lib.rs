@@ -23,7 +23,7 @@
 //! The guards can miss:
 //!
 //! - types inferred without a guarded identifier at the use site
-//! - aliases reached through private glob imports below crate-root scope or private bindings in other non-root files
+//! - aliases from private glob imports below crate-root scope or private bindings in other non-root files
 //! - aliases defined inside blocks or macro invocations
 //! - modules placed outside the scanned directories by `#[path]`
 //!
@@ -43,7 +43,7 @@ mod tests {
     use guppy::graph::BuildTargetId;
 
     use crate::{
-        graph::{direct_links_reaching, LinkKinds, Links, Reach, Workspace},
+        graph::{direct_links_to_target_or_its_dependents, Dependencies, LinkKinds, Links, Workspace},
         symbols::{Mention, SourceTree},
     };
 
@@ -59,12 +59,12 @@ mod tests {
     }
 
     #[track_caller]
-    fn assert_unreachable(from: &str, targets: &[&str]) {
+    fn assert_does_not_depend_on(from: &str, targets: &[&str]) {
         let workspace = workspace();
-        let reach = Reach::new(workspace.member(from).unwrap(), Links::Built);
+        let dependencies = Dependencies::new(workspace.member(from).unwrap(), Links::Built);
         let routes: Vec<String> = targets
             .iter()
-            .filter_map(|target| reach.route_to(&workspace.member(target).unwrap()))
+            .filter_map(|target| dependencies.route_to(&workspace.member(target).unwrap()))
             .map(|route| route.to_string())
             .collect();
         assert!(
@@ -93,30 +93,30 @@ mod tests {
     /// Components take component-owned inputs; the binary adapts the shared model.
     #[test]
     fn saluki_components_does_not_depend_on_the_configuration_model() {
-        assert_unreachable("saluki-components", &[MODEL]);
+        assert_does_not_depend_on("saluki-components", &[MODEL]);
     }
 
     /// Loading and translation belong outside runtime components.
     #[test]
     fn saluki_components_does_not_depend_on_the_configuration_system() {
-        assert_unreachable("saluki-components", &[CONFIG_SYSTEM]);
+        assert_does_not_depend_on("saluki-components", &[CONFIG_SYSTEM]);
     }
 
     /// Components must not interpret source-specific configuration.
     #[test]
     fn saluki_components_does_not_depend_on_the_datadog_configuration_source() {
-        assert_unreachable("saluki-components", &[DATADOG_CONFIG]);
+        assert_does_not_depend_on("saluki-components", &[DATADOG_CONFIG]);
     }
 
     /// The configuration system produces data, not component instances.
     #[test]
     fn configuration_system_does_not_depend_on_saluki_components() {
-        assert_unreachable(CONFIG_SYSTEM, &["saluki-components"]);
+        assert_does_not_depend_on(CONFIG_SYSTEM, &["saluki-components"]);
     }
 
     /// Keep shared utilities independent of higher-level subsystems.
     #[test]
-    fn saluki_common_reaches_only_foundational_workspace_crates() {
+    fn saluki_common_depends_only_on_foundational_workspace_crates() {
         let allowed = [
             "saluki-antithesis",
             "saluki-error",
@@ -125,17 +125,17 @@ mod tests {
             "stringtheory",
         ];
         let workspace = workspace();
-        let reach = Reach::new(workspace.member("saluki-common").unwrap(), Links::Built);
-        let mut routes: Vec<String> = reach
+        let dependencies = Dependencies::new(workspace.member("saluki-common").unwrap(), Links::Built);
+        let mut routes: Vec<String> = dependencies
             .workspace_members()
             .filter(|package| !allowed.contains(&package.name()))
-            .filter_map(|package| reach.route_to(&package))
+            .filter_map(|package| dependencies.route_to(&package))
             .map(|route| route.to_string())
             .collect();
         routes.sort();
         assert!(
             routes.is_empty(),
-            "`saluki-common` may reach only {allowed:?} workspace crates:\n{}",
+            "`saluki-common` may depend only on {allowed:?} workspace crates:\n{}",
             routes.join("\n")
         );
     }
@@ -180,18 +180,18 @@ mod tests {
 
     /// The source model stays independent of workspace runtime code.
     #[test]
-    fn datadog_configuration_source_normal_links_reach_only_go_duration() {
+    fn datadog_configuration_source_depends_only_on_go_duration_through_normal_links() {
         let workspace = workspace();
-        let reach = Reach::new(workspace.member(DATADOG_CONFIG).unwrap(), Links::Normal);
-        let routes: Vec<String> = reach
+        let dependencies = Dependencies::new(workspace.member(DATADOG_CONFIG).unwrap(), Links::Normal);
+        let routes: Vec<String> = dependencies
             .workspace_members()
             .filter(|package| package.name() != "go-duration")
-            .filter_map(|package| reach.route_to(&package))
+            .filter_map(|package| dependencies.route_to(&package))
             .map(|route| route.to_string())
             .collect();
         assert!(
             routes.is_empty(),
-            "`{DATADOG_CONFIG}` may reach only `go-duration` through normal links:\n{}",
+            "`{DATADOG_CONFIG}` may depend only on `go-duration` through normal links:\n{}",
             routes.join("\n")
         );
     }
@@ -199,13 +199,14 @@ mod tests {
     /// The binary needs the model for adapters, but its components must remain model-independent.
     /// Check dependency names and aliases so renamed imports don't bypass this boundary.
     #[test]
-    fn bin_components_name_no_crate_or_alias_reaching_the_configuration_model() {
+    fn bin_components_name_neither_the_configuration_model_nor_crates_depending_on_it() {
         let workspace = workspace();
         let bin = workspace.member(BIN).unwrap();
-        let crates: BTreeSet<String> = direct_links_reaching(&bin, &workspace.member(MODEL).unwrap())
-            .iter()
-            .map(|link| link.resolved_name().to_string())
-            .collect();
+        let crates: BTreeSet<String> =
+            direct_links_to_target_or_its_dependents(&bin, &workspace.member(MODEL).unwrap())
+                .iter()
+                .map(|link| link.resolved_name().to_string())
+                .collect();
         let bin_dir = bin.manifest_path().parent().unwrap().as_std_path();
         let crate_root = bin
             .build_target(&BuildTargetId::Binary(BIN))

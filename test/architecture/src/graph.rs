@@ -1,4 +1,4 @@
-//! Workspace package graph and dependency reach.
+//! Workspace package graph and dependency queries.
 
 use std::{collections::HashMap, fmt, path::Path};
 
@@ -44,7 +44,7 @@ impl Workspace {
     }
 }
 
-/// Which dependency kinds a [`Reach`] follows, without feature or platform filtering.
+/// Dependency kinds included by [`Dependencies`], without feature or platform filtering.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Links {
     /// Any link out of the root, including dev-dependencies, then [`Links::AsDependency`].
@@ -57,13 +57,13 @@ pub enum Links {
     Normal,
 }
 
-/// The packages reachable from a root package, with one route to each.
-pub struct Reach<'g> {
+/// A package's direct and transitive dependencies, with one route to each.
+pub struct Dependencies<'g> {
     via: HashMap<&'g PackageId, PackageLink<'g>>,
 }
 
-impl<'g> Reach<'g> {
-    /// Computes the packages reachable from `root` through `links`.
+impl<'g> Dependencies<'g> {
+    /// Computes the packages `root` depends on through `links`.
     pub fn new(root: PackageMetadata<'g>, links: Links) -> Self {
         let mut via = HashMap::new();
         let root_id = root.id();
@@ -82,7 +82,7 @@ impl<'g> Reach<'g> {
         Self { via }
     }
 
-    /// Returns the route from the root to `package`, or `None` if `package` is the root or unreachable.
+    /// Returns the dependency route to `package`, or `None` for the root or a non-dependency.
     pub fn route_to(&self, package: &PackageMetadata<'g>) -> Option<Route<'g>> {
         let mut links = Vec::new();
         let mut id = package.id();
@@ -97,7 +97,7 @@ impl<'g> Reach<'g> {
         Some(Route { links })
     }
 
-    /// Returns the reachable workspace members, excluding the root.
+    /// Returns workspace members the root depends on, excluding the root itself.
     pub fn workspace_members(&self) -> impl Iterator<Item = PackageMetadata<'g>> + '_ {
         self.via
             .values()
@@ -144,13 +144,15 @@ impl fmt::Display for LinkKinds<'_, '_> {
     }
 }
 
-/// Returns the direct links, of any kind, from `from` to `target` or to a package that reaches
-/// `target` through [`Links::AsDependency`].
-pub fn direct_links_reaching<'g>(from: &PackageMetadata<'g>, target: &PackageMetadata<'g>) -> Vec<PackageLink<'g>> {
+/// Returns direct links of any kind from `from` to `target` or to packages that depend on `target`
+/// through [`Links::AsDependency`].
+pub fn direct_links_to_target_or_its_dependents<'g>(
+    from: &PackageMetadata<'g>, target: &PackageMetadata<'g>,
+) -> Vec<PackageLink<'g>> {
     from.direct_links()
         .filter(|link| {
             let to = link.to();
-            to.id() == target.id() || Reach::new(to, Links::AsDependency).route_to(target).is_some()
+            to.id() == target.id() || Dependencies::new(to, Links::AsDependency).route_to(target).is_some()
         })
         .collect()
 }
@@ -242,61 +244,73 @@ mod tests {
     }
 
     #[test]
-    fn built_reach_follows_root_dev_links_but_not_dependency_dev_links() {
+    fn built_dependencies_include_root_dev_links_but_not_dependency_dev_links() {
         let fixture = Fixture::new();
         let workspace = fixture.load();
         let a = workspace.member("a").unwrap();
-        let reach = Reach::new(a, Links::Built);
+        let dependencies = Dependencies::new(a, Links::Built);
 
         assert_eq!(
-            member_names(reach.workspace_members()),
+            member_names(dependencies.workspace_members()),
             BTreeSet::from(["b", "c", "d", "e", "g"])
         );
-        assert!(reach.route_to(&workspace.member("f").unwrap()).is_none());
+        assert!(dependencies.route_to(&workspace.member("f").unwrap()).is_none());
         assert_eq!(
-            reach.route_to(&workspace.member("g").unwrap()).unwrap().to_string(),
+            dependencies
+                .route_to(&workspace.member("g").unwrap())
+                .unwrap()
+                .to_string(),
             "a -[build]-> d -[normal]-> g"
         );
         assert_eq!(
-            reach.route_to(&workspace.member("e").unwrap()).unwrap().to_string(),
+            dependencies
+                .route_to(&workspace.member("e").unwrap())
+                .unwrap()
+                .to_string(),
             "a -[normal]-> e"
         );
 
-        let c_reach = Reach::new(workspace.member("c").unwrap(), Links::Built);
+        let c_dependencies = Dependencies::new(workspace.member("c").unwrap(), Links::Built);
         assert_eq!(
-            c_reach.route_to(&workspace.member("f").unwrap()).unwrap().to_string(),
+            c_dependencies
+                .route_to(&workspace.member("f").unwrap())
+                .unwrap()
+                .to_string(),
             "c -[dev]-> f"
         );
     }
 
     #[test]
-    fn normal_reach_follows_only_normal_links() {
+    fn normal_dependencies_follow_only_normal_links() {
         let fixture = Fixture::new();
         let workspace = fixture.load();
-        let reach = Reach::new(workspace.member("a").unwrap(), Links::Normal);
+        let dependencies = Dependencies::new(workspace.member("a").unwrap(), Links::Normal);
 
-        assert_eq!(member_names(reach.workspace_members()), BTreeSet::from(["b", "e"]));
+        assert_eq!(
+            member_names(dependencies.workspace_members()),
+            BTreeSet::from(["b", "e"])
+        );
     }
 
     #[test]
-    fn direct_links_reaching_matches_target_and_packages_reaching_it() {
+    fn direct_links_include_target_and_packages_depending_on_it() {
         let fixture = Fixture::new();
         let workspace = fixture.load();
         let a = workspace.member("a").unwrap();
 
-        let to_b: Vec<_> = direct_links_reaching(&a, &workspace.member("b").unwrap())
+        let to_b: Vec<_> = direct_links_to_target_or_its_dependents(&a, &workspace.member("b").unwrap())
             .iter()
             .map(|link| (link.resolved_name(), link.to().name()))
             .collect();
         assert_eq!(to_b, [("renamed", "b")]);
 
-        let to_g: Vec<_> = direct_links_reaching(&a, &workspace.member("g").unwrap())
+        let to_g: Vec<_> = direct_links_to_target_or_its_dependents(&a, &workspace.member("g").unwrap())
             .iter()
             .map(|link| (link.resolved_name(), LinkKinds(link).to_string()))
             .collect();
         assert_eq!(to_g, [("d", "build".to_string())]);
 
-        assert!(direct_links_reaching(&a, &workspace.member("f").unwrap()).is_empty());
+        assert!(direct_links_to_target_or_its_dependents(&a, &workspace.member("f").unwrap()).is_empty());
     }
 
     #[test]
