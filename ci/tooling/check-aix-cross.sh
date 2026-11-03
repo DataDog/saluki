@@ -12,11 +12,12 @@
 # - AIX is a tier 3 target with no prebuilt standard library, so we build it from source with `-Zbuild-std`. That needs a
 #   nightly toolchain with the `rust-src` component, and a newer one than `RUST_NIGHTLY_VERSION`: neither it nor our
 #   stable toolchain can build the AIX standard library from source.
-# - `aws-lc-sys` and `zstd-sys` compile C code in their build scripts, which needs an AIX C toolchain and sysroot. We
-#   override those build scripts for the AIX target instead, and provide what the Rust code needs from them in their
-#   place. In this configuration both crates use their pregenerated bindings rather than running bindgen, so that's only
-#   the `cfg` that `aws-lc-sys` uses to select its bindings and the `include` metadata that `aws-lc-rs` expects. The
-#   libraries they declare don't need to exist, because `cargo check` never links.
+# - `aws-lc-sys`, `zstd-sys`, and `tikv-jemalloc-sys` compile C code in their build scripts, which needs an AIX C
+#   toolchain and sysroot. We override those build scripts for the AIX target instead, and provide what the Rust code
+#   needs from them in their place. In this configuration `aws-lc-sys` and `zstd-sys` use their pregenerated bindings
+#   rather than running bindgen, so that's only the `cfg` that `aws-lc-sys` uses to select its bindings, the `include`
+#   metadata that `aws-lc-rs` expects, and the `cfg` that `tikv-jemalloc-sys` uses for prefixed symbols. The libraries
+#   they declare don't need to exist, because `cargo check` never links.
 # - We cap lints at warnings. This check is only about compile errors, and the newer nightly's lints (new deprecations,
 #   for example) would otherwise trip `#![deny(warnings)]` in crates that are lint-free on our stable toolchain.
 
@@ -47,6 +48,14 @@ done
 
 for links in $(links_values zstd-sys); do
     config_args+=(--config "target.${AIX_TARGET}.${links}.rustc-link-lib=[\"zstd\"]")
+done
+
+for links in $(links_values tikv-jemalloc-sys); do
+    # `prefixed` is the `cfg` that the `tikv-jemalloc-sys` build script emits when jemalloc's symbols are prefixed.
+    config_args+=(
+        --config "target.${AIX_TARGET}.${links}.rustc-cfg=[\"prefixed\"]"
+        --config "target.${AIX_TARGET}.${links}.rustc-link-lib=[\"static=jemalloc_pic\"]"
+    )
 done
 
 # The profile matches what `build-adp-aix.sh` builds with, so code gated on `debug_assertions` is checked the same way.

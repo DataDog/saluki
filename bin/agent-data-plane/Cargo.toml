@@ -73,6 +73,11 @@ tikv-jemallocator = { workspace = true, features = [
   "stats",
 ] }
 
+# AIX's libc doesn't route its own allocations through a `malloc` defined in the executable, so an unprefixed jemalloc
+# would mix two allocators in one process. Prefixed, jemalloc only serves Rust allocations.
+[target.'cfg(target_os = "aix")'.dependencies]
+tikv-jemallocator = { workspace = true, features = ["background_threads", "stats"] }
+
 [dev-dependencies]
 datadog-agent-config-testing = { workspace = true }
 derive-where = { workspace = true }

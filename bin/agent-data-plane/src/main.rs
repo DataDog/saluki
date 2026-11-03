@@ -37,12 +37,12 @@ mod remote_config;
 
 pub(crate) mod state;
 
-#[cfg(all(target_os = "linux", not(system_allocator)))]
+#[cfg(all(any(target_os = "linux", target_os = "aix"), not(system_allocator)))]
 #[global_allocator]
 static ALLOC: saluki_common::resource_tracking::TrackingAllocator<tikv_jemallocator::Jemalloc> =
     saluki_common::resource_tracking::TrackingAllocator::new(tikv_jemallocator::Jemalloc);
 
-#[cfg(any(not(target_os = "linux"), system_allocator))]
+#[cfg(any(not(any(target_os = "linux", target_os = "aix")), system_allocator))]
 #[global_allocator]
 static ALLOC: saluki_common::resource_tracking::TrackingAllocator<std::alloc::System> =
     saluki_common::resource_tracking::TrackingAllocator::new(std::alloc::System);
