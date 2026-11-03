@@ -119,12 +119,15 @@ integration tests that check system output, see [correctness tests](#correctness
 ```bash
 make test-integration        # build images + run all
 make test-integration-quick  # skip image builds
+make run-integration-quick   # skip binary and image builds
 make list-integration-tests  # list available tests
 ```
 
-`test-integration`, `test-integration-quick` and `list-integration-tests` select subject OS `linux`, including on
-macOS, where tests run in Linux containers through the local Docker setup. Use the macOS Make targets for native
-host-process tests.
+`test-integration-quick` builds panoramic and the Linux courier, then calls `run-integration-quick`.
+CI calls `run-integration-quick` with binaries from `build-panoramic-binary`.
+
+These targets select subject OS `linux`, including on macOS, where tests run in Linux containers through the local
+Docker setup. Use the macOS Make targets for native host-process tests.
 
 Pass `PANORAMIC_ARTIFACTS=<file>` on the make command line to run with an artifact manifest:
 
@@ -132,10 +135,11 @@ Pass `PANORAMIC_ARTIFACTS=<file>` on the make command line to run with an artifa
 make test-integration-quick PANORAMIC_ARTIFACTS=artifacts.toml
 ```
 
-`test-integration`, `test-integration-quick`, `test-integration-macos-run`, `test-correctness` and
-`test-correctness-case` accept this variable only on the command line; they reject values from the environment,
-including empty values. For `test-integration-macos-run`, the manifest must bind `adp-host-binary` and
-`agent-host-install` to the paths the target passes as flags; `make render-macos-test-artifacts` writes a matching
+`test-integration`, `test-integration-quick`, `run-integration-quick`, `test-integration-macos-run`,
+`test-correctness` and `test-correctness-case` accept this variable only on the command line; they reject values
+from the environment, including empty values. For `test-integration-macos-run`, the manifest must bind
+`adp-host-binary` and `agent-host-install` to the paths the target passes as flags;
+`make render-macos-test-artifacts` writes a matching
 manifest to `MACOS_TEST_ARTIFACTS` (default: `target/panoramic-artifacts-macos.toml`). Use the same `BUILD_PROFILE` and
 `MACOS_TEST_AGENT_INSTALL_DIR` values for rendering and running.
 `test-integration-macos-ci` renders and forces its own manifest, even if you supply another path.
@@ -149,7 +153,8 @@ A case file either sets `type: integration`, defining a container and a list of 
 participants; see [Participant cases](#participant-cases). Assertions run sequentially by default but can also be
 configured to run in `parallel`.
 
-CI: `.gitlab/e2e.yml`—same file as correctness, `e2e` stage, 10 min timeout, retry 2.
+CI: `test-integration` in `.gitlab/e2e.yml` runs in the `e2e` stage with a 15 min timeout and retry 2. It uses the
+panoramic and courier binaries from `build-panoramic-binary`.
 
 ### Participant cases
 
@@ -354,8 +359,7 @@ separates the role from its reference.
 `--artifacts`, so its `run.json` records what it tested in `artifacts`. Linux integration and correctness jobs bind
 `agent-adp-linux-image` and `tools-linux-image` to the pipeline's images and `fixup-image` to
 `registry.ddbuild.io/alpine:latest`, then run `panoramic artifacts pull` before testing.
-Linux jobs also bind `courier-linux-binary` to the courier that `build-panoramic-binary` builds for correctness jobs
-or `test-integration` builds for integration tests.
+Linux integration and correctness jobs bind `courier-linux-binary` to the courier from `build-panoramic-binary`.
 `make test-integration-macos-ci` binds the ADP binary and Agent install it builds and provisions;
 `ci/tooling/windows-integration-tests.ps1` binds the image it builds. Image and binary overrides must agree with
 the manifest. Every selected correctness case must use a `saluki-images/` baseline, because both sides take

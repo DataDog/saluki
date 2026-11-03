@@ -908,7 +908,11 @@ fn assert_ci_block_lines_in_order(file: &str, text: &str, lines: &[&str]) {
 fn ci_line_pins_reject_commands_moved_to_another_job_or_target() {
     let root = repository_root();
     for (file, header, command) in [
-        (".gitlab/e2e.yml", "test-integration:", "- make build-panoramic"),
+        (
+            ".gitlab/e2e.yml",
+            "test-integration:",
+            "- target/release/panoramic artifacts pull -d test/integration/cases --subject-os linux --artifacts target/panoramic-artifacts.toml",
+        ),
         (
             "Makefile",
             "test-integration: build-panoramic build-courier-linux build-datadog-agent-image build-correctness-tools-image",
@@ -1034,6 +1038,75 @@ fn container_daemon_tests_run_in_a_separate_ci_job() {
 }
 
 #[test]
+fn the_integration_job_runs_the_binaries_build_panoramic_binary_ships() {
+    // test-integration runs the panoramic and courier binaries that build-panoramic-binary ships, without compiling.
+    let e2e: Value = serde_saphyr::from_str(&read_text(&repository_root().join(".gitlab/e2e.yml"))).unwrap();
+    let integration = &e2e["test-integration"];
+    assert!(integration["needs"]
+        .as_array()
+        .unwrap()
+        .contains(&json!({"job": "build-panoramic-binary", "artifacts": true})));
+    let script: Vec<_> = integration["script"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|command| command.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        script
+            .iter()
+            .copied()
+            .filter(|command| command.starts_with("make "))
+            .collect::<Vec<_>>(),
+        ["make run-integration-quick PANORAMIC_ARTIFACTS=target/panoramic-artifacts.toml"]
+    );
+    assert!(script.iter().all(|command| !command.contains("cargo ")));
+}
+
+#[cfg(unix)]
+#[test]
+fn quick_integration_ci_target_runs_with_the_manifest_without_building() {
+    let root = repository_root();
+    let output = std::process::Command::new("make")
+        .current_dir(&root)
+        .env_remove("MAKEFLAGS")
+        .env_remove("MFLAGS")
+        .env_remove("MAKELEVEL")
+        .env_remove("PANORAMIC_ARTIFACTS")
+        .args([
+            "--no-print-directory",
+            "--dry-run",
+            "run-integration-quick",
+            "PANORAMIC_ARTIFACTS=target/panoramic-artifacts.toml",
+            "PANORAMIC_LOG_DIR=integration-logs",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let commands = stdout
+        .lines()
+        .filter(|line| !line.starts_with("echo "))
+        .collect::<Vec<_>>();
+    let [command] = commands.as_slice() else {
+        panic!("expected one command, got {commands:?}");
+    };
+    // Make expands `$(shell pwd)`, which may name the checkout through a symlink (macOS `/var` is
+    // `/private/var`), so compare the case directory by what it resolves to.
+    let (before, rest) = command.split_once(" -d ").unwrap();
+    let (cases, after) = rest.split_once(' ').unwrap();
+    assert_eq!(before, "target/release/panoramic run --subject-os linux");
+    assert_eq!(
+        std::fs::canonicalize(cases).unwrap(),
+        std::fs::canonicalize(root.join("test/integration/cases")).unwrap()
+    );
+    assert_eq!(
+        after,
+        "-l integration-logs --artifacts \"target/panoramic-artifacts.toml\""
+    );
+}
+
+#[test]
 fn ci_binds_the_courier_its_jobs_build() {
     let root = repository_root();
     let e2e: Value = serde_saphyr::from_str(&read_text(&root.join(".gitlab/e2e.yml"))).unwrap();
@@ -1116,7 +1189,6 @@ fn ci_jobs_in_the_inventory_are_defined() {
         &e2e,
         &[
             r#"test-integration:"#,
-            r#"- make build-panoramic"#,
             r#"- target/release/panoramic artifacts render"#,
             r#"--set agent-adp-linux-image=${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${CI_PIPELINE_ID}"#,
             r#"--set tools-linux-image=${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA}"#,
@@ -1124,7 +1196,7 @@ fn ci_jobs_in_the_inventory_are_defined() {
             r#"--set courier-linux-binary=target/x86_64-unknown-linux-musl/release/panoramic-courier"#,
             r#"--output target/panoramic-artifacts.toml"#,
             r#"- target/release/panoramic artifacts pull -d test/integration/cases --subject-os linux --artifacts target/panoramic-artifacts.toml"#,
-            r#"- make test-integration-quick PANORAMIC_ARTIFACTS=target/panoramic-artifacts.toml"#,
+            r#"- make run-integration-quick PANORAMIC_ARTIFACTS=target/panoramic-artifacts.toml"#,
         ],
     );
     assert_ci_block_lines_in_order(
@@ -1178,6 +1250,14 @@ fn ci_jobs_in_the_inventory_are_defined() {
         &makefile,
         &[
             r#"test-integration-quick: build-panoramic build-courier-linux"#,
+            r#"@$(MAKE) run-integration-quick"#,
+        ],
+    );
+    assert_ci_block_lines_in_order(
+        "Makefile",
+        &makefile,
+        &[
+            r#"run-integration-quick: ## Runs ADP integration tests using built binaries and images"#,
             r#"@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/integration/cases $(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR)) $(PANORAMIC_ARTIFACTS_ARG)"#,
         ],
     );

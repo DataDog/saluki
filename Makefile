@@ -667,6 +667,10 @@ test-integration: ## Runs all ADP integration tests
 .PHONY: test-integration-quick
 test-integration-quick: build-panoramic build-courier-linux
 test-integration-quick: ## Runs ADP integration tests (assumes images already built)
+	@$(MAKE) run-integration-quick
+
+.PHONY: run-integration-quick
+run-integration-quick: ## Runs ADP integration tests using built binaries and images
 	@echo "[*] Running ADP integration tests (quick mode)..."
 	@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/integration/cases $(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR)) $(PANORAMIC_ARTIFACTS_ARG)
 
