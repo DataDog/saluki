@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::time::{sleep, Instant};
+use tokio::time::Instant;
 
 use super::{
     case_name, CaseDuration, CaseLoader, ConnectionTarget, Registries, StepTemplate, TypedCase, TypedCaseLoader,
@@ -21,12 +21,11 @@ use crate::{
     endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind, EndpointOperation, Port},
     handle::{probe_from_runner_host, HandleError},
     layout::{Os, Realization, RealizationKind},
-    observe::{Capture, ExitObservation},
     participant::{
         CaseValues, EffectiveConfig, ExitChannel, FactDeclaration, OutputChannel, OutputStream, ParticipantType,
         ProcessSpec,
     },
-    probe::{AttemptLimits, ProbeAnswer, POLL_INTERVAL},
+    probe::{AttemptLimits, ProbeAnswer},
     record::{AssertionStatus, StepReport},
     step::{decode_fields, Need, Step, StepContext, StepFactory, StepFields},
 };
@@ -95,28 +94,9 @@ impl Step for Probe {
                 }
             }
             if let Some(process) = &self.process {
-                let observation = cx
-                    .observation(&self.on)
-                    .expect("probe needs its participant")
-                    .process(process)
-                    .expect("probe needs a declared process")
-                    .settled()
-                    .await;
-                match observation {
-                    ExitObservation::Exited(status) if status.code == Some(0) => {}
-                    ExitObservation::Exited(status) => {
-                        return Err((
-                            AssertionStatus::Failed,
-                            format!("process '{process}' exited: {status:?}"),
-                        ))
-                    }
-                    ExitObservation::Undetermined(reason) => return Err((AssertionStatus::Errored, reason)),
-                    ExitObservation::Running => {
-                        return Err((
-                            AssertionStatus::Errored,
-                            format!("process '{process}' has no settled exit"),
-                        ))
-                    }
+                let report = crate::step::test_support::wait_for_exit(cx, &self.on, process).await;
+                if report.status != AssertionStatus::Passed {
+                    return Err((report.status, report.message));
                 }
             }
             Ok(())
@@ -164,26 +144,7 @@ impl Step for Marker {
         vec![Need::Handle(self.on.clone())]
     }
     async fn run(&self, cx: &StepContext<'_>) -> StepReport {
-        let started = Instant::now();
-        let observation = cx.observation(&self.on).expect("marker needs its participant");
-        let mut cursor = 0;
-        loop {
-            let captures = std::iter::once(observation.capture())
-                .chain(observation.outputs.values().map(|output| output.current()))
-                .collect::<Vec<_>>();
-            let (lines, next) = observation.lines.since(cursor);
-            cursor = next;
-            if lines.iter().any(|line| line.text == "marker") {
-                return StepReport::new(started, AssertionStatus::Passed, "marker observed");
-            }
-            if let Some(Capture::Failed { reason }) = captures
-                .iter()
-                .find(|capture| matches!(capture, Capture::Failed { .. }))
-            {
-                return StepReport::new(started, AssertionStatus::Errored, reason.clone());
-            }
-            sleep(POLL_INTERVAL).await;
-        }
+        crate::step::test_support::wait_for_output(cx, &self.on, "marker").await
     }
 }
 

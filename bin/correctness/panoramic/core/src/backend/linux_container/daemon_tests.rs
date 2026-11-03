@@ -989,7 +989,7 @@ async fn wait_for_capture(output: &ProcessOutput) {
 async fn wait_for_output_lines(observation: &ParticipantObservation, process: &str, count: usize) {
     timeout(Duration::from_secs(15), async {
         loop {
-            let (lines, _) = observation.lines.since(0);
+            let (lines, _) = observation.lines.since(0).unwrap();
             if lines.iter().filter(|line| line.process == Some(process)).count() >= count {
                 break;
             }
@@ -1017,7 +1017,7 @@ async fn a_processs_output_file_is_followed_while_it_runs_and_completed_after_it
         wait_for_capture(output).await;
         assert_eq!(output.paths, [dir.path().join("svc.log")]);
         assert_eq!(std::fs::read(&output.paths[0]).unwrap(), b"before\nduring\nlast");
-        let (lines, _) = observation.lines.since(0);
+        let (lines, _) = observation.lines.since(0).unwrap();
         let lines: Vec<_> = lines.iter().filter(|line| line.process == Some("svc")).collect();
         assert_eq!(lines.iter().map(|line| line.text.as_str()).collect::<Vec<_>>(), ["before", "during", "last"]);
         assert!(lines.iter().all(|line| &*line.participant == "p" && line.stream == OutputStream::Merged));
@@ -1060,7 +1060,7 @@ async fn a_log_file_created_after_following_starts_is_followed_from_its_first_by
             b"first\nsecond\n"
         );
         assert_eq!(observation.outputs["svc"].current(), Capture::Following);
-        let (lines, _) = observation.lines.since(0);
+        let (lines, _) = observation.lines.since(0).unwrap();
         assert_eq!(
             lines
                 .iter()
@@ -1090,7 +1090,7 @@ async fn the_output_of_a_process_that_exits_before_its_follower_starts_is_read_a
             std::fs::read(&observation.outputs["svc"].paths[0]).unwrap(),
             b"early\nlast"
         );
-        let (lines, _) = observation.lines.since(0);
+        let (lines, _) = observation.lines.since(0).unwrap();
         assert_eq!(
             lines
                 .iter()
@@ -1106,33 +1106,45 @@ async fn the_output_of_a_process_that_exits_before_its_follower_starts_is_read_a
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn container_output_lines_are_tagged_with_their_process_and_stream() {
-    in_scope(&["p"], courier_bytes(), |scope, tasks| async move {
-        let participant = Arc::new(start_participant(&scope, "p", &recipe("echo out; printf err >&2")).await);
-        let dir = tempfile::tempdir().unwrap();
-        let observation = participant.observe(EXIT_SPECS, &tasks, dir.path()).await;
-        let output = &observation.outputs["main"];
-        wait_for_capture(output).await;
-        assert_eq!(
-            output.paths,
-            [observation.stdout_path.clone(), observation.stderr_path.clone()]
-        );
-        assert!(!dir.path().join("main.stdout.log").exists());
-        assert_eq!(std::fs::read(&output.paths[0]).unwrap(), b"out\n");
-        assert_eq!(std::fs::read(&output.paths[1]).unwrap(), b"err");
-        let (lines, _) = observation.lines.since(0);
-        assert_eq!(lines.len(), 2);
-        assert!(lines
-            .iter()
-            .all(|line| line.process == Some("main") && &*line.participant == "p"));
-        assert_eq!(
-            lines
+    // A short-lived container can exit while its file follower is starting.
+    for delay in ["0", "0.005", "0.05"] {
+        in_scope(&["p"], courier_bytes(), move |scope, tasks| async move {
+            let participant = Arc::new(
+                start_participant(
+                    &scope,
+                    "p",
+                    &recipe(&format!("echo out; printf err >&2; sleep {delay}")),
+                )
+                .await,
+            );
+            let dir = tempfile::tempdir().unwrap();
+            let observation = participant.observe(EXIT_SPECS, &tasks, dir.path()).await;
+            let output = &observation.outputs["main"];
+            wait_for_capture(output).await;
+            wait_for_capture(&observation.outputs["svc"]).await;
+            assert_eq!(std::fs::read(&observation.outputs["svc"].paths[0]).unwrap(), b"");
+            assert_eq!(
+                output.paths,
+                [observation.stdout_path.clone(), observation.stderr_path.clone()]
+            );
+            assert!(!dir.path().join("main.stdout.log").exists());
+            assert_eq!(std::fs::read(&output.paths[0]).unwrap(), b"out\n");
+            assert_eq!(std::fs::read(&output.paths[1]).unwrap(), b"err");
+            let (lines, _) = observation.lines.since(0).unwrap();
+            assert_eq!(lines.len(), 2, "delay={delay}; {lines:#?}");
+            assert!(lines
                 .iter()
-                .map(|line| (line.stream, line.text.as_str()))
-                .collect::<Vec<_>>(),
-            [(OutputStream::Stdout, "out"), (OutputStream::Stderr, "err")]
-        );
-    })
-    .await;
+                .all(|line| line.process == Some("main") && &*line.participant == "p"));
+            assert_eq!(
+                lines
+                    .iter()
+                    .map(|line| (line.stream, line.text.as_str()))
+                    .collect::<Vec<_>>(),
+                [(OutputStream::Stdout, "out"), (OutputStream::Stderr, "err")]
+            );
+        })
+        .await;
+    }
 }
 
 #[tokio::test]

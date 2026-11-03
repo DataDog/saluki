@@ -53,13 +53,15 @@ server because port proxies can accept connections even when the server has no l
 Native procedure tests cover `passed`, `failed` and `errored` steps, fail-fast, endpoint routes, late-fact resolution,
 missing process exit records, capture failures, cancellation and case deadlines. Reclaim tests check individual
 participant entries, concurrent graceful stops, and interrupted creation that leaves both a participant and its scope
-unconfirmed.
+unconfirmed. Runner tests exercise creation and startup failures, removal during a procedure, output overflow,
+interruption and case deadlines through artifact verification and the native runner. They check `result.json` and that
+no container, volume or network with the case's scope label remains. Report tests also check native process reports
+and snapshots after a case body exceeds its cancellation grace.
 They are ignored by default. Run them with `make test-panoramic-daemon`, which builds the Linux courier first.
 `PANORAMIC_TEST_IMAGE` defaults to `alpine:latest`; load it first, because these tests never pull images.
 They fail if the daemon, image or courier is missing.
-Runner report tests check native process reports and snapshots after a case body exceeds its cancellation grace.
-After building the courier, run them with
-`cargo nextest run -p panoramic --run-ignored only runner::report_tests`.
+The target runs every ignored test in both `panoramic-core` and `panoramic`, including the runner failure and report
+tests.
 
 CI: the `test-container-daemon` job in `.gitlab/e2e.yml` runs them after airlock's daemon tests, with
 `PANORAMIC_TEST_IMAGE` set to the same local Alpine image.
@@ -138,7 +140,7 @@ make list-integration-tests  # list available tests
 CI calls `run-integration-quick` with binaries from `build-panoramic-binary`.
 
 These targets select subject OS `linux`, including on macOS, where tests run in Linux containers through the local
-Docker setup. Use the macOS Make targets for native host-process tests.
+Docker setup. Use the macOS Make targets to run tests as host processes.
 
 Pass `PANORAMIC_ARTIFACTS=<file>` on the make command line to run with an artifact manifest:
 
@@ -212,6 +214,10 @@ it arrives, keeping the streams separate. Each process declares either container
 log directory. File output reaches `<process>.stdout.log`, `<process>.stderr.log` or `<process>.log` for merged streams;
 a final read after exit appends bytes the follower missed. Lines carry their participant, process, stream and receipt
 time. Output readiness waits for a regex match in the named process's lines and fails on that process's capture error.
+Readiness and step readers share a 64 MiB line-text bound per participant across all output sources. After overflow,
+the buffer drops new lines, preserving existing cursors. Readers can consume the retained prefix, then get a capture
+error naming the bound and the output files. Empty lines count as one byte; unterminated lines are also bounded.
+Capture still writes every byte to disk, so the files remain the full output source.
 After the start levels, native Linux container cases run their procedure in the `steps` phase, using the same step
 budgets, case deadline, parallel blocks and fail-fast behavior as the integration runner. Steps receive the started
 participants' primitives, exit and output observations, planned routes, and early and late facts; late facts in step
@@ -632,7 +638,8 @@ Legacy Docker containers, their shared volume, and network share one isolation-g
 state directory have separate entries. Correctness tests have one isolation-group entry per container
 group, or one `namespace:` entry per kind namespace, and the runner stops their background tasks first. Failed or
 skipped removal adds a `resource_leaked` issue; unconfirmed removal adds `resource_unsettled`. These issues leave the
-test outcome unchanged.
+test outcome unchanged. A background task still tracked after the five-second stop budget adds a
+`tasks_still_running` issue without changing the outcome; resource cleanup still runs.
 
 ### Reading traffic artifacts
 

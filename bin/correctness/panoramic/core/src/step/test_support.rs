@@ -1,4 +1,4 @@
-//! Executes steps against a planned participant with no live resources.
+//! Step execution fixtures and readers for native lifecycle tests.
 
 use std::path::Path;
 
@@ -72,4 +72,59 @@ pub async fn run_step(factory: &dyn StepFactory, fields: &StepFields) -> StepRep
         panic!("step tests have one sequential step");
     };
     step.run(&StepContext::new(plan, BTreeMap::new())).await
+}
+
+/// Reads a started participant's container ID for daemon-side fault injection.
+pub fn container_id(cx: &StepContext<'_>, on: &str) -> Option<String> {
+    cx.late_fact(on, LateFact::ContainerId).map(str::to_owned)
+}
+
+/// Waits for a named process, reporting a step error if its exit is unknown.
+///
+/// # Panics
+///
+/// Panics if the step did not declare an existing participant and process.
+pub async fn wait_for_exit(cx: &StepContext<'_>, on: &str, process: &str) -> StepReport {
+    use crate::{observe::ExitObservation, record::AssertionStatus};
+    let started = tokio::time::Instant::now();
+    let observation = cx.observation(on).unwrap().process(process).unwrap().settled().await;
+    let (status, message) = match observation {
+        ExitObservation::Exited(status) if status.code == Some(0) => (AssertionStatus::Passed, "process exited".into()),
+        ExitObservation::Exited(status) => (AssertionStatus::Failed, format!("process exited: {status:?}")),
+        ExitObservation::Undetermined(reason) => (AssertionStatus::Errored, reason),
+        ExitObservation::Running => unreachable!("settled waits for a terminal observation"),
+    };
+    StepReport::new(started, status, message)
+}
+
+/// Waits for an exact output line, reporting a step error if capture is lost or overflows.
+///
+/// # Panics
+///
+/// Panics if the step did not declare an existing participant.
+pub async fn wait_for_output(cx: &StepContext<'_>, on: &str, text: &str) -> StepReport {
+    use crate::{observe::Capture, probe::POLL_INTERVAL, record::AssertionStatus};
+    let started = tokio::time::Instant::now();
+    let observation = cx.observation(on).unwrap();
+    let mut cursor = 0;
+    loop {
+        let captures = std::iter::once(observation.capture())
+            .chain(observation.outputs.values().map(|output| output.current()))
+            .collect::<Vec<_>>();
+        let (lines, next) = match observation.lines_since(cursor) {
+            Ok(lines) => lines,
+            Err(message) => return StepReport::new(started, AssertionStatus::Errored, message),
+        };
+        cursor = next;
+        if lines.iter().any(|line| line.text == text) {
+            return StepReport::new(started, AssertionStatus::Passed, format!("{text} observed"));
+        }
+        if let Some(Capture::Failed { reason }) = captures
+            .iter()
+            .find(|capture| matches!(capture, Capture::Failed { .. }))
+        {
+            return StepReport::new(started, AssertionStatus::Errored, reason.clone());
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
 }

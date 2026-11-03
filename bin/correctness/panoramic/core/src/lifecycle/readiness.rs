@@ -134,7 +134,9 @@ async fn check_once(
                 })?;
             // A terminal capture state is published after its last lines, so snapshot it before reading them.
             let capture = output.current();
-            let (lines, next) = observation.lines.since(*cursor);
+            let (lines, next) = observation
+                .lines_since(*cursor)
+                .map_err(|message| HandleError::Harness { message })?;
             *cursor = next;
             if lines
                 .iter()
@@ -360,6 +362,28 @@ mod tests {
             .await,
             Ok(())
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_output_gate_fails_when_capture_overflows_before_a_match() {
+        let mut server = Server::new([]);
+        server.observation.lines = crate::observe::output::OutputLines::new(5);
+        server.observation.stdout_path = "server/container.stdout.log".into();
+        server.observation.stderr_path = "server/container.stderr.log".into();
+        server.observation.outputs.get_mut("main").unwrap().paths = vec!["server/main.log".into()];
+        push_line(&server, Some("main"), "noise");
+        push_line(&server, Some("main"), "ready");
+        let started = Instant::now();
+        let error = wait_for_gates(
+            [("consumer", &output_gate())],
+            |_| (&server as &dyn Primitives, &server.observation),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error, "participant 'consumer' cannot start: checking output-matches '^ready$' on process 'main' of participant 'server' failed: output capture failed: in-memory output exceeded the 5-byte line-text bound; see output files: server/container.stderr.log, server/container.stdout.log, server/main.log");
+        assert_eq!(started.elapsed(), POLL_INTERVAL);
+        assert!(server.calls.lock().unwrap().is_empty());
     }
 
     #[tokio::test(start_paused = true)]

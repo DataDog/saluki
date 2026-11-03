@@ -104,7 +104,7 @@ impl ProcessObservation {
     }
 
     #[cfg_attr(
-        not(test),
+        not(any(test, feature = "test-util")),
         expect(dead_code, reason = "Exit steps and the run report read process exit observations.")
     )]
     /// Waits for an exit or an observation error, including loss of the channel.
@@ -211,6 +211,23 @@ impl ParticipantObservation {
         }
     }
 
+    /// Reads the retained output prefix; overflow errors name the files that still receive the full output.
+    pub(crate) fn lines_since(&self, cursor: usize) -> Result<(Vec<output::OutputLine>, usize), String> {
+        self.lines.since(cursor).map_err(|reason| {
+            let paths = [&self.stdout_path, &self.stderr_path]
+                .into_iter()
+                .chain(self.outputs.values().flat_map(|output| &output.paths))
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>();
+            format!(
+                "output capture failed: {reason}; see output files: {}",
+                paths.join(", ")
+            )
+        })
+    }
+
     pub(crate) fn snapshot(&self, specs: &[ProcessSpec]) -> Vec<ProcessReport> {
         specs
             .iter()
@@ -285,7 +302,7 @@ impl ParticipantObservation {
     }
 
     #[cfg_attr(
-        not(test),
+        not(any(test, feature = "test-util")),
         expect(dead_code, reason = "Log steps fail on a participant capture error.")
     )]
     /// Returns capture progress, reporting a closed, unfinished channel as failed.
@@ -294,7 +311,7 @@ impl ParticipantObservation {
     }
 
     #[cfg_attr(
-        not(test),
+        not(any(test, feature = "test-util")),
         expect(dead_code, reason = "Exit steps and the run report read process exit observations.")
     )]
     /// Looks up a process declared by the participant's type.
@@ -778,7 +795,7 @@ mod tests {
                 process,
             )
             .await;
-            let (lines, cursor) = fixture.observation.lines.since(0);
+            let (lines, cursor) = fixture.observation.lines.since(0).unwrap();
             assert_eq!(cursor, 2);
             for (line, text, stream) in [
                 (&lines[0], "out", OutputStream::Stdout),

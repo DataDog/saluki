@@ -46,18 +46,69 @@ pub(crate) struct OutputLine {
     pub text: String,
 }
 
-/// All lines of one participant, shared by its output sources and read with independent cursors.
-#[derive(Clone, Default)]
-pub(crate) struct OutputLines(Arc<Mutex<Vec<OutputLine>>>);
+/// Maximum retained line text per participant, shared by all its output sources.
+pub(crate) const OUTPUT_LINE_BYTES: usize = 64 * 1024 * 1024;
+
+/// A bounded prefix of one participant's lines, read with independent cursors.
+///
+/// Drop newest lines after overflow so existing cursors remain valid. Readers receive the retained prefix,
+/// then an error at the first missing line; files still receive every byte. Empty lines count as one byte.
+/// The final read after exit is transient and unbounded.
+#[derive(Clone)]
+pub(crate) struct OutputLines(Arc<Mutex<LineStorage>>);
+
+struct LineStorage {
+    lines: Vec<OutputLine>,
+    bytes: usize,
+    limit: usize,
+    overflowed: bool,
+}
+
+impl Default for OutputLines {
+    fn default() -> Self {
+        Self::new(OUTPUT_LINE_BYTES)
+    }
+}
 
 impl OutputLines {
-    pub(crate) fn push(&self, line: OutputLine) {
-        self.0.lock().unwrap().push(line);
+    pub(crate) fn new(limit: usize) -> Self {
+        Self(Arc::new(Mutex::new(LineStorage {
+            lines: Vec::new(),
+            bytes: 0,
+            limit,
+            overflowed: false,
+        })))
     }
 
-    pub(crate) fn since(&self, index: usize) -> (Vec<OutputLine>, usize) {
-        let lines = self.0.lock().unwrap();
-        (lines[index..].to_vec(), lines.len())
+    pub(crate) fn push(&self, line: OutputLine) {
+        let mut storage = self.0.lock().unwrap();
+        let bytes = line.text.len().max(1);
+        if storage.overflowed || bytes > storage.limit - storage.bytes {
+            storage.overflowed = true;
+            return;
+        }
+        storage.bytes += bytes;
+        storage.lines.push(line);
+    }
+
+    // Bound unterminated lines too, before a source can accumulate arbitrarily many chunks.
+    fn accepts_partial(&self, bytes: usize) -> bool {
+        let mut storage = self.0.lock().unwrap();
+        if bytes > storage.limit - storage.bytes {
+            storage.overflowed = true;
+        }
+        !storage.overflowed
+    }
+
+    pub(crate) fn since(&self, index: usize) -> Result<(Vec<OutputLine>, usize), String> {
+        let storage = self.0.lock().unwrap();
+        if index == storage.lines.len() && storage.overflowed {
+            return Err(format!(
+                "in-memory output exceeded the {}-byte line-text bound",
+                storage.limit
+            ));
+        }
+        Ok((storage.lines[index..].to_vec(), storage.lines.len()))
     }
 }
 
@@ -92,11 +143,25 @@ impl LineBuffer {
         self.received = received;
         let mut remaining = bytes;
         while let Some(end) = remaining.iter().position(|byte| *byte == b'\n') {
-            self.pending.extend_from_slice(&remaining[..end]);
+            if !self.append(&remaining[..end]) {
+                return;
+            }
             self.publish();
             remaining = &remaining[end + 1..];
         }
-        self.pending.extend_from_slice(remaining);
+        self.append(remaining);
+    }
+
+    fn append(&mut self, bytes: &[u8]) -> bool {
+        if !self
+            .lines
+            .accepts_partial(self.pending.len().saturating_add(bytes.len()))
+        {
+            self.pending = Vec::new();
+            return false;
+        }
+        self.pending.extend_from_slice(bytes);
+        true
     }
 
     pub(crate) fn finish(&mut self) {
@@ -273,12 +338,12 @@ mod tests {
         let first = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
         let second = first + Duration::from_secs(1);
         source.push(b"one\ntw", first);
-        let (read, cursor) = lines.since(0);
+        let (read, cursor) = lines.since(0).unwrap();
         assert_eq!(cursor, 1);
         assert_eq!(read[0].text, "one");
         assert_eq!(read[0].received, first);
         source.push(b"o\nthree\n", second);
-        let (read, next) = lines.since(cursor);
+        let (read, next) = lines.since(cursor).unwrap();
         assert_eq!(next, 3);
         assert_eq!(
             read.iter().map(|line| line.text.as_str()).collect::<Vec<_>>(),
@@ -291,7 +356,7 @@ mod tests {
             assert_eq!(line.received, second);
         }
         source.finish();
-        assert!(lines.since(next).0.is_empty());
+        assert!(lines.since(next).unwrap().0.is_empty());
     }
 
     #[test]
@@ -300,13 +365,65 @@ mod tests {
         let mut source = LineBuffer::new(lines.clone(), "p".into(), None, OutputStream::Stderr);
         let received = SystemTime::UNIX_EPOCH;
         source.push(b"partial", received);
-        assert!(lines.since(0).0.is_empty());
+        assert!(lines.since(0).unwrap().0.is_empty());
         source.finish();
         source.finish();
-        let (read, cursor) = lines.since(0);
+        let (read, cursor) = lines.since(0).unwrap();
         assert_eq!(cursor, 1);
         assert_eq!(read[0].text, "partial");
         assert_eq!(read[0].received, received);
+    }
+
+    #[test]
+    fn output_overflow_preserves_the_prefix_and_fails_every_cursor_at_the_gap() {
+        let lines = OutputLines::new(6);
+        let mut stdout = LineBuffer::new(lines.clone(), "p".into(), Some("main"), OutputStream::Stdout);
+        let mut stderr = LineBuffer::new(lines.clone(), "p".into(), Some("worker"), OutputStream::Stderr);
+        stdout.push(b"abc\n", SystemTime::now());
+        let (_, cursor) = lines.since(0).unwrap();
+        stderr.push(b"def\n", SystemTime::now());
+        assert_eq!(lines.0.lock().unwrap().bytes, 6);
+        stdout.push(b"dropped\n", SystemTime::now());
+        stderr.push(b"x\n", SystemTime::now());
+        let (prefix, end) = lines.since(0).unwrap();
+        assert_eq!(
+            prefix.iter().map(|line| line.text.as_str()).collect::<Vec<_>>(),
+            ["abc", "def"]
+        );
+        assert_eq!(lines.since(cursor).unwrap().0[0].text, "def");
+        assert_eq!(
+            lines.since(end).unwrap_err(),
+            "in-memory output exceeded the 6-byte line-text bound"
+        );
+        let storage = lines.0.lock().unwrap();
+        assert_eq!(storage.bytes, 6);
+        assert_eq!(storage.lines.len(), 2);
+    }
+
+    #[test]
+    fn output_overflow_bounds_unterminated_lines_and_lossy_utf8_and_empty_lines() {
+        for chunks in [
+            vec![&b"ab"[..], &b"cd"[..]],
+            vec![&b"\xff\xff\n"[..]],
+            vec![&b"\n\n\n\n"[..]],
+        ] {
+            let lines = OutputLines::new(3);
+            let mut source = LineBuffer::new(lines.clone(), "p".into(), None, OutputStream::Stdout);
+            for chunk in chunks {
+                source.push(chunk, SystemTime::now());
+            }
+            source.finish();
+            let storage = lines.0.lock().unwrap();
+            assert!(storage.overflowed);
+            assert!(storage.bytes <= 3);
+            let end = storage.lines.len();
+            drop(storage);
+            assert!(source.pending.is_empty());
+            assert_eq!(
+                lines.since(end).unwrap_err(),
+                "in-memory output exceeded the 3-byte line-text bound"
+            );
+        }
     }
 
     struct Fixture {
@@ -369,7 +486,13 @@ mod tests {
         }
 
         fn texts(&self) -> Vec<String> {
-            self.lines.since(0).0.into_iter().map(|line| line.text).collect()
+            self.lines
+                .since(0)
+                .unwrap()
+                .0
+                .into_iter()
+                .map(|line| line.text)
+                .collect()
         }
 
         fn assert_failed(&self, expected: &str) {

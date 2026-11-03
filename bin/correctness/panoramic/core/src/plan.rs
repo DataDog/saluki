@@ -604,6 +604,15 @@ fn plan_participants(
 #[cfg(test)]
 pub(crate) mod fixtures;
 
+/// Plan identities used by daemon tests to find their resources after a failure.
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_support {
+    /// Returns the isolation-group label for a native case, or `None` for a typed case.
+    pub fn scope_id<C>(plan: &super::CasePlan<C>) -> Option<String> {
+        plan.participants().map(|plan| plan.scope().id())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;

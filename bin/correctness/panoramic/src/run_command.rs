@@ -200,7 +200,7 @@ async fn check_providability(
 }
 
 /// Verifies selected artifacts and loads native inputs before creating any run logs.
-async fn prepare_artifacts(
+pub(crate) async fn prepare_artifacts(
     backends: Arc<RunBackends>, cmd: &cli::RunCommand, console: &Console, subject_os: Os, built: &[BuiltCase],
     unprovidable: &BTreeMap<Realization, String>,
 ) -> Result<(Option<Vec<VerifiedArtifact>>, Option<NativeInputs>), SetupFailure> {

@@ -77,14 +77,13 @@ impl<'a> StepContext<'a> {
     }
 
     #[cfg_attr(
-        not(test),
+        not(any(test, feature = "test-util")),
         expect(dead_code, reason = "Exit and output observations for native steps.")
     )]
     pub(crate) fn observation(&self, name: &str) -> Option<&ParticipantObservation> {
         self.participants.get(name).map(|participant| participant.observation)
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "Execution-time facts for native steps."))]
     pub(crate) fn late_fact(&self, name: &str, fact: LateFact) -> Option<&str> {
         self.participants.get(name)?.late.get(&fact).copied()
     }

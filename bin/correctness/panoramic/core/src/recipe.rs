@@ -52,4 +52,22 @@ pub mod test_support {
             mounts: vec![],
         })
     }
+
+    /// Builds a shell fixture from `SCRIPT`, with optional `ENTRYPOINT` and `HOST_MOUNT` fault injection.
+    pub fn shell(image: ArtifactRole, config: &crate::participant::RenderedConfig) -> Recipe {
+        let script = config.env.get("SCRIPT").map_or("exec sleep 60", String::as_str);
+        let Recipe::Container(mut recipe) = container(image, &["sh", "-c"], &[script]);
+        recipe.env = config.env.clone();
+        if let Some(entrypoint) = config.env.get("ENTRYPOINT") {
+            recipe.entrypoint = Some(vec![entrypoint.clone()]);
+        }
+        if let Some(host_path) = config.env.get("HOST_MOUNT") {
+            recipe.mounts.push(HostMount {
+                host_path: host_path.clone(),
+                container_path: "/fixture".into(),
+                read_only: true,
+            });
+        }
+        Recipe::Container(recipe)
+    }
 }

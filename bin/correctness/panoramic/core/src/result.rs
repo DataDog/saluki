@@ -318,6 +318,8 @@ pub enum IssueKind {
     PostVerdictDeadline,
     /// The test did not return within the grace period after it was stopped.
     CleanupGraceExpired,
+    /// Background tasks remained tracked after their stop budget expired.
+    TasksStillRunning,
     /// A registered resource likely remains after failed or skipped removal.
     ResourceLeaked,
     /// A registered resource's removal is unconfirmed.
@@ -330,6 +332,7 @@ impl fmt::Display for IssueKind {
         let name = match self {
             Self::PostVerdictDeadline => "post_verdict_deadline",
             Self::CleanupGraceExpired => "cleanup_grace_expired",
+            Self::TasksStillRunning => "tasks_still_running",
             Self::ResourceLeaked => "resource_leaked",
             Self::ResourceUnsettled => "resource_unsettled",
         };

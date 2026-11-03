@@ -533,6 +533,12 @@ impl Runner {
                 "Background tasks were still tracked after the {:?} stop budget expired.",
                 TASK_STOP_TIME
             );
+            result.issues.push(Issue {
+                kind: IssueKind::TasksStillRunning,
+                message: format!(
+                    "{running} background task(s) still tracked after the {TASK_STOP_TIME:?} stop budget expired."
+                ),
+            });
         }
         let (reclaim, issues) = ledger.reclaim(deadline).await;
         if !reclaim.is_empty() {
@@ -2411,6 +2417,66 @@ mod tests {
         assert!(dropped.directory_existed, "the task should stop before reclaim");
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tasks_outliving_the_stop_budget_are_reported_without_changing_the_verdict() {
+        struct Blocks {
+            release: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl Test for Blocks {
+            fn images(&self) -> std::collections::BTreeMap<&str, String> {
+                Default::default()
+            }
+            async fn run(&self, tctx: TestContext) -> TestResult {
+                let release = self.release.lock().unwrap().take().unwrap();
+                let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+                tctx.tasks.spawn(async move {
+                    let _ = started_tx.send(());
+                    // Synchronous work holds a worker beyond cooperative cancellation; dropping the sender releases it.
+                    let _ = release.recv();
+                });
+                started_rx.await.unwrap();
+                TestResult::from_assertions("blocked-task", Duration::ZERO, Vec::new(), Vec::new())
+            }
+        }
+
+        let logs = tempfile::tempdir().unwrap();
+        let (release, receiver) = std::sync::mpsc::channel();
+        let built = BuiltCase {
+            plan: ScriptedTest::new("blocked-task", Behavior::Pass).plan(),
+            execution: Execution::Runner(Box::new(Blocks {
+                release: std::sync::Mutex::new(Some(receiver)),
+            })),
+        };
+        let result = run_with_settings(
+            &built,
+            test_runner_settings(logs.path()),
+            logs.path(),
+            &CancellationToken::new(),
+            Duration::from_secs(15),
+        )
+        .await;
+        drop(release);
+        assert_eq!(result.outcome, TestOutcome::Passed);
+        assert_eq!(
+            result.issues,
+            [issue(
+                IssueKind::TasksStillRunning,
+                "1 background task(s) still tracked after the 5s stop budget expired."
+            )]
+        );
+        let report = written_report(&result);
+        assert_eq!(report["outcome"], "passed");
+        assert_eq!(
+            report["issues"],
+            serde_json::json!([{
+                "kind": "tasks_still_running", "message": result.issues[0].message,
+            }])
+        );
+        assert_eq!(IssueKind::TasksStillRunning.to_string(), "tasks_still_running");
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_timed_out_case_stops_its_tasks_at_the_deadline() {
         let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
@@ -2832,3 +2898,6 @@ while :; do sleep 1; done"#
 
 #[cfg(test)]
 mod report_tests;
+
+#[cfg(test)]
+mod daemon_tests;

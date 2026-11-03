@@ -254,7 +254,7 @@ async fn run_report_case(stall: bool) {
     assert_scope_removed(id).await;
 }
 
-async fn assert_scope_removed(id: &str) {
+pub(super) async fn assert_scope_removed(id: &str) {
     use bollard::query_parameters::{
         ListContainersOptionsBuilder, ListNetworksOptionsBuilder, ListVolumesOptionsBuilder,
     };
@@ -285,13 +285,13 @@ async fn assert_scope_removed(id: &str) {
 }
 
 #[tokio::test]
-#[ignore = "needs a Docker daemon and built Linux courier"]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn the_runner_reports_native_processes_and_per_participant_reclaim() {
     run_report_case(false).await;
 }
 
 #[tokio::test]
-#[ignore = "needs a Docker daemon and built Linux courier"]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn the_runner_snapshots_participants_after_dropping_a_case_body_that_outlived_its_grace() {
     run_report_case(true).await;
 }
