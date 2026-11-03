@@ -1,0 +1,15 @@
+# Docs: https://datadoghq.atlassian.net/wiki/spaces/SECENG/pages/5138645099/User+guide+dd-octo-sts
+issuer: https://token.actions.githubusercontent.com
+
+# `pull_request_target` runs report the generic `pull_request` subject, while `workflow_dispatch` runs report the ref.
+subject_pattern: repo:DataDog/saluki:(pull_request|ref:refs/heads/main)
+
+claim_pattern:
+  event_name: (pull_request_target|workflow_dispatch)
+  ref: refs/heads/main
+  ref_protected: "true"
+  job_workflow_ref: DataDog/saluki/\.github/workflows/backport\.yml@refs/heads/main
+
+permissions:
+  contents: write
+  pull_requests: write
