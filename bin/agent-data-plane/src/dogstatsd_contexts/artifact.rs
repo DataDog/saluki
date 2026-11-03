@@ -2,6 +2,7 @@ use std::error::Error;
 use std::fmt;
 #[cfg(unix)]
 use std::fs;
+#[cfg(any(unix, test))]
 use std::fs::File;
 #[cfg(unix)]
 use std::io;
