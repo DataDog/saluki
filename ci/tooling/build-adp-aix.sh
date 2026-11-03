@@ -35,6 +35,11 @@ export RANLIB="${ADP_AIX_RANLIB}"
 # - It lists symbols with `${NM} -a`, which AIX's `nm` rejects, so we point it at a wrapper. If this breaks, the build
 #   still succeeds, but without jemalloc's internal symbols namespaced.
 # - Its generated awk scripts need gawk; AIX's `nawk` rejects them. Configure picks gawk up from `PATH`.
+#
+# All of these, including the gawk requirement below and `ci/tooling/aix-jemalloc/`, can go once a tikv-jemalloc-sys
+# release bundles a jemalloc with https://github.com/jemalloc/jemalloc/pull/3064. Separately, once a release includes
+# https://github.com/tikv/jemallocator/pull/197, which always uses prefixed symbols on AIX, the AIX-specific
+# `tikv-jemallocator` entry in `bin/agent-data-plane/Cargo.toml` can be folded back into the Linux one.
 jemalloc_compat_dir="${repo_root}/ci/tooling/aix-jemalloc"
 export CFLAGS_powerpc64_ibm_aix="${CFLAGS_powerpc64_ibm_aix:+${CFLAGS_powerpc64_ibm_aix} }-g2"
 export EXTRA_CFLAGS="-I${jemalloc_compat_dir}/include${EXTRA_CFLAGS:+ ${EXTRA_CFLAGS}}"
