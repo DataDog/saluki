@@ -1272,6 +1272,54 @@ mod tests {
         assert!(error.to_string().contains("command was cancelled"), "{error:#}");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn empty_infinite_replay_yields_to_other_tasks_on_a_single_threaded_runtime() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let socket_path = directory.path().join("replay.sock");
+        let capture_path = directory.path().join("empty.dog");
+        std::fs::write(&capture_path, EMPTY_CAPTURE).expect("empty capture should be written");
+
+        // The watchdog runs on the test thread, because a timer on a starved runtime can't fire.
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime should build");
+            let result = runtime.block_on(async move {
+                let _receiver = tokio::net::UnixDatagram::bind(&socket_path).expect("receiver should bind");
+                let mut reader =
+                    super::TrafficCaptureReader::from_path(&capture_path).expect("empty capture should load");
+                let cancellation = CancellationToken::new();
+                let replay = tokio::spawn({
+                    let cancellation = cancellation.clone();
+                    async move {
+                        super::run_dogstatsd_replay(
+                            &mut reader,
+                            ReplayTarget::UnixDatagram(socket_path),
+                            0,
+                            &cancellation,
+                        )
+                        .await
+                    }
+                });
+                tokio::spawn(async move { cancellation.cancel() })
+                    .await
+                    .expect("cancelling task should run");
+                replay.await
+            });
+            let _ = done_tx.send(result);
+        });
+
+        let result = done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("replaying an empty capture forever must yield so that another task can cancel it");
+        result
+            .expect("replay task should not panic")
+            .expect("cancelled replay should not fail");
+    }
+
     #[tokio::test]
     async fn remote_replay_session_started_before_cancellation_is_finished() {
         let cancellation = CancellationToken::new();
