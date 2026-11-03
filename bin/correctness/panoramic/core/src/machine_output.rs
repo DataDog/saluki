@@ -12,7 +12,8 @@ use crate::artifact::VerifiedArtifact;
 use crate::layout::{LayoutEntry, Os};
 use crate::record::StepStatus;
 use crate::result::{
-    DurationMs, Issue, PhaseTiming, ReclaimEntry, StopCause, TestError, TestOutcome, TestResult, TimeoutAttribution,
+    DurationMs, Issue, ParticipantReport, PhaseTiming, ReclaimEntry, StopCause, TestError, TestOutcome, TestResult,
+    TimeoutAttribution,
 };
 
 /// Reported when the build could not read a repository to get a revision from.
@@ -174,6 +175,8 @@ pub struct TestReport {
     /// Planned layout, including when setup failed. Cases with a top-level `type` have one entry without
     /// a participant; skipped cases have `null`.
     pub(crate) layout: Option<Vec<LayoutEntry>>,
+    /// Native participants whose creation was attempted and their observed processes.
+    pub(crate) participants: Vec<ParticipantReport>,
     /// How long the test took.
     pub(crate) duration_ms: u64,
     /// Absolute path of this test's log directory, when the runner knows it.
@@ -381,6 +384,7 @@ impl TestReport {
             outcome: TestOutcome::Skipped,
             skip_reason: Some(skip_reason(subject_os)),
             layout: None,
+            participants: Vec::new(),
             duration_ms: 0,
             log_dir: None,
             artifacts: Vec::new(),
@@ -435,7 +439,7 @@ impl TestReport {
         let (diagnostic_lines, diagnostic_lines_truncated) = if result.outcome.is_passed() {
             (Vec::new(), false)
         } else {
-            collect_diagnostic_lines(&artifacts)
+            collect_diagnostic_lines(diagnostic_sources(result, &artifacts))
         };
 
         Self {
@@ -444,6 +448,7 @@ impl TestReport {
             outcome: result.outcome,
             skip_reason: None,
             layout: result.layout.clone(),
+            participants: result.participants.clone(),
             duration_ms: DurationMs(result.duration).as_millis(),
             log_dir: result.log_dir.clone(),
             artifacts,
@@ -476,19 +481,52 @@ pub fn revision(sha: &str, dirty: &str) -> String {
     }
 }
 
+fn diagnostic_sources(result: &TestResult, artifacts: &[PathBuf]) -> Vec<(PathBuf, CapturedStream)> {
+    if result.participants.is_empty() {
+        return artifacts
+            .iter()
+            .filter_map(|path| CapturedStream::from_artifact(path).map(|stream| (path.clone(), stream)))
+            .collect();
+    }
+    let mut sources = Vec::new();
+    for participant in &result.participants {
+        for process in &participant.processes {
+            for (path, stream) in [
+                (&process.output.stdout, CapturedStream::Stdout),
+                (&process.output.stderr, CapturedStream::Stderr),
+                (&process.output.merged, CapturedStream::Combined),
+            ] {
+                if let Some(path) = path {
+                    sources.push((path.clone(), stream));
+                }
+            }
+        }
+        if let Some(log_dir) = &result.log_dir {
+            let dir = log_dir.join(&participant.name);
+            let stdout = dir.join("container.stdout.log");
+            let stderr = dir.join("container.stderr.log");
+            let owned = participant.processes.iter().any(|process| {
+                process.output.stdout.as_ref() == Some(&stdout) && process.output.stderr.as_ref() == Some(&stderr)
+            });
+            if !owned {
+                sources.extend([(stdout, CapturedStream::Stdout), (stderr, CapturedStream::Stderr)]);
+            }
+        }
+    }
+    sources.sort_by(|a, b| a.0.cmp(&b.0));
+    sources.dedup_by(|a, b| a.0 == b.0);
+    sources
+}
+
 /// Scans a test's captured output for lines worth reading first, capped and in artifact order.
 ///
 /// Returns the lines and whether the cap cut the set short.
-fn collect_diagnostic_lines(artifacts: &[PathBuf]) -> (Vec<DiagnosticLine>, bool) {
+fn collect_diagnostic_lines(sources: Vec<(PathBuf, CapturedStream)>) -> (Vec<DiagnosticLine>, bool) {
     let mut lines = Vec::new();
     let mut truncated = false;
 
-    for artifact in artifacts {
-        let Some(stream) = CapturedStream::from_artifact(artifact) else {
-            continue;
-        };
-
-        let Ok(file) = std::fs::File::open(artifact) else {
+    for (artifact, stream) in sources {
+        let Ok(file) = std::fs::File::open(&artifact) else {
             continue;
         };
 
@@ -1033,6 +1071,104 @@ mod tests {
             .diagnostic_lines
             .iter()
             .all(|line| line.reason == DiagnosticReason::SeverityMarker));
+    }
+
+    #[test]
+    fn native_diagnostics_use_declared_streams_and_unowned_container_output_only() {
+        use crate::{
+            layout::RealizationKind,
+            result::{ExitSource, ProcessExitReport, ProcessOutputReport, ProcessReport},
+        };
+        let logs = tempfile::tempdir().unwrap();
+        let dir = logs.path().join("subject");
+        std::fs::create_dir(&dir).unwrap();
+        for (name, contents) in [
+            ("a.stdout.log", "plain error stream\n"),
+            ("b.stderr.log", "ordinary merged output\nERROR merged\n"),
+            ("c.data", "ordinary stdout\nERROR stdout\n"),
+            ("container.stderr.log", "runtime message\n"),
+            ("container.stdout.log", "ordinary runtime output\nERROR runtime\n"),
+            ("stray.stderr.log", "ERROR unrelated artifact\n"),
+        ] {
+            std::fs::write(dir.join(name), contents).unwrap();
+        }
+        let process = |name: &str, output| ProcessReport {
+            name: name.into(),
+            exit: ProcessExitReport::Running {
+                source: ExitSource::Record,
+            },
+            output,
+        };
+        let mut result = TestResult::errored(
+            "native",
+            crate::result::ErrorKind::Evaluation,
+            "failed",
+            Duration::ZERO,
+            vec![],
+        );
+        result.log_dir = Some(logs.path().into());
+        result.participants = vec![ParticipantReport {
+            name: "subject".into(),
+            participant_type: "fixture".into(),
+            os: Os::Linux,
+            realization: RealizationKind::LinuxContainer,
+            processes: vec![
+                process(
+                    "a",
+                    ProcessOutputReport {
+                        stderr: Some(dir.join("a.stdout.log")),
+                        ..Default::default()
+                    },
+                ),
+                process(
+                    "b",
+                    ProcessOutputReport {
+                        merged: Some(dir.join("b.stderr.log")),
+                        ..Default::default()
+                    },
+                ),
+                process(
+                    "c",
+                    ProcessOutputReport {
+                        stdout: Some(dir.join("c.data")),
+                        ..Default::default()
+                    },
+                ),
+            ],
+        }];
+        for owned in [false, true] {
+            if owned {
+                result.participants[0].processes.push(process(
+                    "main",
+                    ProcessOutputReport {
+                        stdout: Some(dir.join("container.stdout.log")),
+                        stderr: Some(dir.join("container.stderr.log")),
+                        merged: None,
+                    },
+                ));
+            }
+            let report = TestReport::new(&result);
+            assert_eq!(
+                report
+                    .diagnostic_lines
+                    .iter()
+                    .map(|line| (line.text.as_str(), line.reason))
+                    .collect::<Vec<_>>(),
+                [
+                    ("plain error stream", DiagnosticReason::CapturedStderr),
+                    ("ERROR merged", DiagnosticReason::SeverityMarker),
+                    ("ERROR stdout", DiagnosticReason::SeverityMarker),
+                    ("runtime message", DiagnosticReason::CapturedStderr),
+                    ("ERROR runtime", DiagnosticReason::SeverityMarker),
+                ]
+            );
+            assert_eq!(report.artifacts.len(), 6);
+            assert_eq!(report.participants, result.participants);
+            assert_eq!(
+                serde_json::to_value(&report).unwrap()["participants"],
+                serde_json::to_value(&result.participants).unwrap()
+            );
+        }
     }
 
     #[test]

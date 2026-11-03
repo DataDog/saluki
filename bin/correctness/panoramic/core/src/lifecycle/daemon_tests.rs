@@ -41,6 +41,9 @@ impl ParticipantType for Fixture {
     fn supports(&self) -> &'static [(Os, RealizationKind)] {
         &[(Os::Linux, RealizationKind::LinuxContainer)]
     }
+    fn stop_grace(&self, _: Realization) -> Duration {
+        Duration::from_secs(1)
+    }
     fn artifacts(&self, _: Realization) -> &'static [ArtifactRole] {
         &[IMAGE, COURIER_LINUX_BINARY]
     }
@@ -154,12 +157,12 @@ impl Observed {
         .await
         .expect("the consumer must record whether the server's marker existed at startup");
         assert_eq!(saw, b"yes\n");
-        assert_eq!(self.result.phase_timings.last().unwrap().phase, "steps");
+        assert_eq!(self.result.phase_timings.last().unwrap().phase, "observe");
     }
 
     async fn assert_consumer_never_started(&self) {
         assert_eq!(self.result.error.as_ref().unwrap().kind, ErrorKind::Setup);
-        assert_eq!(self.result.phase_timings.last().unwrap().phase, "start:consumer");
+        assert_eq!(self.result.phase_timings.last().unwrap().phase, "observe");
         let state = self.container("consumer").await.state.unwrap();
         assert_eq!(state.running, Some(false));
         assert!(state.started_at.unwrap().starts_with("0001"));
@@ -275,6 +278,7 @@ async fn with_case_control<F: Future<Output = ()> + Send + 'static>(
     let tasks = CaseTasks::new(&cancel);
     let logs = tempfile::tempdir().unwrap();
     let control = CaseControl {
+        observations: Observations::default(),
         record: CaseRecord::default(),
         deadline: Deadline::after(
             Budget::Case,
@@ -299,10 +303,17 @@ async fn with_case_control<F: Future<Output = ()> + Send + 'static>(
                 }
                 std::future::pending::<()>().await;
             };
-            let result = tokio::select! {
+            let mut result = tokio::select! {
                 result = run => result,
                 () = interrupt => unreachable!("the interruption observer waits for the case"),
             };
+            result.participants = control.observations.snapshot();
+            let mut expected_resources = vec![format!("isolation_group:{}", plan.scope().unwrap().id())];
+            for name in plan.create_order().unwrap().iter().flatten() {
+                if result.participants.iter().any(|participant| &participant.name == name) {
+                    expected_resources.push(format!("participant:{name}"));
+                }
+            }
             check(Observed {
                 docker: test_docker,
                 plan,
@@ -313,12 +324,14 @@ async fn with_case_control<F: Future<Output = ()> + Send + 'static>(
                 log_dir: control.log_dir.clone(),
             })
             .await;
+            expected_resources
         })
         .await
-        .expect("native scenario exceeded one minute");
+        .expect("native scenario exceeded one minute")
     })
     .await;
     let remaining_tasks = tasks.stop_all(TokioInstant::now() + TASK_STOP_TIME).await;
+    let registered = ledger.labels();
     let (reclaimed, issues) = ledger.reclaim(TokioInstant::now() + Duration::from_secs(30)).await;
     let remaining = timeout(Duration::from_secs(30), remaining_resources(&docker, &id))
         .await
@@ -327,11 +340,21 @@ async fn with_case_control<F: Future<Output = ()> + Send + 'static>(
     assert_eq!(remaining_tasks, 0, "{id}: observation tasks must stop before reclaim");
     assert!(remaining.is_empty(), "{id}: {remaining:?}");
     assert!(issues.is_empty(), "{id}: {issues:?}");
-    assert_eq!(reclaimed.len(), 1);
-    assert_eq!(reclaimed[0].resource, format!("isolation_group:{id}"));
-    assert_eq!(reclaimed[0].result, ReclaimResult::Reclaimed);
-    if let Err(error) = outcome {
-        std::panic::resume_unwind(error.into_panic());
+    assert_eq!(
+        reclaimed.iter().map(|entry| &entry.resource).collect::<Vec<_>>(),
+        registered.iter().rev().collect::<Vec<_>>()
+    );
+    assert_eq!(reclaimed.last().unwrap().resource, format!("isolation_group:{id}"));
+    for entry in &reclaimed {
+        assert_eq!(entry.result, ReclaimResult::Reclaimed);
+        assert_eq!(
+            entry.participant.as_deref(),
+            entry.resource.strip_prefix("participant:")
+        );
+    }
+    match outcome {
+        Ok(expected_resources) => assert_eq!(registered, expected_resources),
+        Err(error) => std::panic::resume_unwind(error.into_panic()),
     }
 }
 
@@ -386,9 +409,19 @@ async fn a_native_case_creates_its_participants_in_create_order_starts_them_and_
                 "create:consumer",
                 "start:peer,sibling",
                 "start:consumer",
-                "steps"
+                "steps",
+                "observe"
             ]
         );
+        assert_eq!(
+            view.result
+                .participants
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>(),
+            ["consumer", "peer", "sibling"]
+        );
+        assert!(view.result.participants.iter().all(|p| p.processes.len() == 2));
         for name in ["consumer", "peer", "sibling"] {
             let container = view.container(name).await;
             assert_eq!(container.state.unwrap().running, Some(true));
@@ -456,7 +489,7 @@ async fn a_participant_that_exits_immediately_still_starts() {
         "[{step: noop}]",
         |view| async move {
             assert_eq!(view.result.outcome, TestOutcome::Passed, "{:?}", view.result.error);
-            assert_eq!(view.result.phase_timings.last().unwrap().phase, "steps");
+            assert_eq!(view.result.phase_timings.last().unwrap().phase, "observe");
             assert!(!view
                 .container("subject")
                 .await
@@ -480,6 +513,15 @@ async fn a_participant_that_fails_to_start_is_a_setup_error_in_its_start_phase()
             assert!(error.message.contains(&format!("participant '{name}'")), "{error:?}");
         }
         assert_eq!(view.result.phase_timings.last().unwrap().phase, "start:first,second");
+        assert_eq!(
+            view.result
+                .participants
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+        assert!(view.result.participants.iter().all(|p| p.processes.is_empty()));
     })
     .await;
 }
@@ -593,7 +635,12 @@ async fn an_endpoint_that_never_answers_200_fails_its_consumers_start_within_its
         let expected = "participant 'consumer' cannot start: http-ok on 'api' at '/ready' of participant 'server' \
                         was not ready within 2s: answered HTTP 503";
         assert_eq!(view.result.error.as_ref().unwrap().message, expected);
-        let phase = view.result.phase_timings.last().unwrap();
+        let phase = view
+            .result
+            .phase_timings
+            .iter()
+            .find(|phase| phase.phase == "start:consumer")
+            .unwrap();
         assert!(phase.duration >= Duration::from_secs(2), "{phase:?}");
         assert!(phase.duration < Duration::from_secs(5), "{phase:?}");
     })
@@ -636,7 +683,12 @@ async fn a_server_that_exits_before_accepting_fails_its_consumers_start_without_
             "{message}"
         );
         assert!(message.contains("participant 'server'"), "{message}");
-        let phase = view.result.phase_timings.last().unwrap();
+        let phase = view
+            .result
+            .phase_timings
+            .iter()
+            .find(|phase| phase.phase == "start:consumer")
+            .unwrap();
         assert!(phase.duration < Duration::from_secs(10), "{phase:?}");
     })
     .await;
@@ -671,7 +723,12 @@ async fn a_consumer_waiting_for_an_http_endpoint_stops_when_its_server_exits() {
             message.contains("participant 'server' exited with code 3 before http-ok on 'api'"),
             "{message}"
         );
-        let phase = view.result.phase_timings.last().unwrap();
+        let phase = view
+            .result
+            .phase_timings
+            .iter()
+            .find(|phase| phase.phase == "start:consumer")
+            .unwrap();
         assert!(phase.duration < Duration::from_secs(10), "{phase:?}");
         assert_eq!(view.output("server", "stdout", "bye").await, "bye\n");
     })
@@ -727,7 +784,7 @@ async fn a_passing_procedure_runs_after_start_and_passes_the_case() {
             assert_eq!(view.result.outcome, TestOutcome::Passed);
             assert!(view.record.decided());
             assert_eq!(view.result.phase_timings.iter().map(|phase| phase.phase.as_str()).collect::<Vec<_>>(),
-                ["prepare", "create:subject", "start:subject", "steps"]);
+                ["prepare", "create:subject", "start:subject", "steps", "observe"]);
             assert_eq!(view.result.assertion_results.iter().map(|step| (step.step, step.member, step.status)).collect::<Vec<_>>(),
                 [(0, None, StepStatus::Passed), (1, Some(0), StepStatus::Passed), (1, Some(1), StepStatus::Passed)]);
         },
@@ -842,7 +899,7 @@ async fn interrupted_procedure(stop: Stop) {
                     .collect::<Vec<_>>(),
                 [StepStatus::Interrupted, StepStatus::NotRun]
             );
-            assert_eq!(view.result.phase_timings.last().unwrap().phase, "steps");
+            assert_eq!(view.result.phase_timings.last().unwrap().phase, "observe");
         },
     )
     .await;

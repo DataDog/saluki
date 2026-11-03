@@ -1,6 +1,6 @@
 //! Participant type declarations, effective configuration and realization-specific early facts.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::Duration};
 
 use crate::{
     artifact::ArtifactRole,
@@ -161,6 +161,9 @@ pub enum OutputStream {
     Merged,
 }
 
+/// Default graceful-stop allowance, matching the ten-second Docker stop timeout.
+const DEFAULT_STOP_GRACE: Duration = Duration::from_secs(10);
+
 /// A participant type a case may name, and what it accepts and provides.
 pub trait ParticipantType: Send + Sync {
     /// Registry name, as written in a participant's `type`.
@@ -175,6 +178,11 @@ pub trait ParticipantType: Send + Sync {
     /// Artifact roles this type runs as one realization. Called only with realizations from [`Self::supports`].
     /// Every declaration of a role name, by any type or backend, must agree on its kind and local default.
     fn artifacts(&self, realization: Realization) -> &'static [ArtifactRole];
+
+    /// Time allowed for graceful shutdown on this realization. Defaults to ten seconds.
+    fn stop_grace(&self, _realization: Realization) -> Duration {
+        DEFAULT_STOP_GRACE
+    }
 
     /// Supplies the creation recipe, called in create order with a supported realization.
     /// Every artifact role named by the recipe must be declared by [`Self::artifacts`] for that realization.
@@ -416,6 +424,14 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn the_default_stop_grace_is_ten_seconds_on_every_supported_realization() {
+        use crate::case::fixtures::Server;
+        for &(os, kind) in Server.supports() {
+            assert_eq!(Server.stop_grace(Realization { os, kind }), Duration::from_secs(10));
+        }
+    }
 
     const CONFIG: &str = r#"
 env: {A: base, B: base}

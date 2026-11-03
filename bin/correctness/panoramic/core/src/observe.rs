@@ -12,7 +12,10 @@ pub(crate) mod output;
 
 use output::{LineBuffer, OutputLines};
 
-use crate::participant::OutputStream;
+use crate::{
+    participant::{OutputChannel, OutputStream, ProcessSpec},
+    result::{ExitSource, ProcessExitReport, ProcessOutputReport, ProcessReport},
+};
 
 /// A process exit reported by its declared channel.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,6 +24,8 @@ pub(crate) struct ExitStatus {
     pub code: Option<i32>,
     /// The signal from an exit record, set for a signal death instead of `code`.
     pub signal: Option<i32>,
+    /// Runtime error accompanying a container exit.
+    pub reason: Option<String>,
     /// Timestamp on the container's clock, or `None` for container waits. Never compare it with host time.
     pub recorded_at: Option<SystemTime>,
 }
@@ -54,11 +59,11 @@ impl ProcessObservation {
                 let current = receiver.borrow();
                 let observation = match &*current {
                     ParticipantExit::Running => ExitObservation::Running,
-                    // TODO: preserve Docker's exit error and the observation source in exit-step diagnostics.
-                    ParticipantExit::Exited { code, .. } => match i32::try_from(*code) {
+                    ParticipantExit::Exited { code, error } => match i32::try_from(*code) {
                         Ok(code) => ExitObservation::Exited(ExitStatus {
                             code: Some(code),
                             signal: None,
+                            reason: error.clone(),
                             recorded_at: None,
                         }),
                         Err(_) => ExitObservation::Undetermined(format!(
@@ -78,6 +83,23 @@ impl ProcessObservation {
             ExitObservation::Undetermined("exit observation ended without a status".into())
         } else {
             observation
+        }
+    }
+
+    fn snapshot(&self) -> ProcessExitReport {
+        let source = match self {
+            Self::Container(_) => ExitSource::Container,
+            Self::Record(_) => ExitSource::Record,
+        };
+        match self.current() {
+            ExitObservation::Running => ProcessExitReport::Running { source },
+            ExitObservation::Exited(status) => ProcessExitReport::Exited {
+                source,
+                code: status.code,
+                signal: status.signal,
+                reason: status.reason,
+            },
+            ExitObservation::Undetermined(reason) => ProcessExitReport::Undetermined { source, reason },
         }
     }
 
@@ -141,10 +163,6 @@ pub(crate) struct ParticipantObservation {
 /// Capture progress and host output files for a named process.
 pub(crate) struct ProcessOutput {
     pub capture: watch::Receiver<Capture>,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "Log steps and reports read process output paths.")
-    )]
     pub paths: Vec<PathBuf>,
 }
 
@@ -191,6 +209,59 @@ impl ParticipantObservation {
             outputs: BTreeMap::new(),
             lines: OutputLines::default(),
         }
+    }
+
+    pub(crate) fn snapshot(&self, specs: &[ProcessSpec]) -> Vec<ProcessReport> {
+        specs
+            .iter()
+            .map(|spec| {
+                let output = &self.outputs[spec.name];
+                let first = output.paths.first().cloned();
+                let output = match spec.output {
+                    OutputChannel::Container => ProcessOutputReport {
+                        stdout: Some(self.stdout_path.clone()),
+                        stderr: Some(self.stderr_path.clone()),
+                        merged: None,
+                    },
+                    OutputChannel::File { stream, .. } => match stream {
+                        OutputStream::Stdout => ProcessOutputReport {
+                            stdout: first,
+                            ..Default::default()
+                        },
+                        OutputStream::Stderr => ProcessOutputReport {
+                            stderr: first,
+                            ..Default::default()
+                        },
+                        OutputStream::Merged => ProcessOutputReport {
+                            merged: first,
+                            ..Default::default()
+                        },
+                    },
+                };
+                ProcessReport {
+                    name: spec.name.into(),
+                    exit: self.processes[spec.name].snapshot(),
+                    output,
+                }
+            })
+            .collect()
+    }
+
+    /// Waits for final output reads only when the participant's exit has already been observed.
+    pub(crate) async fn finish_output(&self) {
+        if !matches!(self.exit(), ParticipantExit::Exited { .. }) {
+            return;
+        }
+        let captures =
+            std::iter::once(self.capture_rx.clone()).chain(self.outputs.values().map(|output| output.capture.clone()));
+        futures::future::join_all(captures.map(|mut capture| async move {
+            while capture_state(&capture) == Capture::Following {
+                if capture.changed().await.is_err() {
+                    break;
+                }
+            }
+        }))
+        .await;
     }
 
     /// Returns the participant's exit state, or an undetermined state if its unsettled channel closes.
@@ -339,6 +410,122 @@ mod tests {
         }
     }
 
+    #[test]
+    fn exit_reports_keep_the_state_source_code_signal_and_failure_reason() {
+        use serde_json::json;
+        for (exit, expected) in [
+            (
+                ParticipantExit::Running,
+                json!({"state": "running", "source": "container"}),
+            ),
+            (
+                ParticipantExit::Exited {
+                    code: 3,
+                    error: Some("runtime failure".into()),
+                },
+                json!({"state": "exited", "source": "container", "code": 3, "reason": "runtime failure"}),
+            ),
+            (
+                ParticipantExit::Undetermined {
+                    reason: "connection lost".into(),
+                },
+                json!({"state": "undetermined", "source": "container", "reason": "connection lost"}),
+            ),
+        ] {
+            let (_tx, rx) = watch::channel(exit);
+            assert_eq!(
+                serde_json::to_value(ProcessObservation::Container(rx).snapshot()).unwrap(),
+                expected
+            );
+        }
+        for (exit, expected) in [
+            (
+                ExitObservation::Running,
+                json!({"state": "running", "source": "record"}),
+            ),
+            (
+                ExitObservation::Exited(ExitStatus {
+                    code: None,
+                    signal: Some(9),
+                    recorded_at: None,
+                    reason: None,
+                }),
+                json!({"state": "exited", "source": "record", "signal": 9}),
+            ),
+            (
+                ExitObservation::Undetermined("record missing".into()),
+                json!({"state": "undetermined", "source": "record", "reason": "record missing"}),
+            ),
+        ] {
+            let (_tx, rx) = watch::channel(exit);
+            assert_eq!(
+                serde_json::to_value(ProcessObservation::Record(rx).snapshot()).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn process_reports_take_output_paths_and_streams_from_the_declared_channels() {
+        use serde_json::json;
+
+        use crate::participant::ExitChannel;
+        let mut fixture = Fixture::new();
+        let dir = fixture._dir.path();
+        let mut specs = vec![ProcessSpec {
+            name: "main",
+            exit: ExitChannel::Container,
+            output: OutputChannel::Container,
+        }];
+        fixture.observation.processes.insert(
+            "main",
+            ProcessObservation::Container(fixture.observation.exit_rx.clone()),
+        );
+        fixture.observation.outputs.insert(
+            "main",
+            ProcessOutput {
+                capture: fixture.observation.capture_rx.clone(),
+                // Reverse the list to check that stream labels follow the named paths.
+                paths: vec![dir.join("container.stderr.log"), dir.join("container.stdout.log")],
+            },
+        );
+        for (name, stream) in [
+            ("a", OutputStream::Stdout),
+            ("b", OutputStream::Stderr),
+            ("c", OutputStream::Merged),
+        ] {
+            let spec = ProcessSpec {
+                name,
+                exit: ExitChannel::Record { file: name },
+                output: OutputChannel::File { file: name, stream },
+            };
+            let path = dir.join(output::host_output_file(name, spec.output).unwrap());
+            fixture.observation.outputs.insert(
+                name,
+                ProcessOutput {
+                    capture: fixture.observation.capture_rx.clone(),
+                    paths: vec![path],
+                },
+            );
+            let (_tx, rx) = watch::channel(ExitObservation::Undetermined("record missing".into()));
+            fixture
+                .observation
+                .processes
+                .insert(name, ProcessObservation::Record(rx));
+            specs.push(spec);
+        }
+        let report = serde_json::to_value(fixture.observation.snapshot(&specs)).unwrap();
+        assert_eq!(
+            report,
+            json!([
+                {"name": "main", "exit": {"state": "running", "source": "container"}, "output": {"stdout": dir.join("container.stdout.log"), "stderr": dir.join("container.stderr.log")}},
+                {"name": "a", "exit": {"state": "undetermined", "source": "record", "reason": "record missing"}, "output": {"stdout": dir.join("a.stdout.log")}},
+                {"name": "b", "exit": {"state": "undetermined", "source": "record", "reason": "record missing"}, "output": {"stderr": dir.join("b.stderr.log")}},
+                {"name": "c", "exit": {"state": "undetermined", "source": "record", "reason": "record missing"}, "output": {"merged": dir.join("c.log")}},
+            ])
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn the_container_exit_channel_reports_the_containers_exit_or_undetermined() {
         for (exit, expected) in [
@@ -347,6 +534,7 @@ mod tests {
                 ExitObservation::Exited(ExitStatus {
                     code: Some(0),
                     signal: None,
+                    reason: None,
                     recorded_at: None,
                 }),
             ),
@@ -358,6 +546,7 @@ mod tests {
                 ExitObservation::Exited(ExitStatus {
                     code: Some(3),
                     signal: None,
+                    reason: Some("runtime failure".into()),
                     recorded_at: None,
                 }),
             ),
@@ -366,6 +555,7 @@ mod tests {
                 ExitObservation::Exited(ExitStatus {
                     code: Some(137),
                     signal: None,
+                    reason: None,
                     recorded_at: None,
                 }),
             ),
@@ -444,6 +634,7 @@ mod tests {
                         ExitObservation::Exited(ExitStatus {
                             code: Some(3),
                             signal: None,
+                            reason: None,
                             recorded_at: None,
                         })
                     );

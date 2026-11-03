@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use panoramic_core::deadline::Deadline;
 use panoramic_core::ledger::ResourceLedger;
+use panoramic_core::lifecycle::Observations;
 use panoramic_core::record::CaseRecord;
 use panoramic_core::result::{PhaseTracker, TestResult};
 use panoramic_core::tasks::CaseTasks;
@@ -80,6 +81,9 @@ pub(crate) struct TestContext {
     /// Step states and verdict shared with the runner for reporting after cancellation.
     pub(crate) record: CaseRecord,
 
+    /// Live participant observations retained when the runner drops the case body.
+    pub(crate) observations: Observations,
+
     /// Test resources registered for cleanup by the runner.
     pub(crate) ledger: ResourceLedger,
 
@@ -100,6 +104,7 @@ impl TestContext {
             kind_ready: None,
             phases: PhaseTracker::default(),
             record: CaseRecord::default(),
+            observations: Observations::default(),
             ledger: ResourceLedger::default(),
         }
     }

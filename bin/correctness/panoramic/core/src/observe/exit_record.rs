@@ -119,6 +119,7 @@ fn parse(line: &str) -> Result<ExitStatus, String> {
     Ok(ExitStatus {
         code,
         signal,
+        reason: None,
         recorded_at: Some(recorded_at),
     })
 }
@@ -153,6 +154,7 @@ mod tests {
                 Ok(ExitStatus {
                     code,
                     signal,
+                    reason: None,
                     recorded_at: Some(SystemTime::UNIX_EPOCH + Duration::new(seconds, nanos)),
                 }),
                 "{line}"
@@ -277,6 +279,7 @@ mod tests {
         ExitObservation::Exited(ExitStatus {
             code: Some(code),
             signal: None,
+            reason: None,
             recorded_at: Some(SystemTime::UNIX_EPOCH + Duration::from_millis(1500)),
         })
     }

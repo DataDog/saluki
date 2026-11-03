@@ -35,3 +35,21 @@ pub(crate) struct HostMount {
     pub(crate) container_path: String,
     pub(crate) read_only: bool,
 }
+
+/// Recipes for test participants that exercise lifecycle callers outside this crate.
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_support {
+    use super::*;
+
+    /// Builds a container recipe with the supplied image, entrypoint and command.
+    pub fn container(image: ArtifactRole, entrypoint: &[&str], command: &[&str]) -> Recipe {
+        Recipe::Container(ContainerRecipe {
+            image,
+            entrypoint: Some(entrypoint.iter().map(|arg| (*arg).into()).collect()),
+            command: Some(command.iter().map(|arg| (*arg).into()).collect()),
+            env: BTreeMap::new(),
+            files: vec![],
+            mounts: vec![],
+        })
+    }
+}

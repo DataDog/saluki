@@ -452,8 +452,9 @@ impl Runner {
         let record = tctx.record.clone();
         let ledger = tctx.ledger.clone();
         let tasks = tctx.tasks.clone();
+        let observations = tctx.observations.clone();
 
-        let mut result = {
+        let (mut result, observed) = {
             let run_fut = async {
                 match &built.execution {
                     Execution::Runner(test) => test.run(tctx).await,
@@ -468,6 +469,7 @@ impl Runner {
                             );
                         };
                         let control = CaseControl {
+                            observations: observations.clone(),
                             record: tctx.record.clone(),
                             deadline,
                             cancel: tctx.test_cancel_token(),
@@ -495,24 +497,29 @@ impl Runner {
             //
             // The case timer wins ties with the body so an expired deadline is reported, even after a verdict.
             // The body precedes `cancel_all` to preserve a result ready when external cancellation arrives.
+            // Snapshot observations before cancellation closes their watch channels.
             tokio::select! {
                 biased;
                 _ = tokio::time::sleep_until(deadline.at) => {
                     let stop = Stop::snapshot(StoppedBy::CaseDeadline, &phases, &record);
+                    let observed = observations.snapshot();
                     test_cancel.cancel();
                     let returned = tokio::time::timeout(GRACE_TIME, &mut run_fut).await.ok();
-                    stop.settle(returned, &name, timeout, started.elapsed(), &phases, &record)
+                    (stop.settle(returned, &name, timeout, started.elapsed(), &phases, &record), Some(observed))
                 }
-                r = &mut run_fut => r,
+                r = &mut run_fut => (r, None),
                 _ = cancel_all.cancelled() => {
                     let stop = Stop::snapshot(StoppedBy::Signal, &phases, &record);
+                    let observed = observations.snapshot();
                     test_cancel.cancel();
                     let returned = tokio::time::timeout(GRACE_TIME, &mut run_fut).await.ok();
-                    stop.settle(returned, &name, timeout, started.elapsed(), &phases, &record)
+                    (stop.settle(returned, &name, timeout, started.elapsed(), &phases, &record), Some(observed))
                 }
             }
             // Drop the body before cleanup; its tracked background tasks are handled below.
         };
+
+        result.participants = observed.unwrap_or_else(|| observations.snapshot());
 
         // Cleanup has its own budget because the test token may already be cancelled. Give tracked tasks time to stop
         // and mark interrupted creations before reclaim reads the ledger.
@@ -2822,3 +2829,6 @@ while :; do sleep 1; done"#
         assert!(!normalized.contains_key("DD_DATA_PLANE_FORCE_ENABLE"));
     }
 }
+
+#[cfg(test)]
+mod report_tests;

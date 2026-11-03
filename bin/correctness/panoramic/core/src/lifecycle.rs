@@ -3,8 +3,8 @@
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::Arc,
-    time::Instant,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use bytes::Bytes;
@@ -26,7 +26,7 @@ use crate::{
     plan::ParticipantPlan,
     recipe::Recipe,
     record::CaseRecord,
-    result::{ErrorKind, PhaseTracker, TestResult},
+    result::{ErrorKind, ParticipantReport, PhaseTracker, TestResult},
     tasks::CaseTasks,
 };
 
@@ -35,6 +35,73 @@ mod daemon_tests;
 mod readiness;
 mod render;
 mod steps;
+
+/// Maximum time to finish capturing output from participants whose exit was observed.
+const OBSERVE_TIME: Duration = Duration::from_secs(5);
+
+/// Participant identities and live observations retained after the case body returns or is dropped.
+#[derive(Clone, Default)]
+pub struct Observations {
+    participants: Arc<Mutex<BTreeMap<String, ObservedParticipant>>>,
+}
+
+impl std::fmt::Debug for Observations {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Observations")
+            .field("participants", &self.snapshot())
+            .finish()
+    }
+}
+
+struct ObservedParticipant {
+    report: ParticipantReport,
+    specs: &'static [ProcessSpec],
+    observation: Option<Arc<ParticipantObservation>>,
+}
+
+impl Observations {
+    fn register(&self, name: &str, participant_type: &str, realization: Realization, specs: &'static [ProcessSpec]) {
+        self.participants.lock().unwrap().insert(
+            name.into(),
+            ObservedParticipant {
+                report: ParticipantReport {
+                    name: name.into(),
+                    participant_type: participant_type.into(),
+                    os: realization.os,
+                    realization: realization.kind,
+                    processes: Vec::new(),
+                },
+                specs,
+                observation: None,
+            },
+        );
+    }
+
+    fn started(&self, name: &str, observation: Arc<ParticipantObservation>) {
+        self.participants
+            .lock()
+            .unwrap()
+            .get_mut(name)
+            .expect("started participants were registered before creation")
+            .observation = Some(observation);
+    }
+
+    /// Takes a report snapshot in participant-name order, before the runner stops observation tasks.
+    pub fn snapshot(&self) -> Vec<ParticipantReport> {
+        self.participants
+            .lock()
+            .unwrap()
+            .values()
+            .map(|participant| {
+                let mut report = participant.report.clone();
+                if let Some(observation) = &participant.observation {
+                    report.processes = observation.snapshot(participant.specs);
+                }
+                report
+            })
+            .collect()
+    }
+}
 
 /// Verified image IDs and container-binary bytes shared by every native case in a run.
 pub struct NativeInputs {
@@ -87,6 +154,8 @@ impl NativeInputs {
 
 /// Cancellation, phase reporting and resource ownership supplied by the case runner.
 pub struct CaseControl {
+    /// Participant observations retained by the runner through cancellation.
+    pub observations: Observations,
     /// Procedure states and verdict retained by the runner through cancellation.
     pub record: CaseRecord,
     /// The case-wide deadline used to bound each step.
@@ -115,7 +184,7 @@ struct Started {
     participant: Arc<LinuxParticipant>,
     container_id: String,
     ip: Option<String>,
-    observation: ParticipantObservation,
+    observation: Arc<ParticipantObservation>,
 }
 
 /// Creates and starts a native participant case, then runs its procedure.
@@ -184,13 +253,36 @@ pub async fn run(
         .await;
         phase.finish();
         if let Err(error) = result {
+            observe(control).await;
             return fail(error);
         }
     }
     let phase = control.phases.enter("steps");
     steps::run(plan, &running, control).await;
     phase.finish();
+    observe(control).await;
     control.record.result("", started.elapsed(), control.phases.completed())
+}
+
+async fn observe(control: &CaseControl) {
+    let observations: Vec<_> = control
+        .observations
+        .participants
+        .lock()
+        .unwrap()
+        .values()
+        .filter_map(|participant| participant.observation.clone())
+        .collect();
+    if observations.is_empty() {
+        return;
+    }
+    let phase = control.phases.enter("observe");
+    let finish = join_all(observations.iter().map(|observation| observation.finish_output()));
+    let _ = control
+        .cancel
+        .run_until_cancelled(tokio::time::timeout(OBSERVE_TIME, finish))
+        .await;
+    phase.finish();
 }
 
 async fn prepare(
@@ -235,7 +327,7 @@ async fn prepare(
     let scope = plan.scope();
     let id = scope.id();
     let names = file.participants.keys().map(String::as_str).collect::<Vec<_>>();
-    control.ledger.isolation_group_with_id(id.clone());
+    control.ledger.linux_scope(inputs.backends.clone(), scope.clone());
     let scope = control
         .ledger
         .create(
@@ -285,9 +377,17 @@ async fn create(
         .scope
         .participant(name, image, &recipe, &plan.runner_host_ports(name))
         .map_err(|error| format!("participant '{name}': {error:#}"))?;
+    control.ledger.participant(
+        name,
+        participant.container_ref(),
+        participant_type.stop_grace(realization),
+    );
+    control
+        .observations
+        .register(name, type_name, realization, prepared.process_specs[name]);
     let container_id = control
         .ledger
-        .create(&prepared.id, &control.cancel, participant.create())
+        .create_participant(name, &prepared.id, &control.cancel, participant.create())
         .await
         .ok_or_else(|| format!("cancelled while creating participant '{name}'"))?
         .map_err(|error| format!("{error:#}"))?;
@@ -315,6 +415,8 @@ async fn start_level(
                     let observation = participant
                         .observe(process_specs[name], &control.tasks, &control.log_dir.join(name))
                         .await;
+                    let observation = Arc::new(observation);
+                    control.observations.started(name, observation.clone());
                     Ok(Started {
                         container_id: created[name].clone(),
                         participant,
@@ -364,6 +466,145 @@ mod tests {
         participant::{ExitChannel, OutputChannel, OutputStream, RenderedConfig},
         plan::{CasePlan, Planner},
     };
+
+    #[tokio::test(start_paused = true)]
+    async fn observation_waits_only_for_exited_participants_and_obeys_its_bound_and_cancellation() {
+        use tokio::{
+            sync::watch,
+            time::{sleep, Instant as Clock},
+        };
+
+        use crate::observe::{Capture, ParticipantExit, ProcessOutput};
+
+        enum Completion {
+            Finish,
+            Bound,
+            Cancel,
+        }
+        use Completion::{Bound, Cancel, Finish};
+
+        for completion in [Finish, Bound, Cancel] {
+            let dir = tempfile::tempdir().unwrap();
+            let cancel = CancellationToken::new();
+            let control = CaseControl {
+                observations: Observations::default(),
+                record: CaseRecord::default(),
+                deadline: Deadline::after(Budget::Case, Duration::from_secs(60)),
+                phases: PhaseTracker::default(),
+                ledger: ResourceLedger::default(),
+                tasks: CaseTasks::new(&cancel),
+                cancel: cancel.clone(),
+                log_dir: dir.path().into(),
+            };
+            observe(&control).await;
+            assert!(control.phases.completed().is_empty());
+            let realization = Realization {
+                os: Os::Linux,
+                kind: RealizationKind::LinuxContainer,
+            };
+            let mut channels = Vec::new();
+            for (name, exit) in [
+                ("running", ParticipantExit::Running),
+                (
+                    "unknown",
+                    ParticipantExit::Undetermined {
+                        reason: "lost wait".into(),
+                    },
+                ),
+                ("stopped", ParticipantExit::Exited { code: 0, error: None }),
+            ] {
+                control.observations.register(name, "fixture", realization, &[]);
+                let (exit_tx, exit_rx) = watch::channel(exit);
+                let (capture_tx, capture_rx) = watch::channel(Capture::Following);
+                let (_container_tx, container_rx) = watch::channel(Capture::Complete);
+                let mut observation =
+                    ParticipantObservation::new(exit_rx, container_rx, Default::default(), Default::default());
+                observation.outputs.insert(
+                    "worker",
+                    ProcessOutput {
+                        capture: capture_rx,
+                        paths: vec![],
+                    },
+                );
+                control.observations.started(name, Arc::new(observation));
+                channels.push((exit_tx, capture_tx));
+            }
+            let started = Clock::now();
+            tokio::join!(observe(&control), async {
+                match completion {
+                    Finish => {
+                        sleep(Duration::from_secs(2)).await;
+                        channels[2].1.send_replace(Capture::Complete);
+                    }
+                    Bound => {}
+                    Cancel => {
+                        sleep(Duration::from_secs(1)).await;
+                        cancel.cancel();
+                    }
+                }
+            });
+            let expected = match completion {
+                Finish => Duration::from_secs(2),
+                Bound => OBSERVE_TIME,
+                Cancel => Duration::from_secs(1),
+            };
+            assert_eq!(started.elapsed(), expected);
+            assert_eq!(
+                control
+                    .phases
+                    .completed()
+                    .iter()
+                    .map(|phase| phase.phase.as_str())
+                    .collect::<Vec<_>>(),
+                ["observe"]
+            );
+        }
+    }
+
+    #[test]
+    fn participant_identities_are_reported_from_registration_and_processes_from_startup() {
+        use serde_json::json;
+        use tokio::sync::watch;
+
+        use crate::observe::{Capture, ParticipantExit, ProcessObservation, ProcessOutput};
+        let observations = Observations::default();
+        let realization = Realization {
+            os: Os::Linux,
+            kind: RealizationKind::LinuxContainer,
+        };
+        const SPECS: &[ProcessSpec] = &[ProcessSpec {
+            name: "main",
+            exit: ExitChannel::Container,
+            output: OutputChannel::Container,
+        }];
+        observations.register("subject", "fixture", realization, SPECS);
+        let identity = json!({"name": "subject", "type": "fixture", "os": "linux", "realization": "linux-container", "processes": []});
+        assert_eq!(
+            serde_json::to_value(observations.snapshot()).unwrap(),
+            json!([identity])
+        );
+        let (_exit, exit_rx) = watch::channel(ParticipantExit::Running);
+        let (_capture, capture_rx) = watch::channel(Capture::Following);
+        let mut observation =
+            ParticipantObservation::new(exit_rx.clone(), capture_rx.clone(), "stdout".into(), "stderr".into());
+        observation
+            .processes
+            .insert("main", ProcessObservation::Container(exit_rx));
+        observation.outputs.insert(
+            "main",
+            ProcessOutput {
+                capture: capture_rx,
+                paths: vec!["stdout".into(), "stderr".into()],
+            },
+        );
+        observations.started("subject", Arc::new(observation));
+        let mut expected = identity;
+        expected["processes"] = json!([{"name": "main", "exit": {"state": "running", "source": "container"}, "output": {"stdout": "stdout", "stderr": "stderr"}}]);
+        assert_eq!(
+            serde_json::to_value(observations.snapshot()).unwrap(),
+            json!([expected])
+        );
+    }
 
     #[test]
     fn the_default_recipe_names_the_type_and_realization() {
@@ -427,6 +668,7 @@ mod tests {
         let log_dir = tempfile::tempdir().unwrap();
         let cancel = CancellationToken::new();
         let control = CaseControl {
+            observations: Observations::default(),
             record: CaseRecord::default(),
             deadline: Deadline::after(Budget::Case, std::time::Duration::from_secs(60)),
             tasks: CaseTasks::new(&cancel),
@@ -711,6 +953,7 @@ mod tests {
             let log_dir = tempfile::tempdir().unwrap();
             let cancel = CancellationToken::new();
             let control = CaseControl {
+                observations: Observations::default(),
                 record: CaseRecord::default(),
                 deadline: Deadline::after(Budget::Case, std::time::Duration::from_secs(60)),
                 tasks: CaseTasks::new(&cancel),
@@ -761,6 +1004,7 @@ mod tests {
         let log_dir = tempfile::tempdir().unwrap();
         let cancel = CancellationToken::new();
         let control = CaseControl {
+            observations: Observations::default(),
             record: CaseRecord::default(),
             deadline: Deadline::after(Budget::Case, std::time::Duration::from_secs(60)),
             tasks: CaseTasks::new(&cancel),
@@ -794,6 +1038,7 @@ mod tests {
         std::fs::write(&log_dir, b"regular file").unwrap();
         let cancel = CancellationToken::new();
         let control = CaseControl {
+            observations: Observations::default(),
             record: CaseRecord::default(),
             deadline: Deadline::after(Budget::Case, std::time::Duration::from_secs(60)),
             tasks: CaseTasks::new(&cancel),
@@ -833,6 +1078,7 @@ mod tests {
             let log_dir = tempfile::tempdir().unwrap();
             let cancel = CancellationToken::new();
             let control = CaseControl {
+                observations: Observations::default(),
                 record: CaseRecord::default(),
                 deadline: Deadline::after(Budget::Case, std::time::Duration::from_secs(60)),
                 tasks: CaseTasks::new(&cancel),
@@ -886,6 +1132,7 @@ mod tests {
         let log_dir = tempfile::tempdir().unwrap();
         let cancel = CancellationToken::new();
         let control = CaseControl {
+            observations: Observations::default(),
             record: CaseRecord::default(),
             deadline: Deadline::after(Budget::Case, std::time::Duration::from_secs(60)),
             tasks: CaseTasks::new(&cancel),

@@ -51,10 +51,15 @@ responses through published TCP ports, courier probes of published ports with no
 held-port startup failures, and courier routes to exited participants. Container probes and raw sends run inside the
 server because port proxies can accept connections even when the server has no listener.
 Native procedure tests cover `passed`, `failed` and `errored` steps, fail-fast, endpoint routes, late-fact resolution,
-missing process exit records, capture failures, cancellation and case deadlines.
+missing process exit records, capture failures, cancellation and case deadlines. Reclaim tests check individual
+participant entries, concurrent graceful stops, and interrupted creation that leaves both a participant and its scope
+unconfirmed.
 They are ignored by default. Run them with `make test-panoramic-daemon`, which builds the Linux courier first.
 `PANORAMIC_TEST_IMAGE` defaults to `alpine:latest`; load it first, because these tests never pull images.
 They fail if the daemon, image or courier is missing.
+Runner report tests check native process reports and snapshots after a case body exceeds its cancellation grace.
+After building the courier, run them with
+`cargo nextest run -p panoramic --run-ignored only runner::report_tests`.
 
 CI: the `test-container-daemon` job in `.gitlab/e2e.yml` runs them after airlock's daemon tests, with
 `PANORAMIC_TEST_IMAGE` set to the same local Alpine image.
@@ -210,8 +215,10 @@ time. Output readiness waits for a regex match in the named process's lines and 
 After the start levels, native Linux container cases run their procedure in the `steps` phase, using the same step
 budgets, case deadline, parallel blocks and fail-fast behavior as the integration runner. Steps receive the started
 participants' primitives, exit and output observations, planned routes, and early and late facts; late facts in step
-fields resolve when the step runs. The registered log and file steps report an evaluation error on native participants
-until their native execution is implemented. The runner stops observation tasks before reclaiming resources.
+fields resolve when the step runs. Registered log and file assertions require the integration runner.
+The `observe` phase gives exited participants up to five seconds to finish
+capturing output; it also runs after a setup failure if any participant started. Running participants are skipped, and
+case cancellation ends the wait. The runner snapshots observations, stops observation tasks, then reclaims resources.
 Each case keeps its chosen route.
 
 The integration runner's translation supports this subset of the schema:
@@ -593,6 +600,18 @@ fails, including when the host can't provide a realization. Cases with a top-lev
 `layout: null`. Run-level `artifacts` in `run.json` records every binding and identity verified before cases
 started, including native cases' roles on runs without `--artifacts`, or `null` when the run didn't verify artifacts.
 
+Native cases also report `participants[]`, with each participant's `name`, `type`, `os`, `realization`, and `processes`.
+A participant appears once its creation is attempted; its process list stays empty until startup. Each process has an
+`exit` with `state: running | exited | undetermined` and `source: container | record`. Exit codes, signals and failure
+reasons appear only when observed. A container runtime error accompanies its exit as `reason`. Process `output` lists
+host paths under `stdout`, `stderr` or `merged`. The runner snapshots observations before cancelling an interrupted case,
+or after the case body returns normally, then stops background tasks. The snapshot survives a dropped case body.
+Legacy cases report an empty participant list.
+
+For native cases, `diagnostic_lines` reads declared process outputs and container output that no process owns.
+Non-blank stderr lines qualify; stdout and merged output require severity markers. Legacy cases use
+filename-based stream classification. `artifacts` lists files under the test's log directory.
+
 Follow report types in `bin/correctness/panoramic/core/src/machine_output.rs` for semantics. For precedence rules, see
 `TestResult::from_steps` in `bin/correctness/panoramic/core/src/result.rs` and `exit_code` in
 `bin/correctness/panoramic/src/collector.rs`. The current `schema_version` is 3. Check it and `run.json`'s
@@ -603,8 +622,14 @@ On Unix, send SIGINT or SIGTERM to stop a run with cleanup. A second signal may 
 ### Resource cleanup
 
 After every test, the runner attempts cleanup and records each resource as `reclaimed`, `leaked`, or `unsettled` under
-`reclaim` in `result.json`. Docker containers, their shared volume, and network share one isolation-group entry; host
-processes and the state directory have separate entries. Correctness tests have one isolation-group entry per container
+`reclaim` in `result.json`. Native participants have separate `participant:<name>` entries with a `participant` field.
+Each stops with its type's grace, ten seconds by default, before removal. Consecutive participant entries stop
+concurrently; the scope's shared volume and network follow through the run's Docker connection. An interrupted creation
+marks both its participant and scope `unsettled`, because creation might finish after removal. The `details` and
+`traffic` artifact directories are reserved participant names.
+
+Legacy Docker containers, their shared volume, and network share one isolation-group entry; host processes and the
+state directory have separate entries. Correctness tests have one isolation-group entry per container
 group, or one `namespace:` entry per kind namespace, and the runner stops their background tasks first. Failed or
 skipped removal adds a `resource_leaked` issue; unconfirmed removal adds `resource_unsettled`. These issues leave the
 test outcome unchanged.

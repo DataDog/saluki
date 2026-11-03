@@ -63,13 +63,6 @@ impl RunBackends {
     }
 
     /// Removes all scope resources, including partial preparation. Cancel-safe; the caller bounds it.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Used by daemon tests to check scope removal through the shared connection."
-        )
-    )]
     pub(crate) async fn remove_linux_scope(&self, scope: &ScopeLayout) -> Result<(), GenericError> {
         let client = self
             .docker
@@ -129,10 +122,6 @@ pub(crate) struct LinuxParticipant {
 
 impl LinuxParticipant {
     /// Returns a removal reference before creation, so reclaim can be registered first.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "Used by daemon tests to remove individual participants.")
-    )]
     pub(crate) fn container_ref(&self) -> ContainerRef {
         self.driver.container_ref()
     }

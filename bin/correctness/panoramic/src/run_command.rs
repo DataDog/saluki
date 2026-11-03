@@ -240,7 +240,7 @@ async fn report_run(prepared: PreparedRun, cmd: &cli::RunCommand, console: &Cons
     let log_dir = match std::path::absolute(cmd.log_dir()) {
         Ok(path) => path,
         Err(e) => {
-            error!("Failed to resolve log directory: {}", e);
+            console.error(format!("Failed to resolve log directory: {}", e));
             return ExitCode::from(2);
         }
     };
@@ -408,11 +408,11 @@ async fn execute(
             let lifecycle: Option<KindLifecycle> = kind_lifecycle_slot.lock().await.take();
             if let Some(lifecycle) = lifecycle {
                 if cmd.no_delete_kind_cluster {
-                    info!(
+                    console.info(format!(
                         "Skipping kind cluster teardown (--no-delete-kind-cluster). \
                          Cluster '{}' is still running.",
                         cluster_name
-                    );
+                    ));
                 } else if let Some(source) = run_teardown(lifecycle.teardown(), collector, interrupts).await {
                     console.warn(format!(
                         "Received {}; abandoned kind cluster teardown. A 'kind delete' already started may still \

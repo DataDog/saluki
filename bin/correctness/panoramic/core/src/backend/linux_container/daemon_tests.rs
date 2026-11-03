@@ -25,11 +25,12 @@ use crate::{
     backend::COURIER_LINUX_BINARY,
     endpoint::{EndpointKind, EndpointOperation, RunnerHostRoute},
     handle::{probe_from_runner_host, send_from_runner_host},
-    ledger,
+    ledger::{self, ResourceLedger},
     observe::ExitStatus,
     participant::{OutputChannel, OutputStream},
     probe::ProbeAnswer,
     recipe::HostMount,
+    result::{IssueKind, ReclaimResult},
     tasks::TASK_STOP_TIME,
 };
 
@@ -59,10 +60,35 @@ pub(crate) fn courier_bytes() -> Vec<u8> {
     })
 }
 
+struct TestScope {
+    scope: LinuxScope,
+    ledger: ResourceLedger,
+    id: String,
+}
+
+impl TestScope {
+    fn participant(
+        &self, name: &str, image: &str, recipe: &ContainerRecipe, ports: &[RunnerHostPort],
+    ) -> Result<LinuxParticipant, GenericError> {
+        let participant = self.scope.participant(name, image, recipe, ports)?;
+        self.ledger
+            .participant(name, participant.container_ref(), Duration::from_secs(1));
+        Ok(participant)
+    }
+}
+
 async fn in_scope<F, S>(participants: &[&str], courier: Vec<u8>, scenario: S)
 where
     F: Future<Output = ()> + Send + 'static,
-    S: FnOnce(LinuxScope, CaseTasks) -> F + Send + 'static,
+    S: FnOnce(TestScope, CaseTasks) -> F + Send + 'static,
+{
+    in_scope_with_reclaim(participants, courier, ReclaimResult::Reclaimed, scenario).await;
+}
+
+async fn in_scope_with_reclaim<F, S>(participants: &[&str], courier: Vec<u8>, expected: ReclaimResult, scenario: S)
+where
+    F: Future<Output = ()> + Send + 'static,
+    S: FnOnce(TestScope, CaseTasks) -> F + Send + 'static,
 {
     let backends = Arc::new(RunBackends::default());
     let scope = Arc::new(ScopeLayout {
@@ -71,11 +97,14 @@ where
     });
     let participants: Vec<_> = participants.iter().map(|name| (*name).to_owned()).collect();
     eprintln!("Daemon test scope: {}", scope.id());
+    let ledger = ResourceLedger::default();
+    ledger.linux_scope(backends.clone(), (*scope).clone());
     let tasks = CaseTasks::new(&CancellationToken::new());
     let outcome = tokio::spawn({
         let tasks = tasks.clone();
         let backends = backends.clone();
         let scope = scope.clone();
+        let ledger = ledger.clone();
         async move {
             timeout(Duration::from_secs(60), async {
                 let docker = backends
@@ -96,7 +125,15 @@ where
                     .prepare_linux_scope(&scope, &participants, &image, courier.into())
                     .await
                     .unwrap();
-                scenario(prepared, tasks).await;
+                scenario(
+                    TestScope {
+                        scope: prepared,
+                        ledger,
+                        id: scope.id(),
+                    },
+                    tasks,
+                )
+                .await;
             })
             .await
             .expect("the daemon scenario should finish within a minute");
@@ -108,10 +145,26 @@ where
     if tasks.stop_all(Instant::now() + TASK_STOP_TIME).await != 0 {
         problems.push("observation tasks did not stop before reclaim".into());
     }
-    match timeout(Duration::from_secs(30), backends.remove_linux_scope(&scope)).await {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => problems.push(format!("scope cleanup failed: {error:#}")),
-        Err(_) => problems.push("scope cleanup exceeded 30 seconds".into()),
+    let registered = ledger.labels();
+    let (reclaimed, issues) = ledger.reclaim(Instant::now() + Duration::from_secs(30)).await;
+    assert_eq!(
+        reclaimed.iter().map(|entry| &entry.resource).collect::<Vec<_>>(),
+        registered.iter().rev().collect::<Vec<_>>()
+    );
+    for entry in &reclaimed {
+        if entry.result != expected {
+            problems.push(format!("unexpected reclaim: {entry:?}"));
+        }
+        assert_eq!(
+            entry.participant.as_deref(),
+            entry.resource.strip_prefix("participant:")
+        );
+    }
+    if expected == ReclaimResult::Unsettled {
+        assert_eq!(issues.len(), reclaimed.len());
+        assert!(issues.iter().all(|issue| issue.kind == IssueKind::ResourceUnsettled));
+    } else {
+        problems.extend(issues.iter().map(|issue| issue.message.clone()));
     }
     let resources = timeout(Duration::from_secs(30), async {
         let docker = backends
@@ -184,7 +237,7 @@ fn recipe(script: &str) -> ContainerRecipe {
     }
 }
 
-async fn start_participant(scope: &LinuxScope, name: &str, recipe: &ContainerRecipe) -> LinuxParticipant {
+async fn start_participant(scope: &TestScope, name: &str, recipe: &ContainerRecipe) -> LinuxParticipant {
     let participant = scope.participant(name, &test_image(), recipe, &[]).unwrap();
     participant.create().await.unwrap();
     participant.start().await.unwrap();
@@ -829,6 +882,7 @@ async fn a_restarted_process_keeps_its_first_recorded_exit() {
             ExitObservation::Exited(ExitStatus {
                 code: Some(3),
                 signal: None,
+                reason: None,
                 recorded_at: Some(UNIX_EPOCH + Duration::new(1700000000, 3)),
             })
         );
@@ -871,6 +925,7 @@ async fn a_record_written_as_the_container_stops_is_read_after_it_stops() {
             ExitObservation::Exited(ExitStatus {
                 code: Some(0),
                 signal: None,
+                reason: None,
                 recorded_at: None,
             })
         );
@@ -882,6 +937,7 @@ async fn a_record_written_as_the_container_stops_is_read_after_it_stops() {
             ExitObservation::Exited(ExitStatus {
                 code: None,
                 signal: Some(15),
+                reason: None,
                 recorded_at: Some(UNIX_EPOCH + Duration::new(1700000000, 1)),
             })
         );
@@ -904,6 +960,7 @@ async fn a_container_that_stops_without_a_record_leaves_its_process_undetermined
             ExitObservation::Exited(ExitStatus {
                 code: Some(0),
                 signal: None,
+                reason: None,
                 recorded_at: None,
             })
         );
@@ -1075,5 +1132,78 @@ async fn container_output_lines_are_tagged_with_their_process_and_stream() {
             [(OutputStream::Stdout, "out"), (OutputStream::Stderr, "err")]
         );
     })
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn participants_ignoring_sigterm_are_stopped_concurrently_within_one_grace() {
+    in_scope(
+        &["a", "b", "c", "d", "e", "f"],
+        courier_bytes(),
+        |scope, _tasks| async move {
+            for name in ["a", "b", "c", "d", "e", "f"] {
+                let script = format!("trap '' TERM; echo ready > /airlock/{name}/shared/ready; exec sleep 60");
+                let participant = start_participant(&scope, name, &recipe(&script)).await;
+                wait_for_file(&participant, &format!("/airlock/{name}/shared/ready"), b"ready").await;
+            }
+            let started = Instant::now();
+            let (reclaimed, issues) = scope.ledger.reclaim(Instant::now() + Duration::from_secs(30)).await;
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "concurrent stops took {:?}",
+                started.elapsed()
+            );
+            assert!(started.elapsed() >= Duration::from_secs(1));
+            assert!(issues.is_empty(), "{issues:?}");
+            assert_eq!(
+                reclaimed
+                    .iter()
+                    .map(|entry| entry.participant.as_deref())
+                    .collect::<Vec<_>>(),
+                [Some("f"), Some("e"), Some("d"), Some("c"), Some("b"), Some("a"), None]
+            );
+            assert!(reclaimed.iter().all(|entry| entry.result == ReclaimResult::Reclaimed));
+            assert_eq!(
+                reclaimed.last().unwrap().resource,
+                format!("isolation_group:{}", scope.id)
+            );
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn interrupted_participant_creation_leaves_both_the_participant_and_scope_unsettled() {
+    in_scope_with_reclaim(
+        &["p"],
+        courier_bytes(),
+        ReclaimResult::Unsettled,
+        |scope, _tasks| async move {
+            let participant = scope
+                .participant("p", &test_image(), &recipe("exec sleep 60"), &[])
+                .unwrap();
+            let cancel = CancellationToken::new();
+            let created = tokio::sync::Notify::new();
+            let request = async {
+                participant.create().await.unwrap();
+                created.notify_one();
+                std::future::pending::<()>().await;
+            };
+            let (result, ()) = tokio::join!(
+                scope.ledger.create_participant("p", &scope.id, &cancel, request),
+                async {
+                    created.notified().await;
+                    cancel.cancel();
+                },
+            );
+            assert!(result.is_none());
+            assert_eq!(
+                scope.ledger.labels(),
+                [format!("isolation_group:{}", scope.id), "participant:p".into()]
+            );
+        },
+    )
     .await;
 }

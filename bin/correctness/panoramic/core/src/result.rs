@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use crate::layout::LayoutEntry;
+use crate::layout::{LayoutEntry, Os, RealizationKind};
 use crate::record::{step_label, ActiveStep, AssertionResult, StepResult, StepStatus};
 
 /// Phase name reported when the harness cannot tell which phase a test was in.
@@ -340,8 +340,11 @@ impl fmt::Display for IssueKind {
 /// The runner's cleanup result for one registered resource.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ReclaimEntry {
-    /// The resource: `isolation_group:<id>`, `process:<name>`, or `directory:<path>`.
+    /// Resource label, such as `participant:<name>`, `isolation_group:<id>`, or `directory:<path>`.
     pub resource: String,
+    /// Participant owning this resource, when it is reclaimed individually.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub participant: Option<String>,
     /// Cleanup status. Failed or unconfirmed removal also adds an issue.
     pub result: ReclaimResult,
 }
@@ -356,6 +359,89 @@ pub enum ReclaimResult {
     Leaked,
     /// Removal is unconfirmed: creation was interrupted or cleanup timed out.
     Unsettled,
+}
+
+/// Identity and observed processes of a participant whose creation was attempted.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ParticipantReport {
+    /// Case-file participant name.
+    pub name: String,
+    /// Registered participant type.
+    #[serde(rename = "type")]
+    pub participant_type: String,
+    /// Participant operating system.
+    pub os: Os,
+    /// Selected realization.
+    pub realization: RealizationKind,
+    /// Processes observed after startup, in declaration order.
+    pub processes: Vec<ProcessReport>,
+}
+
+/// One declared process's exit and captured output paths.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ProcessReport {
+    /// Process name declared by the participant's type.
+    pub name: String,
+    /// Last observed exit state, before observation tasks stop.
+    pub exit: ProcessExitReport,
+    /// Host paths of captured streams.
+    pub output: ProcessOutputReport,
+}
+
+/// The channel that reports a process's exit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExitSource {
+    /// The container runtime's wait result.
+    Container,
+    /// A supervisor-written exit record.
+    Record,
+}
+
+/// A process's observed state, with evidence supplied by its declared exit channel.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ProcessExitReport {
+    /// The channel is still waiting for an exit.
+    Running {
+        /// Channel being watched.
+        source: ExitSource,
+    },
+    /// The channel reported an exit.
+    Exited {
+        /// Reported exit code, absent for a recorded signal death.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        code: Option<i32>,
+        /// Reported terminating signal.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        signal: Option<i32>,
+        /// Channel that reported the exit.
+        source: ExitSource,
+        /// Runtime error accompanying the exit, when supplied.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    /// The channel could not determine an exit status.
+    Undetermined {
+        /// Channel whose observation failed.
+        source: ExitSource,
+        /// Why the exit could not be determined.
+        reason: String,
+    },
+}
+
+/// Captured output files, keyed by the stream the participant's type declares.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ProcessOutputReport {
+    /// Captured standard output.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stdout: Option<PathBuf>,
+    /// Captured standard error.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stderr: Option<PathBuf>,
+    /// Output whose producer combines both streams.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merged: Option<PathBuf>,
 }
 
 /// Result of a single test case.
@@ -384,6 +470,8 @@ pub struct TestResult {
     /// Planned layout, set by the runner even when setup fails. Cases with a top-level `type` have one entry
     /// without a participant; only skipped cases are reported with a null layout.
     pub layout: Option<Vec<LayoutEntry>>,
+    /// Native participant observations, captured by the runner before stopping background tasks.
+    pub participants: Vec<ParticipantReport>,
     /// Directory this test's artifacts were written to. Set by the runner.
     pub log_dir: Option<PathBuf>,
     /// Timing breakdown for each phase of test execution.
@@ -453,6 +541,7 @@ impl TestResult {
             issues: Vec::new(),
             case_path: None,
             layout: None,
+            participants: Vec::new(),
             log_dir: None,
             phase_timings,
             assertion_details: Vec::new(),
@@ -696,6 +785,33 @@ mod tests {
     use crate::record::AssertionStatus;
 
     const LABELS: [&str; 5] = ["PASS", "FAIL", "ERROR", "TIMEOUT", "INTERRUPTED"];
+
+    #[test]
+    fn reclaim_reports_name_only_resources_owned_by_a_participant() {
+        use serde_json::json;
+        for (participant, expected) in [
+            (
+                None,
+                json!({"resource": "isolation_group:scope", "result": "reclaimed"}),
+            ),
+            (
+                Some("subject".to_string()),
+                json!({"resource": "participant:subject", "participant": "subject", "result": "reclaimed"}),
+            ),
+        ] {
+            let resource = if participant.is_some() {
+                "participant:subject"
+            } else {
+                "isolation_group:scope"
+            };
+            let entry = ReclaimEntry {
+                resource: resource.into(),
+                participant,
+                result: ReclaimResult::Reclaimed,
+            };
+            assert_eq!(serde_json::to_value(entry).unwrap(), expected);
+        }
+    }
 
     #[test]
     fn every_outcome_has_its_own_label() {

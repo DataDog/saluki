@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use airlock::driver::{Driver, DriverDetails};
+use airlock::driver::{ContainerRef, Driver, DriverDetails};
 use airlock::unix::UnixProcess;
 use futures::future::join_all;
 use k8s_openapi::api::core::v1::Namespace;
@@ -18,6 +18,7 @@ use tokio::time::{sleep, timeout_at, Instant};
 use tokio_util::sync::CancellationToken;
 
 use crate::result::{Issue, IssueKind, ReclaimEntry, ReclaimResult};
+use crate::{backend::RunBackends, plan::ScopeLayout};
 
 /// Shared budget for stopping a case's tracked tasks and removing its resources.
 pub const RECLAIM_TIME: Duration = Duration::from_secs(30);
@@ -55,6 +56,17 @@ struct Entry {
 enum Resource {
     /// The containers, shared volume, and network labeled with this isolation-group ID.
     IsolationGroup(String),
+    /// A participant stopped with its type's grace before removal.
+    Participant {
+        name: String,
+        container: ContainerRef,
+        grace: Duration,
+    },
+    /// Native scope resources removed through the run's Docker connection.
+    LinuxScope {
+        backends: Arc<RunBackends>,
+        scope: ScopeLayout,
+    },
     /// A host process and its process group.
     Process(UnixProcess),
     /// A Kubernetes namespace, removed through the client that created it.
@@ -82,8 +94,12 @@ impl Resource {
     /// Removes the resource, returning a namespace that is still terminating.
     ///
     /// A directory or namespace that is already gone counts as removed.
-    async fn remove(self) -> Result<Option<Terminating>, GenericError> {
+    async fn remove(self, deadline: Instant) -> Result<Option<Terminating>, GenericError> {
         match self {
+            Self::Participant { container, grace, .. } => {
+                container.stop_and_remove(grace, deadline).await.map(|()| None)
+            }
+            Self::LinuxScope { backends, scope } => backends.remove_linux_scope(&scope).await.map(|()| None),
             Self::IsolationGroup(id) => Driver::clean_related_resources(id).await.map(|()| None),
             Self::Process(process) => process.cleanup().await.map(|()| None),
             Self::Namespace { name, client } => {
@@ -108,6 +124,8 @@ impl fmt::Debug for Resource {
     /// Omits a namespace's client, which isn't `Debug`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Participant { name, .. } => f.debug_tuple("Participant").field(name).finish(),
+            Self::LinuxScope { scope, .. } => f.debug_tuple("LinuxScope").field(scope).finish(),
             Self::IsolationGroup(id) => f.debug_tuple("IsolationGroup").field(id).finish(),
             Self::Process(process) => f.debug_tuple("Process").field(process).finish(),
             Self::Namespace { name, .. } => f.debug_struct("Namespace").field("name", name).finish_non_exhaustive(),
@@ -120,6 +138,8 @@ impl fmt::Display for Resource {
     /// Resource label used in cleanup reports.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Participant { name, .. } => write!(f, "participant:{name}"),
+            Self::LinuxScope { scope, .. } => write!(f, "isolation_group:{}", scope.id()),
             Self::IsolationGroup(id) => write!(f, "isolation_group:{}", id),
             Self::Process(process) => write!(f, "process:{}", process.name()),
             Self::Namespace { name, .. } => write!(f, "namespace:{}", name),
@@ -159,6 +179,36 @@ fn removed(unsettled: bool) -> Settled {
     }
 }
 
+async fn remove_entry(
+    entry: Entry, kept_by: Option<&str>, deadline: Instant,
+) -> (String, Option<String>, bool, Removal) {
+    let Entry { resource, unsettled } = entry;
+    let label = resource.to_string();
+    let participant = match &resource {
+        Resource::Participant { name, .. } => Some(name.clone()),
+        _ => None,
+    };
+    let removal = match (&resource, kept_by) {
+        (Resource::Directory(_), Some(kept_by)) => Removal::Settled((
+            ReclaimResult::Leaked,
+            Some(format!("kept because {} was not reclaimed", kept_by)),
+        )),
+        _ => match timeout_at(deadline, resource.remove(deadline)).await {
+            Ok(Ok(Some(terminating))) => Removal::Terminating(terminating),
+            Ok(Ok(None)) => Removal::Settled(removed(unsettled)),
+            Ok(Err(e)) => Removal::Settled((ReclaimResult::Leaked, Some(format!("{:#}", e)))),
+            Err(_) => Removal::Settled((
+                ReclaimResult::Unsettled,
+                Some(format!(
+                    "still being removed when the {:?} reclaim budget expired",
+                    RECLAIM_TIME
+                )),
+            )),
+        },
+    };
+    (label, participant, unsettled, removal)
+}
+
 impl ResourceLedger {
     fn lock(&self) -> MutexGuard<'_, Vec<Entry>> {
         // Every update is a single push or flag write, so the entries stay consistent if a holder panics.
@@ -175,13 +225,38 @@ impl ResourceLedger {
     /// Registers a new isolation group and returns its ID. Call it before creating anything in the group.
     pub fn isolation_group(&self) -> String {
         let id = random_id();
-        self.isolation_group_with_id(id.clone());
+        self.register(Resource::IsolationGroup(id.clone()));
         id
     }
 
-    /// Registers the planned isolation-group ID before creating any of its resources.
-    pub(crate) fn isolation_group_with_id(&self, id: String) {
-        self.register(Resource::IsolationGroup(id));
+    /// Registers the native scope before preparation.
+    pub(crate) fn linux_scope(&self, backends: Arc<RunBackends>, scope: ScopeLayout) {
+        self.register(Resource::LinuxScope { backends, scope });
+    }
+
+    /// Registers a participant before its creation request.
+    pub(crate) fn participant(&self, name: &str, container: ContainerRef, grace: Duration) {
+        self.register(Resource::Participant {
+            name: name.into(),
+            container,
+            grace,
+        });
+    }
+
+    /// Runs creation with both the participant and scope marked unsettled if cancellation cuts it short.
+    pub(crate) async fn create_participant<F>(
+        &self, participant: &str, scope: &str, cancel: &CancellationToken, request: F,
+    ) -> Option<F::Output>
+    where
+        F: Future,
+    {
+        let created = self
+            .create(&format!("participant:{participant}"), cancel, request)
+            .await;
+        if created.is_none() {
+            self.mark_unsettled(scope);
+        }
+        created
     }
 
     #[cfg(test)]
@@ -209,6 +284,8 @@ impl ResourceLedger {
         for entry in self.lock().iter_mut() {
             let named = match &entry.resource {
                 Resource::IsolationGroup(id) => id == name,
+                Resource::LinuxScope { scope, .. } => scope.id() == name,
+                Resource::Participant { name: participant, .. } => format!("participant:{participant}") == name,
                 Resource::Namespace { name: namespace, .. } => namespace == name,
                 Resource::Process(_) | Resource::Directory(_) => false,
             };
@@ -260,6 +337,7 @@ impl ResourceLedger {
 
     /// Attempts cleanup in reverse registration order under one deadline.
     ///
+    /// Consecutive participant entries stop concurrently, each with its own grace.
     /// Namespace deletions start during the walk; confirmation polls run concurrently afterward. Returns results in
     /// reverse registration order and an issue for each failed or unconfirmed removal. Expiry drops pending removal
     /// futures; dropping a process sends SIGKILL if needed.
@@ -270,54 +348,57 @@ impl ResourceLedger {
         // kind-node paths and can finish independently of these host directories.
         let mut kept_by: Option<String> = None;
 
-        for Entry { resource, unsettled } in entries.into_iter().rev() {
-            let label = resource.to_string();
-            let removal = match (&resource, &kept_by) {
-                (Resource::Directory(_), Some(kept_by)) => Removal::Settled((
-                    ReclaimResult::Leaked,
-                    Some(format!("kept because {} was not reclaimed", kept_by)),
-                )),
-                _ => match timeout_at(deadline, resource.remove()).await {
-                    Ok(Ok(Some(terminating))) => Removal::Terminating(terminating),
-                    Ok(Ok(None)) => Removal::Settled(removed(unsettled)),
-                    Ok(Err(e)) => Removal::Settled((ReclaimResult::Leaked, Some(format!("{:#}", e)))),
-                    Err(_) => Removal::Settled((
-                        ReclaimResult::Unsettled,
-                        Some(format!(
-                            "still being removed when the {:?} reclaim budget expired",
-                            RECLAIM_TIME
-                        )),
-                    )),
-                },
-            };
-            if let Removal::Settled((_, Some(_))) = removal {
-                kept_by.get_or_insert_with(|| label.clone());
+        let mut entries = entries.into_iter().rev().peekable();
+        while let Some(entry) = entries.next() {
+            let mut batch = vec![entry];
+            if matches!(batch[0].resource, Resource::Participant { .. }) {
+                while entries
+                    .peek()
+                    .is_some_and(|entry| matches!(entry.resource, Resource::Participant { .. }))
+                {
+                    batch.push(entries.next().expect("the next entry is a participant"));
+                }
             }
-            removals.push((label, unsettled, removal));
+            for removal in join_all(
+                batch
+                    .into_iter()
+                    .map(|entry| remove_entry(entry, kept_by.as_deref(), deadline)),
+            )
+            .await
+            {
+                if let Removal::Settled((_, Some(_))) = removal.3 {
+                    kept_by.get_or_insert_with(|| removal.0.clone());
+                }
+                removals.push(removal);
+            }
         }
 
-        let settled = join_all(removals.into_iter().map(|(label, unsettled, removal)| async move {
-            let settled = match removal {
-                Removal::Settled(settled) => settled,
-                Removal::Terminating(terminating) => match timeout_at(deadline, terminating.gone()).await {
-                    Ok(Ok(())) => removed(unsettled),
-                    Ok(Err(e)) => (ReclaimResult::Leaked, Some(format!("{:#}", e))),
-                    Err(_) => (
-                        ReclaimResult::Unsettled,
-                        Some(format!(
-                            "still terminating when the {:?} reclaim budget expired",
-                            RECLAIM_TIME
-                        )),
-                    ),
-                },
-            };
-            (label, settled)
-        }))
+        let settled = join_all(
+            removals
+                .into_iter()
+                .map(|(label, participant, unsettled, removal)| async move {
+                    let settled = match removal {
+                        Removal::Settled(settled) => settled,
+                        Removal::Terminating(terminating) => match timeout_at(deadline, terminating.gone()).await {
+                            Ok(Ok(())) => removed(unsettled),
+                            Ok(Err(e)) => (ReclaimResult::Leaked, Some(format!("{:#}", e))),
+                            Err(_) => (
+                                ReclaimResult::Unsettled,
+                                Some(format!(
+                                    "still terminating when the {:?} reclaim budget expired",
+                                    RECLAIM_TIME
+                                )),
+                            ),
+                        },
+                    };
+                    (label, participant, settled)
+                }),
+        )
         .await;
 
         let mut reclaim = Vec::with_capacity(settled.len());
         let mut issues = Vec::new();
-        for (label, (result, detail)) in settled {
+        for (label, participant, (result, detail)) in settled {
             if let Some(detail) = detail {
                 let kind = match result {
                     ReclaimResult::Unsettled => IssueKind::ResourceUnsettled,
@@ -330,6 +411,7 @@ impl ResourceLedger {
             }
             reclaim.push(ReclaimEntry {
                 resource: label,
+                participant,
                 result,
             });
         }
@@ -515,6 +597,7 @@ mod tests {
     fn entry(resource: &str, result: ReclaimResult) -> ReclaimEntry {
         ReclaimEntry {
             resource: resource.to_string(),
+            participant: None,
             result,
         }
     }

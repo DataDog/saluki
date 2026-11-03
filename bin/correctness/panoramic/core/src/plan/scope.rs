@@ -52,7 +52,7 @@ impl ScopeRegistry {
 }
 
 /// A case's run identity and isolation scope index.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ScopeLayout {
     pub(crate) run: String,
     pub(crate) index: u16,
