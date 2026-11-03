@@ -1297,7 +1297,7 @@ mod tests {
     #[tokio::test]
     async fn port_forwards_stop_with_their_case() {
         // Keep the upgrade request pending so only task cancellation closes the forwarded connection.
-        let api = MockIntake::unresponsive().await;
+        let (api, connected) = MockIntake::unresponsive_with_connection_signal().await;
         let config = kube::Config::new(
             format!("http://127.0.0.1:{}", api.port())
                 .parse()
@@ -1312,13 +1312,10 @@ mod tests {
             .await
             .expect("the first connection should finish within the bound")
             .expect("the port-forward should accept a connection");
-        tokio::time::timeout(BOUND, async {
-            while api.connections() == 0 {
-                sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("the forwarded connection should reach the API within the bound");
+        tokio::time::timeout(BOUND, connected)
+            .await
+            .expect("the forwarded connection should reach the API within the bound")
+            .expect("the API should signal an accepted connection");
 
         let running = tokio::time::timeout(BOUND, tasks.stop_all(tokio::time::Instant::now() + BOUND))
             .await
