@@ -16,6 +16,7 @@ pub(crate) mod elf;
 mod pull;
 mod verify;
 pub(crate) use pull::pull;
+pub(crate) use verify::binary_identity;
 pub(crate) use verify::verify;
 pub use verify::{verified_artifacts, ArtifactVerification, VerifiedArtifact};
 

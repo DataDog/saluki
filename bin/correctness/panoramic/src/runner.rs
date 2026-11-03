@@ -18,7 +18,9 @@ use futures::stream::{self, StreamExt as _};
 use panoramic_core::deadline::{Budget, Deadline};
 use panoramic_core::events::{EventSender, TestEvent};
 use panoramic_core::ledger::RECLAIM_TIME;
+use panoramic_core::lifecycle::{self, CaseControl, NativeInputs};
 use panoramic_core::machine_output::RESULT_LOG_FILE_NAME;
+use panoramic_core::participant::ParticipantType;
 use panoramic_core::probe::probe;
 use panoramic_core::record::{ActiveStep, CaseRecord, StepStatus, Verdict};
 use panoramic_core::result::{
@@ -210,13 +212,19 @@ impl RunArgs {
 /// Owns the set of registered tests and orchestrates their execution.
 ///
 /// Handles parallelism, timeout enforcement, cancellation propagation, log directory creation,
-/// and event dispatch. Individual test logic lives in the `Test`
-/// implementations.
+/// and event dispatch. Case bodies use typed runners, the integration bridge or the native lifecycle.
 pub(crate) struct Runner {
     tests: Vec<BuiltCase>,
     log_base_dir: PathBuf,
     settings: RunnerSettings,
     kind_ready: Option<crate::test::KindReadyReceiver>,
+    native: Option<NativeExecution>,
+}
+
+/// Verified artifacts and participant types used to run native cases.
+struct NativeExecution {
+    inputs: NativeInputs,
+    types: &'static [&'static dyn ParticipantType],
 }
 
 impl Runner {
@@ -226,7 +234,13 @@ impl Runner {
             log_base_dir: log_base_dir.into(),
             settings,
             kind_ready: None,
+            native: None,
         }
+    }
+
+    pub(crate) fn with_native(mut self, inputs: NativeInputs, types: &'static [&'static dyn ParticipantType]) -> Self {
+        self.native = Some(NativeExecution { inputs, types });
+        self
     }
 
     pub(crate) fn with_kind_ready(mut self, rx: crate::test::KindReadyReceiver) -> Self {
@@ -311,6 +325,7 @@ impl Runner {
                 self.log_base_dir.clone(),
                 self.settings.clone(),
                 kind_ready,
+                self.native.as_ref(),
             )
             .await;
 
@@ -365,7 +380,16 @@ impl Runner {
                     return;
                 }
 
-                Self::run_one(built, event_sender, &cancel, log_base_dir, settings, kind_ready).await;
+                Self::run_one(
+                    built,
+                    event_sender,
+                    &cancel,
+                    log_base_dir,
+                    settings,
+                    kind_ready,
+                    self.native.as_ref(),
+                )
+                .await;
             });
 
             while futures.len() >= parallelism {
@@ -378,7 +402,7 @@ impl Runner {
 
     async fn run_one(
         built: &BuiltCase, event_sender: &EventSender, cancel_all: &CancellationToken, log_base_dir: PathBuf,
-        settings: RunnerSettings, kind_ready: Option<crate::test::KindReadyReceiver>,
+        settings: RunnerSettings, kind_ready: Option<crate::test::KindReadyReceiver>, native: Option<&NativeExecution>,
     ) -> TestResult {
         let plan = &built.plan;
         let case = plan.case();
@@ -430,11 +454,30 @@ impl Runner {
         let tasks = tctx.tasks.clone();
 
         let mut result = {
-            let run_fut = match &built.execution {
-                Execution::Runner(test) => futures::future::Either::Left(test.run(tctx)),
-                Execution::Unprovidable(message) => futures::future::Either::Right(std::future::ready(
-                    TestResult::errored("", ErrorKind::Setup, message, Duration::ZERO, vec![]),
-                )),
+            let run_fut = async {
+                match &built.execution {
+                    Execution::Runner(test) => test.run(tctx).await,
+                    Execution::Native => {
+                        let Some(native) = native else {
+                            return TestResult::errored(
+                                "",
+                                ErrorKind::Internal,
+                                "Native execution inputs were not prepared.",
+                                Duration::ZERO,
+                                vec![],
+                            );
+                        };
+                        let control = CaseControl {
+                            cancel: tctx.test_cancel_token(),
+                            phases: tctx.phases.clone(),
+                            ledger: tctx.ledger.clone(),
+                        };
+                        lifecycle::run(plan, native.types, &native.inputs, &control).await
+                    }
+                    Execution::Unprovidable(message) => {
+                        TestResult::errored("", ErrorKind::Setup, message, Duration::ZERO, vec![])
+                    }
+                }
             };
             pin!(run_fut);
 
@@ -1437,7 +1480,7 @@ pub(crate) mod test_support {
 
         tokio::time::timeout(
             bound,
-            Runner::run_one(built, &tx, cancel_all, log_base_dir.to_path_buf(), settings, None),
+            Runner::run_one(built, &tx, cancel_all, log_base_dir.to_path_buf(), settings, None, None),
         )
         .await
         .expect("the runner should finish the test within the bound")
@@ -1465,6 +1508,70 @@ mod tests {
         plan_for_linux, run_with_settings, test_runner_settings, Behavior, ScriptedTest, TaskProbe,
     };
     use super::*;
+
+    #[tokio::test]
+    async fn the_runner_reports_a_native_case_through_the_lifecycle() {
+        use panoramic_core::backend::RunBackends;
+
+        use crate::config::{
+            build_runners,
+            route::tests::{plan_with_plain, Plain},
+            runner_artifacts::RunnerArtifacts,
+            tests::PARTICIPANT_FIELDS,
+        };
+
+        for fail_fast in [false, true] {
+            let logs = tempfile::tempdir().unwrap();
+            let plan = plan_with_plain(
+                &PARTICIPANT_FIELDS
+                    .replace("agent-adp", "plain")
+                    .replace("[linux]", "[macos]"),
+                "native",
+                Os::MacOs,
+            );
+            let layout = layout_entries(&plan);
+            let built = build_runners([plan], Os::MacOs, &RunnerArtifacts::Overrides(&[]))
+                .unwrap()
+                .remove(0);
+            let inputs = NativeInputs::new(Arc::new(RunBackends::default()), &[], logs.path()).unwrap();
+            let mut runner = Runner::new(logs.path(), test_runner_settings(logs.path())).with_native(inputs, &[&Plain]);
+            runner.register(built).unwrap();
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let args = RunArgs::new(CancellationToken::new(), tx).with_fail_fast(fail_fast);
+            tokio::time::timeout(BOUND, runner.run_tests(args)).await.unwrap();
+
+            assert!(matches!(
+                rx.try_recv().unwrap(),
+                TestEvent::RunStarted { total_tests: 1 }
+            ));
+            assert!(matches!(rx.try_recv().unwrap(), TestEvent::TestStarted { name } if name == "native"));
+            let TestEvent::TestCompleted { result, log_dir } = rx.try_recv().unwrap() else {
+                panic!("native case should report completion");
+            };
+            assert_eq!(result.name, "native");
+            assert_eq!(result.outcome, TestOutcome::Errored);
+            let error = result.error.as_ref().unwrap();
+            assert_eq!(error.kind, ErrorKind::Setup);
+            assert_eq!(
+                error.message,
+                "panoramic cannot create host-process-group participants natively: 'adp' on macos"
+            );
+            assert_eq!(phase_names(&result), ["prepare"]);
+            assert!(result.reclaim.is_empty());
+            assert!(result.issues.is_empty());
+            assert_eq!(result.layout, Some(layout.clone()));
+            assert_eq!(log_dir, logs.path().join("integration/native"));
+            let report = written_report(&result);
+            assert_eq!(report["name"], "native");
+            assert_eq!(report["outcome"], "errored");
+            assert_eq!(report["error"]["kind"], "setup");
+            assert_eq!(report["error"]["message"], error.message);
+            assert_eq!(report["phase_timings"][0]["phase"], "prepare");
+            assert_eq!(report["reclaim"], serde_json::json!([]));
+            assert_eq!(report["layout"], serde_json::to_value(layout).unwrap());
+            assert!(rx.try_recv().is_err());
+        }
+    }
 
     #[tokio::test]
     async fn only_cases_that_need_a_kubernetes_pod_wait_for_the_kind_cluster() {
@@ -1690,6 +1797,7 @@ mod tests {
             occupied_base_dir.path().to_path_buf(),
             test_runner_settings(mounts_dir.path()),
             None,
+            None,
         )
         .await;
 
@@ -1739,6 +1847,7 @@ mod tests {
                 &CancellationToken::new(),
                 log_base_dir.path().to_path_buf(),
                 test_runner_settings(log_base_dir.path()),
+                None,
                 None,
             ),
         )
@@ -1795,6 +1904,7 @@ mod tests {
                 &CancellationToken::new(),
                 log_base_dir.path().to_path_buf(),
                 test_runner_settings(log_base_dir.path()),
+                None,
                 None,
             ),
         )

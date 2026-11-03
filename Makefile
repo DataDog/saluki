@@ -624,7 +624,7 @@ test-airlock-daemon: ## Runs airlock's tests against a real Docker daemon (the i
 test-panoramic-daemon: check-rust-build-tools cargo-install-cargo-nextest build-courier-linux
 test-panoramic-daemon: ## Runs panoramic's Linux container backend tests against a real Docker daemon (the image in $PANORAMIC_TEST_IMAGE, default alpine:latest, must already be local)
 	@echo "[*] Running panoramic daemon tests..."
-	cargo nextest run -p panoramic-core --run-ignored only --no-fail-fast -E 'test(/^backend::linux_container::daemon_tests::/)'
+	cargo nextest run -p panoramic-core --run-ignored only --no-fail-fast -E 'test(/^backend::linux_container::daemon_tests::/) | test(/^lifecycle::daemon_tests::/)'
 
 .PHONY: test-all
 test-all: ## Test everything

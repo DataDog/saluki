@@ -2,6 +2,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::case::template::AddressPart;
+
 /// How a served endpoint is reached.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum EndpointKind {
@@ -173,6 +175,17 @@ pub struct ResolvedAddress {
     pub(crate) host: Option<String>,
     pub(crate) port: Option<u16>,
     pub(crate) path: Option<String>,
+}
+
+impl ResolvedAddress {
+    pub(crate) fn part(&self, part: AddressPart) -> Option<String> {
+        match part {
+            AddressPart::Url => Some(self.url.clone()),
+            AddressPart::Host => self.host.clone(),
+            AddressPart::Port => self.port.map(|port| port.to_string()),
+            AddressPart::Path => self.path.clone(),
+        }
+    }
 }
 
 /// How the runner host performs one endpoint operation, directly or through the server participant's courier.

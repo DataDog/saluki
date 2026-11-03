@@ -2,8 +2,17 @@
 
 use std::collections::BTreeMap;
 
-/// Entrypoint, command, environment, files and host mounts for one container.
-pub(crate) struct ContainerRecipe {
+use crate::artifact::ArtifactRole;
+
+/// A participant type's recipe for one supported realization.
+pub enum Recipe {
+    /// A container created from a declared image role.
+    Container(ContainerRecipe),
+}
+
+/// Image role, entrypoint, command, environment, files and host mounts for one container.
+pub struct ContainerRecipe {
+    pub(crate) image: ArtifactRole,
     pub(crate) entrypoint: Option<Vec<String>>,
     pub(crate) command: Option<Vec<String>>,
     pub(crate) env: BTreeMap<String, String>,

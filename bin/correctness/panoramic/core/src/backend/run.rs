@@ -22,7 +22,7 @@ pub struct RunBackends {
 
 impl RunBackends {
     #[cfg(test)]
-    fn with_docker(docker: DockerDaemon) -> Self {
+    pub(crate) fn with_docker(docker: DockerDaemon) -> Self {
         Self {
             docker,
             providability_checks: std::sync::Mutex::default(),
@@ -140,7 +140,7 @@ mod tests {
             let api = FakeDocker::new(Some(os));
             let backends = RunBackends::with_docker(api.daemon());
             let error = backends
-                .prepare_linux_scope(&scope, &["p"], "local:latest", Vec::new())
+                .prepare_linux_scope(&scope, &["p"], "local:latest", bytes::Bytes::new())
                 .await
                 .err()
                 .unwrap();

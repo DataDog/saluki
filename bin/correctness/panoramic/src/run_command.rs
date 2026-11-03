@@ -1,10 +1,11 @@
-use std::{collections::BTreeMap, path::Path, process::ExitCode};
+use std::{collections::BTreeMap, path::Path, process::ExitCode, sync::Arc};
 
 use panoramic_core::artifact::{verified_artifacts, ArtifactBinding, VerifiedArtifact};
 use panoramic_core::backend::RunBackends;
 use panoramic_core::events::create_event_channel;
 use panoramic_core::interrupts::Interrupts;
 use panoramic_core::layout::{Os, Realization};
+use panoramic_core::lifecycle::NativeInputs;
 use panoramic_core::machine_output::{revision, RunReport, TestReport, RUN_REPORT_FILE_NAME};
 use panoramic_core::plan::needed_artifacts;
 use tokio::sync::{watch, Mutex};
@@ -59,6 +60,7 @@ struct PreparedRun {
     excluded: Vec<LoadedCase>,
     settings: RunnerSettings,
     verified: Option<Vec<VerifiedArtifact>>,
+    native: Option<NativeInputs>,
 }
 
 pub(crate) async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
@@ -79,15 +81,16 @@ async fn prepare_run(cmd: &cli::RunCommand, console: &Console) -> Result<Prepare
     let (mut built, settings, artifacts) = build_cases(cmd, subject_os, plans)?;
     check_legacy_inputs(cmd, subject_os, &built, &settings, &artifacts)?;
     select_cases(cmd, console, subject_os, &mut built, &mut excluded)?;
-    let backends = RunBackends::default();
+    let backends = Arc::new(RunBackends::default());
     let unprovidable = check_providability(&backends, console, &mut built).await?;
-    let verified = verify_artifacts(&backends, cmd, console, subject_os, &built, &unprovidable).await?;
+    let (verified, native) = prepare_artifacts(backends, cmd, console, subject_os, &built, &unprovidable).await?;
     Ok(PreparedRun {
         subject_os,
         built,
         excluded,
         settings,
         verified,
+        native,
     })
 }
 
@@ -196,21 +199,31 @@ async fn check_providability(
     Ok(unprovidable)
 }
 
-/// Verifies artifacts for selected cases the host can run when a manifest was supplied.
-async fn verify_artifacts(
-    backends: &RunBackends, cmd: &cli::RunCommand, console: &Console, subject_os: Os, built: &[BuiltCase],
+/// Verifies selected artifacts and loads native inputs before creating any run logs.
+async fn prepare_artifacts(
+    backends: Arc<RunBackends>, cmd: &cli::RunCommand, console: &Console, subject_os: Os, built: &[BuiltCase],
     unprovidable: &BTreeMap<Realization, String>,
-) -> Result<Option<Vec<VerifiedArtifact>>, SetupFailure> {
-    if cmd.artifacts.is_some() {
-        let bindings = run_artifacts(built, unprovidable);
-        let base = std::env::current_dir()
-            .map_err(|error| SetupFailure::harness(format!("Cannot read the current directory: {error}")))?;
-        Ok(Some(
-            verify_run_artifacts(backends, &bindings, subject_os, &base, console).await?,
-        ))
-    } else {
-        Ok(None)
+) -> Result<(Option<Vec<VerifiedArtifact>>, Option<NativeInputs>), SetupFailure> {
+    let bindings = verification_bindings(built, unprovidable, cmd.artifacts.is_some());
+    let has_native = built.iter().any(|built| matches!(built.execution, Execution::Native));
+    if bindings.is_none() && !has_native {
+        return Ok((None, None));
     }
+    let base = std::env::current_dir()
+        .map_err(|error| SetupFailure::harness(format!("Cannot read the current directory: {error}")))?;
+    let verified = match bindings {
+        Some(bindings) => Some(verify_run_artifacts(&backends, &bindings, subject_os, &base, console).await?),
+        None => None,
+    };
+    let native = if has_native {
+        Some(
+            NativeInputs::new(backends, verified.as_deref().unwrap_or_default(), &base)
+                .map_err(SetupFailure::harness)?,
+        )
+    } else {
+        None
+    };
+    Ok((verified, native))
 }
 
 /// Creates run reports, executes the cases and returns the run's exit code.
@@ -221,6 +234,7 @@ async fn report_run(prepared: PreparedRun, cmd: &cli::RunCommand, console: &Cons
         excluded,
         settings,
         verified,
+        native,
     } = prepared;
     // Create log directory.
     let log_dir = match std::path::absolute(cmd.log_dir()) {
@@ -257,7 +271,17 @@ async fn report_run(prepared: PreparedRun, cmd: &cli::RunCommand, console: &Cons
     let mut collector = RunCollector::start(report, cmd.fail_fast);
 
     let display_error = if !built.is_empty() {
-        execute(built, settings, cmd, console, &log_dir, &mut collector, &mut interrupts).await
+        execute(
+            built,
+            settings,
+            native,
+            cmd,
+            console,
+            &log_dir,
+            &mut collector,
+            &mut interrupts,
+        )
+        .await
     } else {
         collector.finish(Ok(()));
         let message = format!(
@@ -291,8 +315,8 @@ async fn report_run(prepared: PreparedRun, cmd: &cli::RunCommand, console: &Cons
 
 /// Runs the selected cases, collects their results and handles kind cluster cleanup.
 async fn execute(
-    built: Vec<BuiltCase>, settings: RunnerSettings, cmd: &cli::RunCommand, console: &Console, log_dir: &Path,
-    collector: &mut RunCollector, interrupts: &mut Interrupts,
+    built: Vec<BuiltCase>, settings: RunnerSettings, native: Option<NativeInputs>, cmd: &cli::RunCommand,
+    console: &Console, log_dir: &Path, collector: &mut RunCollector, interrupts: &mut Interrupts,
 ) -> Option<std::io::Error> {
     // Create the event channel early so the kind setup task can emit status messages.
     let (tx, rx) = create_event_channel();
@@ -323,6 +347,9 @@ async fn execute(
     };
 
     let mut registry = Runner::new(log_dir, settings);
+    if let Some(inputs) = native {
+        registry = registry.with_native(inputs, crate::REGISTRIES.participant_types);
+    }
     if let Some(ref rx) = kind_rx {
         registry = registry.with_kind_ready(rx.clone());
     }
@@ -406,14 +433,25 @@ async fn execute(
     display_error
 }
 
-/// Selects artifacts only from cases this host can run, after test-name selection.
-fn run_artifacts(built: &[BuiltCase], unprovidable: &BTreeMap<Realization, String>) -> Vec<ArtifactBinding> {
+/// Selects native roles, or every route's roles with a manifest, after name selection and host checks.
+fn run_artifacts(
+    built: &[BuiltCase], unprovidable: &BTreeMap<Realization, String>, with_manifest: bool,
+) -> Vec<ArtifactBinding> {
     needed_artifacts(built.iter().filter_map(|built| {
-        realizations(&built.plan)
+        let selected = with_manifest || matches!(built.execution, Execution::Native);
+        let providable = realizations(&built.plan)
             .iter()
-            .all(|(_, realization)| !unprovidable.contains_key(realization))
-            .then_some(&built.plan)
+            .all(|(_, realization)| !unprovidable.contains_key(realization));
+        (selected && providable).then_some(&built.plan)
     }))
+}
+
+/// Chooses whether to verify, retaining an empty selection when a manifest was supplied.
+fn verification_bindings(
+    built: &[BuiltCase], unprovidable: &BTreeMap<Realization, String>, with_manifest: bool,
+) -> Option<Vec<ArtifactBinding>> {
+    let bindings = run_artifacts(built, unprovidable, with_manifest);
+    (!bindings.is_empty() || with_manifest).then_some(bindings)
 }
 
 /// Reports artifact verification results and returns their verified identities.
@@ -761,12 +799,274 @@ mod tests {
                 .into_iter()
                 .map(|realization| (realization, "unavailable".into()))
                 .collect();
-            let bindings = run_artifacts(&built, &unprovidable);
+            let bindings = run_artifacts(&built, &unprovidable, true);
             assert_eq!(
                 bindings.iter().map(|binding| binding.role.name).collect::<Vec<_>>(),
                 expected
             );
         }
+    }
+
+    #[test]
+    fn without_a_manifest_only_native_rows_have_their_bindings_verified() {
+        use panoramic_core::layout::RealizationKind;
+
+        use crate::config::route::tests::plan_with_plain;
+
+        let native = PARTICIPANT_FIELDS.replace("agent-adp", "plain");
+        let unavailable = native.replace("  adp:", "  windows: {type: agent-adp, os: windows}\n  adp:");
+        let plans = [
+            plan_with_plain(&native, "native", Os::Linux),
+            plan_with_plain(&unavailable, "unavailable", Os::Linux),
+            plan_with_plain(PARTICIPANT_FIELDS, "bridge", Os::Linux),
+            plan_with_plain(
+                &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
+                "unselected",
+                Os::Linux,
+            ),
+        ];
+        let mut built = build_runners(plans, Os::Linux, &RunnerArtifacts::Overrides(&[])).unwrap();
+        let selected = ["native".into(), "unavailable".into(), "bridge".into()];
+        retain_selected(&mut built, Some(&selected), |built| built.plan.case().name());
+        let unprovidable = BTreeMap::from([(
+            Realization {
+                os: Os::Windows,
+                kind: RealizationKind::WindowsContainer,
+            },
+            "unavailable".into(),
+        )]);
+        built[1].execution = Execution::Unprovidable("unavailable".into());
+        for (with_manifest, expected) in [
+            (false, vec!["courier-linux-binary", "fixup-image"]),
+            (
+                true,
+                vec!["agent-adp-linux-image", "courier-linux-binary", "fixup-image"],
+            ),
+        ] {
+            let bindings = run_artifacts(&built, &unprovidable, with_manifest);
+            assert_eq!(
+                bindings.iter().map(|binding| binding.role.name).collect::<Vec<_>>(),
+                expected
+            );
+        }
+        built.remove(0);
+        assert!(run_artifacts(&built, &unprovidable, false).is_empty());
+    }
+
+    #[test]
+    fn verification_requires_a_manifest_or_native_bindings() {
+        use crate::config::route::tests::plan_with_plain;
+
+        let unprovidable = BTreeMap::new();
+        assert_eq!(verification_bindings(&[], &unprovidable, false), None);
+        assert_eq!(verification_bindings(&[], &unprovidable, true), Some(vec![]));
+
+        let plan = plan_with_plain(&PARTICIPANT_FIELDS.replace("agent-adp", "plain"), "native", Os::Linux);
+        let built = build_runners([plan], Os::Linux, &RunnerArtifacts::Overrides(&[])).unwrap();
+        let bindings = verification_bindings(&built, &unprovidable, false).expect("native bindings must be verified");
+        assert_eq!(
+            bindings.iter().map(|binding| binding.role.name).collect::<Vec<_>>(),
+            ["courier-linux-binary", "fixup-image"]
+        );
+    }
+
+    fn native_file_run(dir: &Path) -> (cli::RunCommand, Vec<BuiltCase>) {
+        use panoramic_core::{
+            artifact::{ArtifactKind, ArtifactRole},
+            case::{CaseLoader, Registries},
+            layout::RealizationKind,
+            participant::ParticipantType,
+        };
+
+        use crate::config::typed_case::TypedConfigLoader;
+
+        struct LocalFiles;
+
+        impl ParticipantType for LocalFiles {
+            fn name(&self) -> &'static str {
+                "local-files"
+            }
+
+            fn supports(&self) -> &'static [(Os, RealizationKind)] {
+                &[
+                    (Os::Linux, RealizationKind::HostProcessGroup),
+                    (Os::MacOs, RealizationKind::HostProcessGroup),
+                    (Os::Windows, RealizationKind::HostProcessGroup),
+                ]
+            }
+
+            fn artifacts(&self, _realization: Realization) -> &'static [ArtifactRole] {
+                &[
+                    ArtifactRole {
+                        name: "native-binary",
+                        kind: ArtifactKind::Binary,
+                        local_default: "",
+                    },
+                    ArtifactRole {
+                        name: "native-install",
+                        kind: ArtifactKind::Install {
+                            main_binary: "bin/main",
+                        },
+                        local_default: "",
+                    },
+                ]
+            }
+
+            fn processes(&self) -> &'static [&'static str] {
+                &[]
+            }
+        }
+
+        // Synthetic host plans keep providability and verification local. In-memory bindings supply fixture paths
+        // independently of the command's --artifacts flag.
+        let registries = Registries {
+            participant_types: &[&LocalFiles],
+            ..REGISTRIES
+        };
+        let os = Os::host();
+        let yaml = PARTICIPANT_FIELDS
+            .replace("[linux]", &format!("[{}]", os.name()))
+            .replace("agent-adp", "local-files")
+            .replace(
+                "subject: true",
+                "subject: true, realization: {kind: host-process-group}",
+            );
+        let case = CaseLoader::new(registries, TypedConfigLoader, "integration")
+            .load_content(&yaml, "native", &dir.join("native/config.yaml"))
+            .unwrap()
+            .remove(0);
+        let bindings = ArtifactManifest::new(
+            "fixture",
+            BTreeMap::from([
+                ("native-binary".into(), dir.join("binary").to_str().unwrap().into()),
+                ("native-install".into(), dir.join("install").to_str().unwrap().into()),
+            ]),
+        )
+        .unwrap();
+        let plan = Planner::new(registries, bindings)
+            .unwrap()
+            .compile(case, os)
+            .unwrap()
+            .into_plan()
+            .unwrap();
+        let built = build_runners([plan], os, &RunnerArtifacts::Overrides(&[])).unwrap();
+        assert!(matches!(built[0].execution, Execution::Native));
+        let logs = dir.join("logs");
+        let Command::Run(cmd) = Cli::try_parse_from([
+            "panoramic",
+            "run",
+            "--subject-os",
+            os.name(),
+            "--no-tui",
+            "-l",
+            logs.to_str().unwrap(),
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("expected run")
+        };
+        assert!(cmd.artifacts.is_none());
+        (cmd, built)
+    }
+
+    #[tokio::test]
+    async fn native_preparation_without_the_artifacts_flag_fails_verification_before_creating_logs() {
+        use tracing::instrument::WithSubscriber as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (cmd, mut built) = native_file_run(dir.path());
+        let console = Console { use_tui: false };
+        let backends = Arc::new(RunBackends::default());
+        let unprovidable = check_providability(&backends, &console, &mut built).await.unwrap();
+        assert!(unprovidable.is_empty());
+        let output = std::fs::File::create(dir.path().join("diagnostic.log")).unwrap();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(std::sync::Mutex::new(output))
+            .finish();
+        let failure = prepare_artifacts(backends, &cmd, &console, Os::host(), &built, &unprovidable)
+            .with_subscriber(subscriber)
+            .await
+            .err()
+            .expect("missing native files must fail preparation without --artifacts");
+        assert_eq!(failure.message, "2 of 2 artifact(s) failed verification.");
+        assert_eq!(failure.report(&console), ExitCode::from(EXIT_HARNESS_ERROR));
+        let diagnostic = std::fs::read_to_string(dir.path().join("diagnostic.log")).unwrap();
+        assert_eq!(diagnostic.matches("FAILED:").count(), 2, "{diagnostic}");
+        for role in ["native-binary", "native-install"] {
+            assert!(diagnostic.contains(&format!("{role} =")), "{diagnostic}");
+        }
+        assert!(!dir.path().join("logs").exists());
+        assert!(!cmd.log_dir().join(RUN_REPORT_FILE_NAME).exists());
+    }
+
+    #[tokio::test]
+    async fn native_verification_without_the_artifacts_flag_records_artifact_identities_in_run_json() {
+        use panoramic_core::artifact::test_util::write_executable;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (cmd, mut built) = native_file_run(dir.path());
+        write_executable(&dir.path().join("binary"));
+        write_executable(&dir.path().join("install/bin/main"));
+        let console = Console { use_tui: false };
+        let backends = Arc::new(RunBackends::default());
+        let unprovidable = check_providability(&backends, &console, &mut built).await.unwrap();
+        assert!(unprovidable.is_empty());
+        let (verified, native) = prepare_artifacts(backends, &cmd, &console, Os::host(), &built, &unprovidable)
+            .await
+            .unwrap();
+        assert!(native.is_some());
+        assert!(!dir.path().join("logs").exists());
+        let prepared = PreparedRun {
+            subject_os: Os::host(),
+            built,
+            excluded: vec![],
+            settings: cmd.runner_settings(),
+            verified,
+            native,
+        };
+        // Host-process execution fails at lifecycle prepare, after the verified bindings reach the report.
+        assert_eq!(
+            report_run(prepared, &cmd, &console).await,
+            ExitCode::from(EXIT_HARNESS_ERROR)
+        );
+        let run_dir = std::fs::read_dir(dir.path().join("logs"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let report: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(run_dir.join(RUN_REPORT_FILE_NAME)).unwrap()).unwrap();
+        assert_eq!(
+            report["artifacts"],
+            serde_json::json!([
+                {
+                    "role": "native-binary",
+                    "reference": dir.path().join("binary"),
+                    "identity": "sha256:7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+                    "kind": "binary",
+                },
+                {
+                    "role": "native-install",
+                    "reference": dir.path().join("install"),
+                    "identity": "sha256:7c9bbe5ec9b3fb774e8fa0f54247e93c34ddf8e5d16fe3073420de0ae81a262d",
+                    "kind": "install",
+                },
+            ])
+        );
+        assert_eq!(report["state"], "complete");
+        assert_eq!(report["tests"][0]["outcome"], "errored");
+        assert_eq!(report["tests"][0]["error"]["kind"], "setup");
+        assert_eq!(
+            report["tests"][0]["error"]["message"],
+            format!(
+                "panoramic cannot create host-process-group participants natively: 'adp' on {}",
+                Os::host().name()
+            )
+        );
     }
 
     #[tokio::test]
@@ -1155,7 +1455,7 @@ mod tests {
             .plans;
             let artifacts = RunnerArtifacts::Bound(BoundArtifacts::new(needed_artifacts(&plans)));
             let built = build_runners(plans, os, &artifacts).unwrap();
-            let listing = listing(built.iter().map(|built| &built.plan), &built, &[], os);
+            let listing = listing(&built, &[], os);
             assert_eq!(
                 listing["integration"]["images"],
                 serde_json::json!({"container": target})

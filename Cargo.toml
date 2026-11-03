@@ -295,6 +295,10 @@ overflow-checks = true
 lto = "thin"
 codegen-units = 8
 
+[profile.release.package.panoramic-courier]
+debug = false
+strip = "debuginfo"
+
 [profile.optimized-release]
 inherits = "release"
 debug-assertions = false

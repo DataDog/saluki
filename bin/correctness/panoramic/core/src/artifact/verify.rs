@@ -177,8 +177,12 @@ fn open_binary(path: &Path) -> Result<File, String> {
 fn hash_binary(file: &mut File, path: &Path) -> Result<String, String> {
     file.rewind()
         .map_err(|error| format!("cannot read '{}': {error}", path.display()))?;
+    binary_identity(file).map_err(|error| format!("cannot read '{}': {error}", path.display()))
+}
+
+pub(crate) fn binary_identity(mut reader: impl std::io::Read) -> std::io::Result<String> {
     let mut hash = Sha256::new();
-    std::io::copy(file, &mut hash).map_err(|error| format!("cannot read '{}': {error}", path.display()))?;
+    std::io::copy(&mut reader, &mut hash)?;
     Ok(format!("sha256:{:x}", hash.finalize()))
 }
 

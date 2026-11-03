@@ -5,14 +5,7 @@
 
 pub(crate) mod courier;
 pub(crate) mod docker;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Native case execution creates Linux container participants through this module."
-    )
-)]
-mod linux_container;
+pub(crate) mod linux_container;
 mod run;
 pub use run::RunBackends;
 
@@ -22,7 +15,8 @@ use crate::{
     plan::ScopeLayout,
 };
 
-/// Image that makes the shared volume writable before Linux containers start.
+/// Image that creates each participant's directories on the shared volume before Linux containers start;
+/// it must provide `sh`, `mkdir` and `chmod`.
 pub const FIXUP_IMAGE: ArtifactRole = ArtifactRole {
     name: "fixup-image",
     kind: ArtifactKind::Image { os: Os::Linux },

@@ -8,6 +8,7 @@ use crate::{
     case::{EndpointOverride, FileSource, ParticipantConfig},
     endpoint::{ConsumedEndpoint, Endpoint},
     layout::{Os, Realization, RealizationKind},
+    recipe::Recipe,
 };
 
 /// One participant's case configuration for its participant OS, after applying that OS's overlay.
@@ -87,6 +88,13 @@ impl EffectiveConfig {
     }
 }
 
+/// Configuration rendered for container creation, with case files keyed by configuration name.
+pub struct RenderedConfig {
+    pub(crate) env: BTreeMap<String, String>,
+    pub(crate) params: BTreeMap<String, serde_json::Value>,
+    pub(crate) files: BTreeMap<String, Vec<u8>>,
+}
+
 /// The core-provided fact naming a participant's directory for served sockets.
 pub const SHARED_DIR_FACT: &str = "shared_dir";
 
@@ -112,6 +120,21 @@ pub trait ParticipantType: Send + Sync {
     /// Artifact roles this type runs as one realization. Called only with realizations from [`Self::supports`].
     /// Every declaration of a role name, by any type or backend, must agree on its kind and local default.
     fn artifacts(&self, realization: Realization) -> &'static [ArtifactRole];
+
+    /// Supplies the creation recipe, called in create order with a supported realization.
+    /// Every artifact role named by the recipe must be declared by [`Self::artifacts`] for that realization.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the type cannot supply a recipe for the rendered configuration.
+    fn recipe(&self, realization: Realization, _config: &RenderedConfig) -> Result<Recipe, String> {
+        Err(format!(
+            "participant type '{}' has no recipe for {} on {}",
+            self.name(),
+            realization.kind.name(),
+            realization.os.name(),
+        ))
+    }
 
     /// Names a case may supply under `config.files`. Defaults to none.
     fn config_files(&self) -> &'static [&'static str] {

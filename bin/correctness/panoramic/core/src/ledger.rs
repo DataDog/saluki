@@ -175,8 +175,18 @@ impl ResourceLedger {
     /// Registers a new isolation group and returns its ID. Call it before creating anything in the group.
     pub fn isolation_group(&self) -> String {
         let id = random_id();
-        self.register(Resource::IsolationGroup(id.clone()));
+        self.isolation_group_with_id(id.clone());
         id
+    }
+
+    /// Registers the planned isolation-group ID before creating any of its resources.
+    pub(crate) fn isolation_group_with_id(&self, id: String) {
+        self.register(Resource::IsolationGroup(id));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn labels(&self) -> Vec<String> {
+        self.lock().iter().map(|entry| entry.resource.to_string()).collect()
     }
 
     /// Takes ownership of a spawned process.

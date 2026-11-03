@@ -8,7 +8,6 @@ use crate::{
     cli,
     config::{
         build_runners,
-        route::{route, Route},
         runner_artifacts::RunnerArtifacts,
         typed_case::{layout_entries, LoadedCase, LoadedPlan},
         BuiltCase, Discovered,
@@ -131,28 +130,21 @@ fn excluded_listing_text(case: &LoadedCase) -> String {
 fn json_listing(
     plans: &[LoadedPlan], excluded: &[LoadedCase], subject_os: Os,
 ) -> Result<BTreeMap<String, serde_json::Value>, GenericError> {
-    let runners = build_runners(
-        plans.iter().filter(|plan| route(plan) != Route::Native),
-        subject_os,
-        &RunnerArtifacts::Overrides(&[]),
-    )?;
-    Ok(listing(plans, &runners, excluded, subject_os))
+    let built = build_runners(plans, subject_os, &RunnerArtifacts::Overrides(&[]))?;
+    Ok(listing(&built, excluded, subject_os))
 }
 
 /// Lists every enabled case's status, layout and roles, with runtime and images for cases using runners.
-pub(crate) fn listing<'a, P>(
-    plans: impl IntoIterator<Item = &'a LoadedPlan>, built: &[BuiltCase<P>], excluded: &[LoadedCase], subject_os: Os,
+pub(crate) fn listing<P>(
+    built: &[BuiltCase<P>], excluded: &[LoadedCase], subject_os: Os,
 ) -> BTreeMap<String, serde_json::Value>
 where
     P: Borrow<LoadedPlan>,
 {
-    let runners: BTreeMap<_, _> = built
+    built
         .iter()
-        .filter_map(|built| built.runner().map(|runner| (built.plan.borrow().case().name(), runner)))
-        .collect();
-    plans
-        .into_iter()
-        .map(|plan| {
+        .map(|built| {
+            let plan = built.plan.borrow();
             let case = plan.case();
             let roles: Vec<_> = plan
                 .artifacts()
@@ -173,7 +165,7 @@ where
                 "layout": layout_entries(plan),
                 "roles": roles,
             });
-            if let Some(runner) = runners.get(case.name()) {
+            if let Some(runner) = built.runner() {
                 row["runtime"] = serde_json::json!(runner.runtime());
                 row["images"] = serde_json::json!(runner.images());
             }
@@ -233,7 +225,7 @@ mod tests {
             ),
         ] {
             let built = build_runners([&plan], Os::Linux, &RunnerArtifacts::Overrides(&[])).unwrap();
-            let entries = listing([&plan], &built, &[], Os::Linux);
+            let entries = listing(&built, &[], Os::Linux);
             let entry = &entries["case"];
             assert_eq!(entry["status"], "runnable");
             assert_eq!(entry["layout"], expected_layout);
@@ -333,7 +325,7 @@ mod tests {
             discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::MacOs).unwrap();
         assert!(plans.is_empty());
         let built = build_runners(&plans, Os::MacOs, &RunnerArtifacts::Overrides(&[])).unwrap();
-        let entries = listing(&plans, &built, &excluded, Os::MacOs);
+        let entries = listing(&built, &excluded, Os::MacOs);
         assert_eq!(entries.len(), 2);
         for case in &excluded {
             assert_eq!(
@@ -384,7 +376,7 @@ mod tests {
                         discover_in_scope(&mut load_planner(manifest).unwrap(), &[dir.path().to_path_buf()], os)
                             .unwrap();
                     let built = build_runners(&plans, os, &RunnerArtifacts::Overrides(&[])).unwrap();
-                    listing(&plans, &built, &excluded, os)
+                    listing(&built, &excluded, os)
                 })
                 .collect();
             for (name, before) in &listings[0] {
@@ -749,7 +741,7 @@ mod tests {
         );
         let cases = crate::CASE_LOADER.load_file(&path).unwrap();
         let runners = build_case_runners(cases, Os::Linux, &[]).unwrap();
-        let entries = listing(runners.iter().map(|built| &built.plan), &runners, &[], Os::Linux);
+        let entries = listing(&runners, &[], Os::Linux);
         assert_eq!(entries.len(), 1);
         let entry = &entries["correctness"];
         assert_eq!(entry["type"], "correctness");
@@ -764,7 +756,7 @@ mod tests {
         );
         let cases = crate::CASE_LOADER.load_file(&path).unwrap();
         let runners = build_case_runners(cases, Os::Windows, &[]).unwrap();
-        let entries = listing(runners.iter().map(|built| &built.plan), &runners, &[], Os::Windows);
+        let entries = listing(&runners, &[], Os::Windows);
         assert_eq!(entries.len(), 1);
         let entry = &entries["integration"];
         assert_eq!(entry["type"], "integration");
@@ -778,7 +770,7 @@ mod tests {
         let path = write_case(dir.path(), "participant", &PARTICIPANT_FIELDS.replace("1s", "9s"));
         let cases = crate::CASE_LOADER.load_file(&path).unwrap();
         let runners = build_case_runners(cases, Os::Linux, &[]).unwrap();
-        let entries = listing(runners.iter().map(|built| &built.plan), &runners, &[], Os::Linux);
+        let entries = listing(&runners, &[], Os::Linux);
         assert_eq!(entries.len(), 1);
         let entry = &entries["participant"];
         assert_eq!(entry["type"], "integration");

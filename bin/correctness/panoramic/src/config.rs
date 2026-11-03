@@ -1,5 +1,5 @@
 use std::borrow::Borrow;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -7,7 +7,7 @@ use std::{
 };
 
 use airlock::driver::Protocol;
-use panoramic_core::case::{deserialize_case, deserialize_env_map, CaseDuration, CaseSchema};
+use panoramic_core::case::{deserialize_case, deserialize_env_map, CaseDuration};
 use panoramic_core::{
     artifact::ArtifactManifest,
     layout::Os,
@@ -714,8 +714,13 @@ pub(crate) struct BuiltCase<P = LoadedPlan> {
     pub(crate) execution: Execution,
 }
 
+/// The executable case body or the host's setup failure.
 pub(crate) enum Execution {
+    /// The typed or integration bridge runner.
     Runner(Box<dyn Test>),
+    /// The panoramic-core lifecycle.
+    Native,
+    /// A setup error for a case the host cannot provide, with its message.
     Unprovidable(String),
 }
 
@@ -723,12 +728,12 @@ impl<P> BuiltCase<P> {
     pub(crate) fn runner(&self) -> Option<&dyn Test> {
         match &self.execution {
             Execution::Runner(runner) => Some(runner.as_ref()),
-            Execution::Unprovidable(_) => None,
+            Execution::Native | Execution::Unprovidable(_) => None,
         }
     }
 }
 
-/// Builds a runner for each plan, in input order, and validates image overrides across the runners.
+/// Builds executions in input order and validates image overrides across typed and bridge runners.
 ///
 /// # Errors
 ///
@@ -753,30 +758,10 @@ where
                 }),
                 Err(error) => errors.push(format!("{error:#}").replace('\n', "\n    ")),
             },
-            route::Route::Native => {
-                let case = borrowed.case();
-                let CaseSchema::Participants { file, .. } = case.schema() else {
-                    unreachable!("only participant cases have a native route");
-                };
-                let types: BTreeSet<_> = file
-                    .participants
-                    .values()
-                    .map(|entry| entry.participant_type.as_str())
-                    .filter(|name| !integration_bridge::BRIDGED_TYPES.contains(&(*name, borrowed.subject_os())))
-                    .collect();
-                errors.push(format!(
-                    "case '{}' in {}: on subject OS '{}', participant type(s) {} have no integration bridge route, \
-                     and panoramic cannot run them natively",
-                    case.name(),
-                    case.source().display(),
-                    borrowed.subject_os().name(),
-                    types
-                        .into_iter()
-                        .map(|name| format!("'{name}'"))
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                ));
-            }
+            route::Route::Native => built.push(BuiltCase {
+                plan,
+                execution: Execution::Native,
+            }),
         }
     }
     if !errors.is_empty() {

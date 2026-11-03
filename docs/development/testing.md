@@ -40,9 +40,9 @@ The daemon suite runs separately from the Linux integration cases.
 
 ### Panoramic daemon tests
 
-Panoramic's daemon tests exercise the Linux container backend against a real Docker daemon: scope preparation and
-removal, creating participants from recipes with files, the courier and host mounts, command execution, file reads
-and status, and courier probes and sends. They also check HTTP responses through published TCP ports,
+Panoramic's daemon tests exercise native case creation and the Linux container backend against a real Docker daemon:
+scope preparation and removal, creating participants from recipes with files, the courier and host mounts, command
+execution, file reads and status, and courier probes and sends. They also check HTTP responses through published TCP ports,
 courier probes of published ports with no listener, explicit loopback bindings, held-port startup failures,
 and courier routes to exited participants. Container probes and raw sends run inside the server because port proxies can
 accept connections even when the server has no listener.
@@ -193,8 +193,11 @@ procedure:   # Required; at least one step.
 Panoramic routes a participant case to the integration runner when every participant's type has an integration bridge
 route on the selected subject OS. `agent-adp` has one on Linux, macOS and Windows. The integration runner translates
 the case and runs it in a Linux or Windows container with default settings, or as host processes on macOS.
-A case with a type lacking a bridge route requires native execution; `run` rejects it because native execution is
-unavailable. Cases never fall back to another route. The translation supports this subset of the schema:
+Other participant cases use native execution. Panoramic prepares each case's scope, creates participants in create
+order from verified image IDs, and starts each start level together. Native Linux container runs end after startup
+with an evaluation error. Each case keeps its chosen route.
+
+The integration runner's translation supports this subset of the schema:
 
 - One participant, of type `agent-adp` with `subject: true`, configured only through `config.env`, optionally with
   `config.os` overlays of `env` whose values replace the base values on that OS. Environment values must be YAML strings;
@@ -271,9 +274,9 @@ fixup-image = "registry.example/alpine:3"
 Omitted roles use their local defaults: for example, `agent-adp-linux-image` defaults to
 `saluki-images/datadog-agent:testing-devel`. A role no participant type, backend or typed schema declares fails the listing;
 a declared role the selected cases don't need is ignored. Relative binary and install paths resolve against the
-working directory, whether supplied by a manifest or a local default. With `run --artifacts <file>`, runners take
-images and binaries from these bindings. Verification during a run requires this flag; other runs use case files,
-harness defaults and the image and binary flags or their environment variables.
+working directory, whether supplied by a manifest or a local default. Native execution always verifies and uses
+these bindings. With `run --artifacts <file>`, typed and bridge runners also verify and use them; without the flag,
+those runners use case files, harness defaults and the image and binary flags or their environment variables.
 
 Typed integration and correctness cases map their containers and host processes to these roles:
 
@@ -305,7 +308,8 @@ integration image, `saluki-images/datadog-agent:testing-devel`. These are releas
 With `run --artifacts`, both targets use the role binding: locally, `:testing-devel` unless the manifest binds it.
 Without the flag, runners keep the images the files declare, subject to image overrides.
 
-Use `panoramic run --artifacts <file> -d <cases>` to verify artifacts before any case starts. Verification follows
+Use `panoramic run --artifacts <file> -d <cases>` to verify all selected artifact roles before any case starts.
+Native cases' roles are verified on every run, with or without `--artifacts`. Verification follows
 `-t` selection and the check that the host can provide the cases. Unavailable cases stay `errored`/`setup` rows and
 contribute no artifacts to verification. Any verification failure exits 2 before creating the log directory or
 `run.json`, starting kind setup or running a case. The report goes to stderr, including in TUI mode, leaving stdout
@@ -315,7 +319,7 @@ When verification passes, `run.json`'s `artifacts` lists each verified binding a
 in role-name order. `identity` is the image ID for images, the SHA-256 of the file for binaries, and the SHA-256 of the
 main binary for installs. `reference` is preserved as written. Roles needed only by skipped cases or cases the host
 can't provide aren't verified and don't appear. With `--artifacts`, the list is empty (`[]`) when no bindings need
-verification; without the flag, `artifacts` is `null`.
+verification. Without the flag, `artifacts` lists verified native bindings, or is `null` when nothing was verified.
 
 The flag has no environment fallback. Legacy flags and their environment variables can accompany `--artifacts`,
 but each explicit value must name the same reference as the binding of the role it feeds:
@@ -569,8 +573,8 @@ Each `run.json` entry in `tests[]` and each `result.json` contains `layout`, usi
 `{participant, type, os, realization}` entries as `list --json`. It records the planned layout even when setup
 fails, including when the host can't provide a realization. Cases with a top-level `type` have one entry with
 `participant` and `type` set to `null`, giving the realization their runner uses. Only skipped cases have
-`layout: null`. Run-level `artifacts` in `run.json` records the bindings and identities verified before cases
-started, or `null` when the run didn't verify artifacts.
+`layout: null`. Run-level `artifacts` in `run.json` records every binding and identity verified before cases
+started, including native cases' roles on runs without `--artifacts`, or `null` when the run didn't verify artifacts.
 
 Follow report types in `bin/correctness/panoramic/core/src/machine_output.rs` for semantics. For precedence rules, see
 `TestResult::from_steps` in `bin/correctness/panoramic/core/src/result.rs` and `exit_code` in

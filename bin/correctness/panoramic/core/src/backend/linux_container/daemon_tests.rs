@@ -43,7 +43,7 @@ fn host_ports(count: usize) -> Vec<u16> {
     (0..count).map(|offset| base + offset as u16).collect()
 }
 
-fn courier_bytes() -> Vec<u8> {
+pub(crate) fn courier_bytes() -> Vec<u8> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(4).unwrap();
     let path = root.join(COURIER_LINUX_BINARY.local_default);
     std::fs::read(&path).unwrap_or_else(|error| {
@@ -86,7 +86,7 @@ where
                 );
                 let participants: Vec<_> = participants.iter().map(String::as_str).collect();
                 let prepared = backends
-                    .prepare_linux_scope(&scope, &participants, &image, courier)
+                    .prepare_linux_scope(&scope, &participants, &image, courier.into())
                     .await
                     .unwrap();
                 scenario(prepared).await;
@@ -127,7 +127,7 @@ where
     assert!(problems.is_empty(), "Cleanup problems for {}:\n{problems}", scope.id());
 }
 
-async fn remaining_resources(docker: &Docker, id: &str) -> Result<Vec<String>, GenericError> {
+pub(crate) async fn remaining_resources(docker: &Docker, id: &str) -> Result<Vec<String>, GenericError> {
     let filters = HashMap::from([("label", vec![format!("airlock-isolation-group={id}")])]);
     let containers = docker
         .list_containers(Some(
@@ -165,6 +165,7 @@ async fn remaining_resources(docker: &Docker, id: &str) -> Result<Vec<String>, G
 
 fn recipe(script: &str) -> ContainerRecipe {
     ContainerRecipe {
+        image: super::super::FIXUP_IMAGE,
         entrypoint: Some(vec!["sh".into(), "-c".into()]),
         command: Some(vec![script.into()]),
         env: Default::default(),

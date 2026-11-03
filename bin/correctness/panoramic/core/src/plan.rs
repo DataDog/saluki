@@ -70,10 +70,6 @@ pub struct CasePlan<C> {
     subject_os: Os,
     layout: Option<Layout>,
     artifacts: Vec<ArtifactBinding>,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "Read when backends prepare isolation scopes.")
-    )]
     scope: Option<ScopeLayout>,
     order: Option<DependencyOrder>,
     participants: BTreeMap<String, PlannedParticipant>,
@@ -261,6 +257,10 @@ impl<C> CasePlan<C> {
         &self.case
     }
 
+    pub(crate) fn scope(&self) -> Option<&ScopeLayout> {
+        self.scope.as_ref()
+    }
+
     /// Returns the subject OS selected for execution.
     pub fn subject_os(&self) -> Os {
         self.subject_os
@@ -320,25 +320,11 @@ impl<C> CasePlan<C> {
     }
 
     /// Returns the address delivered for a participant's connection.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Recipes substitute endpoint and connection references with these addresses."
-        )
-    )]
     pub(crate) fn connection_address(&self, participant: &str, key: &str) -> Option<&ResolvedAddress> {
         self.participants.get(participant)?.connections.get(key)
     }
 
     /// Returns a referenced endpoint's address as seen by the holder, using resolved participant names.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Recipes substitute endpoint and connection references with these addresses."
-        )
-    )]
     pub(crate) fn endpoint_address(&self, holder: &str, server: &str, endpoint: &str) -> Option<&ResolvedAddress> {
         self.participants
             .get(holder)?
@@ -357,7 +343,6 @@ impl<C> CasePlan<C> {
 
     /// Lists the participant's published or forwarded ports in endpoint-name order.
     /// Returns an empty list when the participant is unknown or needs no runner-host ports.
-    #[cfg_attr(not(test), expect(dead_code, reason = "Container backends publish these ports."))]
     pub(crate) fn runner_host_ports(&self, participant: &str) -> Vec<RunnerHostPort> {
         self.runner_host_ports
             .iter()

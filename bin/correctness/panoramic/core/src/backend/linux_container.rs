@@ -11,6 +11,7 @@ use airlock::{
     group::IsolationGroup,
 };
 use async_trait::async_trait;
+use bytes::Bytes;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 
 use super::{courier, RunBackends};
@@ -37,7 +38,7 @@ impl RunBackends {
     ///
     /// Register `scope.id()` for removal before calling: failure or cancellation can leave partial resources.
     pub(crate) async fn prepare_linux_scope(
-        &self, scope: &ScopeLayout, participants: &[&str], fixup_image: &str, courier: Vec<u8>,
+        &self, scope: &ScopeLayout, participants: &[&str], fixup_image: &str, courier: Bytes,
     ) -> Result<LinuxScope, GenericError> {
         let client = self
             .docker
@@ -52,6 +53,13 @@ impl RunBackends {
     }
 
     /// Removes all scope resources, including partial preparation. Cancel-safe; the caller bounds it.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Used by daemon tests to check scope removal through the shared connection."
+        )
+    )]
     pub(crate) async fn remove_linux_scope(&self, scope: &ScopeLayout) -> Result<(), GenericError> {
         let client = self
             .docker
@@ -111,6 +119,10 @@ pub(crate) struct LinuxParticipant {
 
 impl LinuxParticipant {
     /// Returns a removal reference before creation, so reclaim can be registered first.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Used by daemon tests to remove individual participants.")
+    )]
     pub(crate) fn container_ref(&self) -> ContainerRef {
         self.driver.container_ref()
     }
@@ -242,7 +254,7 @@ fn container_files(files: &[RecipeFile], courier: &ContainerFile) -> Result<Vec<
 }
 
 #[cfg(test)]
-mod daemon_tests;
+pub(crate) mod daemon_tests;
 
 #[cfg(test)]
 mod tests {

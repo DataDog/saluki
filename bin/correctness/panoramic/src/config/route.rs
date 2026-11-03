@@ -53,11 +53,12 @@ pub(crate) mod tests {
             runner_artifacts::RunnerArtifacts,
             tests::{plan, CORRECTNESS_FIELDS, PARTICIPANT_FIELDS},
             typed_case::TypedConfigLoader,
+            Execution,
         },
         REGISTRIES,
     };
 
-    struct Plain;
+    pub(crate) struct Plain;
 
     impl ParticipantType for Plain {
         fn name(&self) -> &'static str {
@@ -65,7 +66,10 @@ pub(crate) mod tests {
         }
 
         fn supports(&self) -> &'static [(Os, RealizationKind)] {
-            &[(Os::Linux, RealizationKind::LinuxContainer)]
+            &[
+                (Os::Linux, RealizationKind::LinuxContainer),
+                (Os::MacOs, RealizationKind::HostProcessGroup),
+            ]
         }
 
         fn artifacts(&self, _realization: Realization) -> &'static [ArtifactRole] {
@@ -138,16 +142,21 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_native_route_fails_runner_construction_naming_the_case_and_its_types() {
-        let yaml = PARTICIPANT_FIELDS.replace("  adp:", "  other: {type: plain}\n  again: {type: plain}\n  adp:");
-        let plans = ["first", "second"].map(|name| plan_with_plain(&yaml, name, Os::Linux));
-        let error = build_runners(&plans, Os::Linux, &RunnerArtifacts::Overrides(&[]))
-            .err()
-            .expect("native cases must fail runner construction");
-        assert_eq!(error.to_string(), concat!(
-            "Failed to build test runners:\n",
-            "  - case 'first' in /cases/first/config.yaml: on subject OS 'linux', participant type(s) 'plain' have no integration bridge route, and panoramic cannot run them natively\n",
-            "  - case 'second' in /cases/second/config.yaml: on subject OS 'linux', participant type(s) 'plain' have no integration bridge route, and panoramic cannot run them natively",
-        ));
+    fn participant_cases_without_a_bridge_route_build_native_executions() {
+        let single = PARTICIPANT_FIELDS.replace("agent-adp", "plain");
+        let mixed = PARTICIPANT_FIELDS.replace("  adp:", "  other: {type: plain}\n  adp:");
+        let plans = [
+            plan_with_plain(&single, "single", Os::Linux),
+            plan_with_plain(&mixed, "mixed", Os::Linux),
+            plan(PARTICIPANT_FIELDS, Os::Linux),
+        ];
+        let built = build_runners(&plans, Os::Linux, &RunnerArtifacts::Overrides(&[])).unwrap();
+        assert_eq!(built.len(), 3);
+        for (built, name) in built[..2].iter().zip(["single", "mixed"]) {
+            assert_eq!(built.plan.case().name(), name);
+            assert!(matches!(built.execution, Execution::Native));
+            assert!(built.runner().is_none());
+        }
+        assert!(matches!(built[2].execution, Execution::Runner(_)));
     }
 }

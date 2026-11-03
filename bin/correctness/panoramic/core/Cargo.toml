@@ -15,6 +15,7 @@ test-util = []
 [dependencies]
 airlock = { path = "../../airlock" }
 async-trait = { workspace = true }
+bytes = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
 k8s-openapi = { workspace = true }

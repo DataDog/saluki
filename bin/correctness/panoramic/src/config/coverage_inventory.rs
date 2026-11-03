@@ -254,7 +254,7 @@ impl Inventory {
                 })
                 .collect();
             let built = build_runners(plans, os, &RunnerArtifacts::Overrides(&[])).unwrap();
-            let listed = crate::list_command::listing(built.iter().map(|built| &built.plan), &built, &[], os);
+            let listed = crate::list_command::listing(&built, &[], os);
             for built in built {
                 let case = built.plan.case();
                 let status = if case.is_disabled() { DISABLED } else { SELECTED };
