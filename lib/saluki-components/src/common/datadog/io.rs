@@ -56,7 +56,7 @@ use saluki_core::diagnostic::{DiagnosticDetails, DiagnosticEvent, DiagnosticsEmi
 use saluki_core::runtime::{self, get_sanitized_name};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::{
-    client::http::{into_client_body, HttpClient, HttpClientBuilder},
+    client::http::{into_client_body, HttpClient, HttpClientBuilder, TlsMinimumVersion},
     util::{
         middleware::{HttpInspectionLayer, RetryCircuitBreakerError, RetryCircuitBreakerLayer},
         retry::{DiskUsageRetrieverImpl, PersistedQueueArgs, PushResult, RetryCauseTelemetry, RetryQueue, Retryable},
@@ -334,6 +334,7 @@ impl Default for LiveForwarderConfiguration {
 pub struct TransactionForwarder<B> {
     context: ComponentContext,
     config: ForwarderConfiguration,
+    min_tls_version: TlsMinimumVersion,
     retry_storage_path: PathBuf,
     api_key_validation_interval: Duration,
     live: LiveForwarderConfiguration,
@@ -405,12 +406,13 @@ pub(crate) const API_KEY_VALIDATION_PURPOSE: &str = "api_key_validation";
 
 /// Returns an HTTP client builder for Datadog intake traffic, emitting telemetry through `metrics_builder`.
 fn http_client_builder(
-    config: &ForwarderConfiguration, metrics_builder: MetricsBuilder, endpoint_name: Arc<EndpointNameFn>,
+    config: &ForwarderConfiguration, min_tls_version: TlsMinimumVersion, metrics_builder: MetricsBuilder,
+    endpoint_name: Arc<EndpointNameFn>,
 ) -> Result<HttpClientBuilder, GenericError> {
     let mut client_builder = HttpClient::builder()
         .with_request_timeout(config.request_timeout())
         .with_max_idle_conns_per_host(config.endpoint_concurrency_multiplier)
-        .with_min_tls_version(config.effective_min_tls_version())
+        .with_min_tls_version(min_tls_version)
         .with_tls_handshake_timeout(config.tls_handshake_timeout)
         .with_http_protocol(config.http_protocol.into())
         .with_endpoint_telemetry(metrics_builder, Some(move |uri: &Uri| endpoint_name(uri)));
@@ -431,10 +433,12 @@ fn http_client_builder(
 /// Like the Core Agent, validation uses its own client so that its requests are never counted as forwarding
 /// transactions. Its telemetry is still emitted, tagged with `purpose` so that consumers can tell the two apart.
 fn validation_http_client_builder(
-    config: &ForwarderConfiguration, metrics_builder: MetricsBuilder, endpoint_name: Arc<EndpointNameFn>,
+    config: &ForwarderConfiguration, min_tls_version: TlsMinimumVersion, metrics_builder: MetricsBuilder,
+    endpoint_name: Arc<EndpointNameFn>,
 ) -> Result<HttpClientBuilder, GenericError> {
     http_client_builder(
         config,
+        min_tls_version,
         metrics_builder.add_default_tag(("purpose", API_KEY_VALIDATION_PURPOSE)),
         endpoint_name,
     )
@@ -484,12 +488,19 @@ where
     {
         let endpoints = config.build_routable_endpoints()?;
         // Resolve settings that may log once per build, rather than once per endpoint or use.
+        let min_tls_version = config.effective_min_tls_version();
         let retry_storage_path = config.retry.resolved_storage_path();
         let api_key_validation_interval = config.effective_api_key_validation_interval();
         let api_key_refresher = ApiKeyRefresher::new(&endpoints, &live.api_keys);
         let endpoint_name: Arc<EndpointNameFn> = Arc::new(endpoint_name);
 
-        let client = http_client_builder(&config, metrics_builder.clone(), Arc::clone(&endpoint_name))?.build()?;
+        let client = http_client_builder(
+            &config,
+            min_tls_version,
+            metrics_builder.clone(),
+            Arc::clone(&endpoint_name),
+        )?
+        .build()?;
 
         let emitter = DiagnosticsEmitter::from_current(context.identity())
             .error_context("Failed to create diagnostics emitter for transaction forwarder.")?;
@@ -497,6 +508,7 @@ where
         Ok(Self {
             context,
             config,
+            min_tls_version,
             retry_storage_path,
             api_key_validation_interval,
             live,
@@ -531,6 +543,7 @@ where
         let Self {
             context,
             config,
+            min_tls_version: _,
             retry_storage_path,
             api_key_validation_interval: _,
             live,
@@ -593,6 +606,7 @@ where
         // Built here rather than up front, since not every forwarder validates its API keys.
         let client = validation_http_client_builder(
             &self.config,
+            self.min_tls_version,
             self.metrics_builder.clone(),
             Arc::clone(&self.endpoint_name),
         )?
@@ -1351,7 +1365,6 @@ mod tests {
             test_util::TestSupervisor,
         },
     };
-    use saluki_io::net::client::http::TlsMinimumVersion;
     use saluki_metrics::test::TestRecorder;
     use saluki_tls::test_util::SelfSignedCert;
     use tokio::{
@@ -2241,13 +2254,16 @@ mod tests {
                 .build()
                 .expect("client should build")
         };
+        let min_tls_version = config.effective_min_tls_version();
         let _forwarder_client = build(http_client_builder(
             &config,
+            min_tls_version,
             MetricsBuilder::default(),
             Arc::clone(&endpoint_name),
         ));
         let mut validation_client = build(validation_http_client_builder(
             &config,
+            min_tls_version,
             MetricsBuilder::default(),
             Arc::clone(&endpoint_name),
         ));
@@ -2293,6 +2309,35 @@ mod tests {
         assert_eq!(forwarding("gt_400", "transaction"), Some(0));
         assert_eq!(forwarding("cant_send", "transaction"), Some(0));
         assert_eq!(forwarding("connection_error", "phase"), Some(0));
+    }
+
+    #[tokio::test]
+    async fn invalid_min_tls_version_warns_once_when_building_both_clients() {
+        // Building the validation client used to parse min_tls_version again and repeat its warning.
+        let logs = tempfile::NamedTempFile::new().expect("log file should be created");
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(logs.reopen().expect("log file should reopen"))
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        let _subscriber_guard = tracing::subscriber::set_default(subscriber);
+
+        let (_dataspace, forwarder) = build_test_forwarder_configured(
+            DEFAULT_PRIMARY_ENDPOINT,
+            LiveForwarderConfiguration::default(),
+            |config| config.min_tls_version = "invalid".to_string(),
+        )
+        .await;
+        let warning_count = || {
+            std::fs::read_to_string(logs.path())
+                .expect("logs should be readable")
+                .matches("Invalid configured TLS minimum version; using tlsv1.2.")
+                .count()
+        };
+        assert_eq!(warning_count(), 1);
+
+        forwarder.api_key_validator().expect("API key validator should build");
+        assert_eq!(warning_count(), 1);
     }
 
     #[tokio::test]
