@@ -288,6 +288,7 @@ mod tests {
     use saluki_metrics::{test::TestRecorder, MetricsBuilder};
 
     use super::*;
+    use crate::components::dogstatsd_filterlist::MetricPrefixRule;
 
     /// Builds a [`DogStatsDPrefixFilter`] with defaults for fields a test does not vary.
     struct FilterBuilder {
@@ -499,7 +500,7 @@ mod tests {
         let metric_filter = Live::new_fixed(MetricNameFilter {
             values: vec!["exact.blocked".to_string()],
             match_prefix: false,
-            prefix_rules: vec![crate::components::dogstatsd_filterlist::MetricPrefixRule {
+            prefix_rules: vec![MetricPrefixRule {
                 prefix: "prefixed.".to_string(),
                 except_prefix: vec!["prefixed.keep.".to_string()],
                 except_exact: vec!["prefixed.keep.exact".to_string()],
@@ -527,7 +528,7 @@ mod tests {
         let metric_filter = Live::new_fixed(MetricNameFilter {
             values: Vec::new(),
             match_prefix: false,
-            prefix_rules: vec![crate::components::dogstatsd_filterlist::MetricPrefixRule {
+            prefix_rules: vec![MetricPrefixRule {
                 prefix: "requests.".to_string(),
                 except_prefix: Vec::new(),
                 except_exact: vec!["requests.exact.keep.avg".to_string()],
@@ -550,7 +551,7 @@ mod tests {
         let metric_filter = Live::new_fixed(MetricNameFilter {
             values: vec!["requests.exact.keep".to_string()],
             match_prefix: false,
-            prefix_rules: vec![crate::components::dogstatsd_filterlist::MetricPrefixRule {
+            prefix_rules: vec![MetricPrefixRule {
                 prefix: "requests.".to_string(),
                 except_prefix: Vec::new(),
                 except_exact: vec!["requests.exact.keep.avg".to_string()],
@@ -569,7 +570,7 @@ mod tests {
         let metric_filter = Live::new_fixed(MetricNameFilter {
             values: Vec::new(),
             match_prefix: false,
-            prefix_rules: vec![crate::components::dogstatsd_filterlist::MetricPrefixRule {
+            prefix_rules: vec![MetricPrefixRule {
                 prefix: "tenant.requests.".to_string(),
                 except_prefix: Vec::new(),
                 except_exact: vec!["tenant.requests.exact.keep.avg".to_string()],
@@ -651,7 +652,7 @@ mod tests {
         publisher.publish(MetricNameFilter {
             values: Vec::new(),
             match_prefix: false,
-            prefix_rules: vec![crate::components::dogstatsd_filterlist::MetricPrefixRule {
+            prefix_rules: vec![MetricPrefixRule {
                 prefix: "foo".to_string(),
                 except_prefix: vec!["foobar".to_string()],
                 except_exact: vec!["foo".to_string()],
