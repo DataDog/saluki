@@ -51,14 +51,6 @@ mod tests {
     const CONFIG_SYSTEM: &str = "agent-data-plane-config-system";
     const DATADOG_CONFIG: &str = "datadog-agent-config";
     const OVERLAY_MODEL: &str = "datadog-agent-config-overlay-model";
-    const CONFIG_CRATES: [&str; 6] = [
-        MODEL,
-        CONFIG_SYSTEM,
-        "saluki-config",
-        DATADOG_CONFIG,
-        OVERLAY_MODEL,
-        "datadog-agent-config-testing",
-    ];
     const BIN: &str = "agent-data-plane";
 
     fn workspace() -> Workspace {
@@ -122,10 +114,30 @@ mod tests {
         assert_unreachable(CONFIG_SYSTEM, &["saluki-components"]);
     }
 
-    /// Common utilities must remain usable without configuration code.
+    /// Keep shared utilities independent of higher-level subsystems.
     #[test]
-    fn saluki_common_depends_on_no_configuration_crate() {
-        assert_unreachable("saluki-common", &CONFIG_CRATES);
+    fn saluki_common_reaches_only_foundational_workspace_crates() {
+        let allowed = [
+            "saluki-antithesis",
+            "saluki-error",
+            "saluki-metrics",
+            "saluki-metrics-macros",
+            "stringtheory",
+        ];
+        let workspace = workspace();
+        let reach = Reach::new(workspace.member("saluki-common").unwrap(), Links::Built);
+        let mut routes: Vec<String> = reach
+            .workspace_members()
+            .filter(|package| !allowed.contains(&package.name()))
+            .filter_map(|package| reach.route_to(&package))
+            .map(|route| route.to_string())
+            .collect();
+        routes.sort();
+        assert!(
+            routes.is_empty(),
+            "`saluki-common` may reach only {allowed:?} workspace crates:\n{}",
+            routes.join("\n")
+        );
     }
 
     /// The model is pure data, independent of other workspace crates.
