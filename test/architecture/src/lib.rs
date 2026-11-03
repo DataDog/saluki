@@ -1,45 +1,28 @@
-//! Executable crate boundaries for the Saluki workspace.
+//! Architecture tests for the Saluki workspace.
 //!
-//! Unit tests report boundary violations with a dependency route or `file:line`.
+//! Unit tests in this crate report violations to intended architectural invariants.
 //!
 //! # Dependency guards
 //!
-//! The configuration crates are `agent-data-plane-config` (the model), `agent-data-plane-config-system`,
-//! `saluki-config`, `datadog-agent-config`, `datadog-agent-config-overlay-model`, and
-//! `datadog-agent-config-testing`.
-//!
-//! - `saluki-components` has no dependency on the model, the configuration system, or `datadog-agent-config`.
-//! - The model links no workspace crate.
-//! - The configuration system doesn't depend on `saluki-components`.
-//! - `saluki-common` depends on no configuration crate.
-//! - No crate lists `datadog-agent-config-overlay-model` in `[dependencies]`, and only the configuration system lists
-//!   it in `[dev-dependencies]`. Any crate may list it in `[build-dependencies]`.
-//! - Through normal links, `datadog-agent-config` may reach no workspace crate except `go-duration`.
-//!
-//! The graph comes from `cargo metadata --locked --all-features` without platform filtering, so optional,
-//! feature-gated, and target-specific links count. Links join package IDs, so dependency renames don't hide them.
-//! "Depends on" means reach through [`graph::Links::Built`]: any link out of the crate, then only links with a normal
-//! or build entry. Cargo never builds a dependency's `[dev-dependencies]`.
+//! Dependency guards reject unwanted direct or transitive dependencies between crates. [`graph::Workspace`] loads
+//! the package graph from Cargo metadata, including optional, feature-gated, and target-specific dependencies.
+//! Links join package IDs, so dependency renames don't hide them. Each guard chooses which dependency kinds to
+//! follow through [`graph::Links`]. Violations report the dependency route.
 //!
 //! # Symbol guards
 //!
-//! - Code under `bin/agent-data-plane/src/components/` names no crate, or alias of one, that the binary links to and
-//!   that is or reaches the model. Crate names are the binary's extern names, so renames in its `Cargo.toml` count.
-//!   [`symbols::SourceTree::aliases`] defines aliases, including top-level private imports in `main.rs` accessible
-//!   through `crate::` or `super::*`.
-//! - Code under `bin/agent-data-plane/{src,tests}/` names neither `GenericConfiguration` nor
-//!   `ConfigurationLoader`, under any root, so re-exports and `as` renames fail where they're imported.
-//!
-//! The scan parses every `.rs` file under these directories, including `#[cfg(test)]` code. It matches path segments,
-//! `use` trees, `extern crate` items, and identifier tokens in macro bodies and attribute arguments. Comments, doc text,
-//! and string literals never match. Read or parse errors, or a scan with no `.rs` files, fail the guard.
+//! Symbol guards restrict which names code may mention, enforcing boundaries within a crate that dependency guards
+//! can't express. [`symbols::SourceTree`] parses every `.rs` file under selected directories, including test code.
+//! It matches names in paths, imports, and macro or attribute tokens, but ignores comments, doc text, and strings.
+//! Guards can also collect aliases with [`symbols::SourceTree::aliases`]. Matches report the source location;
+//! unreadable, invalid, or missing sources fail the scan.
 //!
 //! # Limits
 //!
-//! The symbol guards don't resolve names. An unrelated item sharing a guarded identifier causes a false positive.
+//! Symbol guards don't resolve names. Unrelated items sharing a guarded identifier cause false positives.
 //! The guards can miss:
 //!
-//! - model values inferred from function results or struct fields, with no guarded identifier at the use site
+//! - types inferred without a guarded identifier at the use site
 //! - aliases reached through private glob imports below crate-root scope or private bindings in other non-root files
 //! - aliases defined inside blocks or macro invocations
 //! - modules placed outside the scanned directories by `#[path]`
@@ -115,31 +98,37 @@ mod tests {
         assert!(lines.is_empty(), "{rule}:\n{}", lines.join("\n"));
     }
 
+    /// Components take component-owned inputs; the binary adapts the shared model.
     #[test]
     fn saluki_components_does_not_depend_on_the_configuration_model() {
         assert_unreachable("saluki-components", &[MODEL]);
     }
 
+    /// Loading and translation belong outside runtime components.
     #[test]
     fn saluki_components_does_not_depend_on_the_configuration_system() {
         assert_unreachable("saluki-components", &[CONFIG_SYSTEM]);
     }
 
+    /// Components must not interpret source-specific configuration.
     #[test]
     fn saluki_components_does_not_depend_on_the_datadog_configuration_source() {
         assert_unreachable("saluki-components", &[DATADOG_CONFIG]);
     }
 
+    /// The configuration system produces data, not component instances.
     #[test]
     fn configuration_system_does_not_depend_on_saluki_components() {
         assert_unreachable(CONFIG_SYSTEM, &["saluki-components"]);
     }
 
+    /// Common utilities must remain usable without configuration code.
     #[test]
     fn saluki_common_depends_on_no_configuration_crate() {
         assert_unreachable("saluki-common", &CONFIG_CRATES);
     }
 
+    /// The model is pure data, independent of other workspace crates.
     #[test]
     fn configuration_model_links_no_workspace_crate() {
         let workspace = workspace();
@@ -157,6 +146,7 @@ mod tests {
         );
     }
 
+    /// Overlay metadata belongs to code generation and configuration-system validation, not runtime code.
     #[test]
     fn overlay_model_has_no_normal_dependents_and_only_configuration_system_tests_use_it() {
         let workspace = workspace();
@@ -176,6 +166,7 @@ mod tests {
         );
     }
 
+    /// The source model stays independent of workspace runtime code.
     #[test]
     fn datadog_configuration_source_normal_links_reach_only_go_duration() {
         let workspace = workspace();
@@ -193,6 +184,8 @@ mod tests {
         );
     }
 
+    /// The binary needs the model for adapters, but its components must remain model-independent.
+    /// Check dependency names and aliases so renamed imports don't bypass this boundary.
     #[test]
     fn bin_components_name_no_crate_or_alias_reaching_the_configuration_model() {
         let workspace = workspace();
@@ -221,6 +214,8 @@ mod tests {
         );
     }
 
+    /// The binary uses typed configuration, not the raw-map library API.
+    /// Matching type names under any root catches re-exports and renamed imports.
     #[test]
     fn bin_names_no_raw_configuration_map_type() {
         let workspace = workspace();

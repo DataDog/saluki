@@ -23,6 +23,20 @@ shared fixtures, and assertion density, see [Testing patterns](./testing-pattern
 
 CI: `.gitlab/test.yml`—runs on both Linux (amd64/arm64) and macOS (amd64/arm64).
 
+### Architecture tests
+
+The `architecture-tests` crate in `test/architecture/` protects architectural invariants as part of the unit-test
+suite. Dependency guards check crate relationships; symbol guards restrict names used within selected source
+directories. Add tests here for other architectural invariants, documenting each beside its test. The crate's API
+documentation explains the guards and their limits.
+
+```shell
+cargo nextest run -p architecture-tests
+```
+
+Failures report a dependency route or source location. Inspect symbol matches before changing code: unrelated names
+can produce false positives.
+
 ## Correctness tests (panoramic)
 
 These tests serve to answer the question: *Does ADP produce the same output as the Datadog Agent for a given workload?*
