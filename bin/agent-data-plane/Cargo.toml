@@ -54,6 +54,7 @@ simdutf8 = { workspace = true }
 stringtheory = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = [
+  "fs",
   "io-std",
   "io-util",
   "macros",

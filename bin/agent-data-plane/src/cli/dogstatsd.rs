@@ -1,8 +1,6 @@
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -368,9 +366,8 @@ async fn handle_dogstatsd_replay(
     #[cfg(not(target_os = "linux"))]
     write_non_linux_replay_origin_tag_warning(output).await?;
 
-    let replay_file_path = cmd.replay_file_path.clone();
+    let file = open_replay_capture_file(&cmd.replay_file_path).await?;
     let Some((mut reader, state)) = run_cancellable_replay_load(cancel, move || {
-        let file = open_replay_capture_file(&replay_file_path)?;
         let reader = TrafficCaptureReader::from_file(file)?;
         let state = reader.read_state()?;
         Ok((reader, state))
@@ -496,33 +493,38 @@ fn dogstatsd_replay_target(listeners: &Listeners) -> Result<ReplayTarget, Generi
     }
 }
 
-fn open_replay_capture_file(path: &Path) -> Result<std::fs::File, GenericError> {
+async fn open_replay_capture_file(path: &Path) -> Result<std::fs::File, GenericError> {
     open_regular_file(
         path,
         "DogStatsD replay requires a regular capture file; failed to open",
         "DogStatsD replay requires a regular capture file; failed to inspect",
         "DogStatsD replay requires a regular capture file;",
     )
+    .await
 }
 
-pub(super) fn open_regular_file(
+pub(super) async fn open_regular_file(
     path: &Path, open_error_prefix: &'static str, inspect_error_prefix: &'static str,
     not_regular_file_prefix: &'static str,
 ) -> Result<std::fs::File, GenericError> {
-    let mut options = std::fs::OpenOptions::new();
+    let mut options = tokio::fs::OpenOptions::new();
     options.read(true);
+    // Opening a FIFO for reading blocks until a writer connects, which would hold a blocking-pool thread and this
+    // command indefinitely. `O_NONBLOCK` makes that open return immediately so the check below can reject it.
     #[cfg(unix)]
     options.custom_flags(libc::O_NONBLOCK);
 
     let file = options
         .open(path)
+        .await
         .with_error_context(|| format!("{open_error_prefix} '{}'.", path.display()))?;
     if file
         .metadata()
+        .await
         .with_error_context(|| format!("{inspect_error_prefix} '{}'.", path.display()))?
         .is_file()
     {
-        Ok(file)
+        Ok(file.into_std().await)
     } else {
         Err(generic_error!(format!(
             "{not_regular_file_prefix} '{}' is not a regular file.",
@@ -1121,8 +1123,8 @@ mod tests {
         assert_eq!(capture.capture_path, None);
     }
 
-    #[test]
-    fn remote_command_parser_defers_path_validation_to_execution() {
+    #[tokio::test]
+    async fn remote_command_parser_defers_path_validation_to_execution() {
         let directory = tempfile::tempdir().expect("temporary directory should be created");
         #[cfg(unix)]
         let fifo = {
@@ -1154,6 +1156,7 @@ mod tests {
         }
 
         let error = super::open_replay_capture_file(directory.path())
+            .await
             .expect_err("replay should reject a directory during execution");
         assert!(
             error.to_string().contains("regular file") || error.to_string().contains("failed to open"),
@@ -1162,13 +1165,15 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn replay_file_open_rejects_a_fifo_without_waiting_for_a_writer() {
+    #[tokio::test]
+    async fn replay_file_open_rejects_a_fifo_without_waiting_for_a_writer() {
         let directory = tempfile::tempdir().expect("temporary directory should be created");
         let fifo = directory.path().join("capture.fifo");
         create_fifo(&fifo);
 
-        let error = super::open_replay_capture_file(&fifo).expect_err("replay should reject a FIFO");
+        let error = super::open_replay_capture_file(&fifo)
+            .await
+            .expect_err("replay should reject a FIFO");
 
         assert!(error.to_string().contains("regular file"), "{error:#}");
     }

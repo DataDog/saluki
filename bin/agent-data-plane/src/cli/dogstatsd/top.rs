@@ -73,7 +73,7 @@ pub(super) async fn handle_dogstatsd_top(
         return Ok(());
     }
 
-    let file = open_context_report_file(&path)?;
+    let file = open_context_report_file(&path).await?;
     let metric_limit = cmd.num_metrics;
     let tag_limit = cmd.num_tags;
     let task = tokio::task::spawn_blocking({
@@ -89,13 +89,14 @@ pub(super) async fn handle_dogstatsd_top(
     write_rendered_report(output, &path, rendered).await
 }
 
-fn open_context_report_file(path: &Path) -> Result<File, GenericError> {
+async fn open_context_report_file(path: &Path) -> Result<File, GenericError> {
     open_regular_file(
         path,
         "Failed to open DogStatsD context report from",
         "Failed to inspect DogStatsD context report from",
         "DogStatsD context report path",
     )
+    .await
 }
 
 fn render_report_from_file(
@@ -250,15 +251,17 @@ mod tests {
         assert_eq!(output.text(), GOLDEN_REPORT);
     }
 
-    #[test]
-    fn offline_top_renders_from_the_descriptor_opened_before_path_changes() {
+    #[tokio::test]
+    async fn offline_top_renders_from_the_descriptor_opened_before_path_changes() {
         let artifact = tempfile::NamedTempFile::new().expect("temporary artifact should be created");
         std::fs::write(
             artifact.path(),
             b"{\"Name\":\"original.metric\",\"Host\":\"\",\"Type\":\"Gauge\",\"TaggerTags\":[],\"MetricTags\":[],\"NoIndex\":false,\"Source\":1}\n",
         )
         .expect("original artifact should be written");
-        let file = open_context_report_file(artifact.path()).expect("original artifact should open");
+        let file = open_context_report_file(artifact.path())
+            .await
+            .expect("original artifact should open");
         let replacement = artifact.path().with_extension("replacement");
         std::fs::write(&replacement, b"not-json").expect("replacement artifact should be written");
         std::fs::rename(&replacement, artifact.path()).expect("artifact path should be replaced");
