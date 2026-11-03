@@ -22,7 +22,7 @@ use crate::{
     layout::{Os, Realization, RealizationKind},
     ledger::ResourceLedger,
     observe::ParticipantObservation,
-    participant::{find_type, ParticipantType},
+    participant::{check_process_specs, find_type, ParticipantType, ProcessSpec},
     plan::CasePlan,
     recipe::Recipe,
     result::{ErrorKind, PhaseTracker, TestResult},
@@ -101,9 +101,16 @@ pub struct CaseControl {
 struct Prepared {
     scope: LinuxScope,
     id: String,
+    process_specs: BTreeMap<String, &'static [ProcessSpec]>,
 }
 
-type Started = (LinuxParticipant, Option<String>, ParticipantObservation);
+/// A started participant and its live observations.
+struct Started {
+    participant: Arc<LinuxParticipant>,
+    #[expect(dead_code, reason = "Late facts read the started participant's IP.")]
+    ip: Option<String>,
+    observation: ParticipantObservation,
+}
 
 /// Prepares, creates and starts a native participant case using verified image IDs and container binaries.
 ///
@@ -123,7 +130,7 @@ pub async fn run<C>(
         )
     };
     let phase = control.phases.enter("prepare");
-    let prepared = prepare(plan, inputs, control).await;
+    let prepared = prepare(plan, types, inputs, control).await;
     phase.finish();
     let prepared = match prepared {
         Ok(prepared) => prepared,
@@ -140,7 +147,7 @@ pub async fn run<C>(
             match creation {
                 Ok((participant, container_id)) => {
                     created.insert(name.clone(), container_id);
-                    participants.insert(name.clone(), participant);
+                    participants.insert(name.clone(), Arc::new(participant));
                 }
                 Err(error) => return fail(error),
             }
@@ -157,12 +164,12 @@ pub async fn run<C>(
                 gates,
                 |name| {
                     let started: &Started = &running[name];
-                    (&started.0 as &dyn Primitives, &started.2)
+                    (started.participant.as_ref() as &dyn Primitives, &started.observation)
                 },
                 &control.cancel,
             )
             .await?;
-            start_level(level, &mut participants, &mut running, control).await
+            start_level(level, &mut participants, &mut running, &prepared.process_specs, control).await
         }
         .await;
         phase.finish();
@@ -179,7 +186,9 @@ pub async fn run<C>(
     )
 }
 
-async fn prepare<C>(plan: &CasePlan<C>, inputs: &NativeInputs, control: &CaseControl) -> Result<Prepared, String> {
+async fn prepare<C>(
+    plan: &CasePlan<C>, types: &[&dyn ParticipantType], inputs: &NativeInputs, control: &CaseControl,
+) -> Result<Prepared, String> {
     let CaseSchema::Participants { file, .. } = plan.case().schema() else {
         return Err("native execution requires a participant case".into());
     };
@@ -197,6 +206,14 @@ async fn prepare<C>(plan: &CasePlan<C>, inputs: &NativeInputs, control: &CaseCon
         .collect::<Vec<_>>();
     if !unsupported.is_empty() {
         return Err(unsupported.join("; "));
+    }
+    let mut process_specs = BTreeMap::new();
+    for (name, participant) in &file.participants {
+        let type_name = &participant.participant_type;
+        let participant_type = find_type(types, type_name)
+            .ok_or_else(|| format!("participant '{name}' has unregistered type '{type_name}'"))?;
+        let realization = layout.get(name).expect("every participant has a realization");
+        process_specs.insert(name.clone(), check_process_specs(name, participant_type, realization)?);
     }
     for name in file.participants.keys() {
         let path = control.log_dir.join(name);
@@ -226,7 +243,11 @@ async fn prepare<C>(plan: &CasePlan<C>, inputs: &NativeInputs, control: &CaseCon
         .await
         .ok_or_else(|| "cancelled while preparing the isolation scope".to_string())?
         .map_err(|error| format!("failed to prepare isolation scope '{id}': {error:#}"))?;
-    Ok(Prepared { scope, id })
+    Ok(Prepared {
+        scope,
+        id,
+        process_specs,
+    })
 }
 
 async fn create<C>(
@@ -272,7 +293,8 @@ async fn create<C>(
 }
 
 async fn start_level(
-    level: &[String], participants: &mut BTreeMap<String, LinuxParticipant>, running: &mut BTreeMap<String, Started>,
+    level: &[String], participants: &mut BTreeMap<String, Arc<LinuxParticipant>>,
+    running: &mut BTreeMap<String, Started>, process_specs: &BTreeMap<String, &'static [ProcessSpec]>,
     control: &CaseControl,
 ) -> Result<(), String> {
     let results = join_all(level.iter().map(|name| {
@@ -288,8 +310,14 @@ async fn start_level(
                 .and_then(|result| result.map_err(|error| format!("participant '{name}': {error:#}")));
             let result = match result {
                 Ok(ip) => {
-                    let observation = participant.observe(&control.tasks, &control.log_dir.join(name)).await;
-                    Ok((participant, ip, observation))
+                    let observation = participant
+                        .observe(process_specs[name], &control.tasks, &control.log_dir.join(name))
+                        .await;
+                    Ok(Started {
+                        participant,
+                        ip,
+                        observation,
+                    })
                 }
                 Err(error) => Err(error),
             };
@@ -326,7 +354,12 @@ fn undeclared_role(participant: &str, type_name: &str, role: ArtifactRole, reali
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{backend::docker::test_util::FakeDocker, case::fixtures, participant::RenderedConfig, plan::Planner};
+    use crate::{
+        backend::docker::test_util::FakeDocker,
+        case::fixtures,
+        participant::{ExitChannel, RenderedConfig},
+        plan::Planner,
+    };
 
     #[test]
     fn the_default_recipe_names_the_type_and_realization() {
@@ -403,6 +436,196 @@ mod tests {
             error.message,
             "panoramic cannot create host-process-group participants natively: 'subject' on macos"
         );
+        assert!(api.calls.lock().unwrap().is_empty());
+        assert!(control.ledger.labels().is_empty());
+    }
+
+    #[tokio::test]
+    async fn process_specs_must_cover_exactly_the_types_processes() {
+        struct Specs(&'static [ProcessSpec]);
+        impl ParticipantType for Specs {
+            fn name(&self) -> &'static str {
+                "server"
+            }
+            fn artifacts(&self, _: Realization) -> &'static [ArtifactRole] {
+                &[]
+            }
+            fn processes(&self) -> &'static [&'static str] {
+                fixtures::Server.processes()
+            }
+            fn process_specs(&self, _: Realization) -> &'static [ProcessSpec] {
+                self.0
+            }
+        }
+        const SERVER: ProcessSpec = ProcessSpec {
+            name: "server",
+            exit: ExitChannel::Container,
+        };
+        const WORKER: ProcessSpec = ProcessSpec {
+            name: "worker",
+            exit: ExitChannel::Record { file: "worker" },
+        };
+        const CASES: &[(&[ProcessSpec], &str)] = &[
+            (&[], "declares no exit channel for process 'server'"),
+            (&[WORKER], "declares no exit channel for process 'server'"),
+            (&[SERVER], "declares no exit channel for process 'worker'"),
+            (
+                &[
+                    ProcessSpec {
+                        exit: ExitChannel::Record { file: "x" },
+                        ..SERVER
+                    },
+                    ProcessSpec {
+                        exit: ExitChannel::Record { file: "x" },
+                        ..WORKER
+                    },
+                ],
+                "declares exit record file 'x' for processes 'server' and 'worker'; \
+                 each process needs its own record file",
+            ),
+            (
+                &[
+                    SERVER,
+                    WORKER,
+                    ProcessSpec {
+                        name: "extra",
+                        exit: ExitChannel::Record { file: "extra" },
+                    },
+                ],
+                "declares an exit channel for process 'extra', which the type does not run",
+            ),
+            (
+                &[SERVER, SERVER, WORKER],
+                "declares two exit channels for process 'server'",
+            ),
+            (&[WORKER, WORKER], "declares no exit channel for process 'server'"),
+            (
+                &[
+                    ProcessSpec {
+                        name: "worker",
+                        exit: ExitChannel::Container,
+                    },
+                    SERVER,
+                ],
+                "gives the container's exit to processes 'server' and 'worker'; only one process can own it",
+            ),
+            (
+                &[
+                    SERVER,
+                    ProcessSpec {
+                        name: "worker",
+                        exit: ExitChannel::Record { file: "" },
+                    },
+                ],
+                "declares exit record file '' for process 'worker'; record files must be plain file names",
+            ),
+            (
+                &[
+                    SERVER,
+                    ProcessSpec {
+                        name: "worker",
+                        exit: ExitChannel::Record { file: "." },
+                    },
+                ],
+                "declares exit record file '.' for process 'worker'; record files must be plain file names",
+            ),
+            (
+                &[
+                    SERVER,
+                    ProcessSpec {
+                        name: "worker",
+                        exit: ExitChannel::Record { file: ".." },
+                    },
+                ],
+                "declares exit record file '..' for process 'worker'; record files must be plain file names",
+            ),
+            (
+                &[
+                    SERVER,
+                    ProcessSpec {
+                        name: "worker",
+                        exit: ExitChannel::Record { file: "nested/file" },
+                    },
+                ],
+                "declares exit record file 'nested/file' for process 'worker'; record files must be plain file names",
+            ),
+            (
+                &[
+                    SERVER,
+                    ProcessSpec {
+                        name: "worker",
+                        exit: ExitChannel::Record { file: "nested\\file" },
+                    },
+                ],
+                "declares exit record file 'nested\\file' for process 'worker'; record files must be plain file names",
+            ),
+        ];
+        for (specs, message) in CASES {
+            let api = FakeDocker::new(Some("linux"));
+            let mut inputs =
+                NativeInputs::new(Arc::new(RunBackends::with_docker(api.daemon())), &[], Path::new(".")).unwrap();
+            inputs.images.insert(FIXUP_IMAGE.name, "sha256:fixup".into());
+            inputs.binaries.insert(COURIER_LINUX_BINARY.name, Bytes::new());
+            let log_dir = tempfile::tempdir().unwrap();
+            let cancel = CancellationToken::new();
+            let control = CaseControl {
+                tasks: CaseTasks::new(&cancel),
+                cancel,
+                phases: PhaseTracker::default(),
+                ledger: ResourceLedger::default(),
+                log_dir: log_dir.path().to_owned(),
+            };
+            let result = run(&linux_plan(), &[&Specs(specs)], &inputs, &control).await;
+            let error = result.error.unwrap();
+            assert_eq!(error.kind, ErrorKind::Setup);
+            assert_eq!(
+                error.message,
+                format!("participant 'subject' of type 'server' as linux-container on linux {message}")
+            );
+            assert_eq!(result.phase_timings.len(), 1);
+            assert_eq!(result.phase_timings[0].phase, "prepare");
+            assert!(api.calls.lock().unwrap().is_empty());
+            assert!(control.ledger.labels().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn all_process_specs_are_checked_before_creating_output_directories() {
+        const TYPES: &[&dyn ParticipantType] = &[&fixtures::Server, &fixtures::PodServer];
+        let registries = crate::case::Registries {
+            participant_types: TYPES,
+            ..fixtures::REGISTRIES
+        };
+        let yaml = fixtures::PARTICIPANT_FIELDS.replace("participants:\n", "participants:\n  z: {type: pod-server}\n");
+        let case = crate::case::CaseLoader::new(registries, fixtures::FixtureTypes, "fixture-participants")
+            .load_content(&yaml, "case", Path::new("/cases/case/config.yaml"))
+            .unwrap()
+            .remove(0);
+        let plan = Planner::with_run(registries, "testcase")
+            .compile(case, Os::Linux)
+            .unwrap()
+            .into_plan()
+            .unwrap();
+        let api = FakeDocker::new(Some("linux"));
+        let inputs = NativeInputs::new(Arc::new(RunBackends::with_docker(api.daemon())), &[], Path::new(".")).unwrap();
+        let log_dir = tempfile::tempdir().unwrap();
+        let cancel = CancellationToken::new();
+        let control = CaseControl {
+            tasks: CaseTasks::new(&cancel),
+            cancel,
+            phases: PhaseTracker::default(),
+            ledger: ResourceLedger::default(),
+            log_dir: log_dir.path().to_owned(),
+        };
+        let result = run(&plan, TYPES, &inputs, &control).await;
+        let error = result.error.unwrap();
+        assert_eq!(error.kind, ErrorKind::Setup);
+        assert_eq!(
+            error.message,
+            "participant 'z' of type 'pod-server' as linux-container on linux \
+            declares no exit channel for process 'server'"
+        );
+        assert_eq!(std::fs::read_dir(log_dir.path()).unwrap().count(), 0);
         assert!(api.calls.lock().unwrap().is_empty());
         assert!(control.ledger.labels().is_empty());
     }

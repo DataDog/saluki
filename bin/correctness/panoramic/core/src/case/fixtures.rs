@@ -16,7 +16,7 @@ use crate::{
     backend::LateFact,
     endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind, EndpointOperation, Port},
     layout::{Os, Realization, RealizationKind},
-    participant::{CaseValues, EffectiveConfig, FactDeclaration, ParticipantType},
+    participant::{CaseValues, EffectiveConfig, ExitChannel, FactDeclaration, ParticipantType, ProcessSpec},
     step::{decode_fields, Need, Step, StepFactory, StepFields},
 };
 
@@ -218,6 +218,22 @@ impl ParticipantType for Server {
 
     fn processes(&self) -> &'static [&'static str] {
         &["server", "worker"]
+    }
+
+    fn process_specs(&self, realization: Realization) -> &'static [ProcessSpec] {
+        if realization.kind != RealizationKind::LinuxContainer {
+            return &[];
+        }
+        &[
+            ProcessSpec {
+                name: "server",
+                exit: ExitChannel::Container,
+            },
+            ProcessSpec {
+                name: "worker",
+                exit: ExitChannel::Record { file: "worker" },
+            },
+        ]
     }
 }
 

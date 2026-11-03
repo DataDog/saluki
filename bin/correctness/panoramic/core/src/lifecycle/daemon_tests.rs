@@ -597,14 +597,16 @@ async fn a_server_that_exits_before_accepting_fails_its_consumers_start_without_
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn a_started_participants_output_reaches_its_log_files_while_it_runs() {
     with_case(
-        "  subject: {type: fixture, subject: true, config: {env: {SCRIPT: 'echo out-1; echo err-1 >&2; exec sleep 60'}}}",
+        "  subject: {type: fixture, subject: true, \
+         config: {env: {SCRIPT: 'echo out-1; echo err-1 >&2; exec sleep 60'}}}",
         |view| async move {
             assert_eq!(view.result.error.as_ref().unwrap().kind, ErrorKind::Evaluation);
             assert_eq!(view.output("subject", "stdout", "out-1").await, "out-1\n");
             assert_eq!(view.output("subject", "stderr", "err-1").await, "err-1\n");
             assert_eq!(view.container("subject").await.state.unwrap().running, Some(true));
         },
-    ).await;
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -630,12 +632,22 @@ async fn a_consumer_waiting_for_an_http_endpoint_stops_when_its_server_exits() {
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn a_started_participants_output_is_observed_even_when_its_sibling_fails_to_start() {
     with_case(
-        "  first: {type: fixture, subject: true, config: {env: {BAD_START: '1'}}}\n  second: {type: fixture, config: {env: {SCRIPT: 'echo started; exec sleep 60'}}}",
+        concat!(
+            "  first: {type: fixture, subject: true, config: {env: {BAD_START: '1'}}}\n",
+            "  second: {type: fixture, config: {env: {SCRIPT: 'echo started; exec sleep 60'}}}",
+        ),
         |view| async move {
             assert_eq!(view.result.error.as_ref().unwrap().kind, ErrorKind::Setup);
-            assert!(view.result.error.as_ref().unwrap().message.contains("participant 'first'"));
+            assert!(view
+                .result
+                .error
+                .as_ref()
+                .unwrap()
+                .message
+                .contains("participant 'first'"));
             assert_eq!(view.output("second", "stdout", "started").await, "started\n");
             assert_eq!(view.container("second").await.state.unwrap().running, Some(true));
         },
-    ).await;
+    )
+    .await;
 }

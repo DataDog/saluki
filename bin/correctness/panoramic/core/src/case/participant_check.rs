@@ -40,6 +40,11 @@ pub(super) fn check_participants(
                  starting with a letter and not ending with '-'"
             )));
         }
+        if participant == "traffic" {
+            return Err(error(
+                "participant name 'traffic' is reserved for harness traffic artifacts; choose another name".into(),
+            ));
+        }
         if participant == "self" {
             return Err(error(
                 "participant name 'self' is reserved for references to the participant itself; choose another name"
@@ -369,6 +374,19 @@ mod tests {
         assert!(message.contains("participant name 'self' is reserved"), "{message}");
         assert!(message.contains("choose another name"), "{message}");
         check(&yaml.replace("  self:", "  itself:")).unwrap();
+    }
+
+    #[test]
+    fn the_participant_name_traffic_is_reserved_for_harness_artifacts() {
+        // Traffic manifests and participant output share the case directory.
+        let yaml = case_yaml("  traffic: {type: server, subject: true}", "linux");
+        let message = check_error(&yaml);
+        assert!(
+            message
+                .contains("participant name 'traffic' is reserved for harness traffic artifacts; choose another name"),
+            "{message}"
+        );
+        check(&yaml.replace("  traffic:", "  traffic-source:")).unwrap();
     }
 
     #[test]

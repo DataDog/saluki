@@ -107,6 +107,32 @@ pub struct FactDeclaration {
     pub value: &'static str,
 }
 
+/// How a named process's exit is observed on one realization.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcessSpec {
+    /// A name declared by [`ParticipantType::processes`].
+    pub name: &'static str,
+    /// The source of the process's first exit observation.
+    pub exit: ExitChannel,
+}
+
+/// The source of a process's exit status.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExitChannel {
+    /// The container's exit, owned by at most one process per participant.
+    Container,
+    /// A supervisor appends one line per exit to a file in the participant's exit directory.
+    ///
+    /// Each line is `<code> <signal> <seconds>.<nanoseconds>`, followed by a newline. A normal exit
+    /// has code 0–255 and signal 0; a signal death has code 256 and a positive signal number.
+    /// The timestamp is Unix time on the container's clock, with 1–9 fractional digits.
+    /// The first line records the process's first exit, even if the supervisor restarts it.
+    Record {
+        /// A plain file name: nonempty, other than `.` or `..`, and containing neither `/` nor `\`.
+        file: &'static str,
+    },
+}
+
 /// A participant type a case may name, and what it accepts and provides.
 pub trait ParticipantType: Send + Sync {
     /// Registry name, as written in a participant's `type`.
@@ -222,6 +248,70 @@ pub trait ParticipantType: Send + Sync {
 
     /// Named processes steps may address with `process`, in sorted order.
     fn processes(&self) -> &'static [&'static str];
+
+    /// Exit channels for this realization. Defaults to none.
+    /// Native preparation requires exactly one channel for every name in [`Self::processes`].
+    fn process_specs(&self, _realization: Realization) -> &'static [ProcessSpec] {
+        &[]
+    }
+}
+
+/// Checks exit channels in process declaration order, returning the validated specifications.
+pub(crate) fn check_process_specs(
+    participant: &str, participant_type: &dyn ParticipantType, realization: Realization,
+) -> Result<&'static [ProcessSpec], String> {
+    let prefix = format!(
+        "participant '{participant}' of type '{}' as {} on {}",
+        participant_type.name(),
+        realization.kind.name(),
+        realization.os.name(),
+    );
+    let processes = participant_type.processes();
+    let specs = participant_type.process_specs(realization);
+    let mut container_owner = None;
+    let mut record_files: Vec<(&str, &str)> = Vec::new();
+    for &process in processes {
+        let mut channels = specs.iter().filter(|spec| spec.name == process);
+        let Some(spec) = channels.next() else {
+            return Err(format!("{prefix} declares no exit channel for process '{process}'"));
+        };
+        if channels.next().is_some() {
+            return Err(format!("{prefix} declares two exit channels for process '{process}'"));
+        }
+        match spec.exit {
+            ExitChannel::Container => {
+                if let Some(owner) = container_owner {
+                    return Err(format!(
+                        "{prefix} gives the container's exit to processes '{owner}' and '{process}'; \
+                         only one process can own it"
+                    ));
+                }
+                container_owner = Some(process);
+            }
+            ExitChannel::Record { file } => {
+                if matches!(file, "" | "." | "..") || file.contains(['/', '\\']) {
+                    return Err(format!(
+                        "{prefix} declares exit record file '{file}' for process '{process}'; \
+                         record files must be plain file names"
+                    ));
+                }
+                if let Some((_, owner)) = record_files.iter().find(|(seen, _)| *seen == file) {
+                    return Err(format!(
+                        "{prefix} declares exit record file '{file}' for processes '{owner}' and '{process}'; \
+                         each process needs its own record file"
+                    ));
+                }
+                record_files.push((file, process));
+            }
+        }
+    }
+    if let Some(spec) = specs.iter().find(|spec| !processes.contains(&spec.name)) {
+        return Err(format!(
+            "{prefix} declares an exit channel for process '{}', which the type does not run",
+            spec.name,
+        ));
+    }
+    Ok(specs)
 }
 
 /// Finds a registered participant type by its case-file name.

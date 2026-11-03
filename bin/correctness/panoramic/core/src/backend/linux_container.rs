@@ -2,13 +2,13 @@
 //!
 //! Exec and courier calls have their own limits. Other backend calls are safe to drop; callers bound them.
 
-use std::{path::Path, time::Duration};
+use std::{path::Path, sync::Arc, time::Duration};
 
 use airlock::{
     driver::{ContainerRef, Driver, DriverConfig, Protocol},
     exec::{ExecOutput, ExecRequest},
     files::{ContainerFile, FileStat},
-    group::IsolationGroup,
+    group::{IsolationGroup, SHARED_ROOT},
 };
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -20,7 +20,11 @@ use crate::{
     endpoint::{ResolvedAddress, RunnerHostPort, Transport},
     handle::{ExecCommand, HandleError, Primitives},
     layout::Os,
-    observe::{follow_output, watch_exit, Capture, ParticipantExit, ParticipantObservation},
+    observe::{
+        exit_record::watch_record, follow_output, watch_exit, Capture, ExitObservation, ParticipantExit,
+        ParticipantObservation, ProcessObservation,
+    },
+    participant::{ExitChannel, ProcessSpec},
     plan::ScopeLayout,
     probe::{AttemptLimits, ProbeAnswer},
     recipe::{ContainerRecipe, RecipeFile},
@@ -166,17 +170,45 @@ impl LinuxParticipant {
         Ok(details.container_ip().map(str::to_owned))
     }
 
-    /// Follows a started container's exit and output until the case stops its tasks.
-    pub(crate) async fn observe(&self, tasks: &CaseTasks, output_dir: &Path) -> ParticipantObservation {
+    /// Follows a started container's exit and output, and each record-channel process's exit,
+    /// until the case stops its tasks.
+    pub(crate) async fn observe(
+        self: &Arc<Self>, specs: &[ProcessSpec], tasks: &CaseTasks, output_dir: &Path,
+    ) -> ParticipantObservation {
         let (exit_tx, exit_rx) = watch::channel(ParticipantExit::Running);
         let (capture_tx, capture_rx) = watch::channel(Capture::Following);
-        let observation = ParticipantObservation {
-            exit_rx,
+        let mut observation = ParticipantObservation::new(
+            exit_rx.clone(),
             capture_rx,
-            stdout_path: output_dir.join("container.stdout.log"),
-            stderr_path: output_dir.join("container.stderr.log"),
-        };
+            output_dir.join("container.stdout.log"),
+            output_dir.join("container.stderr.log"),
+        );
         tasks.spawn(watch_exit(self.driver.wait_exit(), exit_tx));
+        for spec in specs {
+            let process = match spec.exit {
+                ExitChannel::Container => ProcessObservation::Container(exit_rx.clone()),
+                ExitChannel::Record { file } => {
+                    let path = format!("{SHARED_ROOT}/{}/exit/{file}", self.name);
+                    let participant = self.clone();
+                    let name = spec.name;
+                    let exit = exit_rx.clone();
+                    let (tx, rx) = watch::channel(ExitObservation::Running);
+                    tasks.spawn(async move {
+                        watch_record(
+                            || participant.driver.read_file(&path),
+                            exit,
+                            tx,
+                            &participant.name,
+                            name,
+                            &path,
+                        )
+                        .await;
+                    });
+                    ProcessObservation::Record(rx)
+                }
+            };
+            observation.processes.insert(spec.name, process);
+        }
         match self.driver.logs().await {
             Ok(stream) => {
                 tasks.spawn(follow_output(

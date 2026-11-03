@@ -10,6 +10,7 @@ use std::{
 use airlock::{
     docker::{image_id, Docker},
     files::FileKind,
+    observe::ContainerExit,
 };
 use bollard::{
     errors::Error,
@@ -25,6 +26,7 @@ use crate::{
     endpoint::{EndpointKind, EndpointOperation, RunnerHostRoute},
     handle::{probe_from_runner_host, send_from_runner_host},
     ledger,
+    observe::ExitStatus,
     probe::ProbeAnswer,
     recipe::HostMount,
     tasks::TASK_STOP_TIME,
@@ -744,22 +746,21 @@ async fn a_probe_of_an_unlistened_published_port_is_not_listening() {
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn a_stopped_containers_exit_and_output_are_observed() {
     in_scope(&["p"], courier_bytes(), |scope, tasks| async move {
-        let participant = start_participant(&scope, "p", &recipe("echo out; echo err >&2; exit 3")).await;
+        let participant = Arc::new(start_participant(&scope, "p", &recipe("echo out; echo err >&2; exit 3")).await);
         timeout(Duration::from_secs(10), participant.driver.wait_exit())
             .await
             .unwrap()
             .unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let observation = participant.observe(&tasks, dir.path()).await;
+        let observation = participant.observe(&[], &tasks, dir.path()).await;
         let exit = timeout(Duration::from_secs(5), observation.stopped()).await.unwrap();
-        assert_eq!(exit, ParticipantExit::Exited { code: 3, error: None });
-        let mut capture = observation.capture_rx.clone();
-        timeout(
-            Duration::from_secs(5),
-            capture.wait_for(|value| *value != Capture::Following),
-        )
+        assert_eq!(exit, ContainerExit { code: 3, error: None });
+        timeout(Duration::from_secs(5), async {
+            while observation.capture() == Capture::Following {
+                sleep(Duration::from_millis(25)).await;
+            }
+        })
         .await
-        .unwrap()
         .unwrap();
         assert_eq!(observation.capture(), Capture::Complete);
         assert_eq!(std::fs::read(&observation.stdout_path).unwrap(), b"out\n");
@@ -772,14 +773,141 @@ async fn a_stopped_containers_exit_and_output_are_observed() {
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn a_removed_container_leaves_exit_and_capture_errors() {
     in_scope(&["p"], courier_bytes(), |scope, tasks| async move {
-        let participant = start_participant(&scope, "p", &recipe("exec sleep 60")).await;
+        let participant = Arc::new(start_participant(&scope, "p", &recipe("exec sleep 60")).await);
         let deadline = Instant::now() + Duration::from_secs(10);
-        tokio::time::timeout_at(deadline, participant.container_ref().stop_and_remove(Duration::ZERO, deadline)).await.unwrap().unwrap();
+        let container = participant.container_ref();
+        tokio::time::timeout_at(deadline, container.stop_and_remove(Duration::ZERO, deadline))
+            .await
+            .unwrap()
+            .unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let observation = participant.observe(&tasks, dir.path()).await;
-        let mut exit = observation.exit_rx.clone();
-        timeout(Duration::from_secs(5), exit.wait_for(|value| *value != ParticipantExit::Running)).await.unwrap().unwrap();
-        assert!(matches!(observation.exit(), ParticipantExit::Undetermined { reason } if reason.contains("no such container")));
+        let observation = participant.observe(&[], &tasks, dir.path()).await;
+        timeout(Duration::from_secs(5), async {
+            while observation.exit() == ParticipantExit::Running {
+                sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let exit = observation.exit();
+        assert!(matches!(exit, ParticipantExit::Undetermined { reason } if reason.contains("no such container")));
         assert!(matches!(observation.capture(), Capture::Failed { reason } if reason.contains("no such container")));
-    }).await;
+    })
+    .await;
+}
+
+const EXIT_SPECS: &[ProcessSpec] = &[
+    ProcessSpec {
+        name: "main",
+        exit: ExitChannel::Container,
+    },
+    ProcessSpec {
+        name: "svc",
+        exit: ExitChannel::Record { file: "svc" },
+    },
+];
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn a_restarted_process_keeps_its_first_recorded_exit() {
+    in_scope(&["p"], courier_bytes(), |scope, tasks| async move {
+        let script =
+            "for c in 3 4; do echo \"$c 0 1700000000.00000000$c\" >> /airlock/p/exit/svc; sleep 1; done; exec sleep 60";
+        let participant = Arc::new(start_participant(&scope, "p", &recipe(script)).await);
+        let dir = tempfile::tempdir().unwrap();
+        let observation = participant.observe(EXIT_SPECS, &tasks, dir.path()).await;
+        let svc = observation.process("svc").unwrap();
+        let first = timeout(Duration::from_secs(5), svc.settled()).await.unwrap();
+        assert_eq!(
+            first,
+            ExitObservation::Exited(ExitStatus {
+                code: Some(3),
+                signal: None,
+                recorded_at: Some(UNIX_EPOCH + Duration::new(1700000000, 3)),
+            })
+        );
+        let contents = wait_for_file(
+            participant.as_ref(),
+            "/airlock/p/exit/svc",
+            b"4 0 1700000000.000000004\n",
+        )
+        .await;
+        assert_eq!(contents, b"3 0 1700000000.000000003\n4 0 1700000000.000000004\n");
+        assert_eq!(svc.current(), first);
+        assert_eq!(observation.process("main").unwrap().current(), ExitObservation::Running);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn a_record_written_as_the_container_stops_is_read_after_it_stops() {
+    in_scope(&["p"], courier_bytes(), |scope, tasks| async move {
+        let participant = Arc::new(
+            start_participant(
+                &scope,
+                "p",
+                &recipe("printf '256 15 1700000000.000000001' >> /airlock/p/exit/svc; exit 0"),
+            )
+            .await,
+        );
+        timeout(Duration::from_secs(5), participant.driver.wait_exit())
+            .await
+            .unwrap()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let observation = participant.observe(EXIT_SPECS, &tasks, dir.path()).await;
+        let main = timeout(Duration::from_secs(5), observation.process("main").unwrap().settled())
+            .await
+            .unwrap();
+        assert_eq!(
+            main,
+            ExitObservation::Exited(ExitStatus {
+                code: Some(0),
+                signal: None,
+                recorded_at: None,
+            })
+        );
+        let svc = timeout(Duration::from_secs(5), observation.process("svc").unwrap().settled())
+            .await
+            .unwrap();
+        assert_eq!(
+            svc,
+            ExitObservation::Exited(ExitStatus {
+                code: None,
+                signal: Some(15),
+                recorded_at: Some(UNIX_EPOCH + Duration::new(1700000000, 1)),
+            })
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn a_container_that_stops_without_a_record_leaves_its_process_undetermined() {
+    in_scope(&["p"], courier_bytes(), |scope, tasks| async move {
+        let participant = Arc::new(start_participant(&scope, "p", &recipe("exit 0")).await);
+        let dir = tempfile::tempdir().unwrap();
+        let observation = participant.observe(EXIT_SPECS, &tasks, dir.path()).await;
+        let main = timeout(Duration::from_secs(5), observation.process("main").unwrap().settled())
+            .await
+            .unwrap();
+        assert_eq!(
+            main,
+            ExitObservation::Exited(ExitStatus {
+                code: Some(0),
+                signal: None,
+                recorded_at: None,
+            })
+        );
+        let svc = timeout(Duration::from_secs(5), observation.process("svc").unwrap().settled())
+            .await
+            .unwrap();
+        assert_eq!(
+            svc,
+            ExitObservation::Undetermined("participant 'p' stopped without an exit record for process 'svc'".into())
+        );
+    })
+    .await;
 }

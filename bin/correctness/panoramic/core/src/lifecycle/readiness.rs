@@ -1,13 +1,13 @@
 //! Waits for the readiness evidence required by a start level.
 
-use airlock::files::FileKind;
+use airlock::{files::FileKind, observe::ContainerExit};
 use futures::future::join_all;
 use tokio::time::{sleep, Instant};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     handle::{http_status_from_runner_host, probe_from_runner_host, HandleError, Primitives},
-    observe::{ParticipantExit, ParticipantObservation},
+    observe::ParticipantObservation,
     plan::{PlannedCheck, StartGate},
     probe::{probe, AttemptLimits, ProbeAnswer, ProbeError, POLL_INTERVAL},
 };
@@ -89,7 +89,7 @@ impl Waiting<'_> {
             }
         };
         match result {
-            Err(ParticipantExit::Exited { code, error }) => {
+            Err(ContainerExit { code, error }) => {
                 let docker = error.map(|error| format!(" (Docker: {error})")).unwrap_or_default();
                 Err(format!(
                     "{consumers} cannot start: participant '{}' exited with code {code}{docker} \
@@ -97,7 +97,6 @@ impl Waiting<'_> {
                     self.gate.server,
                 ))
             }
-            Err(_) => unreachable!("stopped resolves only on an observed exit"),
             Ok(Ok(Ok(()))) => Ok(()),
             Ok(Ok(Err(message))) => Err(format!("{consumers} cannot start: checking {what} failed: {message}")),
             Ok(Err(ProbeError::TimedOut { .. })) => Err(format!(
@@ -158,7 +157,7 @@ mod tests {
     use tokio::sync::watch;
 
     use super::*;
-    use crate::observe::Capture;
+    use crate::observe::{Capture, ParticipantExit};
     use crate::{
         endpoint::{EndpointKind, Evidence, ResolvedAddress, RunnerHostRoute},
         handle::ExecCommand,
@@ -183,12 +182,7 @@ mod tests {
             let (_, capture_rx) = watch::channel(Capture::Following);
             Self {
                 exit_tx,
-                observation: ParticipantObservation {
-                    exit_rx,
-                    capture_rx,
-                    stdout_path: Default::default(),
-                    stderr_path: Default::default(),
-                },
+                observation: ParticipantObservation::new(exit_rx, capture_rx, Default::default(), Default::default()),
                 answers: Mutex::new(answers.into_iter().collect()),
                 calls: Mutex::default(),
             }

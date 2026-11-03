@@ -43,10 +43,11 @@ The daemon suite runs separately from the Linux integration cases.
 Panoramic's daemon tests exercise native case creation and the Linux container backend against a real Docker daemon:
 scope preparation and removal, creating participants from recipes with files, the courier and host mounts, command
 execution, file reads and status, courier probes and sends, and readiness gates before consumers start. They check
-container exit and output observation, incremental stdout and stderr files, and readiness waits ending when a server
-exits. They also check HTTP responses through published TCP ports, courier probes of published ports with no listener,
-explicit loopback bindings, held-port startup failures, and courier routes to exited participants. Container probes and
-raw sends run inside the server because port proxies can accept connections even when the server has no listener.
+container exit and output observation, incremental stdout and stderr files, readiness waits ending when a server
+exits, and process exit channels that preserve the first supervisor record through restarts. They also check HTTP
+responses through published TCP ports, courier probes of published ports with no listener, explicit loopback bindings,
+held-port startup failures, and courier routes to exited participants. Container probes and raw sends run inside the
+server because port proxies can accept connections even when the server has no listener.
 They are ignored by default. Run them with `make test-panoramic-daemon`, which builds the Linux courier first.
 `PANORAMIC_TEST_IMAGE` defaults to `alpine:latest`; load it first, because these tests never pull images.
 They fail if the daemon, image or courier is missing.
