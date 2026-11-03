@@ -76,6 +76,13 @@ impl<T: Clone + PartialEq + 'static> Live<T> {
         }
     }
 
+    /// Returns `true` if this view's value never changes.
+    ///
+    /// A fixed view never yields from [`changed`](Self::changed), so callers can treat its current value as a constant.
+    pub fn is_fixed(&self) -> bool {
+        matches!(self.inner, Inner::Fixed(_))
+    }
+
     /// Waits for the projected value to change and returns the new value.
     ///
     /// The notification only says that the shared source may have changed. This method loads the

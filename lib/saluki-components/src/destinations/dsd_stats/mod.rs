@@ -28,7 +28,10 @@ use tokio::{
     pin,
     sync::{Mutex, OwnedMutexGuard},
 };
-use tokio::{select, sync::mpsc, sync::oneshot};
+use tokio::{
+    select,
+    sync::{mpsc, oneshot, watch},
+};
 
 type StatsRequestReceiver = mpsc::Receiver<(oneshot::Sender<StatsResponse>, u64)>;
 
@@ -89,6 +92,7 @@ impl Serialize for FlattenedStats {
 pub struct DogStatsDStatisticsConfiguration {
     api_handler: DogStatsDStatsAPIHandler,
     rx: Arc<Mutex<StatsRequestReceiver>>,
+    collection_active: Arc<watch::Sender<bool>>,
 }
 /// State for the DogStatsD API handler.
 #[derive(Clone)]
@@ -105,6 +109,7 @@ pub struct DogStatsDStatsAPIHandler {
 /// DogStatsD destination that collects metrics and processes statistics.
 pub struct DogStatsDStats {
     rx: OwnedMutexGuard<StatsRequestReceiver>,
+    collection_active: Arc<watch::Sender<bool>>,
 }
 
 #[async_trait::async_trait]
@@ -141,7 +146,9 @@ impl Destination for DogStatsDStats {
                         // We don't care if we can successfully send back a response or not.
                         let _ = response_tx.send(StatsResponse::AlreadyRunning { try_after });
                     } else {
-                        // Start collection.
+                        // Start collection. Signal that we want metrics before starting the collection window, so that
+                        // the window covers metrics sent to us once the signal is observed.
+                        self.collection_active.send_replace(true);
                         collection_active = true;
                         stats_collection_start_time = get_coarse_unix_timestamp();
                         stats_collection_end_time = stats_collection_start_time + collection_period_secs;
@@ -175,6 +182,7 @@ impl Destination for DogStatsDStats {
                 },
                 _ = &mut collection_done, if collection_active => {
                     collection_active = false;
+                    self.collection_active.send_replace(false);
 
                     // Build the response.
                     let stats = match current_stats.take() {
@@ -283,12 +291,21 @@ impl DogStatsDStatisticsConfiguration {
         Self {
             api_handler: handler,
             rx: Arc::new(Mutex::new(rx)),
+            collection_active: Arc::new(watch::channel(false).0),
         }
     }
 
     /// Returns an API handler for DogStatsD API.
     pub fn api_handler(&self) -> DogStatsDStatsAPIHandler {
         self.api_handler.clone()
+    }
+
+    /// Returns a receiver that tracks whether a statistics collection is in progress.
+    ///
+    /// Metrics are only used while a collection is in progress, so this can be used to only send metrics to the
+    /// destination when they're needed.
+    pub fn collection_active(&self) -> watch::Receiver<bool> {
+        self.collection_active.subscribe()
     }
 }
 
@@ -300,7 +317,10 @@ impl DestinationBuilder for DogStatsDStatisticsConfiguration {
 
     async fn build(&self, _context: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
         let rx = self.rx.clone().try_lock_owned()?;
-        Ok(Box::new(DogStatsDStats { rx }))
+        Ok(Box::new(DogStatsDStats {
+            rx,
+            collection_active: Arc::clone(&self.collection_active),
+        }))
     }
 }
 
