@@ -1,4 +1,4 @@
-//! Prepares native case scopes, creates participants from verified artifacts and starts their dependency levels.
+//! Prepares native case scopes, creates and starts participants, then runs their procedure.
 
 use std::{
     collections::BTreeMap,
@@ -17,14 +17,15 @@ use crate::{
         linux_container::{LinuxParticipant, LinuxScope},
         RunBackends, COURIER_LINUX_BINARY, FIXUP_IMAGE,
     },
-    case::CaseSchema,
+    deadline::Deadline,
     handle::Primitives,
     layout::{Os, Realization, RealizationKind},
     ledger::ResourceLedger,
     observe::ParticipantObservation,
     participant::{check_process_specs, find_type, ParticipantType, ProcessSpec},
-    plan::CasePlan,
+    plan::ParticipantPlan,
     recipe::Recipe,
+    record::CaseRecord,
     result::{ErrorKind, PhaseTracker, TestResult},
     tasks::CaseTasks,
 };
@@ -33,6 +34,7 @@ use crate::{
 mod daemon_tests;
 mod readiness;
 mod render;
+mod steps;
 
 /// Verified image IDs and container-binary bytes shared by every native case in a run.
 pub struct NativeInputs {
@@ -85,6 +87,10 @@ impl NativeInputs {
 
 /// Cancellation, phase reporting and resource ownership supplied by the case runner.
 pub struct CaseControl {
+    /// Procedure states and verdict retained by the runner through cancellation.
+    pub record: CaseRecord,
+    /// The case-wide deadline used to bound each step.
+    pub deadline: Deadline,
     /// Cancellation of this case, including its deadline and run interruption.
     pub cancel: CancellationToken,
     /// The active phase and completed timings reported by the runner.
@@ -107,17 +113,16 @@ struct Prepared {
 /// A started participant and its live observations.
 struct Started {
     participant: Arc<LinuxParticipant>,
-    #[expect(dead_code, reason = "Late facts read the started participant's IP.")]
+    container_id: String,
     ip: Option<String>,
     observation: ParticipantObservation,
 }
 
-/// Prepares, creates and starts a native participant case using verified image IDs and container binaries.
+/// Creates and starts a native participant case, then runs its procedure.
 ///
-/// The runner owns deadlines and reclaim. Setup failures include phase timings; successful startup returns an
-/// evaluation error.
-pub async fn run<C>(
-    plan: &CasePlan<C>, types: &[&dyn ParticipantType], inputs: &NativeInputs, control: &CaseControl,
+/// The runner owns deadlines and reclaim. Setup failures return directly; procedure outcomes follow the case record.
+pub async fn run(
+    plan: ParticipantPlan<'_>, types: &[&dyn ParticipantType], inputs: &NativeInputs, control: &CaseControl,
 ) -> TestResult {
     let started = Instant::now();
     let fail = |message| {
@@ -139,7 +144,7 @@ pub async fn run<C>(
     let mut created = BTreeMap::new();
     let mut participants = BTreeMap::new();
     let mut running = BTreeMap::new();
-    for level in plan.create_order().expect("participant plans have create orders") {
+    for level in plan.create_order() {
         for name in level {
             let phase = control.phases.enter(format!("create:{name}"));
             let creation = create(plan, types, inputs, control, &prepared, name, &created).await;
@@ -153,15 +158,12 @@ pub async fn run<C>(
             }
         }
     }
-    for level in plan.start_order().expect("participant plans have start orders") {
+    for level in plan.start_order() {
         let phase = control.phases.enter(format!("start:{}", level.join(",")));
         let result = async {
-            let gates = level
-                .iter()
-                .flat_map(|name| plan.start_gates(name).iter().map(move |gate| (name.as_str(), gate)))
-                .collect::<Vec<_>>();
             readiness::wait_for_level(
-                gates,
+                plan,
+                level,
                 |name| {
                     let started: &Started = &running[name];
                     (started.participant.as_ref() as &dyn Primitives, &started.observation)
@@ -169,7 +171,15 @@ pub async fn run<C>(
                 &control.cancel,
             )
             .await?;
-            start_level(level, &mut participants, &mut running, &prepared.process_specs, control).await
+            start_level(
+                level,
+                &mut participants,
+                &mut running,
+                &created,
+                &prepared.process_specs,
+                control,
+            )
+            .await
         }
         .await;
         phase.finish();
@@ -177,22 +187,17 @@ pub async fn run<C>(
             return fail(error);
         }
     }
-    TestResult::errored(
-        "",
-        ErrorKind::Evaluation,
-        "the procedure did not run: panoramic runs no steps of natively executed cases",
-        started.elapsed(),
-        control.phases.completed(),
-    )
+    let phase = control.phases.enter("steps");
+    steps::run(plan, &running, control).await;
+    phase.finish();
+    control.record.result("", started.elapsed(), control.phases.completed())
 }
 
-async fn prepare<C>(
-    plan: &CasePlan<C>, types: &[&dyn ParticipantType], inputs: &NativeInputs, control: &CaseControl,
+async fn prepare(
+    plan: ParticipantPlan<'_>, types: &[&dyn ParticipantType], inputs: &NativeInputs, control: &CaseControl,
 ) -> Result<Prepared, String> {
-    let CaseSchema::Participants { file, .. } = plan.case().schema() else {
-        return Err("native execution requires a participant case".into());
-    };
-    let layout = plan.layout().expect("participant plans have layouts");
+    let file = plan.file();
+    let layout = plan.layout();
     let unsupported = layout
         .iter()
         .filter(|(_, realization)| realization.os != Os::Linux || realization.kind != RealizationKind::LinuxContainer)
@@ -227,7 +232,7 @@ async fn prepare<C>(
             COURIER_LINUX_BINARY.name
         )
     })?;
-    let scope = plan.scope().expect("participant plans have scopes");
+    let scope = plan.scope();
     let id = scope.id();
     let names = file.participants.keys().map(String::as_str).collect::<Vec<_>>();
     control.ledger.isolation_group_with_id(id.clone());
@@ -250,19 +255,16 @@ async fn prepare<C>(
     })
 }
 
-async fn create<C>(
-    plan: &CasePlan<C>, types: &[&dyn ParticipantType], inputs: &NativeInputs, control: &CaseControl,
+async fn create(
+    plan: ParticipantPlan<'_>, types: &[&dyn ParticipantType], inputs: &NativeInputs, control: &CaseControl,
     prepared: &Prepared, name: &str, created: &BTreeMap<String, String>,
 ) -> Result<(LinuxParticipant, String), String> {
     let config = render::render(plan, name, created)?;
     let realization = plan
         .layout()
-        .expect("participant plans have layouts")
         .get(name)
         .expect("create order names laid-out participants");
-    let CaseSchema::Participants { file, .. } = plan.case().schema() else {
-        unreachable!("preparation validates the case schema");
-    };
+    let file = plan.file();
     let type_name = &file.participants[name].participant_type;
     let participant_type = find_type(types, type_name)
         .ok_or_else(|| format!("participant '{name}' has unregistered type '{type_name}'"))?;
@@ -294,8 +296,8 @@ async fn create<C>(
 
 async fn start_level(
     level: &[String], participants: &mut BTreeMap<String, Arc<LinuxParticipant>>,
-    running: &mut BTreeMap<String, Started>, process_specs: &BTreeMap<String, &'static [ProcessSpec]>,
-    control: &CaseControl,
+    running: &mut BTreeMap<String, Started>, created: &BTreeMap<String, String>,
+    process_specs: &BTreeMap<String, &'static [ProcessSpec]>, control: &CaseControl,
 ) -> Result<(), String> {
     let results = join_all(level.iter().map(|name| {
         let participant = participants
@@ -314,6 +316,7 @@ async fn start_level(
                         .observe(process_specs[name], &control.tasks, &control.log_dir.join(name))
                         .await;
                     Ok(Started {
+                        container_id: created[name].clone(),
                         participant,
                         ip,
                         observation,
@@ -357,8 +360,9 @@ mod tests {
     use crate::{
         backend::docker::test_util::FakeDocker,
         case::fixtures,
+        deadline::Budget,
         participant::{ExitChannel, OutputChannel, OutputStream, RenderedConfig},
-        plan::Planner,
+        plan::{CasePlan, Planner},
     };
 
     #[test]
@@ -423,13 +427,15 @@ mod tests {
         let log_dir = tempfile::tempdir().unwrap();
         let cancel = CancellationToken::new();
         let control = CaseControl {
+            record: CaseRecord::default(),
+            deadline: Deadline::after(Budget::Case, std::time::Duration::from_secs(60)),
             tasks: CaseTasks::new(&cancel),
             cancel,
             log_dir: log_dir.path().to_owned(),
             phases: PhaseTracker::default(),
             ledger: ResourceLedger::default(),
         };
-        let result = run(&plan, fixtures::TYPES, &inputs, &control).await;
+        let result = run(plan.participants().unwrap(), fixtures::TYPES, &inputs, &control).await;
         let error = result.error.unwrap();
         assert_eq!(error.kind, ErrorKind::Setup);
         assert_eq!(
@@ -705,13 +711,21 @@ mod tests {
             let log_dir = tempfile::tempdir().unwrap();
             let cancel = CancellationToken::new();
             let control = CaseControl {
+                record: CaseRecord::default(),
+                deadline: Deadline::after(Budget::Case, std::time::Duration::from_secs(60)),
                 tasks: CaseTasks::new(&cancel),
                 cancel,
                 phases: PhaseTracker::default(),
                 ledger: ResourceLedger::default(),
                 log_dir: log_dir.path().to_owned(),
             };
-            let result = run(&linux_plan(), &[&Specs(specs)], &inputs, &control).await;
+            let result = run(
+                linux_plan().participants().unwrap(),
+                &[&Specs(specs)],
+                &inputs,
+                &control,
+            )
+            .await;
             let error = result.error.unwrap();
             assert_eq!(error.kind, ErrorKind::Setup);
             assert_eq!(
@@ -747,13 +761,15 @@ mod tests {
         let log_dir = tempfile::tempdir().unwrap();
         let cancel = CancellationToken::new();
         let control = CaseControl {
+            record: CaseRecord::default(),
+            deadline: Deadline::after(Budget::Case, std::time::Duration::from_secs(60)),
             tasks: CaseTasks::new(&cancel),
             cancel,
             phases: PhaseTracker::default(),
             ledger: ResourceLedger::default(),
             log_dir: log_dir.path().to_owned(),
         };
-        let result = run(&plan, TYPES, &inputs, &control).await;
+        let result = run(plan.participants().unwrap(), TYPES, &inputs, &control).await;
         let error = result.error.unwrap();
         assert_eq!(error.kind, ErrorKind::Setup);
         assert_eq!(
@@ -778,13 +794,15 @@ mod tests {
         std::fs::write(&log_dir, b"regular file").unwrap();
         let cancel = CancellationToken::new();
         let control = CaseControl {
+            record: CaseRecord::default(),
+            deadline: Deadline::after(Budget::Case, std::time::Duration::from_secs(60)),
             tasks: CaseTasks::new(&cancel),
             cancel,
             phases: PhaseTracker::default(),
             ledger: ResourceLedger::default(),
             log_dir: log_dir.clone(),
         };
-        let result = run(&linux_plan(), fixtures::TYPES, &inputs, &control).await;
+        let result = run(linux_plan().participants().unwrap(), fixtures::TYPES, &inputs, &control).await;
         let error = result.error.unwrap();
         assert_eq!(error.kind, ErrorKind::Setup);
         let path = log_dir.join("subject");
@@ -815,13 +833,15 @@ mod tests {
             let log_dir = tempfile::tempdir().unwrap();
             let cancel = CancellationToken::new();
             let control = CaseControl {
+                record: CaseRecord::default(),
+                deadline: Deadline::after(Budget::Case, std::time::Duration::from_secs(60)),
                 tasks: CaseTasks::new(&cancel),
                 cancel,
                 log_dir: log_dir.path().to_owned(),
                 phases: PhaseTracker::default(),
                 ledger: ResourceLedger::default(),
             };
-            let result = run(&plan, fixtures::TYPES, &inputs, &control).await;
+            let result = run(plan.participants().unwrap(), fixtures::TYPES, &inputs, &control).await;
             let error = result.error.unwrap();
             assert_eq!(error.kind, ErrorKind::Setup);
             assert_eq!(
@@ -866,13 +886,15 @@ mod tests {
         let log_dir = tempfile::tempdir().unwrap();
         let cancel = CancellationToken::new();
         let control = CaseControl {
+            record: CaseRecord::default(),
+            deadline: Deadline::after(Budget::Case, std::time::Duration::from_secs(60)),
             tasks: CaseTasks::new(&cancel),
             cancel,
             log_dir: log_dir.path().to_owned(),
             phases: PhaseTracker::default(),
             ledger: ResourceLedger::default(),
         };
-        let result = run(&plan, fixtures::TYPES, &inputs, &control).await;
+        let result = run(plan.participants().unwrap(), fixtures::TYPES, &inputs, &control).await;
         assert_eq!(result.error.as_ref().unwrap().kind, ErrorKind::Setup);
         assert!(result
             .error

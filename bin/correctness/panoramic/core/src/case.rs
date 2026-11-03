@@ -29,6 +29,7 @@ pub(crate) mod template;
 pub(crate) mod fixtures;
 
 pub(crate) use self::participant_check::declared_names;
+pub(crate) use self::template::Template;
 use self::{config_references::FileTemplates, participant_check::check_participants, step_check::build_steps};
 pub use self::{
     duration::CaseDuration,
@@ -36,7 +37,7 @@ pub use self::{
         deserialize_env_map, CaseFile, ConfigOverlay, ConnectionTarget, EndpointOverride, FileSource,
         ParticipantConfig, ParticipantEntry, ProcedureNode, RequestedRealization, StepNode,
     },
-    template::Template,
+    template::StepTemplate,
 };
 
 /// Participant types, steps and typed-schema artifact roles available to case files. Defaults to empty registries.
@@ -521,6 +522,7 @@ mod tests {
             panic!("expected one built step");
         };
         let expected = fixtures::Probe {
+            timeout: fixtures::step_timeout(),
             on: "subject".into(),
             process: None,
             values: vec![],
@@ -684,13 +686,17 @@ procedure:
             panic!("expected step, parallel, step");
         };
         assert_eq!(members.len(), 1);
-        let marker = fixtures::Marker { on: "subject".into() };
+        let marker = fixtures::Marker {
+            timeout: fixtures::step_timeout(),
+            on: "subject".into(),
+        };
         assert_eq!(format!("{:?}", members[0]), format!("{marker:?}"));
         for (step, marker, process, path) in [
             (first, "first", None, None),
             (last, "last", Some("worker"), Some("{{ subject.facts.file }}")),
         ] {
             let expected = fixtures::Probe {
+                timeout: fixtures::step_timeout(),
                 on: "subject".into(),
                 process: process.map(String::from),
                 values: vec![serde_json::json!(marker)],

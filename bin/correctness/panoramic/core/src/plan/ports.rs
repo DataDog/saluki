@@ -175,7 +175,7 @@ mod tests {
             ..planner()
         };
         assert_eq!(compile_with(&mut planner, &yaml, Os::Linux).err().unwrap().to_string(),
-            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 2.1 reaches endpoint 'grpc' of participant 'subject', which needs a runner-host port: all 1 runner-host ports are allocated");
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 2.1 'reach' reaches endpoint 'grpc' of participant 'subject', which needs a runner-host port: all 1 runner-host ports are allocated");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Compiles loaded cases for a selected subject operating system.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::Path};
 
 use saluki_error::{generic_error, GenericError};
 
@@ -72,16 +72,24 @@ impl<C> Compiled<C> {
 pub struct CasePlan<C> {
     case: CaseConfig<C>,
     subject_os: Os,
-    layout: Option<Layout>,
     artifacts: Vec<ArtifactBinding>,
-    scope: Option<ScopeLayout>,
-    order: Option<DependencyOrder>,
-    participants: BTreeMap<String, PlannedParticipant>,
-    /// Ports published or forwarded for endpoints reached by connections, references, readiness checks or steps,
-    /// keyed by serving participant and endpoint for the selected subject OS.
-    runner_host_ports: BTreeMap<(String, String), u16>,
-    runner_host_routes: BTreeMap<(String, String, EndpointOperation), RunnerHostRoute>,
-    start_gates: BTreeMap<String, Vec<StartGate>>,
+    participants: Option<ParticipantData>,
+}
+
+struct ParticipantData {
+    layout: Layout,
+    scope: ScopeLayout,
+    planned: PlannedCase,
+}
+
+/// A compiled participant case's declarations, procedure and realization-specific values.
+#[derive(Clone, Copy)]
+pub struct ParticipantPlan<'a> {
+    file: &'a CaseFile,
+    procedure: &'a [ProcedureNode<Box<dyn Step>>],
+    templates: &'a FileTemplates,
+    source: &'a Path,
+    data: &'a ParticipantData,
 }
 
 struct PlannedCase {
@@ -173,14 +181,9 @@ impl<'a> Planner<'a> {
     ///       the served endpoint and operation-specific route, then allocate any port it needs and render its address.
     pub fn compile<C>(&mut self, case: CaseConfig<C>, subject_os: Os) -> Result<Compiled<C>, GenericError> {
         let selected = case.subject_os().contains(&subject_os);
-        let mut layout = None;
         let mut artifacts = Vec::new();
-        let mut scope = None;
-        let mut order = None;
-        let mut participants = BTreeMap::new();
-        let mut runner_host_ports = BTreeMap::new();
-        let mut runner_host_routes = BTreeMap::new();
-        let mut start_gates = BTreeMap::new();
+        let mut selected_participants = None;
+        let mut participants = None;
         if let CaseSchema::Participants { file, procedure } = case.schema() {
             let candidate_scope = if selected {
                 self.scopes.allocate().map_err(|error| {
@@ -222,16 +225,15 @@ impl<'a> Planner<'a> {
                 .map_err(error)?;
                 if os == subject_os {
                     artifacts = artifacts::bind(file, &candidate, self.registries.participant_types, &self.bindings);
-                    layout = Some(candidate);
-                    order = Some(planned.order);
-                    participants = planned.participants;
-                    runner_host_ports = planned.runner_host_ports;
-                    runner_host_routes = planned.runner_host_routes;
-                    start_gates = planned.start_gates;
+                    selected_participants = Some((candidate, planned));
                 }
             }
-            if selected {
-                scope = Some(candidate_scope);
+            if let Some((layout, planned)) = selected_participants {
+                participants = Some(ParticipantData {
+                    layout,
+                    scope: candidate_scope,
+                    planned,
+                });
             }
         } else if selected {
             let roles = case.typed_artifact_roles(subject_os);
@@ -259,14 +261,8 @@ impl<'a> Planner<'a> {
         Ok(Compiled::Planned(Box::new(CasePlan {
             case,
             subject_os,
-            layout,
             artifacts,
-            scope,
-            order,
             participants,
-            runner_host_ports,
-            runner_host_routes,
-            start_gates,
         })))
     }
 }
@@ -277,8 +273,23 @@ impl<C> CasePlan<C> {
         &self.case
     }
 
+    /// Returns the participant plan, or `None` for a typed case.
+    pub fn participants(&self) -> Option<ParticipantPlan<'_>> {
+        let CaseSchema::Participants { file, procedure } = self.case.schema() else {
+            return None;
+        };
+        Some(ParticipantPlan {
+            file,
+            procedure,
+            templates: self.case.file_templates(),
+            source: self.case.source(),
+            data: self.participants.as_ref()?,
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn scope(&self) -> Option<&ScopeLayout> {
-        self.scope.as_ref()
+        self.participants().map(|plan| plan.scope())
     }
 
     /// Returns the subject OS selected for execution.
@@ -288,7 +299,7 @@ impl<C> CasePlan<C> {
 
     /// Returns `Some(layout)` for participant cases and `None` for typed cases.
     pub fn layout(&self) -> Option<&Layout> {
-        self.layout.as_ref()
+        self.participants().map(|plan| plan.layout())
     }
 
     /// Reports each participant's type, OS and realization in name order.
@@ -298,8 +309,7 @@ impl<C> CasePlan<C> {
             return None;
         };
         Some(
-            self.layout
-                .as_ref()?
+            self.layout()?
                 .iter()
                 .map(|(name, realization)| LayoutEntry {
                     participant: Some(name.to_string()),
@@ -321,7 +331,7 @@ impl<C> CasePlan<C> {
     /// A participant follows every other participant whose late fact, known once created, its configuration embeds.
     /// Each level lists independent participants in name order.
     pub fn create_order(&self) -> Option<&[Vec<String>]> {
-        self.order.as_ref().map(|order| order.create.as_slice())
+        self.participants().map(|plan| plan.create_order())
     }
 
     /// Returns start dependency levels for participant cases, or `None` for typed cases.
@@ -330,51 +340,135 @@ impl<C> CasePlan<C> {
     /// whose late fact its template files reference when that fact becomes available only after start.
     /// Each level lists independent participants in name order.
     pub fn start_order(&self) -> Option<&[Vec<String>]> {
-        self.order.as_ref().map(|order| order.start.as_slice())
-    }
-
-    /// Returns the readiness checks a consumer waits for before starting.
-    /// Unknown participants and typed cases have no gates.
-    pub(crate) fn start_gates(&self, participant: &str) -> &[StartGate] {
-        self.start_gates.get(participant).map(Vec::as_slice).unwrap_or(&[])
+        self.participants().map(|plan| plan.start_order())
     }
 
     /// Returns a fact from the participant's planned realization, including `shared_dir`.
-    /// Returns `None` for unknown participants or facts, and for typed cases.
     pub fn fact(&self, participant: &str, fact: &str) -> Option<&str> {
-        self.participants.get(participant)?.facts.get(fact).map(String::as_str)
+        self.participants()?.fact(participant, fact)
+    }
+
+    /// Returns the participant's effective configuration for its planned realization.
+    pub fn effective_config(&self, participant: &str) -> Option<&EffectiveConfig> {
+        self.participants()?.effective_config(participant)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn start_gates(&self, participant: &str) -> &[StartGate] {
+        self.participants()
+            .map(|plan| plan.start_gates(participant))
+            .unwrap_or(&[])
+    }
+
+    #[cfg(test)]
+    pub(crate) fn connection_address(&self, participant: &str, key: &str) -> Option<&ResolvedAddress> {
+        self.participants()?.connection_address(participant, key)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn endpoint_address(&self, holder: &str, server: &str, endpoint: &str) -> Option<&ResolvedAddress> {
+        self.participants()?.endpoint_address(holder, server, endpoint)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn runner_host_route(
+        &self, server: &str, endpoint: &str, operation: EndpointOperation,
+    ) -> Option<&RunnerHostRoute> {
+        self.participants()?.runner_host_route(server, endpoint, operation)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn runner_host_ports(&self, participant: &str) -> Vec<RunnerHostPort> {
+        self.participants()
+            .map(|plan| plan.runner_host_ports(participant))
+            .unwrap_or_default()
+    }
+}
+
+impl<'a> ParticipantPlan<'a> {
+    pub(crate) fn file(self) -> &'a CaseFile {
+        self.file
+    }
+    pub(crate) fn procedure(self) -> &'a [ProcedureNode<Box<dyn Step>>] {
+        self.procedure
+    }
+    pub(crate) fn templates(self) -> &'a FileTemplates {
+        self.templates
+    }
+    pub(crate) fn source(self) -> &'a Path {
+        self.source
+    }
+    pub(crate) fn scope(self) -> &'a ScopeLayout {
+        &self.data.scope
+    }
+    pub(crate) fn layout(self) -> &'a Layout {
+        &self.data.layout
+    }
+    pub(crate) fn create_order(self) -> &'a [Vec<String>] {
+        &self.data.planned.order.create
+    }
+    pub(crate) fn start_order(self) -> &'a [Vec<String>] {
+        &self.data.planned.order.start
+    }
+
+    /// Returns the readiness checks a consumer waits for before starting.
+    /// Returns an empty list for unknown participants.
+    pub(crate) fn start_gates(self, participant: &str) -> &'a [StartGate] {
+        self.data
+            .planned
+            .start_gates
+            .get(participant)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// Returns a fact from the participant's planned realization, including `shared_dir`.
+    /// Returns `None` for unknown participants or facts.
+    pub(crate) fn fact(self, participant: &str, fact: &str) -> Option<&'a str> {
+        self.data
+            .planned
+            .participants
+            .get(participant)?
+            .facts
+            .get(fact)
+            .map(String::as_str)
     }
 
     /// Returns the address delivered for a participant's connection.
-    pub(crate) fn connection_address(&self, participant: &str, key: &str) -> Option<&ResolvedAddress> {
-        self.participants.get(participant)?.connections.get(key)
+    pub(crate) fn connection_address(self, participant: &str, key: &str) -> Option<&'a ResolvedAddress> {
+        self.data.planned.participants.get(participant)?.connections.get(key)
     }
 
     /// Returns a referenced endpoint's address as seen by the holder, using resolved participant names.
-    pub(crate) fn endpoint_address(&self, holder: &str, server: &str, endpoint: &str) -> Option<&ResolvedAddress> {
-        self.participants
+    pub(crate) fn endpoint_address(self, holder: &str, server: &str, endpoint: &str) -> Option<&'a ResolvedAddress> {
+        self.data
+            .planned
+            .participants
             .get(holder)?
             .endpoint_references
             .get(&(server.into(), endpoint.into()))
     }
 
     /// Returns the runner-host route for a step-needed endpoint operation.
-    #[cfg_attr(not(test), expect(dead_code, reason = "Steps reach endpoints through these routes."))]
     pub(crate) fn runner_host_route(
-        &self, server: &str, endpoint: &str, operation: EndpointOperation,
-    ) -> Option<&RunnerHostRoute> {
-        self.runner_host_routes
+        self, server: &str, endpoint: &str, operation: EndpointOperation,
+    ) -> Option<&'a RunnerHostRoute> {
+        self.data
+            .planned
+            .runner_host_routes
             .get(&(server.into(), endpoint.into(), operation))
     }
 
     /// Lists the participant's published or forwarded ports in endpoint-name order.
     /// Returns an empty list when the participant is unknown or needs no runner-host ports.
-    pub(crate) fn runner_host_ports(&self, participant: &str) -> Vec<RunnerHostPort> {
-        self.runner_host_ports
+    pub(crate) fn runner_host_ports(self, participant: &str) -> Vec<RunnerHostPort> {
+        self.data
+            .planned
+            .runner_host_ports
             .iter()
             .filter(|((server, _), _)| server == participant)
             .map(|((_, name), &host_port)| {
-                let endpoint = &self.participants[participant].served[name];
+                let endpoint = &self.data.planned.participants[participant].served[name];
                 let Listener::Port(Port::Fixed(container_port)) = endpoint.listener else {
                     unreachable!("runner-host ports map to resolved network listeners");
                 };
@@ -391,9 +485,11 @@ impl<C> CasePlan<C> {
     }
 
     /// Returns the participant's effective configuration for its planned realization.
-    /// Returns `None` for unknown participants and typed cases.
-    pub fn effective_config(&self, participant: &str) -> Option<&EffectiveConfig> {
-        self.participants
+    /// Returns `None` for unknown participants.
+    pub(crate) fn effective_config(self, participant: &str) -> Option<&'a EffectiveConfig> {
+        self.data
+            .planned
+            .participants
             .get(participant)
             .map(|participant| &participant.config)
     }
@@ -608,12 +704,12 @@ mod tests {
         let mut planner = planner();
         for (index, os) in [Os::Linux, Os::MacOs, Os::Windows].into_iter().enumerate() {
             let plan = compile_with(&mut planner, &yaml, os).unwrap().unwrap();
-            let scope = plan.scope.unwrap();
+            let scope = plan.scope().unwrap();
             assert_eq!(usize::from(scope.index), index);
             assert_eq!(scope.run, "testrun0");
             if os == Os::MacOs {
                 assert_eq!(
-                    plan.participants["subject"].facts[SHARED_DIR_FACT],
+                    plan.participants.as_ref().unwrap().planned.participants["subject"].facts[SHARED_DIR_FACT],
                     "/tmp/panoramic-testrun0/0001/subject/shared"
                 );
             }
@@ -628,7 +724,7 @@ mod tests {
             .unwrap()
             .is_none());
         let plan = compile_with(&mut planner, "type: fixture", Os::MacOs).unwrap().unwrap();
-        assert!(plan.scope.is_none());
+        assert!(plan.participants().is_none());
         assert_eq!(plan.fact("subject", SHARED_DIR_FACT), None);
         assert_eq!(planner.scopes.allocate().unwrap().index, 0);
     }
@@ -648,7 +744,7 @@ mod tests {
         assert!(compile_with(&mut planner, "type: fixture", Os::MacOs)
             .unwrap()
             .unwrap()
-            .scope
+            .participants()
             .is_none());
     }
 
@@ -797,7 +893,7 @@ mod tests {
             (
                 "other.facts.file",
                 "subject.facts.file",
-                "step 1 references fact 'file' of participant 'other'",
+                "step 1 'probe' references fact 'file' of participant 'other'",
             ),
         ] {
             let message = compile(&yaml, Os::Windows).err().unwrap().to_string();
@@ -878,7 +974,7 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
             (
                 "{{observer.facts.file}}",
                 "literal",
-                "step 1 references fact 'file' of participant 'observer'",
+                "step 1 'probe' references fact 'file' of participant 'observer'",
             ),
         ] {
             let case = loader
@@ -961,7 +1057,7 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
                 .err()
                 .unwrap()
                 .to_string()
-                .contains("step 1 references fact 'file'")
+                .contains("step 1 'probe' references fact 'file'")
         );
     }
 
@@ -1003,11 +1099,11 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
         };
         let plan = planner.compile(*case, Os::MacOs).unwrap().into_plan().unwrap();
         assert_eq!(
-            plan.scope.as_ref().unwrap().state_dir(Os::MacOs),
+            plan.scope().unwrap().state_dir(Os::MacOs),
             "/tmp/panoramic-testrun0/0000"
         );
         assert_eq!(
-            plan.runner_host_ports,
+            plan.participants.as_ref().unwrap().planned.runner_host_ports,
             BTreeMap::from([(("server".into(), "api".into()), 20000)])
         );
     }
@@ -1052,7 +1148,7 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
             assert_eq!(plan.subject_os(), os);
             assert_eq!(plan.case().name(), "alpha");
             assert!(plan.layout().is_none());
-            assert!(plan.runner_host_ports.is_empty());
+            assert!(plan.participants().is_none());
         }
     }
 

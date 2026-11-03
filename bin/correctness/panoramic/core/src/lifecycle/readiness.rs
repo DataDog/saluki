@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     handle::{http_status_from_runner_host, probe_from_runner_host, HandleError, Primitives},
     observe::{Capture, ParticipantObservation},
-    plan::{PlannedCheck, StartGate},
+    plan::{ParticipantPlan, PlannedCheck, StartGate},
     probe::{probe, AttemptLimits, ProbeAnswer, ProbeError, POLL_INTERVAL},
 };
 
@@ -18,6 +18,17 @@ struct Waiting<'a> {
 }
 
 pub(super) async fn wait_for_level<'a>(
+    plan: ParticipantPlan<'a>, level: &'a [String],
+    server: impl Fn(&str) -> (&'a dyn Primitives, &'a ParticipantObservation), cancel: &CancellationToken,
+) -> Result<(), String> {
+    let gates = level
+        .iter()
+        .flat_map(|name| plan.start_gates(name).iter().map(move |gate| (name.as_str(), gate)))
+        .collect::<Vec<_>>();
+    wait_for_gates(gates, server, cancel).await
+}
+
+async fn wait_for_gates<'a>(
     gates: impl IntoIterator<Item = (&'a str, &'a StartGate)>,
     server: impl Fn(&str) -> (&'a dyn Primitives, &'a ParticipantObservation), cancel: &CancellationToken,
 ) -> Result<(), String> {
@@ -318,7 +329,7 @@ mod tests {
                 sleep(2 * POLL_INTERVAL).await;
                 push_line(&server, Some("main"), "ready");
             },
-            wait_for_level(
+            wait_for_gates(
                 [("consumer", &gate)],
                 |_| (&server as &dyn Primitives, &server.observation),
                 &cancel
@@ -336,12 +347,12 @@ mod tests {
             reason: "disk full".into(),
         });
         let started = Instant::now();
-        assert_eq!(wait_for_level([("consumer", &output_gate())], |_| (&server as &dyn Primitives, &server.observation), &CancellationToken::new()).await,
+        assert_eq!(wait_for_gates([("consumer", &output_gate())], |_| (&server as &dyn Primitives, &server.observation), &CancellationToken::new()).await,
             Err("participant 'consumer' cannot start: checking output-matches '^ready$' on process 'main' of participant 'server' failed: output capture of process 'main' failed: disk full".into()));
         assert_eq!(started.elapsed(), Duration::ZERO);
         push_line(&server, Some("main"), "ready");
         assert_eq!(
-            wait_for_level(
+            wait_for_gates(
                 [("consumer", &output_gate())],
                 |_| (&server as &dyn Primitives, &server.observation),
                 &CancellationToken::new()
@@ -362,7 +373,7 @@ mod tests {
             endpoint: Some("other".into()),
             ..output_gate()
         };
-        assert_eq!(wait_for_level([("a", &gate), ("a", &alias), ("b", &alias)], |_| (&server as &dyn Primitives, &server.observation), &CancellationToken::new()).await,
+        assert_eq!(wait_for_gates([("a", &gate), ("a", &alias), ("b", &alias)], |_| (&server as &dyn Primitives, &server.observation), &CancellationToken::new()).await,
             Err("participants 'a', 'b' cannot start: checking output-matches '^ready$' on process 'main' of participant 'server' failed: output capture of process 'main' failed: disk full".into()));
     }
 
@@ -425,7 +436,7 @@ mod tests {
                         error: error.clone(),
                     });
                 },
-                wait_for_level(
+                wait_for_gates(
                     [("consumer", &gate)],
                     |_| (&server as &dyn Primitives, &server.observation),
                     &cancel
@@ -453,7 +464,7 @@ mod tests {
             .send_replace(ParticipantExit::Exited { code: 0, error: None });
         let started = Instant::now();
         assert_eq!(
-            wait_for_level(
+            wait_for_gates(
                 [("consumer", &tcp_gate())],
                 |_| (&server as &dyn Primitives, &server.observation),
                 &CancellationToken::new()
@@ -482,7 +493,7 @@ mod tests {
         });
         let started = Instant::now();
         assert_eq!(
-            wait_for_level(
+            wait_for_gates(
                 [("consumer", &tcp_gate())],
                 |_| (&server as &dyn Primitives, &server.observation),
                 &CancellationToken::new()
@@ -508,7 +519,7 @@ mod tests {
         ]);
         let started = Instant::now();
         assert_eq!(
-            wait_for_level(
+            wait_for_gates(
                 [("consumer", &tcp_gate())],
                 |_| (&server as &dyn Primitives, &server.observation),
                 &CancellationToken::new()
@@ -539,7 +550,7 @@ mod tests {
             "participant 'consumer' cannot start: tcp-accepts on 'api' of participant 'server' was not ready \
             within 2s: connection refused";
         assert_eq!(
-            wait_for_level(
+            wait_for_gates(
                 [("consumer", &gate)],
                 |_| (&server as &dyn Primitives, &server.observation),
                 &CancellationToken::new()
@@ -558,7 +569,7 @@ mod tests {
             "participant 'consumer' cannot start: tcp-accepts on 'api' of participant 'server' was not ready \
             within 60s: no check completed";
         assert_eq!(
-            wait_for_level(
+            wait_for_gates(
                 [("consumer", &tcp_gate())],
                 |_| (&server as &dyn Primitives, &server.observation),
                 &CancellationToken::new()
@@ -579,7 +590,7 @@ mod tests {
         let expected = "participant 'consumer' cannot start: checking tcp-accepts on 'api' of participant 'server' \
             failed: exec failed: server has exited";
         assert_eq!(
-            wait_for_level(
+            wait_for_gates(
                 [("consumer", &tcp_gate())],
                 |_| (&server as &dyn Primitives, &server.observation),
                 &CancellationToken::new()
@@ -602,7 +613,7 @@ mod tests {
                 sleep(Duration::from_secs(1)).await;
                 cancel.cancel();
             },
-            wait_for_level(
+            wait_for_gates(
                 [("consumer", &gate)],
                 |_| (&server as &dyn Primitives, &server.observation),
                 &cancel
@@ -670,7 +681,7 @@ mod tests {
         };
         let server = Server::new([Answer::Stat(None), Answer::Stat(Some(FileKind::File))]);
         assert_eq!(
-            wait_for_level(
+            wait_for_gates(
                 [("consumer", &gate)],
                 |_| (&server as &dyn Primitives, &server.observation),
                 &CancellationToken::new()
@@ -685,7 +696,7 @@ mod tests {
         let expected = "participant 'consumer' cannot start: checking file-exists at '/ready' of participant 'server' \
             failed: archive unavailable";
         assert_eq!(
-            wait_for_level(
+            wait_for_gates(
                 [("consumer", &gate)],
                 |_| (&server as &dyn Primitives, &server.observation),
                 &CancellationToken::new()
@@ -715,7 +726,7 @@ mod tests {
         ] {
             let server = Server::new([answer]);
             assert_eq!(
-                wait_for_level(
+                wait_for_gates(
                     [("a", &gate), ("a", &alias), ("b", &gate)],
                     |_| (&server as &dyn Primitives, &server.observation),
                     &CancellationToken::new()
@@ -740,7 +751,7 @@ mod tests {
             "participants 'a', 'b' cannot start: tcp-accepts on 'api' of participant 'server' was not ready \
             within 1s: no check completed";
         assert_eq!(
-            wait_for_level(
+            wait_for_gates(
                 [("a", &gate), ("b", &shorter)],
                 |_| (&server as &dyn Primitives, &server.observation),
                 &CancellationToken::new()
@@ -769,7 +780,7 @@ mod tests {
             2s: no check completed; participant 'b' cannot start: tcp-accepts on 'api' of participant \
             'other' was not ready within 2s: no check completed";
         assert_eq!(
-            wait_for_level(
+            wait_for_gates(
                 [("a", &gate), ("b", &other)],
                 |_| (&server as &dyn Primitives, &server.observation),
                 &CancellationToken::new()
@@ -799,7 +810,7 @@ mod tests {
         let expected = "participant 'consumer' cannot start: checking http-ok on 'api' at '/ready' of participant \
             'server' failed: HTTP checks through the courier are not supported";
         assert_eq!(
-            wait_for_level(
+            wait_for_gates(
                 [("consumer", &gate)],
                 |_| (&server as &dyn Primitives, &server.observation),
                 &CancellationToken::new()
@@ -829,7 +840,7 @@ mod tests {
         let expected = "participant 'consumer' cannot start: checking http-ok on 'api' at '/a b' of participant \
             'server' failed: invalid uri character";
         assert_eq!(
-            wait_for_level(
+            wait_for_gates(
                 [("consumer", &gate)],
                 |_| (&server as &dyn Primitives, &server.observation),
                 &CancellationToken::new()
@@ -861,7 +872,7 @@ mod tests {
             cannot start: checking http-ok on 'api' at '/live' of participant 'server' failed: HTTP checks \
             through the courier are not supported";
         assert_eq!(
-            wait_for_level(
+            wait_for_gates(
                 gates.iter().map(|gate| ("consumer", gate)),
                 |_| (&server as &dyn Primitives, &server.observation),
                 &CancellationToken::new()

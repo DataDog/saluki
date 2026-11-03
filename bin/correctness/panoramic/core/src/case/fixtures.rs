@@ -6,22 +6,41 @@ use std::{
     time::Duration,
 };
 
+use async_trait::async_trait;
 use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 use serde_json::Value;
+use tokio::time::{sleep, Instant};
 
-use super::{case_name, CaseLoader, ConnectionTarget, Registries, Template, TypedCase, TypedCaseLoader};
+use super::{
+    case_name, CaseDuration, CaseLoader, ConnectionTarget, Registries, StepTemplate, TypedCase, TypedCaseLoader,
+};
 use crate::{
     artifact::ArtifactRole,
     backend::LateFact,
     endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind, EndpointOperation, Port},
+    handle::{probe_from_runner_host, HandleError},
     layout::{Os, Realization, RealizationKind},
+    observe::{Capture, ExitObservation},
     participant::{
         CaseValues, EffectiveConfig, ExitChannel, FactDeclaration, OutputChannel, OutputStream, ParticipantType,
         ProcessSpec,
     },
-    step::{decode_fields, Need, Step, StepFactory, StepFields},
+    probe::{AttemptLimits, ProbeAnswer, POLL_INTERVAL},
+    record::{AssertionStatus, StepReport},
+    step::{decode_fields, Need, Step, StepContext, StepFactory, StepFields},
 };
+
+pub(crate) fn step_timeout() -> CaseDuration {
+    "30s".parse().unwrap()
+}
+
+fn handle_failure(error: HandleError) -> (AssertionStatus, String) {
+    match error {
+        HandleError::Harness { message } => (AssertionStatus::Errored, message),
+        HandleError::Product { message } => (AssertionStatus::Failed, message),
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -34,18 +53,77 @@ pub(crate) struct Probe {
         reason = "Only read through derived Debug, which dead-code analysis ignores."
     )]
     pub(crate) values: Vec<Value>,
-    pub(crate) path: Option<Template>,
+    pub(crate) path: Option<StepTemplate>,
+    #[serde(default = "step_timeout")]
+    pub(crate) timeout: CaseDuration,
 }
 
+#[async_trait]
 impl Step for Probe {
+    fn name(&self) -> &'static str {
+        "probe"
+    }
+    fn budget(&self) -> Duration {
+        self.timeout.into()
+    }
+
     fn needs(&self) -> Vec<Need> {
         let participant = match &self.process {
             Some(process) => Need::Process(self.on.clone(), process.clone()),
             None => Need::Handle(self.on.clone()),
         };
         std::iter::once(participant)
-            .chain(self.path.iter().flat_map(Template::needs))
+            .chain(self.path.iter().flat_map(StepTemplate::needs))
             .collect()
+    }
+    async fn run(&self, cx: &StepContext<'_>) -> StepReport {
+        let started = Instant::now();
+        let result = async {
+            if let Some(path) = &self.path {
+                let path = cx
+                    .resolve(path)
+                    .map_err(|message| (AssertionStatus::Errored, message))?;
+                match cx
+                    .primitives(&self.on)
+                    .expect("probe needs its participant")
+                    .read_file(&path)
+                    .await
+                {
+                    Ok(Some(_)) => {}
+                    Ok(None) => return Err((AssertionStatus::Failed, format!("file '{path}' is missing"))),
+                    Err(error) => return Err(handle_failure(error)),
+                }
+            }
+            if let Some(process) = &self.process {
+                let observation = cx
+                    .observation(&self.on)
+                    .expect("probe needs its participant")
+                    .process(process)
+                    .expect("probe needs a declared process")
+                    .settled()
+                    .await;
+                match observation {
+                    ExitObservation::Exited(status) if status.code == Some(0) => {}
+                    ExitObservation::Exited(status) => {
+                        return Err((
+                            AssertionStatus::Failed,
+                            format!("process '{process}' exited: {status:?}"),
+                        ))
+                    }
+                    ExitObservation::Undetermined(reason) => return Err((AssertionStatus::Errored, reason)),
+                    ExitObservation::Running => {
+                        return Err((
+                            AssertionStatus::Errored,
+                            format!("process '{process}' has no settled exit"),
+                        ))
+                    }
+                }
+            }
+            Ok(())
+        }
+        .await;
+        let (status, message) = result.err().unwrap_or((AssertionStatus::Passed, "probe passed".into()));
+        StepReport::new(started, status, message)
     }
 }
 
@@ -69,11 +147,43 @@ impl StepFactory for ProbeFactory {
 #[serde(deny_unknown_fields)]
 pub(super) struct Marker {
     pub(super) on: String,
+    #[serde(default = "step_timeout")]
+    pub(crate) timeout: CaseDuration,
 }
 
+#[async_trait]
 impl Step for Marker {
+    fn name(&self) -> &'static str {
+        "marker"
+    }
+    fn budget(&self) -> Duration {
+        self.timeout.into()
+    }
+
     fn needs(&self) -> Vec<Need> {
         vec![Need::Handle(self.on.clone())]
+    }
+    async fn run(&self, cx: &StepContext<'_>) -> StepReport {
+        let started = Instant::now();
+        let observation = cx.observation(&self.on).expect("marker needs its participant");
+        let mut cursor = 0;
+        loop {
+            let captures = std::iter::once(observation.capture())
+                .chain(observation.outputs.values().map(|output| output.current()))
+                .collect::<Vec<_>>();
+            let (lines, next) = observation.lines.since(cursor);
+            cursor = next;
+            if lines.iter().any(|line| line.text == "marker") {
+                return StepReport::new(started, AssertionStatus::Passed, "marker observed");
+            }
+            if let Some(Capture::Failed { reason }) = captures
+                .iter()
+                .find(|capture| matches!(capture, Capture::Failed { .. }))
+            {
+                return StepReport::new(started, AssertionStatus::Errored, reason.clone());
+            }
+            sleep(POLL_INTERVAL).await;
+        }
     }
 }
 
@@ -89,14 +199,28 @@ impl StepFactory for MarkerFactory {
     }
 }
 
-/// A step without fields or needs, for procedures whose steps aren't under test.
+/// A passing step.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct Noop {}
+pub(crate) struct Noop {
+    #[serde(default = "step_timeout")]
+    pub(crate) timeout: CaseDuration,
+}
 
+#[async_trait]
 impl Step for Noop {
+    fn name(&self) -> &'static str {
+        "noop"
+    }
+    fn budget(&self) -> Duration {
+        self.timeout.into()
+    }
+
     fn needs(&self) -> Vec<Need> {
         Vec::new()
+    }
+    async fn run(&self, _cx: &StepContext<'_>) -> StepReport {
+        StepReport::new(Instant::now(), AssertionStatus::Passed, "noop passed")
     }
 }
 
@@ -117,15 +241,49 @@ impl StepFactory for NoopFactory {
 struct Reach {
     endpoint: ConnectionTarget,
     operation: Option<EndpointOperation>,
+    #[serde(default = "step_timeout")]
+    pub(crate) timeout: CaseDuration,
 }
 
+#[async_trait]
 impl Step for Reach {
+    fn name(&self) -> &'static str {
+        "reach"
+    }
+    fn budget(&self) -> Duration {
+        self.timeout.into()
+    }
+
     fn needs(&self) -> Vec<Need> {
         vec![Need::Endpoint(
             self.endpoint.participant.clone(),
             self.endpoint.endpoint.clone(),
             self.operation.unwrap_or(EndpointOperation::Probe),
         )]
+    }
+    async fn run(&self, cx: &StepContext<'_>) -> StepReport {
+        let started = Instant::now();
+        let server = &self.endpoint.participant;
+        let route = cx
+            .runner_host_route(
+                server,
+                &self.endpoint.endpoint,
+                self.operation.unwrap_or(EndpointOperation::Probe),
+            )
+            .expect("reach needs a planned route");
+        let result = probe_from_runner_host(
+            route,
+            cx.primitives(server).expect("reach needs its server"),
+            &AttemptLimits::new(self.budget()),
+        )
+        .await;
+        let (status, message) = match result {
+            Ok(ProbeAnswer::Listening) => (AssertionStatus::Passed, "endpoint is listening".into()),
+            Ok(ProbeAnswer::NotListening { reason }) => (AssertionStatus::Failed, reason),
+            Ok(ProbeAnswer::Addressable) => (AssertionStatus::Failed, "listener availability is unknown".into()),
+            Err(error) => handle_failure(error),
+        };
+        StepReport::new(started, status, message)
     }
 }
 

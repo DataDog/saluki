@@ -468,13 +468,21 @@ impl Runner {
                             );
                         };
                         let control = CaseControl {
+                            record: tctx.record.clone(),
+                            deadline,
                             cancel: tctx.test_cancel_token(),
                             phases: tctx.phases.clone(),
                             ledger: tctx.ledger.clone(),
                             tasks: tctx.tasks.clone(),
                             log_dir: log_dir.clone(),
                         };
-                        lifecycle::run(plan, native.types, &native.inputs, &control).await
+                        lifecycle::run(
+                            plan.participants().expect("native cases declare participants"),
+                            native.types,
+                            &native.inputs,
+                            &control,
+                        )
+                        .await
                     }
                     Execution::Unprovidable(message) => {
                         TestResult::errored("", ErrorKind::Setup, message, Duration::ZERO, vec![])

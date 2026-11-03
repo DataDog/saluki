@@ -14,15 +14,17 @@ use crate::{
         fixtures::{self, FixtureConfig, FixtureTypes},
         CaseLoader, Registries,
     },
+    deadline::Budget,
     endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind, Evidence, Port},
     layout::Realization,
     participant::{EffectiveConfig, ExitChannel, OutputChannel, RenderedConfig},
     plan::{
         fixtures::{attach_endpoint_evidence, participant_evidence},
-        Planner,
+        CasePlan, Planner,
     },
     recipe::{ContainerRecipe, RecipeFile},
-    result::ReclaimResult,
+    record::StepStatus,
+    result::{ReclaimResult, TestOutcome},
     tasks::TASK_STOP_TIME,
 };
 
@@ -99,14 +101,24 @@ impl ParticipantType for Fixture {
         )])
     }
     fn processes(&self) -> &'static [&'static str] {
-        &["main"]
+        &["main", "worker"]
     }
     fn process_specs(&self, _: Realization) -> &'static [ProcessSpec] {
-        &[ProcessSpec {
-            name: "main",
-            exit: ExitChannel::Container,
-            output: OutputChannel::Container,
-        }]
+        &[
+            ProcessSpec {
+                name: "main",
+                exit: ExitChannel::Container,
+                output: OutputChannel::Container,
+            },
+            ProcessSpec {
+                name: "worker",
+                exit: ExitChannel::Record { file: "worker" },
+                output: OutputChannel::File {
+                    file: "worker",
+                    stream: crate::participant::OutputStream::Merged,
+                },
+            },
+        ]
     }
 }
 
@@ -114,6 +126,7 @@ struct Observed {
     docker: Docker,
     plan: CasePlan<FixtureConfig>,
     result: TestResult,
+    record: CaseRecord,
     image_id: String,
     courier: Vec<u8>,
     log_dir: PathBuf,
@@ -126,12 +139,7 @@ impl Observed {
             .unwrap()
     }
     async fn assert_consumer_saw_marker(&self) {
-        assert_eq!(
-            self.result.error.as_ref().unwrap().kind,
-            ErrorKind::Evaluation,
-            "{:?}",
-            self.result.error
-        );
+        assert_eq!(self.result.outcome, TestOutcome::Passed, "{:?}", self.result.error);
         let consumer = self.driver("consumer");
         let saw = timeout(Duration::from_secs(5), async {
             loop {
@@ -146,7 +154,7 @@ impl Observed {
         .await
         .expect("the consumer must record whether the server's marker existed at startup");
         assert_eq!(saw, b"yes\n");
-        assert_eq!(self.result.phase_timings.last().unwrap().phase, "start:consumer");
+        assert_eq!(self.result.phase_timings.last().unwrap().phase, "steps");
     }
 
     async fn assert_consumer_never_started(&self) {
@@ -183,15 +191,28 @@ impl Observed {
 }
 
 async fn with_case<F: Future<Output = ()> + Send + 'static>(
-    participants: &str, check: impl FnOnce(Observed) -> F + Send + 'static,
+    participants: &str, procedure: &str, check: impl FnOnce(Observed) -> F + Send + 'static,
 ) {
-    with_case_on_ports(participants, 20000..=29999, check).await;
+    with_case_on_ports(participants, procedure, 20000..=29999, check).await;
 }
 
 // Runs the case with runner-host ports drawn from `ports`. HTTP scenarios pass a port from `host_ports`,
 // outside the production pool, so concurrent runs on one daemon do not collide.
 async fn with_case_on_ports<F: Future<Output = ()> + Send + 'static>(
-    participants: &str, ports: RangeInclusive<u16>, check: impl FnOnce(Observed) -> F + Send + 'static,
+    participants: &str, procedure: &str, ports: RangeInclusive<u16>, check: impl FnOnce(Observed) -> F + Send + 'static,
+) {
+    with_case_control(participants, procedure, ports, None, check).await;
+}
+
+#[derive(Clone, Copy)]
+enum Stop {
+    Cancel,
+    Deadline,
+}
+
+async fn with_case_control<F: Future<Output = ()> + Send + 'static>(
+    participants: &str, procedure: &str, ports: RangeInclusive<u16>, stop: Option<Stop>,
+    check: impl FnOnce(Observed) -> F + Send + 'static,
 ) {
     let backends = Arc::new(RunBackends::default());
     let docker = airlock::docker::connect().expect("Docker daemon is unavailable; check DOCKER_HOST");
@@ -212,7 +233,7 @@ async fn with_case_on_ports<F: Future<Output = ()> + Send + 'static>(
     };
     let case = CaseLoader::new(registries, FixtureTypes, "fixture-participants")
         .load_content(
-            &format!("timeout: 60s\nsubject_os: [linux]\nparticipants:\n{participants}\nprocedure: [{{step: noop}}]\n"),
+            &format!("timeout: 60s\nsubject_os: [linux]\nparticipants:\n{participants}\nprocedure: {procedure}\n"),
             "case",
             &files.path().join("config.yaml"),
         )
@@ -254,6 +275,11 @@ async fn with_case_on_ports<F: Future<Output = ()> + Send + 'static>(
     let tasks = CaseTasks::new(&cancel);
     let logs = tempfile::tempdir().unwrap();
     let control = CaseControl {
+        record: CaseRecord::default(),
+        deadline: Deadline::after(
+            Budget::Case,
+            Duration::from_secs(if matches!(stop, Some(Stop::Deadline)) { 5 } else { 60 }),
+        ),
         cancel,
         phases: PhaseTracker::default(),
         ledger: ledger.clone(),
@@ -263,11 +289,25 @@ async fn with_case_on_ports<F: Future<Output = ()> + Send + 'static>(
     let test_docker = docker.clone();
     let outcome = tokio::spawn(async move {
         timeout(Duration::from_secs(60), async {
-            let result = run(&plan, &[&Fixture], &inputs, &control).await;
+            let run = run(plan.participants().unwrap(), &[&Fixture], &inputs, &control);
+            let interrupt = async {
+                if matches!(stop, Some(Stop::Cancel)) {
+                    while control.record.running().is_empty() {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    control.cancel.cancel();
+                }
+                std::future::pending::<()>().await;
+            };
+            let result = tokio::select! {
+                result = run => result,
+                () = interrupt => unreachable!("the interruption observer waits for the case"),
+            };
             check(Observed {
                 docker: test_docker,
                 plan,
                 result,
+                record: control.record.clone(),
                 image_id,
                 courier,
                 log_dir: control.log_dir.clone(),
@@ -331,8 +371,8 @@ const FAILED_START: &str = "
 #[tokio::test]
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn a_native_case_creates_its_participants_in_create_order_starts_them_and_reclaim_removes_its_scope() {
-    with_case(CONNECTED, |view| async move {
-        assert_eq!(view.result.error.as_ref().unwrap().kind, ErrorKind::Evaluation);
+    with_case(CONNECTED, "[{step: noop}]", |view| async move {
+        assert_eq!(view.result.outcome, TestOutcome::Passed, "{:?}", view.result.error);
         assert_eq!(
             view.result
                 .phase_timings
@@ -345,7 +385,8 @@ async fn a_native_case_creates_its_participants_in_create_order_starts_them_and_
                 "create:sibling",
                 "create:consumer",
                 "start:peer,sibling",
-                "start:consumer"
+                "start:consumer",
+                "steps"
             ]
         );
         for name in ["consumer", "peer", "sibling"] {
@@ -361,8 +402,8 @@ async fn a_native_case_creates_its_participants_in_create_order_starts_them_and_
 #[tokio::test]
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn a_participant_receives_the_container_id_of_a_participant_created_before_it() {
-    with_case(CONNECTED, |view| async move {
-        assert_eq!(view.result.error.as_ref().unwrap().kind, ErrorKind::Evaluation);
+    with_case(CONNECTED, "[{step: noop}]", |view| async move {
+        assert_eq!(view.result.outcome, TestOutcome::Passed, "{:?}", view.result.error);
         let peer = view.container("peer").await.id.unwrap();
         let env = view.container("consumer").await.config.unwrap().env.unwrap();
         assert!(env.contains(&format!("PEER={peer}")), "{env:?}");
@@ -373,8 +414,8 @@ async fn a_participant_receives_the_container_id_of_a_participant_created_before
 #[tokio::test]
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn each_participant_holds_the_verified_courier_and_its_rendered_case_files() {
-    with_case(FILES, |view| async move {
-        assert_eq!(view.result.error.as_ref().unwrap().kind, ErrorKind::Evaluation);
+    with_case(FILES, "[{step: noop}]", |view| async move {
+        assert_eq!(view.result.outcome, TestOutcome::Passed, "{:?}", view.result.error);
         let peer = view.container("peer").await.id.unwrap();
         for (name, contents) in [("consumer", format!("peer={peer}")), ("peer", "case file".into())] {
             let driver = view.driver(name);
@@ -394,7 +435,7 @@ async fn each_participant_holds_the_verified_courier_and_its_rendered_case_files
 #[tokio::test]
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn a_recipe_naming_a_role_its_type_does_not_declare_fails_creation_naming_the_role() {
-    with_case(UNDECLARED_ROLE, |view| async move {
+    with_case(UNDECLARED_ROLE, "[{step: noop}]", |view| async move {
         let error = view.result.error.unwrap();
         assert_eq!(error.kind, ErrorKind::Setup);
         assert_eq!(
@@ -412,9 +453,10 @@ async fn a_recipe_naming_a_role_its_type_does_not_declare_fails_creation_naming_
 async fn a_participant_that_exits_immediately_still_starts() {
     with_case(
         "  subject: {type: fixture, subject: true, config: {env: {SCRIPT: 'exit 7'}}}",
+        "[{step: noop}]",
         |view| async move {
-            assert_eq!(view.result.error.as_ref().unwrap().kind, ErrorKind::Evaluation);
-            assert_eq!(view.result.phase_timings.last().unwrap().phase, "start:subject");
+            assert_eq!(view.result.outcome, TestOutcome::Passed, "{:?}", view.result.error);
+            assert_eq!(view.result.phase_timings.last().unwrap().phase, "steps");
             assert!(!view
                 .container("subject")
                 .await
@@ -431,7 +473,7 @@ async fn a_participant_that_exits_immediately_still_starts() {
 #[tokio::test]
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn a_participant_that_fails_to_start_is_a_setup_error_in_its_start_phase() {
-    with_case(FAILED_START, |view| async move {
+    with_case(FAILED_START, "[{step: noop}]", |view| async move {
         let error = view.result.error.unwrap();
         assert_eq!(error.kind, ErrorKind::Setup);
         for name in ["first", "second"] {
@@ -445,7 +487,7 @@ async fn a_participant_that_fails_to_start_is_a_setup_error_in_its_start_phase()
 #[tokio::test]
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn a_recipe_naming_a_declared_binary_as_its_image_fails_creation_naming_the_role() {
-    with_case(NON_IMAGE_ROLE, |view| async move {
+    with_case(NON_IMAGE_ROLE, "[{step: noop}]", |view| async move {
         let error = view.result.error.unwrap();
         assert_eq!(error.kind, ErrorKind::Setup);
         assert_eq!(
@@ -505,7 +547,7 @@ async fn a_consumer_starts_only_after_its_servers_endpoint_accepts_tcp_connectio
         &[("READY_TCP", "api")],
         "sleep 1; touch /airlock/server/shared/marker; exec nc -lk -p 8080 -e cat",
     );
-    with_case(&case, |view| async move {
+    with_case(&case, "[{step: noop}]", |view| async move {
         view.assert_consumer_saw_marker().await;
         assert!(view.plan.runner_host_ports("server").is_empty());
     })
@@ -517,7 +559,7 @@ async fn a_consumer_starts_only_after_its_servers_endpoint_accepts_tcp_connectio
 async fn a_consumer_waits_for_its_servers_http_endpoint_to_answer_200_through_a_published_port() {
     let case = readiness_case("api", &[("READY_HTTP", "/ready")], &http_script(200, true));
     let port = host_ports(1)[0];
-    with_case_on_ports(&case, port..=port, |view| async move {
+    with_case_on_ports(&case, "[{step: noop}]", port..=port, |view| async move {
         view.assert_consumer_saw_marker().await;
         let ports = view.plan.runner_host_ports("server");
         assert_eq!(ports.len(), 1);
@@ -546,7 +588,7 @@ async fn an_endpoint_that_never_answers_200_fails_its_consumers_start_within_its
         &http_script(503, false),
     );
     let port = host_ports(1)[0];
-    with_case_on_ports(&case, port..=port, |view| async move {
+    with_case_on_ports(&case, "[{step: noop}]", port..=port, |view| async move {
         view.assert_consumer_never_started().await;
         let expected = "participant 'consumer' cannot start: http-ok on 'api' at '/ready' of participant 'server' \
                         was not ready within 2s: answered HTTP 503";
@@ -575,7 +617,7 @@ async fn a_consumer_waits_for_its_servers_socket_and_file() {
             ],
             script,
         );
-        with_case(&case, |view| async move {
+        with_case(&case, "[{step: noop}]", |view| async move {
             view.assert_consumer_saw_marker().await;
         })
         .await;
@@ -586,7 +628,7 @@ async fn a_consumer_waits_for_its_servers_socket_and_file() {
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn a_server_that_exits_before_accepting_fails_its_consumers_start_without_waiting_out_its_bound() {
     let case = readiness_case("api", &[("READY_TCP", "api")], "exit 3");
-    with_case(&case, |view| async move {
+    with_case(&case, "[{step: noop}]", |view| async move {
         view.assert_consumer_never_started().await;
         let message = &view.result.error.as_ref().unwrap().message;
         assert!(
@@ -606,8 +648,9 @@ async fn a_started_participants_output_reaches_its_log_files_while_it_runs() {
     with_case(
         "  subject: {type: fixture, subject: true, \
          config: {env: {SCRIPT: 'echo out-1; echo err-1 >&2; exec sleep 60'}}}",
+        "[{step: noop}]",
         |view| async move {
-            assert_eq!(view.result.error.as_ref().unwrap().kind, ErrorKind::Evaluation);
+            assert_eq!(view.result.outcome, TestOutcome::Passed, "{:?}", view.result.error);
             assert_eq!(view.output("subject", "stdout", "out-1").await, "out-1\n");
             assert_eq!(view.output("subject", "stderr", "err-1").await, "err-1\n");
             assert_eq!(view.container("subject").await.state.unwrap().running, Some(true));
@@ -621,7 +664,7 @@ async fn a_started_participants_output_reaches_its_log_files_while_it_runs() {
 async fn a_consumer_waiting_for_an_http_endpoint_stops_when_its_server_exits() {
     let case = readiness_case("api", &[("READY_HTTP", "/ready")], "echo bye; exit 3");
     let port = host_ports(1)[0];
-    with_case_on_ports(&case, port..=port, |view| async move {
+    with_case_on_ports(&case, "[{step: noop}]", port..=port, |view| async move {
         view.assert_consumer_never_started().await;
         let message = &view.result.error.as_ref().unwrap().message;
         assert!(
@@ -643,6 +686,7 @@ async fn a_started_participants_output_is_observed_even_when_its_sibling_fails_t
             "  first: {type: fixture, subject: true, config: {env: {BAD_START: '1'}}}\n",
             "  second: {type: fixture, config: {env: {SCRIPT: 'echo started; exec sleep 60'}}}",
         ),
+        "[{step: noop}]",
         |view| async move {
             assert_eq!(view.result.error.as_ref().unwrap().kind, ErrorKind::Setup);
             assert!(view
@@ -667,8 +711,151 @@ async fn a_consumer_starts_only_after_its_servers_output_matches() {
         &[("READY_OUTPUT", "^listening$")],
         "sleep 1; touch /airlock/server/shared/marker; echo listening; exec sleep 60",
     );
-    with_case(&case, |view| async move {
+    with_case(&case, "[{step: noop}]", |view| async move {
         view.assert_consumer_saw_marker().await;
     })
     .await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn a_passing_procedure_runs_after_start_and_passes_the_case() {
+    with_case(
+        "  subject: {type: fixture, subject: true, config: {env: {SCRIPT: 'echo marker; exec sleep 60'}}}",
+        "[{step: marker, on: subject}, {parallel: [{step: noop}, {step: probe, on: subject, path: /panoramic/courier}]}]",
+        |view| async move {
+            assert_eq!(view.result.outcome, TestOutcome::Passed);
+            assert!(view.record.decided());
+            assert_eq!(view.result.phase_timings.iter().map(|phase| phase.phase.as_str()).collect::<Vec<_>>(),
+                ["prepare", "create:subject", "start:subject", "steps"]);
+            assert_eq!(view.result.assertion_results.iter().map(|step| (step.step, step.member, step.status)).collect::<Vec<_>>(),
+                [(0, None, StepStatus::Passed), (1, Some(0), StepStatus::Passed), (1, Some(1), StepStatus::Passed)]);
+        },
+    ).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn a_failing_step_fails_the_case_and_leaves_later_steps_not_run() {
+    with_case(
+        "  subject: {type: fixture, subject: true}",
+        "[{step: probe, on: subject, path: /missing}, {step: noop}]",
+        |view| async move {
+            assert_eq!(view.result.outcome, TestOutcome::Failed);
+            assert!(view.record.decided());
+            assert_eq!(
+                view.result
+                    .assertion_results
+                    .iter()
+                    .map(|step| step.status)
+                    .collect::<Vec<_>>(),
+                [StepStatus::Failed, StepStatus::NotRun]
+            );
+            assert_eq!(view.result.assertion_results[0].message, "file '/missing' is missing");
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn a_step_reaches_its_servers_endpoint_through_the_planned_runner_host_route() {
+    let participants = readiness_case("api", &[("READY_TCP", "api")], "exec nc -lk -p 8080 -e cat");
+    with_case(
+        &participants,
+        "[{step: reach, endpoint: server.api}]",
+        |view| async move {
+            assert_eq!(
+                view.result.outcome,
+                TestOutcome::Passed,
+                "{:?}",
+                view.result.assertion_results
+            );
+            assert_eq!(view.result.assertion_results[0].name, "reach");
+            assert_eq!(view.result.assertion_results[0].message, "endpoint is listening");
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn a_step_resolves_a_late_fact_in_its_path_when_it_runs() {
+    with_case(
+        "  subject: {type: fixture, subject: true, config: {env: {SCRIPT: 'touch /airlock/subject/shared/$(hostname -i); echo marker; exec sleep 60'}}}",
+        "[{step: marker, on: subject}, {step: probe, on: subject, path: '{{subject.facts.shared_dir}}/{{subject.late.ip}}'}]",
+        |view| async move {
+            assert_eq!(view.result.outcome, TestOutcome::Passed, "{:?}", view.result.assertion_results);
+            assert_eq!(view.result.assertion_results.len(), 2);
+            assert!(view.result.assertion_results.iter().all(|step| step.status == StepStatus::Passed));
+        },
+    ).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn a_step_waiting_for_a_process_without_an_exit_record_is_errored() {
+    with_case(
+        "  subject: {type: fixture, subject: true, config: {env: {SCRIPT: 'exit 0'}}}",
+        "[{step: probe, on: subject, process: worker}, {step: noop}]",
+        |view| async move {
+            assert_eq!(view.result.outcome, TestOutcome::Errored);
+            assert_eq!(view.result.error.as_ref().unwrap().kind, ErrorKind::Evaluation);
+            assert_eq!(view.result.assertion_results[0].status, StepStatus::Errored);
+            assert_eq!(
+                view.result.assertion_results[0].message,
+                "participant 'subject' stopped without an exit record for process 'worker'"
+            );
+            assert_eq!(view.result.assertion_results[1].status, StepStatus::NotRun);
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn a_step_reading_output_with_a_failed_capture_is_errored() {
+    with_case(
+        "  subject: {type: fixture, subject: true, config: {env: {SCRIPT: 'mkdir /airlock/subject/log/worker; exit 0'}}}",
+        "[{step: marker, on: subject}]",
+        |view| async move {
+            assert_eq!(view.result.outcome, TestOutcome::Errored);
+            assert_eq!(view.result.assertion_results[0].status, StepStatus::Errored);
+            assert!(view.result.assertion_results[0].message.contains("worker"), "{:?}", view.result.assertion_results);
+        },
+    ).await;
+}
+
+async fn interrupted_procedure(stop: Stop) {
+    with_case_control(
+        "  subject: {type: fixture, subject: true}",
+        "[{step: marker, on: subject}, {step: noop}]",
+        20000..=29999,
+        Some(stop),
+        |view| async move {
+            assert!(!view.record.decided());
+            assert_eq!(
+                view.result
+                    .assertion_results
+                    .iter()
+                    .map(|step| step.status)
+                    .collect::<Vec<_>>(),
+                [StepStatus::Interrupted, StepStatus::NotRun]
+            );
+            assert_eq!(view.result.phase_timings.last().unwrap().phase, "steps");
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn cancelling_a_running_procedure_interrupts_its_step_and_leaves_the_case_undecided() {
+    interrupted_procedure(Stop::Cancel).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn the_case_deadline_interrupts_a_running_step() {
+    interrupted_procedure(Stop::Deadline).await;
 }

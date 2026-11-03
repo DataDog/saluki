@@ -70,7 +70,13 @@ pub(super) fn check_step_references(
                     }),
                     Need::Handle(_) | Need::Process(_, _) => continue,
                 };
-                result.map_err(|reason| format!("step {} {reason}", step_label(index, parallel.then_some(member))))?;
+                result.map_err(|reason| {
+                    format!(
+                        "step {} '{}' {reason}",
+                        step_label(index, parallel.then_some(member)),
+                        step.name()
+                    )
+                })?;
             }
         }
     }
@@ -130,7 +136,7 @@ mod tests {
                         && !matches!(kind, EndpointKind::Http | EndpointKind::Grpc)
                     {
                         assert_eq!(compile_with(&mut planner, &yaml, Os::Linux).err().unwrap().to_string(), format!(
-                            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 1 reaches endpoint '{endpoint}' of participant 'subject', which the runner host cannot reach: request/response operations require an http or grpc endpoint"));
+                            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 1 'reach' reaches endpoint '{endpoint}' of participant 'subject', which the runner host cannot reach: request/response operations require an http or grpc endpoint"));
                         assert_eq!(planner.ports.allocate(), Ok(20000));
                         continue;
                     }
@@ -314,7 +320,7 @@ mod tests {
             .replace("procedure: [", "procedure: [{step: noop}, {parallel: [{step: noop}, ")
             .replace("endpoint: subject.tcp}]", "endpoint: subject.tcp}]}]");
         assert_eq!(compile(&yaml, Os::Linux).err().unwrap().to_string(),
-            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 2.2 reaches endpoint 'tcp' of participant 'subject', which it does not serve; it serves datagram, grpc, http, pipe, stream, udp");
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 2.2 'reach' reaches endpoint 'tcp' of participant 'subject', which it does not serve; it serves datagram, grpc, http, pipe, stream, udp");
     }
 
     #[test]
@@ -340,7 +346,7 @@ mod tests {
             ),
         ] {
             assert_eq!(compile(&reach_case(os, realization, endpoint), os).err().unwrap().to_string(), format!(
-                "case 'alpha' in cases/alpha/config.yaml: on subject OS '{}', step 1 reaches endpoint '{endpoint}' of participant 'subject', which the runner host cannot reach: {reason}", os.name()));
+                "case 'alpha' in cases/alpha/config.yaml: on subject OS '{}', step 1 'reach' reaches endpoint '{endpoint}' of participant 'subject', which the runner host cannot reach: {reason}", os.name()));
         }
     }
 
@@ -376,7 +382,7 @@ mod tests {
                 }))
             );
         }
-        assert_eq!(plan.runner_host_routes.len(), 4);
+        assert_eq!(plan.participants.as_ref().unwrap().planned.runner_host_routes.len(), 4);
         assert_eq!(
             plan.runner_host_ports("server"),
             vec![RunnerHostPort {
@@ -437,7 +443,7 @@ mod tests {
                 .replace("subject.facts.file", &format!("{participant}.facts.{fact}"));
             let message = compile(&yaml, Os::Linux).err().unwrap().to_string();
             assert_eq!(message, format!(
-                "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 1 references fact '{fact}' of participant '{participant}', which type '{participant_type}' does not provide as linux-container on linux; it provides it as none"
+                "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 1 'probe' references fact '{fact}' of participant '{participant}', which type '{participant_type}' does not provide as linux-container on linux; it provides it as none"
             ));
         }
     }
@@ -455,7 +461,7 @@ mod tests {
             let step_error = compile(&step_yaml, Os::MacOs).err().unwrap().to_string();
             let config_error = compile(&config_yaml, Os::MacOs).err().unwrap().to_string();
             let step_reason = step_error
-                .strip_prefix("case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', step 1 ")
+                .strip_prefix("case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', step 1 'probe' ")
                 .unwrap();
             let config_reason = config_error
                 .strip_prefix(&format!("case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'subject' of type 'server' as host-process-group on macos environment variable 'KEY' '{{{{ subject.facts.{fact} }}}}' "))
@@ -476,7 +482,7 @@ mod tests {
         let step_error = compile(&step_yaml, Os::MacOs).err().unwrap().to_string();
         let config_error = compile(&config_yaml, Os::MacOs).err().unwrap().to_string();
         let step_reason = step_error
-            .strip_prefix("case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', step 1 ")
+            .strip_prefix("case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', step 1 'probe' ")
             .unwrap();
         let config_reason = config_error
             .strip_prefix("case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', participant 'subject' of type 'server' as host-process-group on macos environment variable 'KEY' '{{ subject.late.container_id }}' ")
@@ -494,7 +500,7 @@ mod tests {
                     .unwrap()
                     .to_string();
                 assert_eq!(message,
-                    "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', step 1 references fact 'file' of participant 'subject', which type 'server' does not provide as host-process-group on macos; it provides it as linux-container on linux, windows-container on windows"
+                    "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', step 1 'probe' references fact 'file' of participant 'subject', which type 'server' does not provide as host-process-group on macos; it provides it as linux-container on linux, windows-container on windows"
                 );
             }
         }
@@ -510,7 +516,7 @@ mod tests {
             .replace("subject.facts.file", "subject.late.container_id");
         for os in [Os::Linux, Os::MacOs, Os::Windows] {
             assert_eq!(compile(&yaml, os).err().unwrap().to_string(),
-                "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', step 1 references late fact 'container_id' of participant 'subject', which a host-process-group does not have; a host-process-group has ip"
+                "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', step 1 'probe' references late fact 'container_id' of participant 'subject', which a host-process-group does not have; a host-process-group has ip"
             );
         }
         assert!(compile(&yaml.replace("[linux, macos]", "[linux, windows]"), Os::Linux)
@@ -575,7 +581,7 @@ mod tests {
             .unwrap()
             .remove(0);
         assert_eq!(Planner::with_run(registries, "testrun0").compile(case, Os::Linux).err().unwrap().to_string(),
-            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 1 references late fact 'pod_uid' of participant 'subject', which a linux-container does not have; a linux-container has container_id, ip"
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 1 'probe' references late fact 'pod_uid' of participant 'subject', which a linux-container does not have; a linux-container has container_id, ip"
         );
     }
 
@@ -600,7 +606,7 @@ mod tests {
             let message = compile(&yaml, Os::MacOs).err().unwrap().to_string();
             assert!(
                 message.contains(&format!(
-                    "on subject OS 'macos', step {label} references {kind} '{fact}' of participant 'subject'"
+                    "on subject OS 'macos', step {label} 'probe' references {kind} '{fact}' of participant 'subject'"
                 )),
                 "{message}"
             );
@@ -628,7 +634,7 @@ mod tests {
             .unwrap()
             .to_string();
         assert_eq!(message,
-            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 1 references fact 'file' of participant 'subject', which type 'pod-server' does not provide as kubernetes-pod on linux; it provides it as linux-container on linux"
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 1 'probe' references fact 'file' of participant 'subject', which type 'pod-server' does not provide as kubernetes-pod on linux; it provides it as linux-container on linux"
         );
         let case = loader
             .load_content(
@@ -663,7 +669,7 @@ mod tests {
             .unwrap()
             .to_string();
         assert_eq!(message,
-            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', step 1 references fact 'file' of participant 'other', which type 'server' does not provide as host-process-group on macos; it provides it as linux-container on linux, windows-container on windows"
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'macos', step 1 'probe' references fact 'file' of participant 'other', which type 'server' does not provide as host-process-group on macos; it provides it as linux-container on linux, windows-container on windows"
         );
     }
 
@@ -675,7 +681,7 @@ mod tests {
             .replace(minimal_procedure!(), "procedure:\n  - {step: probe, on: subject, path: '{{ subject.facts.file }}'}\n  - parallel:\n    - {step: probe, on: subject}\n    - {step: probe, on: subject, path: '{{ other.facts.file }}'}\n  - {step: probe, on: subject, path: '{{ other.facts.file }}'}");
         let message = compile(&yaml, Os::MacOs).err().unwrap().to_string();
         assert!(
-            message.contains("on subject OS 'linux', step 2.2 references fact 'file' of participant 'other'"),
+            message.contains("on subject OS 'linux', step 2.2 'probe' references fact 'file' of participant 'other'"),
             "{message}"
         );
         let message = compile(&yaml.replace("{{ other.facts.file }}", "literal"), Os::Linux)
@@ -683,7 +689,7 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(
-            message.contains("on subject OS 'macos', step 1 references fact 'file' of participant 'subject'"),
+            message.contains("on subject OS 'macos', step 1 'probe' references fact 'file' of participant 'subject'"),
             "{message}"
         );
     }

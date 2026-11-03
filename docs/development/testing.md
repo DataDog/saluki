@@ -50,6 +50,8 @@ Output readiness tests check that consumers wait for a matching line from the de
 responses through published TCP ports, courier probes of published ports with no listener, explicit loopback bindings,
 held-port startup failures, and courier routes to exited participants. Container probes and raw sends run inside the
 server because port proxies can accept connections even when the server has no listener.
+Native procedure tests cover `passed`, `failed` and `errored` steps, fail-fast, endpoint routes, late-fact resolution,
+missing process exit records, capture failures, cancellation and case deadlines.
 They are ignored by default. Run them with `make test-panoramic-daemon`, which builds the Linux courier first.
 `PANORAMIC_TEST_IMAGE` defaults to `alpine:latest`; load it first, because these tests never pull images.
 They fail if the daemon, image or courier is missing.
@@ -205,8 +207,12 @@ it arrives, keeping the streams separate. Each process declares either container
 log directory. File output reaches `<process>.stdout.log`, `<process>.stderr.log` or `<process>.log` for merged streams;
 a final read after exit appends bytes the follower missed. Lines carry their participant, process, stream and receipt
 time. Output readiness waits for a regex match in the named process's lines and fails on that process's capture error.
-The runner stops these tasks before reclaiming resources. Native Linux container runs end after startup with an
-evaluation error. Each case keeps its chosen route.
+After the start levels, native Linux container cases run their procedure in the `steps` phase, using the same step
+budgets, case deadline, parallel blocks and fail-fast behavior as the integration runner. Steps receive the started
+participants' primitives, exit and output observations, planned routes, and early and late facts; late facts in step
+fields resolve when the step runs. The registered log and file steps report an evaluation error on native participants
+until their native execution is implemented. The runner stops observation tasks before reclaiming resources.
+Each case keeps its chosen route.
 
 The integration runner's translation supports this subset of the schema:
 

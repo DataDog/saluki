@@ -62,6 +62,37 @@ mod tests {
     use super::*;
     use crate::test_support::valid_fields;
 
+    #[tokio::test]
+    async fn every_registered_step_reports_errored_on_native_participants() {
+        for factory in REGISTERED_STEPS {
+            let report = panoramic_core::step::test_support::run_step(*factory, &valid_fields(factory.name())).await;
+            assert_eq!(report.status, panoramic_core::record::AssertionStatus::Errored);
+            assert_eq!(
+                report.message,
+                format!(
+                    "step '{}' cannot run on natively executed participants yet",
+                    factory.name()
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn every_registered_step_uses_its_declared_name_and_budget() {
+        for factory in REGISTERED_STEPS {
+            let duration_field = if factory.name() == "log_not_contains" {
+                "during"
+            } else {
+                "timeout"
+            };
+            let mut fields = valid_fields(factory.name());
+            fields.insert(duration_field.into(), Value::String("7s".into()));
+            let step = factory.build(&fields).unwrap();
+            assert_eq!(step.name(), factory.name());
+            assert_eq!(step.budget(), std::time::Duration::from_secs(7));
+        }
+    }
+
     #[test]
     fn registered_steps_have_unique_names_in_sorted_order() {
         let names: Vec<_> = REGISTERED_STEPS.iter().map(|factory| factory.name()).collect();

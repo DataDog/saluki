@@ -1,8 +1,13 @@
 //! Steps that search a participant's output for a pattern.
 
+use std::time::Duration;
+
+use async_trait::async_trait;
 use panoramic_core::case::CaseDuration;
-use panoramic_core::step::{decode_fields, Need, Step, StepFactory, StepFields};
+use panoramic_core::record::{AssertionStatus, StepReport};
+use panoramic_core::step::{decode_fields, Need, Step, StepContext, StepFactory, StepFields};
 use serde::Deserialize;
+use tokio::time::Instant;
 
 use super::check_pattern;
 
@@ -32,7 +37,22 @@ impl LogContains {
     pub const NAME: &'static str = "log_contains";
 }
 
+#[async_trait]
 impl Step for LogContains {
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+    fn budget(&self) -> Duration {
+        self.timeout.into()
+    }
+    async fn run(&self, _cx: &StepContext<'_>) -> StepReport {
+        StepReport::new(
+            Instant::now(),
+            AssertionStatus::Errored,
+            format!("step '{}' cannot run on natively executed participants yet", Self::NAME),
+        )
+    }
+
     fn needs(&self) -> Vec<Need> {
         match &self.process {
             Some(process) => vec![Need::Process(self.on.clone(), process.clone())],
@@ -67,7 +87,22 @@ impl LogNotContains {
     pub const NAME: &'static str = "log_not_contains";
 }
 
+#[async_trait]
 impl Step for LogNotContains {
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+    fn budget(&self) -> Duration {
+        self.during.into()
+    }
+    async fn run(&self, _cx: &StepContext<'_>) -> StepReport {
+        StepReport::new(
+            Instant::now(),
+            AssertionStatus::Errored,
+            format!("step '{}' cannot run on natively executed participants yet", Self::NAME),
+        )
+    }
+
     fn needs(&self) -> Vec<Need> {
         match &self.process {
             Some(process) => vec![Need::Process(self.on.clone(), process.clone())],

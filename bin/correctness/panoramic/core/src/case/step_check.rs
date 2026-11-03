@@ -389,6 +389,7 @@ mod tests {
             ),
         ] {
             let expected = Probe {
+                timeout: crate::case::fixtures::step_timeout(),
                 on: participant.into(),
                 process: process.map(String::from),
                 values,

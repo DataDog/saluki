@@ -9,11 +9,11 @@ use crate::{
         template::{Reference, Template},
     },
     participant::RenderedConfig,
-    plan::CasePlan,
+    plan::ParticipantPlan,
 };
 
-pub(super) fn render<C>(
-    plan: &CasePlan<C>, participant: &str, created: &BTreeMap<String, String>,
+pub(super) fn render(
+    plan: ParticipantPlan<'_>, participant: &str, created: &BTreeMap<String, String>,
 ) -> Result<RenderedConfig, String> {
     let config = plan
         .effective_config(participant)
@@ -65,10 +65,9 @@ pub(super) fn render<C>(
     })?;
     for (name, source) in &config.files {
         let bytes = if source.template {
-            substitute(plan.case().file_templates().get(&source.from), ConfigField::File(name))?.into_bytes()
+            substitute(plan.templates().get(&source.from), ConfigField::File(name))?.into_bytes()
         } else {
             let path = plan
-                .case()
                 .source()
                 .parent()
                 .expect("case sources have a directory")
@@ -104,7 +103,7 @@ mod tests {
         endpoint::{ConsumedEndpoint, Endpoint},
         layout::{Os, Realization, RealizationKind},
         participant::{EffectiveConfig, ParticipantType},
-        plan::Planner,
+        plan::{CasePlan, Planner},
     };
 
     struct FileClient;
@@ -187,7 +186,7 @@ mod tests {
         let plan = compile(&config, &source);
         std::fs::remove_file(template_path).unwrap();
         let created = BTreeMap::from([("server".into(), "created-id".into())]);
-        let rendered = render(&plan, "subject", &created).unwrap();
+        let rendered = render(plan.participants().unwrap(), "subject", &created).unwrap();
         let expected = concat!(
             "created-id|/logs/output.log|http://server:8080|server|8080|",
             "http://server:8080|server|8080|/run/input.sock|unix:///run/input.sock"
@@ -220,7 +219,7 @@ mod tests {
             .unwrap();
             let plan = compile(config, &source);
             assert_eq!(
-                render(&plan, "subject", &BTreeMap::new()).err().unwrap(),
+                render(plan.participants().unwrap(), "subject", &BTreeMap::new()).err().unwrap(),
                 format!("participant 'subject' {field}: internal error: no creation-time value for '{{{{server.late.container_id}}}}'")
             );
         }
@@ -229,7 +228,7 @@ mod tests {
     #[test]
     fn rendering_keeps_the_participants_own_late_facts_as_written_for_its_type() {
         let plan = compile("{}", Path::new("cases/alpha/config.yaml"));
-        let rendered = render(&plan, "server", &BTreeMap::new()).unwrap();
+        let rendered = render(plan.participants().unwrap(), "server", &BTreeMap::new()).unwrap();
         assert_eq!(rendered.env["OWN"], "{{  self.late.ip  }}/{{server.late.ip}}");
     }
 
@@ -241,17 +240,21 @@ mod tests {
         let bytes = b"\xff\0{{not a reference}}";
         std::fs::write(&path, bytes).unwrap();
         let plan = compile("{files: {settings.yaml: input.bin}}", &source);
-        let rendered = render(&plan, "subject", &BTreeMap::new()).unwrap();
+        let rendered = render(plan.participants().unwrap(), "subject", &BTreeMap::new()).unwrap();
         assert_eq!(rendered.files["settings.yaml"], bytes);
         std::fs::remove_file(&path).unwrap();
-        let error = render(&plan, "subject", &BTreeMap::new()).err().unwrap();
+        let error = render(plan.participants().unwrap(), "subject", &BTreeMap::new())
+            .err()
+            .unwrap();
         assert!(error.starts_with(&format!(
             "participant 'subject' file 'settings.yaml' ({}): ",
             path.display()
         )));
         std::fs::create_dir(&path).unwrap();
         assert_eq!(
-            render(&plan, "subject", &BTreeMap::new()).err().unwrap(),
+            render(plan.participants().unwrap(), "subject", &BTreeMap::new())
+                .err()
+                .unwrap(),
             format!(
                 "participant 'subject' file 'settings.yaml' ({}) is a directory; native creation places regular files",
                 path.display()
@@ -261,7 +264,9 @@ mod tests {
         {
             std::fs::remove_dir(&path).unwrap();
             let _socket = std::os::unix::net::UnixListener::bind(&path).unwrap();
-            let error = render(&plan, "subject", &BTreeMap::new()).err().unwrap();
+            let error = render(plan.participants().unwrap(), "subject", &BTreeMap::new())
+                .err()
+                .unwrap();
             assert!(error.ends_with("is not a regular file"));
         }
     }

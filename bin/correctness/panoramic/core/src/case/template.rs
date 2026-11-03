@@ -8,12 +8,15 @@ use crate::{backend::LateFact, step::Need};
 
 /// Text containing literals and participant fact, late-fact, endpoint or connection references.
 ///
-/// [`FromStr`] parses every reference form. Deserializing reads a step field, which accepts only
-/// facts and late facts of named participants.
+/// [`FromStr`] parses every reference form.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Template {
+pub(crate) struct Template {
     segments: Vec<Segment>,
 }
+
+/// A step field containing literals and facts or late facts of named participants.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StepTemplate(pub(crate) Template);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Segment {
@@ -206,26 +209,6 @@ impl Template {
         Ok(resolved)
     }
 
-    /// Reports named fact and late-fact needs for templates read from step fields.
-    /// Preserves text order and duplicates.
-    ///
-    /// # Panics
-    ///
-    /// Panics during iteration if a reference is not a fact or late fact of a named participant.
-    pub fn needs(&self) -> impl Iterator<Item = Need> + '_ {
-        self.references().map(|reference| match reference {
-            Reference::Fact {
-                participant: ParticipantRef::Named(participant),
-                fact,
-            } => Need::Fact(participant.clone(), fact.clone()),
-            Reference::Late {
-                participant: ParticipantRef::Named(participant),
-                fact,
-            } => Need::Late(participant.clone(), *fact),
-            _ => unreachable!("step templates reference facts and late facts of named participants"),
-        })
-    }
-
     fn check_step_field(&self) -> Result<(), String> {
         let allowed = "step fields accept only fact and late fact references to named participants";
         let name_participant = "a step has no 'self'; name the participant, as in";
@@ -259,35 +242,39 @@ impl Template {
         }
         Ok(())
     }
+}
+
+impl StepTemplate {
+    /// Reports named fact and late-fact needs for templates read from step fields.
+    /// Preserves text order and duplicates.
+    pub fn needs(&self) -> impl Iterator<Item = Need> + '_ {
+        self.0.references().filter_map(|reference| match reference {
+            Reference::Fact {
+                participant: ParticipantRef::Named(participant),
+                fact,
+            } => Some(Need::Fact(participant.clone(), fact.clone())),
+            Reference::Late {
+                participant: ParticipantRef::Named(participant),
+                fact,
+            } => Some(Need::Late(participant.clone(), *fact)),
+            _ => None,
+        })
+    }
 
     /// Substitutes early facts, failing on the first unavailable reference or if the result contains `{{`.
     pub fn resolve<'a>(&self, fact: impl Fn(&str, &str) -> Option<&'a str>) -> Result<String, String> {
-        let mut resolved = String::new();
-        for segment in &self.segments {
-            match segment {
-                Segment::Literal(text) => resolved.push_str(text),
-                Segment::Reference { written, reference } => match reference {
-                    Reference::Fact {
-                        participant: ParticipantRef::Named(participant),
-                        fact: name,
-                    } => {
-                        let value = fact(participant, name)
-                            .ok_or_else(|| format!("cannot resolve fact reference '{written}'"))?;
-                        resolved.push_str(value);
-                    }
-                    Reference::Late { .. } => {
-                        return Err(format!(
-                            "cannot resolve late fact reference '{written}' before the participant runs"
-                        ))
-                    }
-                    _ => return Err(format!("cannot resolve '{written}'")),
-                },
-            }
-        }
-        if resolved.contains("{{") {
-            return Err("resolved template contains a template reference ('{{')".into());
-        }
-        Ok(resolved)
+        self.0.substitute(|written, reference| match reference {
+            Reference::Fact {
+                participant: ParticipantRef::Named(participant),
+                fact: name,
+            } => fact(participant, name)
+                .map(|value| Some(value.to_owned()))
+                .ok_or_else(|| format!("cannot resolve fact reference '{written}'")),
+            Reference::Late { .. } => Err(format!(
+                "cannot resolve late fact reference '{written}' before the participant runs"
+            )),
+            _ => Err(format!("cannot resolve '{written}'")),
+        })
     }
 }
 
@@ -318,8 +305,18 @@ impl FromStr for Template {
     }
 }
 
+impl FromStr for StepTemplate {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let template: Template = text.parse()?;
+        template.check_step_field()?;
+        Ok(Self(template))
+    }
+}
+
 /// Reads a step field, accepting only facts and late facts of named participants.
-impl<'de> Deserialize<'de> for Template {
+impl<'de> Deserialize<'de> for StepTemplate {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -327,7 +324,6 @@ impl<'de> Deserialize<'de> for Template {
         let template: Self = String::deserialize(deserializer)?
             .parse()
             .map_err(serde::de::Error::custom)?;
-        template.check_step_field().map_err(serde::de::Error::custom)?;
         Ok(template)
     }
 }
@@ -339,7 +335,7 @@ mod tests {
 
     #[derive(Debug, Deserialize)]
     struct Fields {
-        path: Template,
+        path: StepTemplate,
     }
 
     #[test]
@@ -415,8 +411,8 @@ mod tests {
     #[test]
     fn literal_templates_resolve_verbatim_including_backslashes_and_single_braces() {
         for text in ["", "/logs/output.log", r"C:\logs\{output}.log", "}text{", "text }}"] {
-            let template: Template = text.parse().unwrap();
-            assert!(template.references().next().is_none());
+            let template: StepTemplate = text.parse().unwrap();
+            assert!(template.0.references().next().is_none());
             assert_eq!(template.resolve(|_, _| None).unwrap(), text);
         }
     }
@@ -490,7 +486,7 @@ mod tests {
 
     #[test]
     fn literals_and_repeated_references_resolve_in_text_order() {
-        let template: Template = "prefix/{{ other.facts.dir }}/{{subject.facts.file}}/{{ other.facts.dir }}.log"
+        let template: StepTemplate = "prefix/{{ other.facts.dir }}/{{subject.facts.file}}/{{ other.facts.dir }}.log"
             .parse()
             .unwrap();
         assert_eq!(
@@ -657,24 +653,6 @@ mod tests {
     }
 
     #[test]
-    fn needs_panics_for_references_outside_step_fields() {
-        for reference in [
-            "self.facts.file",
-            "self.late.ip",
-            "self.endpoints.api.url",
-            "subject.endpoints.api.url",
-            "self.connections.api.url",
-        ] {
-            let template: Template = format!("{{{{ {reference} }}}}").parse().unwrap();
-            let panic = std::panic::catch_unwind(|| template.needs().collect::<Vec<_>>()).unwrap_err();
-            assert_eq!(
-                panic.downcast_ref::<&str>().copied(),
-                Some("internal error: entered unreachable code: step templates reference facts and late facts of named participants")
-            );
-        }
-    }
-
-    #[test]
     fn template_fields_require_yaml_strings_and_name_parse_errors() {
         for (yaml, expected) in [
             ("path: true", "path: invalid type: boolean `true`, expected a string"),
@@ -693,13 +671,8 @@ mod tests {
 
     #[test]
     fn resolution_substitutes_facts_and_rejects_late_facts_by_name() {
-        for reference in [
-            "subject.late.ip",
-            "other.late.container_id",
-            "other.late.pod_uid",
-            "self.late.ip",
-        ] {
-            let template: Template =
+        for reference in ["subject.late.ip", "other.late.container_id", "other.late.pod_uid"] {
+            let template: StepTemplate =
                 format!("{{{{ subject.facts.file }}}}/{{{{{reference}}}}}/{{{{ other.late.ip }}}}")
                     .parse()
                     .unwrap();
@@ -712,30 +685,14 @@ mod tests {
                 format!("cannot resolve late fact reference '{{{{{reference}}}}}' before the participant runs")
             );
         }
-        let template: Template = "{{subject.facts.file}}".parse().unwrap();
+        let template: StepTemplate = "{{subject.facts.file}}".parse().unwrap();
         assert_eq!(template.resolve(|_, _| Some("logs")).unwrap(), "logs");
-    }
-
-    #[test]
-    fn resolution_rejects_holder_facts_and_addresses() {
-        for body in [
-            "self.facts.file",
-            "self.endpoints.api.url",
-            "subject.endpoints.api.port",
-            "self.connections.api.path",
-        ] {
-            let template: Template = format!("{{{{{body}}}}}").parse().unwrap();
-            assert_eq!(
-                template.resolve(|_, _| Some("unused")).unwrap_err(),
-                format!("cannot resolve '{{{{{body}}}}}'")
-            );
-        }
     }
 
     #[test]
     fn resolution_names_the_first_missing_reference() {
         for reference in ["{{ other.facts.b }}", "{{other.facts.b}}", "{{  other.facts.b  }}"] {
-            let template: Template = format!("{{{{ subject.facts.a }}}}{reference}{{{{ subject.facts.c }}}}")
+            let template: StepTemplate = format!("{{{{ subject.facts.a }}}}{reference}{{{{ subject.facts.c }}}}")
                 .parse()
                 .unwrap();
             assert_eq!(
@@ -753,10 +710,10 @@ mod tests {
             ("{{ subject.facts.file }}", "{{ unresolved }}"),
             ("{{ subject.facts.file }}{", "{"),
         ] {
-            let template: Template = text.parse().unwrap();
+            let template: StepTemplate = text.parse().unwrap();
             assert_eq!(
                 template.resolve(|_, _| Some(value)).unwrap_err(),
-                "resolved template contains a template reference ('{{')"
+                "substitution would form a template delimiter ('{{')"
             );
         }
     }

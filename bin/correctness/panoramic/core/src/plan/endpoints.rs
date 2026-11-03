@@ -317,7 +317,7 @@ mod tests {
                 plan.effective_config("client").unwrap().env["UPSTREAM_URL"],
                 format!("http://127.0.0.1:{port}")
             );
-            assert!(plan.runner_host_ports.is_empty());
+            assert!(plan.participants.as_ref().unwrap().planned.runner_host_ports.is_empty());
         }
         assert_eq!(planner.ports.allocate(), Ok(20004));
     }
@@ -387,7 +387,7 @@ participants:
             "http://127.0.0.1:20004"
         );
         assert_eq!(
-            plan.runner_host_ports,
+            plan.participants.as_ref().unwrap().planned.runner_host_ports,
             BTreeMap::from([
                 (("container".into(), "api".into()), 20004),
                 (("container".into(), "metrics".into()), 20005),

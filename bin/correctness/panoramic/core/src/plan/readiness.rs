@@ -553,7 +553,16 @@ participants:
                 ),
             ]
         );
-        assert_eq!(plan.start_gates.keys().collect::<Vec<_>>(), ["consumer"]);
+        assert_eq!(
+            plan.participants
+                .as_ref()
+                .unwrap()
+                .planned
+                .start_gates
+                .keys()
+                .collect::<Vec<_>>(),
+            ["consumer"]
+        );
         assert_eq!(plan.start_order().unwrap(), [vec!["alpha", "zeta"], vec!["consumer"]]);
         assert!(plan.runner_host_ports("zeta").is_empty());
     }
@@ -561,7 +570,7 @@ participants:
     #[test]
     fn an_endpoint_without_evidence_adds_no_gate() {
         let plan = compile(&ready_case(""), Os::Linux).unwrap().unwrap();
-        assert!(plan.start_gates.is_empty());
+        assert!(plan.participants.as_ref().unwrap().planned.start_gates.is_empty());
         for name in ["consumer", "server", "unknown"] {
             assert!(plan.start_gates(name).is_empty());
         }
@@ -585,7 +594,7 @@ participants:
             );
         let mut planner = planner();
         let plan = compile_with(&mut planner, &yaml, Os::Linux).unwrap().unwrap();
-        assert!(plan.start_gates.is_empty());
+        assert!(plan.participants.as_ref().unwrap().planned.start_gates.is_empty());
         assert!(plan.runner_host_ports("server").is_empty());
         assert_eq!(plan.start_order().unwrap(), [vec!["server"]]);
         assert_eq!(planner.ports.allocate(), Ok(20000));
@@ -649,7 +658,7 @@ participants:
             .replace("type: client", "type: every-kind-client");
         let mut planner = planner();
         let plan = compile_with(&mut planner, &yaml, Os::Linux).unwrap().unwrap();
-        assert!(plan.start_gates.is_empty());
+        assert!(plan.participants.as_ref().unwrap().planned.start_gates.is_empty());
         assert!(plan.runner_host_ports("server").is_empty());
         assert_eq!(planner.ports.allocate(), Ok(20000));
     }
@@ -691,7 +700,7 @@ participants:
                 ", config: {env: {REF: '{{server.endpoints.api.url}}'}}",
             );
         let plan = compile(&yaml, Os::Linux).unwrap().unwrap();
-        assert!(plan.start_gates.is_empty());
+        assert!(plan.participants.as_ref().unwrap().planned.start_gates.is_empty());
         assert_eq!(plan.start_order().unwrap(), [vec!["consumer", "server"]]);
         assert!(plan.runner_host_ports("server").is_empty());
     }

@@ -162,7 +162,9 @@ mod tests {
             let config = plan.effective_config("client").unwrap();
             assert_eq!(address.url, config.env["UPSTREAM_URL"]);
             assert_eq!(config.env["KEY"], reference);
-            assert!(plan.participants["client"].endpoint_references.is_empty());
+            assert!(plan.participants.as_ref().unwrap().planned.participants["client"]
+                .endpoint_references
+                .is_empty());
             assert_eq!(plan.connection_address("client", "side"), None);
             assert_eq!(plan.connection_address("server", "upstream"), None);
             assert_eq!(plan.connection_address("missing", "upstream"), None);
@@ -279,7 +281,7 @@ mod tests {
             );
         }
         assert_eq!(
-            plan.runner_host_ports,
+            plan.participants.as_ref().unwrap().planned.runner_host_ports,
             BTreeMap::from([(("server".into(), "api".into()), 20000)])
         );
         assert_eq!(planner.ports.allocate(), Ok(20001));
@@ -298,7 +300,7 @@ mod tests {
             "udp://127.0.0.1:20001"
         );
         assert_eq!(
-            plan.runner_host_ports,
+            plan.participants.as_ref().unwrap().planned.runner_host_ports,
             BTreeMap::from([
                 (("server".into(), "tcp".into()), 20000),
                 (("server".into(), "udp".into()), 20001),
@@ -331,7 +333,7 @@ mod tests {
                 "http://127.0.0.1:20000"
             );
             assert_eq!(
-                plan.runner_host_ports,
+                plan.participants.as_ref().unwrap().planned.runner_host_ports,
                 BTreeMap::from([(("server".into(), "api".into()), 20000)])
             );
             assert_eq!(planner.ports.allocate(), Ok(20001));
@@ -360,7 +362,7 @@ mod tests {
         ] {
             let plan = compile_files(&host_to_container_reference_case(config), &sources, Os::MacOs).unwrap();
             assert_eq!(
-                plan.runner_host_ports,
+                plan.participants.as_ref().unwrap().planned.runner_host_ports,
                 BTreeMap::from([(("server".into(), "api".into()), 20000)]),
                 "{config}"
             );
@@ -379,7 +381,7 @@ mod tests {
             "http://127.0.0.1:20000"
         );
         assert_eq!(
-            plan.runner_host_ports,
+            plan.participants.as_ref().unwrap().planned.runner_host_ports,
             BTreeMap::from([(("server".into(), "api".into()), 20000)])
         );
         assert_eq!(planner.ports.allocate(), Ok(20001));
@@ -406,7 +408,10 @@ mod tests {
             );
             let mut planner = planner();
             let plan = compile_with(&mut planner, &yaml, os).unwrap().unwrap();
-            assert!(plan.runner_host_ports.is_empty(), "{yaml}");
+            assert!(
+                plan.participants.as_ref().unwrap().planned.runner_host_ports.is_empty(),
+                "{yaml}"
+            );
             assert_eq!(planner.ports.allocate(), Ok(20000), "{yaml}");
         }
     }
@@ -427,7 +432,7 @@ participants:
         );
         let plan = compile(yaml, Os::MacOs).unwrap().unwrap();
         assert_eq!(
-            plan.runner_host_ports,
+            plan.participants.as_ref().unwrap().planned.runner_host_ports,
             BTreeMap::from([
                 (("server".into(), "api".into()), 20000),
                 (("server".into(), "metrics".into()), 20001),
@@ -439,7 +444,7 @@ participants:
         let yaml = host_to_container_reference_case(config).replace("type: server", "type: file-server");
         let plan = compile_files(&yaml, &[("source.yaml", "{{server.endpoints.http.url}}")], Os::MacOs).unwrap();
         assert_eq!(
-            plan.runner_host_ports,
+            plan.participants.as_ref().unwrap().planned.runner_host_ports,
             BTreeMap::from([
                 (("server".into(), "udp".into()), 20000),
                 (("server".into(), "tcp".into()), 20001),
@@ -484,11 +489,11 @@ participants:
             let mut planner = planner();
             let plan = compile_with(&mut planner, &yaml, selected).unwrap().unwrap();
             if selected == Os::Linux {
-                assert!(plan.runner_host_ports.is_empty());
+                assert!(plan.participants.as_ref().unwrap().planned.runner_host_ports.is_empty());
                 assert_eq!(planner.ports.allocate(), Ok(20000));
             } else {
                 assert_eq!(
-                    plan.runner_host_ports,
+                    plan.participants.as_ref().unwrap().planned.runner_host_ports,
                     BTreeMap::from([(("server".into(), "api".into()), 20000)])
                 );
                 assert_eq!(planner.ports.allocate(), Ok(20001));

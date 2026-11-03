@@ -735,7 +735,12 @@ mod tests {
                 } else {
                     assert_eq!(config.params["mode"][0]["nested"], reference);
                 }
-                assert_eq!(plan.participants["subject"].endpoint_references.len(), 1);
+                assert_eq!(
+                    plan.participants.as_ref().unwrap().planned.participants["subject"]
+                        .endpoint_references
+                        .len(),
+                    1
+                );
                 assert_eq!(plan.endpoint_address("subject", "server", "metrics"), None);
                 assert_eq!(plan.endpoint_address("server", "server", endpoint), None);
                 assert_eq!(plan.endpoint_address("missing", "server", endpoint), None);
@@ -758,7 +763,12 @@ mod tests {
                 path: None,
             })
         );
-        assert_eq!(plan.participants["subject"].endpoint_references.len(), 1);
+        assert_eq!(
+            plan.participants.as_ref().unwrap().planned.participants["subject"]
+                .endpoint_references
+                .len(),
+            1
+        );
         assert_eq!(
             plan.case().file_templates().get(Path::new("source.yaml")),
             &text.parse().unwrap()
@@ -823,7 +833,7 @@ mod tests {
                     }
                     assert_eq!(plan.effective_config("subject").unwrap().env["KEY"], reference);
                     assert_eq!(plan.start_order().unwrap(), &[vec!["subject".to_string()]]);
-                    assert!(plan.runner_host_ports.is_empty());
+                    assert!(plan.participants.as_ref().unwrap().planned.runner_host_ports.is_empty());
                 }
             }
         }
@@ -861,7 +871,9 @@ mod tests {
             let plan = compile_with(&mut planner, &yaml, os).unwrap().unwrap();
             if os == Os::Linux {
                 assert_eq!(plan.endpoint_address("subject", "server", "api"), None);
-                assert!(plan.participants["subject"].endpoint_references.is_empty());
+                assert!(plan.participants.as_ref().unwrap().planned.participants["subject"]
+                    .endpoint_references
+                    .is_empty());
                 assert_eq!(planner.ports.allocate(), Ok(20000));
             } else {
                 assert_eq!(
@@ -1057,7 +1069,7 @@ mod tests {
             error(&yaml, "linux", &format!("participant 'subject' of type 'server' as linux-container on linux {field} '{{{{self.endpoints.{endpoint}.url}}}}' references endpoint '{endpoint}' of participant 'subject', which it does not serve; it serves api, metrics"));
             yaml = yaml.replace(&format!("{{{{self.endpoints.{endpoint}.url}}}}"), "literal");
         }
-        error(&yaml, "linux", "step 1 references late fact 'pod_uid' of participant 'subject', which a linux-container does not have; a linux-container has container_id, ip");
+        error(&yaml, "linux", "step 1 'probe' references late fact 'pod_uid' of participant 'subject', which a linux-container does not have; a linux-container has container_id, ip");
     }
 
     fn file_case(os: &str) -> String {

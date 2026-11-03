@@ -46,7 +46,7 @@ fn default_log_file_references_plan_on_linux_and_windows_but_not_macos() {
         .expect("macOS has no declared default log file")
         .to_string();
     assert_eq!(message, format!(
-        "Failed to plan test cases:\n  - case 'alpha' in {}: on subject OS 'macos', step 1 references fact 'default_log_file' of participant 'adp', which type 'agent-adp' does not provide as host-process-group on macos; it provides it as linux-container on linux, windows-container on windows",
+        "Failed to plan test cases:\n  - case 'alpha' in {}: on subject OS 'macos', step 1 'file_contains' references fact 'default_log_file' of participant 'adp', which type 'agent-adp' does not provide as host-process-group on macos; it provides it as linux-container on linux, windows-container on windows",
         path.canonicalize().unwrap().display()
     ));
 }
@@ -65,7 +65,7 @@ fn agent_adp_cases_cannot_reference_pod_uid() {
         .unwrap()
         .to_string();
     assert_eq!(message, format!(
-        "Failed to plan test cases:\n  - case 'alpha' in {}: on subject OS 'linux', step 1 references late fact 'pod_uid' of participant 'adp', which a linux-container does not have; a linux-container has container_id, ip",
+        "Failed to plan test cases:\n  - case 'alpha' in {}: on subject OS 'linux', step 1 'file_contains' references late fact 'pod_uid' of participant 'adp', which a linux-container does not have; a linux-container has container_id, ip",
         path.canonicalize().unwrap().display()
     ));
 }

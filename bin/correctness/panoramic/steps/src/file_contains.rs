@@ -1,8 +1,13 @@
 //! A step that searches a file inside a participant for a pattern.
 
-use panoramic_core::case::{CaseDuration, Template};
-use panoramic_core::step::{decode_fields, Need, Step, StepFactory, StepFields};
+use std::time::Duration;
+
+use async_trait::async_trait;
+use panoramic_core::case::{CaseDuration, StepTemplate};
+use panoramic_core::record::{AssertionStatus, StepReport};
+use panoramic_core::step::{decode_fields, Need, Step, StepContext, StepFactory, StepFields};
 use serde::Deserialize;
+use tokio::time::Instant;
 
 use super::check_pattern;
 
@@ -16,7 +21,7 @@ pub struct FileContains {
     /// Required participant whose file is searched; has no default.
     pub on: String,
     /// Required path inside the participant; may reference facts and late facts of named participants. Has no default.
-    pub path: Template,
+    pub path: StepTemplate,
     /// Required text or regex to find; has no default.
     pub pattern: String,
     /// Whether `pattern` is a regex. Defaults to false.
@@ -31,7 +36,22 @@ impl FileContains {
     pub const NAME: &'static str = "file_contains";
 }
 
+#[async_trait]
 impl Step for FileContains {
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+    fn budget(&self) -> Duration {
+        self.timeout.into()
+    }
+    async fn run(&self, _cx: &StepContext<'_>) -> StepReport {
+        StepReport::new(
+            Instant::now(),
+            AssertionStatus::Errored,
+            format!("step '{}' cannot run on natively executed participants yet", Self::NAME),
+        )
+    }
+
     fn needs(&self) -> Vec<Need> {
         std::iter::once(Need::Handle(self.on.clone()))
             .chain(self.path.needs())
