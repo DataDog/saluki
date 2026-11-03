@@ -2,10 +2,10 @@
 
 use std::collections::BTreeMap;
 
-use super::PortRegistry;
+use super::{readiness::check_readiness, PortRegistry};
 use crate::{
     case::{declared_names, Template},
-    endpoint::{ConsumedEndpoint, Endpoint, Listener, Port},
+    endpoint::{ConsumedEndpoint, Endpoint, Evidence, Listener, Port},
     layout::{Os, Realization, RealizationKind},
     participant::{CaseValues, EffectiveConfig, ParticipantType},
 };
@@ -18,6 +18,8 @@ pub(super) struct ParticipantEndpoints {
     pub(super) os: Os,
     /// Endpoints served with the effective configuration.
     pub(super) served: BTreeMap<String, Endpoint>,
+    /// Participant-level evidence from the type's readiness hook, in declaration order.
+    pub(super) readiness: Vec<Evidence>,
     /// Endpoints consumed with the effective configuration.
     pub(super) consumed: BTreeMap<String, ConsumedEndpoint>,
     /// Case values after the OS overlay and fact substitution.
@@ -60,6 +62,8 @@ pub(super) fn derive_endpoints(
         served = rederived;
     }
     resolve_listeners(holder, realization.os, &config, &mut served)?;
+    let readiness = participant_type.readiness(realization, &config);
+    check_readiness(holder, realization.os, &served, &readiness)?;
     let consumed = participant_type.consumes(realization, &config);
     Ok((
         config,
@@ -67,6 +71,7 @@ pub(super) fn derive_endpoints(
             shared_dir,
             os: realization.os,
             served,
+            readiness,
             consumed,
             values,
             assigned_ports,
@@ -221,33 +226,50 @@ fn resolve_listeners(
                     "{holder} serves endpoint '{name}' on port 0; a listener needs a port from 1 to 65535"
                 ));
             }
-            Listener::Path(path) => {
-                if !path
-                    .parse::<Template>()
-                    .is_ok_and(|template| template.references().next().is_none())
-                {
-                    return Err(format!(
-                        "{holder} serves endpoint '{name}' at '{path}', which holds a reference resolved only after planning"
-                    ));
-                }
-                let absolute = match os {
-                    Os::Linux | Os::MacOs => path.starts_with('/'),
-                    Os::Windows => {
-                        path.starts_with(['\\', '/'])
-                            || matches!(path.as_bytes(), [drive, b':', b'\\' | b'/', ..] if drive.is_ascii_alphabetic())
-                    }
-                };
-                if !absolute {
-                    return Err(format!(
-                        "{holder} serves endpoint '{name}' at relative path '{path}'; socket paths must be absolute"
-                    ));
-                }
-            }
+            Listener::Path(path) => check_absolute_path(path, os).map_err(|error| match error {
+                PathError::UnresolvedReference => format!(
+                    "{holder} serves endpoint '{name}' at '{path}', which holds a reference resolved only after planning"
+                ),
+                PathError::Relative => format!(
+                    "{holder} serves endpoint '{name}' at relative path '{path}'; socket paths must be absolute"
+                ),
+            })?,
             Listener::Port(Port::Assigned { .. }) => unreachable!("assigned ports are re-derived before overrides"),
             Listener::Port(Port::Fixed(_)) | Listener::Pipe(_) => {}
         }
     }
     Ok(())
+}
+
+/// Why a path cannot be resolved at planning.
+pub(super) enum PathError {
+    UnresolvedReference,
+    Relative,
+}
+
+/// Whether a path parses as a literal template with no references.
+pub(super) fn holds_no_reference(path: &str) -> bool {
+    path.parse::<Template>()
+        .is_ok_and(|template| template.references().next().is_none())
+}
+
+/// Checks that a path is absolute for the OS and holds no reference resolved after planning.
+pub(super) fn check_absolute_path(path: &str, os: Os) -> Result<(), PathError> {
+    if !holds_no_reference(path) {
+        return Err(PathError::UnresolvedReference);
+    }
+    let absolute = match os {
+        Os::Linux | Os::MacOs => path.starts_with('/'),
+        Os::Windows => {
+            path.starts_with(['\\', '/'])
+                || matches!(path.as_bytes(), [drive, b':', b'\\' | b'/', ..] if drive.is_ascii_alphabetic())
+        }
+    };
+    if absolute {
+        Ok(())
+    } else {
+        Err(PathError::Relative)
+    }
 }
 
 #[cfg(test)]
@@ -554,6 +576,12 @@ participants:
                 self.0.lock().unwrap().push("endpoints");
                 Ok(BTreeMap::new())
             }
+            fn readiness(&self, _realization: Realization, config: &EffectiveConfig) -> Vec<Evidence> {
+                assert_eq!(config.env["UPSTREAM_URL"], "default");
+                assert_eq!(config.env["CASE"], "value");
+                self.0.lock().unwrap().push("readiness");
+                Vec::new()
+            }
             fn consumes(
                 &self, realization: Realization, config: &EffectiveConfig,
             ) -> BTreeMap<String, ConsumedEndpoint> {
@@ -585,7 +613,7 @@ participants:
             .unwrap();
         assert_eq!(
             *hooks.0.lock().unwrap(),
-            ["validate", "defaults", "endpoints", "consumes"]
+            ["validate", "defaults", "endpoints", "readiness", "consumes"]
         );
         assert_eq!(
             plan.effective_config("client").unwrap().env,

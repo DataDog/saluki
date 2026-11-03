@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
+    time::Duration,
 };
 
 use saluki_error::GenericError;
@@ -13,10 +14,119 @@ use crate::{
         fixtures::{minimal_procedure, write_case, Client, Configured, FixtureConfig, FixtureTypes, Server, STEPS},
         CaseLoader, Registries,
     },
-    endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind, Port},
+    endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind, Evidence, Port},
     layout::{Os, Realization, RealizationKind},
     participant::{CaseValues, EffectiveConfig, FactDeclaration, ParticipantType},
 };
+
+pub(super) struct ReadyServer;
+
+impl ParticipantType for ReadyServer {
+    fn name(&self) -> &'static str {
+        "ready-server"
+    }
+
+    fn supports(&self) -> &'static [(Os, RealizationKind)] {
+        EveryKindServer.supports()
+    }
+
+    fn artifacts(&self, _realization: Realization) -> &'static [ArtifactRole] {
+        &[]
+    }
+
+    fn params(&self) -> &'static [&'static str] {
+        &["mode"]
+    }
+
+    fn endpoints(
+        &self, _realization: Realization, config: &EffectiveConfig,
+    ) -> Result<BTreeMap<String, Endpoint>, String> {
+        let port = Port::Fixed(
+            config
+                .env
+                .get("PORT")
+                .map(|value| value.parse().unwrap())
+                .unwrap_or(8080),
+        );
+        let api = match config.env.get("READY_KIND").map(String::as_str).unwrap_or("http") {
+            "tcp" => Endpoint::tcp(port),
+            "udp" => Endpoint::udp(port),
+            "http" => Endpoint::http(port),
+            "grpc" => Endpoint::grpc(port),
+            "unix-datagram" => Endpoint::unix_datagram("/run/api.sock"),
+            "unix-stream" => Endpoint::unix_stream("/run/api.sock"),
+            "named-pipe" => Endpoint::named_pipe("api"),
+            kind => panic!("unknown fixture endpoint kind: {kind}"),
+        };
+        let mut endpoints = BTreeMap::from([
+            ("api".into(), api),
+            ("metrics".into(), Endpoint::udp(Port::Fixed(9000))),
+        ]);
+        let owner = config.env.get("READY_ON").map(String::as_str).unwrap_or("api");
+        if let Some(endpoint) = config.env.get("READY_TCP") {
+            endpoints.get_mut(owner).unwrap().ready = Some(Evidence::tcp_accepts(endpoint));
+        }
+        if let Some(path) = config.env.get("READY_HTTP") {
+            endpoints.get_mut(owner).unwrap().ready = Some(Evidence::http_ok("api", path));
+        }
+        if let Some(path) = config.env.get("READY_SOCKET") {
+            let endpoint = config
+                .env
+                .get("READY_SOCKET_TARGET")
+                .map(String::as_str)
+                .unwrap_or("log");
+            endpoints.insert(
+                "log".into(),
+                Endpoint::unix_datagram(path).with_ready(Evidence::socket_exists(endpoint)),
+            );
+        }
+        if let Some(within) = config.env.get("READY_WITHIN") {
+            for endpoint in endpoints.values_mut() {
+                endpoint.ready = endpoint
+                    .ready
+                    .take()
+                    .map(|evidence| evidence.within(Duration::from_secs(within.parse().unwrap())));
+            }
+        }
+        Ok(endpoints)
+    }
+
+    fn readiness(&self, _realization: Realization, config: &EffectiveConfig) -> Vec<Evidence> {
+        ["READY_FILE", "READY_FILE_2"]
+            .into_iter()
+            .filter_map(|key| {
+                config.env.get(key).map(|path| {
+                    let path = match config.params.get("mode").and_then(serde_json::Value::as_str) {
+                        Some("late-path") => "{{self.late.ip}}/ready",
+                        Some("malformed-path") => "{{unfinished",
+                        _ => path,
+                    };
+                    let evidence = Evidence::file_exists(path);
+                    match config.env.get("READY_WITHIN") {
+                        Some(within) => evidence.within(Duration::from_secs(within.parse().unwrap())),
+                        None => evidence,
+                    }
+                })
+            })
+            .collect()
+    }
+
+    fn consumes(&self, realization: Realization, config: &EffectiveConfig) -> BTreeMap<String, ConsumedEndpoint> {
+        let mut endpoint = EveryKindClient.consumes(realization, config).remove("target").unwrap();
+        endpoint.delivery = Delivery::Env {
+            keys: BTreeSet::new(),
+            value: |_| BTreeMap::new(),
+        };
+        ["a", "b", "c", "z"]
+            .into_iter()
+            .map(|name| (name.into(), endpoint.clone()))
+            .collect()
+    }
+
+    fn processes(&self) -> &'static [&'static str] {
+        &[]
+    }
+}
 
 pub(super) struct EveryKindServer;
 
@@ -336,6 +446,14 @@ impl ParticipantType for AssignedServer {
         Ok(endpoints)
     }
 
+    fn readiness(&self, _realization: Realization, config: &EffectiveConfig) -> Vec<Evidence> {
+        if config.params.get("mode").and_then(serde_json::Value::as_str) == Some("readiness-after-assignment") {
+            vec![Evidence::file_exists(format!("/ports/{}", config.env["API_PORT"]))]
+        } else {
+            Vec::new()
+        }
+    }
+
     fn consumes(&self, _realization: Realization, config: &EffectiveConfig) -> BTreeMap<String, ConsumedEndpoint> {
         let delivery = match config.params.get("mode").and_then(serde_json::Value::as_str) {
             Some("consume-assigned-key") => Delivery::Env {
@@ -418,6 +536,7 @@ pub(super) const CONFIG_REGISTRIES: Registries<'static> = Registries {
         &FileServer,
         &SharedDeliveryClient,
         &AssignedServer,
+        &ReadyServer,
     ],
     steps: STEPS,
     ..crate::case::fixtures::REGISTRIES
