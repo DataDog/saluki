@@ -163,6 +163,9 @@ After every integration test, the runner attempts cleanup and records each resou
 isolation-group entry; host processes and the state directory have separate entries. Failed or skipped removal adds a
 `resource_leaked` issue; unconfirmed removal adds `resource_unsettled`. These issues leave the test outcome unchanged.
 
+The runner saves host-process `stdout.log` and `stderr.log` after reclaim drains the log pumps, including shutdown
+output. Setup failures and cancelled cases also retain these logs.
+
 ### Reading traffic artifacts
 
 Traffic captures live under `<log_dir>/traffic/`. Start with `traffic/manifest.json`: it lists each capture, whether its

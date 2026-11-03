@@ -59,7 +59,7 @@ impl Resource {
         match self {
             Self::IsolationGroup(id) => Driver::clean_related_resources(id).await,
             Self::Process(process) => process.cleanup().await,
-            Self::Directory(path) => match std::fs::remove_dir_all(&path) {
+            Self::Directory(path) => match tokio::fs::remove_dir_all(&path).await {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
                 removed => removed.with_error_context(|| format!("Failed to remove '{}'", path.display())),
             },
@@ -120,7 +120,8 @@ impl ResourceLedger {
     /// Attempts cleanup in reverse registration order, sharing one [`RECLAIM_TIME`] budget.
     ///
     /// Returns a result per resource and an issue for each failed or unconfirmed removal. At the deadline, drops
-    /// pending removal futures; dropping a process sends SIGKILL if cleanup hasn't sent it yet.
+    /// pending removal futures; dropping a process sends SIGKILL if cleanup hasn't sent it yet. Filesystem removal
+    /// may continue on a blocking thread after its future is dropped.
     pub(crate) async fn reclaim(&self) -> (Vec<ReclaimEntry>, Vec<Issue>) {
         let entries = std::mem::take(&mut *self.lock());
         let deadline = Instant::now() + RECLAIM_TIME;
@@ -179,7 +180,84 @@ impl ResourceLedger {
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future as _;
+    use std::task::Poll;
+
     use super::*;
+
+    #[test]
+    fn directory_removal_yields_to_the_reclaim_deadline() {
+        // Synchronous removal in Resource::remove prevented the reclaim timer from running. Occupy the blocking
+        // pool so async removal must wait, then expire the budget before any filesystem work can start.
+        let parent = tempfile::tempdir().expect("temp dir should be creatable");
+        let directory = parent.path().join("state");
+        std::fs::create_dir(&directory).expect("the state directory should be creatable");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .max_blocking_threads(1)
+            .build()
+            .expect("the runtime should build");
+
+        runtime.block_on(async {
+            let (release, wait) = std::sync::mpsc::channel::<()>();
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let blocker = tokio::task::spawn_blocking(move || {
+                let _ = started.send(());
+                let _ = wait.recv();
+            });
+            ready.await.expect("the blocking task should start");
+
+            let ledger = ResourceLedger::default();
+            ledger.directory(directory.clone());
+            let reclaim = ledger.reclaim();
+            tokio::pin!(reclaim);
+            std::future::poll_fn(|cx| {
+                assert!(reclaim.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            tokio::time::advance(RECLAIM_TIME).await;
+            let (reclaim, issues) = reclaim.await;
+
+            assert_eq!(
+                reclaim,
+                [ReclaimEntry {
+                    resource: format!("directory:{}", directory.display()),
+                    result: ReclaimResult::Unsettled,
+                }]
+            );
+            assert_eq!(issues.len(), 1);
+            assert_eq!(issues[0].kind, IssueKind::ResourceUnsettled);
+            assert!(issues[0].message.contains("reclaim budget expired"), "{:?}", issues[0]);
+            assert!(directory.exists(), "removal should still be queued");
+            drop(release);
+            blocker.await.expect("the blocking task should finish");
+        });
+    }
+
+    #[tokio::test]
+    async fn a_directory_with_nested_files_is_reclaimed() {
+        let parent = tempfile::tempdir().expect("temp dir should be creatable");
+        let directory = parent.path().join("state");
+        std::fs::create_dir_all(directory.join("nested")).expect("the nested directory should be creatable");
+        std::fs::write(directory.join("nested/file"), b"state").expect("the nested file should be writable");
+        let ledger = ResourceLedger::default();
+        ledger.directory(directory.clone());
+
+        let (reclaim, issues) = ledger.reclaim().await;
+
+        assert_eq!(
+            reclaim,
+            [ReclaimEntry {
+                resource: format!("directory:{}", directory.display()),
+                result: ReclaimResult::Reclaimed,
+            }]
+        );
+        assert_eq!(issues, []);
+        assert!(!directory.exists());
+        assert!(parent.path().exists());
+    }
 
     #[tokio::test]
     async fn a_directory_that_is_already_gone_counts_as_reclaimed() {

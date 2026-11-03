@@ -409,6 +409,7 @@ impl Runner {
         let phases = tctx.phases.clone();
         let record = tctx.record.clone();
         let ledger = tctx.ledger.clone();
+        let host_logs = tctx.host_logs.clone();
 
         let mut result = {
             let run_fut = test.run(tctx);
@@ -449,6 +450,20 @@ impl Runner {
         }
         result.reclaim = reclaim;
         result.issues.extend(issues);
+
+        if let Some(logs) = host_logs.get().cloned() {
+            let phase = phases.enter("write_logs");
+            let dir = log_dir.clone();
+            if let Err(e) = tokio::task::spawn_blocking(move || logs.read().unwrap().write_to(&dir))
+                .await
+                .error_context("Failed to join the host log writer")
+                .and_then(|result| result)
+            {
+                warn!(test = %name, error = %e, "Failed to write captured logs to disk.");
+            }
+            result.phase_timings.push(phase.finish());
+            result.duration = started.elapsed();
+        }
 
         // The runner is the only place that knows both the test and where its artifacts landed, so
         // it stamps that provenance onto the result before anything reports on it.
@@ -1697,7 +1712,7 @@ mod tests {
         // room to start both processes on a busy machine before the wait begins.
         let case = MacCase::new(
             &format!("name: ipc-wait\ntimeout: 3s\nprocedure:\n{LOG_MATCHES}"),
-            "exit 0",
+            "echo core-stdout; echo core-stderr >&2; exit 0",
             "exit 0",
         );
         let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
@@ -1711,6 +1726,19 @@ mod tests {
             .expect("a timed-out test should carry timeout detail");
         assert_eq!(timeout.deadline, TimeoutDeadline::TestDeadline);
         assert_eq!(timeout.active_phase, "core_agent_ipc_ready");
+        // Unix setup errors used to return before saving the log buffer. The runner retains it through reclaim.
+        let log_dir = result
+            .log_dir
+            .as_ref()
+            .expect("the runner should record the log directory");
+        assert_eq!(
+            std::fs::read_to_string(log_dir.join("stdout.log")).unwrap(),
+            "core-stdout\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(log_dir.join("stderr.log")).unwrap(),
+            "core-stderr\n"
+        );
         let reclaimed = reclaimed(&result);
         assert_eq!(reclaimed.len(), 2, "{reclaimed:?}");
         let state_dir = state_dir(reclaimed[1].0);
@@ -1724,7 +1752,7 @@ mod tests {
         );
         assert_eq!(
             phase_names(&result),
-            ["core_agent_spawn", "core_agent_ipc_ready", "reclaim"]
+            ["core_agent_spawn", "core_agent_ipc_ready", "reclaim", "write_logs"]
         );
     }
 
@@ -1744,6 +1772,16 @@ mod tests {
         assert_eq!(result.outcome, TestOutcome::Passed, "{:?}", result.error);
         let marked = std::fs::read_to_string(&marker).expect("the processes should have written the marker");
         assert_eq!(marked, "adp dir\nagent dir\n");
+        // Saving logs in the Unix test body lost SIGTERM output. Persist only after reclaim drains both pumps.
+        let log_dir = result
+            .log_dir
+            .as_ref()
+            .expect("the runner should record the log directory");
+        let stdout = std::fs::read_to_string(log_dir.join("stdout.log")).expect("stdout.log should exist");
+        let stderr = std::fs::read_to_string(log_dir.join("stderr.log")).expect("stderr.log should exist");
+        assert_eq!(stdout, "ready\nadp stopped\nagent stopped\n");
+        assert!(stderr.contains("adp shutdown diagnostic\n"), "{stderr}");
+        assert!(stderr.contains("agent shutdown diagnostic\n"), "{stderr}");
         let reclaimed = reclaimed(&result);
         assert_eq!(reclaimed.len(), 3, "{reclaimed:?}");
         let state_dir = state_dir(reclaimed[2].0);
@@ -1772,8 +1810,8 @@ mod tests {
                 "core_agent_ipc_ready",
                 "spawn",
                 "assertions",
-                "write_logs",
-                "reclaim"
+                "reclaim",
+                "write_logs"
             ]
         );
     }
@@ -2190,7 +2228,7 @@ mod tests {
     fn marking_script(role: &str, setup: &str) -> String {
         format!(
             r#"dir=${{DD_AUTH_TOKEN_FILE_PATH%/*}}
-trap 'if [ -d "$dir" ]; then echo "{role} dir" >> "$MARKER"; else echo {role} >> "$MARKER"; fi; exit 0' TERM
+trap 'if [ -d "$dir" ]; then echo "{role} dir" >> "$MARKER"; else echo {role} >> "$MARKER"; fi; echo "{role} stopped"; echo "{role} shutdown diagnostic" >&2; exit 0' TERM
 {setup}
 while :; do sleep 1; done"#
         )

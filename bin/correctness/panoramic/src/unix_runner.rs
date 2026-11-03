@@ -109,10 +109,11 @@ pub(crate) struct UnixIntegrationRunner {
 impl UnixIntegrationRunner {
     /// Creates a new runner for the given test case.
     pub(crate) fn new(test_case: IntegrationTestCase, tctx: TestContext) -> Self {
+        let log_buffer = tctx.host_logs.get_or_init(Default::default).clone();
         Self {
             test_case,
             tctx,
-            log_buffer: Arc::new(RwLock::new(LogBuffer::default())),
+            log_buffer,
         }
     }
 
@@ -279,15 +280,6 @@ impl UnixIntegrationRunner {
         .await;
         phase_timings.push(phase.finish());
 
-        // Phase: write captured logs to disk so the artifact upload picks them up. Matches the
-        // Docker runner's behavior; without this the artifact only contains result.log and a
-        // failed assertion's truncated context is all we have to debug from.
-        let phase = self.tctx.phases.enter("write_logs");
-        if let Err(e) = self.write_logs().await {
-            debug!(test = %test_name, error = %e, "Failed to write captured logs to disk.");
-        }
-        phase_timings.push(phase.finish());
-
         self.tctx.record.result(&test_name, started.elapsed(), phase_timings)
     }
 
@@ -310,29 +302,6 @@ impl UnixIntegrationRunner {
             }
         }
         mappings
-    }
-
-    async fn write_logs(&self) -> Result<(), GenericError> {
-        use std::io::Write as _;
-
-        let log_dir = self.tctx.log_dir();
-        let buffer = self.log_buffer.read().unwrap();
-
-        let stdout_path = log_dir.join("stdout.log");
-        let mut stdout_file = std::fs::File::create(&stdout_path)
-            .with_error_context(|| format!("Failed to create stdout log at '{}'.", stdout_path.display()))?;
-        for line in &buffer.stdout {
-            writeln!(stdout_file, "{}", line).error_context("Failed to write stdout log line.")?;
-        }
-
-        let stderr_path = log_dir.join("stderr.log");
-        let mut stderr_file = std::fs::File::create(&stderr_path)
-            .with_error_context(|| format!("Failed to create stderr log at '{}'.", stderr_path.display()))?;
-        for line in &buffer.stderr {
-            writeln!(stderr_file, "{}", line).error_context("Failed to write stderr log line.")?;
-        }
-
-        Ok(())
     }
 
     async fn run_assertions(

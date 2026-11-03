@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -7,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
+use crate::assertions::LogBuffer;
 use crate::deadline::Deadline;
 use crate::ledger::ResourceLedger;
 use crate::record::CaseRecord;
@@ -76,6 +78,9 @@ pub(crate) struct TestContext {
 
     /// Test resources registered for cleanup by the runner.
     pub(crate) ledger: ResourceLedger,
+
+    /// Host-process logs retained for the runner to save after reclaim drains the log pumps.
+    pub(crate) host_logs: Arc<OnceLock<Arc<RwLock<LogBuffer>>>>,
 }
 
 impl TestContext {
@@ -91,6 +96,7 @@ impl TestContext {
             phases: PhaseTracker::default(),
             record: CaseRecord::default(),
             ledger: ResourceLedger::default(),
+            host_logs: Arc::default(),
         }
     }
 
