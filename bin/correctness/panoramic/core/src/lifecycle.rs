@@ -13,6 +13,7 @@ use crate::{
         RunBackends, COURIER_LINUX_BINARY, FIXUP_IMAGE,
     },
     case::CaseSchema,
+    handle::Primitives,
     layout::{Os, Realization, RealizationKind},
     ledger::ResourceLedger,
     participant::{find_type, ParticipantType},
@@ -23,6 +24,7 @@ use crate::{
 
 #[cfg(test)]
 mod daemon_tests;
+mod readiness;
 mod render;
 
 /// Verified image IDs and container-binary bytes shared by every native case in a run.
@@ -132,7 +134,15 @@ pub async fn run<C>(
     }
     for level in plan.start_order().expect("participant plans have start orders") {
         let phase = control.phases.enter(format!("start:{}", level.join(",")));
-        let result = start_level(level, &mut participants, control).await;
+        let result = async {
+            let gates = level
+                .iter()
+                .flat_map(|name| plan.start_gates(name).iter().map(move |gate| (name.as_str(), gate)))
+                .collect::<Vec<_>>();
+            readiness::wait_for_level(gates, |name| &participants[name].0 as &dyn Primitives, &control.cancel).await?;
+            start_level(level, &mut participants, control).await
+        }
+        .await;
         phase.finish();
         if let Err(error) = result {
             return fail(error);

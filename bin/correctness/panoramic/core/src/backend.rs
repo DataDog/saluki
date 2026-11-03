@@ -5,6 +5,7 @@
 
 pub(crate) mod courier;
 pub(crate) mod docker;
+pub(crate) mod http;
 pub(crate) mod linux_container;
 mod run;
 pub use run::RunBackends;

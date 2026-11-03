@@ -7,7 +7,10 @@ use async_trait::async_trait;
 use snafu::Snafu;
 
 use crate::{
-    backend::courier,
+    backend::{
+        courier,
+        http::{self, HttpError},
+    },
     endpoint::{ResolvedAddress, RunnerHostRoute},
     probe::{AttemptLimits, ProbeAnswer},
 };
@@ -44,13 +47,34 @@ pub(crate) trait Primitives: Send + Sync {
 }
 
 /// Probes through the plan's route for `EndpointOperation::Probe`, using the server for a courier route.
-#[cfg_attr(not(test), expect(dead_code, reason = "Steps reach endpoints through these routes."))]
 pub(crate) async fn probe_from_runner_host(
     route: &RunnerHostRoute, server: &dyn Primitives, limits: &AttemptLimits,
 ) -> Result<ProbeAnswer, HandleError> {
     match route {
         RunnerHostRoute::Direct(address) => courier::probe_in_process(address, limits).await,
         RunnerHostRoute::Courier(address) => server.probe(address, limits).await,
+    }
+}
+
+/// Requests an HTTP status through the plan's request route.
+/// Invalid requests and unsupported routes are harness failures; connection errors and timeouts are product failures.
+pub(crate) async fn http_status_from_runner_host(
+    route: &RunnerHostRoute, _server: &dyn Primitives, path: &str, limits: &AttemptLimits,
+) -> Result<u16, HandleError> {
+    match route {
+        RunnerHostRoute::Direct(address) => {
+            match tokio::time::timeout(limits.attempt, http::get_status(address, path)).await {
+                Ok(Ok(status)) => Ok(status),
+                Ok(Err(HttpError::Request(message))) => Err(HandleError::Harness { message }),
+                Ok(Err(HttpError::Connection(message))) => Err(HandleError::Product { message }),
+                Err(_) => Err(HandleError::Product {
+                    message: format!("HTTP check timed out after {:?}", limits.attempt),
+                }),
+            }
+        }
+        RunnerHostRoute::Courier(_) => Err(HandleError::Harness {
+            message: "HTTP checks through the courier are not supported".into(),
+        }),
     }
 }
 
@@ -238,5 +262,113 @@ mod tests {
             );
         }
         assert_eq!(*server.calls.lock().unwrap(), ["probe", "send"]);
+    }
+
+    fn http_route(port: u16) -> RunnerHostRoute {
+        RunnerHostRoute::Direct(ResolvedAddress {
+            kind: EndpointKind::Http,
+            url: format!("http://127.0.0.1:{port}"),
+            host: Some("127.0.0.1".into()),
+            port: Some(port),
+            path: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn a_direct_http_route_returns_the_status_without_using_the_participant() {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+
+        let server = Server {
+            address: None,
+            ..server(false)
+        };
+        for status in [200, 503] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let responder = async {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                assert!(stream.read(&mut [0; 1024]).await.unwrap() > 0);
+                stream
+                    .write_all(format!("HTTP/1.1 {status} Status\r\nContent-Length: 0\r\n\r\n").as_bytes())
+                    .await
+                    .unwrap();
+            };
+            let limits = AttemptLimits::new(Duration::from_secs(5));
+            let route = http_route(port);
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let (_, result) = tokio::join!(
+                    responder,
+                    http_status_from_runner_host(&route, &server, "/ready", &limits)
+                );
+                assert_eq!(result, Ok(status));
+            })
+            .await
+            .unwrap();
+        }
+        assert!(server.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn http_request_errors_are_harness_failures_and_connection_errors_are_product_failures() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let server = Server {
+            address: None,
+            ..server(false)
+        };
+        let limits = AttemptLimits::new(Duration::from_secs(5));
+        let route = http_route(port);
+        assert_eq!(
+            http_status_from_runner_host(&route, &server, "/a b", &limits).await,
+            Err(HandleError::Harness {
+                message: "invalid uri character".into()
+            })
+        );
+        let error = http_status_from_runner_host(&route, &server, "/ready", &limits)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, HandleError::Product { ref message } if message.to_lowercase().contains("refused")),
+            "{error:?}"
+        );
+        assert!(server.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_stalled_http_request_is_a_product_timeout_and_closes_its_connection() {
+        use tokio::{io::AsyncReadExt, net::TcpListener};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let route = http_route(listener.local_addr().unwrap().port());
+        let server = Server {
+            address: None,
+            ..server(false)
+        };
+        let limits = AttemptLimits::new(Duration::from_millis(100));
+        let responder = async {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            stream.read_to_end(&mut request).await.unwrap();
+            assert!(request.starts_with(b"GET /ready HTTP/1.1\r\n"));
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (_, result) = tokio::join!(
+                responder,
+                http_status_from_runner_host(&route, &server, "/ready", &limits)
+            );
+            assert_eq!(
+                result,
+                Err(HandleError::Product {
+                    message: "HTTP check timed out after 100ms".into()
+                })
+            );
+        })
+        .await
+        .unwrap();
+        assert!(server.calls.lock().unwrap().is_empty());
     }
 }
