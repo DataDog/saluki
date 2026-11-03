@@ -37,14 +37,15 @@ pub(crate) fn closed_port() -> u16 {
 /// The ports `closed_port` picks from, all below every platform's default ephemeral range.
 const CLOSED_PORT_RANGE: std::ops::Range<u16> = 20000..32768;
 
-/// Returns whether `127.0.0.1:port` is free, so nothing would accept a connection to it.
+/// Returns whether no IPv4 socket is bound to `port`, so nothing would accept a connection to `127.0.0.1:port`.
 ///
-/// The probe doesn't set `SO_REUSEADDR`, which on macOS would let it bind `127.0.0.1` alongside a wildcard listener
-/// that still accepts connections to that address.
+/// The probe binds the wildcard address without `SO_REUSEADDR`, which conflicts with an existing socket on the port
+/// whether it's bound to `127.0.0.1` or to the wildcard. Probing `127.0.0.1` instead would miss a wildcard listener on
+/// Windows, which lets a socket bind a specific address alongside one, and on macOS if the probe set `SO_REUSEADDR`.
 fn is_unbound(port: u16) -> bool {
     let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).expect("should create a TCP socket");
     socket
-        .bind(&SocketAddr::from((Ipv4Addr::LOCALHOST, port)).into())
+        .bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)).into())
         .is_ok()
 }
 
@@ -192,6 +193,14 @@ mod tests {
     fn a_port_with_a_wildcard_listener_is_not_unbound() {
         // A standard listener sets `SO_REUSEADDR` on Unix, as most servers do.
         let listener = StdTcpListener::bind((Ipv4Addr::UNSPECIFIED, 0)).expect("should bind an ephemeral port");
+        let port = listener.local_addr().expect("should have a local address").port();
+
+        assert!(!is_unbound(port));
+    }
+
+    #[test]
+    fn a_port_with_a_loopback_listener_is_not_unbound() {
+        let listener = StdTcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("should bind an ephemeral port");
         let port = listener.local_addr().expect("should have a local address").port();
 
         assert!(!is_unbound(port));
