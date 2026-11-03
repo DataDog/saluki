@@ -1,4 +1,5 @@
 use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use argh::FromArgs;
@@ -6,8 +7,12 @@ use async_trait::async_trait;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio_util::sync::CancellationToken;
 
-use crate::cli::{dogstatsd::open_regular_file, remote::CommandOutput, utils::DataPlaneAPIClient};
-use crate::dogstatsd_contexts::read_report_from_file;
+use crate::cli::{
+    dogstatsd::{open_regular_file, run_cancellable, run_cancellable_blocking, CancellableRead},
+    remote::CommandOutput,
+    utils::DataPlaneAPIClient,
+};
+use crate::dogstatsd_contexts::read_report_from_reader;
 
 /// Displays the DogStatsD contexts with the highest cardinality.
 #[derive(FromArgs, Debug)]
@@ -69,19 +74,17 @@ pub(super) async fn handle_dogstatsd_top(
         }
     };
 
-    if cancellation.is_cancelled() {
+    let Some(file) = run_cancellable(cancellation, open_context_report_file(&path)).await? else {
         return Ok(());
-    }
-
-    let file = open_context_report_file(&path).await?;
+    };
+    let input = CancellableRead::new(file, cancellation.clone());
     let metric_limit = cmd.num_metrics;
     let tag_limit = cmd.num_tags;
     let task = tokio::task::spawn_blocking({
         let path = path.clone();
-        move || render_report_from_file(&path, file, metric_limit, tag_limit)
+        move || render_report(&path, input, metric_limit, tag_limit)
     });
-    let Some(rendered) =
-        super::run_cancellable_blocking(cancellation, task, "DogStatsD context report rendering").await?
+    let Some(rendered) = run_cancellable_blocking(cancellation, task, "DogStatsD context report rendering").await?
     else {
         return Ok(());
     };
@@ -99,10 +102,10 @@ async fn open_context_report_file(path: &Path) -> Result<File, GenericError> {
     .await
 }
 
-fn render_report_from_file(
-    path: &Path, file: File, metric_limit: usize, tag_limit: Option<usize>,
+fn render_report(
+    path: &Path, input: impl Read, metric_limit: usize, tag_limit: Option<usize>,
 ) -> Result<String, GenericError> {
-    let report = read_report_from_file(path, file)
+    let report = read_report_from_reader(path, input)
         .with_error_context(|| format!("Failed to read DogStatsD context report from '{}'.", path.display()))?;
     Ok(report.render(metric_limit, tag_limit.unwrap_or(5)))
 }
@@ -153,11 +156,11 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::{
-        handle_dogstatsd_dump_contexts, handle_dogstatsd_top, open_context_report_file, render_report_from_file,
+        handle_dogstatsd_dump_contexts, handle_dogstatsd_top, open_context_report_file, render_report,
         DogStatsDContextDumpRequester, TopCommand,
     };
     use crate::cli::{
-        dogstatsd::{DogstatsdCommand, DogstatsdSubcommand},
+        dogstatsd::{CancellableRead, DogstatsdCommand, DogstatsdSubcommand},
         remote::CommandOutput,
     };
 
@@ -266,10 +269,26 @@ mod tests {
         std::fs::write(&replacement, b"not-json").expect("replacement artifact should be written");
         std::fs::rename(&replacement, artifact.path()).expect("artifact path should be replaced");
 
-        let rendered =
-            render_report_from_file(artifact.path(), file, 10, Some(5)).expect("opened artifact should render");
+        let rendered = render_report(artifact.path(), file, 10, Some(5)).expect("opened artifact should render");
 
         assert!(rendered.contains("original.metric"), "{rendered}");
+    }
+
+    #[test]
+    fn report_rendering_stops_reading_its_input_after_cancellation() {
+        let file = std::fs::File::open(PLAIN_FIXTURE).expect("fixture should open");
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let error = render_report(
+            Path::new(PLAIN_FIXTURE),
+            CancellableRead::new(file, cancellation),
+            10,
+            None,
+        )
+        .expect_err("cancelled input should stop rendering");
+
+        assert!(format!("{error:#}").contains("command was cancelled"), "{error:#}");
     }
 
     #[tokio::test]

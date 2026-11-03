@@ -304,13 +304,16 @@ impl Error for ArtifactError {
 #[cfg(test)]
 pub(crate) fn for_each_record(path: &Path, consume: impl FnMut(AgentContextRecord)) -> Result<(), ArtifactError> {
     let file = File::open(path).map_err(|error| ArtifactError::new(path, "open", 0, error))?;
-    for_each_record_from_file(path, file, consume)
+    for_each_record_from_reader(path, file, consume)
 }
 
-pub(crate) fn for_each_record_from_file(
-    path: &Path, file: File, mut consume: impl FnMut(AgentContextRecord),
+/// Decodes each record from an already-open artifact, such as a file descriptor.
+///
+/// `path` is used only in error messages.
+pub(crate) fn for_each_record_from_reader(
+    path: &Path, reader: impl Read, mut consume: impl FnMut(AgentContextRecord),
 ) -> Result<(), ArtifactError> {
-    let mut compressed_input = BufReader::new(file);
+    let mut compressed_input = BufReader::new(reader);
     let is_compressed = compressed_input
         .fill_buf()
         .map_err(|error| ArtifactError::new(path, "inspect compression magic for", 0, error))?

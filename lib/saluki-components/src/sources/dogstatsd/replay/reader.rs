@@ -3,7 +3,11 @@
 //! Decodes a `.dog` or `.dog.zstd` capture file into the sequence of `UnixDogstatsdMsg` records it
 //! contains, plus the optional `TaggerState` trailer.
 
-use std::{fs, io::Read, path::Path};
+use std::{
+    fs,
+    io::{BufRead as _, BufReader, Read},
+    path::Path,
+};
 
 use datadog_protos::agent::{TaggerState, UnixDogstatsdMsg};
 use prost::Message;
@@ -39,29 +43,36 @@ impl TrafficCaptureReader {
     pub fn from_path(path: &Path) -> Result<Self, GenericError> {
         let file = fs::File::open(path)
             .map_err(|e| generic_error!("Failed to read capture file '{}': {}", path.display(), e))?;
-        Self::from_reader(file, &format!("capture file '{}'", path.display()))
+        Self::read_capture(file, &format!("capture file '{}'", path.display()))
     }
 
-    /// Reads a capture file from an already-open file descriptor.
+    /// Reads a capture from an already-open source, such as a file descriptor.
     ///
     /// Detects zstd-compressed inputs by magic bytes and decompresses transparently. Validates the
     /// Datadog capture header and parses the file version.
-    pub fn from_file(file: fs::File) -> Result<Self, GenericError> {
-        Self::from_reader(file, "capture file")
+    ///
+    /// Compressed input is decoded as it is read, so a failing reader also stops decompression.
+    pub fn from_reader(reader: impl Read) -> Result<Self, GenericError> {
+        Self::read_capture(reader, "capture file")
     }
 
-    fn from_reader(mut reader: impl Read, source: &str) -> Result<Self, GenericError> {
-        let mut raw = Vec::new();
-        reader
-            .read_to_end(&mut raw)
-            .map_err(|e| generic_error!("Failed to read {source}: {e}"))?;
+    fn read_capture(reader: impl Read, source: &str) -> Result<Self, GenericError> {
+        let mut input = BufReader::new(reader);
+        let is_compressed = input
+            .fill_buf()
+            .map_err(|e| generic_error!("Failed to read {source}: {e}"))?
+            .starts_with(&ZSTD_MAGIC);
 
-        let contents = if has_zstd_magic(&raw) {
-            zstd::stream::decode_all(raw.as_slice())
-                .map_err(|e| generic_error!("Failed to decompress {source}: {e}"))?
+        let mut contents = Vec::new();
+        if is_compressed {
+            zstd::stream::read::Decoder::with_buffer(input)
+                .and_then(|mut decoder| decoder.read_to_end(&mut contents))
+                .map_err(|e| generic_error!("Failed to decompress {source}: {e}"))?;
         } else {
-            raw
-        };
+            input
+                .read_to_end(&mut contents)
+                .map_err(|e| generic_error!("Failed to read {source}: {e}"))?;
+        }
 
         if !valid_header(&contents) {
             return Err(generic_error!(
@@ -167,10 +178,6 @@ impl TrafficCaptureReader {
     }
 }
 
-fn has_zstd_magic(buf: &[u8]) -> bool {
-    buf.len() >= ZSTD_MAGIC.len() && buf[..ZSTD_MAGIC.len()] == ZSTD_MAGIC
-}
-
 #[cfg(test)]
 mod tests {
     use std::{fs, path::PathBuf, sync::Arc, time::Duration};
@@ -228,17 +235,35 @@ mod tests {
     }
 
     #[test]
-    fn from_file_reads_the_opened_capture_after_path_changes() {
+    fn from_reader_reads_the_opened_capture_after_path_changes() {
         let (path, _dir_guard) = run_capture(1, false, &[sample_record(100, b"metric.a:1|c", 11)]);
         let file = fs::File::open(&path).expect("capture should open");
         let replacement = path.with_extension("replacement");
         fs::write(&replacement, b"not a capture file").expect("replacement capture should be written");
         fs::rename(&replacement, &path).expect("capture path should be replaced");
 
-        let mut reader = TrafficCaptureReader::from_file(file).expect("reader should use the opened capture");
+        let mut reader = TrafficCaptureReader::from_reader(file).expect("reader should use the opened capture");
         let msg = reader.read_next().expect("read should succeed").expect("record");
 
         assert_eq!(msg.payload, b"metric.a:1|c");
+    }
+
+    #[test]
+    fn from_reader_surfaces_input_errors_during_decompression() {
+        let (path, _dir_guard) = run_capture(1, true, &[sample_record(1, b"metric.a:1|c", 1)]);
+        let compressed = fs::read(&path).expect("capture readable");
+        let reader = std::io::Read::chain(
+            &compressed[..ZSTD_MAGIC.len() + 1],
+            FailingReader("input failed during decompression"),
+        );
+
+        let error = TrafficCaptureReader::from_reader(reader).expect_err("input failure should stop the read");
+
+        assert!(error.to_string().contains("Failed to decompress"), "{error:#}");
+        assert!(
+            error.to_string().contains("input failed during decompression"),
+            "{error:#}"
+        );
     }
 
     #[test]
@@ -401,6 +426,14 @@ mod tests {
             pid: Some(pid),
             ancillary: Vec::new(),
             container_id: Some(format!("container_id://container-{}", pid)),
+        }
+    }
+
+    struct FailingReader(&'static str);
+
+    impl Read for FailingReader {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other(self.0))
         }
     }
 

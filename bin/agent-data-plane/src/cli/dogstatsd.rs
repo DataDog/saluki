@@ -1,6 +1,7 @@
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -213,14 +214,16 @@ pub(crate) async fn run_dogstatsd_command(
 
     match cmd.subcommand {
         DogstatsdSubcommand::Stats(command) => {
-            let mut api_client = get_api_client(config).await?;
+            let Some(mut api_client) = run_cancellable(cancellation, get_api_client(config)).await? else {
+                return Ok(());
+            };
             handle_dogstatsd_stats(&mut api_client, command, output, cancellation)
                 .await
                 .error_context("Failed to run stats subcommand")
         }
         DogstatsdSubcommand::Capture(command) => {
-            let mut api_client = get_api_client(config).await?;
             run_cancellable_command(cancellation, async {
+                let mut api_client = get_api_client(config).await?;
                 handle_dogstatsd_capture(&mut api_client, command, output)
                     .await
                     .error_context("Failed to start DogStatsD capture")
@@ -228,7 +231,9 @@ pub(crate) async fn run_dogstatsd_command(
             .await
         }
         DogstatsdSubcommand::Replay(command) => {
-            let mut api_client = get_api_client(config).await?;
+            let Some(mut api_client) = run_cancellable(cancellation, get_api_client(config)).await? else {
+                return Ok(());
+            };
             handle_dogstatsd_replay(
                 &mut api_client,
                 &config.domains.dogstatsd.listeners,
@@ -243,13 +248,15 @@ pub(crate) async fn run_dogstatsd_command(
             if command.is_offline() {
                 handle_dogstatsd_top(None, command, output, cancellation).await
             } else {
-                let mut api_client = get_api_client(config).await?;
+                let Some(mut api_client) = run_cancellable(cancellation, get_api_client(config)).await? else {
+                    return Ok(());
+                };
                 handle_dogstatsd_top(Some(&mut api_client), command, output, cancellation).await
             }
         }
         DogstatsdSubcommand::DumpContexts(_) => {
-            let mut api_client = get_api_client(config).await?;
             run_cancellable_command(cancellation, async {
+                let mut api_client = get_api_client(config).await?;
                 handle_dogstatsd_dump_contexts(&mut api_client, output).await
             })
             .await
@@ -257,7 +264,7 @@ pub(crate) async fn run_dogstatsd_command(
     }
 }
 
-async fn run_cancellable<T>(
+pub(super) async fn run_cancellable<T>(
     cancellation: &CancellationToken, command: impl Future<Output = Result<T, GenericError>>,
 ) -> Result<Option<T>, GenericError> {
     tokio::select! {
@@ -363,9 +370,12 @@ async fn handle_dogstatsd_replay(
     #[cfg(not(target_os = "linux"))]
     write_non_linux_replay_origin_tag_warning(output).await?;
 
-    let file = open_replay_capture_file(&cmd.replay_file_path).await?;
+    let Some(file) = run_cancellable(cancel, open_replay_capture_file(&cmd.replay_file_path)).await? else {
+        return Ok(());
+    };
+    let input = CancellableRead::new(file, cancel.clone());
     let Some((mut reader, state)) = run_cancellable_replay_load(cancel, move || {
-        let reader = TrafficCaptureReader::from_file(file)?;
+        let reader = TrafficCaptureReader::from_reader(input)?;
         let state = reader.read_state()?;
         Ok((reader, state))
     })
@@ -557,8 +567,8 @@ where
     tokio::select! {
         biased;
         _ = cancellation.cancelled() => {
-            // A blocking task that has already started can't be interrupted, so it finishes in the background
-            // and its result is discarded. Aborting only prevents a task that hasn't started yet from running.
+            // Aborting only stops a task that hasn't started. A started task runs on in the background and its result
+            // is discarded, so file readers wrap their input in `CancellableRead` to stop early.
             task.abort();
             Ok(None)
         }
@@ -566,6 +576,32 @@ where
             Ok(result) => result.map(Some),
             Err(error) => Err(generic_error!("{task_name} task failed: {error}")),
         },
+    }
+}
+
+/// Fails every read once `cancellation` is cancelled.
+///
+/// A started blocking task can't be interrupted, but one that reads through this stops at its next read.
+pub(super) struct CancellableRead<R> {
+    inner: R,
+    cancellation: CancellationToken,
+}
+
+impl<R> CancellableRead<R> {
+    pub(super) fn new(inner: R, cancellation: CancellationToken) -> Self {
+        Self { inner, cancellation }
+    }
+}
+
+impl<R> Read for CancellableRead<R>
+where
+    R: Read,
+{
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.cancellation.is_cancelled() {
+            return Err(std::io::Error::other("command was cancelled"));
+        }
+        self.inner.read(buf)
     }
 }
 
@@ -1224,6 +1260,18 @@ mod tests {
             .is_none());
     }
 
+    #[test]
+    fn cancelled_replay_capture_load_stops_reading_its_input() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let error =
+            super::TrafficCaptureReader::from_reader(super::CancellableRead::new(&EMPTY_CAPTURE[..], cancellation))
+                .expect_err("cancelled input should stop the capture load");
+
+        assert!(error.to_string().contains("command was cancelled"), "{error:#}");
+    }
+
     #[tokio::test]
     async fn remote_replay_session_started_before_cancellation_is_finished() {
         let cancellation = CancellationToken::new();
@@ -1307,6 +1355,9 @@ mod tests {
         let clamped = compute_target_offset(50, 100, TimestampResolution::Nanoseconds);
         assert_eq!(clamped, Duration::ZERO);
     }
+
+    /// A version 3 capture file that contains no records.
+    const EMPTY_CAPTURE: [u8; 8] = [0xD4, 0x74, 0xD0, 0x60, 0xF3, 0xFF, 0x00, 0x00];
 
     fn remote_file_argument(name: &str, path: &std::path::Path) -> prost_types::Struct {
         prost_types::Struct {

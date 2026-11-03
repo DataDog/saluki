@@ -1,4 +1,4 @@
-use std::{fs::File, path::Path};
+use std::{io::Read, path::Path};
 
 use saluki_error::GenericError;
 
@@ -22,9 +22,9 @@ pub(crate) fn read_report(path: &Path) -> Result<ContextReport, GenericError> {
     Ok(report)
 }
 
-pub(crate) fn read_report_from_file(path: &Path, file: File) -> Result<ContextReport, GenericError> {
+pub(crate) fn read_report_from_reader(path: &Path, reader: impl Read) -> Result<ContextReport, GenericError> {
     let mut report = ContextReport::new();
-    artifact::for_each_record_from_file(path, file, |record| report.ingest(record))?;
+    artifact::for_each_record_from_reader(path, reader, |record| report.ingest(record))?;
     Ok(report)
 }
 
