@@ -476,7 +476,7 @@ fn add_baseline_logs_pipeline_to_blueprint(
 ) -> Result<(), GenericError> {
     // Create the back half of the logs processing pipeline.
     let compression = &shared.endpoints.compression;
-    // TODO: the buffered encoders ignore `metrics_encoding.flush_timeout` and always use its default.
+    // TODO(#3001): pass `shared.metrics_encoding.flush_timeout`; the default preserves existing behavior.
     let dd_logs_config = BufferedIncrementalConfiguration::new(
         DatadogLogsConfiguration::new(&compression.compressor_kind, compression.effective_zstd_level()),
         DEFAULT_ENCODER_FLUSH_TIMEOUT,
@@ -496,7 +496,7 @@ fn add_baseline_events_pipeline_to_blueprint(
 ) -> Result<(), GenericError> {
     let metrics_encoding = &shared.metrics_encoding;
     let compression = &shared.endpoints.compression;
-    // TODO: the buffered encoders ignore `metrics_encoding.flush_timeout` and always use its default.
+    // TODO(#3001): pass `shared.metrics_encoding.flush_timeout`; the default preserves existing behavior.
     let dd_events_config = BufferedIncrementalConfiguration::new(
         DatadogEventsConfiguration {
             max_payload_size: metrics_encoding.max_payload_size,
@@ -520,7 +520,7 @@ fn add_baseline_service_checks_pipeline_to_blueprint(
 ) -> Result<(), GenericError> {
     let metrics_encoding = &shared.metrics_encoding;
     let compression = &shared.endpoints.compression;
-    // TODO: the buffered encoders ignore `metrics_encoding.flush_timeout` and always use its default.
+    // TODO(#3001): pass `shared.metrics_encoding.flush_timeout`; the default preserves existing behavior.
     let dd_service_checks_config = BufferedIncrementalConfiguration::new(
         DatadogServiceChecksConfiguration {
             max_payload_size: metrics_encoding.max_payload_size,
