@@ -33,7 +33,7 @@ fn test_image() -> String {
     std::env::var("PANORAMIC_TEST_IMAGE").unwrap_or_else(|_| "alpine:latest".into())
 }
 
-fn host_ports(count: usize) -> Vec<u16> {
+pub(crate) fn host_ports(count: usize) -> Vec<u16> {
     // Stay above panoramic's runner-host pool (20000–29999) and below default ephemeral ranges
     // (Linux 32768+, macOS/Windows 49152+). The clock separates nextest's per-test processes.
     assert!(count <= 2700);

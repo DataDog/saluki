@@ -33,7 +33,10 @@ use self::{
     ports::{check_host_listeners, PortRegistry, RunnerHostPorts},
     scope::{participant_shared_dir, ScopeRegistry},
 };
-pub(crate) use self::{readiness::StartGate, scope::ScopeLayout};
+pub(crate) use self::{
+    readiness::{PlannedCheck, StartGate},
+    scope::ScopeLayout,
+};
 
 /// Holds the registries and artifact bindings shared across one run's plans.
 ///
@@ -114,6 +117,12 @@ impl<'a> Planner<'a> {
             bindings: manifest.roles,
             catalog,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_port_range(mut self, ports: std::ops::RangeInclusive<u16>) -> Self {
+        self.ports = PortRegistry::over(ports);
+        self
     }
 
     #[cfg(test)]
@@ -326,10 +335,6 @@ impl<C> CasePlan<C> {
 
     /// Returns the readiness checks a consumer waits for before starting.
     /// Unknown participants and typed cases have no gates.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "The lifecycle waits for these before starting consumers.")
-    )]
     pub(crate) fn start_gates(&self, participant: &str) -> &[StartGate] {
         self.start_gates.get(participant).map(Vec::as_slice).unwrap_or(&[])
     }
@@ -501,7 +506,7 @@ fn plan_participants(
 }
 
 #[cfg(test)]
-mod fixtures;
+pub(crate) mod fixtures;
 
 #[cfg(test)]
 mod tests {

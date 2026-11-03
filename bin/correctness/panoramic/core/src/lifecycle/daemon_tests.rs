@@ -1,23 +1,23 @@
-use std::{collections::BTreeSet, future::Future, time::Duration};
+use std::{collections::BTreeSet, future::Future, ops::RangeInclusive, time::Duration};
 
 use airlock::{
     docker::{image_id, Docker},
     driver::{Driver, DriverConfig},
 };
-use bollard::models::ContainerInspectResponse;
+use bollard::models::{ContainerInspectResponse, PortBinding};
 use tokio::time::{timeout, Instant as TokioInstant};
 
 use super::*;
 use crate::{
-    backend::linux_container::daemon_tests::{courier_bytes, remaining_resources},
+    backend::linux_container::daemon_tests::{courier_bytes, host_ports, remaining_resources},
     case::{
         fixtures::{self, FixtureConfig, FixtureTypes},
         CaseLoader, Registries,
     },
-    endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind, Port},
+    endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind, Evidence, Port},
     layout::Realization,
     participant::{EffectiveConfig, RenderedConfig},
-    plan::Planner,
+    plan::{fixtures::evidence_from_env, Planner},
     recipe::{ContainerRecipe, RecipeFile},
     result::ReclaimResult,
 };
@@ -73,14 +73,19 @@ impl ParticipantType for Fixture {
     fn config_files(&self) -> &'static [&'static str] {
         &["settings"]
     }
-    fn endpoints(&self, _: Realization, _: &EffectiveConfig) -> Result<BTreeMap<String, Endpoint>, String> {
-        Ok(BTreeMap::from([("api".into(), Endpoint::http(Port::Fixed(8080)))]))
+    fn endpoints(&self, _: Realization, config: &EffectiveConfig) -> Result<BTreeMap<String, Endpoint>, String> {
+        let mut endpoints = BTreeMap::from([("api".into(), Endpoint::http(Port::Fixed(8080)))]);
+        evidence_from_env(config, &mut endpoints);
+        Ok(endpoints)
+    }
+    fn readiness(&self, realization: Realization, config: &EffectiveConfig) -> Vec<Evidence> {
+        evidence_from_env(config, &mut self.endpoints(realization, config).unwrap())
     }
     fn consumes(&self, _: Realization, _: &EffectiveConfig) -> BTreeMap<String, ConsumedEndpoint> {
         BTreeMap::from([(
             "upstream".into(),
             ConsumedEndpoint {
-                accepts: vec![EndpointKind::Http],
+                accepts: vec![EndpointKind::Http, EndpointKind::UnixDatagram],
                 required: false,
                 delivery: Delivery::Env {
                     keys: BTreeSet::new(),
@@ -108,6 +113,38 @@ impl Observed {
             .await
             .unwrap()
     }
+    async fn assert_consumer_saw_marker(&self) {
+        assert_eq!(
+            self.result.error.as_ref().unwrap().kind,
+            ErrorKind::Evaluation,
+            "{:?}",
+            self.result.error
+        );
+        let consumer = self.driver("consumer");
+        let saw = timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(bytes) = consumer.read_file("/airlock/consumer/shared/saw").await.unwrap() {
+                    if !bytes.is_empty() {
+                        break bytes;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the consumer must record whether the server's marker existed at startup");
+        assert_eq!(saw, b"yes\n");
+        assert_eq!(self.result.phase_timings.last().unwrap().phase, "start:consumer");
+    }
+
+    async fn assert_consumer_never_started(&self) {
+        assert_eq!(self.result.error.as_ref().unwrap().kind, ErrorKind::Setup);
+        assert_eq!(self.result.phase_timings.last().unwrap().phase, "start:consumer");
+        let state = self.container("consumer").await.state.unwrap();
+        assert_eq!(state.running, Some(false));
+        assert!(state.started_at.unwrap().starts_with("0001"));
+    }
+
     fn driver(&self, name: &str) -> Driver {
         Driver::from_config(
             self.plan.scope().unwrap().id(),
@@ -119,6 +156,13 @@ impl Observed {
 
 async fn with_case<F: Future<Output = ()> + Send + 'static>(
     participants: &str, check: impl FnOnce(Observed) -> F + Send + 'static,
+) {
+    with_case_on_ports(participants, 20000..=29999, check).await;
+}
+
+// HTTP scenarios use randomized ports outside the production pool to isolate concurrent test runs.
+async fn with_case_on_ports<F: Future<Output = ()> + Send + 'static>(
+    participants: &str, ports: RangeInclusive<u16>, check: impl FnOnce(Observed) -> F + Send + 'static,
 ) {
     let backends = Arc::new(RunBackends::default());
     let docker = airlock::docker::connect().expect("Docker daemon is unavailable; check DOCKER_HOST");
@@ -147,6 +191,7 @@ async fn with_case<F: Future<Output = ()> + Send + 'static>(
         .remove(0);
     let plan = Planner::new(registries, Default::default())
         .unwrap()
+        .with_port_range(ports)
         .compile(case, Os::Linux)
         .unwrap()
         .into_plan()
@@ -371,6 +416,151 @@ async fn a_recipe_naming_a_declared_binary_as_its_image_fails_creation_naming_th
             "recipe of participant 'subject' names role 'courier-linux-binary', which is not a Linux image",
         );
         assert_eq!(view.result.phase_timings.last().unwrap().phase, "create:subject");
+    })
+    .await;
+}
+
+fn readiness_case(endpoint: &str, evidence: &[(&str, &str)], script: &str) -> String {
+    let mut env = evidence.iter().copied().collect::<BTreeMap<_, _>>();
+    env.insert("SCRIPT", script);
+    let env = serde_json::to_string(&env).unwrap();
+    format!(
+        r#"
+  consumer:
+    type: fixture
+    subject: true
+    connect: {{upstream: server.{endpoint}}}
+    config:
+      env:
+        SCRIPT: >-
+          if [ -f /airlock/server/shared/marker ]; then echo yes; else echo no; fi
+          > /airlock/consumer/shared/saw;
+          exec sleep 60
+  server:
+    type: fixture
+    config: {{env: {env}}}
+"#
+    )
+}
+
+fn http_script(status: u16, delay: bool) -> String {
+    let start = if delay {
+        "sleep 1; touch /airlock/server/shared/marker;"
+    } else {
+        ""
+    };
+    format!(
+        r#"{start}
+exec nc -lk -s 0.0.0.0 -p 8080 -e sh -c '
+while IFS= read -r line; do
+    [ "$line" = "$(printf "\r")" ] && break
+done
+printf "HTTP/1.1 {status} Status\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+'"#
+    )
+}
+
+#[tokio::test]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn a_consumer_starts_only_after_its_servers_endpoint_accepts_tcp_connections() {
+    let case = readiness_case(
+        "api",
+        &[("READY_TCP", "api")],
+        "sleep 1; touch /airlock/server/shared/marker; exec nc -lk -p 8080 -e cat",
+    );
+    with_case(&case, |view| async move {
+        view.assert_consumer_saw_marker().await;
+        assert!(view.plan.runner_host_ports("server").is_empty());
+    })
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn a_consumer_waits_for_its_servers_http_endpoint_to_answer_200_through_a_published_port() {
+    let case = readiness_case("api", &[("READY_HTTP", "/ready")], &http_script(200, true));
+    let port = host_ports(1)[0];
+    with_case_on_ports(&case, port..=port, |view| async move {
+        view.assert_consumer_saw_marker().await;
+        let ports = view.plan.runner_host_ports("server");
+        assert_eq!(ports.len(), 1);
+        assert_eq!(ports[0].container_port, 8080);
+        let config = view.container("server").await.host_config.unwrap();
+        assert_eq!(
+            config.port_bindings,
+            Some(std::collections::HashMap::from([(
+                "8080/tcp".into(),
+                Some(vec![PortBinding {
+                    host_ip: Some("127.0.0.1".into()),
+                    host_port: Some(ports[0].host_port.to_string()),
+                }])
+            ),]))
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn an_endpoint_that_never_answers_200_fails_its_consumers_start_within_its_bound() {
+    let case = readiness_case(
+        "api",
+        &[("READY_HTTP", "/ready"), ("READY_WITHIN", "2")],
+        &http_script(503, false),
+    );
+    let port = host_ports(1)[0];
+    with_case_on_ports(&case, port..=port, |view| async move {
+        view.assert_consumer_never_started().await;
+        let expected = "participant 'consumer' cannot start: http-ok on 'api' at '/ready' of participant 'server' \
+                        was not ready within 2s: answered HTTP 503";
+        assert_eq!(view.result.error.as_ref().unwrap().message, expected);
+        let phase = view.result.phase_timings.last().unwrap();
+        assert!(phase.duration >= Duration::from_secs(2), "{phase:?}");
+        assert!(phase.duration < Duration::from_secs(5), "{phase:?}");
+    })
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn a_consumer_waits_for_its_servers_socket_and_file() {
+    for script in [
+        "sleep 1; ln -sf /airlock/server/shared/log.sock /dev/log; syslogd -O -; \
+         sleep 1; touch /airlock/server/shared/marker; touch /ready; exec sleep 60",
+        "sleep 1; touch /ready; sleep 1; touch /airlock/server/shared/marker; \
+         ln -sf /airlock/server/shared/log.sock /dev/log; exec syslogd -n -O -",
+    ] {
+        let case = readiness_case(
+            "log",
+            &[
+                ("READY_SOCKET", "{{self.facts.shared_dir}}/log.sock"),
+                ("READY_FILE", "/ready"),
+            ],
+            script,
+        );
+        with_case(&case, |view| async move {
+            view.assert_consumer_saw_marker().await;
+        })
+        .await;
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn a_server_that_exits_before_accepting_fails_its_consumers_start_without_waiting_out_its_bound() {
+    let case = readiness_case("api", &[("READY_TCP", "api")], "exit 3");
+    with_case(&case, |view| async move {
+        view.assert_consumer_never_started().await;
+        let message = &view.result.error.as_ref().unwrap().message;
+        let expected = "participant 'consumer' cannot start: checking tcp-accepts on 'api' of participant 'server' \
+                        failed: The courier probe to tcp://server:8080 failed: ";
+        let failure = message.strip_prefix(expected).unwrap_or_else(|| panic!("{message}"));
+        // Docker can refuse the exec or report exit 126 if the container exits after exec creation.
+        let exited = "The courier never ran (exit 126); check that the binary is installed, executable \
+                      and built for the container architecture";
+        assert!(failure.starts_with("exec failed: ") || failure == exited, "{message}");
+        let phase = view.result.phase_timings.last().unwrap();
+        assert!(phase.duration < Duration::from_secs(10), "{phase:?}");
     })
     .await;
 }

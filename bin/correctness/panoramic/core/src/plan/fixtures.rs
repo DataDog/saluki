@@ -1,3 +1,5 @@
+//! Participant types and readiness declarations for planning and lifecycle tests.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
@@ -18,6 +20,53 @@ use crate::{
     layout::{Os, Realization, RealizationKind},
     participant::{CaseValues, EffectiveConfig, FactDeclaration, ParticipantType},
 };
+
+/// Attaches endpoint evidence and returns participant evidence from the fixture's `READY_*` variables.
+pub(crate) fn evidence_from_env(config: &EffectiveConfig, endpoints: &mut BTreeMap<String, Endpoint>) -> Vec<Evidence> {
+    let owner = config.env.get("READY_ON").map(String::as_str).unwrap_or("api");
+    if let Some(endpoint) = config.env.get("READY_TCP") {
+        endpoints.get_mut(owner).unwrap().ready = Some(Evidence::tcp_accepts(endpoint));
+    }
+    if let Some(path) = config.env.get("READY_HTTP") {
+        endpoints.get_mut(owner).unwrap().ready = Some(Evidence::http_ok("api", path));
+    }
+    if let Some(path) = config.env.get("READY_SOCKET") {
+        let endpoint = config
+            .env
+            .get("READY_SOCKET_TARGET")
+            .map(String::as_str)
+            .unwrap_or("log");
+        endpoints.insert(
+            "log".into(),
+            Endpoint::unix_datagram(path).with_ready(Evidence::socket_exists(endpoint)),
+        );
+    }
+    if let Some(within) = config.env.get("READY_WITHIN") {
+        for endpoint in endpoints.values_mut() {
+            endpoint.ready = endpoint
+                .ready
+                .take()
+                .map(|evidence| evidence.within(Duration::from_secs(within.parse().unwrap())));
+        }
+    }
+    ["READY_FILE", "READY_FILE_2"]
+        .into_iter()
+        .filter_map(|key| {
+            config.env.get(key).map(|path| {
+                let path = match config.params.get("mode").and_then(serde_json::Value::as_str) {
+                    Some("late-path") => "{{self.late.ip}}/ready",
+                    Some("malformed-path") => "{{unfinished",
+                    _ => path,
+                };
+                let evidence = Evidence::file_exists(path);
+                match config.env.get("READY_WITHIN") {
+                    Some(within) => evidence.within(Duration::from_secs(within.parse().unwrap())),
+                    None => evidence,
+                }
+            })
+        })
+        .collect()
+}
 
 pub(super) struct ReadyServer;
 
@@ -62,53 +111,12 @@ impl ParticipantType for ReadyServer {
             ("api".into(), api),
             ("metrics".into(), Endpoint::udp(Port::Fixed(9000))),
         ]);
-        let owner = config.env.get("READY_ON").map(String::as_str).unwrap_or("api");
-        if let Some(endpoint) = config.env.get("READY_TCP") {
-            endpoints.get_mut(owner).unwrap().ready = Some(Evidence::tcp_accepts(endpoint));
-        }
-        if let Some(path) = config.env.get("READY_HTTP") {
-            endpoints.get_mut(owner).unwrap().ready = Some(Evidence::http_ok("api", path));
-        }
-        if let Some(path) = config.env.get("READY_SOCKET") {
-            let endpoint = config
-                .env
-                .get("READY_SOCKET_TARGET")
-                .map(String::as_str)
-                .unwrap_or("log");
-            endpoints.insert(
-                "log".into(),
-                Endpoint::unix_datagram(path).with_ready(Evidence::socket_exists(endpoint)),
-            );
-        }
-        if let Some(within) = config.env.get("READY_WITHIN") {
-            for endpoint in endpoints.values_mut() {
-                endpoint.ready = endpoint
-                    .ready
-                    .take()
-                    .map(|evidence| evidence.within(Duration::from_secs(within.parse().unwrap())));
-            }
-        }
+        evidence_from_env(config, &mut endpoints);
         Ok(endpoints)
     }
 
-    fn readiness(&self, _realization: Realization, config: &EffectiveConfig) -> Vec<Evidence> {
-        ["READY_FILE", "READY_FILE_2"]
-            .into_iter()
-            .filter_map(|key| {
-                config.env.get(key).map(|path| {
-                    let path = match config.params.get("mode").and_then(serde_json::Value::as_str) {
-                        Some("late-path") => "{{self.late.ip}}/ready",
-                        Some("malformed-path") => "{{unfinished",
-                        _ => path,
-                    };
-                    let evidence = Evidence::file_exists(path);
-                    match config.env.get("READY_WITHIN") {
-                        Some(within) => evidence.within(Duration::from_secs(within.parse().unwrap())),
-                        None => evidence,
-                    }
-                })
-            })
-            .collect()
+    fn readiness(&self, realization: Realization, config: &EffectiveConfig) -> Vec<Evidence> {
+        evidence_from_env(config, &mut self.endpoints(realization, config).unwrap())
     }
 
     fn consumes(&self, realization: Realization, config: &EffectiveConfig) -> BTreeMap<String, ConsumedEndpoint> {

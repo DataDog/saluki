@@ -42,10 +42,10 @@ The daemon suite runs separately from the Linux integration cases.
 
 Panoramic's daemon tests exercise native case creation and the Linux container backend against a real Docker daemon:
 scope preparation and removal, creating participants from recipes with files, the courier and host mounts, command
-execution, file reads and status, and courier probes and sends. They also check HTTP responses through published TCP ports,
-courier probes of published ports with no listener, explicit loopback bindings, held-port startup failures,
-and courier routes to exited participants. Container probes and raw sends run inside the server because port proxies can
-accept connections even when the server has no listener.
+execution, file reads and status, courier probes and sends, and readiness gates before consumers start. They also check
+HTTP responses through published TCP ports, courier probes of published ports with no listener, explicit loopback bindings,
+held-port startup failures, and courier routes to exited participants. Container probes and raw sends run inside the server
+because port proxies can accept connections even when the server has no listener.
 They are ignored by default. Run them with `make test-panoramic-daemon`, which builds the Linux courier first.
 `PANORAMIC_TEST_IMAGE` defaults to `alpine:latest`; load it first, because these tests never pull images.
 They fail if the daemon, image or courier is missing.
@@ -194,8 +194,8 @@ Panoramic routes a participant case to the integration runner when every partici
 route on the selected subject OS. `agent-adp` has one on Linux, macOS and Windows. The integration runner translates
 the case and runs it in a Linux or Windows container with default settings, or as host processes on macOS.
 Other participant cases use native execution. Panoramic prepares each case's scope, creates participants in create
-order from verified image IDs, and starts each start level together. Native Linux container runs end after startup
-with an evaluation error. Each case keeps its chosen route.
+order from verified image IDs, and starts each level once the readiness evidence of the servers it connects to is
+observed. Native Linux container runs end after startup with an evaluation error. Each case keeps its chosen route.
 
 The integration runner's translation supports this subset of the schema:
 
