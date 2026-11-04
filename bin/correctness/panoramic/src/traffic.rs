@@ -995,8 +995,7 @@ mod tests {
 
         #[tokio::test]
         async fn an_unreachable_intake_records_the_full_collection_error() {
-            let closed = closed_port();
-            let manifest = capture(closed.port(), &CancellationToken::new(), Duration::from_secs(5)).await;
+            let manifest = capture(closed_port(), &CancellationToken::new(), Duration::from_secs(5)).await;
 
             let reason = unavailable_reason(&manifest);
             assert!(

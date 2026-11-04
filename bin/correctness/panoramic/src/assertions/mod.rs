@@ -1106,8 +1106,7 @@ mod tests {
         let auth_token = dir.path().join("auth_token");
         std::fs::write(&auth_token, "token").expect("the auth token should be writable");
         let missing = dir.path().join("missing");
-        let reserved = closed_port();
-        let closed = reserved.port();
+        let closed = closed_port();
         let cancel = CancellationToken::new();
         let mut ctx = context(&cancel, None);
         ctx.port_mappings.insert("1234/tcp".to_string(), closed);
@@ -1159,8 +1158,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir should be creatable");
         let directory = dir.path().display().to_string();
         let missing = dir.path().join("missing");
-        let reserved = closed_port();
-        let closed = reserved.port();
+        let closed = closed_port();
         let context_with = |configure: &dyn Fn(&mut AssertionContext)| {
             let mut ctx = context(&CancellationToken::new(), None);
             configure(&mut ctx);

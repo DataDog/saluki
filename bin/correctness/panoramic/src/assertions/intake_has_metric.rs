@@ -496,7 +496,7 @@ mod tests {
         create_assertion, Assertion as _, AssertionContext, AssertionResult, AssertionStatus, LogBuffer, TargetCommand,
     };
     use crate::config::{AssertionConfig, AssertionStep, IntegrationConfig, MetricTypeMatcher, TagMatch};
-    use crate::intake::test_server::{closed_port, install_crypto_provider, ClosedPort, MockIntake};
+    use crate::intake::test_server::{closed_port, install_crypto_provider, MockIntake};
     use crate::intake::IntakeClient;
 
     fn count(value: f64) -> Value {
@@ -562,9 +562,9 @@ mod tests {
         assertion.failure_message("Summary.".to_string(), Some(&snapshot(metrics)), None)
     }
 
-    /// Returns a context pointing at `intake_port`.
+    /// Returns a context pointing at `intake_port`, or at a port with no listener when it is `None`.
     fn context_for(
-        cancel_token: CancellationToken, container_exit_token: CancellationToken, intake_port: u16,
+        cancel_token: CancellationToken, container_exit_token: CancellationToken, intake_port: Option<u16>,
     ) -> AssertionContext {
         install_crypto_provider();
 
@@ -579,7 +579,7 @@ mod tests {
             is_host_process: false,
             host_process_exit_code: None,
             docker_container_exit_code: None,
-            intake_host_port: Some(intake_port),
+            intake_host_port: Some(intake_port.unwrap_or_else(closed_port)),
             core_agent_auth_token_path: None,
             adp_cli_command: TargetCommand::new(vec!["panoramic-unused-cli-program".to_string()]),
             core_agent_cli_command: TargetCommand::new(vec!["panoramic-unused-cli-program".to_string()]),
@@ -596,14 +596,8 @@ mod tests {
     }
 
     /// Returns a context pointing at a port with no listener, so every intake poll fails.
-    ///
-    /// The port stays closed for as long as the returned [`ClosedPort`] is kept.
-    fn context(
-        cancel_token: CancellationToken, container_exit_token: CancellationToken,
-    ) -> (AssertionContext, ClosedPort) {
-        let closed = closed_port();
-        let ctx = context_for(cancel_token, container_exit_token, closed.port());
-        (ctx, closed)
+    fn context(cancel_token: CancellationToken, container_exit_token: CancellationToken) -> AssertionContext {
+        context_for(cancel_token, container_exit_token, None)
     }
 
     fn polling_assertion(timeout: Duration) -> IntakeHasMetricAssertion {
@@ -629,7 +623,7 @@ mod tests {
     async fn target_exit_fails_without_waiting_out_the_timeout() {
         let container_exit_token = CancellationToken::new();
         container_exit_token.cancel();
-        let (ctx, _closed) = context(CancellationToken::new(), container_exit_token);
+        let ctx = context(CancellationToken::new(), container_exit_token);
 
         let result = check(&polling_assertion(Duration::from_secs(600)), &ctx).await;
 
@@ -645,7 +639,7 @@ mod tests {
     async fn a_step_shorter_than_the_probe_limit_ends_at_its_own_deadline() {
         // Giving the first poll a full probe limit would hold a short step up to 10s past its own budget.
         let intake = MockIntake::unresponsive().await;
-        let ctx = context_for(CancellationToken::new(), CancellationToken::new(), intake.port());
+        let ctx = context_for(CancellationToken::new(), CancellationToken::new(), Some(intake.port()));
 
         let result = check(&polling_assertion(Duration::from_millis(200)), &ctx).await;
 
@@ -661,7 +655,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_intake_port_fails_immediately() {
-        let (mut ctx, _closed) = context(CancellationToken::new(), CancellationToken::new());
+        let mut ctx = context(CancellationToken::new(), CancellationToken::new());
         ctx.intake_host_port = None;
 
         let result = check(&polling_assertion(Duration::from_secs(600)), &ctx).await;
@@ -678,8 +672,11 @@ mod tests {
     async fn cancellation_and_timeout_are_reported_distinctly() {
         let cancel_token = CancellationToken::new();
         cancel_token.cancel();
-        let (ctx, _closed) = context(cancel_token, CancellationToken::new());
-        let cancelled = check(&polling_assertion(Duration::from_secs(600)), &ctx).await;
+        let cancelled = check(
+            &polling_assertion(Duration::from_secs(600)),
+            &context(cancel_token, CancellationToken::new()),
+        )
+        .await;
 
         assert_eq!(cancelled.status, AssertionStatus::Errored, "{}", cancelled.message);
         assert!(
@@ -693,8 +690,11 @@ mod tests {
             cancelled.message
         );
 
-        let (ctx, _closed) = context(CancellationToken::new(), CancellationToken::new());
-        let timed_out = check(&polling_assertion(Duration::from_millis(300)), &ctx).await;
+        let timed_out = check(
+            &polling_assertion(Duration::from_millis(300)),
+            &context(CancellationToken::new(), CancellationToken::new()),
+        )
+        .await;
 
         assert_eq!(timed_out.status, AssertionStatus::Errored, "{}", timed_out.message);
         assert!(
@@ -753,7 +753,7 @@ mod tests {
             metric_json("split.counter", &["source:test"], &[rate(0.3)]),
         ]))
         .await;
-        let ctx = context_for(CancellationToken::new(), exited(), intake.port());
+        let ctx = context_for(CancellationToken::new(), exited(), Some(intake.port()));
 
         let mut total = subset(
             "split.counter",
@@ -909,7 +909,7 @@ mod tests {
             &[gauge(4.0)]
         )]))
         .await;
-        let ctx = context_for(CancellationToken::new(), exited(), intake.port());
+        let ctx = context_for(CancellationToken::new(), exited(), Some(intake.port()));
 
         let build = |tags_match: &str| {
             let yaml = format!(
