@@ -186,12 +186,13 @@ mod tests {
     fn datadog_configuration_source_depends_only_on_go_duration_through_normal_links() {
         let workspace = workspace();
         let dependencies = Dependencies::new(workspace.member(DATADOG_CONFIG).unwrap(), Links::Normal);
-        let routes: Vec<String> = dependencies
+        let mut routes: Vec<String> = dependencies
             .workspace_members()
             .filter(|package| package.name() != "go-duration")
             .filter_map(|package| dependencies.route_to(&package))
             .map(|route| route.to_string())
             .collect();
+        routes.sort();
         assert!(
             routes.is_empty(),
             "`{DATADOG_CONFIG}` may depend only on `go-duration` through normal links:\n{}",
