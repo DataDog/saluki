@@ -1,8 +1,18 @@
 //! The `agent-adp` participant type: the Core Agent and ADP running together.
+//!
+//! Uses the default ten-second stop grace; s6 stops both services in about 2.6 s.
+
+use std::collections::BTreeMap;
 
 use panoramic_core::artifact::{ArtifactKind, ArtifactRole};
+use panoramic_core::endpoint::{ConsumedEndpoint, Endpoint};
 use panoramic_core::layout::{Os, Realization, RealizationKind};
-use panoramic_core::participant::{FactDeclaration, ParticipantType};
+use panoramic_core::participant::{
+    CaseValues, EffectiveConfig, FactDeclaration, ParticipantType, ProcessSpec, RenderedConfig,
+};
+use panoramic_core::recipe::Recipe;
+
+mod linux;
 
 /// The Core Agent and ADP running together.
 pub struct AgentAdp;
@@ -65,6 +75,53 @@ impl ParticipantType for AgentAdp {
         }
     }
 
+    fn recipe(&self, realization: Realization, config: &RenderedConfig) -> Result<Recipe, String> {
+        match (realization.os, realization.kind) {
+            (Os::Linux, RealizationKind::LinuxContainer) => linux::recipe(config),
+            _ => Err(format!(
+                "participant type '{}' has no recipe for {} on {}",
+                Self::NAME,
+                realization.kind.name(),
+                realization.os.name()
+            )),
+        }
+    }
+
+    fn validate_config(&self, realization: Realization, config: &CaseValues) -> Result<(), String> {
+        if matches!(
+            (realization.os, realization.kind),
+            (Os::Linux, RealizationKind::LinuxContainer)
+        ) {
+            let mut env = linux::default_env();
+            env.extend(config.env.clone());
+            linux::endpoints(&env)?;
+        }
+        Ok(())
+    }
+
+    fn default_env(&self, realization: Realization, _: &CaseValues) -> BTreeMap<String, String> {
+        match (realization.os, realization.kind) {
+            (Os::Linux, RealizationKind::LinuxContainer) => linux::default_env(),
+            _ => BTreeMap::new(),
+        }
+    }
+
+    fn endpoints(
+        &self, realization: Realization, config: &EffectiveConfig,
+    ) -> Result<BTreeMap<String, Endpoint>, String> {
+        match (realization.os, realization.kind) {
+            (Os::Linux, RealizationKind::LinuxContainer) => linux::endpoints(&config.env),
+            _ => Ok(BTreeMap::new()),
+        }
+    }
+
+    fn consumes(&self, realization: Realization, _: &EffectiveConfig) -> BTreeMap<String, ConsumedEndpoint> {
+        match (realization.os, realization.kind) {
+            (Os::Linux, RealizationKind::LinuxContainer) => linux::consumes(),
+            _ => BTreeMap::new(),
+        }
+    }
+
     /// `default_log_file` follows ADP's `PlatformSettings::get_default_log_file_path()` in
     /// Linux and Windows containers.
     fn facts(&self, realization: Realization) -> &'static [FactDeclaration] {
@@ -84,12 +141,17 @@ impl ParticipantType for AgentAdp {
     fn processes(&self) -> &'static [&'static str] {
         &["adp", "agent"]
     }
+
+    fn process_specs(&self, realization: Realization) -> &'static [ProcessSpec] {
+        match (realization.os, realization.kind) {
+            (Os::Linux, RealizationKind::LinuxContainer) => &linux::PROCESS_SPECS,
+            _ => &[],
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use panoramic_core::participant::EffectiveConfig;
-
     use super::*;
 
     #[test]
@@ -158,10 +220,18 @@ mod tests {
     }
 
     #[test]
-    fn agent_adp_serves_and_consumes_no_endpoints_on_any_supported_realization() {
+    fn agent_adp_keeps_macos_and_windows_declarations_unchanged() {
         let config = EffectiveConfig::default();
-        for &(os, kind) in AgentAdp.supports() {
+        for &(os, kind) in &AgentAdp.supports()[1..] {
             let realization = Realization { os, kind };
+            assert!(AgentAdp.default_env(realization, &CaseValues::default()).is_empty());
+            assert!(AgentAdp.process_specs(realization).is_empty());
+            assert!(AgentAdp
+                .recipe(
+                    realization,
+                    &panoramic_core::recipe::test_support::rendered(BTreeMap::new(), BTreeMap::new())
+                )
+                .is_err());
             assert!(AgentAdp.endpoints(realization, &config).unwrap().is_empty());
             assert!(AgentAdp.consumes(realization, &config).is_empty());
         }

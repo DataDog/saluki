@@ -631,7 +631,7 @@ test-panoramic-daemon: ## Runs panoramic's backend, lifecycle and runner daemon 
 test-panoramic-products: check-rust-build-tools cargo-install-cargo-nextest build-courier-linux
 test-panoramic-products: ## Runs native product tests with local images ($PANORAMIC_AGENT_ADP_LINUX_IMAGE and $PANORAMIC_TOOLS_LINUX_IMAGE)
 	@echo "[*] Running panoramic product tests..."
-	cargo nextest run -p panoramic --run-ignored only --no-fail-fast -E 'test(/^runner::product_tests::/)'
+	cargo nextest run -p panoramic --run-ignored only --no-fail-fast --test-threads 1 -E 'test(/^runner::product_tests::/)'
 
 .PHONY: test-all
 test-all: ## Test everything

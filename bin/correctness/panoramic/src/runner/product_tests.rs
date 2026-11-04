@@ -8,6 +8,7 @@ use panoramic_core::{
     endpoint::EndpointOperation,
     probe::{AttemptLimits, POLL_INTERVAL},
     record::{AssertionStatus, StepReport},
+    result::{ExitSource, ProcessExitReport},
     step::{test_support, Need, Step, StepContext, StepFactory, StepFields},
 };
 use panoramic_participants::{AgentAdp, TOOLS_LINUX_IMAGE};
@@ -119,18 +120,7 @@ impl StepFactory for ForwardFactory {
 #[ignore = "needs product images; run with make test-panoramic-products"]
 async fn two_intakes_are_ready_independently_and_keep_their_own_forwarded_packets() {
     let _ = crate::default_crypto_provider().install_default();
-    let bindings = [
-        (AgentAdp::LINUX_IMAGE, "PANORAMIC_AGENT_ADP_LINUX_IMAGE"),
-        (TOOLS_LINUX_IMAGE, "PANORAMIC_TOOLS_LINUX_IMAGE"),
-    ]
-    .into_iter()
-    .map(|(role, key)| {
-        (
-            role.name.into(),
-            std::env::var(key).unwrap_or_else(|_| role.local_default.into()),
-        )
-    })
-    .collect::<BTreeMap<_, _>>();
+    let bindings = product_bindings();
     let (_logs, report) = run_native_case(
         panoramic_participants::REGISTERED_TYPES,
         &[&ForwardFactory],
@@ -158,5 +148,333 @@ async fn two_intakes_are_ready_independently_and_keep_their_own_forwarded_packet
         assert_eq!(process["name"], "intake");
         assert_eq!(process["exit"]["state"], "running");
         assert_eq!(process["exit"]["source"], "container");
+    }
+}
+
+fn product_bindings() -> BTreeMap<String, String> {
+    [
+        (AgentAdp::LINUX_IMAGE, "PANORAMIC_AGENT_ADP_LINUX_IMAGE"),
+        (TOOLS_LINUX_IMAGE, "PANORAMIC_TOOLS_LINUX_IMAGE"),
+    ]
+    .into_iter()
+    .map(|(role, key)| {
+        (
+            role.name.into(),
+            std::env::var(key).unwrap_or_else(|_| role.local_default.into()),
+        )
+    })
+    .collect()
+}
+
+const AGENT_BUDGET: Duration = Duration::from_secs(120);
+
+#[derive(Clone, Copy, Debug)]
+enum AgentAction {
+    Metrics,
+    Restart,
+}
+
+#[async_trait]
+impl Step for AgentAction {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Metrics => "metrics",
+            Self::Restart => "restart",
+        }
+    }
+
+    fn needs(&self) -> Vec<Need> {
+        let mut needs = vec![
+            Need::Process("adp".into(), "adp".into()),
+            Need::Process("adp".into(), "agent".into()),
+        ];
+        if matches!(self, Self::Metrics) {
+            needs.extend([
+                Need::Endpoint("adp".into(), "dogstatsd_udp".into(), EndpointOperation::Send),
+                Need::Endpoint("intake".into(), "api".into(), EndpointOperation::Request),
+            ]);
+        }
+        needs
+    }
+
+    fn budget(&self) -> Duration {
+        AGENT_BUDGET
+    }
+
+    async fn run(&self, cx: &StepContext<'_>) -> StepReport {
+        let started = Instant::now();
+        let ready = regex::Regex::new(r#"listen_addr:"udp://[^"]+:58125" \| DogStatsD listener started\."#).unwrap();
+        let outcome = tokio::time::timeout(AGENT_BUDGET, async {
+            loop {
+                let lines = test_support::process_output(cx, "adp", "adp")?;
+                if lines.iter().any(|line| ready.is_match(line)) {
+                    break;
+                }
+                if !matches!(
+                    test_support::process_exit(cx, "adp", "adp"),
+                    Some(ProcessExitReport::Running { .. })
+                ) {
+                    return Err(format!(
+                        "ADP exited before its listener was ready: {:?}; output: {lines:?}",
+                        test_support::process_exit(cx, "adp", "adp")
+                    ));
+                }
+                tokio::time::sleep(POLL_INTERVAL).await;
+            }
+            match self {
+                Self::Metrics => {
+                    let port = test_support::runner_host_port(cx, "intake", "api", EndpointOperation::Request)
+                        .ok_or("intake.api has no runner-host port")?;
+                    let intake = IntakeClient::new(port);
+                    loop {
+                        test_support::send(cx, "adp", "dogstatsd_udp", PACKET).await?;
+                        let limits = AttemptLimits::new(AGENT_BUDGET.saturating_sub(started.elapsed()));
+                        let metrics = tokio::time::timeout(limits.attempt, intake.metrics())
+                            .await
+                            .map_err(|error| error.to_string())?
+                            .map_err(|error| error.to_string())?;
+                        if metrics.iter().any(|metric| metric.context().name() == "panoramic.test") {
+                            return Ok("ADP delivered the counter to its connected intake".to_string());
+                        }
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                    }
+                }
+                Self::Restart => {
+                    let old_pid = test_support::exec(
+                        cx,
+                        "adp",
+                        &["s6-svstat", "-o", "pid", "/var/run/s6/services/data-plane"],
+                    )
+                    .await?;
+                    if old_pid.exit_code != 0 {
+                        return Err(format!("cannot read ADP's supervised PID: {:?}", old_pid.stderr));
+                    }
+                    let killed =
+                        test_support::exec(cx, "adp", &["s6-svc", "-k", "/var/run/s6/services/data-plane"]).await?;
+                    if killed.exit_code != 0 {
+                        return Err(format!("s6-svc failed: {:?}", killed.stderr));
+                    }
+                    loop {
+                        match test_support::process_exit(cx, "adp", "adp") {
+                            Some(ProcessExitReport::Running { .. }) => {}
+                            Some(ProcessExitReport::Exited {
+                                code: None,
+                                signal: Some(9),
+                                source: ExitSource::Record,
+                                ..
+                            }) => break,
+                            other => return Err(format!("expected a recorded signal 9 death, got {other:?}")),
+                        }
+                        tokio::time::sleep(POLL_INTERVAL).await;
+                    }
+                    loop {
+                        let lines = test_support::process_output(cx, "adp", "adp")?;
+                        let restarted = lines.iter().filter(|line| ready.is_match(line)).count() >= 2;
+                        if restarted && lines.iter().any(|line| line.contains("restarting in 2 seconds")) {
+                            break;
+                        }
+                        tokio::time::sleep(POLL_INTERVAL).await;
+                    }
+                    let new_pid = test_support::exec(
+                        cx,
+                        "adp",
+                        &["s6-svstat", "-o", "pid", "/var/run/s6/services/data-plane"],
+                    )
+                    .await?;
+                    if new_pid.exit_code != 0 || old_pid.stdout == new_pid.stdout || new_pid.stdout == b"-1\n" {
+                        return Err(format!(
+                            "ADP did not restart with a new PID: {:?} -> {:?}",
+                            old_pid.stdout, new_pid.stdout
+                        ));
+                    }
+                    if !matches!(
+                        test_support::process_exit(cx, "adp", "agent"),
+                        Some(ProcessExitReport::Running { .. })
+                    ) {
+                        return Err("the Agent stopped during ADP's restart".into());
+                    }
+                    Ok("ADP's signal death was recorded and its supervisor restarted it".into())
+                }
+            }
+        })
+        .await;
+        let (status, message) = match outcome {
+            Ok(Ok(message)) => (AssertionStatus::Passed, message),
+            Ok(Err(message)) => (AssertionStatus::Errored, message),
+            Err(_) => (
+                AssertionStatus::Failed,
+                "product observation did not complete within two minutes".into(),
+            ),
+        };
+        StepReport::new(started, status, message)
+    }
+}
+
+impl StepFactory for AgentAction {
+    fn name(&self) -> &'static str {
+        Step::name(self)
+    }
+    fn build(&self, _: &StepFields) -> Result<Box<dyn Step>, String> {
+        Ok(Box::new(*self))
+    }
+}
+
+fn connected_case(step: &str) -> serde_json::Value {
+    json!({
+        "timeout": "180s", "subject_os": ["linux"],
+        "participants": {
+            "intake": {"type": "datadog-intake"},
+            "adp": {"type": "agent-adp", "subject": true, "connect": {"intake": "intake.api"}, "config": {"env": {
+                "DD_API_KEY": "00000000000000000000000000000000", "DD_HOSTNAME": "panoramic-product",
+                "DD_DATA_PLANE_ENABLED": "true", "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DOGSTATSD_NON_LOCAL_TRAFFIC": "true",
+            }}},
+        },
+        "procedure": [{"step": step}],
+    })
+}
+
+#[tokio::test]
+#[ignore = "needs product images; run with make test-panoramic-products"]
+async fn agent_adp_delivers_dogstatsd_metrics_to_its_connected_intake() {
+    let _ = crate::default_crypto_provider().install_default();
+    let (_logs, report) = run_native_case(
+        panoramic_participants::REGISTERED_TYPES,
+        &[&AgentAction::Metrics],
+        connected_case("metrics"),
+        product_bindings(),
+        CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(report["outcome"], "passed", "{report:#}");
+    assert_eq!(report["assertions"][0]["status"], "passed");
+    let phases = report["phase_timings"].as_array().unwrap();
+    let position = |name: &str| phases.iter().position(|phase| phase["phase"] == name).unwrap();
+    assert!(position("start:intake") < position("start:adp"));
+}
+
+#[tokio::test]
+#[ignore = "needs product images; run with make test-panoramic-products"]
+async fn a_killed_adp_is_recorded_as_a_signal_death_and_restarted_by_its_supervisor() {
+    let _ = crate::default_crypto_provider().install_default();
+    let (_logs, report) = run_native_case(
+        panoramic_participants::REGISTERED_TYPES,
+        &[&AgentAction::Restart],
+        connected_case("restart"),
+        product_bindings(),
+        CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(report["outcome"], "passed", "{report:#}");
+    let adp = &report["participants"][0];
+    assert_eq!(adp["name"], "adp");
+    let processes = adp["processes"].as_array().unwrap();
+    assert_eq!(processes[0]["name"], "adp");
+    assert_eq!(
+        processes[0]["exit"],
+        json!({"state": "exited", "source": "record", "signal": 9})
+    );
+    assert_eq!(processes[1]["name"], "agent");
+    assert_eq!(processes[1]["exit"], json!({"state": "running", "source": "record"}));
+    let path = processes[0]["output"]["merged"].as_str().unwrap();
+    assert!(path.ends_with("adp.log"), "{path}");
+    let log = std::fs::read_to_string(path).unwrap();
+    for text in [
+        "DogStatsD listener started.",
+        "starting agent-data-plane",
+        "restarting in 2 seconds",
+    ] {
+        assert!(log.contains(text), "missing {text}: {log}");
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs product images; run with make test-panoramic-products"]
+async fn the_images_shipped_services_match_the_definition_sources_and_listener_defaults() {
+    use airlock::{driver::DriverConfig, group::IsolationGroup};
+    use panoramic_core::{
+        layout::{Os, Realization, RealizationKind},
+        participant::{CaseValues, ParticipantType},
+    };
+
+    let _ = crate::default_crypto_provider().install_default();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(3)
+        .unwrap();
+    let docker = airlock::docker::connect().unwrap();
+    let scope = format!("product-sources-{:x}", rand::random::<u64>());
+    eprintln!("Product source test scope: {scope}");
+    let result = tokio::time::timeout(Duration::from_secs(60), async {
+        let image = product_bindings()[AgentAdp::LINUX_IMAGE.name].clone();
+        let image = docker.inspect_image(&image).await?;
+        let fixup = std::env::var("PANORAMIC_TEST_IMAGE").unwrap_or_else(|_| "alpine:latest".into());
+        let group = IsolationGroup::prepare(docker.clone(), scope.clone(), &["subject"], &fixup).await?;
+        let driver = group.driver(DriverConfig::from_image("subject", image.id.clone().unwrap()))?;
+        driver.create().await?;
+        let mut comparisons = Vec::new();
+        for (container, source) in [
+            ("/etc/services.d/data-plane/run", "docker/s6-services/data-plane/run"),
+            (
+                "/etc/services.d/data-plane/finish",
+                "docker/s6-services/data-plane/finish",
+            ),
+            ("/etc/services.d/agent/run", "docker/s6-services/agent/run"),
+            (
+                "/etc/services.d/agent/finish",
+                "bin/correctness/panoramic/participants/src/agent_adp/assets/s6/agent-finish",
+            ),
+        ] {
+            comparisons.push((
+                container,
+                driver.read_file(container).await?,
+                std::fs::read(root.join(source))?,
+            ));
+        }
+        Ok::<_, saluki_error::GenericError>((
+            comparisons,
+            image.config.and_then(|config| config.env).unwrap_or_default(),
+        ))
+    })
+    .await;
+    tokio::time::timeout(Duration::from_secs(30), IsolationGroup::remove(&docker, &scope))
+        .await
+        .unwrap()
+        .unwrap();
+    super::report_tests::assert_scope_removed(&scope).await;
+    let (comparisons, env) = result.unwrap().unwrap();
+    for (path, image, source) in comparisons {
+        assert_eq!(image.as_deref(), Some(source.as_slice()), "{path}");
+    }
+    let mut keys = AgentAdp
+        .default_env(
+            Realization {
+                os: Os::Linux,
+                kind: RealizationKind::LinuxContainer,
+            },
+            &CaseValues::default(),
+        )
+        .into_keys()
+        .collect::<Vec<_>>();
+    keys.extend(
+        [
+            "DD_DATA_PLANE_ENABLED",
+            "DD_DATA_PLANE_DOGSTATSD_ENABLED",
+            "DD_USE_DOGSTATSD",
+            "DD_DOGSTATSD_SOCKET",
+            "DD_DOGSTATSD_STREAM_SOCKET",
+            "DD_DOGSTATSD_NON_LOCAL_TRAFFIC",
+            "DD_BIND_HOST",
+            "DD_APM_RECEIVER_SOCKET",
+        ]
+        .map(String::from),
+    );
+    for entry in env {
+        let key = entry.split_once('=').unwrap().0;
+        let key = key.strip_prefix("ADP_").unwrap_or(key);
+        assert!(
+            !keys.iter().any(|read| read == key),
+            "image supplies a listener setting the definition must account for: {entry}"
+        );
     }
 }

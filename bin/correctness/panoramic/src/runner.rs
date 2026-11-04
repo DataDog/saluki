@@ -1321,6 +1321,7 @@ pub(crate) mod test_support {
             .unwrap();
         let scope = panoramic_core::plan::test_support::scope_id(&plan).unwrap();
         eprintln!("Native runner test scope: {scope}");
+        let limit = plan.case().timeout() + Duration::from_secs(30);
         let built = BuiltCase {
             plan,
             execution: Execution::Native,
@@ -1362,7 +1363,7 @@ pub(crate) mod test_support {
             Runner::new(logs.path(), test_runner_settings(logs.path())).with_native(native.unwrap(), participant_types);
         runner.register(built).unwrap();
         let (tx, mut rx) = mpsc::unbounded_channel();
-        tokio::time::timeout(Duration::from_secs(120), runner.run_tests(RunArgs::new(cancel, tx)))
+        tokio::time::timeout(limit, runner.run_tests(RunArgs::new(cancel, tx)))
             .await
             .expect("the runner must return after its cleanup budgets");
         let mut completed = Vec::new();

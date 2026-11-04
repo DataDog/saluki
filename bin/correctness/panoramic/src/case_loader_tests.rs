@@ -150,16 +150,27 @@ fn agent_adp_participants_accept_environment_variables_and_os_overlays_only() {
 }
 
 #[test]
-fn agent_adp_participants_accept_no_endpoint_overrides_or_connections() {
+fn agent_adp_rejects_overriding_derived_ports_and_undeclared_connections() {
     let dir = tempfile::tempdir().unwrap();
+    let yaml = PARTICIPANT_FIELDS
+        .replace("participants:", "participants:\n  intake: {type: datadog-intake}")
+        .replace("subject: true", "subject: true, connect: {intake: intake.api}");
+    write_case(dir.path(), "alpha", &yaml);
+    let plans = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::Linux)
+        .unwrap()
+        .plans;
+    assert_eq!(plans.len(), 1);
+    let env = &plans[0].effective_config("adp").unwrap().env;
+    assert_eq!(env["DD_DD_URL"], "http://intake:2049");
+    assert_eq!(env["DD_APM_DD_URL"], "http://intake:2049");
     for (fields, expected) in [
         (
-            "config: {endpoints: {api: {port: 80}}}",
-            "overrides endpoint 'api', which it does not serve; it serves none",
+            "config: {endpoints: {agent_cmd: {port: 80}}}",
+            "overrides endpoint 'agent_cmd', whose port its type derives from its configuration",
         ),
         (
             "connect: {upstream: other.api}",
-            "connects 'upstream', which it does not consume; it consumes none",
+            "connects 'upstream', which it does not consume; it consumes intake",
         ),
     ] {
         let yaml = PARTICIPANT_FIELDS

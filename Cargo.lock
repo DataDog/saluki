@@ -4562,6 +4562,8 @@ name = "panoramic-participants"
 version = "0.1.0"
 dependencies = [
  "panoramic-core",
+ "regex",
+ "url",
 ]
 
 [[package]]

@@ -160,3 +160,54 @@ pub async fn send(cx: &StepContext<'_>, server: &str, endpoint: &str, payload: &
     .await
     .map_err(|error| error.to_string())
 }
+
+/// Runs a command through a started participant's backend with a ten-second limit.
+///
+/// # Errors
+///
+/// Returns an error if the participant is missing or execution fails.
+pub async fn exec(cx: &StepContext<'_>, on: &str, argv: &[&str]) -> Result<airlock::exec::ExecOutput, String> {
+    let primitives = cx
+        .primitives(on)
+        .ok_or_else(|| format!("participant '{on}' has not started"))?;
+    primitives
+        .exec(
+            crate::handle::ExecCommand {
+                argv: argv.iter().map(|arg| (*arg).into()).collect(),
+                env: Vec::new(),
+                stdin: None,
+            },
+            Duration::from_secs(10),
+        )
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Returns the named process's current exit report, or `None` if it is not observed.
+pub fn process_exit(cx: &StepContext<'_>, on: &str, process: &str) -> Option<crate::result::ProcessExitReport> {
+    Some(cx.observation(on)?.process(process)?.snapshot())
+}
+
+/// Reads the named process's retained output lines.
+///
+/// # Errors
+///
+/// Returns an error for missing observations, a failed capture or an overflowed line buffer.
+pub fn process_output(cx: &StepContext<'_>, on: &str, process: &str) -> Result<Vec<String>, String> {
+    let observation = cx
+        .observation(on)
+        .ok_or_else(|| format!("participant '{on}' has not started"))?;
+    let output = observation
+        .outputs
+        .get(process)
+        .ok_or_else(|| format!("process '{on}.{process}' has no output"))?;
+    if let crate::observe::Capture::Failed { reason } = output.current() {
+        return Err(reason);
+    }
+    let (lines, _) = observation.lines_since(0)?;
+    Ok(lines
+        .into_iter()
+        .filter(|line| line.process == Some(process))
+        .map(|line| line.text)
+        .collect())
+}

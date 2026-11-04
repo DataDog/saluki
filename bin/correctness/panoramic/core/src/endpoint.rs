@@ -276,6 +276,11 @@ pub struct ResolvedAddress {
 }
 
 impl ResolvedAddress {
+    /// The endpoint's URL as seen by its consumer.
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
     pub(crate) fn part(&self, part: AddressPart) -> Option<String> {
         match part {
             AddressPart::Url => Some(self.url.clone()),
@@ -328,6 +333,29 @@ pub enum Delivery {
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_support {
     use super::*;
+
+    /// Builds an HTTP address as seen by a consumer.
+    pub fn http_address(host: &str, port: u16) -> ResolvedAddress {
+        ResolvedAddress {
+            kind: EndpointKind::Http,
+            url: format!("http://{host}:{port}"),
+            host: Some(host.into()),
+            port: Some(port),
+            path: None,
+        }
+    }
+
+    /// Checks a socket endpoint's kind, path and readiness evidence.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any declaration differs from the expected value.
+    #[track_caller]
+    pub fn assert_socket_endpoint(endpoint: &Endpoint, kind: EndpointKind, path: &str, ready: Option<Evidence>) {
+        assert_eq!(endpoint.kind, kind);
+        assert!(matches!(&endpoint.listener, Listener::Path(actual) if actual == path));
+        assert_eq!(endpoint.ready, ready);
+    }
 
     /// Checks a network endpoint's kind, fixed port and readiness evidence.
     ///

@@ -2,7 +2,7 @@
 //!
 //! Exec and courier calls have their own limits. Other backend calls are safe to drop; callers bound them.
 
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
 
 use airlock::{
     driver::{ContainerRef, Driver, DriverConfig, Protocol},
@@ -85,7 +85,7 @@ impl LinuxScope {
         if let Some(command) = &recipe.command {
             config = config.with_command(command.clone());
         }
-        for (key, value) in &recipe.env {
+        for (key, value) in container_env(name, &recipe.env)? {
             config = config.with_env_var(key, value);
         }
         for mount in &recipe.mounts {
@@ -108,8 +108,26 @@ impl LinuxScope {
             driver,
             files,
             ports: ports.to_vec(),
+            #[cfg(any(test, feature = "test-util"))]
+            output_line_bytes: recipe.output_line_bytes,
         })
     }
+}
+
+fn container_env(name: &str, recipe_env: &BTreeMap<String, String>) -> Result<BTreeMap<String, String>, GenericError> {
+    let mut env = recipe_env.clone();
+    for (key, value) in [
+        ("PANORAMIC_PARTICIPANT", name.to_owned()),
+        ("PANORAMIC_EXIT_DIR", format!("{SHARED_ROOT}/{name}/exit")),
+        ("PANORAMIC_LOG_DIR", format!("{SHARED_ROOT}/{name}/log")),
+    ] {
+        if env.insert(key.into(), value).is_some() {
+            return Err(generic_error!(
+                "recipe of participant '{name}' sets reserved environment variable '{key}'"
+            ));
+        }
+    }
+    Ok(env)
 }
 
 /// A scope participant whose removal reference is available before container creation.
@@ -118,6 +136,8 @@ pub(crate) struct LinuxParticipant {
     driver: Driver,
     files: Vec<ContainerFile>,
     ports: Vec<RunnerHostPort>,
+    #[cfg(any(test, feature = "test-util"))]
+    output_line_bytes: Option<usize>,
 }
 
 impl LinuxParticipant {
@@ -175,6 +195,10 @@ impl LinuxParticipant {
             output_dir.join("container.stdout.log"),
             output_dir.join("container.stderr.log"),
         );
+        #[cfg(any(test, feature = "test-util"))]
+        if let Some(limit) = self.output_line_bytes {
+            observation.lines = crate::observe::output::OutputLines::new(limit);
+        }
         tasks.spawn(watch_exit(self.driver.wait_exit(), exit_tx));
         let mut container_output = None;
         for spec in specs {
@@ -366,6 +390,35 @@ pub(crate) mod daemon_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_container_gets_its_name_and_observation_directories() {
+        for name in ["first", "second"] {
+            let env = container_env(name, &BTreeMap::from([("CASE_VALUE".into(), "kept".into())])).unwrap();
+            assert_eq!(
+                env,
+                BTreeMap::from([
+                    ("CASE_VALUE".into(), "kept".into()),
+                    ("PANORAMIC_PARTICIPANT".into(), name.into()),
+                    ("PANORAMIC_EXIT_DIR".into(), format!("{SHARED_ROOT}/{name}/exit")),
+                    ("PANORAMIC_LOG_DIR".into(), format!("{SHARED_ROOT}/{name}/log")),
+                ])
+            );
+        }
+    }
+
+    #[test]
+    fn a_recipe_cannot_set_a_reserved_observation_variable() {
+        for key in ["PANORAMIC_PARTICIPANT", "PANORAMIC_EXIT_DIR", "PANORAMIC_LOG_DIR"] {
+            let error = container_env("first", &BTreeMap::from([(key.into(), String::new())]))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("first") && error.contains(key) && error.contains("reserved"),
+                "{error}"
+            );
+        }
+    }
 
     #[test]
     fn runner_host_ports_map_to_published_container_ports() {

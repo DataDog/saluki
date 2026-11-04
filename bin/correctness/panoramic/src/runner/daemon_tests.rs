@@ -8,7 +8,10 @@ use panoramic_core::{
     backend::LateFact,
     layout::{Os, Realization, RealizationKind},
     participant::{ExitChannel, OutputChannel, OutputStream, ProcessSpec, RenderedConfig},
-    recipe::{test_support::shell, Recipe},
+    recipe::{
+        test_support::{shell, with_output_line_bytes},
+        Recipe,
+    },
     record::StepReport,
     step::{decode_fields, test_support, Need, Step, StepContext, StepFactory, StepFields},
 };
@@ -19,6 +22,7 @@ use tokio::sync::mpsc;
 use super::*;
 
 const BOUND: Duration = Duration::from_secs(120);
+const OUTPUT_LINE_BYTES: usize = 2 * 1024 * 1024;
 const IMAGE: ArtifactRole = ArtifactRole {
     name: "runner-test-image",
     kind: ArtifactKind::Image { os: Os::Linux },
@@ -61,7 +65,7 @@ impl ParticipantType for Fixture {
         ]
     }
     fn recipe(&self, _: Realization, config: &RenderedConfig) -> Result<Recipe, String> {
-        Ok(shell(IMAGE, config))
+        Ok(with_output_line_bytes(shell(IMAGE, config), OUTPUT_LINE_BYTES))
     }
 }
 
@@ -292,9 +296,11 @@ async fn removing_a_participant_during_the_procedure_reports_an_unknown_exit_and
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn large_output_stays_byte_identical_on_disk_and_overflows_the_step_reader() {
     let mut participants = participants(json!({}));
-    participants["first"]["config"] = json!({"env": {"SCRIPT":
-        "mkdir -p /airlock/first/log; awk 'BEGIN { for (i=0;i<8191;i++) s=s \"x\"; for (i=0;i<8448;i++) print s }' > /airlock/first/log/worker; printf 'after-bound\\n' >> /airlock/first/log/worker"
-    }});
+    participants["first"]["config"] = json!({"env": {"SCRIPT": concat!(
+        "mkdir -p $PANORAMIC_LOG_DIR; ",
+        "awk 'BEGIN { for (i=0;i<8191;i++) s=s \"x\"; for (i=0;i<288;i++) print s }' ",
+        "> $PANORAMIC_LOG_DIR/worker; printf 'after-bound\\n' >> $PANORAMIC_LOG_DIR/worker",
+    )}});
     let (_logs, report) = run_case(
         participants,
         json!([
@@ -313,7 +319,7 @@ async fn large_output_stays_byte_identical_on_disk_and_overflows_the_step_reader
     let message = report["assertions"][1]["message"].as_str().unwrap();
     assert!(
         message.contains("output capture failed")
-            && message.contains("67108864-byte line-text bound")
+            && message.contains(&format!("{OUTPUT_LINE_BYTES}-byte line-text bound"))
             && message.contains(path),
         "{message}"
     );
@@ -321,7 +327,7 @@ async fn large_output_stays_byte_identical_on_disk_and_overflows_the_step_reader
     let mut expected = [b'x'; 8192];
     expected[8191] = b'\n';
     let mut bytes = [0; 8192];
-    for _ in 0..8448 {
+    for _ in 0..288 {
         file.read_exact(&mut bytes).unwrap();
         assert_eq!(bytes, expected);
     }

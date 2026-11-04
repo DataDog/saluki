@@ -160,10 +160,10 @@ completion and supervisor scheduling before the next run script logs its start.
   subsequent Agent kill has a running ADP to shut down.
 - Removing the exit directory forces the record write to fail even for root, which can bypass mode `000`.
 
-## Provenance of upstream/agent-finish
+## Provenance of the Agent finish asset
 
-The [saved file](./panoramic-architecture-s6-experiment/upstream/agent-finish) is a byte-for-byte archive-API copy,
-made on **2026-11-01**, of `/etc/services.d/agent/finish` in:
+The [saved file](../../../bin/correctness/panoramic/participants/src/agent_adp/assets/s6/agent-finish) is a byte-for-byte
+archive-API copy, made on **2026-11-01**, of `/etc/services.d/agent/finish` in:
 
 - Reference: `registry.datadoghq.com/agent:7.85.0-rc.5-full`
 - Repo digest: `registry.datadoghq.com/agent@sha256:8d1549cd677fb1709d2f2068941b209b581760265d8e48d42ccf0ee2dee20bfa`
@@ -174,7 +174,7 @@ The data-plane finish body comes from `docker/s6-services/data-plane/finish`, ve
 The Agent body comes from the subject container. Each composition preserves the shebang, inserts the record block,
 and appends the shipped bytes from line two onward. After start, the script checks the active s6 copies against
 those independently captured bodies. The saved upstream copy records the source for the `agent-adp` definition's
-s6 overlay assets.
+s6 overlay assets, under `bin/correctness/panoramic/participants/src/agent_adp/assets/s6/`.
 
 ## Findings for the implementation
 
@@ -205,3 +205,10 @@ s6 overlay assets.
 - **Product-version coverage is bounded by the tested image.** The pinned Agent finish and s6 init scripts match
   exactly, while the running converged image uses the older Agent and ADP builds listed above. Repeat the experiment
   with a rebuilt image before relying on product-specific exit behavior.
+
+## Follow-up
+
+`make test-panoramic-products` exercises the native definition's overlays, checks ADP's recorded signal death and
+restart, and compares the shipped service scripts with their repository sources. The definition merges stderr in
+each run script before the service logger. These product tests run locally with the images bound by their environment
+variables. CI's native cases use the images built from the Dockerfile pin.

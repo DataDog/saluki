@@ -102,6 +102,11 @@ impl RenderedConfig {
     pub fn env(&self) -> &BTreeMap<String, String> {
         &self.env
     }
+
+    /// Case file contents keyed by their declared configuration names.
+    pub fn files(&self) -> &BTreeMap<String, Vec<u8>> {
+        &self.files
+    }
 }
 
 /// The core-provided fact naming a participant's directory for served sockets.
@@ -132,6 +137,7 @@ pub enum ExitChannel {
     /// The container's exit, owned by at most one process per participant.
     Container,
     /// A supervisor appends one line per exit to a file in the participant's exit directory.
+    /// In Linux containers, `PANORAMIC_EXIT_DIR` gives that directory's absolute path.
     ///
     /// Each line is `<code> <signal> <seconds>.<nanoseconds>`, followed by a newline. A normal exit
     /// has code 0–255 and signal 0; a signal death has code 256 and a positive signal number.
@@ -149,6 +155,7 @@ pub enum OutputChannel {
     /// The container's log, owned by at most one process per participant.
     Container,
     /// A file the process writes in the participant's log directory.
+    /// In Linux containers, `PANORAMIC_LOG_DIR` gives that directory's absolute path.
     File {
         /// A plain file name: nonempty, other than `.` or `..`, and containing neither `/` nor `\`.
         file: &'static str,
@@ -193,6 +200,9 @@ pub trait ParticipantType: Send + Sync {
 
     /// Supplies the creation recipe, called in create order with a supported realization.
     /// Every artifact role named by the recipe must be declared by [`Self::artifacts`] for that realization.
+    /// Linux containers receive reserved environment variables: `PANORAMIC_PARTICIPANT` names the participant,
+    /// `PANORAMIC_EXIT_DIR` is its exit-record directory and `PANORAMIC_LOG_DIR` is its process-log directory.
+    /// Recipes must not set these variables.
     ///
     /// # Errors
     ///

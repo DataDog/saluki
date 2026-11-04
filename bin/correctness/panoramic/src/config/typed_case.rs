@@ -276,7 +276,7 @@ impl RunnableCase for LoadedPlan {
             case.name(),
             case.source(),
             |participant, fact| self.fact(participant, fact),
-            |participant| self.effective_config(participant),
+            |participant| self.case_values(participant),
         )
         .map_err(|reason| {
             generic_error!(

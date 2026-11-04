@@ -77,6 +77,7 @@ impl ParticipantType for Fixture {
                 })
                 .collect(),
             mounts: vec![],
+            output_line_bytes: None,
         }))
     }
     fn config_files(&self) -> &'static [&'static str] {
@@ -554,8 +555,8 @@ fn readiness_case(endpoint: &str, evidence: &[(&str, &str)], script: &str) -> St
     config:
       env:
         SCRIPT: >-
-          if [ -f /airlock/server/shared/marker ]; then echo yes; else echo no; fi
-          > /airlock/consumer/shared/saw;
+          if [ -f {{{{server.facts.shared_dir}}}}/marker ]; then echo yes; else echo no; fi
+          > {{{{self.facts.shared_dir}}}}/saw;
           exec sleep 60
   server:
     type: fixture
@@ -566,7 +567,7 @@ fn readiness_case(endpoint: &str, evidence: &[(&str, &str)], script: &str) -> St
 
 fn http_script(status: u16, delay: bool) -> String {
     let start = if delay {
-        "sleep 1; touch /airlock/server/shared/marker;"
+        "sleep 1; touch {{self.facts.shared_dir}}/marker;"
     } else {
         ""
     };
@@ -587,7 +588,7 @@ async fn a_consumer_starts_only_after_its_servers_endpoint_accepts_tcp_connectio
     let case = readiness_case(
         "api",
         &[("READY_TCP", "api")],
-        "sleep 1; touch /airlock/server/shared/marker; exec nc -lk -p 8080 -e cat",
+        "sleep 1; touch {{self.facts.shared_dir}}/marker; exec nc -lk -p 8080 -e cat",
     );
     with_case(&case, "[{step: noop}]", |view| async move {
         view.assert_consumer_saw_marker().await;
@@ -651,10 +652,10 @@ async fn an_endpoint_that_never_answers_200_fails_its_consumers_start_within_its
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn a_consumer_waits_for_its_servers_socket_and_file() {
     for script in [
-        "sleep 1; ln -sf /airlock/server/shared/log.sock /dev/log; syslogd -O -; \
-         sleep 1; touch /airlock/server/shared/marker; touch /ready; exec sleep 60",
-        "sleep 1; touch /ready; sleep 1; touch /airlock/server/shared/marker; \
-         ln -sf /airlock/server/shared/log.sock /dev/log; exec syslogd -n -O -",
+        "sleep 1; ln -sf {{self.facts.shared_dir}}/log.sock /dev/log; syslogd -O -; \
+         sleep 1; touch {{self.facts.shared_dir}}/marker; touch /ready; exec sleep 60",
+        "sleep 1; touch /ready; sleep 1; touch {{self.facts.shared_dir}}/marker; \
+         ln -sf {{self.facts.shared_dir}}/log.sock /dev/log; exec syslogd -n -O -",
     ] {
         let case = readiness_case(
             "log",
@@ -766,7 +767,7 @@ async fn a_consumer_starts_only_after_its_servers_output_matches() {
     let case = readiness_case(
         "api",
         &[("READY_OUTPUT", "^listening$")],
-        "sleep 1; touch /airlock/server/shared/marker; echo listening; exec sleep 60",
+        "sleep 1; touch {{self.facts.shared_dir}}/marker; echo listening; exec sleep 60",
     );
     with_case(&case, "[{step: noop}]", |view| async move {
         view.assert_consumer_saw_marker().await;
@@ -839,7 +840,7 @@ async fn a_step_reaches_its_servers_endpoint_through_the_planned_runner_host_rou
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn a_step_resolves_a_late_fact_in_its_path_when_it_runs() {
     with_case(
-        "  subject: {type: fixture, subject: true, config: {env: {SCRIPT: 'touch /airlock/subject/shared/$(hostname -i); echo marker; exec sleep 60'}}}",
+        "  subject: {type: fixture, subject: true, config: {env: {SCRIPT: 'touch {{self.facts.shared_dir}}/$(hostname -i); echo marker; exec sleep 60'}}}",
         "[{step: marker, on: subject}, {step: probe, on: subject, path: '{{subject.facts.shared_dir}}/{{subject.late.ip}}'}]",
         |view| async move {
             assert_eq!(view.result.outcome, TestOutcome::Passed, "{:?}", view.result.assertion_results);
@@ -873,14 +874,19 @@ async fn a_step_waiting_for_a_process_without_an_exit_record_is_errored() {
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn a_step_reading_output_with_a_failed_capture_is_errored() {
     with_case(
-        "  subject: {type: fixture, subject: true, config: {env: {SCRIPT: 'mkdir /airlock/subject/log/worker; exit 0'}}}",
+        "  subject: {type: fixture, subject: true, config: {env: {SCRIPT: 'mkdir $PANORAMIC_LOG_DIR/worker; exit 0'}}}",
         "[{step: marker, on: subject}]",
         |view| async move {
             assert_eq!(view.result.outcome, TestOutcome::Errored);
             assert_eq!(view.result.assertion_results[0].status, StepStatus::Errored);
-            assert!(view.result.assertion_results[0].message.contains("worker"), "{:?}", view.result.assertion_results);
+            assert!(
+                view.result.assertion_results[0].message.contains("worker"),
+                "{:?}",
+                view.result.assertion_results
+            );
         },
-    ).await;
+    )
+    .await;
 }
 
 async fn interrupted_procedure(stop: Stop) {

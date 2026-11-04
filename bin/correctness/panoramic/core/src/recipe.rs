@@ -18,6 +18,8 @@ pub struct ContainerRecipe {
     pub(crate) env: BTreeMap<String, String>,
     pub(crate) files: Vec<RecipeFile>,
     pub(crate) mounts: Vec<HostMount>,
+    #[cfg(any(test, feature = "test-util"))]
+    pub(crate) output_line_bytes: Option<usize>,
 }
 
 impl ContainerRecipe {
@@ -30,12 +32,30 @@ impl ContainerRecipe {
             env: BTreeMap::new(),
             files: Vec::new(),
             mounts: Vec::new(),
+            #[cfg(any(test, feature = "test-util"))]
+            output_line_bytes: None,
         }
     }
 
     /// Replaces the image's entrypoint.
     pub fn with_entrypoint(mut self, entrypoint: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.entrypoint = Some(entrypoint.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Replaces the image's command arguments.
+    pub fn with_command(mut self, command: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.command = Some(command.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Places a file at an absolute container path with the given permission bits before startup.
+    pub fn with_file(mut self, path: impl Into<String>, mode: u32, contents: impl Into<Vec<u8>>) -> Self {
+        self.files.push(RecipeFile {
+            path: path.into(),
+            mode,
+            contents: contents.into(),
+        });
         self
     }
 
@@ -83,25 +103,56 @@ pub mod test_support {
         assert!(recipe.mounts.is_empty());
     }
 
-    /// Builds rendered configuration with the supplied environment and empty files and parameters.
-    pub fn rendered_env(env: BTreeMap<String, String>) -> crate::participant::RenderedConfig {
+    /// Checks an image recipe's image, environment and unmodified container defaults.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the image, environment or image defaults differ.
+    #[track_caller]
+    pub fn assert_image_recipe(recipe: &Recipe, image: ArtifactRole, env: &BTreeMap<String, String>) {
+        let Recipe::Container(recipe) = recipe;
+        assert_eq!(recipe.image, image);
+        assert_eq!(&recipe.env, env);
+        assert!(recipe.entrypoint.is_none());
+        assert!(recipe.command.is_none());
+        assert!(recipe.mounts.is_empty());
+    }
+
+    /// Returns each placed file's path, permission bits and contents.
+    pub fn files(recipe: &Recipe) -> Vec<(&str, u32, &[u8])> {
+        let Recipe::Container(recipe) = recipe;
+        recipe
+            .files
+            .iter()
+            .map(|file| (file.path.as_str(), file.mode, file.contents.as_slice()))
+            .collect()
+    }
+
+    /// Builds rendered configuration with the supplied environment and files and empty parameters.
+    pub fn rendered(
+        env: BTreeMap<String, String>, files: BTreeMap<String, Vec<u8>>,
+    ) -> crate::participant::RenderedConfig {
         crate::participant::RenderedConfig {
             env,
             params: BTreeMap::new(),
-            files: BTreeMap::new(),
+            files,
         }
     }
 
     /// Builds a container recipe with the supplied image, entrypoint and command.
     pub fn container(image: ArtifactRole, entrypoint: &[&str], command: &[&str]) -> Recipe {
-        Recipe::Container(ContainerRecipe {
-            image,
-            entrypoint: Some(entrypoint.iter().map(|arg| (*arg).into()).collect()),
-            command: Some(command.iter().map(|arg| (*arg).into()).collect()),
-            env: BTreeMap::new(),
-            files: vec![],
-            mounts: vec![],
-        })
+        Recipe::Container(
+            ContainerRecipe::new(image)
+                .with_entrypoint(entrypoint.iter().copied())
+                .with_command(command.iter().copied()),
+        )
+    }
+
+    /// Sets a test participant's in-memory output bound while its files retain the complete output.
+    pub fn with_output_line_bytes(mut recipe: Recipe, limit: usize) -> Recipe {
+        let Recipe::Container(container) = &mut recipe;
+        container.output_line_bytes = Some(limit);
+        recipe
     }
 
     /// Builds a shell fixture from `SCRIPT`, with optional `ENTRYPOINT` and `HOST_MOUNT` fault injection.

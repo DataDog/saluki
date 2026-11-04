@@ -234,6 +234,7 @@ fn recipe(script: &str) -> ContainerRecipe {
         env: Default::default(),
         files: vec![],
         mounts: vec![],
+        output_line_bytes: None,
     }
 }
 
@@ -342,6 +343,18 @@ async fn a_participant_is_created_from_its_recipe_and_shares_the_host_pid_namesp
             wait_for_file(primitives, "/airlock/p/shared/env", b"hello\n").await,
             b"hello\n"
         );
+        let output = primitives
+            .exec(
+                command(&[
+                    "sh",
+                    "-c",
+                    "printf '%s\n' \"$PANORAMIC_PARTICIPANT\" \"$PANORAMIC_EXIT_DIR\" \"$PANORAMIC_LOG_DIR\"",
+                ]),
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+        assert_eq!(output.stdout, b"p\n/airlock/p/exit\n/airlock/p/log\n");
         let pid = wait_for_file(primitives, "/airlock/p/shared/pid", b"\n").await;
         assert!(String::from_utf8(pid).unwrap().trim().parse::<u32>().unwrap() > 1);
     })
@@ -463,7 +476,8 @@ async fn an_exec_that_closes_its_output_still_returns_its_exit_code() {
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn files_are_read_and_stated_after_the_participant_exits_and_exec_then_fails() {
     in_scope(&["p"], courier_bytes(), |scope, _tasks| async move {
-        let participant = start_participant(&scope, "p", &recipe("echo 3 > /airlock/p/exit/done; exit 3")).await;
+        let participant =
+            start_participant(&scope, "p", &recipe("echo 3 > \"$PANORAMIC_EXIT_DIR/done\"; exit 3")).await;
         let primitives: &dyn Primitives = &participant;
         timeout(Duration::from_secs(10), async {
             loop {
@@ -504,8 +518,12 @@ async fn files_are_read_and_stated_after_the_participant_exits_and_exec_then_fai
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn the_courier_probes_and_sends_to_a_unix_datagram_socket_inside_its_participant() {
     in_scope(&["srv"], courier_bytes(), |scope, _tasks| async move {
-        let participant =
-            start_participant(&scope, "srv", &recipe("exec syslogd -n -O /airlock/srv/log/messages")).await;
+        let participant = start_participant(
+            &scope,
+            "srv",
+            &recipe("exec syslogd -n -O \"$PANORAMIC_LOG_DIR/messages\""),
+        )
+        .await;
         let primitives: &dyn Primitives = &participant;
         let limits = AttemptLimits::new(Duration::from_secs(10));
         let address = socket_address(EndpointKind::UnixDatagram, "/dev/log");
@@ -636,7 +654,7 @@ async fn the_runner_host_receives_an_http_response_through_a_published_port() {
         let recipe = recipe(
             r#"nc -lk -s 0.0.0.0 -p 9000 -e sh -c '
 while IFS= read -r line; do
-    printf "%s\n" "$line" >> /airlock/srv/log/http
+    printf "%s\n" "$line" >> $PANORAMIC_LOG_DIR/http
     [ "$line" = "$(printf "\r")" ] && break
 done
 printf "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello"
@@ -871,7 +889,7 @@ const EXIT_SPECS: &[ProcessSpec] = &[
 async fn a_restarted_process_keeps_its_first_recorded_exit() {
     in_scope(&["p"], courier_bytes(), |scope, tasks| async move {
         let script =
-            "for c in 3 4; do echo \"$c 0 1700000000.00000000$c\" >> /airlock/p/exit/svc; sleep 1; done; exec sleep 60";
+            "for c in 3 4; do echo \"$c 0 1700000000.00000000$c\" >> $PANORAMIC_EXIT_DIR/svc; sleep 1; done; exec sleep 60";
         let participant = Arc::new(start_participant(&scope, "p", &recipe(script)).await);
         let dir = tempfile::tempdir().unwrap();
         let observation = participant.observe(EXIT_SPECS, &tasks, dir.path()).await;
@@ -907,7 +925,7 @@ async fn a_record_written_as_the_container_stops_is_read_after_it_stops() {
             start_participant(
                 &scope,
                 "p",
-                &recipe("printf '256 15 1700000000.000000001' >> /airlock/p/exit/svc; exit 0"),
+                &recipe("printf '256 15 1700000000.000000001' >> $PANORAMIC_EXIT_DIR/svc; exit 0"),
             )
             .await,
         );
@@ -1005,7 +1023,7 @@ async fn wait_for_output_lines(observation: &ParticipantObservation, process: &s
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn a_processs_output_file_is_followed_while_it_runs_and_completed_after_it_exits() {
     in_scope(&["p"], courier_bytes(), |scope, tasks| async move {
-        let script = "echo before > /airlock/p/log/output; while [ ! -f /airlock/p/shared/continue ]; do sleep 0.1; done; echo during >> /airlock/p/log/output; while [ ! -f /airlock/p/shared/finish ]; do sleep 0.1; done; printf last >> /airlock/p/log/output";
+        let script = "echo before > $PANORAMIC_LOG_DIR/output; while [ ! -f /airlock/p/shared/continue ]; do sleep 0.1; done; echo during >> $PANORAMIC_LOG_DIR/output; while [ ! -f /airlock/p/shared/finish ]; do sleep 0.1; done; printf last >> $PANORAMIC_LOG_DIR/output";
         let participant = Arc::new(start_participant(&scope, "p", &recipe(script)).await);
         let dir = tempfile::tempdir().unwrap();
         let observation = participant.observe(EXIT_SPECS, &tasks, dir.path()).await;
@@ -1049,7 +1067,7 @@ async fn a_log_file_created_after_following_starts_is_followed_from_its_first_by
         .unwrap();
         participant
             .exec(
-                command(&["sh", "-c", "printf 'first\\nsecond\\n' > /airlock/p/log/output"]),
+                command(&["sh", "-c", "printf 'first\\nsecond\\n' > $PANORAMIC_LOG_DIR/output"]),
                 Duration::from_secs(5),
             )
             .await
@@ -1077,8 +1095,14 @@ async fn a_log_file_created_after_following_starts_is_followed_from_its_first_by
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn the_output_of_a_process_that_exits_before_its_follower_starts_is_read_after_exit() {
     in_scope(&["p"], courier_bytes(), |scope, tasks| async move {
-        let participant =
-            Arc::new(start_participant(&scope, "p", &recipe("printf 'early\\nlast' > /airlock/p/log/output")).await);
+        let participant = Arc::new(
+            start_participant(
+                &scope,
+                "p",
+                &recipe("printf 'early\\nlast' > $PANORAMIC_LOG_DIR/output"),
+            )
+            .await,
+        );
         timeout(Duration::from_secs(5), participant.driver.wait_exit())
             .await
             .unwrap()

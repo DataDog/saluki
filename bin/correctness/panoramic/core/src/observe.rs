@@ -86,7 +86,7 @@ impl ProcessObservation {
         }
     }
 
-    fn snapshot(&self) -> ProcessExitReport {
+    pub(crate) fn snapshot(&self) -> ProcessExitReport {
         let source = match self {
             Self::Container(_) => ExitSource::Container,
             Self::Record(_) => ExitSource::Record,

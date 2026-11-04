@@ -8,3 +8,8 @@
 lib/datadog-agent/config/src/generated/witness.rs linguist-generated=true
 lib/datadog-agent/config/src/generated/classifier_data.rs linguist-generated=true
 lib/datadog-agent/config/src/generated/env_keys.rs linguist-generated=true
+
+# s6 service scripts run in Linux containers and are embedded byte for byte in panoramic's
+# agent-adp overlays, so they must keep LF line endings on every checkout.
+docker/s6-services/** text eol=lf
+bin/correctness/panoramic/participants/src/agent_adp/assets/s6/** text eol=lf

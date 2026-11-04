@@ -343,7 +343,7 @@ def provenance():
                     hashes[name, path] = hashlib.sha256(content).hexdigest()
                     print(f"SHA256 {name} {path} {hashes[name, path]}")
                     if name == "pinned" and path.endswith("agent/finish"):
-                        (ASSETS / "upstream/agent-finish").write_bytes(content)
+                        (ROOT / "bin/correctness/panoramic/participants/src/agent_adp/assets/s6/agent-finish").write_bytes(content)
             finally:
                 remove(container)
         for path in ["/etc/services.d/agent/finish", "/etc/s6/init/init-stage2", "/etc/s6/init/init-stage3"]:

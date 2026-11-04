@@ -101,6 +101,7 @@ struct PlannedCase {
 }
 
 struct PlannedParticipant {
+    case_values: CaseValues,
     facts: BTreeMap<String, String>,
     config: EffectiveConfig,
     served: BTreeMap<String, Endpoint>,
@@ -353,6 +354,16 @@ impl<C> CasePlan<C> {
         self.participants()?.effective_config(participant)
     }
 
+    /// Returns the substituted case values after the participant OS overlay, before defaults and deliveries.
+    pub fn case_values(&self, participant: &str) -> Option<&CaseValues> {
+        self.participants
+            .as_ref()?
+            .planned
+            .participants
+            .get(participant)
+            .map(|participant| &participant.case_values)
+    }
+
     #[cfg(test)]
     pub(crate) fn start_gates(&self, participant: &str) -> &[StartGate] {
         self.participants()
@@ -540,21 +551,22 @@ fn plan_participants(
             &holder,
             participant_type,
             realization,
-            values,
+            values.clone(),
             facts[name][SHARED_DIR_FACT].clone(),
             ports,
         )?;
         participant_endpoints.insert(name.to_string(), endpoints);
-        configs.insert(name.to_string(), config);
+        configs.insert(name.to_string(), (values, config));
     }
     let mut participants: BTreeMap<_, _> = facts
         .into_iter()
         .zip(configs.into_values())
-        .map(|((name, facts), config)| {
+        .map(|((name, facts), (case_values, config))| {
             let served = participant_endpoints[&name].served.clone();
             (
                 name,
                 PlannedParticipant {
+                    case_values,
                     facts,
                     config,
                     served,

@@ -14,7 +14,7 @@ use std::path::Path;
 
 use panoramic_core::case::{CaseFile, ParticipantConfig, ParticipantEntry, ProcedureNode, StepNode};
 use panoramic_core::layout::Os;
-use panoramic_core::participant::{EffectiveConfig, SHARED_DIR_FACT};
+use panoramic_core::participant::{CaseValues, SHARED_DIR_FACT};
 use panoramic_core::record::step_label;
 use panoramic_core::step::{decode_fields, Need};
 use panoramic_participants::AgentAdp;
@@ -42,7 +42,7 @@ pub(super) const BRIDGED_TYPES: &[(&str, Os)] = &[
 /// Checks participants before steps. The caller supplies the case name and source in its error context.
 pub(super) fn integration_config<'a>(
     file: &CaseFile, name: &str, source: &Path, fact: impl Fn(&str, &str) -> Option<&'a str>,
-    config: impl Fn(&str) -> Option<&'a EffectiveConfig>,
+    config: impl Fn(&str) -> Option<&'a CaseValues>,
 ) -> Result<IntegrationConfig, String> {
     let CaseFile {
         // Use the name resolved by the case loader.
@@ -92,7 +92,7 @@ pub(super) fn integration_config<'a>(
             ));
         }
     }
-    let EffectiveConfig {
+    let CaseValues {
         env,
         files: _,
         params: _,
@@ -296,6 +296,33 @@ mod tests {
         },
         test::TestSuite,
     };
+
+    #[test]
+    fn agent_adp_linux_defaults_match_test_env_port_isolation() {
+        let defaults = AgentAdp.default_env(
+            Realization {
+                os: Os::Linux,
+                kind: RealizationKind::LinuxContainer,
+            },
+            &CaseValues::default(),
+        );
+        assert_eq!(defaults, crate::test_env::port_isolation_env().into_iter().collect());
+    }
+
+    #[test]
+    fn bridged_cases_receive_case_environment_without_type_defaults() {
+        let yaml = PARTICIPANT_FIELDS.replace("subject: true", "subject: true, config: {env: {DD_CMD_PORT: '55123', CASE_ONLY: base}, os: {linux: {env: {CASE_ONLY: linux}}}}");
+        let plan = plan(&yaml, Os::Linux);
+        assert_eq!(plan.effective_config("adp").unwrap().env["DD_DOGSTATSD_PORT"], "58125");
+        assert_eq!(
+            plan.integration_config().unwrap().env,
+            [
+                ("DD_CMD_PORT".into(), "55123".into()),
+                ("CASE_ONLY".into(), "linux".into())
+            ]
+            .into()
+        );
+    }
 
     #[test]
     fn participant_cases_build_the_same_integration_config_as_their_integration_twins() {
@@ -561,14 +588,14 @@ mod tests {
     }
 
     #[test]
-    fn translation_takes_environment_only_from_the_planned_configuration() {
+    fn translation_takes_environment_only_from_the_planned_case_values() {
         let file: CaseFile = serde_saphyr::from_str(
             &PARTICIPANT_FIELDS.replace("subject: true", "subject: true, config: {env: {A: raw}}"),
         )
         .unwrap();
-        let planned_config = EffectiveConfig {
+        let planned_config = CaseValues {
             env: [("B".into(), "planned".into())].into(),
-            ..EffectiveConfig::default()
+            ..CaseValues::default()
         };
         let translated = integration_config(
             &file,
@@ -631,7 +658,7 @@ mod tests {
 
     #[test]
     fn translation_rejects_a_step_on_another_participant() {
-        let planned_config = EffectiveConfig::default();
+        let planned_config = CaseValues::default();
         for factory in REGISTERED_STEPS {
             for (parallel, label) in [(false, "1"), (true, "1.1")] {
                 let mut file: CaseFile = serde_saphyr::from_str(PARTICIPANT_FIELDS).unwrap();
@@ -666,7 +693,7 @@ mod tests {
 
     #[test]
     fn every_registered_step_translates_to_a_log_or_file_assertion_on_every_subject_os() {
-        let planned_config = EffectiveConfig::default();
+        let planned_config = CaseValues::default();
         for factory in REGISTERED_STEPS {
             let yaml = PARTICIPANT_FIELDS
                 .replace("[linux]", "[linux, macos, windows]")
@@ -711,7 +738,7 @@ mod tests {
 
     #[test]
     fn translation_resolves_file_path_facts_only_through_the_resolver() {
-        let planned_config = EffectiveConfig::default();
+        let planned_config = CaseValues::default();
         for (reference, expected) in [
             ("other.facts.default_log_file", None),
             ("adp.facts.unknown", None),
@@ -765,7 +792,7 @@ mod tests {
                 "alpha",
                 Path::new("alpha/config.yaml"),
                 |_, _| panic!("shared_dir must be rejected before resolving facts"),
-                |participant| plan.effective_config(participant),
+                |participant| plan.case_values(participant),
             )
             .unwrap_err();
             assert_eq!(
@@ -794,7 +821,7 @@ mod tests {
             "alpha",
             Path::new("alpha/config.yaml"),
             |participant, fact| plan.fact(participant, fact),
-            |participant| plan.effective_config(participant),
+            |participant| plan.case_values(participant),
         )
         .unwrap_err();
         assert_eq!(
@@ -884,9 +911,9 @@ mod tests {
             ),
         ] {
             let file: CaseFile = serde_saphyr::from_str(&PARTICIPANT_FIELDS.replace(old, new)).unwrap();
-            let planned_config = EffectiveConfig {
+            let planned_config = CaseValues {
                 files: file.participants["adp"].config.files.clone(),
-                ..EffectiveConfig::default()
+                ..CaseValues::default()
             };
             assert_eq!(
                 integration_config(&file, "alpha", Path::new("alpha/config.yaml"), |_, _| None, |_| Some(&planned_config)).unwrap_err(),
@@ -897,7 +924,7 @@ mod tests {
 
     #[test]
     fn a_step_whose_fields_do_not_decode_fails_translation_naming_the_step() {
-        let planned_config = EffectiveConfig::default();
+        let planned_config = CaseValues::default();
         for (nodes, label) in [
             ("[{step: log_contains, on: adp}]", "1"),
             ("[{parallel: [{step: log_contains, on: adp}]}]", "1.1"),
@@ -944,7 +971,7 @@ mod tests {
 
     #[test]
     fn a_step_without_an_integration_runner_equivalent_fails_translation() {
-        let planned_config = EffectiveConfig::default();
+        let planned_config = CaseValues::default();
         let file: CaseFile =
             serde_saphyr::from_str(&PARTICIPANT_FIELDS.replace(minimal_procedure!(), "procedure: [{step: probe}]"))
                 .unwrap();

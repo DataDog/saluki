@@ -106,7 +106,7 @@ fn listen_ports(env: &BTreeMap<String, String>) -> Result<[u16; 2], String> {
 mod tests {
     use panoramic_core::{
         endpoint::{test_support::assert_network_endpoint, EndpointKind},
-        recipe::test_support::{assert_container, rendered_env},
+        recipe::test_support::{assert_container, rendered},
     };
 
     use super::*;
@@ -213,7 +213,7 @@ mod tests {
     #[test]
     fn the_intake_recipe_runs_the_tools_binary_with_the_case_environment() {
         let env = BTreeMap::from([("INTAKE_HTTP_LISTEN_ADDR".into(), "0.0.0.0:8080".into())]);
-        let config = rendered_env(env.clone());
+        let config = rendered(env.clone(), BTreeMap::new());
         let recipe = DatadogIntake.recipe(LINUX, &config).unwrap();
         assert_container(&recipe, TOOLS_LINUX_IMAGE, &["/usr/local/bin/datadog-intake"], &env);
     }

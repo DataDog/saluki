@@ -79,8 +79,11 @@ Image bindings come from:
 | `PANORAMIC_TEST_IMAGE` | `fixup-image` | `alpine:latest` |
 
 Each test verifies the roles its case needs. The intake test starts two intakes in one scope, waits for each ready
-route, sends a forwarded DogStatsD packet to one, and checks that only that intake retains it. Tests check the native
-participant reports and confirm that the scope's containers, volume and network are removed.
+route, sends a forwarded DogStatsD packet to one, and checks that only that intake retains it. Agent tests deliver
+DogStatsD metrics to a connected intake, kill ADP and check its recorded signal death and supervised restart, and
+compare the image's shipped service scripts and listener environment with the definition's sources and defaults.
+The target runs tests serially because each runner invocation allocates host ports from the same pool. Tests check
+native participant reports and confirm that the scope's containers, volume and network are removed.
 
 ## Correctness tests (panoramic)
 
@@ -256,6 +259,47 @@ and host `0.0.0.0` or `[::]`, so participants and published ports can reach it. 
 HTTP 200 from `api` at `/ready`: the intake binds UDP before starting HTTP. Connections wait for that evidence before
 starting their consumer. Each intake stores its own telemetry. When the listen variables are unset, the intake binary
 uses the defaults listed above.
+
+The `agent-adp` Linux container definition uses `agent-adp-linux-image`. Its environment defaults match the legacy
+runner's port isolation: command API 55001, expvar 55000, APM 58126, process command API 56062, Agent IPC 55004,
+DogStatsD UDP 58125, ADP APIs 55100/55101 and Agent OTLP 54317/54318. The GUI is disabled. Case environment values
+replace those defaults. The legacy translation receives only the case's environment after its OS overlay, so the
+legacy runner applies its own defaults.
+
+The definition derives these endpoints from the effective environment:
+
+| Endpoint | Kind | Environment key | Conditions and readiness |
+| --- | --- | --- | --- |
+| `dogstatsd_udp` | UDP | `DD_DOGSTATSD_PORT` | Requires nonzero port, enabled DogStatsD and a non-loopback bind; ADP's listener output supplies readiness |
+| `dogstatsd_uds` | Unix datagram | `DD_DOGSTATSD_SOCKET` | Defaults to `/var/run/datadog/dsd.socket` on Linux; empty disables it; waits for the socket |
+| `dogstatsd_uds_stream` | Unix stream | `DD_DOGSTATSD_STREAM_SOCKET` | Nonempty enables it; waits for the socket |
+| `api` | HTTP | `DD_DATA_PLANE_API_LISTEN_ADDRESS` | Requires ADP and a non-loopback host; waits for TCP acceptance |
+| `secure_api` | TCP | `DD_DATA_PLANE_SECURE_API_LISTEN_ADDRESS` | Requires ADP and a non-loopback host; waits for TCP acceptance; the listener uses TLS |
+| `agent_cmd` | TCP | `DD_CMD_PORT` | Nonzero enables it; waits for TCP acceptance |
+| `agent_ipc` | TCP | `DD_AGENT_IPC_PORT` | Positive enables it; waits for TCP acceptance |
+
+ADP owns DogStatsD when `DD_DATA_PLANE_ENABLED` and `DD_DATA_PLANE_DOGSTATSD_ENABLED` are true; otherwise the
+Agent owns it. The master ADP switch defaults to false, its DogStatsD switch to true, and `DD_USE_DOGSTATSD` to true.
+Disabling DogStatsD removes its socket endpoints too. ADP-owned listener keys prefer the `ADP_DD_` spelling over
+`DD_`; Agent-owned listeners use only `DD_`. Agent-owned UDP readiness follows container startup.
+The UDP endpoint is declared when `DD_DOGSTATSD_NON_LOCAL_TRAFFIC=true`, or when `DD_BIND_HOST` names a non-loopback
+host. These keys follow the same owner precedence. With both unset, DogStatsD binds loopback and the endpoint is
+omitted. ADP API addresses use `tcp://host:port`; a loopback host is a configuration error, and port 0 disables the
+endpoint. Invalid listener values name the configuration key in their errors.
+
+An optional `connect: {intake: <participant>.api}` connection accepts HTTP and delivers its URL as both `DD_DD_URL`
+and `DD_APM_DD_URL`. It gates Agent startup on the intake's ready route. The native recipe uses the image's command
+and overlays the `data-plane` and `agent` s6 services. Each finish script records the exit before running the shipped
+body, preserving ADP's two-second restart after failure and disablement after a clean exit. Each run script merges
+stderr into stdout, and its logger appends to `adp.log` or `agent.log` while retaining the lines on container stdout.
+These merged process logs include the run and finish scripts' own messages. Container stdout and stderr are also
+captured separately. The default ten-second stop grace covers the measured roughly 2.6-second supervisor shutdown.
+
+Every native Linux container receives three reserved variables: `PANORAMIC_PARTICIPANT` names the participant,
+`PANORAMIC_EXIT_DIR` names its exit-record directory, and `PANORAMIC_LOG_DIR` names its process-log directory.
+Recipes that set any of these variables fail creation. The backend prepares the directories before start. The
+`agent-adp` recipe uses the default host PID namespace and the container's own cgroup view.
+macOS and Windows use the integration bridge.
 
 The integration runner's translation supports this subset of the schema:
 
@@ -515,7 +559,8 @@ A case must not set, in `config.env` or the overlay for that OS, an environment 
 connections delivers. Two connections of one participant must not deliver the same variable, and a connection
 must not deliver a variable carrying an assigned listener port.
 Every required consumed endpoint must be connected, and each `config.endpoints` key must name an endpoint
-the participant serves. Both `connect` and `config.endpoints` must be empty for `agent-adp`.
+the participant serves. The integration bridge requires `connect` to be empty. The Linux `agent-adp` definition derives
+its listener ports from the environment; configure those ports through the listener's environment key.
 
 `--subject-os linux|macos|windows` selects which cases run. It defaults to the OS selected by `--runtime`, then the
 host's OS. Conflicting values exit 2 before discovery. Correctness cases run only for subject OS `linux` and are
@@ -566,7 +611,7 @@ The source documents each part:
 - `bin/correctness/panoramic/core/src/artifact/pull.rs`: image pulling and identities.
 - `bin/correctness/panoramic/core/src/backend/run.rs`: host availability checks, artifact verification and image pulls over one Docker connection.
 - `bin/correctness/panoramic/core/src/layout.rs`: how participants are placed on an OS and realization.
-- `bin/correctness/panoramic/participants/src/agent_adp.rs`: what `agent-adp` declares, including its facts and artifact roles.
+- `bin/correctness/panoramic/participants/src/agent_adp/mod.rs`: what `agent-adp` declares, including its facts and artifact roles.
 - `bin/correctness/panoramic/steps/src/`: each step's fields.
 - `bin/correctness/panoramic/src/config/integration_bridge.rs`: the subset the integration runner supports, and the output each OS captures.
 
