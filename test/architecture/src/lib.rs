@@ -52,6 +52,7 @@ mod tests {
     const DATADOG_CONFIG: &str = "datadog-agent-config";
     const OVERLAY_MODEL: &str = "datadog-agent-config-overlay-model";
     const CORPUS: &str = "datadog-agent-config-corpus";
+    const CONFIG_DOCS: &str = "datadog-agent-config-docs";
     const BIN: &str = "agent-data-plane";
 
     fn workspace() -> Workspace {
@@ -160,9 +161,10 @@ mod tests {
     }
 
     /// Overlay metadata belongs to code generation and configuration validation, not runtime code.
-    /// The corpus tests check recordings against the support inventory.
+    /// Code generation build-depends on it, and the corpus tests check recordings against the support inventory.
     #[test]
-    fn overlay_model_has_no_normal_dependents_and_only_configuration_tests_use_it() {
+    fn overlay_model_is_used_only_by_code_generation_and_configuration_tests() {
+        let build_dependents = [DATADOG_CONFIG, CONFIG_DOCS];
         let dev_dependents = [CONFIG_SYSTEM, CORPUS];
         let workspace = workspace();
         let links: Vec<String> = workspace
@@ -170,13 +172,17 @@ mod tests {
             .unwrap()
             .reverse_direct_links()
             .filter(|link| {
-                link.normal().is_present() || (link.dev().is_present() && !dev_dependents.contains(&link.from().name()))
+                let from = link.from().name();
+                link.normal().is_present()
+                    || (link.build().is_present() && !build_dependents.contains(&from))
+                    || (link.dev().is_present() && !dev_dependents.contains(&from))
             })
             .map(|link| format!("{} -[{}]-> {OVERLAY_MODEL}", link.from().name(), LinkKinds(&link)))
             .collect();
         assert!(
             links.is_empty(),
-            "`{OVERLAY_MODEL}` allows build links, and dev links from {dev_dependents:?}, only:\n{}",
+            "`{OVERLAY_MODEL}` allows build links from {build_dependents:?} and dev links from {dev_dependents:?} \
+             only:\n{}",
             links.join("\n")
         );
     }
