@@ -7,7 +7,10 @@ region](programmable-metrics-v2.md#v7a-state-owners-in-any-region)) and is judge
 ([gates](programmable-metrics-next.md#gates-for-n2-to-n4)). The owner decided its questions on 2026-10-21
 ([section 7](#7-owner-questions)). **Built** (2026-10-21): the interfaces step, the six parts, and the integration
 ([6.3](#63-integration-z)); what integration decided or found is in [6.5](#65-as-built). The N1 candidate runs
-([6.4](#64-validation)) come next. Line references are to `3a871929f3`. Amendments 203 to 206 are proposed in
+([6.4](#64-validation)) ran on 2026-10-21 and missed the exit, and the owner decided V7b done as optionality
+([6.5](#65-as-built)). Since then, the stall study placed V7b as the first of N2's four layers, the non-blocking drain
+([N2](programmable-metrics-next.md#n2-keep-admitting-through-a-flush-in-four-layers)), and superseded G6's thresholds.
+Line references are to `3a871929f3`. Amendments 203 to 206 are proposed in
 [section 8](#8-proposed-amendments).
 
 ## Contents
@@ -519,6 +522,14 @@ What integration decided, found, or left, against the text above:
   0.6 s because the pace is only a floor; capping a pass at its pace) and encode cost (N4), the pool question for G5,
   and revisiting G6's thresholds (native itself reaches only 0.61 to 0.66). G1 at 3,000 contexts on 0.3 and 0.6 CPUs
   cannot resolve differences under about 10% with six runs per image.
+
+  **Read against the stall study (merged 2026-11-04).** Instrumenting a flush on N1a's host, before V7b, found the
+  drain pausing admission for only 30 to 75 ms at 0.6 to 1.2 cores and the encoder's burst after it, about 85% of a
+  flush's instructions, starving admission under the quota on native and plan alike
+  ([what stalls admission at a flush](programmable-metrics-next.md#what-stalls-admission-at-a-flush)). That is what G6
+  read after V7b's drain stopped blocking. V7b delivered N2's first layer; the deferred flush pacing is its second
+  layer, and priority for admission, the third, is new. G6's thresholds are superseded
+  ([gates](programmable-metrics-next.md#gates-for-n2-to-n4)).
 
 ## 7. Owner questions
 

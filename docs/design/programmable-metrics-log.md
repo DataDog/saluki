@@ -893,6 +893,137 @@ lanes matter little (and are off at those sizes), R1's cost model adds hops for 
 aggregation flush is the biggest practical problem. The consequences and the next chunk of work are in
 [deployment context and next steps](programmable-metrics-next.md).
 
+## N1a: measuring at production CPU limits
+
+On 2026-10-13 and 14, N1 of [the next steps](programmable-metrics-next.md#n1-measure-in-the-production-regime)
+measured the plan against current `main` at 0.05, 0.3, 0.6, and 1.2 CPUs under the steady loads of the SMP tiers. The
+results and findings are in [N1a](programmable-metrics-next.md#n1a-steady-load-against-the-smp-tiers), and the gates
+for N2 to N4 in [gates](programmable-metrics-next.md#gates-for-n2-to-n4); the per-run tables are in
+`test/scaling/baselines/n1-2026-10-14/`. It was the first of two N1 measurements; the second, N1b, measured bursts
+across a flush a week later ([below](#n1b-bursts-across-a-flush)).
+
+### What was built
+
+`test/scaling/run-limits.sh`, with `compose.limits.yaml` over the existing `compose.yaml` and `summarize_limits.py`
+([README](../../test/scaling/README.md#runs-at-production-cpu-limits-run-limitssh)), and `make limits-images` and
+`make limits-runs`. Unlike `run-curves.sh`, which ties the CPU count, the pinned CPU set, and the worker count to one
+integer, it gives ADP a fractional quota on four fixed cores and removes every override (`SALUKI_WORKER_THREADS`,
+`DD_DOGSTATSD_WORKERS_COUNT`, `DD_METRICS_LEVEL`, the context limit, CPU-time sampling), so ADP derives its workers and
+decoders from the quota as production does: `available_parallelism` follows the cgroup's `cpu.max`, so every limit
+up to two cores gives two workers and two decoders, and the plan runs without lanes and with R1's pipelining.
+
+### Decisions
+
+- **Steady loads, not bursts.** The owner decided against modeling bursts: a limit can absorb a burst up to the steady
+  load it sustains, which saturate runs measure. The loads are the four SMP quality-gate tiers
+  (`quality_gates_rss_dsd_{low,medium,heavy,ultraheavy}`), with their rates, contexts, interner sizes, and memory
+  bounds.
+- **Current `main` as native**, not the branch's merge base: `main` was six commits ahead, none touching the measured
+  path.
+- **Production defaults**, including the `info` metrics level. The telemetry needed is all at `info`: the decoded
+  counter, aggregation's drops, failed context resolves, and the `dsd_packet_bufs` pool gauges.
+- **Local runs only**; CI is deferred. p99 latency is not measured in containers.
+
+### What went wrong, and what was learned
+
+- **Measurement inside the quota.** `run-curves.sh` reads `cpu.stat` with `docker exec`, which runs inside ADP's cgroup
+  and is charged to its quota: negligible at four cores, not at 50 millicores. `run-limits.sh` reads the cgroup files
+  from the host (`/sys/fs/cgroup/docker/<id>` under Docker's cgroupfs driver) every second, and ADP's own telemetry
+  only every five seconds.
+- **No drop counter.** A Unix datagram socket blocks the sender rather than drop, so falling behind shows as lading
+  sending less than its rate. "Keeps up" is lading at 97% of the rate or more.
+- **Stalls shorter than the sampling.** The first stall measure, lading's slowest second, missed flush stalls under a
+  second (corrected later: lading's own one-second pacing confounds every per-second measure; see "What stalls
+  admission at a flush" below). Lading catches up after each, so its fastest second (1.25 to 1.44 times the rate where both keep up at the
+  heavy tiers) was added as the signal. At the low tier, lading's block size makes per-second rates too lumpy for
+  either measure to mean much.
+- **The first smoke run died silently**: ADP logs JSON here (`"git_hash":"..."`), the grep expected the text format,
+  and `pipefail` with `set -e` ended the script with its containers still running. The script now tolerates a missing
+  hash and tears down on exit.
+- **An overstated finding.** Midway, one series' medians suggested the plan decoded 1.7 times less than `main` at heavy
+  0.05. Across all 21 runs at that cell (A/A, paced, saturate) the gap is about 20% with overlapping ranges: the
+  collapse cells' noise is 19 to 25%, and conclusions there need every series. The ultraheavy freeze held up.
+- **Runs take about a minute longer than their 90 seconds** of warm-up and window (start, health check, lading's block
+  cache, teardown): the 192 runs took about nine hours.
+
+### The health check, and the matrix again
+
+Investigating the "freeze" showed two things. First, it was not plan-specific: rerunning the cell, `main` decoded 50
+and 191 metrics a second and the plan 315 and 156, and in one run it was `main` whose decoding stopped and whose
+aggregation never flushed; only about 18,000 contexts are active at that rate, so the aggregation drain the hypothesis
+blamed costs about 4 ms. Second, an idle ADP measured 17 to 22 millicores, but its threads used 3: the rest was
+`compose.yaml`'s health check, `test -S` run inside ADP's container every second, each check a process charged to
+ADP's quota. Every N1 run had carried about 20 millicores of it, 40% of the quota at 0.05. With checks every second only
+while starting (`start_interval`) and hourly after, idle ADP costs 2.3 to 2.8 millicores, and ADP still becomes
+healthy in two to three seconds.
+
+The fix is in `compose.yaml`, which `run-curves.sh` shares, so the stage 9 curves had carried the same overhead, a
+smaller share at their larger CPU counts. The whole matrix ran again (2026-10-14), and its results replaced the first
+run's in [N1a's results](programmable-metrics-next.md#n1a-results) and in `test/scaling/baselines/n1-2026-10-14/`.
+Ratios from 0.3 up barely moved; the 0.05 figures and the "fixed cost dominates at small loads" finding (34 millicores
+at the low tier, really about 15) did. With the full quota, the plan and `main` are the same within the noise at the
+0.05 collapse cells, both erratic.
+
+**Lessons.** Check what the measurement itself costs before trusting a small-quota figure: anything run inside the
+container, a health check or `docker exec`, is charged to the quota being measured. And a striking result in the noisiest
+cells needs every series behind it before it becomes a finding.
+
+### Left open
+
+- Absolute figures on x86.
+
+## First iterations after N1
+
+On 2026-10-14 the quick loop of [how we iterate](programmable-metrics-next.md#how-we-iterate) was built, validated
+against the N1a baseline, and used for the first hypotheses; results are in
+[what the first iterations showed](programmable-metrics-next.md#what-the-first-iterations-showed), the findings
+independent of the plan in [ADP efficiency findings](adp-efficiency-findings.md), and the tables in
+`test/scaling/baselines/iterations-2026-10-14/`.
+
+### What was built
+
+`run-limits.sh` gained named cells (`SCALING_CELLS`), variants of an image with their own environment
+(`SCALING_VARIANTS`, through an `env_file` in `compose.limits.yaml`), cells in parallel on disjoint cores
+(`SCALING_PARALLEL`), `perf stat` counts in ADP's cgroup (`SCALING_PERF`), and instruction-sampled profiles with call
+stacks (`SCALING_RECORD`); `summarize_limits.py` reports instructions, IPC, refills, and back-end stalls per metric and
+ratios against a reference variant. The agent-data-plane binary gained an experimental switch,
+`SALUKI_EXPERIMENT_FUSE_ALL=1` (removed after the iterations, once H2 was answered; it is in `7c7631a4bb`), which lays
+the frame out without R1's pipelining while lanes stay off, so that fusion
+can be measured apart from the lane runtime (`lanes.rs`; documented as an experiment, not a setting); the boot log
+now reports the pipelining the frame actually uses.
+
+### Decisions
+
+- **Instruction counts as the quick loop's measure.** This VM exposes three hardware counters: instructions and cycles
+  are pinned (exact), and L1D and L2 refills, back-end stalls, and TLB walks share the third (scaled estimates).
+- **Every arm of a hypothesis runs the same binary**, differing only in environment, so that no difference comes from
+  a rebuild's code layout.
+- **The owner's direction after the results:** record every impactful finding, but separate those that could land in
+  ADP on their own (the new document) from the plan work, and focus the plan work on behavior the plan can improve
+  structurally, starting with flush stalls (N2).
+
+### What went wrong, and what was learned
+
+- **Editing a script while it runs.** The quick-loop changes were first about to go into `run-limits.sh`,
+  `compose.limits.yaml`, and `summarize_limits.py` while the overnight baseline was executing them: bash reads a
+  script as it runs, and each of the baseline's three series started the script afresh. They were staged as `*.next`
+  files and swapped in by the chain that ran after the baseline.
+- **`pkill -f` matched its own shell.** A pattern given to `pkill -f` also appears in the command line of the shell
+  running it; a bracket (`'[b]ash target/...'`) keeps it from matching itself.
+- **The quick loop is not valid for CPU time.** Its A/A agreed within 0.3% in instructions, but against the sequential
+  baseline its CPU per metric missed by up to 4% at two cells, and its memory by up to 9% even as an A/A.
+  The cause, parallel slots or two-core CPU sets, is not yet separated.
+- **The plan's unclassified profile samples were shared code:** newline framing (`memchr`), buffer copies, and
+  `recvmsg`, not plan overhead. The plan's own runtime is 5 to 6% of instructions.
+
+### Left open
+
+- Separating the quick loop's CPU-time skew (one slot with two cores, against parallel slots).
+- A policy-heavy workload (the `mapper` and `gateways` profiles, checked against what production configurations use),
+  before H3 and H4.
+- N3's effect on stalls and CPU time, in sequential runs.
+- The independent findings G1 to G8, for whoever takes them up.
+
 ## After stage 9: one scope over the whole metrics path
 
 On 2026-10-14 the owner asked for one editable program covering the whole metrics path, with at most one aggregation
@@ -1237,6 +1368,56 @@ shorter program installs, and the fixes followed, on 2026-10-15, not committed:
   152.7 s and 283.5 s, 7 minutes 24 seconds with the build, canaries 2,886 of 2,886 and 4,798 sent with 4,799
   received, within the allowance.
 
+## What stalls admission at a flush
+
+On 2026-10-15 the metrics path was instrumented to find out what happens at a flush, before designing N2 (recorded on
+2026-11-04); results are
+in [what stalls admission at a flush](programmable-metrics-next.md#what-stalls-admission-at-a-flush) and G9 of the
+[ADP findings](adp-efficiency-findings.md), and the tables in `test/scaling/baselines/stalls-2026-10-15/`.
+
+### What was built, and what was kept
+
+A `flow_trace` module in `saluki-core`, off unless `SALUKI_EXPERIMENT_TRACE` names a file: every dispatcher output
+counts its time waiting to send (an `Instant` pair per send), every region host publishes its input queue's depth and
+records each drain (start, duration, steps, time waiting on its sends, events out), and a thread writes it all every
+100 ms with Unix-millisecond stamps. `run-limits.sh` gained `SCALING_FLOW=1`, which turns it on and samples, from the
+host about every 100 ms, ADP's CPU time and throttling, lading's bytes, and the socket; and `SCALING_RECORD` gained
+monotonic timestamps with the wall clock's offset beside them, so that instruction samples line up with the trace.
+
+The trace answered its question and was **not kept**: it is ad hoc instrumentation in core library code with a check
+on every send, and N2's gates should rest on telemetry designed for them, such as the time admission pauses per flush.
+It is kept as `flow-trace.patch` beside the results (it applies to `7c7631a4bb`); the profile timestamps were kept.
+
+### Findings
+
+The drain pauses admission for 28 to 76 ms at 0.6 and 1.2 cores (100 to 290 ms at 0.3), about 3% of a flush's
+instructions; the encoder's burst after it, two to three seconds of encoding and compression, is about 85%, and starves
+admission under the quota: admission halves for about two seconds at 0.6 cores. No component is blocked sending; it is
+CPU starvation. `main` and the plan are the same in all of it. A non-blocking drain alone removes the smaller part, so
+N2 became the foundation of four layers: the non-blocking drain, pacing, priority for admission, and shedding.
+
+### What went wrong, and what was learned
+
+- **The earlier stall measures were confounded.** lading sends each second's bytes in about half a second and then
+  idles, so the fastest and slowest seconds of N1 mixed its pacing with ADP's stalls; the N2 gates that rested on them
+  were replaced by admission per 100 ms after each flush.
+- **The flush interval is 15 seconds,** not the 10 several notes had assumed.
+- **The socket "queue" was not a depth:** for a Unix datagram socket `ss` reports the first datagram's size, and the
+  socket's memory is invisible from both ends; an attempt to read lading's send buffer instead showed nothing.
+- **This kernel's perf does not take the wall clock;** `-k mono` with a recorded offset does the job.
+- **Two apparent differences between the plan and `main` were artifacts:** a one-flush profile made the plan's encoder
+  look 2.5 times as costly, and anchoring `main`'s flushes on CPU peaks made the plan's throttling look five times as
+  high. Four flushes per profile, and the same anchor (the encoder's onset) for both, erased both.
+- **A parsing slip** read a drain's send-wait field as its event count, briefly suggesting drains of 132 metrics.
+- **The analysis scripts lived in `/tmp`,** which was cleared before they were committed; they were rewritten from the
+  session into the results directory and reproduced the reported figures exactly.
+
+### Left open
+
+- Lower thread priority for the encoder, in the quick loop: the cheapest test of the priority layer.
+- The design of the non-blocking drain and of pacing, and the telemetry N2's gates need.
+- The instrumentation's own overhead was not measured.
+
 ## Version 2: the plan, and V2 (resources artifacts removed)
 
 On 2026-10-15 the owner agreed that the premise behind stages 1 to 9 (programmability inside a native system that
@@ -1485,6 +1666,38 @@ Not run: the release property tests, ADP suites other than `topology::`, and the
 **Left for later:** sub-region buffer credits (kernel credits merge into the slot's, over-counting for a slot with several lanes),
 the reason explain gives for cutting a moved owner, the 128-buffer size to confirm against N1, and R1, lanes, and V7b to V9.
 
+## N1b: bursts across a flush
+
+On 2026-10-20 and 21, after V7a and before V7b, N1 was measured a second time, built independently of N1a (the two lines
+of work met at a merge on 2026-11-04): native at the merge base against the plan through V7a, at 0.05, 0.3, 0.6, and
+1.2 CPUs with lanes off, a steady window at 30% of native capacity and then a burst of four times that, timed across a
+flush, at 3,000 and 100,000 contexts, with an A/A pair per image (96 runs in the dory VM). The method, results,
+findings, and gates G1 to G6 are in [N1b](programmable-metrics-next.md#n1b-bursts-across-a-flush) and
+[gates](programmable-metrics-next.md#gates-for-n2-to-n4); the summaries in `test/scaling/results/n1-20261021/`.
+
+### What was built
+
+`test/scaling/run-regime.sh` (`cfa417d5d7`, [README](../../test/scaling/README.md#bursts-across-a-flush-run-regimesh),
+[runbook](programmable-metrics-measurement.md#the-production-regime-in-containers-n1)), which runs ADP under a
+fractional CPU limit on two cores with two workers, for native, plan, and a candidate image with an A/A pair of each;
+`regime_sampler.py`, a container that reads ADP's cgroup and the generators' bytes written every 100 ms from outside
+ADP's cgroup; and `summarize-regime.py`. The compose file gained the burst generator and the sampler (profile
+`regime`), a UDP transport, and a health check that runs every second only until ADP is healthy; `run-curves.sh`
+renders UDP generators and can be sourced for its helpers.
+
+### What went wrong, and what was learned
+
+- **UDP measured lading.** lading releases each second's bytes in one clump at the start of the second, which
+  overflows a UDP socket's default receive buffer at any rate. The series run over Unix datagrams instead, and drops are
+  lading's shortfall against its configured rate.
+- **The Docker VM restarted twice in four hours**, because the sampler wrote its timeline into a bind mount of the host
+  and read a phase file the host rewrote, every 100 ms. Both moved into a volume of the VM.
+- **0.6 CPUs was never overloaded.** The series interpolated 0.6's capacity from 0.3 and 1.2 and underestimated it; the
+  calibration made after the series showed it. Calibrate every limit.
+- **A flush seemed to stall the plan more than native** at 0.3 CPUs with 100,000 contexts, which N1b read as the
+  blocking drain. The V7b runs and the stall study later showed the drain to be the smaller part
+  ([N1b's findings](programmable-metrics-next.md#what-n1b-says)).
+
 ## Version 2: V7b (one region with an interleaved flush)
 
 V7b was built from [its design](programmable-metrics-v7b.md) and the owner's answers (2026-10-21) in parallel parts on
@@ -1543,3 +1756,40 @@ clippy `-D warnings` on the touched crates, `cargo check --workspace --tests`, a
 harness, and the `aggregator.processed` remap ([version 2: what is left](programmable-metrics-v2.md#what-is-left));
 under saturation a chained owner's tick may wait out its 2 s grace for an upstream pass spread over up to 5 s. Next:
 the N1 candidate runs.
+
+## V7b's candidate runs and the layout A/B
+
+On 2026-10-21 V7b was judged in N1b's harness against N1b's plan image, and on 2026-10-22 its fused layout was compared
+with an isolated one; results in [V7b against N2](programmable-metrics-next.md#v7b-against-n2) and
+`test/scaling/results/v7b-20261021/` and `layout-ab-20261021/`.
+
+### What was built
+
+The Saluki-only `experimental.programmable_metrics.isolate_state` key (`cbe180d2e0`, measurement only), which isolates
+state owners without lanes; the regime harness's `REGIME_VARIANTS` and `adp/isolated.yaml`; and the region driver
+bench's `layout_steady_admission` group (`ddc74e1851`).
+
+### Findings
+
+- **The candidate missed the exit as G1 to G6 stated it**: blocked flush time 0, but G5 and G6 missed at 0.3 CPUs, G6
+  at 1.2, and G1 at 3,000 contexts at 0.3 and 0.6. Admission still fell after the flush on every image, at a full
+  quota, and the pace did not spread a pass.
+- **G1's miss was noise.** Fused and isolated measured the same steady CPU per metric within the A/A distances, and the
+  in-process bench the same region cost (277 against 275 ns a metric in batches of 1,024).
+- **The flush count was wrong.** `aggregate_flushes_total` read 6 to 9 where plan read 5: with aggregation fused, a
+  gated tick a header released stayed gated during its pass, so every later header released it again, and it flushed a
+  second time at the same flush time. Fixed in `cba809db95`, which also times every drain of flush ticks. Alongside,
+  `de240e4005` fixed the phase of a lineage a cut creates while a pass is pending, which a clock reset exposed in the
+  interleaved property test.
+
+### Decisions
+
+On 2026-10-21 the owner decided that the merged layout stays the default when lanes are off, that V7b is done as
+optionality (the physical layout is a plan choice), and deferred flush pacing, encode cost, G5's pool question, and
+G6's thresholds ([V7b's outcome](programmable-metrics-v7b.md#65-as-built)).
+
+### Read against the stall study
+
+The stall study, made on N1a's host before V7b and merged on 2026-11-04, explains the miss: the drain is about 3% of a
+flush's cost and the encoder's burst about 85%, the same on native. V7b delivered N2's first layer, the non-blocking
+drain; pacing and priority for admission are the open layers, and G6's thresholds are superseded.

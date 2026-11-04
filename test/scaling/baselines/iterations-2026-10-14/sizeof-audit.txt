@@ -1,0 +1,23 @@
+     Running tests/sizeof_audit.rs (target/debug/deps/sizeof_audit-28ec76ef9283aa2d)
+Event            size  336 align  8
+Metric           size  160 align  8
+MetricValues     size  104 align  8
+ScalarPoints     size   72 align  8
+SetPoints        size   64 align  8
+HistogramPoints  size   88 align  8
+SketchPoints     size   96 align  8
+MetricMetadata   size   48 align  8
+Context          size    8 align  8
+TagSet           size   32 align  8
+SharedTagSet     size   24 align  8
+Tag              size   24 align  8
+MetaString       size   24 align  8
+EventD           size  200 align  8
+ServiceCheck     size  160 align  8
+Log              size  192 align  8
+Trace            size  336 align  8
+TraceStats       size   24 align  8
+EventsBuffer     size   80 align  8
+metrics per 64-byte line in an Event slot: 0.19
+Event slots in a 1,024-event buffer: 336 KiB
+test sizeof_audit ... ok

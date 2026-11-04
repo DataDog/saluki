@@ -300,7 +300,11 @@ validation](programmable-metrics-v7b.md#64-validation)), is not met
 quota its CPU still lands in the 2 s after it, a pass runs ahead of its pace whenever the region is idle, and the
 candidate parks less of a burst than native. The owner decided on 2026-10-21 that V7b is done as optionality (the
 physical layout is a plan choice; the merged layout stays the default) and deferred the gaps: flush pacing, encode
-cost, the pool question for G5, and G6's thresholds. Next are V8, V9, and V1. A
+cost, the pool question for G5, and G6's thresholds. The stall study, merged on 2026-11-04, explains the gap: most of
+what slows admission after a flush is the encoder's burst under the quota, not the drain, so V7b is the first of N2's
+[four layers](programmable-metrics-next.md#n2-keep-admitting-through-a-flush-in-four-layers), and pacing and priority
+for admission are open; V8's encoding as a terminal kernel should be weighed against the third layer, which wants the
+encoder where it can run at a lower priority. Next are V8, V9, and V1. A
 new session starts from the log's V7b section, the V7b design's [as built](programmable-metrics-v7b.md#65-as-built),
 and the status document's [changes users can see](programmable-metrics-status.md#changes-users-can-see).
 

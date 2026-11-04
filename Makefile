@@ -953,6 +953,19 @@ scaling-curves: ## Runs the containerized scaling curves, legacy against plan (L
 	@echo "[*] Running the scaling curves (images $(SCALING_LEGACY_IMAGE) and $(SCALING_PLAN_IMAGE))..."
 	@./test/scaling/run-curves.sh
 
+export SCALING_MAIN_IMAGE ?= saluki-images/agent-data-plane:main
+
+.PHONY: limits-images
+limits-images: ## Builds the images the CPU-limit runs compare: main (origin/main) and plan (this tree)
+	@git fetch --quiet origin main
+	@$(MAKE) scaling-images SCALING_LEGACY_BASE=$$(git rev-parse --short=10 origin/main) \
+		SCALING_LEGACY_IMAGE=$(SCALING_MAIN_IMAGE)
+
+.PHONY: limits-runs
+limits-runs: ## Runs ADP at production CPU limits, main against plan (Linux; see test/scaling/README.md)
+	@echo "[*] Running at CPU limits (images $(SCALING_MAIN_IMAGE) and $(SCALING_PLAN_IMAGE))..."
+	@./test/scaling/run-limits.sh
+
 ##@ Development
 
 .PHONY: fast-edit-test

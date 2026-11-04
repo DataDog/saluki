@@ -1,0 +1,475 @@
+diff --git a/lib/saluki-core/src/execution/region/host.rs b/lib/saluki-core/src/execution/region/host.rs
+index 991b5ceb52..ef27f798be 100644
+--- a/lib/saluki-core/src/execution/region/host.rs
++++ b/lib/saluki-core/src/execution/region/host.rs
+@@ -43,7 +43,7 @@ use crate::{
+         AdmissionPointConfig, Budget, DrainPolicy, OwnedAdmission, Progress,
+     },
+     health::{Health, Probe},
+-    observability::ComponentMetricsExt as _,
++    observability::{flow_trace, ComponentMetricsExt as _},
+     runtime,
+     support::SubsystemIdentifier,
+     topology::{
+@@ -550,6 +550,8 @@ where
+                     routes: ExitRoutes::new(Arc::clone(&self.exit_names), lane),
+                     stats,
+                     work_per_turn: self.work_per_turn,
++                    flow_queue: flow_trace::queue_gauge(format!("{}#{}", context.component_id(), lane.index)),
++                    flow_drain: None,
+                 }
+             })
+             .collect::<Vec<_>>();
+@@ -1163,6 +1165,9 @@ where
+     routes: ExitRoutes,
+     stats: Option<Arc<LaneStats>>,
+     work_per_turn: NonZeroUsize,
++    // The lane's input queue depth and its drain in progress, when the flow trace experiment is on.
++    flow_queue: Option<Arc<flow_trace::QueueGauge>>,
++    flow_drain: Option<flow_trace::Drain>,
+ }
+ 
+ /// What a lane waits on for its admission point's source clock to reset: the clock's epoch channel, which keeps the
+@@ -1249,6 +1254,9 @@ where
+                 debug!(lane = %self.context, "Region lane's coordinator is gone. Stopping the lane.");
+                 return Ok(());
+             }
++            if let Some(queue) = &self.flow_queue {
++                queue.set(input.queued());
++            }
+ 
+             // A turn of input ends once no call is yielded, with whether more input waits as of now.
+             if turn_owed && self.runner.pending.is_none() {
+@@ -1450,7 +1458,29 @@ where
+     async fn dispatch(
+         &mut self, dispatcher: &EventsDispatcher, liveness: &mut Liveness, control: &mut ControlSource<D::Control>,
+     ) -> Result<(), GenericError> {
+-        dispatch(&mut self.runner, &mut self.routes, dispatcher, liveness, control).await
++        let Some(queue) = &self.flow_queue else {
++            return dispatch(&mut self.runner, &mut self.routes, dispatcher, liveness, control).await;
++        };
++        // The flow trace: a drain runs from the first call that leaves a call pending until no call is pending; each
++        // send of its output counts as a step. (A drain finished within one call, which never leaves a call pending,
++        // is not seen.)
++        if self.runner.pending.is_some() && self.flow_drain.is_none() {
++            self.flow_drain = Some(flow_trace::Drain::start(queue.get()));
++        }
++        let events: u64 = self.runner.outbox.iter().map(|(_, _, buffer)| buffer.len() as u64).sum();
++        let started = std::time::Instant::now();
++        let result = dispatch(&mut self.runner, &mut self.routes, dispatcher, liveness, control).await;
++        if let Some(drain) = &mut self.flow_drain {
++            drain.step(started.elapsed(), events);
++            if self.runner.pending.is_none() {
++                let name = queue.name().to_string();
++                let queued = queue.get();
++                if let Some(drain) = self.flow_drain.take() {
++                    drain.end(&name, queued);
++                }
++            }
++        }
++        result
+     }
+ }
+ 
+diff --git a/lib/saluki-core/src/observability/flow_trace.rs b/lib/saluki-core/src/observability/flow_trace.rs
+new file mode 100644
+index 0000000000..c423fa09e1
+--- /dev/null
++++ b/lib/saluki-core/src/observability/flow_trace.rs
+@@ -0,0 +1,217 @@
++//! An experiment: a fine-grained trace of where the metrics path waits, for investigating admission stalls.
++//!
++//! Off unless `SALUKI_EXPERIMENT_TRACE` names a file. When on, each dispatcher output counts the time its sends spend
++//! waiting (for the admission point's lock and for room downstream), each region host publishes its input queue's
++//! depth, and the hosts of regions that drain record each drain; a background thread writes every 100 ms, to the file,
++//! the counters' changes since its last write, the queue depths, and the drains that ended, all stamped with the Unix
++//! time in milliseconds, so that they can be lined up with measurements taken outside the process. The experiment is
++//! not a supported setting: it costs two clock reads per send and a file write every 100 ms.
++//!
++//! Lines are space-separated:
++//!
++//! - `w <unix_ms> <name> <wait_us> <sends> <items>`: an output's waiting since the last line for it (only outputs that
++//!   sent);
++//! - `q <unix_ms> <name> <batches>`: a region's input queue depth, now;
++//! - `d <start_unix_ms> <name> <duration_us> <steps> <dispatch_wait_us> <events_out> <queued_at_start> <queued_at_end>`:
++//!   a drain that ended.
++
++use std::{
++    fs::File,
++    io::{BufWriter, Write as _},
++    sync::{
++        atomic::{AtomicU64, Ordering::Relaxed},
++        Arc, Mutex, OnceLock,
++    },
++    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
++};
++
++/// The environment variable that turns the trace on, naming the file it writes.
++pub const FLOW_TRACE_ENV: &str = "SALUKI_EXPERIMENT_TRACE";
++
++const INTERVAL: Duration = Duration::from_millis(100);
++
++/// The waiting of one dispatcher output.
++#[derive(Debug, Default)]
++pub struct WaitCounter {
++    name: String,
++    wait_us: AtomicU64,
++    sends: AtomicU64,
++    items: AtomicU64,
++}
++
++impl WaitCounter {
++    /// Counts one send of `items` items that waited `waited`.
++    pub fn record(&self, waited: Duration, items: usize) {
++        self.wait_us.fetch_add(waited.as_micros() as u64, Relaxed);
++        self.sends.fetch_add(1, Relaxed);
++        self.items.fetch_add(items as u64, Relaxed);
++    }
++}
++
++/// The depth of one region's input queue.
++#[derive(Debug, Default)]
++pub struct QueueGauge {
++    name: String,
++    batches: AtomicU64,
++}
++
++impl QueueGauge {
++    /// Sets the depth.
++    pub fn set(&self, batches: usize) {
++        self.batches.store(batches as u64, Relaxed);
++    }
++
++    /// Returns the depth last set.
++    pub fn get(&self) -> usize {
++        self.batches.load(Relaxed) as usize
++    }
++
++    /// Returns the gauge's name.
++    pub fn name(&self) -> &str {
++        &self.name
++    }
++}
++
++/// A drain in progress in a region host.
++#[derive(Debug)]
++pub struct Drain {
++    started: Instant,
++    started_unix_ms: u64,
++    steps: u64,
++    dispatch_wait: Duration,
++    events_out: u64,
++    queued_at_start: usize,
++}
++
++impl Drain {
++    /// Starts a drain, with `queued` batches waiting at the host's input.
++    pub fn start(queued: usize) -> Self {
++        Self {
++            started: Instant::now(),
++            started_unix_ms: unix_ms(),
++            steps: 0,
++            dispatch_wait: Duration::ZERO,
++            events_out: 0,
++            queued_at_start: queued,
++        }
++    }
++
++    /// Counts one step of the drain, whose output took `dispatch_wait` to send and held `events` events.
++    pub fn step(&mut self, dispatch_wait: Duration, events: u64) {
++        self.steps += 1;
++        self.dispatch_wait += dispatch_wait;
++        self.events_out += events;
++    }
++
++    /// Ends the drain of the region `name`, with `queued` batches waiting at the host's input, and records it.
++    pub fn end(self, name: &str, queued: usize) {
++        if let Some(trace) = trace() {
++            let line = format!(
++                "d {} {} {} {} {} {} {} {}",
++                self.started_unix_ms,
++                name,
++                self.started.elapsed().as_micros(),
++                self.steps,
++                self.dispatch_wait.as_micros(),
++                self.events_out,
++                self.queued_at_start,
++                queued
++            );
++            trace.drains.lock().expect("not poisoned").push(line);
++        }
++    }
++}
++
++struct Trace {
++    counters: Mutex<Vec<Arc<WaitCounter>>>,
++    gauges: Mutex<Vec<Arc<QueueGauge>>>,
++    drains: Mutex<Vec<String>>,
++}
++
++fn trace() -> Option<&'static Trace> {
++    static TRACE: OnceLock<Option<&'static Trace>> = OnceLock::new();
++    *TRACE.get_or_init(|| {
++        let path = std::env::var_os(FLOW_TRACE_ENV)?;
++        let file = File::create(&path).ok()?;
++        let trace: &'static Trace = Box::leak(Box::new(Trace {
++            counters: Mutex::new(Vec::new()),
++            gauges: Mutex::new(Vec::new()),
++            drains: Mutex::new(Vec::new()),
++        }));
++        std::thread::Builder::new()
++            .name("flow-trace".to_string())
++            .spawn(move || write_forever(trace, BufWriter::new(file)))
++            .ok()?;
++        Some(trace)
++    })
++}
++
++/// Returns `true` if the trace is on.
++pub fn enabled() -> bool {
++    trace().is_some()
++}
++
++/// Returns a wait counter named `name`, registered with the trace, if the trace is on.
++pub fn wait_counter(name: String) -> Option<Arc<WaitCounter>> {
++    let trace = trace()?;
++    let counter = Arc::new(WaitCounter {
++        name,
++        ..WaitCounter::default()
++    });
++    trace.counters.lock().expect("not poisoned").push(Arc::clone(&counter));
++    Some(counter)
++}
++
++/// Returns a queue gauge named `name`, registered with the trace, if the trace is on.
++pub fn queue_gauge(name: String) -> Option<Arc<QueueGauge>> {
++    let trace = trace()?;
++    let gauge = Arc::new(QueueGauge {
++        name,
++        ..QueueGauge::default()
++    });
++    trace.gauges.lock().expect("not poisoned").push(Arc::clone(&gauge));
++    Some(gauge)
++}
++
++fn unix_ms() -> u64 {
++    SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .map_or(0, |since| since.as_millis() as u64)
++}
++
++fn write_forever(trace: &'static Trace, mut out: BufWriter<File>) {
++    // The last totals written for each counter, by its position in the registry, which only grows.
++    let mut last: Vec<(u64, u64, u64)> = Vec::new();
++    loop {
++        std::thread::sleep(INTERVAL);
++        let now = unix_ms();
++        let counters = trace.counters.lock().expect("not poisoned").clone();
++        last.resize(counters.len(), (0, 0, 0));
++        for (counter, last) in counters.iter().zip(last.iter_mut()) {
++            let totals = (
++                counter.wait_us.load(Relaxed),
++                counter.sends.load(Relaxed),
++                counter.items.load(Relaxed),
++            );
++            if totals.1 != last.1 {
++                let _ = writeln!(
++                    out,
++                    "w {} {} {} {} {}",
++                    now,
++                    counter.name,
++                    totals.0 - last.0,
++                    totals.1 - last.1,
++                    totals.2 - last.2
++                );
++            }
++            *last = totals;
++        }
++        for gauge in trace.gauges.lock().expect("not poisoned").iter() {
++            let _ = writeln!(out, "q {} {} {}", now, gauge.name, gauge.batches.load(Relaxed));
++        }
++        for line in std::mem::take(&mut *trace.drains.lock().expect("not poisoned")) {
++            let _ = writeln!(out, "{}", line);
++        }
++        let _ = out.flush();
++    }
++}
+diff --git a/lib/saluki-core/src/observability/mod.rs b/lib/saluki-core/src/observability/mod.rs
+index 8226ce9e17..e365736d65 100644
+--- a/lib/saluki-core/src/observability/mod.rs
++++ b/lib/saluki-core/src/observability/mod.rs
+@@ -4,6 +4,7 @@ use saluki_metrics::MetricsBuilder;
+ 
+ use crate::components::ComponentContext;
+ 
++pub mod flow_trace;
+ pub mod metrics;
+ 
+ /// Helper trait for working with [`MetricsBuilder`].
+diff --git a/lib/saluki-core/src/topology/interconnect/dispatcher.rs b/lib/saluki-core/src/topology/interconnect/dispatcher.rs
+index 9a8e9eff36..8734996f51 100644
+--- a/lib/saluki-core/src/topology/interconnect/dispatcher.rs
++++ b/lib/saluki-core/src/topology/interconnect/dispatcher.rs
+@@ -20,6 +20,7 @@ use crate::probes;
+ use crate::{
+     components::ComponentContext,
+     execution::{AdmissionPoint, OwnerToken},
++    observability::flow_trace,
+     topology::{ComponentId, EventsBuffer, LaneEdge, LaneRoute, OutputName},
+ };
+ 
+@@ -299,6 +300,9 @@ struct DispatchTarget<T> {
+ 
+     // Held while the dispatcher lives, so that the admission point sends no heartbeat once the component stops.
+     _admission_owner: Option<OwnerToken>,
++
++    // The output's waiting, when the flow trace experiment is on.
++    flow: Option<Arc<flow_trace::WaitCounter>>,
+ }
+ 
+ impl<T> DispatchTarget<T>
+@@ -307,6 +311,7 @@ where
+ {
+     fn default_output(context: ComponentContext) -> Self {
+         Self {
++            flow: flow_trace::wait_counter(format!("{}._default", context.component_id())),
+             output: OutputName::Default,
+             #[cfg(feature = "measurement")]
+             probes: DispatchProbes::new(&context, "_default"),
+@@ -320,6 +325,7 @@ where
+ 
+     fn named_output(context: ComponentContext, output_name: Cow<'static, str>) -> Self {
+         Self {
++            flow: flow_trace::wait_counter(format!("{}.{}", context.component_id(), output_name)),
+             #[cfg(feature = "measurement")]
+             probes: DispatchProbes::new(&context, &output_name),
+             metrics: DispatcherMetrics::named_output(context, &output_name),
+@@ -480,6 +486,8 @@ where
+     async fn send(&self, mut item: T, route: Option<LaneRoute<'_>>) -> Result<(), GenericError> {
+         // Resolve the route first, so that a send whose route does not fit the output stamps and sends nothing.
+         let mut routed = self.resolve_route(route)?;
++        // The flow trace counts the whole send: the admission point's lock, then room downstream.
++        let entered = self.flow.as_ref().map(|_| Instant::now());
+ 
+         // On an admission point, stamp the item and keep the point locked until the item has been sent to every
+         // sender: every downstream channel then receives the point's items in stamp order, even when several tasks
+@@ -549,6 +557,9 @@ where
+         }
+ 
+         self.record_sent(start, item_count);
++        if let (Some(flow), Some(entered)) = (&self.flow, entered) {
++            flow.record(entered.elapsed(), item_count);
++        }
+         Ok(())
+     }
+ 
+diff --git a/test/scaling/compose.limits.yaml b/test/scaling/compose.limits.yaml
+index fea676ca06..ff9143f14f 100644
+--- a/test/scaling/compose.limits.yaml
++++ b/test/scaling/compose.limits.yaml
+@@ -14,3 +14,5 @@ services:
+       DD_AGGREGATE_CONTEXT_LIMIT: !reset null
+       SALUKI_CPU_TIME_SAMPLING: !reset null
+       DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES: "${INTERNER_SIZE_BYTES:-524288}"
++      # The flow trace experiment (`SCALING_FLOW=1`): the file ADP writes it to, or empty for off.
++      SALUKI_EXPERIMENT_TRACE: "${FLOW_TRACE:-}"
+diff --git a/test/scaling/run-limits.sh b/test/scaling/run-limits.sh
+index 795aaf7f77..4607cd9d74 100755
+--- a/test/scaling/run-limits.sh
++++ b/test/scaling/run-limits.sh
+@@ -21,6 +21,12 @@
+ # once on disjoint cores; SCALING_PERF=1 counts instructions, cycles, and memory events in ADP's cgroup over each
+ # window with `perf stat`; and SCALING_RECORD=1 samples where ADP's instructions go, with call stacks, for the first
+ # SCALING_RECORD_SECONDS of each window (`perf record`, into perf-<run>.data). Both need `sudo -n`.
++#
++# SCALING_FLOW=1 turns on ADP's flow trace experiment (SALUKI_EXPERIMENT_TRACE: every 100 ms, each output's time spent
++# waiting to send, each region's input queue, and each drain, into flow-<run>.txt) and samples, about every 100 ms from
++# the host, ADP's CPU time and throttling, lading's bytes, and whether datagrams wait at the DogStatsD socket
++# (fast-<run>.csv);
++# it needs `ss` and `sudo -n nsenter`.
+ 
+ set -euo pipefail
+ 
+@@ -43,6 +49,7 @@ variants=${SCALING_VARIANTS:-}
+ parallel=${SCALING_PARALLEL:-1}
+ perf=${SCALING_PERF:-0}
+ record=${SCALING_RECORD:-0}
++flow=${SCALING_FLOW:-0}
+ record_seconds=${SCALING_RECORD_SECONDS:-10}
+ # One cell at a time keeps N1's layout: ADP on four cores, lading on two, the blackhole on two. Cells in parallel each
+ # take two cores for ADP (enough for two workers at every limit up to 1.2), two for lading, and one for the blackhole.
+@@ -253,6 +260,21 @@ perf_values() {
+   echo "${values[*]}"
+ }
+ 
++# Samples, about every 100 ms until killed, ADP's cgroup CPU time and throttling, lading's bytes, and whether datagrams
++# wait at the DogStatsD socket, into $1. For a Unix datagram socket `ss` reports, as its receive queue, the size of the
++# first datagram waiting (read in the network namespace of ADP's process $2), so the column is 0 when nothing waits
++# and the size of the next datagram otherwise, not a depth; the socket's memory is not visible this way.
++fast_sample() {
++  local file=$1 pid=$2 queued
++  echo "t,cpu_usec,periods,throttled,throttled_usec,lading_bytes,socket_queued" >"$file"
++  while true; do
++    queued=$(sudo -n nsenter -t "$pid" -n ss -x -a -n 2>/dev/null | awk '$1 == "u_dgr" && /dsd.sock/ { print $3; exit }')
++    echo "$(now),$(awk '$1 == "usage_usec" { u = $2 } $1 == "nr_periods" { p = $2 } $1 == "nr_throttled" { n = $2 }
++      $1 == "throttled_usec" { t = $2 } END { printf "%d,%d,%d,%d", u, p, n, t }' "$adp_cgroup_dir/cpu.stat"),$(lading_bytes 2>/dev/null || echo -),${queued:--}" >>"$file"
++    sleep 0.1
++  done
++}
++
+ # Runs one measured run of tier $1 at CPU limit $2, round $3, of image $5 labeled $4 with the environment file $6, in
+ # slot $7, appending a row to runs.csv.
+ measure() {
+@@ -265,6 +287,11 @@ measure() {
+   export ADP_VARIANT_ENV=$env_file
+   export INTERNER_SIZE_BYTES=$tier_interner
+   export LADING_CONFIG="$out/lading-$tier.yaml"
++  if [[ "$flow" == 1 ]]; then
++    export FLOW_TRACE=/tmp/flow-trace.txt
++  else
++    export FLOW_TRACE=
++  fi
+   log "$name ($image): slot $slot, ADP at $limit CPUs on cores $ADP_CPUSET, $mode at $tier_rate/s, $tier_contexts contexts"
+ 
+   run "${compose[@]}" up --detach --wait adp blackhole
+@@ -293,9 +320,17 @@ measure() {
+       -e "$perf_events" -- sleep "$window" &
+     counter=$!
+   fi
++  local fast=""
++  if [[ "$flow" == 1 ]]; then
++    fast_sample "$out/fast-$name.csv" "$(docker inspect --format '{{.State.Pid}}' "$adp_id")" &
++    fast=$!
++  fi
+   local recorder=""
+   if [[ "$record" == 1 ]]; then
+-    sudo -n perf record -q -o "$out/perf-$name.data" -a -C "$ADP_CPUSET" -e inst_retired -c 100000 \
++    # Monotonic timestamps, and beside them the wall clock's offset from the monotonic clock, so that samples line up
++    # with the flow trace and the host's samples (this kernel's perf does not take the wall clock).
++    python3 -I -c 'import time; print(time.time() - time.monotonic())' >"$out/perf-$name.offset"
++    sudo -n perf record -q -o "$out/perf-$name.data" -k mono -a -C "$ADP_CPUSET" -e inst_retired -c 100000 \
+       --cgroup "docker/$adp_id" --call-graph dwarf,8192 -- sleep "$record_seconds" 2>/dev/null &
+     recorder=$!
+   fi
+@@ -311,6 +346,11 @@ measure() {
+   cgroup1=$(adp_cgroup)
+   kill "$sampler" 2>/dev/null || true
+   wait "$sampler" 2>/dev/null || true
++  if [[ -n "$fast" ]]; then
++    kill "$fast" 2>/dev/null || true
++    wait "$fast" 2>/dev/null || true
++    docker cp "$adp_id:/tmp/flow-trace.txt" "$out/flow-$name.txt" >/dev/null 2>&1 || log "$name: no flow trace"
++  fi
+   if [[ -n "$recorder" ]]; then
+     wait "$recorder" || log "$name: perf record failed"
+   fi
+@@ -352,6 +392,9 @@ main() {
+   if ((host_cpus < parallel * slot_width)); then
+     fail "this host has $host_cpus CPUs; $parallel slot(s) of $slot_width cores need $((parallel * slot_width))"
+   fi
++  if [[ "$flow" == 1 && "$dry_run" != 1 ]]; then
++    command -v ss >/dev/null && sudo -n nsenter --version >/dev/null 2>&1 || fail "SCALING_FLOW=1 needs ss and sudo -n nsenter"
++  fi
+   if [[ ("$perf" == 1 || "$record" == 1) && "$dry_run" != 1 ]]; then
+     sudo -n perf --version >/dev/null 2>&1 || fail "SCALING_PERF=1 and SCALING_RECORD=1 need perf and passwordless sudo"
+   fi

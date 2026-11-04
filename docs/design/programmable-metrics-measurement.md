@@ -1,8 +1,9 @@
 # Programmable metric processing: measurements
 
 **Status:** how to run the measurements of stages 7 and 9 on branch `luke/programmable-metrics`, after stage 9, and
-N1's measurements at production CPU limits ([next steps](programmable-metrics-next.md#n1-measure-in-the-production-regime),
-whose results and gates are recorded there). The
+N1b's measurements at production CPU limits ([next steps](programmable-metrics-next.md#n1-measure-in-the-production-regime),
+whose results and gates are recorded there; N1a's harness, `run-limits.sh`, is documented in
+[its README](../../test/scaling/README.md#runs-at-production-cpu-limits-run-limitssh)). The
 design that defines them is [the stages 7 and 9 plan](programmable-metrics-stages-7-and-9.md): section
 [8.6](programmable-metrics-stages-7-and-9.md#86-measurement-harness-and-what-is-measured-first) lists M1 to M11 and
 records their results, [8.5](programmable-metrics-stages-7-and-9.md#85-stage-9-integration-increments-and-gate) the
@@ -482,11 +483,18 @@ p25 to p75 against the median; then the plan's throughput, scaling, and CPU rati
 
 ## The production regime in containers (N1)
 
-`test/scaling/run-regime.sh` measures ADP under the CPU limits production uses (0.05, 0.3, 0.6, and 1.2 CPUs), at a
-paced steady rate and through a burst timed across an aggregation flush, rather than saturated throughput across
-cores. [The README](../../test/scaling/README.md#the-production-regime-n1) is the reference for its containers and
-variables; N1's results and the gates for N2 to N4 are in [next steps](programmable-metrics-next.md#n1-results). The
-procedure:
+Two harnesses measure ADP under the CPU limits production uses (0.05, 0.3, 0.6, and 1.2 CPUs);
+[which harness to use](../../test/scaling/README.md#which-harness-to-use), in the README, says which answers what.
+`run-limits.sh` (N1a) runs the SMP tiers' steady loads with production defaults, counts instructions for the quick loop, and is documented in
+[its README section](../../test/scaling/README.md#runs-at-production-cpu-limits-run-limitssh), with its pitfalls in
+[ADP efficiency findings](adp-efficiency-findings.md#measuring-adp-under-cpu-limits). This section is the procedure of
+the other.
+
+`test/scaling/run-regime.sh` (N1b) measures ADP at a paced steady rate and through a burst timed across an aggregation
+flush, rather than saturated throughput across cores. [The
+README](../../test/scaling/README.md#bursts-across-a-flush-run-regimesh) is the reference for its containers and
+variables; N1b's results are in [next steps](programmable-metrics-next.md#n1b-bursts-across-a-flush) and the gates in
+[gates for N2 to N4](programmable-metrics-next.md#gates-for-n2-to-n4). The procedure:
 
 1. **Images.** The native image is the merge base's (`make scaling-images` builds it as
    `saluki-images/agent-data-plane:legacy-b940bf1f8b`); the plan image is this tree's (`make build-adp-image-release`,
@@ -507,13 +515,16 @@ procedure:
 What the earlier container runs did not show, and what to watch for:
 
 - **lading clumps a second's bytes.** lading's throttle (0.33) releases each second's bytes at the start of the second;
-  `timeout_micros` and the `linear` throttle do not change it. Over UDP the clump overflows the socket's 212,992-byte
+  `timeout_micros` and the `linear` throttle do not change it. Over a Unix datagram socket the clump lasts as long as
+  ADP takes to read it (about half a second at N1a's loads), so any per-second rate at the sender mixes lading's pacing
+  with ADP's stalls. Over UDP the clump overflows the socket's 212,992-byte
   receive buffer at any rate, so the kernel's drops measure lading. The series run over Unix datagrams, where the
   sender blocks while the socket is full: a paced run is a clump a second that ADP drains at its pace, and drops are
   lading's shortfall against its configured rate.
 - **Anything run inside ADP's container spends its quota.** `docker compose exec` and a health check run in ADP's
-  cgroup: at 50 millicores a check every second costs a few percent of the quota. The health check runs every second
-  only until ADP is healthy, then hourly, and the sampler reads the cgroup and the generators from its own container
+  cgroup: N1a measured a check every second at about 20 millicores, 40% of a 50-millicore quota (on its Graviton host;
+  idle ADP fell from 17 to 22 millicores to 2.3 to 2.8 without it). The health check runs every second only until ADP
+  is healthy, then hourly, and the sampler reads the cgroup and the generators from its own container
   on other cores. ADP's own telemetry is scraped only at the phase boundaries (five times a run).
 - **The flush's phase.** Both images start the aggregation's flush timer when the topology starts, and flush every
   15 s from it; the script reads the time from the log line `Agent Data Plane running.`, and `aggregate_flushes_total`
@@ -602,6 +613,5 @@ What to run there, in order:
 6. M9: the SMP RSS gate with the defaults and with lanes off at four vCPUs: item 6.
 
 The per-buffer cost of lanes is the risk to watch for item 3, in the paced phases and with about 500 stream
-connections (plan 8.6, results of the increments). Whether to delete R1's cost model (plan 8.5, P9.7) needs `lanes.mode:
-off` at W = 1 to 3 in the mapper and gateways profiles with and without R1's pipelining; the harness has no knob for
-pipelining without lanes, so that comparison needs one first.
+connections (plan 8.6, results of the increments). R1's cost model (plan 8.5, P9.7) is deleted since V7b (amendment
+203), after N1a's H2 found that maximal fusion saves no instructions, so the gate host has no R1 comparison to run.

@@ -1,7 +1,7 @@
 # Programmable metric processing: status
 
-**Status:** the state of the work after stage 9 (October 13, 2026) and the one-scope change (October 14), on branch
-`luke/programmable-metrics`. This
+**Status:** the state of the work after stage 9 (October 13, 2026), version 2 through V7b (October 21), and the merge
+of the owner's N1a measurements (November 4), on branch `luke/programmable-metrics`. This
 document records where the implementation of [the specification](programmable-metrics.md) stands, how to run it, what
 it changed outside its own crates, what is still open, and what the next stages inherit. It summarizes and links to
 [the implementation design](programmable-metrics-implementation.md) rather than repeating it, and it holds the open
@@ -70,7 +70,10 @@ ADP's artifact channel and given its headless check in stage 5, and extended in 
   V7b (one region with an interleaved flush, amendments 203 to 206) are built. V7b's N1 candidate runs (2026-10-21,
   [results](programmable-metrics-next.md#v7b-candidate-results)) found the flush stall gone, with G1, G3, and G4 holding
   at 100,000 contexts, but missed the exit: G5 and G6 at 0.3 CPUs, G6 at 1.2, and G1 at 3,000 contexts at 0.3 and 0.6.
-  The owner decided on 2026-10-21 that V7b is done as optionality, with the merged layout the default, and deferred the gaps. V8, V9, and V1 are next. The plan's
+  The owner decided on 2026-10-21 that V7b is done as optionality, with the merged layout the default, and deferred the
+  gaps. Against N2's four layers ([N2](programmable-metrics-next.md#n2-keep-admitting-through-a-flush-in-four-layers)),
+  V7b built the first, the non-blocking drain; what still slows admission after a flush is the encoder's burst under
+  the quota, which pacing and priority for admission address. V8, V9, and V1 are next. The plan's
   [handoff](programmable-metrics-v2.md#handing-off) says how to continue.
 - DogStatsD processing runs on **lanes** (stage 9), tasks inside one component, fixed at boot: `dsd_pre_aggregation`
   runs a producer lane per decoder, each the only stamper of its own admission point; `dsd_agg` runs state lanes, each
@@ -98,17 +101,29 @@ ADP's artifact channel and given its headless check in stage 5, and extended in 
   slot in that profile: the gap was the lane runtime at one lane per slot, so since the stage 9 review `auto` runs the
   layout without lanes wherever every count comes to one, as below three workers. R1's own evidence, the mapper profile,
   was equal at one and two workers.
-- **N1 is measured** (2026-10-21, [results and gates](programmable-metrics-next.md#n1-results)): at 0.05 to 1.2 CPUs
-  with lanes off, the plan's CPU per metric is 0.93 to 1.00 of native and its peak memory 0.54 to 0.95, but at 100,000
-  contexts a flush stalls its admission more than native's at 0.3 CPUs (0.47 against 0.64 of the rate before the
-  flush) and it drops more of a burst there and at 0.05 CPUs. Gates G1 to G6 for N2 to N4 are stated at these limits.
+- **N1 is measured twice** ([where it stands](programmable-metrics-next.md#where-it-stands)).
+  [N1a](programmable-metrics-next.md#n1a-steady-load-against-the-smp-tiers) (2026-10-14, the owner's, `run-limits.sh`
+  under the SMP tiers' steady loads): from the medium tier up the plan uses 4 to 6% less CPU per metric than `main` and
+  sustains 5 to 9% more, and under a crunch it keeps memory inside the SMP bounds where `main` does not.
+  [N1b](programmable-metrics-next.md#n1b-bursts-across-a-flush) (2026-10-21, `run-regime.sh`, a burst across a flush):
+  the plan's CPU per metric is 0.93 to 1.00 of native and its peak memory 0.54 to 0.95, but at 100,000 contexts its
+  admission falls further after a flush than native's at 0.3 CPUs (0.47 against 0.64 of the rate before the flush) and
+  it drops more of a burst there and at 0.05 CPUs. **The stall study** (2026-10-15,
+  [results](programmable-metrics-next.md#what-stalls-admission-at-a-flush)) found the drain pausing admission for only
+  30 to 75 ms and the encoder's burst after it, about 85% of a flush's cost, starving admission under the quota, the
+  same on `main`. The [gates](programmable-metrics-next.md#gates-for-n2-to-n4) for N2 to N4: stall gates inside ADP,
+  instructions per metric, and N1b's G1 to G5 (G6's thresholds superseded). Findings that could land in ADP on their
+  own, led by per-metric tag hashing (22 to 29% of instructions), are in
+  [ADP efficiency findings](adp-efficiency-findings.md).
 - Stages 8 and 10 are not built. Their extension-point types exist, only native defaults are accepted, and each
   unsupported case is a capability error that names a stage (see [Deferred work by stage](#deferred-work-by-stage)).
 
 **Branch.** `luke/programmable-metrics`, on top of `main` (`b940bf1f8b`, the merge base). It was pushed once, at the
-owner's request, up to `eb1c4ee134`; every commit after that is local, and nothing is pushed unless the owner asks
-again. The spec commit is signed; the implementation and document commits are unsigned (made with `--no-gpg-sign`,
-since the repository sets `commit.gpgsign=true`). No CI pipeline has run on the branch.
+owner's request, up to `eb1c4ee134`. The owner then pushed three signed commits on top of it (N1a, the first
+iterations, and the stall study), which were merged with the local commits on 2026-11-04; every other commit after
+`eb1c4ee134` is local, and nothing is pushed unless the owner asks again. The spec commit and the owner's three are
+signed; the other implementation and document commits are unsigned (made with `--no-gpg-sign`, since the repository
+sets `commit.gpgsign=true`). No CI pipeline has run on the branch.
 
 | Commit | Stage | What it delivered |
 |---|---|---|
@@ -135,12 +150,18 @@ since the repository sets `commit.gpgsign=true`). No CI pipeline has run on the 
 | `e6599d63f3` | V3 | Native configuration lowers to literals; bindings are facts and signals (amendment 196). |
 | `53cd99b576` | V4, V5 | Programs are whole and a snapshot holds one program document: scopes, `base`, staleness, fingerprints, and splicing removed (amendment 197). |
 | `9fb3990648` | V6 | Elaboration as a phase: one pass from the program as written to the core program, which installs, has the one hash, and explain shows (amendment 198). |
+| `862764b247`, `7c7631a4bb`, `21f1d9d12f` | N1a (owner, signed) | `run-limits.sh` and N1a's results at the SMP tiers; the health-check correction, the quick loop, the first hypotheses, and the ADP efficiency findings; the stall study (the encoder's burst after a flush) and N2's four layers. No net Rust change. |
+| `cfa417d5d7`, `3a871929f3` | N1b | `run-regime.sh` and N1b's results through a burst across a flush, with gates G1 to G6. |
+| `2ed14366b5`, `cbe180d2e0`, `ddc74e1851`, `cba809db95`, `738a831c01`, `23acb91d43`, `de240e4005` | V7b | The N1b candidate results; the experimental `isolate_state` key and the layout bench; the flush-count fix; the layout A/B; the owner's layout decision; the cut-lineage phase fix. |
 | `7e6b437476` | V7b | One region with an interleaved flush: state owners fuse with stateless work and R1's cost model is gone, so the metrics path without lanes is one region, `dsd_pre_aggregation`; a tick or boundary flush interleaves with admission, flushing on touch; lanes opt-in (amendments 203 to 206). |
 | (V7a commit) | V7a | State owners in any region: a sub-region for a state owner placement puts outside the boot state slots, made at installation and retired with its last generation; a watermark over several sources, chained owners with derived points and boundary flushes, cuts and telemetry by node, heartbeats on every routed point (amendments 200 and 201). |
 | `7b1e126d16`, `64fe645ca9`, (V10 commit) | V10 | Names and a compatibility analysis: operators describe what they report, the telemetry contract as validation warnings and a status section, every node reporting under its name; the node namespace, `single_aggregation`, and the adoption of `dsd_agg` removed (amendment 199). |
 
-**Next.** V7b's missed gates ([candidate results](programmable-metrics-next.md#v7b-candidate-results)) are deferred by the owner's decision of 2026-10-21; then the [version 2
-simplifications](programmable-metrics-v2.md) that remain. Beside them, the stage 9
+**Next.** V7b's missed gates ([candidate results](programmable-metrics-next.md#v7b-candidate-results)) are deferred by
+the owner's decision of 2026-10-21; they are N2's open layers, pacing and priority for admission (the cheapest
+experiment: the encoder at a lower thread priority), and N5's shedding. Then the [version 2
+simplifications](programmable-metrics-v2.md) that remain, and the ADP-wide items of
+[ADP efficiency findings](adp-efficiency-findings.md) for whoever takes them up. Beside them, the stage 9
 gate on a Linux host with at least 20 homogeneous cores (plan 8.5,
 [Q2](programmable-metrics-stages-7-and-9.md#12-open-questions)): its items 1 to 4, with the per-buffer cost of lanes as
 the risk to watch (plan 8.6), M2's rerun for O4's choice, M4 at P = 8, and the allocator setting measured beside it
@@ -162,9 +183,10 @@ real artifact channel, and stage 10 are not started. The owner's direction for s
 | Document | What it holds |
 |---|---|
 | [programmable-metrics-index.md](programmable-metrics-index.md) | **Start here**: a one-page map of the work, its state, key results, open questions, and which document holds what. |
-| [programmable-metrics-next.md](programmable-metrics-next.md) | Deployment context (CPU limits of 0.3 to 1.2 cores; 50 millicores in Nodeless) and what it implies: the next chunk of work, N1 to N5. |
+| [programmable-metrics-next.md](programmable-metrics-next.md) | Deployment context (CPU limits of 0.3 to 1.2 cores; 50 millicores in Nodeless) and what it implies: the next chunk of work, N1 to N5; the two N1 measurements (N1a and N1b), what stalls admission at a flush, V7b against N2, and the gates. |
+| [adp-efficiency-findings.md](adp-efficiency-findings.md) | ADP-wide efficiency findings at production CPU limits, G1 to G9, each independent of the plan: tag hashing, the allocator thread cache, kernel time, decoding, the size of `Event`, the tracking allocator, native buffering when starved, the collapse at 0.05 cores, and the encoder's burst after a flush. |
 | [programmable-metrics-log.md](programmable-metrics-log.md) | The implementation log: what was tried, what failed, what reviews found, results, and decisions, stage by stage. |
-| [programmable-metrics-measurement.md](programmable-metrics-measurement.md) | The measurement runbook: M1 to M11, the scaling curves, the container harness, and what the gate host needs. |
+| [programmable-metrics-measurement.md](programmable-metrics-measurement.md) | The measurement runbook: M1 to M11, the scaling curves, the container harnesses (with [`test/scaling/README.md`](../../test/scaling/README.md), which says which to use for what), and what the gate host needs. |
 | [programmable-metrics.md](programmable-metrics.md) | The specification, authoritative for semantics. It is never edited without its author; refinements go to the proposed amendments. |
 | [programmable-metrics-implementation.md](programmable-metrics-implementation.md) | The implementation design, stages 1 to 6 as built: [code layout](programmable-metrics-implementation.md#code-layout), [execution contracts](programmable-metrics-implementation.md#execution-contracts-in-saluki-core), [frame and region programs](programmable-metrics-implementation.md#physical-frame-and-region-programs) (R1 to R7), [the plan crate](programmable-metrics-implementation.md#the-plan-crate), [installation](programmable-metrics-implementation.md#installation), [ADP integration](programmable-metrics-implementation.md#adp-integration), [demo](programmable-metrics-implementation.md#demo), [stage plan](programmable-metrics-implementation.md#stage-plan) with stage 3 to 5 exit evidence, [stage 6](programmable-metrics-implementation.md#stage-6-stateful-kernels) with its [exit evidence](programmable-metrics-implementation.md#exit-evidence), [87 proposed spec amendments](programmable-metrics-implementation.md#proposed-spec-amendments), and [risks](programmable-metrics-implementation.md#risks). |
 | [programmable-metrics-pipeline-syntax.md](programmable-metrics-pipeline-syntax.md) | The pipeline syntax: the language, its core and sugar, node IDs, the printer's contract, normalization, the registry's defaults, the demo's changes, and what was built. |
@@ -1157,8 +1179,8 @@ the local `--test-threads 4` in the gate (see [Environment notes](#environment-n
 | **Stage 7 deferrals** | Static mode stays the native forwarder (not folded into the delivery host); platform roots load per client build; failures stay text-matched; growth in place is not admitted; 4.13's validation errors are caps at run time. See [Stage 7](#stage-7-resource-generations). | Decide which belong in a stage 7 follow-up. |
 | **The stage 9 gate host** ([Q2](programmable-metrics-stages-7-and-9.md#12-open-questions)) | Items 1 to 4 of the gate (throughput, scaling, CPU and p99, one stream connection) and item 6 (the SMP RSS gate) need a Linux host with at least 20 homogeneous cores (36 for W = 32), with an A/A series first. This Mac decided item 5 and the curves' shape at up to four workers, both passing (plan 8.5). | Provide or approve a host; the runbook is plan 8.4's P9.0 (`test/scaling/`) and 8.6. |
 | **Lanes on by default before the gate host ran** (amendment 157) | Decided by the owner (2026-10-21) and built in V7b: lanes are opt-in, `lanes.mode: off` by default (amendment 204). | None. |
-| **ADP's allocator setting** (the memory investigation) | `.cargo/config.toml` compiles `narenas:1,tcache:false` into every Linux build (since #378, for low RSS on the 4-CPU targets of SMP): every allocation takes one arena's lock, 0.5 µs at two threads and 1.6 at four against 31 ns alone. In ADP at N = 2 the thread cache gave legacy +7.1% throughput and -6.9% CPU per point, the plan +2.8% and -4.1%, for about +8 MiB of peak (+11 to +13 MiB at N = 4); with it on, the shared group counters of the tracking allocator become the next choke point, which per-decoder resource groups would remove. `MALLOC_CONF` overrides the setting at run time without a rebuild. | Measure `MALLOC_CONF=tcache:true` (and with `narenas:<W>`) beside the native setting on the gate host and the RSS gates of SMP, then choose; per-decoder groups are a small stage 9 part if the cache lands. |
-| **The datagram queue's default ceiling** (native, ADP-wide) | `dogstatsd_buffer_count_max` (32,768 datagrams of 8 KiB, about 256 MiB, #2079) fills at saturation on both paths (legacy at its cap at N = 4, 384 MiB peak); capped at 512, both paths peak at 63 to 64 MiB at N = 2 with equal throughput. The plan's deeper queue at N = 2 was the debug-log tap's clone under the admission lock, gated since. | Keep the Core Agent's burst absorption, or lower the default (2,048 or 4,096: 20 to 40 MiB). |
+| **ADP's allocator setting** (the memory investigation) | `.cargo/config.toml` compiles `narenas:1,tcache:false` into every Linux build (since #378, for low RSS on the 4-CPU targets of SMP): every allocation takes one arena's lock, 0.5 µs at two threads and 1.6 at four against 31 ns alone. In ADP at N = 2 the thread cache gave legacy +7.1% throughput and -6.9% CPU per point, the plan +2.8% and -4.1%, for about +8 MiB of peak (+11 to +13 MiB at N = 4); with it on, the shared group counters of the tracking allocator become the next choke point, which per-decoder resource groups would remove. `MALLOC_CONF` overrides the setting at run time without a rebuild. At production CPU limits (N1a's quick loop), `MALLOC_CONF=tcache:true` cut instructions per metric by 3.1 to 7.5% ([ADP finding G2](adp-efficiency-findings.md#g2-jemallocs-thread-cache)); its memory against the SMP bounds is not yet measured. | Measure `MALLOC_CONF=tcache:true` (and with `narenas:<W>`) beside the native setting on the gate host and the RSS gates of SMP, then choose; per-decoder groups are a small stage 9 part if the cache lands. |
+| **The datagram queue's default ceiling** (native, ADP-wide) | `dogstatsd_buffer_count_max` (32,768 datagrams of 8 KiB, about 256 MiB, #2079) fills at saturation on both paths (legacy at its cap at N = 4, 384 MiB peak); capped at 512, both paths peak at 63 to 64 MiB at N = 2 with equal throughput. The plan's deeper queue at N = 2 was the debug-log tap's clone under the admission lock, gated since. At production CPU limits native's pool grows to about 20,000 buffers when starved (N1a; up to 28,250 in N1b's bursts) where the plan's stays at a few dozen to 2,700 ([ADP finding G7](adp-efficiency-findings.md#g7-native-buffering-when-cpu-starved)). | Keep the Core Agent's burst absorption, or lower the default (2,048 or 4,096: 20 to 40 MiB). |
 | **Fused region inputs** | A fused slot's input holds the sum of the native inputs it replaces (invariant 10), so it holds more than legacy (up to about 130 MiB) only when the bottleneck is inside the fused chain; no measured configuration reached it. | Keep burst parity, or size by the longest component if a gate configuration shows it. |
 | **Memory times lanes** | The firm bound grows with every lane's kernels and memos at their configured sizes (about 16, 70, 161, and 186 MiB at 4, 8, 16, and 32 cores, 189 MiB at 64, each decoder's 96 KiB front cache included), most of it the tag filterlist's memo bound (6.4 MB per producer lane); M11 kept per-lane memos (each holds the working set; divided ones would miss). | Accept, or give producer lanes a share of one memo budget (`configured / D` with a floor). |
 | **Layout and V7b's outcome** (decided by the owner on 2026-10-21) | Decided: the merged (fused) layout stays the default when lanes are off: the [layout A/B](programmable-metrics-next.md#layout-ab-at-3k-contexts) showed no CPU cost, fused is about 5% cheaper at small batches, and it is simpler and the base for V8 and V9; `isolate_state: true` stays for A/B. V7b is done as optionality (the layout is a plan choice); flush pacing, encode cost (N4), G5's pool question, and G6's thresholds are deferred. | None. |

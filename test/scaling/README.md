@@ -1,13 +1,29 @@
-# Scaling curves in containers
+# Scaling measurements in containers
 
-This harness measures how ADP's DogStatsD throughput and CPU cost scale with cores, for two images side by side: the
-legacy metrics path (the `main` image at the branch's merge base) and the plan-driven path (this tree). It is the
-container half of the stage 9 measurements in `docs/design/programmable-metrics-stages-7-and-9.md` (sections 8.4 to
-8.6); the in-process half is `bin/agent-data-plane/src/programmable_metrics/topology/measurement_tests/`, which can run
-legacy and plan from one binary. The legacy path exists only under `cfg(test)` on this branch, so the container
-comparison needs two images.
+Three harnesses run ADP's DogStatsD path in containers, for two images side by side: a native image (`main`) and the
+plan-driven path (this tree). They share `compose.yaml`. The legacy metrics path exists only under `cfg(test)` on this
+branch, so a container comparison needs two images; the in-process half of the measurements is
+`bin/agent-data-plane/src/programmable_metrics/topology/measurement_tests/`, which can run legacy and plan from one
+binary.
 
-## What one run is
+## Which harness to use
+
+| To measure | Harness | Where it runs |
+|---|---|---|
+| How throughput and CPU per metric scale with cores, saturated, at 1 to 16 workers: the stage 9 gate | [`run-curves.sh`](#scaling-curves-across-cores-run-curvessh) | Linux with `N_max + 4` homogeneous cores; a Docker VM for smoke runs |
+| CPU per metric, capacity, and memory at production CPU limits (0.05 to 1.2 cores) under the steady loads of the SMP quality-gate tiers, with production defaults (N1a); instructions per metric for a hypothesis (the quick loop); what happens inside ADP at a flush (with the flow-trace patch) | [`run-limits.sh`](#runs-at-production-cpu-limits-run-limitssh) | Linux directly: it reads ADP's cgroup from the host, and its `perf` events are Arm's |
+| A burst across an aggregation flush at production CPU limits: shortfall, admission after against before the flush, the datagram pool, peak memory (N1b); a candidate image judged against the plan with an A/A pair of each (gates G1 to G5) | [`run-regime.sh`](#bursts-across-a-flush-run-regimesh) | Linux, or the Docker VM on a Mac: a sampler container reads ADP's cgroup |
+
+`docs/design/programmable-metrics-next.md` ("The two N1 measurements") says what each found and how the two N1
+harnesses relate; its gates say which harness judges which change.
+
+## Scaling curves across cores (`run-curves.sh`)
+
+This harness measures how ADP's DogStatsD throughput and CPU cost scale with cores, for the legacy metrics path (the
+`main` image at the branch's merge base) and the plan-driven path (this tree). It is the container half of the stage 9
+measurements in `docs/design/programmable-metrics-stages-7-and-9.md` (sections 8.4 to 8.6).
+
+### What one run is
 
 For each CPU count N, `compose.yaml` starts three containers on disjoint CPU sets:
 
@@ -33,7 +49,7 @@ throughput per CPU, CPU ns per metric, lading's bytes per decoded metric (which 
 generator, not ADP, set the rate), peak memory, and the spread of throughput from p25 to p75 against the median; then
 the plan's ratios to legacy (throughput, scaling `T(N) / T(N_min)` against legacy's, CPU per metric).
 
-## Requirements
+### Requirements
 
 - Linux, with cgroup v2, Docker, and Docker Compose v2. The host needs at least `N_max + 4` homogeneous cores: 20 for
   N = 16, 36 for N = 32 (plan question Q2). The script refuses a smaller host unless `SCALING_ALLOW_SMALL_HOST=1`,
@@ -44,7 +60,7 @@ the plan's ratios to legacy (throughput, scaling `T(N) / T(N_min)` against legac
 Docker Desktop and similar tools on macOS run a Linux VM whose vCPUs float over performance and efficiency cores: the
 harness runs there, and can check F7 (CPU-time reads cost a system call on Linux) and M6, but not homogeneous scaling.
 
-## Running it
+### Running it
 
 ```sh
 # Both images: legacy from the merge base (in a temporary work tree under target/), plan from this tree.
@@ -85,7 +101,7 @@ SCALING_WORKERS="1 2 4" SCALING_ROUNDS=3 SCALING_WINDOW_SECONDS=30 SCALING_RATE=
 | `SCALING_OUT` | `test/scaling/results/<time>` | where `runs.csv`, `summary.md`, the rendered lading configurations, and each run's ADP log go |
 | `SCALING_DRY_RUN` | 0 | 1 renders the configurations and prints the docker commands without running them |
 
-## The gate's configurations
+### The gate's configurations
 
 Gate items 1 to 3 of plan section 8.5 (throughput ratio at least 0.93, scaling ratio at least 0.93, CPU per metric
 ratio at most 1.07) are decided here, for each configuration of the gate and each N, one series per configuration:
@@ -110,7 +126,7 @@ no markers to time and no configuration stream to change), the tag filterlist of
 are random), and, if M2 shows the datagram receiver or the resolver capping both curves, items 1 to 3 themselves (plan
 section 8.5: in process legacy runs the same source code and gets the same fixes; the `main` image cannot).
 
-## Reading the results
+### Reading the results
 
 The A/A series first: its throughput spread, p25 to p75 over the median, per N, is the noise this host adds. The plan's
 spread must fit inside it, and a ratio within the spread of 1 is not a difference. If lading's bytes per metric grows
@@ -120,16 +136,106 @@ Report absolute throughput per CPU beside the ratios: two flat curves can pass i
 lanes (plan section 8.5). If both flatten below the top N, the in-process M2 shows whether the datagram receiver or the
 resolver caps them.
 
-## Validating the files without a daemon
+## Runs at production CPU limits (`run-limits.sh`)
 
-`docker compose --file test/scaling/compose.yaml config --quiet` checks the compose file and that the environment files
-it names exist, and `SCALING_DRY_RUN=1 test/scaling/run-curves.sh` renders every lading configuration and prints the
-commands of a series. Neither needs a running Docker daemon.
+`run-limits.sh` measures ADP where production runs it: under CPU limits of 0.3, 0.6, or 1.2 cores, and 50 millicores
+in Nodeless (N1a in `docs/design/programmable-metrics-next.md`). It compares the `main` image (built from
+`origin/main`) against the plan image (this tree) under the steady loads of the SMP quality-gate cases, and reuses
+`compose.yaml` with the overrides in `compose.limits.yaml`.
 
-## The production regime (N1)
+### What one run is
 
-`run-regime.sh` measures ADP at production CPU limits instead of saturated throughput across cores
-(`docs/design/programmable-metrics-next.md`, N1). It uses the same compose file with the `regime` profile, which adds a
+| Container | Cores | What it does |
+|---|---|---|
+| `adp` | `--cpus <limit> --cpuset-cpus 0-(C-1)`, `C = SCALING_ADP_CORES` (4) | The image under test with production defaults: no `SALUKI_WORKER_THREADS`, `DD_DOGSTATSD_WORKERS_COUNT`, `DD_METRICS_LEVEL`, aggregation context limit, or `SALUKI_CPU_TIME_SAMPLING`, so it derives workers and decoders from the CPU quota (two of each at every limit up to two cores) as it does in production. The string interner follows the tier. |
+| `lading` | `C` and `C+1` | The SMP case's DogStatsD generator over the Unix datagram socket, at the tier's rate. |
+| `blackhole` | `C+2` and `C+3` | lading's HTTP blackhole as the intake. |
+
+| Tier (`SCALING_TIERS`) | SMP case | Rate | Contexts | Interner | Memory bound |
+|---|---|---|---|---|---|
+| `low` | `quality_gates_rss_dsd_low` | 1 MiB/s | 3,000 | 512 KiB (default) | 60 MiB |
+| `medium` | `quality_gates_rss_dsd_medium` | 10 MiB/s | 10,000 | 512 KiB (default) | 100 MiB |
+| `heavy` | `quality_gates_rss_dsd_heavy` | 50 MiB/s | 99,000 to 101,000 | 32 MiB | 250 MiB |
+| `ultraheavy` | `quality_gates_rss_dsd_ultraheavy` | 100 MiB/s | 249,000 to 251,000 | 64 MiB | 420 MiB |
+
+After the warm-up, a run reads at both ends of the window ADP's decoded metrics, aggregation's drops, and failed
+context resolves (`:5100/metrics`), lading's `bytes_written`, and ADP's `cpu.stat` (CPU time, CFS periods, throttled
+periods and time); every second, lading's bytes and ADP's `cpu.stat` and anonymous memory (`memory.stat`); and every
+`SCALING_ADP_SAMPLE_SECONDS`, ADP's datagram buffers in use. The cgroup files are read from the host
+(`/sys/fs/cgroup/docker/<id>`, Docker's cgroupfs driver), not with `docker exec`, which would run inside ADP's cgroup
+and charge its quota.
+
+A Unix datagram socket blocks the sender rather than drop, so a run in which ADP falls behind shows as lading sending
+less than the tier's rate: `send` below 0.97 means ADP did not keep up. The worst and peak seconds do not measure
+stalls: lading sends each second's bytes in about half a second and then idles, so per-second rates mix its pacing with
+ADP's; stalls at a flush are measured inside ADP (see "What stalls admission at a flush" in
+`docs/design/programmable-metrics-next.md`).
+
+### Running it
+
+```sh
+# Both images: main from origin/main (in a temporary work tree under target/), plan from this tree.
+make limits-images
+
+# Per host, an A/A series: main against main sets the noise at each limit.
+SCALING_AA=1 make limits-runs
+
+# Then main against plan, every tier at every limit.
+make limits-runs
+
+# The most each image sustains at each limit: lading sends as fast as it can.
+SCALING_MODE=saturate SCALING_TIERS="low heavy" make limits-runs
+
+# The quick loop: a variant against the plan on the focus cells, three cells at a time, 30-second windows, with
+# instruction and memory counts.
+SCALING_CELLS="medium:0.3 heavy:0.6 heavy:1.2 ultraheavy:1.2" SCALING_PARALLEL=3 SCALING_PERF=1 \
+  SCALING_WINDOW_SECONDS=30 SCALING_ROUNDS=2 \
+  SCALING_VARIANTS="plan=saluki-images/agent-data-plane:plan plan-cts16=saluki-images/agent-data-plane:plan;SALUKI_CPU_TIME_SAMPLING=16" \
+  make limits-runs
+```
+
+The quick loop's shortcuts (parallel cells, shorter windows, two cores for ADP) are checked against the one-at-a-time
+runs before they are trusted: see "How we iterate" in `docs/design/programmable-metrics-next.md`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SCALING_LIMITS` | `0.05 0.3 0.6 1.2` | ADP's CPU limits (`--cpus`) |
+| `SCALING_TIERS` | `low medium heavy ultraheavy` | the SMP tiers above |
+| `SCALING_ROUNDS` | 3 | rounds per image, tier, and limit; the images alternate which goes first |
+| `SCALING_WARMUP_SECONDS`, `SCALING_WINDOW_SECONDS` | 30, 60 | the warm-up and the measured window of a run |
+| `SCALING_MODE` | `paced` | `paced` sends the tier's rate; `saturate` sends `SCALING_SATURATE_RATE` with the tier's contexts |
+| `SCALING_SATURATE_RATE` | `1 GiB` | lading's rate in saturate mode |
+| `SCALING_ADP_CORES` | 4 | the cores ADP's quota runs on |
+| `SCALING_ADP_SAMPLE_SECONDS` | 5 | how often a run reads ADP's telemetry for the buffers in use (each read costs ADP a little CPU) |
+| `SCALING_KEEP_SCRAPES` | 0 | 1 also keeps each of those reads whole, in `scrapes-<run>/`, for investigating a run |
+| `SCALING_AA` | 0 | 1 compares the main image against itself |
+| `SCALING_CELLS` | every tier at every limit | the cells to run, as `tier:limit` pairs, such as `"medium:0.3 heavy:1.2"` |
+| `SCALING_VARIANTS` | main and plan | the images to compare, each `label=image` with an optional environment, `label=image;KEY=VALUE;...`; the first is the reference the summary's ratios are against |
+| `SCALING_PARALLEL` | 1 | cells run at once; each slot takes `SCALING_ADP_CORES` (2 when parallel) cores for ADP, two for lading, and one for the blackhole |
+| `SCALING_PERF` | 0 | 1 counts instructions and cycles (pinned, exact) and L1D and L2 refills, back-end stalls, and TLB walks (sharing one counter, scaled estimates) in ADP's cgroup over each window; needs `perf` and `sudo -n` |
+| `SCALING_RECORD`, `SCALING_RECORD_SECONDS` | 0, 10 | 1 samples ADP's instructions with call stacks for the first seconds of each window, into `perf-<run>.data`, timestamped with the monotonic clock; `perf-<run>.offset` holds the wall clock's offset from it |
+| `SCALING_MAIN_IMAGE`, `SCALING_PLAN_IMAGE` | the tags `make limits-images` creates | the images compared |
+| `SCALING_OUT` | `test/scaling/results/limits-<time>` | where `runs.csv`, each run's `series-*.csv` and ADP log, and `summary.md` go |
+| `SCALING_DRY_RUN` | 0 | 1 renders the lading configurations and prints the docker commands without running them |
+
+`summarize_limits.py` prints, per tier and limit, each image's medians (send ratio, decoded rate, cores used and their
+share of the limit, CPU ns per metric, the share of periods throttled, the worst and peak seconds and the seconds stalled, the
+buffers in use, peak and anonymous memory against the SMP bound, and drops), then plan's ratios to main with each
+image's spread from p25 to p75, which the A/A series sets the noise for.
+
+### Measuring inside ADP at a flush
+
+The flow trace that measured what stalls admission at a flush is not in the tree: it is
+`baselines/stalls-2026-10-15/flow-trace.patch`, which applies to `7c7631a4bb` and adds `SALUKI_EXPERIMENT_TRACE` to
+ADP and `SCALING_FLOW=1` to this script (the trace, and a 100 ms host sampler of CPU time, throttling, lading's bytes,
+and whether datagrams wait at the socket). Its README there lists what each file holds and which figures are reliable.
+
+## Bursts across a flush (`run-regime.sh`)
+
+`run-regime.sh` measures ADP at production CPU limits through a burst timed across an aggregation flush, rather than
+saturated throughput across cores or a steady tier (N1b in `docs/design/programmable-metrics-next.md`). It compares the
+native image at the merge base (`make scaling-images` builds it) with the plan image, and a candidate image against
+the plan with an A/A pair of each. It uses the same compose file with the `regime` profile, which adds a
 second generator for bursts (`burst`) and a sampler (`sampler`, `regime_sampler.py`), and reuses `run-curves.sh`'s
 helpers to render lading's configurations.
 
@@ -159,7 +265,7 @@ REGIME_PLAN_IMAGE=saluki-images/agent-data-plane:plan REGIME_CONTEXTS=3000 \
 | `REGIME_CPUS` | `0.05 0.3 0.6 1.2` | the CPU limits |
 | `REGIME_LABELS`, `REGIME_ROUNDS` | `native-a native-b plan-a plan-b`, 3 | the labels (a `native`, `plan`, or `candidate` prefix picks the image) and rounds |
 | `REGIME_NATIVE_IMAGE`, `REGIME_PLAN_IMAGE` | `...:legacy-b940bf1f8b`, `...:plan` | the images |
-| `REGIME_CANDIDATE_IMAGE`, `REGIME_CANDIDATE_CONFIG` | none, the plan image's configuration | a change judged against the plan image: `REGIME_LABELS="plan-a plan-b candidate-a candidate-b"` (N1's gates for N2 to N4) |
+| `REGIME_CANDIDATE_IMAGE`, `REGIME_CANDIDATE_CONFIG` | none, the plan image's configuration | a change judged against the plan image: `REGIME_LABELS="plan-a plan-b candidate-a candidate-b"` (gates G1 to G5 in the next-steps document) |
 | `REGIME_VARIANTS` | none | further label prefixes that run the candidate image with another configuration, `name=path` pairs (a path relative to `test/scaling`), such as `fused=adp/lanes-off.yaml isolated=adp/isolated.yaml` for `REGIME_LABELS="fused-a fused-b isolated-a isolated-b"`; the summary compares each with the plan image and each later one with each earlier one |
 | `REGIME_STEADY_RATES` | none | the steady rate per limit, `cpus:KiB/s` pairs; N1 uses 30% of the native image's saturated rate at that limit |
 | `REGIME_STEADY_RATE_PER_CPU` | `60 MiB` | the steady rate per CPU for a limit `REGIME_STEADY_RATES` does not list |
@@ -185,5 +291,13 @@ remains for a generator that paces evenly (`adp/udp.env`; the sampler reads `Rcv
 Unix socket's queue depth, and admission inside ADP directly: `longest stall` is the longest stretch over which the
 generators' bytes did not grow during the overloaded burst, at the sampler's 100 ms resolution.
 
-Raw results stay local (`results/` is ignored); N1's summaries were added with `git add -f`
-(`results/n1-20261021/*/{series.txt,runs.csv,derived.csv,summary.md}`).
+Raw results stay local (`results/` is ignored); the summaries of N1b, the V7b candidate, and the layout A/B were added
+with `git add -f` (`results/{n1-20261021,v7b-20261021,layout-ab-20261021}/`: `series.txt`, `runs.csv`, `derived.csv`,
+`summary.md`). `run-limits.sh`'s recorded tables are under `baselines/` instead.
+
+## Validating the files without a daemon
+
+`docker compose --file test/scaling/compose.yaml config --quiet` checks the compose file and that the environment files
+it names exist; add `--file test/scaling/compose.limits.yaml` for `run-limits.sh`'s overrides, or `--profile regime`
+for `run-regime.sh`'s services. `SCALING_DRY_RUN=1 test/scaling/run-curves.sh` (or `run-limits.sh`) renders every
+lading configuration and prints the commands of a series. None of these needs a running Docker daemon.

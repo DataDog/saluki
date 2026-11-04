@@ -1,0 +1,16 @@
+heavy-0.3-1-main             flushes  3  drain - ms (- out)  extra CPU 0.132 core-s  extra throttled -596 ms  socket waiting 1.00 -> 1.00  admission deficit -
+heavy-0.3-1-plan             flushes  3  drain 212 ms (28687 out)  extra CPU 0.004 core-s  extra throttled 2674 ms  socket waiting 1.00 -> 0.95  admission deficit 0.43
+heavy-0.3-2-main             flushes  3  drain - ms (- out)  extra CPU 0.130 core-s  extra throttled 531 ms  socket waiting 1.00 -> 0.95  admission deficit -
+heavy-0.3-2-plan             flushes  3  drain 88 ms (29352 out)  extra CPU 0.005 core-s  extra throttled 2710 ms  socket waiting 0.96 -> 0.95  admission deficit 0.42
+heavy-0.6-1-main             flushes  3  drain - ms (- out)  extra CPU 0.479 core-s  extra throttled 1214 ms  socket waiting 0.57 -> 0.62  admission deficit -
+heavy-0.6-1-plan             flushes  3  drain 33 ms (29352 out)  extra CPU 0.874 core-s  extra throttled 4372 ms  socket waiting 0.49 -> 0.76  admission deficit 0.00
+heavy-0.6-2-main             flushes  3  drain - ms (- out)  extra CPU 0.823 core-s  extra throttled 2379 ms  socket waiting 0.53 -> 0.52  admission deficit -
+heavy-0.6-2-plan             flushes  3  drain 56 ms (29352 out)  extra CPU 0.905 core-s  extra throttled 3801 ms  socket waiting 0.47 -> 0.71  admission deficit 0.00
+heavy-1.2-1-main             flushes  3  drain - ms (- out)  extra CPU 0.828 core-s  extra throttled 158 ms  socket waiting 0.22 -> 0.29  admission deficit -
+heavy-1.2-1-plan             flushes  3  drain 39 ms (29352 out)  extra CPU 1.057 core-s  extra throttled 955 ms  socket waiting 0.24 -> 0.40  admission deficit 0.00
+heavy-1.2-2-main             flushes  3  drain - ms (- out)  extra CPU 0.903 core-s  extra throttled 194 ms  socket waiting 0.27 -> 0.29  admission deficit -
+heavy-1.2-2-plan             flushes  3  drain 39 ms (29352 out)  extra CPU 1.066 core-s  extra throttled 895 ms  socket waiting 0.20 -> 0.35  admission deficit -0.00
+ultraheavy-1.2-1-main        flushes  3  drain - ms (- out)  extra CPU -0.643 core-s  extra throttled -361 ms  socket waiting 0.62 -> 0.67  admission deficit -
+ultraheavy-1.2-1-plan        flushes  3  drain 50 ms (46945 out)  extra CPU 1.558 core-s  extra throttled 2277 ms  socket waiting 0.39 -> 0.57  admission deficit 0.02
+ultraheavy-1.2-2-main        flushes  2  drain - ms (- out)  extra CPU 0.991 core-s  extra throttled 1728 ms  socket waiting 0.56 -> 0.64  admission deficit -
+ultraheavy-1.2-2-plan        flushes  3  drain 76 ms (46945 out)  extra CPU 1.679 core-s  extra throttled 2122 ms  socket waiting 0.41 -> 0.62  admission deficit 0.02

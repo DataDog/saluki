@@ -2,7 +2,9 @@
 
 Start here. This page says what the programmable metrics work is, where it stands, and which document holds what, so
 that the whole can be understood at a high level before reading any of the longer documents. Branch
-`luke/programmable-metrics`; pushed once up to `eb1c4ee134`, local commits since.
+`luke/programmable-metrics`; pushed once up to `eb1c4ee134`. The owner then pushed three signed commits on top of it
+(N1a, the first iterations, and the stall study: `862764b247`, `7c7631a4bb`, `21f1d9d12f`), which were merged with the
+local commits since (version 2 through V7b, and N1b) on 2026-11-04.
 
 ## In one paragraph
 
@@ -13,8 +15,8 @@ into **regions** run by a generic driver. Changes install live as **generations*
 operator, or a demo standing in for Remote Config, can replace the program for the whole metrics path with an
 **artifact**, a detached program that owns its policy as literals, and roll it back. Aggregation is a stateful kernel
 that carries its state across changes, cutting over when a change requires it, such as a new bucket width. Outputs and
-recipients are live resources (stage 7), declared by configuration. The path runs on partitioned **lanes** across cores
-(stage 9).
+recipients are live resources (stage 7), declared by configuration. The path can run on partitioned **lanes** across
+cores (stage 9, opt-in since V7b); without them it is one region between its sources and outputs.
 
 ## Where it stands
 
@@ -44,10 +46,15 @@ recipients are live resources (stage 7), declared by configuration. The path run
 | V10 | Names and a compatibility analysis: every node reports under its name, the telemetry contract as warnings, any number of aggregations, a renamed aggregation is a new lineage; the node namespace, `single_aggregation`, and the adoption of `dsd_agg` removed (amendment 199) | `7b1e126d16`, `64fe645ca9`, (V10 commit) |
 | V7a | State owners in any region: a sub-region for any state owner, a watermark over several sources, chained owners with boundary flushes, cuts and telemetry by node (amendments 200, 201) | `09129a6a71` to `546d5a2e0f`, (V7a commit) |
 | Pipeline syntax | Programs written as streaming queries, a printer that writes any program as a person would, normalization and registry defaults (amendments 193, 194), and the demo moved to it | `0cbc6677d3` to `d35c5f8453` |
+| N1a | Production CPU limits under the SMP tiers' steady loads (`run-limits.sh`), the quick loop and first hypotheses, the ADP efficiency findings, and the stall study (the encoder's burst after a flush) | `862764b247`, `7c7631a4bb`, `21f1d9d12f` |
+| N1b | Production CPU limits through a burst across a flush (`run-regime.sh`), gates G1 to G6 | `cfa417d5d7`, `3a871929f3` |
+| V7b | One region with an interleaved flush: state owners fuse, R1's cost model deleted, lanes opt-in (amendments 203 to 206); done as optionality, the merged layout the default | `ed58c17def` to `7e6b437476`, `cba809db95`, `de240e4005` |
 
 Stage 8 (the production Remote Config channel) was skipped on purpose, and stage 10 (measured extensions) is not
-started. **Current work is version 2**: its planned steps through V7a are done; N1 is measured ([results and gates](programmable-metrics-next.md#n1-results)), and V7b, V8, V9, and V1 wait on the owner's reading of it and the lanes decision; a new session starts at its
-[handoff](programmable-metrics-v2.md#handing-off). Current state, in detail: [status: where things
+started. **Current work is version 2**: its steps through V7b are done; N1 is measured twice
+([where it stands](programmable-metrics-next.md#where-it-stands)), and N2 is now four layers, of which V7b built the
+first; pacing and priority for admission are open. V8, V9, and V1 are next on the plan side; a new session starts at
+the version 2 [handoff](programmable-metrics-v2.md#handing-off). Current state, in detail: [status: where things
 stand](programmable-metrics-status.md#where-things-stand).
 
 ## Reading order
@@ -72,8 +79,10 @@ stand](programmable-metrics-status.md#where-things-stand).
    - [Design for stages 7 and 9](programmable-metrics-stages-7-and-9.md), with
      [stage 7 as built](programmable-metrics-stages-7-and-9.md#stage-7-as-built) and
      [stage 9 as built](programmable-metrics-stages-7-and-9.md#stage-9-as-built).
-7. Reference: [artifact channel stub protocol](programmable-metrics-stub-protocol.md) and the
-   [measurement runbook](programmable-metrics-measurement.md).
+7. Reference: [artifact channel stub protocol](programmable-metrics-stub-protocol.md), the
+   [measurement runbook](programmable-metrics-measurement.md), the container harnesses'
+   [README](../../test/scaling/README.md), and [ADP efficiency findings](adp-efficiency-findings.md): what could make
+   ADP cheaper independently of the plan.
 
 ## Where to find
 
@@ -91,7 +100,8 @@ stand](programmable-metrics-status.md#where-things-stand).
 | Do programs replace native policy, and how? | [Direction](programmable-metrics-next.md#direction-programs-replace-native-policy); [detached programs](programmable-metrics-detached-programs.md) |
 | What is left to build? | [Status: deferred work by stage](programmable-metrics-status.md#deferred-work-by-stage) |
 | What alternatives were rejected? | [Stage 7](programmable-metrics-stages-7-and-9.md#418-alternatives-considered), [stage 9](programmable-metrics-stages-7-and-9.md#516-alternatives-considered), and the [log](programmable-metrics-log.md) |
-| What are the performance numbers? | [Implementation risks](programmable-metrics-implementation.md#risks) (stages 3 to 6); [stage 9 measurements](programmable-metrics-stages-7-and-9.md#86-measurement-harness-and-what-is-measured-first); the [log](programmable-metrics-log.md) |
+| What are the performance numbers? | At production limits: [N1a and N1b](programmable-metrics-next.md#the-two-n1-measurements), [the first iterations](programmable-metrics-next.md#what-the-first-iterations-showed), and [V7b against N2](programmable-metrics-next.md#v7b-against-n2); earlier: [implementation risks](programmable-metrics-implementation.md#risks) (stages 3 to 6), [stage 9 measurements](programmable-metrics-stages-7-and-9.md#86-measurement-harness-and-what-is-measured-first), the [log](programmable-metrics-log.md) |
+| What could improve ADP independently of the plan? | [ADP efficiency findings](adp-efficiency-findings.md) |
 
 ## Key results
 
@@ -106,8 +116,11 @@ stand](programmable-metrics-status.md#where-things-stand).
   - stage 7: throughput 1.11 to 1.21, CPU per metric at most 1.01, p99 0.27 to 0.65;
   - stage 9 through the real DogStatsD source: throughput 0.96 to 1.07 at 1 to 8 workers, where stage 6's pipelining
     fell to 0.70 at 8; high-cardinality scaling ahead of native (2.84 against 2.56 times at 8 workers);
-  - CPU per metric on lanes is 4 to 13% above native at 4 workers and more, from a fixed cost per buffer: the main
-    open performance item.
+  - CPU per metric on lanes is 4 to 13% above native at 4 workers and more, from a fixed cost per buffer, which
+    matters little now that production runs without lanes.
+- **Performance at production CPU limits** (Linux, 0.05 to 1.2 cores, ratios to native): CPU per metric 0.93 to 1.00
+  (4 to 6% less from the SMP medium tier up), 5 to 9% more capacity at saturation, and less memory under a crunch;
+  below, [what the production regime showed](#what-the-production-regime-showed).
 
 ## What we learned about deployment
 
@@ -117,7 +130,29 @@ most; multi-core scaling barely matters.** Fusion (stages 3 to 6) is the relevan
 sizes; R1's cost model adds hops for nothing; and the serial, blocking aggregation flush is the biggest practical
 problem. The next chunk of work is to measure at the production limits, make the flush non-blocking without sharding,
 fuse maximally at small budgets, and improve efficiency per metric: see
-[deployment context and next steps](programmable-metrics-next.md).
+[deployment context and next steps](programmable-metrics-next.md). What happened since is below.
+
+## What the production regime showed
+
+**N1 was measured twice, and the two agree** ([the two N1
+measurements](programmable-metrics-next.md#the-two-n1-measurements)).
+[N1a](programmable-metrics-next.md#n1a-steady-load-against-the-smp-tiers) ran steady SMP-tier loads (`run-limits.sh`): from medium load up and from 0.3 to 1.2 cores, the plan uses 4 to 6% less
+CPU per metric and less memory than `main`, and sustains 5 to 9% more at saturation (14 to 24% more at 0.05); under a
+CPU crunch it keeps memory inside the SMP bounds where `main` does not; and the flush stall shows in steady state on
+both. [N1b](programmable-metrics-next.md#n1b-bursts-across-a-flush) ran a burst across a flush (`run-regime.sh`): the
+plan's CPU per metric is 0.93 to 1.00 of native and its peak memory 0.54 to 0.95, because its datagram pool barely
+grows, but in an overloaded burst at 0.3 CPUs with 100,000 contexts it drops more than native, which parks the burst
+in its pool. **The first iterations** ([results](programmable-metrics-next.md#what-the-first-iterations-showed))
+found that more than 85% of ADP's instructions are in code the plan shares with `main`, that maximal fusion saves no
+instructions, and that the plan's own runtime costs less than the Tokio overhead its fusion removes; so the plan work
+now focuses on behavior under load, starting with flush stalls (N2). **Instrumenting a flush**
+([results](programmable-metrics-next.md#what-stalls-admission-at-a-flush)) showed that the drain pauses admission for
+only 30 to 75 ms, and that most of the stall is the encoder's burst of two to three seconds after it, CPU starvation
+under the quota, the same on `main`; N2 became the first of four layers: non-blocking drain, pacing, priority for
+admission, and shedding. **V7b built the first layer** with N3 (one region, R1's cost model gone, lanes opt-in): the
+drain no longer blocks admission, but admission still falls after a flush on every image, which the encoder's burst
+explains ([V7b against N2](programmable-metrics-next.md#v7b-against-n2)); fused and isolated layouts cost the same.
+Findings that could land in ADP on their own are in [ADP efficiency findings](adp-efficiency-findings.md).
 
 ## What we decided about native policy
 
@@ -134,12 +169,13 @@ rather than one shared system: [version 2 simplifications](programmable-metrics-
 
 ## Main open questions
 
-- The open questions of the [next steps](programmable-metrics-next.md#open-questions): which workloads and bursts to
-  model, and what is acceptable during a CPU crunch.
+- The open questions of the [next steps](programmable-metrics-next.md#open-questions): what is acceptable during a CPU
+  crunch, which policy production configurations use, and why the parallel quick loop skews CPU time.
+- How to pace a flush and give admission priority over the encoder (N2's second and third layers), and what replaces
+  G6's thresholds ([gates](programmable-metrics-next.md#gates-for-n2-to-n4)).
 - A **Linux gate host** with at least 20 homogeneous cores is needed to decide the stage 9 gate, now a lower priority
-  ([Q2](programmable-metrics-stages-7-and-9.md#12-open-questions)). Lanes are on by default before that gate
-  ([Q7](programmable-metrics-stages-7-and-9.md#12-open-questions)).
-- Whether to delete R1's fusion cost model ([P9.7](programmable-metrics-stages-7-and-9.md#p97-r1s-cost-model)).
+  ([Q2](programmable-metrics-stages-7-and-9.md#12-open-questions)). Lanes are opt-in since V7b (amendment 204), and
+  R1's fusion cost model is deleted (amendment 203).
 - ADP's allocator setting, which caps parallel gains on Linux, and the DogStatsD datagram queue's ceiling
   ([decisions](programmable-metrics-status.md#decisions-awaiting-the-owner)).
 - The spec amendments that need a decision, the clock-reset threshold, and the other items in that table.

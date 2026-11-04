@@ -2,7 +2,8 @@
 # volume, and lading HTTP blackholes as the intake, each pinned to CPU sets that do not overlap.
 #
 # `run-curves.sh` sets every variable below for each run; see README.md. The defaults describe a 4-CPU run of the
-# `defaults` profile over a Unix datagram socket.
+# `defaults` profile over a Unix datagram socket. `run-limits.sh` applies `compose.limits.yaml` over this file, and
+# `run-regime.sh` adds the services of the `regime` profile.
 name: saluki-scaling
 
 services:
@@ -42,8 +43,9 @@ services:
       - "127.0.0.1:${ADP_TELEMETRY_PORT:-15100}:5100"
     healthcheck:
       # The generator connects once the socket exists (Unix sockets) or the UDP listener is bound (8125 is 1FBD in
-      # /proc/net/udp). A check runs inside ADP's cgroup and spends its CPU quota, which matters at a fraction of a CPU:
-      # every second until healthy, then only hourly.
+      # /proc/net/udp). Each check runs a process inside ADP's container, charged to its CPU quota: at one check a
+      # second, about 20 millicores, 40% of a 50-millicore quota. So checks run every second only while starting, then
+      # hourly.
       test: ["CMD-SHELL", "test -S /var/run/dsd/dsd.sock || grep -q ':1FBD ' /proc/net/udp"]
       interval: 3600s
       start_period: 300s
