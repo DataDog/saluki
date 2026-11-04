@@ -37,14 +37,9 @@ impl ParticipantType for Fixture {
     fn artifacts(&self, _: Realization) -> &'static [ArtifactRole] {
         &[]
     }
-    fn operations(&self, _: Realization) -> &'static [&'static dyn Operation] {
-        &[&ConfigDump]
-    }
-    fn processes(&self) -> &'static [&'static str] {
-        self.0
-    }
     fn endpoints(&self, _: Realization, _: &EffectiveConfig) -> Result<BTreeMap<String, Endpoint>, String> {
         Ok(BTreeMap::from([
+            ("http".into(), Endpoint::http(Port::Fixed(1003))),
             ("tcp".into(), Endpoint::tcp(Port::Fixed(1001))),
             ("udp".into(), Endpoint::udp(Port::Fixed(1002))),
         ]))
@@ -54,6 +49,12 @@ impl ParticipantType for Fixture {
             name: "file",
             value: "/logs/output.log",
         }]
+    }
+    fn operations(&self, _: Realization) -> &'static [&'static dyn Operation] {
+        &[&ConfigDump, &Dump]
+    }
+    fn processes(&self) -> &'static [&'static str] {
+        self.0
     }
 }
 
@@ -75,6 +76,28 @@ impl Operation for ConfigDump {
         let output = cx.exec(vec!["dump".into(), view.into()]).await?;
         serde_json::from_slice(&output.stdout).map_err(|_| HandleError::Product {
             message: "configuration output is not JSON".into(),
+        })
+    }
+}
+
+struct Dump;
+
+#[async_trait]
+impl Operation for Dump {
+    fn name(&self) -> &'static str {
+        "dump"
+    }
+
+    async fn run(&self, cx: &OpContext<'_>, args: Value) -> Result<Value, HandleError> {
+        let kind = args
+            .get("kind")
+            .and_then(Value::as_str)
+            .ok_or_else(|| HandleError::Harness {
+                message: "dump requires a kind".into(),
+            })?;
+        let output = cx.exec(vec!["dump".into(), kind.into()]).await?;
+        serde_json::from_slice(&output.stdout).map_err(|_| HandleError::Product {
+            message: "dump output is not JSON".into(),
         })
     }
 }
@@ -179,7 +202,7 @@ struct FakeProcess {
     reveal: Arc<Mutex<Option<ExitObservation>>>,
 }
 
-/// A participant with scripted output, exits, file reads, command output and probe answers.
+/// A participant with scripted output, exits, file reads, command output, probe answers and sends.
 pub struct FakeParticipant {
     observation: ParticipantObservation,
     exit: watch::Sender<ParticipantExit>,
@@ -190,6 +213,7 @@ pub struct FakeParticipant {
     processes: BTreeMap<&'static str, FakeProcess>,
     probes: Mutex<VecDeque<Result<ProbeAnswer, HandleError>>>,
     execs: Mutex<VecDeque<Result<ExecOutput, HandleError>>>,
+    sends: Mutex<VecDeque<Result<(), HandleError>>>,
 }
 
 impl Default for FakeParticipant {
@@ -256,6 +280,7 @@ impl FakeParticipant {
             processes,
             probes: Mutex::new(VecDeque::new()),
             execs: Mutex::new(VecDeque::new()),
+            sends: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -294,6 +319,11 @@ impl FakeParticipant {
     /// Queues command output; the last queued answer repeats.
     pub fn push_exec(&self, answer: Result<ExecOutput, HandleError>) {
         self.execs.lock().unwrap().push_back(answer);
+    }
+
+    /// Queues a send result; the last queued answer repeats.
+    pub fn push_send(&self, answer: Result<(), HandleError>) {
+        self.sends.lock().unwrap().push_back(answer);
     }
 
     /// Appends a line tagged with its process, or participant-wide output for `None`.
@@ -352,18 +382,12 @@ impl Primitives for FakeParticipant {
         }
     }
     async fn send(&self, _: &ResolvedAddress, _: &[u8], _: &AttemptLimits) -> Result<(), HandleError> {
-        panic!("file and output steps do not send payloads");
-    }
-}
-
-/// Returns a direct request route's port for tests that issue their own HTTP requests.
-/// Returns `None` for a missing or courier route.
-pub fn runner_host_port(
-    cx: &StepContext<'_>, server: &str, endpoint: &str, operation: EndpointOperation,
-) -> Option<u16> {
-    match cx.plan.runner_host_route(server, endpoint, operation)? {
-        RunnerHostRoute::Direct(address) => address.port,
-        RunnerHostRoute::Courier(_) => None,
+        let mut sends = self.sends.lock().unwrap();
+        if sends.len() > 1 {
+            sends.pop_front().unwrap()
+        } else {
+            sends.front().expect("the step must script its send answers").clone()
+        }
     }
 }
 

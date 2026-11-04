@@ -312,12 +312,6 @@ pub(crate) fn resolve_assertion(value: &mut AssertionConfig, vars: &HashMap<Stri
             resolve_placeholders(key, vars);
             resolve_placeholders(endpoint, vars);
         }
-        AssertionConfig::IntakeHasMetric { name, tags, .. } => {
-            resolve_placeholders(name, vars);
-            for tag in tags {
-                resolve_placeholders(tag, vars);
-            }
-        }
         AssertionConfig::ProcessStableFor { .. } | AssertionConfig::AdpExitsWith { .. } => {}
     }
 }
@@ -344,12 +338,6 @@ pub(crate) fn unresolved_assertion(value: &AssertionConfig) -> Vec<String> {
         AssertionConfig::AdpConfigKeyEquals { key, endpoint, .. } => {
             find_unresolved(key, &mut out);
             find_unresolved(endpoint, &mut out);
-        }
-        AssertionConfig::IntakeHasMetric { name, tags, .. } => {
-            find_unresolved(name, &mut out);
-            for tag in tags {
-                find_unresolved(tag, &mut out);
-            }
         }
         AssertionConfig::ProcessStableFor { .. } | AssertionConfig::AdpExitsWith { .. } => {}
     }

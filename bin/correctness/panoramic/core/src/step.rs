@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-pub use crate::handle::{ExecCommand, ExecOutput, FileKind, FileStatus, HandleError};
+pub use crate::handle::{ExecCommand, ExecOutput, FileKind, FileStatus, HandleError, HttpResponse};
 pub use crate::observe::{ExitObservation, ExitStatus};
 use crate::{
     backend::LateFact,
@@ -184,11 +184,22 @@ impl Handle<'_> {
             .ok_or_else(|| HandleError::Harness {
                 message: format!("participant '{}' has no operation '{name}'", self.name),
             })?;
+        let requests = operation
+            .http_endpoints()
+            .iter()
+            .filter_map(|&endpoint| {
+                self.plan
+                    .runner_host_route(self.name, endpoint, EndpointOperation::Request)
+                    .cloned()
+                    .map(|route| (endpoint, route))
+            })
+            .collect();
         operation
             .run(
                 &OpContext {
                     primitives: self.primitives,
                     limit,
+                    requests,
                 },
                 args,
             )
@@ -333,6 +344,15 @@ impl OutputCursor<'_> {
     }
 }
 
+/// Whether a step asserts a condition or performs an action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StepKind {
+    /// Checks a condition.
+    Assertion,
+    /// Changes participant state.
+    Action,
+}
+
 /// Builds a named step from its case-file fields at load time.
 ///
 /// The loader builds steps and checks participant and process names; planning checks operations, facts,
@@ -340,6 +360,11 @@ impl OutputCursor<'_> {
 pub trait StepFactory: Send + Sync {
     /// Registry name, as written in a node's `step`.
     fn name(&self) -> &'static str;
+
+    /// The step's kind, defaulting to assertion. Only assertions may be members of a `parallel` block.
+    fn kind(&self) -> StepKind {
+        StepKind::Assertion
+    }
 
     /// The only fields in which the loader accepts `{{ … }}` template references; defaults to none.
     ///
@@ -554,6 +579,113 @@ mod tests {
                 message: "participant 'subject' has no operation 'missing'".into()
             })
         );
+    }
+
+    #[tokio::test]
+    async fn an_operation_uses_only_its_declared_http_routes_and_bounds_the_whole_response() {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+
+        use crate::case::{
+            fixtures::{CallFactory, FixtureTypes, HttpOperationServer, STEPS},
+            CaseLoader, Registries,
+        };
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let factories: Vec<_> = STEPS
+            .iter()
+            .copied()
+            .chain([&CallFactory as &dyn StepFactory])
+            .collect();
+        let registries = Registries {
+            participant_types: &[&HttpOperationServer(&["api", "other"])],
+            steps: &factories,
+            typed_case_roles: &[],
+        };
+        let case = CaseLoader::new(registries, FixtureTypes, "fixture")
+            .load_content(
+                "timeout: 30s\nsubject_os: [linux]\nparticipants:\n  subject: {type: server, subject: true}\nprocedure: [{step: reach, endpoint: subject.other, operation: request}, {step: call, on: subject, operation: http_dump}]",
+                "case",
+                std::path::Path::new("case/config.yaml"),
+            )
+            .unwrap()
+            .remove(0);
+        let plan = Planner::new(registries, Default::default())
+            .unwrap()
+            .with_port_range((port - 1)..=port)
+            .compile(case, Os::Linux)
+            .unwrap()
+            .into_plan()
+            .unwrap();
+        let plan = plan.participants().unwrap();
+        assert!(plan
+            .runner_host_route("subject", "other", EndpointOperation::Request)
+            .is_some());
+        let (_exit, exit_rx) = watch::channel(ParticipantExit::Running);
+        let (_capture, capture_rx) = watch::channel(Capture::Following);
+        let observation = ParticipantObservation::new(exit_rx, capture_rx, Default::default(), Default::default());
+        let cx = StepContext::new(
+            plan,
+            BTreeMap::from([(
+                "subject",
+                StepParticipant {
+                    primitives: &Backend,
+                    observation: &observation,
+                    late: BTreeMap::new(),
+                },
+            )]),
+        );
+        let handle = cx.handle("subject").unwrap();
+        for endpoint in ["other", "missing"] {
+            assert_eq!(
+                handle
+                    .op("http_dump", serde_json::json!({"endpoint": endpoint}), Duration::from_secs(2))
+                    .await,
+                Err(HandleError::Harness {
+                    message: format!(
+                        "no HTTP request route for endpoint '{endpoint}'; the operation must declare it in http_endpoints and the step must declare an operation need"
+                    ),
+                })
+            );
+        }
+        let responder = async {
+            for complete in [true, false] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    request.push(stream.read_u8().await.unwrap());
+                }
+                assert!(request.starts_with(b"GET /dump HTTP/1.1\r\n"));
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n")
+                    .await
+                    .unwrap();
+                if complete {
+                    stream.write_all(b"payload").await.unwrap();
+                }
+                assert_eq!(stream.read(&mut [0]).await.unwrap(), 0);
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let calls = async {
+                assert_eq!(
+                    handle.op("http_dump", Value::Null, Duration::from_secs(2)).await,
+                    Ok(serde_json::json!({"status": 200, "body": b"payload".to_vec()}))
+                );
+                assert_eq!(
+                    handle.op("http_dump", Value::Null, Duration::from_millis(100)).await,
+                    Err(HandleError::Product {
+                        message: "HTTP request timed out after 100ms".into(),
+                    })
+                );
+            };
+            tokio::join!(responder, calls);
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test(start_paused = true)]

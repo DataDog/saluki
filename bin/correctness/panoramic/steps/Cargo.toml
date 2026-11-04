@@ -17,9 +17,11 @@ async-trait = { workspace = true }
 futures = { workspace = true }
 panoramic-core = { workspace = true }
 regex = { workspace = true, features = ["std"] }
+saluki-error = { workspace = true }
 serde = { workspace = true }
 serde-saphyr = { workspace = true, optional = true }
 serde_json = { workspace = true }
+stele = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]

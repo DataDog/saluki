@@ -22,12 +22,12 @@ use crate::{
     handle::HandleError,
     layout::{Os, Realization, RealizationKind},
     participant::{
-        CaseValues, EffectiveConfig, ExitChannel, FactDeclaration, Operation, OutputChannel, OutputStream,
+        CaseValues, EffectiveConfig, ExitChannel, FactDeclaration, OpContext, Operation, OutputChannel, OutputStream,
         ParticipantType, ProcessSpec,
     },
     probe::{AttemptLimits, ProbeAnswer, POLL_INTERVAL},
     record::{AssertionStatus, StepReport},
-    step::{decode_fields, ExitObservation, Need, OutputEnd, Step, StepContext, StepFactory, StepFields},
+    step::{decode_fields, ExitObservation, Need, OutputEnd, Step, StepContext, StepFactory, StepFields, StepKind},
 };
 
 pub(crate) fn step_timeout() -> CaseDuration {
@@ -220,6 +220,42 @@ impl StepFactory for NoopFactory {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct Action {
+    on: String,
+}
+
+#[async_trait]
+impl Step for Action {
+    fn name(&self) -> &'static str {
+        "action"
+    }
+    fn needs(&self) -> Vec<Need> {
+        vec![Need::Handle(self.on.clone())]
+    }
+    fn budget(&self) -> Duration {
+        step_timeout().into()
+    }
+    async fn run(&self, _: &StepContext<'_>) -> StepReport {
+        StepReport::new(Instant::now(), AssertionStatus::Passed, "action completed")
+    }
+}
+
+pub(crate) struct ActionFactory;
+
+impl StepFactory for ActionFactory {
+    fn name(&self) -> &'static str {
+        "action"
+    }
+    fn kind(&self) -> StepKind {
+        StepKind::Action
+    }
+    fn build(&self, fields: &StepFields) -> Result<Box<dyn Step>, String> {
+        Ok(Box::new(decode_fields::<Action>(fields)?))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Reach {
     endpoint: ConnectionTarget,
     operation: Option<EndpointOperation>,
@@ -337,6 +373,51 @@ impl ParticipantType for OperationServer {
     }
     fn processes(&self) -> &'static [&'static str] {
         Server.processes()
+    }
+}
+
+pub(crate) struct HttpOperationServer(pub &'static [&'static str]);
+
+impl ParticipantType for HttpOperationServer {
+    fn name(&self) -> &'static str {
+        "server"
+    }
+    fn supports(&self) -> &'static [(Os, RealizationKind)] {
+        Server.supports()
+    }
+    fn artifacts(&self, _: Realization) -> &'static [ArtifactRole] {
+        &[]
+    }
+    fn endpoints(&self, _: Realization, _: &EffectiveConfig) -> Result<BTreeMap<String, Endpoint>, String> {
+        Ok(self
+            .0
+            .iter()
+            .enumerate()
+            .map(|(index, &name)| (name.into(), Endpoint::http(Port::Fixed(1003 + index as u16))))
+            .collect())
+    }
+    fn operations(&self, _: Realization) -> &'static [&'static dyn Operation] {
+        &[&HttpDump]
+    }
+    fn processes(&self) -> &'static [&'static str] {
+        Server.processes()
+    }
+}
+
+struct HttpDump;
+
+#[async_trait]
+impl Operation for HttpDump {
+    fn name(&self) -> &'static str {
+        "http_dump"
+    }
+    fn http_endpoints(&self) -> &'static [&'static str] {
+        &["api"]
+    }
+    async fn run(&self, cx: &OpContext<'_>, args: Value) -> Result<Value, HandleError> {
+        let endpoint = args.get("endpoint").and_then(Value::as_str).unwrap_or("api");
+        let response = cx.http_get(endpoint, "/dump").await?;
+        Ok(serde_json::json!({"status": response.status, "body": response.body}))
     }
 }
 

@@ -9,10 +9,11 @@ use crate::{
     artifact::ArtifactRole,
     backend::LateFact,
     case::{EndpointOverride, FileSource, ParticipantConfig},
-    endpoint::{ConsumedEndpoint, Endpoint, Evidence},
-    handle::{ExecCommand, ExecOutput, HandleError, Primitives},
+    endpoint::{ConsumedEndpoint, Endpoint, Evidence, RunnerHostRoute},
+    handle::{http_get_from_runner_host, ExecCommand, ExecOutput, HandleError, HttpResponse, Primitives},
     layout::{Os, Realization, RealizationKind},
     observe::output::host_output_file,
+    probe::AttemptLimits,
     recipe::Recipe,
 };
 
@@ -185,6 +186,11 @@ pub trait Operation: Send + Sync {
     /// Name steps call, unique within the type's operations for a realization.
     fn name(&self) -> &'static str;
 
+    /// The participant's own endpoints this operation requests over HTTP from the runner host. Defaults to none.
+    fn http_endpoints(&self) -> &'static [&'static str] {
+        &[]
+    }
+
     /// Runs with the participant's primitives and the caller's time limit.
     ///
     /// # Errors
@@ -193,10 +199,11 @@ pub trait Operation: Send + Sync {
     async fn run(&self, cx: &OpContext<'_>, args: Value) -> Result<Value, HandleError>;
 }
 
-/// The participant's execution primitive and a step-supplied limit.
+/// The participant's execution primitive, declared HTTP routes and a step-supplied limit.
 pub struct OpContext<'a> {
     pub(crate) primitives: &'a dyn Primitives,
     pub(crate) limit: Duration,
+    pub(crate) requests: BTreeMap<&'static str, RunnerHostRoute>,
 }
 
 impl OpContext<'_> {
@@ -216,6 +223,25 @@ impl OpContext<'_> {
                 self.limit,
             )
             .await
+    }
+
+    /// Gets an HTTP response from a declared endpoint, using the operation's limit for the whole request.
+    ///
+    /// # Errors
+    ///
+    /// Missing request routes, invalid requests and unsupported routes are harness errors.
+    /// Connection failures, incomplete bodies and timeouts are product errors.
+    pub async fn http_get(&self, endpoint: &str, path: &str) -> Result<HttpResponse, HandleError> {
+        let route = self.requests.get(endpoint).ok_or_else(|| HandleError::Harness {
+            message: format!(
+                "no HTTP request route for endpoint '{endpoint}'; the operation must declare it in http_endpoints and the step must declare an operation need"
+            ),
+        })?;
+        let limits = AttemptLimits {
+            attempt: self.limit,
+            ..AttemptLimits::new(self.limit)
+        };
+        http_get_from_runner_host(route, path, &limits).await
     }
 }
 
@@ -501,6 +527,71 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[tokio::test]
+    async fn an_operation_http_request_uses_its_full_limit_instead_of_the_probe_limit() {
+        use tokio::{
+            io::AsyncReadExt,
+            net::TcpListener,
+            time::{advance, pause, resume, timeout},
+        };
+
+        use crate::{
+            endpoint::{EndpointKind, ResolvedAddress},
+            probe::PROBE_TIMEOUT,
+            step::test_support::FakeParticipant,
+        };
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let request = tokio::spawn(async move {
+            let primitives = FakeParticipant::default();
+            let cx = OpContext {
+                primitives: &primitives,
+                limit: PROBE_TIMEOUT * 2,
+                requests: BTreeMap::from([(
+                    "api",
+                    RunnerHostRoute::Direct(ResolvedAddress {
+                        kind: EndpointKind::Http,
+                        url: format!("http://127.0.0.1:{port}"),
+                        host: Some("127.0.0.1".into()),
+                        port: Some(port),
+                        path: None,
+                    }),
+                )]),
+            };
+            cx.http_get("api", "/dump").await
+        });
+        let mut stream = timeout(Duration::from_secs(5), async {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            while !bytes.ends_with(b"\r\n\r\n") {
+                bytes.push(stream.read_u8().await.unwrap());
+            }
+            stream
+        })
+        .await
+        .unwrap();
+        pause();
+        advance(PROBE_TIMEOUT + Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert!(!request.is_finished(), "HTTP operations use the caller's limit");
+        advance(PROBE_TIMEOUT).await;
+        assert_eq!(
+            request.await.unwrap(),
+            Err(HandleError::Product {
+                message: "HTTP request timed out after 20s".into(),
+            })
+        );
+        resume();
+        assert_eq!(
+            timeout(Duration::from_secs(5), stream.read(&mut [0]))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+    }
 
     #[test]
     fn the_default_stop_grace_is_ten_seconds_on_every_supported_realization() {

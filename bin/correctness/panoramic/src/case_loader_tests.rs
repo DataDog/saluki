@@ -274,11 +274,11 @@ fn participant_step_errors_name_the_canonical_file_and_step() {
     for (fields, expected) in [
         (
             "step: wait_ready",
-            "names unknown step 'wait_ready'; registered steps: config_key_equals, exits_with, file_contains, log_contains, log_not_contains, port_listening, process_stable_for",
+            "names unknown step 'wait_ready'; registered steps: config_key_equals, exits_with, file_contains, intake_has_metric, log_contains, log_not_contains, port_listening, process_stable_for, send",
         ),
         (
             "step: adp_cli, on: adp, args: [status]",
-            "names unknown step 'adp_cli'; registered steps: config_key_equals, exits_with, file_contains, log_contains, log_not_contains, port_listening, process_stable_for",
+            "names unknown step 'adp_cli'; registered steps: config_key_equals, exits_with, file_contains, intake_has_metric, log_contains, log_not_contains, port_listening, process_stable_for, send",
         ),
         (
             "step: port_listening, on: adp, timeout: 1s",

@@ -351,7 +351,6 @@ impl UnixIntegrationRunner {
             is_host_process: true,
             host_process_exit_code: Some(exit_code_cell),
             docker_container_exit_code: None,
-            intake_host_port: None,
             core_agent_auth_token_path,
             adp_cli_command,
             core_agent_cli_command,

@@ -58,8 +58,26 @@ pub(super) fn check_step_references(
                     }
                     Need::Operation(participant, operation) => {
                         let offered = participants[&participant].operations;
-                        if offered.iter().any(|offered| offered.name() == operation) {
-                            Ok(())
+                        if let Some(offered) = offered.iter().find(|offered| offered.name() == operation) {
+                            offered.http_endpoints().iter().try_for_each(|&endpoint| {
+                                plan_runner_host_route(
+                                    &format!(
+                                        "calls operation '{operation}' of participant '{participant}', which requests endpoint '{endpoint}'"
+                                    ),
+                                    &participant,
+                                    endpoint,
+                                    EndpointOperation::Request,
+                                    layout,
+                                    endpoints,
+                                    ports,
+                                )
+                                .map(|route| {
+                                    routes.insert(
+                                        (participant.clone(), endpoint.into(), EndpointOperation::Request),
+                                        route,
+                                    );
+                                })
+                            })
                         } else {
                             let realization = layout.get(&participant).expect("step needs name laid-out participants");
                             Err(format!(
@@ -156,6 +174,96 @@ mod tests {
                 assert!(plan.operations("missing").is_empty());
             }
         }
+    }
+
+    #[test]
+    fn operations_plan_request_routes_and_publish_only_the_endpoints_they_declare() {
+        use crate::case::fixtures::{CallFactory, HttpOperationServer};
+
+        let registries = Registries {
+            participant_types: &[&HttpOperationServer(&["api", "other"])],
+            steps: &[&CallFactory],
+            typed_case_roles: &[],
+        };
+        let loader = CaseLoader::new(registries, FixtureTypes, "fixture");
+        for os in [Os::Linux, Os::MacOs, Os::Windows] {
+            let yaml = format!(
+                "timeout: 1s\nsubject_os: [{}]\nparticipants:\n  subject: {{type: server, subject: true}}\nprocedure: [{{step: call, on: subject, operation: http_dump}}, {{step: call, on: subject, operation: http_dump}}]",
+                os.name()
+            );
+            let case = loader
+                .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
+                .unwrap()
+                .remove(0);
+            let mut planner = Planner::new(registries, Default::default()).unwrap();
+            let plan = planner.compile(case, os).unwrap().into_plan().unwrap();
+            let port = if os == Os::Linux { 20000 } else { 1003 };
+            let host = if os == Os::Windows { "subject" } else { "127.0.0.1" };
+            let address = ResolvedAddress {
+                kind: EndpointKind::Http,
+                url: format!("http://{host}:{port}"),
+                host: Some(host.into()),
+                port: Some(port),
+                path: None,
+            };
+            let route = if os == Os::Windows {
+                RunnerHostRoute::Courier(address)
+            } else {
+                RunnerHostRoute::Direct(address)
+            };
+            assert_eq!(
+                plan.runner_host_route("subject", "api", EndpointOperation::Request),
+                Some(&route)
+            );
+            assert_eq!(
+                plan.runner_host_route("subject", "other", EndpointOperation::Request),
+                None
+            );
+            assert_eq!(plan.runner_host_route("subject", "api", EndpointOperation::Send), None);
+            let ports = if os == Os::Linux {
+                vec![RunnerHostPort {
+                    transport: Transport::Tcp,
+                    container_port: 1003,
+                    host_port: 20000,
+                }]
+            } else {
+                vec![]
+            };
+            assert_eq!(plan.runner_host_ports("subject"), ports);
+            assert_eq!(
+                planner.ports.allocate(),
+                Ok(if os == Os::Linux { 20001 } else { 20000 })
+            );
+        }
+    }
+
+    #[test]
+    fn an_operations_missing_http_endpoint_fails_planning_with_the_operation_and_endpoint() {
+        use crate::case::fixtures::{CallFactory, HttpOperationServer};
+
+        let registries = Registries {
+            participant_types: &[&HttpOperationServer(&["other"])],
+            steps: &[&CallFactory],
+            typed_case_roles: &[],
+        };
+        let case = CaseLoader::new(registries, FixtureTypes, "fixture")
+            .load_content(
+                "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {type: server, subject: true}\nprocedure: [{step: call, on: subject, operation: http_dump}]",
+                "alpha",
+                Path::new("cases/alpha/config.yaml"),
+            )
+            .unwrap()
+            .remove(0);
+        let error = Planner::new(registries, Default::default())
+            .unwrap()
+            .compile(case, Os::Linux)
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            error,
+            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 1 'call' calls operation 'http_dump' of participant 'subject', which requests endpoint 'api', which it does not serve; it serves other"
+        );
     }
 
     #[test]

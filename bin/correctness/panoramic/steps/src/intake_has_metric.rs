@@ -1,24 +1,54 @@
+//! Polls an intake participant for a metric context matching every configured criterion.
+
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::time::Duration;
 
-use panoramic_core::probe::{probe, ProbeError, POLL_INTERVAL, PROBE_TIMEOUT};
-use panoramic_core::record::{AssertionResult, AssertionStatus};
-use saluki_error::{generic_error, GenericError};
+use panoramic_core::{
+    case::CaseDuration,
+    probe::{POLL_INTERVAL, PROBE_TIMEOUT},
+    record::{AssertionStatus, StepReport},
+    step::{decode_fields, Need, Step, StepContext, StepFactory, StepFields},
+};
+use saluki_error::{ErrorContext as _, GenericError};
+use serde::Deserialize;
+use serde_json::json;
 use stele::{Metric, MetricValue};
-use tokio::time::Instant;
-use tracing::trace;
+use tokio::time::{sleep_until, Instant};
 
-use crate::assertions::{Assertion, AssertionContext};
-use crate::config::{MetricTypeMatcher, TagMatch};
-use crate::intake::metrics::{
+use crate::metrics::{
     get_formatted_metric_value, MetricType, NormalizationFailure, NormalizedMetric, NormalizedMetricContext,
     NormalizedMetrics,
 };
-use crate::intake::IntakeClient;
 
-/// Names the intake request in probe messages.
-const METRICS_DUMP: &str = "the intake sidecar's metrics dump";
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Fields {
+    /// Required intake participant; has no default.
+    on: String,
+    /// Required metric name; has no default.
+    name: String,
+    /// Expected type; omitted accepts every type.
+    metric_type: Option<MetricType>,
+    /// Expected normalized value; omitted accepts every value. Invalid with the sketch type.
+    value: Option<f64>,
+    /// Expected tags, sorted and deduplicated before matching. Defaults to empty.
+    #[serde(default)]
+    tags: Vec<String>,
+    /// Whether extra tags are allowed. Defaults to subset.
+    #[serde(default)]
+    tags_match: TagMatch,
+    /// Required, positive time to wait for a match; has no default.
+    timeout: CaseDuration,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum TagMatch {
+    #[default]
+    Subset,
+    Exact,
+}
 
 /// Most metric contexts with the expected name that a failure message lists.
 const MAX_CANDIDATES: usize = 10;
@@ -31,13 +61,15 @@ const MAX_MESSAGE_BYTES: usize = 4096;
 
 const TRUNCATION_NOTICE: &str = "\n[message truncated]";
 
-/// Assertion that polls the intake sidecar for a metric matching the configured criteria.
+/// Assertion that polls an intake participant for a metric matching the configured criteria.
 ///
 /// A metric context is a metric name plus its normalized tag set, with the host as a `host:` tag; see
 /// [`NormalizedMetricContext`]. Each poll normalizes the intake's metrics dump per (metric context, type), so a value
 /// split across flushes is compared as its total. The assertion passes once one metric context meets every criterion by
 /// itself; metric contexts are never combined.
-pub struct IntakeHasMetricAssertion {
+#[derive(Debug)]
+pub(crate) struct IntakeHasMetric {
+    on: String,
     /// Expected name and tags, normalized like an observed context.
     expected: NormalizedMetricContext,
     tags_match: TagMatch,
@@ -75,24 +107,16 @@ struct LastError {
     before_snapshot: bool,
 }
 
-impl IntakeHasMetricAssertion {
-    /// Creates the assertion. Expected tags are sorted and deduplicated like observed ones.
-    ///
-    /// # Errors
-    ///
-    /// If `value` is combined with a sketch `metric_type`, which no observed metric can match, an error is returned.
-    pub fn new(
-        name: String, metric_type: Option<MetricTypeMatcher>, value: Option<f64>, tags: Vec<String>,
+impl IntakeHasMetric {
+    /// Registry name used in case procedures.
+    pub(crate) const NAME: &'static str = "intake_has_metric";
+
+    fn new(
+        on: String, name: String, metric_type: Option<MetricType>, value: Option<f64>, tags: Vec<String>,
         tags_match: TagMatch, timeout: Duration,
-    ) -> Result<Self, GenericError> {
-        let metric_type = metric_type.map(|metric_type| match metric_type {
-            MetricTypeMatcher::Count => MetricType::Count,
-            MetricTypeMatcher::Rate => MetricType::Rate,
-            MetricTypeMatcher::Gauge => MetricType::Gauge,
-            MetricTypeMatcher::Sketch => MetricType::Sketch,
-        });
+    ) -> Result<Self, String> {
         if value.is_some() && metric_type == Some(MetricType::Sketch) {
-            return Err(generic_error!(
+            return Err(format!(
                 "intake_has_metric `{}` can't combine `value` with `metric_type: sketch`: a sketch has no single \
                  value to compare",
                 name
@@ -100,6 +124,7 @@ impl IntakeHasMetricAssertion {
         }
 
         Ok(Self {
+            on,
             expected: NormalizedMetricContext::new(name, tags),
             tags_match,
             metric_type,
@@ -177,47 +202,33 @@ impl IntakeHasMetricAssertion {
         }
     }
 
-    /// Reports an unmatched metric as `failed` if the target exited or a poll returned a snapshot, otherwise `errored`.
-    fn unmatched_result(
-        &self, started: Instant, summary: String, target_exited: bool, snapshot: Option<&Snapshot>,
-        last_error: Option<&LastError>,
-    ) -> AssertionResult {
-        let status = if target_exited || snapshot.is_some() {
-            AssertionStatus::Failed
-        } else {
-            AssertionStatus::Errored
-        };
-        AssertionResult::new(
-            self.name(),
-            started,
-            status,
-            self.failure_message(summary, snapshot, last_error),
-        )
-    }
-
     /// Reports a step timeout, leading with the last collection error if every poll failed.
     fn expired_result(
         &self, started: Instant, snapshot: Option<&Snapshot>, last_error: Option<&LastError>,
-    ) -> AssertionResult {
+    ) -> StepReport {
         let summary = format!(
-            "No metric matching {} arrived at the intake within {:?}.",
+            "No metric matching {} arrived at intake participant '{}' within {:?}.",
             self.criteria(),
+            self.on,
             self.timeout
         );
         match (snapshot, last_error) {
             (None, Some(last_error)) => {
                 let message = format!(
-                    "{:#}\n{}\nNo successful snapshot of the intake's metrics.",
-                    last_error.error, summary
+                    "{:#}\n{}\nNo successful metrics snapshot from intake participant '{}'.",
+                    last_error.error, summary, self.on
                 );
-                AssertionResult::new(
-                    self.name(),
-                    started,
-                    AssertionStatus::Errored,
-                    truncate_message(message),
-                )
+                StepReport::new(started, AssertionStatus::Errored, truncate_message(message))
             }
-            _ => self.unmatched_result(started, summary, false, snapshot, last_error),
+            _ => StepReport::new(
+                started,
+                if snapshot.is_some() {
+                    AssertionStatus::Failed
+                } else {
+                    AssertionStatus::Errored
+                },
+                self.failure_message(summary, snapshot, last_error),
+            ),
         }
     }
 
@@ -239,7 +250,13 @@ impl IntakeHasMetricAssertion {
         match snapshot {
             Some(snapshot) => self.describe_snapshot(snapshot, &mut message),
             None if last_error.is_none() => message.push_str("\nNo poll completed."),
-            None => message.push_str("\nNo successful snapshot of the intake's metrics."),
+            None => {
+                let _ = write!(
+                    message,
+                    "\nNo successful metrics snapshot from intake participant '{}'.",
+                    self.on
+                );
+            }
         }
 
         truncate_message(message)
@@ -380,124 +397,111 @@ fn truncate_message(mut message: String) -> String {
 }
 
 #[async_trait::async_trait]
-impl Assertion for IntakeHasMetricAssertion {
+impl Step for IntakeHasMetric {
     fn name(&self) -> &'static str {
-        "intake_has_metric"
+        Self::NAME
     }
 
-    fn description(&self) -> String {
-        format!("Intake received a metric matching {}.", self.criteria())
+    fn needs(&self) -> Vec<Need> {
+        vec![Need::Operation(self.on.clone(), "dump".into())]
     }
 
-    async fn check(&self, ctx: &AssertionContext) -> AssertionResult {
+    fn budget(&self) -> Duration {
+        self.timeout
+    }
+
+    async fn run(&self, cx: &StepContext<'_>) -> StepReport {
         let started = Instant::now();
-        let Some(intake_port) = ctx.intake_host_port else {
-            return AssertionResult::new(
-                self.name(),
+        let deadline = started + self.timeout;
+        let Some(handle) = cx.handle(&self.on) else {
+            return StepReport::new(
                 started,
                 AssertionStatus::Errored,
-                "No intake sidecar for this test; set `intake.enabled: true`.".to_string(),
+                format!("participant '{}' has not started", self.on),
             );
         };
-
-        let client = IntakeClient::new(intake_port);
-        // Building the client can be slow on a busy machine, so the budget starts after it.
-        let deadline = Instant::now() + self.timeout;
         let mut snapshot = None;
         let mut last_error: Option<LastError> = None;
         let mut polled = false;
 
         loop {
-            // Read the exit state before polling so a metric that reached the intake just before
-            // the target exited still counts; see the post-poll check below.
-            let exited = ctx.container_exit_token.is_cancelled();
-
-            if ctx.cancel_token.is_cancelled() {
-                let summary = format!(
-                    "Assertion cancelled. No metric matching {} had arrived at the intake.",
-                    self.criteria()
-                );
-                return self.unmatched_result(started, summary, false, snapshot.as_ref(), last_error.as_ref());
-            }
-
-            // Always poll once. Like every poll, it gets only the step's remaining time.
+            // Always poll once, using only the remaining budget.
             if polled && Instant::now() >= deadline {
                 return self.expired_result(started, snapshot.as_ref(), last_error.as_ref());
             }
             polled = true;
 
             let limit = deadline.saturating_duration_since(Instant::now()).min(PROBE_TIMEOUT);
-            let error = match probe(METRICS_DUMP, limit, &ctx.cancel_token, client.metrics()).await {
-                Ok(Ok(metrics)) => {
+            let metrics = match handle.op("dump", json!({"kind": "metrics"}), limit).await {
+                Ok(value) => serde_json::from_value::<Vec<Metric>>(value).with_error_context(|| {
+                    format!("Failed to decode metrics dump from intake participant '{}'", self.on)
+                }),
+                Err(error) => Err(error.into()),
+            };
+            match metrics {
+                Ok(metrics) => {
                     let current = Snapshot::from_stele_metrics(&metrics);
                     if self.is_met_by(&current.metrics) {
-                        return AssertionResult::new(self.name(), started, AssertionStatus::Passed, self.description());
+                        return StepReport::new(
+                            started,
+                            AssertionStatus::Passed,
+                            format!(
+                                "Intake participant '{}' received a metric matching {}.",
+                                self.on,
+                                self.criteria()
+                            ),
+                        );
                     }
                     snapshot = Some(current);
                     if let Some(last_error) = last_error.as_mut() {
                         last_error.before_snapshot = true;
                     }
-                    None
                 }
-                Ok(Err(error)) => Some(error),
-                Err(error @ ProbeError::TimedOut { .. }) => Some(error.into()),
-                Err(error @ ProbeError::Cancelled { .. }) => {
-                    let summary = format!(
-                        "{}\nNo metric matching {} had arrived at the intake.",
+                Err(error) => {
+                    last_error = Some(LastError {
                         error,
-                        self.criteria()
-                    );
-                    return self.unmatched_result(started, summary, false, snapshot.as_ref(), last_error.as_ref());
+                        before_snapshot: false,
+                    });
                 }
-            };
-            if let Some(error) = error {
-                last_error = Some(LastError {
-                    error,
-                    before_snapshot: false,
-                });
             }
-
-            trace!(metric = self.expected.name(), "Intake metric not present yet.");
-
-            // Nothing more can reach the intake once the target is gone, so report the crash
-            // instead of polling until the timeout.
-            if exited {
-                let summary = format!(
-                    "No metric matching {} arrived at the intake before the target exited.",
-                    self.criteria()
-                );
-                return self.unmatched_result(started, summary, true, snapshot.as_ref(), last_error.as_ref());
-            }
-
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            tokio::select! {
-                _ = tokio::time::sleep(POLL_INTERVAL.min(remaining)) => {}
-                _ = ctx.cancel_token.cancelled() => {}
-                _ = ctx.container_exit_token.cancelled() => {}
-            }
+            sleep_until(deadline.min(Instant::now() + POLL_INTERVAL)).await;
         }
+    }
+}
+
+/// Builds `intake_has_metric` from its case-file fields.
+pub(crate) struct IntakeHasMetricFactory;
+
+impl StepFactory for IntakeHasMetricFactory {
+    fn name(&self) -> &'static str {
+        IntakeHasMetric::NAME
+    }
+
+    fn build(&self, fields: &StepFields) -> Result<Box<dyn Step>, String> {
+        let fields = decode_fields::<Fields>(fields)?;
+        Ok(Box::new(IntakeHasMetric::new(
+            fields.on,
+            fields.name,
+            fields.metric_type,
+            fields.value,
+            fields.tags,
+            fields.tags_match,
+            fields.timeout.into(),
+        )?))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-    use std::sync::{Arc, RwLock};
-    use std::time::Duration;
-
-    use panoramic_core::record::{AssertionResult, AssertionStatus};
-    use saluki_error::{generic_error, GenericError};
-    use serde_json::{json, Value};
-    use stele::Metric;
-    use tokio_util::sync::CancellationToken;
-
-    use super::{
-        truncate_message, IntakeHasMetricAssertion, LastError, Snapshot, MAX_MESSAGE_BYTES, TRUNCATION_NOTICE,
+    use panoramic_core::step::{
+        test_support::{run_step_with, FakeParticipant},
+        ExecOutput, HandleError,
     };
-    use crate::assertions::{create_assertion, Assertion as _, AssertionContext, LogBuffer, TargetCommand};
-    use crate::config::{AssertionConfig, AssertionStep, IntegrationConfig, MetricTypeMatcher, TagMatch};
-    use crate::intake::test_server::{closed_port, install_crypto_provider, MockIntake};
-    use crate::intake::IntakeClient;
+    use saluki_error::generic_error;
+    use serde_json::Value;
+
+    use super::*;
+    use crate::test_support::valid_fields;
 
     fn count(value: f64) -> Value {
         json!({"mtype": "Count", "value": value})
@@ -535,9 +539,10 @@ mod tests {
     }
 
     fn assertion(
-        name: &str, metric_type: Option<MetricTypeMatcher>, value: Option<f64>, tags: &[&str], tags_match: TagMatch,
-    ) -> IntakeHasMetricAssertion {
-        IntakeHasMetricAssertion::new(
+        name: &str, metric_type: Option<MetricType>, value: Option<f64>, tags: &[&str], tags_match: TagMatch,
+    ) -> IntakeHasMetric {
+        IntakeHasMetric::new(
+            "subject".to_string(),
             name.to_string(),
             metric_type,
             value,
@@ -548,239 +553,273 @@ mod tests {
         .expect("assertion should build")
     }
 
-    fn subset(
-        name: &str, metric_type: Option<MetricTypeMatcher>, value: Option<f64>, tags: &[&str],
-    ) -> IntakeHasMetricAssertion {
+    fn subset(name: &str, metric_type: Option<MetricType>, value: Option<f64>, tags: &[&str]) -> IntakeHasMetric {
         assertion(name, metric_type, value, tags, TagMatch::Subset)
     }
 
-    fn exact(name: &str, tags: &[&str]) -> IntakeHasMetricAssertion {
+    fn exact(name: &str, tags: &[&str]) -> IntakeHasMetric {
         assertion(name, None, None, tags, TagMatch::Exact)
     }
 
-    fn failure_message(assertion: &IntakeHasMetricAssertion, metrics: &[Metric]) -> String {
+    fn failure_message(assertion: &IntakeHasMetric, metrics: &[Metric]) -> String {
         assertion.failure_message("Summary.".to_string(), Some(&snapshot(metrics)), None)
     }
 
-    /// Returns a context pointing at `intake_port`, or at a port with no listener when it is `None`.
-    fn context_for(
-        cancel_token: CancellationToken, container_exit_token: CancellationToken, intake_port: Option<u16>,
-    ) -> AssertionContext {
-        install_crypto_provider();
-
-        AssertionContext {
-            log_buffer: Arc::new(RwLock::new(LogBuffer::default())),
-            container_exit_token,
-            cancel_token,
-            port_mappings: HashMap::new(),
-            container_ip: None,
-            target_os: None,
-            container_name: "intake-has-metric-test".to_string(),
-            is_host_process: false,
-            host_process_exit_code: None,
-            docker_container_exit_code: None,
-            intake_host_port: Some(intake_port.unwrap_or_else(closed_port)),
-            core_agent_auth_token_path: None,
-            adp_cli_command: TargetCommand::new(vec!["panoramic-unused-cli-program".to_string()]),
-            core_agent_cli_command: TargetCommand::new(vec!["panoramic-unused-cli-program".to_string()]),
+    fn dump(metrics: Value) -> ExecOutput {
+        ExecOutput {
+            stdout: serde_json::to_vec(&metrics).unwrap(),
+            stderr: Vec::new(),
+            exit_code: 0,
         }
     }
 
-    /// Returns an exit token that has already fired, so a check reports after its first poll.
-    ///
-    /// The poll gets the full probe limit instead of racing a short step budget.
-    fn exited() -> CancellationToken {
-        let token = CancellationToken::new();
-        token.cancel();
-        token
-    }
-
-    /// Returns a context pointing at a port with no listener, so every intake poll fails.
-    fn context(cancel_token: CancellationToken, container_exit_token: CancellationToken) -> AssertionContext {
-        context_for(cancel_token, container_exit_token, None)
-    }
-
-    fn polling_assertion(timeout: Duration) -> IntakeHasMetricAssertion {
-        IntakeHasMetricAssertion::new(
-            "some.counter".to_string(),
-            None,
-            None,
-            Vec::new(),
-            TagMatch::Subset,
-            timeout,
+    #[tokio::test(start_paused = true)]
+    async fn a_later_dump_with_a_matching_context_passes() {
+        let fake = FakeParticipant::default();
+        fake.push_exec(Ok(dump(json!([]))));
+        fake.push_exec(Ok(dump(json!([metric_json("other.metric", &[], &[count(1.0)])]))));
+        fake.push_exec(Ok(dump(json!([metric_json("some.metric", &[], &[count(1.0)])]))));
+        let started = Instant::now();
+        let report = run_step_with(
+            &IntakeHasMetricFactory,
+            &valid_fields(IntakeHasMetric::NAME),
+            Some(&fake),
         )
-        .expect("assertion should build")
-    }
-
-    /// Runs the assertion with a timeout to catch hangs.
-    async fn check(assertion: &IntakeHasMetricAssertion, ctx: &AssertionContext) -> AssertionResult {
-        tokio::time::timeout(Duration::from_secs(10), assertion.check(ctx))
-            .await
-            .expect("the assertion should return within ten seconds")
-    }
-
-    #[tokio::test]
-    async fn target_exit_fails_without_waiting_out_the_timeout() {
-        let container_exit_token = CancellationToken::new();
-        container_exit_token.cancel();
-        let ctx = context(CancellationToken::new(), container_exit_token);
-
-        let result = check(&polling_assertion(Duration::from_secs(600)), &ctx).await;
-
-        assert_eq!(result.status, AssertionStatus::Failed, "{}", result.message);
-        assert!(
-            result.message.contains("before the target exited"),
-            "unexpected message: {}",
-            result.message
+        .await;
+        assert_eq!(report.status, AssertionStatus::Passed);
+        assert_eq!(started.elapsed(), POLL_INTERVAL * 2);
+        assert_eq!(
+            report.message,
+            "Intake participant 'subject' received a metric matching name=some.metric, tags_match=subset."
         );
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_step_shorter_than_the_probe_limit_ends_at_its_own_deadline() {
-        // Giving the first poll a full probe limit would hold a short step up to 10s past its own budget.
-        let intake = MockIntake::unresponsive().await;
-        let ctx = context_for(CancellationToken::new(), CancellationToken::new(), Some(intake.port()));
-
-        let result = check(&polling_assertion(Duration::from_millis(200)), &ctx).await;
-
-        assert_eq!(result.status, AssertionStatus::Errored, "{}", result.message);
-        assert_eq!(result.duration, Duration::from_millis(200));
+    async fn a_timeout_with_a_snapshot_fails_and_lists_candidates() {
+        let fake = FakeParticipant::default();
+        fake.push_exec(Ok(dump(json!([metric_json(
+            "some.metric",
+            &["host:custom"],
+            &[gauge(4.0)]
+        )]))));
+        let mut fields = valid_fields(IntakeHasMetric::NAME);
+        fields.insert("value".into(), json!(5));
+        let started = Instant::now();
+        let report = run_step_with(&IntakeHasMetricFactory, &fields, Some(&fake)).await;
+        assert_eq!(report.status, AssertionStatus::Failed);
+        assert_eq!(started.elapsed(), Duration::from_secs(30));
         assert_eq!(
-            result.message.lines().next(),
-            Some("Timed out after 200ms waiting for the intake sidecar's metrics dump.: deadline has elapsed"),
-            "{}",
-            result.message
+            report.message,
+            "No metric matching name=some.metric, value=5, tags_match=subset arrived at intake participant 'subject' within 30s.\nCandidates named 'some.metric' (1):\n  - some.metric[host:custom] (gauge): gauge(4) from 1 point(s); fails value: expected 5"
         );
     }
 
-    #[tokio::test]
-    async fn missing_intake_port_fails_immediately() {
-        let mut ctx = context(CancellationToken::new(), CancellationToken::new());
-        ctx.intake_host_port = None;
-
-        let result = check(&polling_assertion(Duration::from_secs(600)), &ctx).await;
-
-        assert_eq!(result.status, AssertionStatus::Errored, "{}", result.message);
-        assert!(
-            result.message.contains("intake.enabled"),
-            "unexpected message: {}",
-            result.message
-        );
+    #[tokio::test(start_paused = true)]
+    async fn a_timeout_without_a_snapshot_errors_and_leads_with_the_last_dump_error() {
+        for error in [
+            HandleError::Harness {
+                message: "dump mechanism lost".into(),
+            },
+            HandleError::Product {
+                message: "dump unavailable".into(),
+            },
+        ] {
+            let diagnostic = error.to_string();
+            let fake = FakeParticipant::default();
+            fake.push_exec(Err(HandleError::Product {
+                message: "first dump error".into(),
+            }));
+            fake.push_exec(Err(error));
+            let started = Instant::now();
+            let report = run_step_with(
+                &IntakeHasMetricFactory,
+                &valid_fields(IntakeHasMetric::NAME),
+                Some(&fake),
+            )
+            .await;
+            assert_eq!(report.status, AssertionStatus::Errored);
+            assert_eq!(started.elapsed(), Duration::from_secs(30));
+            assert_eq!(
+                report.message,
+                format!("{diagnostic}\nNo metric matching name=some.metric, tags_match=subset arrived at intake participant 'subject' within 30s.\nNo successful metrics snapshot from intake participant 'subject'.")
+            );
+        }
     }
 
-    #[tokio::test]
-    async fn cancellation_and_timeout_are_reported_distinctly() {
-        let cancel_token = CancellationToken::new();
-        cancel_token.cancel();
-        let cancelled = check(
-            &polling_assertion(Duration::from_secs(600)),
-            &context(cancel_token, CancellationToken::new()),
-        )
-        .await;
-
-        assert_eq!(cancelled.status, AssertionStatus::Errored, "{}", cancelled.message);
-        assert!(
-            cancelled.message.starts_with("Assertion cancelled."),
-            "unexpected message: {}",
-            cancelled.message
-        );
-        assert!(
-            cancelled.message.contains("No poll completed."),
-            "{}",
-            cancelled.message
-        );
-
-        let timed_out = check(
-            &polling_assertion(Duration::from_millis(300)),
-            &context(CancellationToken::new(), CancellationToken::new()),
-        )
-        .await;
-
-        assert_eq!(timed_out.status, AssertionStatus::Errored, "{}", timed_out.message);
-        assert!(
-            timed_out.message.contains("arrived at the intake within"),
-            "unexpected message: {}",
-            timed_out.message
-        );
+    #[tokio::test(start_paused = true)]
+    async fn an_undecodable_dump_is_a_poll_error_and_can_be_retried() {
+        for recovers in [false, true] {
+            let fake = FakeParticipant::default();
+            fake.push_exec(Ok(dump(json!({"unexpected": "shape"}))));
+            if recovers {
+                fake.push_exec(Ok(dump(json!([metric_json("some.metric", &[], &[count(1.0)])]))));
+            }
+            let started = Instant::now();
+            let report = run_step_with(
+                &IntakeHasMetricFactory,
+                &valid_fields(IntakeHasMetric::NAME),
+                Some(&fake),
+            )
+            .await;
+            if recovers {
+                assert_eq!(report.status, AssertionStatus::Passed);
+                assert_eq!(started.elapsed(), POLL_INTERVAL);
+            } else {
+                assert_eq!(report.status, AssertionStatus::Errored);
+                assert_eq!(started.elapsed(), Duration::from_secs(30));
+                assert!(
+                    report
+                        .message
+                        .starts_with("Failed to decode metrics dump from intake participant 'subject': "),
+                    "{}",
+                    report.message
+                );
+                assert!(
+                    report
+                        .message
+                        .ends_with("No successful metrics snapshot from intake participant 'subject'."),
+                    "{}",
+                    report.message
+                );
+            }
+        }
     }
 
-    #[tokio::test]
-    async fn a_failed_poll_reports_its_full_error_chain() {
-        // Formats a real poll error directly, so a slow machine can't turn it into a probe timeout.
-        let intake = MockIntake::hanging_up().await;
-        install_crypto_provider();
-        let error = IntakeClient::new(intake.port())
-            .metrics()
-            .await
-            .expect_err("a server that hangs up should fail the poll");
-        let last_error = LastError {
-            error,
-            before_snapshot: false,
-        };
-        let result = polling_assertion(Duration::from_millis(300)).expired_result(
-            tokio::time::Instant::now(),
-            None,
-            Some(&last_error),
-        );
-
-        assert_eq!(result.status, AssertionStatus::Errored, "{}", result.message);
-        assert!(
-            result
-                .message
-                .contains("\nNo successful snapshot of the intake's metrics."),
-            "unexpected message: {}",
-            result.message
-        );
-        // The outer context alone would hide the cause, so the chain continues past it.
-        let (first_line, _) = result
-            .message
-            .split_once('\n')
-            .expect("the message should have several lines");
-        assert!(
-            first_line
-                .strip_prefix("Failed to call metrics dump endpoint on datadog-intake server.: ")
-                .is_some_and(|cause| !cause.is_empty()),
-            "unexpected message: {}",
-            result.message
-        );
-        assert!(!result.message.contains("Last collection error"), "{}", result.message);
+    #[tokio::test(start_paused = true)]
+    async fn a_snapshot_keeps_a_timeout_failed_and_dates_the_last_collection_error() {
+        for error_first in [false, true] {
+            let fake = FakeParticipant::default();
+            let snapshot = Ok(dump(json!([metric_json("some.metric", &[], &[count(1.0)])])));
+            let error = Err(HandleError::Harness {
+                message: "dump mechanism lost".into(),
+            });
+            if error_first {
+                fake.push_exec(error);
+                fake.push_exec(snapshot);
+            } else {
+                fake.push_exec(snapshot);
+                fake.push_exec(error);
+            }
+            let mut fields = valid_fields(IntakeHasMetric::NAME);
+            fields.insert("value".into(), json!(2));
+            let report = run_step_with(&IntakeHasMetricFactory, &fields, Some(&fake)).await;
+            assert_eq!(report.status, AssertionStatus::Failed);
+            let when = if error_first { "before" } else { "after" };
+            assert!(
+                report.message.contains(&format!(
+                    "Last collection error, {when} the last successful snapshot: dump mechanism lost"
+                )),
+                "{}",
+                report.message
+            );
+            assert!(
+                report
+                    .message
+                    .contains("some.metric (count): count(1) from 1 point(s); fails value: expected 2"),
+                "{}",
+                report.message
+            );
+        }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn polling_matches_a_rate_split_across_flushes_by_its_total() {
-        let intake = MockIntake::serving(json!([
-            metric_json("split.counter", &["source:test"], &[rate(0.3)]),
-            metric_json("split.counter", &["source:test"], &[rate(0.3)]),
-        ]))
+        for (value, status) in [(0.6, AssertionStatus::Passed), (0.3, AssertionStatus::Failed)] {
+            let fake = FakeParticipant::default();
+            fake.push_exec(Ok(dump(json!([
+                metric_json("some.metric", &["source:test"], &[rate(0.3)]),
+                metric_json("some.metric", &["source:test"], &[rate(0.3)]),
+            ]))));
+            let mut fields = valid_fields(IntakeHasMetric::NAME);
+            fields.extend(
+                serde_saphyr::from_str::<StepFields>(&format!(
+                    "metric_type: rate\nvalue: {value}\ntags: ['source:test']"
+                ))
+                .unwrap(),
+            );
+            let report = run_step_with(&IntakeHasMetricFactory, &fields, Some(&fake)).await;
+            assert_eq!(report.status, status);
+            if status == AssertionStatus::Failed {
+                assert!(report.message.contains("some.metric[source:test] (rate): rate(0.6 over 10s) from 2 point(s); fails value: expected 0.3"), "{}", report.message);
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_yaml_exact_tags_match_reaches_the_built_step() {
+        for (tags_match, status) in [
+            ("tags_match: exact", AssertionStatus::Failed),
+            ("", AssertionStatus::Passed),
+        ] {
+            let fake = FakeParticipant::default();
+            fake.push_exec(Ok(dump(json!([metric_json(
+                "hosttag.metric",
+                &["host:custom", "extra:tag"],
+                &[gauge(4.0)]
+            )]))));
+            let fields = serde_saphyr::from_str(&format!(
+                "on: subject\nname: hosttag.metric\nmetric_type: gauge\nvalue: 4\ntags: ['host:custom']\n{tags_match}\ntimeout: 30s"
+            )).unwrap();
+            let report = run_step_with(&IntakeHasMetricFactory, &fields, Some(&fake)).await;
+            assert_eq!(report.status, status);
+            if status == AssertionStatus::Failed {
+                assert!(
+                    report.message.contains("fails tags: unexpected [extra:tag]"),
+                    "{}",
+                    report.message
+                );
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_participant_exit_does_not_end_polling_early() {
+        let fake = FakeParticipant::default();
+        fake.complete();
+        fake.push_exec(Ok(dump(json!([]))));
+        let started = Instant::now();
+        let report = run_step_with(
+            &IntakeHasMetricFactory,
+            &valid_fields(IntakeHasMetric::NAME),
+            Some(&fake),
+        )
         .await;
-        let ctx = context_for(CancellationToken::new(), exited(), Some(intake.port()));
-
-        let mut total = subset(
-            "split.counter",
-            Some(MetricTypeMatcher::Rate),
-            Some(0.6),
-            &["source:test"],
-        );
-        total.timeout = Duration::from_secs(30);
-        let total = check(&total, &ctx).await;
-        assert_eq!(total.status, AssertionStatus::Passed, "{}", total.message);
-
-        let mut partial = subset(
-            "split.counter",
-            Some(MetricTypeMatcher::Rate),
-            Some(0.3),
-            &["source:test"],
-        );
-        partial.timeout = Duration::from_secs(30);
-        let partial = check(&partial, &ctx).await;
-        assert_eq!(partial.status, AssertionStatus::Failed, "{}", partial.message);
+        assert_eq!(report.status, AssertionStatus::Failed);
+        assert_eq!(started.elapsed(), Duration::from_secs(30));
         assert!(
-            partial.message.contains(
-                "split.counter[source:test] (rate): rate(0.6 over 10s) from 2 point(s); fails value: expected 0.3"
-            ),
-            "unexpected message: {}",
-            partial.message
+            report.message.ends_with("No context named 'some.metric' observed."),
+            "{}",
+            report.message
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_budget_shorter_than_the_poll_interval_still_polls() {
+        let fake = FakeParticipant::default();
+        fake.push_exec(Ok(dump(json!([metric_json("some.metric", &[], &[count(1.0)])]))));
+        let mut fields = valid_fields(IntakeHasMetric::NAME);
+        fields.insert("timeout".into(), json!("1ns"));
+        let report = run_step_with(&IntakeHasMetricFactory, &fields, Some(&fake)).await;
+        assert_eq!(report.status, AssertionStatus::Passed);
+        assert_eq!(report.duration, Duration::ZERO);
+    }
+
+    #[test]
+    fn the_metric_step_requires_its_participant_name_and_timeout() {
+        for field in ["on", "name", "timeout"] {
+            let mut fields = valid_fields(IntakeHasMetric::NAME);
+            fields.remove(field).unwrap();
+            let message = IntakeHasMetricFactory.build(&fields).unwrap_err();
+            assert!(message.contains(&format!("missing field `{field}`")), "{message}");
+        }
+        let mut fields = valid_fields(IntakeHasMetric::NAME);
+        fields.insert("metric_type".into(), json!("sketch"));
+        fields.insert("value".into(), json!(1));
+        assert_eq!(
+            IntakeHasMetricFactory.build(&fields).unwrap_err(),
+            "intake_has_metric `some.metric` can't combine `value` with `metric_type: sketch`: a sketch has no single value to compare"
+        );
+        assert!(IntakeHasMetricFactory.template_fields().is_empty());
     }
 
     #[test]
@@ -801,12 +840,12 @@ mod tests {
             subset("some.metric", Some(metric_type), Some(value), &[]).is_met_by(&observed.metrics)
         };
 
-        assert!(met(MetricTypeMatcher::Count, 3.0));
-        assert!(met(MetricTypeMatcher::Gauge, 7.0));
+        assert!(met(MetricType::Count, 3.0));
+        assert!(met(MetricType::Gauge, 7.0));
 
         // Each criterion holds for one context, but no single context satisfies both.
-        assert!(!met(MetricTypeMatcher::Count, 7.0));
-        assert!(!met(MetricTypeMatcher::Gauge, 3.0));
+        assert!(!met(MetricType::Count, 7.0));
+        assert!(!met(MetricType::Gauge, 3.0));
 
         // The same tags with a different type are separate contexts, so their values are never summed.
         assert!(!subset("some.metric", None, Some(10.0), &[]).is_met_by(&observed.metrics));
@@ -819,8 +858,8 @@ mod tests {
             metric("some.counter", &[], &[rate(0.3)]),
         ]);
         let first_flush = snapshot(&[metric("some.counter", &[], &[rate(0.3)])]);
-        let total = subset("some.counter", Some(MetricTypeMatcher::Rate), Some(0.6), &[]);
-        let partial = subset("some.counter", Some(MetricTypeMatcher::Rate), Some(0.3), &[]);
+        let total = subset("some.counter", Some(MetricType::Rate), Some(0.6), &[]);
+        let partial = subset("some.counter", Some(MetricType::Rate), Some(0.3), &[]);
 
         assert!(total.is_met_by(&both_flushes.metrics));
         assert!(!partial.is_met_by(&both_flushes.metrics));
@@ -863,15 +902,16 @@ mod tests {
 
     #[test]
     fn a_value_combined_with_a_sketch_type_is_rejected() {
-        let result = IntakeHasMetricAssertion::new(
+        let result = IntakeHasMetric::new(
+            "subject".to_string(),
             "some.sketch".to_string(),
-            Some(MetricTypeMatcher::Sketch),
+            Some(MetricType::Sketch),
             Some(1.0),
             Vec::new(),
             TagMatch::Subset,
             Duration::from_secs(1),
         );
-        let error = result.err().expect("value with a sketch type should be rejected");
+        let error = result.expect_err("value with a sketch type should be rejected");
         assert!(
             error
                 .to_string()
@@ -881,16 +921,18 @@ mod tests {
         );
 
         // Each one alone is valid.
-        assert!(IntakeHasMetricAssertion::new(
+        assert!(IntakeHasMetric::new(
+            "subject".to_string(),
             "some.sketch".to_string(),
-            Some(MetricTypeMatcher::Sketch),
+            Some(MetricType::Sketch),
             None,
             Vec::new(),
             TagMatch::Subset,
             Duration::from_secs(1),
         )
         .is_ok());
-        assert!(IntakeHasMetricAssertion::new(
+        assert!(IntakeHasMetric::new(
+            "subject".to_string(),
             "some.sketch".to_string(),
             None,
             Some(1.0),
@@ -899,57 +941,6 @@ mod tests {
             Duration::from_secs(1),
         )
         .is_ok());
-    }
-
-    #[tokio::test]
-    async fn a_yaml_exact_tags_match_reaches_the_built_assertion() {
-        let intake = MockIntake::serving(json!([metric_json(
-            "hosttag.metric",
-            &["host:custom", "extra:tag"],
-            &[gauge(4.0)]
-        )]))
-        .await;
-        let ctx = context_for(CancellationToken::new(), exited(), Some(intake.port()));
-
-        let build = |tags_match: &str| {
-            let yaml = format!(
-                r#"
-type: integration
-name: tags-match-case
-timeout: 60s
-procedure:
-  - assertion: intake_has_metric
-    name: "hosttag.metric"
-    metric_type: gauge
-    value: 4
-    tags: ["host:custom"]
-    {}
-    timeout: 30s
-"#,
-                tags_match
-            );
-            let config: IntegrationConfig = serde_saphyr::from_str(&yaml).expect("case should parse");
-            let AssertionStep::Single(assertion_config) = &config.procedure[0] else {
-                panic!("step should parse as a single assertion");
-            };
-            assert!(matches!(assertion_config, AssertionConfig::IntakeHasMetric { .. }));
-            create_assertion(assertion_config).expect("assertion should build")
-        };
-
-        let exact = tokio::time::timeout(Duration::from_secs(10), build("tags_match: exact").check(&ctx))
-            .await
-            .expect("the assertion should return within ten seconds");
-        assert_eq!(exact.status, AssertionStatus::Failed, "{}", exact.message);
-        assert!(
-            exact.message.contains("fails tags: unexpected [extra:tag]"),
-            "unexpected message: {}",
-            exact.message
-        );
-
-        let default = tokio::time::timeout(Duration::from_secs(10), build("").check(&ctx))
-            .await
-            .expect("the assertion should return within ten seconds");
-        assert_eq!(default.status, AssertionStatus::Passed, "{}", default.message);
     }
 
     #[test]
@@ -962,7 +953,7 @@ procedure:
         let message = failure_message(
             &assertion(
                 "hosttag.metric",
-                Some(MetricTypeMatcher::Gauge),
+                Some(MetricType::Gauge),
                 Some(5.0),
                 &["host:custom"],
                 TagMatch::Exact,
@@ -981,7 +972,7 @@ procedure:
     #[test]
     fn a_wrong_type_is_reported_as_a_candidate() {
         let message = failure_message(
-            &subset("some.counter", Some(MetricTypeMatcher::Count), None, &[]),
+            &subset("some.counter", Some(MetricType::Count), None, &[]),
             &[metric("some.counter", &[], &[rate(0.3)])],
         );
 

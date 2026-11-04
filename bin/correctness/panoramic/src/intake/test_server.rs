@@ -41,32 +41,6 @@ impl MockIntake {
         .await
     }
 
-    /// Answers the first connection like [`MockIntake::serving`], then accepts and closes subsequent connections.
-    pub(crate) async fn serving_once(metrics: serde_json::Value) -> Self {
-        let metrics = metrics.to_string();
-        Self::spawn(move |listener, connections| async move {
-            while let Ok((stream, _)) = listener.accept().await {
-                if connections.fetch_add(1, Ordering::SeqCst) == 0 {
-                    tokio::spawn(respond(stream, metrics.clone()));
-                }
-            }
-        })
-        .await
-    }
-
-    /// Accepts connections and closes them without answering.
-    ///
-    /// Requests fail at once on every platform, unlike a closed port, which Windows retries for seconds.
-    pub(crate) async fn hanging_up() -> Self {
-        Self::spawn(|listener, connections| async move {
-            while let Ok((stream, _)) = listener.accept().await {
-                connections.fetch_add(1, Ordering::SeqCst);
-                drop(stream);
-            }
-        })
-        .await
-    }
-
     /// Accepts connections but never answers a request.
     ///
     /// With Tokio's clock paused, requests stay pending as time advances to the next timer, making timeout tests

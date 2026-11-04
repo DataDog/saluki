@@ -72,8 +72,8 @@ equivalence, and migration proofs: their rows, CI links and comparison commit.
   runners use the files' images, subject to image overrides.
 - Integration uses `saluki-images/datadog-agent:testing-devel` on Linux and
   `saluki-images/agent-data-plane:testing-windows` on Windows (overridden in CI by `--image-override container=$ImageTag`).
-  macOS uses host processes. The intake uses `saluki-images/correctness-tools:latest` and is enabled only in
-  `dogstatsd-host-tag` and `dogstatsd-intake-metric`.
+  macOS uses host processes. `dogstatsd-host-tag` and `dogstatsd-intake-metric` declare a `datadog-intake`
+  participant using `saluki-images/correctness-tools:latest`.
 - Both `dsd-forwarding` and `dsd-forwarding-burst` require captured forwarded DogStatsD packets.
 - `privileged-api-endpoints` declares five `output_contains` keys on `adp_cli` actions that the loader ignores:
   `procedure[6].output_contains`, `procedure[7].output_contains`, `procedure[8].output_contains`,
@@ -95,7 +95,7 @@ Use product `config_dump` output from CI runs to compare effective product confi
 
 | Suite | Files | Selected rows (subject OS / runtime) | Disabled rows | Assertions (subject OS) | Actions (subject OS) |
 | --- | --- | --- | --- | --- | --- |
-| integration | 52 | linux / linux: 40; linux / linux-container: 5; macos / mac: 31; windows / windows: 34 | 0 | linux: 191; macos: 130; windows: 144 | linux: 20; macos: 14; windows: 16 |
+| integration | 52 | linux / linux: 38; linux / linux-container: 7; macos / mac: 31; windows / windows: 34 | 0 | linux: 191; macos: 130; windows: 144 | linux: 20; macos: 14; windows: 16 |
 | correctness | 42 | linux / docker: 39; linux / kubernetes_in_docker: 7 | 2 | — | — |
 
 Total: 158 rows.
@@ -231,8 +231,8 @@ Total: 158 rows.
 | dogstatsd-enabled | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
 | dogstatsd-enabled | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
 | dogstatsd-forwarding | integration | linux | linux | selected | test-integration | integration | old | assertions: 12, actions: 0 | 0 |
-| dogstatsd-host-tag | integration | linux | linux | selected | test-integration | integration | old | assertions: 6, actions: 1 | 0 |
-| dogstatsd-intake-metric | integration | linux | linux | selected | test-integration | integration | old | assertions: 4, actions: 2 | 0 |
+| dogstatsd-host-tag | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 6, actions: 1 | 0 |
+| dogstatsd-intake-metric | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 4, actions: 2 | 0 |
 | dogstatsd-named-pipe-windows | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 9, actions: 1 | 0 |
 | dogstatsd-no-listener-continues | integration | linux | linux | selected | test-integration | integration | old | assertions: 4, actions: 0 | 0 |
 | dogstatsd-no-listener-continues | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 4, actions: 0 | 0 |
@@ -293,6 +293,20 @@ Log steps omit `process` to search every process's output plus the container log
 
 `adp-rar-disabled` uses legacy execution and observes container liveness.
 
+## Case migration notes
+
+`dogstatsd-host-tag` and `dogstatsd-intake-metric` use the participant schema and native Linux execution.
+
+- The intake is a participant connected by `connect: {intake: intake.api}`. The connection delivers `DD_DD_URL`
+  and `DD_APM_DD_URL`.
+- Sends reach `dogstatsd_udp` through the courier inside ADP's container instead of a published port.
+- The listener gate is a port-free regex.
+- Failed runs no longer capture the intake's contents under `traffic/`; participant artifact collection restores it.
+- Stability watches both the ADP and Agent exit records.
+- `intake_has_metric` waits out its timeout after a subject crash rather than ending early.
+- Assertion and action counts are unchanged: six assertions and one action for `dogstatsd-host-tag`, four assertions
+  and two actions for `dogstatsd-intake-metric`.
+
 ## Migration proofs
 
 When changing a case's schema or runner, add CI evidence per (case, subject OS, execution). Native rows may say
@@ -313,6 +327,8 @@ Link CI runs; don't copy their logs into the repository.
 | adp-logging-windows-respects-data-plane-log-file | windows | old | Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration-windows-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351930) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
 | adp-rc-core-disabled | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `18554ba44c`. |
 | adp-rc-no-products | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `18554ba44c`. |
+| dogstatsd-host-tag | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `0a52942c17`. |
+| dogstatsd-intake-metric | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `0a52942c17`. |
 <!-- migration-proofs:end -->
 
 The macOS proofs carry a caveat: the integration runner's macOS host processes share the host's `/tmp`, and nothing

@@ -897,7 +897,6 @@ impl IntegrationRunner {
             &container_name,
             &exit_token,
             docker_exit_code,
-            intake_host_port,
         )
         .await;
         phase_timings.push(phase.finish());
@@ -1130,7 +1129,6 @@ impl IntegrationRunner {
     async fn run_assertions(
         &self, port_mappings: &HashMap<String, u16>, container_ip: Option<&str>, container_name: &str,
         exit_token: &CancellationToken, docker_exit_code: crate::assertions::DockerExitCodeCell,
-        intake_host_port: Option<u16>,
     ) {
         let target_os = if self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME {
             ContainerOs::Windows
@@ -1148,7 +1146,6 @@ impl IntegrationRunner {
             is_host_process: false,
             host_process_exit_code: None,
             docker_container_exit_code: Some(docker_exit_code),
-            intake_host_port,
             core_agent_auth_token_path: None,
             adp_cli_command: container_adp_cli_command(target_os),
             core_agent_cli_command: container_core_agent_cli_command(target_os),
@@ -1437,8 +1434,8 @@ pub(crate) mod test_support {
         pub(crate) behavior: Behavior,
         /// Notified once the test has entered its phase.
         pub(crate) entered: Option<Arc<Notify>>,
-        /// Published port of the intake sidecar that procedure steps poll.
-        pub(crate) intake: Option<u16>,
+        /// Host port for procedure requests to port 1234.
+        pub(crate) target_port: Option<u16>,
         /// A directory the test creates and registers before its behavior runs.
         pub(crate) registers: Option<PathBuf>,
         /// Spawns a pending task and records its drop.
@@ -1488,7 +1485,7 @@ pub(crate) mod test_support {
                 phase: "assertions",
                 behavior,
                 entered: None,
-                intake: None,
+                target_port: None,
                 registers: None,
                 spawns: None,
             }
@@ -1632,7 +1629,9 @@ pub(crate) mod test_support {
         async fn run_procedure(&self, steps: &str, tctx: &TestContext) {
             let mut ctx = host_context(tctx.test_cancel_token());
             ctx.log_buffer.write().unwrap().stdout.push("ready".to_string());
-            ctx.intake_host_port = self.intake;
+            if let Some(port) = self.target_port {
+                ctx.port_mappings.insert("1234/tcp".to_string(), port);
+            }
             run_assertion_steps(&procedure(steps), &ctx, tctx.deadline, &tctx.record).await;
         }
     }
@@ -2221,14 +2220,16 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_stalled_request_cut_short_by_the_case_deadline_is_interrupted() {
-        let intake = crate::intake::test_server::MockIntake::unresponsive().await;
+        let target = crate::intake::test_server::MockIntake::unresponsive().await;
         let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
         let test = ScriptedTest {
             timeout: Duration::from_secs(1),
-            intake: Some(intake.port()),
+            target_port: Some(target.port()),
             ..ScriptedTest::new(
                 "stalled",
-                Behavior::Procedure("- assertion: intake_has_metric\n  name: some.metric\n  timeout: 30s\n"),
+                Behavior::Procedure(
+                    "- assertion: http_check\n  endpoint: http://127.0.0.1:1234/\n  status:\n    equal: 200\n  timeout: 30s\n",
+                ),
             )
         };
 
@@ -2246,19 +2247,15 @@ mod tests {
             .iter()
             .map(|step| (step.step, step.member, step.kind.as_str()))
             .collect();
-        assert_eq!(active, [(0, None, "intake_has_metric")]);
+        assert_eq!(active, [(0, None, "http_check")]);
+        assert_eq!(statuses(&result), [("http_check", None, StepStatus::Interrupted)]);
         assert_eq!(
-            statuses(&result),
-            [("intake_has_metric", None, StepStatus::Interrupted)]
-        );
-        let message = &result.assertion_results[0].message;
-        assert!(
-            message.starts_with(
+            result.assertion_results[0].message,
+            format!(
                 "Interrupted after 1.0s. The case left this step 1.0s of its 30s step budget.\n\
-                 Cancelled after 1.0s waiting for the intake sidecar's metrics dump.\n\
-                 No metric matching name=some.metric, tags_match=subset had arrived at the intake.\n"
-            ),
-            "{message}"
+                 Cancelled after 1.0s waiting for GET http://127.0.0.1:{}/.",
+                target.port()
+            )
         );
     }
 

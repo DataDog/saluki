@@ -1,8 +1,8 @@
-//! Executes participant operations with a scripted command primitive.
+//! Executes participant operations with scripted commands or local HTTP routes.
 
 use super::*;
 use crate::{
-    endpoint::ResolvedAddress,
+    endpoint::{EndpointKind, ResolvedAddress},
     handle::FileStatus,
     probe::{AttemptLimits, ProbeAnswer},
 };
@@ -22,6 +22,46 @@ pub async fn run_operation(
             &OpContext {
                 primitives: &primitives,
                 limit: Duration::from_secs(10),
+                requests: BTreeMap::new(),
+            },
+            args,
+        )
+        .await
+}
+
+/// Runs an operation with its declared HTTP endpoints routed to a loopback port and a ten-second limit.
+///
+/// # Errors
+///
+/// Returns the operation's error unchanged.
+///
+/// # Panics
+///
+/// Panics if the operation uses a participant primitive instead of HTTP.
+pub async fn run_http_operation(operation: &dyn Operation, args: Value, port: u16) -> Result<Value, HandleError> {
+    let primitives = ScriptedExec(|_: &ExecCommand| panic!("the operation must use HTTP"));
+    let requests = operation
+        .http_endpoints()
+        .iter()
+        .map(|&endpoint| {
+            (
+                endpoint,
+                RunnerHostRoute::Direct(ResolvedAddress {
+                    kind: EndpointKind::Http,
+                    url: format!("http://127.0.0.1:{port}"),
+                    host: Some("127.0.0.1".into()),
+                    port: Some(port),
+                    path: None,
+                }),
+            )
+        })
+        .collect();
+    operation
+        .run(
+            &OpContext {
+                primitives: &primitives,
+                limit: Duration::from_secs(10),
+                requests,
             },
             args,
         )

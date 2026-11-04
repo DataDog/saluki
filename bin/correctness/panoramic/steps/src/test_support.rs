@@ -3,8 +3,9 @@
 use panoramic_core::step::StepFields;
 
 use crate::{
-    config_key_equals::ConfigKeyEquals, exits_with::ExitsWith, port_listening::PortListening,
-    process_stable_for::ProcessStableFor, FileContains, LogContains, LogNotContains,
+    config_key_equals::ConfigKeyEquals, exits_with::ExitsWith, intake_has_metric::IntakeHasMetric,
+    port_listening::PortListening, process_stable_for::ProcessStableFor, send::Send, FileContains, LogContains,
+    LogNotContains,
 };
 
 /// Returns fields that build the registered step `name`, on participant `subject`.
@@ -17,10 +18,12 @@ pub fn valid_fields(name: &str) -> StepFields {
         ConfigKeyEquals::NAME => "on: subject\nkey: domains.enabled\nvalue: true\nview: runtime\ntimeout: 30s",
         ExitsWith::NAME => "on: subject\nprocess: main\ncode: 1\ntimeout: 30s",
         FileContains::NAME => "on: subject\npath: /logs/output.log\npattern: ready\ntimeout: 30s",
+        IntakeHasMetric::NAME => "on: subject\nname: some.metric\ntimeout: 30s",
         LogContains::NAME => "on: subject\npattern: ready\ntimeout: 30s",
         LogNotContains::NAME => "on: subject\npattern: panic\nduring: 10s",
         PortListening::NAME => "on: subject\nendpoint: tcp\ntimeout: 30s",
         ProcessStableFor::NAME => "on: subject\nduration: 10s",
+        Send::NAME => "on: subject\nendpoint: udp\npayload: 'metric:1|c'\ntimeout: 30s",
         other => panic!("missing valid fields for '{other}'"),
     };
     serde_saphyr::from_str(yaml).unwrap()

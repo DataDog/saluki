@@ -714,8 +714,7 @@ mod tests {
                     | AssertionConfig::AdpExitsWith { .. }
                     | AssertionConfig::PortListening { .. }
                     | AssertionConfig::HttpCheck { .. }
-                    | AssertionConfig::AdpConfigKeyEquals { .. }
-                    | AssertionConfig::IntakeHasMetric { .. } => panic!(
+                    | AssertionConfig::AdpConfigKeyEquals { .. } => panic!(
                         "step '{}' on {os:?} would be observed through container liveness, log-parsed exits or another old mechanism",
                         factory.name()
                     ),

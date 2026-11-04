@@ -2683,15 +2683,17 @@
       "name": "dogstatsd-host-tag",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/dogstatsd-host-tag/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "180s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel",
-        "intake": "saluki-images/correctness-tools:latest"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest",
+        "tools-linux-image": "saluki-images/correctness-tools:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -2703,15 +2705,17 @@
       "name": "dogstatsd-intake-metric",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/dogstatsd-intake-metric/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "180s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel",
-        "intake": "saluki-images/correctness-tools:latest"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest",
+        "tools-linux-image": "saluki-images/correctness-tools:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -8466,95 +8470,96 @@
     },
     "integration/dogstatsd-host-tag": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [
-            "58125/udp"
-          ],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Sends DogStatsD gauges with and without host tags and asserts the exact contexts at datadog-intake",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_DD_URL": "http://datadog-intake:2049",
-          "DD_DOGSTATSD_NON_LOCAL_TRAFFIC": "true",
-          "DD_DOGSTATSD_ORIGIN_DETECTION": "false",
-          "DD_HOSTNAME": "integration-host-tag"
-        },
-        "intake": {
-          "enabled": true
-        },
-        "name": "dogstatsd-host-tag",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "listen_addr:\"udp://0.0.0.0:58125\" | DogStatsD listener started.",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
-          },
-          {
-            "action": "dogstatsd_send",
-            "payload": "hosttag.metric:1|g\nhosttag.metric:2|g|#host:\nhosttag.metric:3|g|#host:integration-host-tag\nhosttag.metric:4|g|#host:custom",
-            "port": 58125,
-            "timeout": "10s"
-          },
-          {
-            "assertion": "intake_has_metric",
-            "metric_type": "gauge",
-            "name": "hosttag.metric",
-            "tags": [
-              "host:integration-host-tag"
-            ],
-            "tags_match": "exact",
-            "timeout": "120s",
-            "value": 3.0
-          },
-          {
-            "assertion": "intake_has_metric",
-            "metric_type": "gauge",
-            "name": "hosttag.metric",
-            "tags": [],
-            "tags_match": "exact",
-            "timeout": "120s",
-            "value": 2.0
-          },
-          {
-            "assertion": "intake_has_metric",
-            "metric_type": "gauge",
-            "name": "hosttag.metric",
-            "tags": [
-              "host:custom"
-            ],
-            "tags_match": "exact",
-            "timeout": "120s",
-            "value": 4.0
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "5s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_NON_LOCAL_TRAFFIC": "true",
+                "DD_DOGSTATSD_ORIGIN_DETECTION": "false",
+                "DD_HOSTNAME": "integration-host-tag"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "5s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux"
-        ],
-        "timeout": "180s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "intake": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "listen_addr:\"udp://[^\"]+\" \\| DogStatsD listener started\\.",
+              "regex": true,
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "endpoint": "dogstatsd_udp",
+              "on": "adp",
+              "payload": "hosttag.metric:1|g\nhosttag.metric:2|g|#host:\nhosttag.metric:3|g|#host:integration-host-tag\nhosttag.metric:4|g|#host:custom",
+              "step": "send",
+              "timeout": "10s"
+            },
+            {
+              "metric_type": "gauge",
+              "name": "hosttag.metric",
+              "on": "intake",
+              "step": "intake_has_metric",
+              "tags": [
+                "host:integration-host-tag"
+              ],
+              "tags_match": "exact",
+              "timeout": "120s",
+              "value": 3
+            },
+            {
+              "metric_type": "gauge",
+              "name": "hosttag.metric",
+              "on": "intake",
+              "step": "intake_has_metric",
+              "tags": [],
+              "tags_match": "exact",
+              "timeout": "120s",
+              "value": 2
+            },
+            {
+              "metric_type": "gauge",
+              "name": "hosttag.metric",
+              "on": "intake",
+              "step": "intake_has_metric",
+              "tags": [
+                "host:custom"
+              ],
+              "tags_match": "exact",
+              "timeout": "120s",
+              "value": 4
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "5s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "5s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 4,
@@ -8562,92 +8567,91 @@
         "parallel_assertions": 2,
         "actions": 1,
         "by_kind": {
-          "dogstatsd_send": 1,
           "intake_has_metric": 3,
           "log_contains": 1,
           "log_not_contains": 1,
-          "process_stable_for": 1
+          "process_stable_for": 1,
+          "send": 1
         }
       },
       "ignored_fields": []
     },
     "integration/dogstatsd-intake-metric": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [
-            "58125/udp"
-          ],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Sends a UDP DogStatsD counter twice through Agent+ADP and asserts its total reaches datadog-intake",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_DD_URL": "http://datadog-intake:2049",
-          "DD_DOGSTATSD_NON_LOCAL_TRAFFIC": "true",
-          "DD_DOGSTATSD_ORIGIN_DETECTION": "false",
-          "DD_HOSTNAME": "integration-test-intake-metric"
-        },
-        "intake": {
-          "enabled": true
-        },
-        "name": "dogstatsd-intake-metric",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "listen_addr:\"udp://0.0.0.0:58125\" | DogStatsD listener started.",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
-          },
-          {
-            "action": "dogstatsd_send",
-            "payload": "integration.intake.counter:3|c|#source:integration-test",
-            "port": 58125,
-            "timeout": "10s"
-          },
-          {
-            "action": "dogstatsd_send",
-            "payload": "integration.intake.counter:3|c|#source:integration-test",
-            "port": 58125,
-            "timeout": "10s"
-          },
-          {
-            "assertion": "intake_has_metric",
-            "metric_type": "rate",
-            "name": "integration.intake.counter",
-            "tags": [
-              "source:integration-test"
-            ],
-            "tags_match": "subset",
-            "timeout": "120s",
-            "value": 0.6
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "5s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_NON_LOCAL_TRAFFIC": "true",
+                "DD_DOGSTATSD_ORIGIN_DETECTION": "false",
+                "DD_HOSTNAME": "integration-test-intake-metric"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "5s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux"
-        ],
-        "timeout": "180s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "intake": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "listen_addr:\"udp://[^\"]+\" \\| DogStatsD listener started\\.",
+              "regex": true,
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "endpoint": "dogstatsd_udp",
+              "on": "adp",
+              "payload": "integration.intake.counter:3|c|#source:integration-test",
+              "step": "send",
+              "timeout": "10s"
+            },
+            {
+              "endpoint": "dogstatsd_udp",
+              "on": "adp",
+              "payload": "integration.intake.counter:3|c|#source:integration-test",
+              "step": "send",
+              "timeout": "10s"
+            },
+            {
+              "metric_type": "rate",
+              "name": "integration.intake.counter",
+              "on": "intake",
+              "step": "intake_has_metric",
+              "tags": [
+                "source:integration-test"
+              ],
+              "timeout": "120s",
+              "value": 0.6
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "5s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "5s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 2,
@@ -8655,11 +8659,11 @@
         "parallel_assertions": 2,
         "actions": 2,
         "by_kind": {
-          "dogstatsd_send": 2,
           "intake_has_metric": 1,
           "log_contains": 1,
           "log_not_contains": 1,
-          "process_stable_for": 1
+          "process_stable_for": 1,
+          "send": 2
         }
       },
       "ignored_fields": []

@@ -12,7 +12,7 @@ use super::{
 use crate::{
     participant::{find_type, ParticipantType},
     record::step_label,
-    step::{Need, Step, StepFactory},
+    step::{Need, Step, StepFactory, StepKind},
 };
 
 /// Builds every step of the procedure, keeping its order and parallel blocks.
@@ -20,7 +20,7 @@ use crate::{
 /// # Errors
 ///
 /// Returns the first error in procedure order, naming the case, source, step label and step.
-/// Checks registration, field decoding, template references, then needs in their declared order.
+/// Checks registration, parallel membership, field decoding, template references, then needs in their declared order.
 pub(super) fn build_steps(
     file: &CaseFile, steps: &[&dyn StepFactory], types: &[&dyn ParticipantType], name: &str, source: &Path,
 ) -> Result<Vec<ProcedureNode<Box<dyn Step>>>, GenericError> {
@@ -29,14 +29,12 @@ pub(super) fn build_steps(
         .enumerate()
         .map(|(index, node)| match node {
             ProcedureNode::Step(node) => {
-                build_step(node, &step_label(index, None), file, steps, types, name, source).map(ProcedureNode::Step)
+                build_step(node, (index, None), file, steps, types, name, source).map(ProcedureNode::Step)
             }
             ProcedureNode::Parallel(nodes) => nodes
                 .iter()
                 .enumerate()
-                .map(|(member, node)| {
-                    build_step(node, &step_label(index, Some(member)), file, steps, types, name, source)
-                })
+                .map(|(member, node)| build_step(node, (index, Some(member)), file, steps, types, name, source))
                 .collect::<Result<Vec<_>, _>>()
                 .map(ProcedureNode::Parallel),
         })
@@ -44,9 +42,11 @@ pub(super) fn build_steps(
 }
 
 fn build_step(
-    node: &StepNode, label: &str, file: &CaseFile, steps: &[&dyn StepFactory], types: &[&dyn ParticipantType],
-    name: &str, source: &Path,
+    node: &StepNode, position: (usize, Option<usize>), file: &CaseFile, steps: &[&dyn StepFactory],
+    types: &[&dyn ParticipantType], name: &str, source: &Path,
 ) -> Result<Box<dyn Step>, GenericError> {
+    let (index, member) = position;
+    let label = step_label(index, member);
     let error = |message: String| generic_error!("case '{}' in {}: step {} {}", name, source.display(), label, message);
     let Some(factory) = steps.iter().find(|factory| factory.name() == node.name) else {
         return Err(error(format!(
@@ -55,6 +55,12 @@ fn build_step(
             declared_names(&steps.iter().map(|factory| factory.name()).collect::<Vec<_>>())
         )));
     };
+    if member.is_some() && factory.kind() == StepKind::Action {
+        return Err(error(format!(
+            "'{}' is an action; parallel blocks accept only assertions",
+            node.name
+        )));
+    }
     let step = factory
         .build(&node.fields)
         .map_err(|message| error(format!("'{}': {message}", node.name)))?;
@@ -198,6 +204,48 @@ mod tests {
             );
             assert!(message.contains("missing field `on`"), "{message}");
         }
+    }
+
+    #[test]
+    fn a_parallel_action_is_rejected_before_decoding_its_fields() {
+        use crate::case::fixtures::ActionFactory;
+
+        let steps: Vec<_> = STEPS
+            .iter()
+            .copied()
+            .chain([&ActionFactory as &dyn StepFactory])
+            .collect();
+        for fields in ["on: subject", "unknown: true"] {
+            let file = case(&format!(
+                "- {{step: noop}}\n- parallel:\n  - {{step: noop}}\n  - {{step: action, {fields}}}"
+            ));
+            let error = build_steps(&file, &steps, TYPES, "alpha", Path::new("cases/alpha/config.yaml"))
+                .unwrap_err()
+                .to_string();
+            assert_eq!(
+                error,
+                "case 'alpha' in cases/alpha/config.yaml: step 2.2 'action' is an action; parallel blocks accept only assertions"
+            );
+        }
+    }
+
+    #[test]
+    fn an_action_outside_a_parallel_block_loads() {
+        use crate::case::fixtures::ActionFactory;
+
+        let procedure = build_steps(
+            &case("- {step: action, on: subject}"),
+            &[&ActionFactory],
+            TYPES,
+            "alpha",
+            Path::new("cases/alpha/config.yaml"),
+        )
+        .unwrap();
+        let [ProcedureNode::Step(step)] = procedure.as_slice() else {
+            panic!("expected a sequential action");
+        };
+        assert_eq!(step.name(), "action");
+        assert_eq!(step.needs(), [Need::Handle("subject".into())]);
     }
 
     #[test]

@@ -12,9 +12,12 @@ mod attempts;
 mod config_key_equals;
 mod exits_with;
 mod file_contains;
+mod intake_has_metric;
 mod log_contains;
+pub mod metrics;
 mod port_listening;
 mod process_stable_for;
+mod send;
 
 pub use self::{
     file_contains::FileContains,
@@ -26,10 +29,12 @@ pub const REGISTERED_STEPS: &[&dyn StepFactory] = &[
     &config_key_equals::ConfigKeyEqualsFactory,
     &exits_with::ExitsWithFactory,
     &file_contains::FileContainsFactory,
+    &intake_has_metric::IntakeHasMetricFactory,
     &log_contains::LogContainsFactory,
     &log_contains::LogNotContainsFactory,
     &port_listening::PortListeningFactory,
     &process_stable_for::ProcessStableForFactory,
+    &send::SendFactory,
 ];
 
 /// Matches text against a step's pattern, either literally or as a compiled regex.
@@ -78,14 +83,14 @@ pub mod test_support;
 mod tests {
     use panoramic_core::{
         endpoint::EndpointOperation,
-        step::{Need, StepFields},
+        step::{Need, StepFields, StepKind},
     };
     use serde_json::Value;
 
     use super::*;
     use crate::{
-        config_key_equals::ConfigKeyEquals, exits_with::ExitsWith, port_listening::PortListening,
-        process_stable_for::ProcessStableFor, test_support::valid_fields,
+        config_key_equals::ConfigKeyEquals, exits_with::ExitsWith, intake_has_metric::IntakeHasMetric,
+        port_listening::PortListening, process_stable_for::ProcessStableFor, send::Send, test_support::valid_fields,
     };
 
     const PATTERN_STEPS: &[&dyn StepFactory] = &[
@@ -131,10 +136,12 @@ mod tests {
                 "config_key_equals",
                 "exits_with",
                 "file_contains",
+                "intake_has_metric",
                 "log_contains",
                 "log_not_contains",
                 "port_listening",
                 "process_stable_for",
+                "send",
             ]
         );
         assert!(names.windows(2).all(|pair| pair[0] < pair[1]));
@@ -151,10 +158,33 @@ mod tests {
                 ConfigKeyEquals::NAME,
                 ExitsWith::NAME,
                 FileContains::NAME,
+                IntakeHasMetric::NAME,
                 LogContains::NAME,
                 LogNotContains::NAME,
                 PortListening::NAME,
                 ProcessStableFor::NAME,
+                Send::NAME,
+            ]
+        );
+    }
+
+    #[test]
+    fn only_send_is_a_registered_action() {
+        assert_eq!(
+            REGISTERED_STEPS
+                .iter()
+                .map(|factory| (factory.name(), factory.kind()))
+                .collect::<Vec<_>>(),
+            [
+                (ConfigKeyEquals::NAME, StepKind::Assertion),
+                (ExitsWith::NAME, StepKind::Assertion),
+                (FileContains::NAME, StepKind::Assertion),
+                (IntakeHasMetric::NAME, StepKind::Assertion),
+                (LogContains::NAME, StepKind::Assertion),
+                (LogNotContains::NAME, StepKind::Assertion),
+                (PortListening::NAME, StepKind::Assertion),
+                (ProcessStableFor::NAME, StepKind::Assertion),
+                (Send::NAME, StepKind::Action),
             ]
         );
     }
@@ -166,6 +196,8 @@ mod tests {
             let step = factory.build(&fields).unwrap();
             let needs = match factory.name() {
                 ConfigKeyEquals::NAME => vec![Need::Operation("subject".into(), "config_dump".into())],
+                IntakeHasMetric::NAME => vec![Need::Operation("subject".into(), "dump".into())],
+                Send::NAME => vec![Need::Endpoint("subject".into(), "udp".into(), EndpointOperation::Send)],
                 ExitsWith::NAME => vec![Need::Process("subject".into(), "main".into())],
                 PortListening::NAME => vec![Need::Endpoint("subject".into(), "tcp".into(), EndpointOperation::Probe)],
                 _ => vec![Need::Handle("subject".into())],
@@ -186,6 +218,8 @@ mod tests {
         for factory in REGISTERED_STEPS {
             let string_fields: &[&str] = match factory.name() {
                 ConfigKeyEquals::NAME => &["on", "key"],
+                IntakeHasMetric::NAME => &["on", "name"],
+                Send::NAME => &["on", "endpoint", "payload"],
                 FileContains::NAME => &["on", "pattern", "path"],
                 LogContains::NAME | LogNotContains::NAME => &["on", "pattern", "process"],
                 ExitsWith::NAME | ProcessStableFor::NAME => &["on", "process"],

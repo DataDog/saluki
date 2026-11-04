@@ -78,10 +78,11 @@ Image bindings come from:
 | `PANORAMIC_TOOLS_LINUX_IMAGE` | `tools-linux-image` | `saluki-images/correctness-tools:latest` |
 | `PANORAMIC_TEST_IMAGE` | `fixup-image` | `alpine:latest` |
 
-Each test verifies the roles its case needs. The intake test starts two intakes in one scope, waits for each ready
-route, sends a forwarded DogStatsD packet to one, and checks that only that intake retains it. Agent tests deliver
-DogStatsD metrics to a connected intake, kill ADP and check its recorded signal death and supervised restart, and
-compare the image's shipped service scripts and listener environment with the definition's sources and defaults.
+Each test verifies the roles its case needs. The intake test starts two intakes in one scope, requests dumps through
+each intake's operation, sends a forwarded DogStatsD packet to one, and checks that only that intake retains it.
+Agent tests deliver DogStatsD metrics to a connected intake, kill ADP and check its recorded signal death and
+supervised restart, and compare the image's shipped service scripts and listener environment with the definition's
+sources and defaults.
 The target runs tests serially because each runner invocation allocates host ports from the same pool. Tests check
 native participant reports and confirm that the scope's containers, volume and network are removed.
 
@@ -240,6 +241,8 @@ Capture still writes every byte to disk, so the files remain the full output sou
 After the start levels, native Linux container cases run their procedure in the `steps` phase, using the same step
 budgets, case deadline, parallel blocks and fail-fast behavior as the integration runner. Steps receive the started
 participants through borrowed handles. File paths resolve early and late facts when the step runs.
+A `parallel` block accepts only assertions. Actions, such as `send`, must be sequential steps; discovery rejects an
+action in a parallel block before building its fields.
 
 The native log and file steps accept `on`, `pattern` and an optional `regex` flag (default false):
 
@@ -271,6 +274,12 @@ Native process and endpoint steps also require `on`:
   it listens or the timeout expires. An addressable UDP endpoint also passes, because UDP cannot confirm a listener.
   A timeout fails after any product answer; it errors if only harness failures prevented observation. A participant
   exit does not end the retry window early.
+- `send` is an action requiring `endpoint`, `payload` and `timeout`. It sends the string's UTF-8 bytes verbatim,
+  including any framing, through the endpoint's planned route. YAML escapes above `\x7f` encode as UTF-8, so
+  frame-length bytes must be below 0x80. It retries failed sends until one is accepted or the timeout expires.
+  A retry after a harness error may deliver the payload twice. A timeout fails after any product refusal; it errors
+  if only harness failures occurred. UDP cannot confirm a listener, so gate UDP sends on the participant's listener
+  output.
 
 An undetermined process exit errors stability and exit assertions. A process's first recorded exit remains final
 across supervised restarts. The integration bridge translates only `log_contains`, `log_not_contains` and
@@ -279,7 +288,9 @@ across supervised restarts. The integration bridge translates only `log_contains
 Participant types offer named **operations** per realization. An operation takes JSON arguments and returns JSON,
 keeping product-specific commands inside the participant definition. Steps declare the operations they call;
 plan compilation rejects an operation the participant's type does not offer for its realization, so `panoramic list`
-reports the error before anything starts. Operations run commands through the participant's exec primitive.
+reports the error before anything starts. Operations run commands through the participant's exec primitive or request
+their own declared HTTP endpoints from the runner host. Planning validates those endpoints and allocates request
+routes and any published ports. An operation can request only the HTTP endpoints it declares.
 Argument and mechanism problems are harness errors; a product answer that does not satisfy the operation is a
 product error.
 
@@ -289,6 +300,55 @@ JSON value equals `value`. Each call receives the whole remaining step budget. M
 or harness errors are retried; at timeout, any product observation makes the step fail, while only harness errors
 make it error. A participant exit does not end the retry window early. The timeout message includes the last
 observed value, or `<missing>` for an absent key.
+
+The native `intake_has_metric` step polls the intake participant named by `on` until it holds a metric matching
+every criterion given, or until `timeout` elapses. Polling, rather than a single check, absorbs the target's
+aggregation and flush window without a fixed sleep.
+
+Each poll normalizes the intake's metrics per context (name and tags) and type, the same way correctness analysis
+does: counts and rates are summed, a gauge takes its latest value, and sketches are merged. A counter flushed as
+one `0.6` rate point or as two `0.3` points over equal intervals therefore matches `value: 0.6`. Contexts are never
+combined: the assertion passes when one context meets every criterion by itself. Expect totals, since a partial sum
+can match an early poll before the rest arrives.
+
+`on`, `name` and `timeout` are required; `name` must match exactly. The other criteria are:
+
+- `metric_type`: `count`, `rate`, `gauge`, or `sketch`.
+- `value`: compared with the normalized value, using the same approximate float equality as correctness analysis. A
+  rate is compared at its own interval. `value` can't be combined with `metric_type: sketch`; the case fails to
+  load.
+- `tags`: compared as `tags_match` directs. Both sides are sorted and deduplicated first.
+- `tags_match`: `subset` (the default) requires every listed tag and allows extras, such as the environment-derived
+  ones the Agent adds. `exact` requires the context's tags to equal the list. The intake reports a metric's host as
+  a `host:<value>` tag, so under `exact`, `tags: []` means no tags and no host.
+
+`exact` constrains the one matching context. It doesn't prove that no other contexts arrived.
+
+```yaml
+- step: intake_has_metric
+  on: intake
+  name: "example.counter"
+  metric_type: rate
+  value: 0.6
+  tags: ["source:integration-test"]
+  timeout: 120s
+
+- step: intake_has_metric
+  on: intake
+  name: "hosttag.metric"
+  metric_type: gauge
+  value: 4
+  tags: ["host:custom"]
+  tags_match: exact
+  timeout: 120s
+```
+
+On failure, the message lists the contexts that share the expected name, with each one's type, normalized value,
+point count, and the first criterion it failed. When no context has that name, it lists other observed names
+instead.
+
+A timeout fails if any poll returned a valid metrics snapshot; otherwise it errors with the last poll error.
+The step keeps polling until its timeout even if the subject exits.
 
 The `observe` phase gives exited participants up to five seconds to finish
 capturing output; it also runs after a setup failure if any participant started. Running participants are skipped, and
@@ -308,6 +368,14 @@ and host `0.0.0.0` or `[::]`, so participants and published ports can reach it. 
 HTTP 200 from `api` at `/ready`: the intake binds UDP before starting HTTP. Connections wait for that evidence before
 starting their consumer. Each intake stores its own telemetry. When the listen variables are unset, the intake binary
 uses the defaults listed above.
+
+The intake's `dump` operation accepts exactly `{"kind": "metrics"}` or `{"kind": "dogstatsd_forwarded"}`.
+`metrics` returns the JSON array of stele metrics unchanged. `dogstatsd_forwarded` returns a JSON array of packets,
+each a JSON array of byte values; the operation decodes the intake's base64 wire format. The operation declares only
+`api` and requests `/metrics/dump` or `/dogstatsd-forwarding/dump`, respectively. Unknown kinds and extra arguments
+are harness errors before any request. Non-success HTTP status, invalid JSON and invalid packet encoding are product
+errors; messages omit response bodies. The operation is offered independently of realization. HTTP requests through
+a courier route are harness errors.
 
 The `agent-adp` Linux container definition uses `agent-adp-linux-image`. Its environment defaults match the legacy
 runner's port isolation: command API 55001, expvar 55000, APM 58126, process command API 56062, Agent IPC 55004,
@@ -614,9 +682,8 @@ cases is the case author's responsibility.
 Step routes depend on the operation. Probes and raw sends to containers and pods use the courier inside the
 server participant: a port proxy can accept a connection even when the server has no listener. HTTP and gRPC
 requests to Linux containers and pods use published or forwarded ports and must observe a server response.
-Host process group endpoints are reached directly. Only request/response step needs allocate runner-host ports;
-current steps declare none, so steps allocate no ports today. Connections and configuration references still
-allocate ports as described above.
+Host process group endpoints are reached directly. Request/response step needs and operations' declared HTTP
+endpoints allocate runner-host ports. Connections and configuration references allocate ports as described above.
 
 Run one panoramic invocation per runner host and Docker daemon at a time: each invocation allocates
 deterministically from 20000. Linux container participants publish exactly their planned ports on `127.0.0.1`.

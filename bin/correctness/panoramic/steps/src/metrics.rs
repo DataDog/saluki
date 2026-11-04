@@ -1,14 +1,22 @@
+//! Metric normalization shared by intake assertions and correctness analysis.
+
 use std::{collections::BTreeMap, fmt};
 
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use serde::Deserialize;
 use stele::{Metric, MetricValue};
 
 /// The type of a metric value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
 pub enum MetricType {
+    /// An accumulated count.
     Count,
+    /// A count normalized to a per-second rate.
     Rate,
+    /// The latest sampled value.
     Gauge,
+    /// A distribution of sampled values.
     Sketch,
 }
 
@@ -30,7 +38,7 @@ impl fmt::Display for MetricType {
 /// - Tags are sorted and deduplicated in a case-sensitive fashion.
 /// - The host appears as a `host:<value>` tag (the stele parsers fold it in from each wire format's host field),
 ///   so it participates in identity comparisons like any other tag.
-#[derive(Clone, Eq, Hash, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 pub struct NormalizedMetricContext {
     name: String,
     tags: Vec<String>,
@@ -226,6 +234,10 @@ impl NormalizedMetrics {
     }
 
     /// Returns the number of metrics in the set.
+    #[expect(
+        clippy::len_without_is_empty,
+        reason = "Callers use the count for reports and metrics() for inspection."
+    )]
     pub fn len(&self) -> usize {
         self.metrics.len()
     }
@@ -334,7 +346,7 @@ fn try_normalize_values(raw_values: &[(u64, MetricValue)]) -> Result<MetricValue
 }
 
 /// Formats a metric value for diagnostics, showing a sketch as summary statistics.
-pub(crate) fn get_formatted_metric_value(value: &MetricValue) -> String {
+pub fn get_formatted_metric_value(value: &MetricValue) -> String {
     match value {
         MetricValue::Count { value } => format!("count({})", value),
         MetricValue::Rate { interval, value } => format!("rate({} over {}s)", value, interval),
@@ -398,8 +410,8 @@ mod tests {
     #[test]
     fn normalizes_context_order_before_grouping_metrics() {
         let metrics = vec![
-            metric("tagfilter.miss", &["pod:pod-a", "env:prod"], &[(10, 2.0)]),
-            metric("tagfilter.miss", &["env:prod", "pod:pod-a"], &[(20, 3.0)]),
+            metric("tagfilter.miss", &["zone:zone-a", "env:prod"], &[(10, 2.0)]),
+            metric("tagfilter.miss", &["env:prod", "zone:zone-a"], &[(20, 3.0)]),
         ];
 
         let normalized = NormalizedMetrics::try_from_stele_metrics(&metrics).expect("metrics should normalize");
@@ -407,7 +419,7 @@ mod tests {
         assert_eq!(normalized.len(), 1);
         assert_eq!(
             normalized.metrics()[0].context().to_string(),
-            "tagfilter.miss[env:prod, pod:pod-a]"
+            "tagfilter.miss[env:prod, zone:zone-a]"
         );
         assert_eq!(normalized.metrics()[0].raw_values().len(), 2);
     }

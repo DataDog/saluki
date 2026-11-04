@@ -29,7 +29,6 @@ mod adp_config_key_equals;
 mod adp_exits;
 mod file_contains;
 mod http_check;
-mod intake_has_metric;
 mod log_contains;
 mod port_listening;
 mod process_stable;
@@ -38,7 +37,6 @@ pub use adp_config_key_equals::{default_adp_config_endpoint, AdpConfigKeyEqualsA
 pub use adp_exits::AdpExitsWithAssertion;
 pub use file_contains::FileContainsAssertion;
 pub use http_check::HttpCheckAssertion;
-pub use intake_has_metric::IntakeHasMetricAssertion;
 pub use log_contains::{LogContainsAssertion, LogNotContainsAssertion};
 pub use port_listening::PortListeningAssertion;
 pub use process_stable::ProcessStableForAssertion;
@@ -225,10 +223,6 @@ pub struct AssertionContext {
     /// exits. `None` on host-process runtimes; otherwise an empty cell that becomes populated
     /// when the docker wait stream completes.
     pub docker_container_exit_code: Option<DockerExitCodeCell>,
-    /// Published port of the Datadog intake sidecar's HTTP endpoint, when the test runs one.
-    ///
-    /// `None` when the test has no intake sidecar, including on host-process runtimes.
-    pub intake_host_port: Option<u16>,
     /// Core Agent auth token path for host-process runtimes.
     pub core_agent_auth_token_path: Option<PathBuf>,
     /// Runtime-specific prefix and host environment for invoking the tested ADP binary as a CLI.
@@ -332,21 +326,6 @@ pub fn create_assertion(config: &AssertionConfig) -> Result<Box<dyn Assertion>, 
             *regex,
             timeout.0,
         ))),
-        AssertionConfig::IntakeHasMetric {
-            name,
-            metric_type,
-            value,
-            tags,
-            tags_match,
-            timeout,
-        } => Ok(Box::new(IntakeHasMetricAssertion::new(
-            name.clone(),
-            *metric_type,
-            *value,
-            tags.clone(),
-            *tags_match,
-            timeout.0,
-        )?)),
         AssertionConfig::AdpConfigKeyEquals {
             key,
             value,
@@ -488,7 +467,6 @@ pub(crate) mod test_support {
             is_host_process: true,
             host_process_exit_code: None,
             docker_container_exit_code: None,
-            intake_host_port: None,
             core_agent_auth_token_path: None,
             adp_cli_command: TargetCommand::new(Vec::new()),
             core_agent_cli_command: TargetCommand::new(Vec::new()),
@@ -526,10 +504,12 @@ mod tests {
     const LOG_MATCHES: &str = "- assertion: log_contains\n  pattern: ready\n  timeout: 5s\n";
 
     /// Returns a host context whose logs hold `ready`, cancelled by `cancel`.
-    fn context(cancel: &CancellationToken, intake: Option<&MockIntake>) -> AssertionContext {
+    fn context(cancel: &CancellationToken, target: Option<&MockIntake>) -> AssertionContext {
         let mut ctx = host_context(cancel.clone());
         ctx.log_buffer.write().unwrap().stdout.push("ready".to_string());
-        ctx.intake_host_port = intake.map(MockIntake::port);
+        if let Some(target) = target {
+            ctx.port_mappings.insert("1234/tcp".to_string(), target.port());
+        }
         ctx
     }
 
@@ -624,7 +604,8 @@ mod tests {
     async fn a_procedure_with_an_invalid_step_runs_none_of_it() {
         let ctx = context(&CancellationToken::new(), None);
         let steps = format!(
-            "{LOG_MATCHES}- assertion: intake_has_metric\n  name: some.sketch\n  metric_type: sketch\n  value: 1.0\n  timeout: 1s\n"
+            "{LOG_MATCHES}- assertion: adp_config_key_equals\n  key: some.key\n  value: true\n  \
+             endpoint: https://localhost:55101/unsupported\n  timeout: 1s\n"
         );
 
         let (record, _) = run(&steps, &ctx).await;
@@ -637,75 +618,34 @@ mod tests {
         assert!(
             error
                 .message
-                .starts_with("Failed to create procedure step 2: intake_has_metric `some.sketch` can't combine"),
+                .starts_with("Failed to create procedure step 2: Unsupported ADP configuration endpoint."),
             "{}",
             error.message
         );
     }
 
-    /// An intake assertion with enough time for multiple probes.
-    const INTAKE_POLL: &str = "- assertion: intake_has_metric\n  name: some.metric\n  timeout: 30s\n";
+    const HTTP_POLL: &str =
+        "- assertion: http_check\n  endpoint: http://127.0.0.1:1234/\n  status:\n    equal: 200\n  timeout: 30s\n";
 
-    #[tokio::test(start_paused = true)]
-    async fn a_stalled_intake_poll_is_retried_until_the_step_errors() {
-        // Holding requests open lets Tokio's paused clock advance each probe to its timeout.
-        let intake = MockIntake::unresponsive().await;
-        let ctx = context(&CancellationToken::new(), Some(&intake));
+    #[tokio::test]
+    async fn an_evaluation_error_reports_the_first_line_of_the_step_message() {
+        let ctx = context(&CancellationToken::new(), None);
+        let invalid_regex = "- assertion: log_contains\n  pattern: '('\n  regex: true\n  timeout: 5s\n";
 
-        let (record, elapsed) = run(INTAKE_POLL, &ctx).await;
+        let (record, _) = run(invalid_regex, &ctx).await;
 
         let steps = record.steps();
-        assert_eq!(statuses(&steps), [("intake_has_metric", None, StepStatus::Errored)]);
-        // The final probe uses the step's remaining budget rather than a full probe timeout.
-        assert_eq!(elapsed, Duration::from_secs(30));
-        let first_line = "Timed out after 9s waiting for the intake sidecar's metrics dump.: deadline has elapsed";
-        assert_eq!(
-            steps[0].message.lines().next(),
-            Some(first_line),
-            "{}",
-            steps[0].message
-        );
+        assert_eq!(statuses(&steps), [("log_contains", None, StepStatus::Errored)]);
+        let first_line = "Invalid regex pattern '(': regex parse error:";
+        assert_eq!(steps[0].message.lines().next(), Some(first_line));
+        assert!(steps[0].message.lines().count() > 1, "{}", steps[0].message);
         let result = record.result("t", Duration::ZERO, Vec::new());
         assert_eq!(result.outcome, TestOutcome::Errored);
-        let error = result.error.expect("a stalled intake should be a harness error");
+        let error = result.error.expect("an invalid regex should be an evaluation error");
         assert_eq!(error.kind, ErrorKind::Evaluation);
         assert_eq!(
             error.message,
-            format!("Step 1 (intake_has_metric) could not be evaluated: {first_line}")
-        );
-    }
-
-    #[tokio::test]
-    async fn errors_after_a_successful_poll_keep_the_step_failed() {
-        let intake = MockIntake::serving_once(serde_json::json!([{
-            "context": {"name": "some.metric", "tags": []},
-            "values": [[0, {"mtype": "Count", "value": 1.0}]],
-        }]))
-        .await;
-        let mut ctx = context(&CancellationToken::new(), Some(&intake));
-        let exit = CancellationToken::new();
-        ctx.container_exit_token = exit.clone();
-        let steps = "- assertion: intake_has_metric\n  name: some.metric\n  value: 2\n  timeout: 30s\n";
-        // Ending the target once a poll has failed after the snapshot keeps the test independent of request speed.
-        let failed_poll_seen = async {
-            while intake.connections() < 2 {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-            exit.cancel();
-        };
-
-        let ((record, _), ()) = tokio::join!(run(steps, &ctx), failed_poll_seen);
-
-        let steps = record.steps();
-        assert_eq!(statuses(&steps), [("intake_has_metric", None, StepStatus::Failed)]);
-        let message = &steps[0].message;
-        assert!(
-            message.contains("\nLast collection error, after the last successful snapshot: "),
-            "{message}"
-        );
-        assert!(
-            message.contains("\n  - some.metric (count): count(1) from 1 point(s); fails value: expected 2"),
-            "{message}"
+            format!("Step 1 (log_contains) could not be evaluated: {first_line}")
         );
     }
 
@@ -734,32 +674,32 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_step_times_only_its_own_budget_until_the_runner_cancels() {
         // Delay runner cancellation past the case deadline to prove the step uses only its own budget.
-        let intake = MockIntake::unresponsive().await;
+        let target = MockIntake::unresponsive().await;
         let cancel = CancellationToken::new();
-        let ctx = context(&cancel, Some(&intake));
+        let ctx = context(&cancel, Some(&target));
         cancel_after(&cancel, Duration::from_millis(1500));
 
-        let (record, _) = run_within(INTAKE_POLL, &ctx, Duration::from_secs(1)).await;
+        let (record, _) = run_within(HTTP_POLL, &ctx, Duration::from_secs(1)).await;
 
         let steps = record.steps();
-        assert_eq!(statuses(&steps), [("intake_has_metric", None, StepStatus::Interrupted)]);
-        let message = &steps[0].message;
-        assert!(
-            message.starts_with(
-                "Interrupted after 1.5s. The case left this step 1.0s of its 30s step budget.\nCancelled after 1.5s \
-                 waiting for the intake sidecar's metrics dump.\n"
-            ),
-            "{message}"
+        assert_eq!(statuses(&steps), [("http_check", None, StepStatus::Interrupted)]);
+        assert_eq!(
+            steps[0].message,
+            format!(
+                "Interrupted after 1.5s. The case left this step 1.0s of its 30s step budget.\n\
+                 Cancelled after 1.5s waiting for GET http://127.0.0.1:{}/.",
+                target.port()
+            )
         );
-        assert!(!message.contains("Timed out"), "{message}");
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_parallel_block_lasts_as_long_as_its_slowest_member() {
-        let intake = MockIntake::unresponsive().await;
-        let ctx = context(&CancellationToken::new(), Some(&intake));
+        let target = MockIntake::unresponsive().await;
+        let ctx = context(&CancellationToken::new(), Some(&target));
         let steps = "- parallel:\n  - assertion: process_stable_for\n    duration: 2s\n  \
-                     - assertion: intake_has_metric\n    name: some.metric\n    timeout: 5s\n";
+                     - assertion: http_check\n    endpoint: http://127.0.0.1:1234/\n    status:\n      \
+                     equal: 200\n    timeout: 5s\n";
 
         let (record, elapsed) = run(steps, &ctx).await;
 
@@ -768,28 +708,30 @@ mod tests {
             statuses(&steps),
             [
                 ("process_stable_for", Some(0), StepStatus::Passed),
-                ("intake_has_metric", Some(1), StepStatus::Errored),
+                ("http_check", Some(1), StepStatus::Failed),
             ]
         );
         assert!(
-            steps[1].message.starts_with(
-                "Timed out after 5s waiting for the intake sidecar's metrics dump.: deadline has elapsed\n"
-            ),
+            steps[1].message.ends_with(&format!(
+                "Last attempt: Timed out after 5s waiting for GET http://127.0.0.1:{}/.",
+                target.port()
+            )),
             "{}",
             steps[1].message
         );
-        assert_eq!(elapsed, Duration::from_secs(5));
+        assert_eq!(elapsed, Duration::from_millis(5500));
     }
 
     #[tokio::test(start_paused = true)]
     async fn cancellation_interrupts_every_unfinished_parallel_member() {
-        let intake = MockIntake::unresponsive().await;
+        let target = MockIntake::unresponsive().await;
         let cancel = CancellationToken::new();
-        let ctx = context(&cancel, Some(&intake));
+        let ctx = context(&cancel, Some(&target));
         cancel_after(&cancel, Duration::from_secs(1));
         let steps = "- parallel:\n  - assertion: log_contains\n    pattern: ready\n    timeout: 5s\n  \
                      - assertion: process_stable_for\n    duration: 600s\n  \
-                     - assertion: intake_has_metric\n    name: some.metric\n    timeout: 600s\n";
+                     - assertion: http_check\n    endpoint: http://127.0.0.1:1234/\n    status:\n      \
+                     equal: 200\n    timeout: 600s\n";
 
         let (record, _) = run(steps, &ctx).await;
 
@@ -799,16 +741,16 @@ mod tests {
             [
                 ("log_contains", Some(0), StepStatus::Passed),
                 ("process_stable_for", Some(1), StepStatus::Interrupted),
-                ("intake_has_metric", Some(2), StepStatus::Interrupted),
+                ("http_check", Some(2), StepStatus::Interrupted),
             ]
         );
         assert_eq!(steps[1].message, "Interrupted after 1.0s.");
-        assert!(
-            steps[2].message.starts_with(
-                "Interrupted after 1.0s.\nCancelled after 1.0s waiting for the intake sidecar's metrics dump.\n"
-            ),
-            "{}",
-            steps[2].message
+        assert_eq!(
+            steps[2].message,
+            format!(
+                "Interrupted after 1.0s.\nCancelled after 1.0s waiting for GET http://127.0.0.1:{}/.",
+                target.port()
+            )
         );
     }
 
@@ -883,23 +825,10 @@ mod tests {
         };
         let cli = |command: &[&str]| TargetCommand::new(command.iter().map(ToString::to_string).collect());
         // Rows share one thread, so budgets leave room for every row's setup and first attempt on a busy machine.
-        let intake_poll = "- assertion: intake_has_metric\n  name: some.metric\n  timeout: 5s\n";
         let port_listening = "- assertion: port_listening\n  port: 1234\n  protocol: tcp\n  timeout: 5s\n";
         let file_contains = |path: &str| format!("- assertion: file_contains\n  path: {path}\n  timeout: 5s\n");
         let config_key = "- assertion: adp_config_key_equals\n  key: some.key\n  value: true\n  timeout: 5s\n";
         let rows = [
-            (
-                "intake_has_metric, closed intake port".to_string(),
-                intake_poll.to_string(),
-                context_with(&|ctx| ctx.intake_host_port = Some(closed)),
-                StepStatus::Errored,
-            ),
-            (
-                "intake_has_metric, no intake".to_string(),
-                intake_poll.to_string(),
-                context_with(&|_| {}),
-                StepStatus::Errored,
-            ),
             (
                 "http_check, closed port".to_string(),
                 format!(

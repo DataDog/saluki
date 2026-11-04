@@ -1,8 +1,8 @@
-//! HTTP status checks from the runner host.
+//! HTTP requests from the runner host.
 
 use bytes::Bytes;
-use http_body_util::Empty;
-use hyper::{client::conn::http1, Request};
+use http_body_util::{BodyExt, Empty};
+use hyper::{body::Incoming, client::conn::http1, Request, Response};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpStream;
 use tokio_util::task::AbortOnDropHandle;
@@ -20,6 +20,26 @@ pub(crate) enum HttpError {
 
 /// Returns the status of a plain HTTP GET as soon as the response headers arrive.
 pub(crate) async fn get_status(address: &ResolvedAddress, path: &str) -> Result<u16, HttpError> {
+    let (response, _connection) = request(address, path).await?;
+    Ok(response.status().as_u16())
+}
+
+/// Returns the status and complete body of a plain HTTP GET.
+pub(crate) async fn get(address: &ResolvedAddress, path: &str) -> Result<(u16, Bytes), HttpError> {
+    let (response, _connection) = request(address, path).await?;
+    let status = response.status().as_u16();
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .map_err(|error| HttpError::Connection(error.to_string()))?
+        .to_bytes();
+    Ok((status, body))
+}
+
+async fn request(
+    address: &ResolvedAddress, path: &str,
+) -> Result<(Response<Incoming>, AbortOnDropHandle<Result<(), hyper::Error>>), HttpError> {
     let host = address
         .host
         .as_deref()
@@ -37,12 +57,12 @@ pub(crate) async fn get_status(address: &ResolvedAddress, path: &str) -> Result<
     let (mut sender, connection) = http1::handshake(TokioIo::new(stream))
         .await
         .map_err(|error| HttpError::Connection(error.to_string()))?;
-    let _connection = AbortOnDropHandle::new(tokio::spawn(connection));
-    sender
+    let connection = AbortOnDropHandle::new(tokio::spawn(connection));
+    let response = sender
         .send_request(request)
         .await
-        .map(|response| response.status().as_u16())
-        .map_err(|error| HttpError::Connection(error.to_string()))
+        .map_err(|error| HttpError::Connection(error.to_string()))?;
+    Ok((response, connection))
 }
 
 #[cfg(test)]
@@ -100,6 +120,29 @@ mod tests {
             .await
             .unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn an_incomplete_http_body_is_a_connection_failure() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = address(listener.local_addr().unwrap().port());
+        let responder = async {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(stream.read_u8().await.unwrap());
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\none")
+                .await
+                .unwrap();
+        };
+        timeout(Duration::from_secs(5), async {
+            let (_, result) = tokio::join!(responder, get(&address, "/dump"));
+            assert!(matches!(result, Err(HttpError::Connection(_))), "{result:?}");
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]

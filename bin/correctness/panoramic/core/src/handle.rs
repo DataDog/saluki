@@ -37,6 +37,15 @@ pub struct ExecOutput {
     pub exit_code: i64,
 }
 
+/// An HTTP response's status and complete body.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HttpResponse {
+    /// HTTP status code.
+    pub status: u16,
+    /// Response body bytes.
+    pub body: Vec<u8>,
+}
+
 /// A path's kind, permission bits and size.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileStatus {
@@ -111,6 +120,30 @@ pub(crate) async fn http_status_from_runner_host(
         }
         RunnerHostRoute::Courier(_) => Err(HandleError::Harness {
             message: "HTTP checks through the courier are not supported".into(),
+        }),
+    }
+}
+
+/// Gets an HTTP response through the plan's request route, bounded through completion of its body.
+pub(crate) async fn http_get_from_runner_host(
+    route: &RunnerHostRoute, path: &str, limits: &AttemptLimits,
+) -> Result<HttpResponse, HandleError> {
+    match route {
+        RunnerHostRoute::Direct(address) => {
+            match tokio::time::timeout(limits.attempt, http::get(address, path)).await {
+                Ok(Ok((status, body))) => Ok(HttpResponse {
+                    status,
+                    body: body.to_vec(),
+                }),
+                Ok(Err(HttpError::Request(message))) => Err(HandleError::Harness { message }),
+                Ok(Err(HttpError::Connection(message))) => Err(HandleError::Product { message }),
+                Err(_) => Err(HandleError::Product {
+                    message: format!("HTTP request timed out after {:?}", limits.attempt),
+                }),
+            }
+        }
+        RunnerHostRoute::Courier(_) => Err(HandleError::Harness {
+            message: "HTTP requests through the courier are not supported".into(),
         }),
     }
 }
@@ -354,6 +387,109 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_direct_http_get_returns_the_status_and_complete_binary_body() {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+
+        for status in [200, 503] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let route = http_route(listener.local_addr().unwrap().port());
+            let responder = async {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    request.push(stream.read_u8().await.unwrap());
+                }
+                assert!(request.starts_with(b"GET /dump?kind=records HTTP/1.1\r\n"));
+                stream
+                    .write_all(format!("HTTP/1.1 {status} Status\r\nTransfer-Encoding: chunked\r\n\r\n").as_bytes())
+                    .await
+                    .unwrap();
+                stream.write_all(b"3\r\none\r\n").await.unwrap();
+                tokio::task::yield_now().await;
+                stream.write_all(b"2\r\n\x00\xff\r\n0\r\n\r\n").await.unwrap();
+                assert_eq!(stream.read(&mut [0]).await.unwrap(), 0);
+            };
+            let limits = AttemptLimits::new(Duration::from_secs(5));
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let (_, result) = tokio::join!(
+                    responder,
+                    http_get_from_runner_host(&route, "/dump?kind=records", &limits)
+                );
+                assert_eq!(
+                    result,
+                    Ok(HttpResponse {
+                        status,
+                        body: b"one\x00\xff".to_vec(),
+                    })
+                );
+            })
+            .await
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn an_http_get_through_a_courier_route_is_a_harness_error() {
+        let RunnerHostRoute::Direct(address) = http_route(1003) else {
+            unreachable!();
+        };
+        assert_eq!(
+            http_get_from_runner_host(
+                &RunnerHostRoute::Courier(address),
+                "/dump",
+                &AttemptLimits::new(Duration::from_secs(5)),
+            )
+            .await,
+            Err(HandleError::Harness {
+                message: "HTTP requests through the courier are not supported".into(),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stalled_http_get_times_out_during_headers_or_body_and_closes_its_connection() {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+
+        for headers_received in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let route = http_route(listener.local_addr().unwrap().port());
+            let responder = async {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    request.push(stream.read_u8().await.unwrap());
+                }
+                assert!(request.starts_with(b"GET /dump HTTP/1.1\r\n"));
+                if headers_received {
+                    stream
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\none")
+                        .await
+                        .unwrap();
+                }
+                assert_eq!(stream.read(&mut [0]).await.unwrap(), 0);
+            };
+            let limits = AttemptLimits::new(Duration::from_millis(100));
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let (_, result) = tokio::join!(responder, http_get_from_runner_host(&route, "/dump", &limits));
+                assert_eq!(
+                    result,
+                    Err(HandleError::Product {
+                        message: "HTTP request timed out after 100ms".into(),
+                    })
+                );
+            })
+            .await
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn http_request_errors_are_harness_failures_and_connection_errors_are_product_failures() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -364,19 +500,30 @@ mod tests {
         };
         let limits = AttemptLimits::new(Duration::from_secs(5));
         let route = http_route(port);
-        assert_eq!(
+        for result in [
             http_status_from_runner_host(&route, &server, "/a b", &limits).await,
-            Err(HandleError::Harness {
-                message: "invalid uri character".into()
-            })
-        );
-        let error = http_status_from_runner_host(&route, &server, "/ready", &limits)
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(error, HandleError::Product { ref message } if message.to_lowercase().contains("refused")),
-            "{error:?}"
-        );
+            http_get_from_runner_host(&route, "/a b", &limits)
+                .await
+                .map(|response| response.status),
+        ] {
+            assert_eq!(
+                result,
+                Err(HandleError::Harness {
+                    message: "invalid uri character".into()
+                })
+            );
+        }
+        for error in [
+            http_status_from_runner_host(&route, &server, "/ready", &limits)
+                .await
+                .unwrap_err(),
+            http_get_from_runner_host(&route, "/ready", &limits).await.unwrap_err(),
+        ] {
+            assert!(
+                matches!(error, HandleError::Product { ref message } if message.to_lowercase().contains("refused")),
+                "{error:?}"
+            );
+        }
         assert!(server.calls.lock().unwrap().is_empty());
     }
 

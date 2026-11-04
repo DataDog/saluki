@@ -17,6 +17,7 @@ use std::{
 use panoramic_core::case::{CaseFile, CaseSchema, ProcedureNode, StepNode};
 use panoramic_core::layout::Os;
 use panoramic_core::plan::Compiled;
+use panoramic_core::step::StepKind;
 use panoramic_participants::AgentAdp;
 use saluki_error::GenericError;
 use serde::Serialize;
@@ -504,7 +505,14 @@ fn record_cases(cases: &[LoadedCase], content: &str, directory: &str) -> Result<
                     .iter()
                     .map(|node| match node {
                         ProcedureNode::Step(step) => {
-                            steps.single_assertions += 1;
+                            let factory = panoramic_steps::REGISTERED_STEPS
+                                .iter()
+                                .find(|factory| factory.name() == step.name)
+                                .expect("loaded steps have a registered factory");
+                            match factory.kind() {
+                                StepKind::Action => steps.actions += 1,
+                                StepKind::Assertion => steps.single_assertions += 1,
+                            }
                             step_value(step)
                         }
                         ProcedureNode::Parallel(parallel) => {
@@ -832,6 +840,32 @@ fn participant_inventory_records_native_rows_and_per_os_configuration_as_written
             ("log_not_contains".into(), 1)
         ])
     );
+}
+
+#[test]
+fn participant_inventory_counts_actions_by_registered_kind() {
+    let root = tempfile::tempdir().unwrap();
+    create_case_dirs(root.path());
+    let yaml = LOGGING_PARTICIPANT.replace("linux, macos, windows", "linux").replace(
+        "        DD_API_KEY:",
+        "        DD_DOGSTATSD_NON_LOCAL_TRAFFIC: \"true\"\n        DD_API_KEY:",
+    ) + "  - step: send\n    on: adp\n    endpoint: dogstatsd_udp\n    payload: hello\n    timeout: 1s\n";
+    write_case(&root.path().join("test/integration/cases"), "alpha", &yaml);
+    let inventory = Inventory::generate(&root.path().canonicalize().unwrap());
+    let case = &inventory.cases["integration/alpha"];
+    let written: Value = serde_saphyr::from_str(&yaml).unwrap();
+    assert_eq!(case.config["linux"]["procedure"], written["procedure"]);
+    let steps = case.steps.as_ref().unwrap();
+    assert_eq!(
+        (
+            steps.single_assertions,
+            steps.parallel_blocks,
+            steps.parallel_assertions,
+            steps.actions
+        ),
+        (2, 1, 2, 1)
+    );
+    assert_eq!(steps.by_kind["send"], 1);
 }
 
 #[test]

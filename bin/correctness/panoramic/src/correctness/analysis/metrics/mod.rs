@@ -1,12 +1,12 @@
 use std::collections::HashSet;
 
+use panoramic_steps::metrics::{
+    get_formatted_metric_value, MetricType, NormalizedMetric, NormalizedMetricContext, NormalizedMetrics,
+};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stele::MetricValue;
 use tracing::{error, info, warn};
 
-use crate::intake::metrics::{
-    get_formatted_metric_value, MetricType, NormalizedMetric, NormalizedMetricContext, NormalizedMetrics,
-};
 use crate::intake::CollectedData;
 
 /// A metric context and type pair, used for comparing metrics between different sets.
@@ -246,11 +246,11 @@ fn get_formatted_metric_values(metric: &NormalizedMetric, value: &MetricValue) -
 
 #[cfg(test)]
 mod tests {
+    use panoramic_steps::metrics::NormalizedMetrics;
     use serde_json::json;
     use stele::Metric;
 
     use super::compare_metric_contexts;
-    use crate::intake::metrics::NormalizedMetrics;
 
     fn metrics(entries: &[(&str, &[&str], &str)]) -> NormalizedMetrics {
         let metrics = entries

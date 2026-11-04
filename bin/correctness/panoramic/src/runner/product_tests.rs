@@ -3,12 +3,11 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use async_trait::async_trait;
-use base64::{engine::general_purpose::STANDARD, Engine as _};
 use panoramic_core::{
     endpoint::EndpointOperation,
     probe::{AttemptLimits, POLL_INTERVAL},
     record::{AssertionStatus, StepReport},
-    step::{test_support, ExecCommand, ExitObservation, Need, OutputEnd, Step, StepContext, StepFactory, StepFields},
+    step::{ExecCommand, ExitObservation, Need, OutputEnd, Step, StepContext, StepFactory, StepFields},
 };
 use panoramic_participants::{AgentAdp, TOOLS_LINUX_IMAGE};
 use serde_json::json;
@@ -16,7 +15,6 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::test_support::run_native_case;
-use crate::intake::IntakeClient;
 
 const BUDGET: Duration = Duration::from_secs(30);
 const PACKET: &[u8] = b"panoramic.test:1|c";
@@ -33,8 +31,8 @@ impl Step for Forward {
     fn needs(&self) -> Vec<Need> {
         vec![
             Need::Endpoint("first".into(), "dogstatsd_forward".into(), EndpointOperation::Send),
-            Need::Endpoint("first".into(), "api".into(), EndpointOperation::Request),
-            Need::Endpoint("second".into(), "api".into(), EndpointOperation::Request),
+            Need::Operation("first".into(), "dump".into()),
+            Need::Operation("second".into(), "dump".into()),
         ]
     }
 
@@ -45,24 +43,23 @@ impl Step for Forward {
     async fn run(&self, cx: &StepContext<'_>) -> StepReport {
         let started = Instant::now();
         let result = tokio::time::timeout(BUDGET, async {
-            let client = reqwest::Client::new();
             let mut intakes = Vec::new();
             for name in ["first", "second"] {
-                let port = test_support::runner_host_port(cx, name, "api", EndpointOperation::Request)
-                    .ok_or_else(|| format!("{name}.api has no runner-host port"))?;
+                let intake = cx
+                    .handle(name)
+                    .ok_or_else(|| format!("participant '{name}' has not started"))?;
                 loop {
-                    let limits = AttemptLimits::new(BUDGET.saturating_sub(started.elapsed()));
-                    let response = client
-                        .get(format!("http://127.0.0.1:{port}/ready"))
-                        .timeout(limits.attempt)
-                        .send()
-                        .await;
-                    if response.is_ok_and(|response| response.status() == reqwest::StatusCode::OK) {
+                    let remaining = BUDGET.saturating_sub(started.elapsed());
+                    if intake
+                        .op("dump", json!({"kind": "dogstatsd_forwarded"}), remaining)
+                        .await
+                        .is_ok()
+                    {
                         break;
                     }
                     tokio::time::sleep(POLL_INTERVAL).await;
                 }
-                intakes.push(IntakeClient::new(port));
+                intakes.push(intake);
             }
             cx.handle("first")
                 .ok_or("participant 'first' has not started")?
@@ -74,22 +71,22 @@ impl Step for Forward {
                 .await
                 .map_err(|error| error.to_string())?;
             loop {
-                let limits = AttemptLimits::new(BUDGET.saturating_sub(started.elapsed()));
-                let packets = tokio::time::timeout(limits.attempt, async {
-                    let first = intakes[0].dogstatsd_forwarded_packets().await?;
-                    let second = intakes[1].dogstatsd_forwarded_packets().await?;
-                    Ok::<_, saluki_error::GenericError>((first, second))
-                })
-                .await
-                .map_err(|error| error.to_string())?
-                .map_err(|error| error.to_string())?;
-                if !packets.1.is_empty() {
+                let mut packets = Vec::new();
+                for intake in &intakes {
+                    let remaining = BUDGET.saturating_sub(started.elapsed());
+                    let dump = intake
+                        .op("dump", json!({"kind": "dogstatsd_forwarded"}), remaining)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    packets.push(serde_json::from_value::<Vec<Vec<u8>>>(dump).map_err(|error| error.to_string())?);
+                }
+                if !packets[1].is_empty() {
                     return Ok((
                         AssertionStatus::Failed,
-                        format!("second intake received packets: {:?}", packets.1),
+                        format!("second intake received packets: {:?}", packets[1]),
                     ));
                 }
-                if packets.0 == [STANDARD.encode(PACKET)] {
+                if packets[0] == [PACKET] {
                     return Ok((
                         AssertionStatus::Passed,
                         "only the first intake received the packet".into(),
@@ -104,7 +101,7 @@ impl Step for Forward {
             Ok(Err(message)) => (AssertionStatus::Errored, message),
             Err(_) => (
                 AssertionStatus::Failed,
-                "intakes did not become ready and retain the expected packets".into(),
+                "intakes did not return dumps containing the expected packets".into(),
             ),
         };
         StepReport::new(started, status, message)
@@ -176,32 +173,19 @@ fn product_bindings() -> BTreeMap<String, String> {
 const AGENT_BUDGET: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Copy, Debug)]
-enum AgentAction {
-    Metrics,
-    Restart,
-}
+struct Restart;
 
 #[async_trait]
-impl Step for AgentAction {
+impl Step for Restart {
     fn name(&self) -> &'static str {
-        match self {
-            Self::Metrics => "metrics",
-            Self::Restart => "restart",
-        }
+        "restart"
     }
 
     fn needs(&self) -> Vec<Need> {
-        let mut needs = vec![
+        vec![
             Need::Process("adp".into(), "adp".into()),
             Need::Process("adp".into(), "agent".into()),
-        ];
-        if matches!(self, Self::Metrics) {
-            needs.extend([
-                Need::Endpoint("adp".into(), "dogstatsd_udp".into(), EndpointOperation::Send),
-                Need::Endpoint("intake".into(), "api".into(), EndpointOperation::Request),
-            ]);
-        }
-        needs
+        ]
     }
 
     fn budget(&self) -> Duration {
@@ -230,101 +214,77 @@ impl Step for AgentAction {
                 }
                 tokio::time::sleep(POLL_INTERVAL).await;
             }
-            match self {
-                Self::Metrics => {
-                    let port = test_support::runner_host_port(cx, "intake", "api", EndpointOperation::Request)
-                        .ok_or("intake.api has no runner-host port")?;
-                    let intake = IntakeClient::new(port);
-                    loop {
-                        handle
-                            .send("dogstatsd_udp", PACKET, &AttemptLimits::new(Duration::from_secs(10)))
-                            .await
-                            .map_err(|error| error.to_string())?;
-                        let limits = AttemptLimits::new(AGENT_BUDGET.saturating_sub(started.elapsed()));
-                        let metrics = tokio::time::timeout(limits.attempt, intake.metrics())
-                            .await
-                            .map_err(|error| error.to_string())?
-                            .map_err(|error| error.to_string())?;
-                        if metrics.iter().any(|metric| metric.context().name() == "panoramic.test") {
-                            return Ok("ADP delivered the counter to its connected intake".to_string());
-                        }
-                        tokio::time::sleep(Duration::from_secs(2)).await;
-                    }
-                }
-                Self::Restart => {
-                    let old_pid = handle
-                        .exec(
-                            ExecCommand {
-                                argv: ["s6-svstat", "-o", "pid", "/var/run/s6/services/data-plane"]
-                                    .map(String::from)
-                                    .to_vec(),
-                                env: Vec::new(),
-                                stdin: None,
-                            },
-                            Duration::from_secs(10),
-                        )
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    if old_pid.exit_code != 0 {
-                        return Err(format!("cannot read ADP's supervised PID: {:?}", old_pid.stderr));
-                    }
-                    let killed = handle
-                        .exec(
-                            ExecCommand {
-                                argv: ["s6-svc", "-k", "/var/run/s6/services/data-plane"]
-                                    .map(String::from)
-                                    .to_vec(),
-                                env: Vec::new(),
-                                stdin: None,
-                            },
-                            Duration::from_secs(10),
-                        )
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    if killed.exit_code != 0 {
-                        return Err(format!("s6-svc failed: {:?}", killed.stderr));
-                    }
-                    match handle.wait_for_exit("adp").await {
-                        ExitObservation::Exited(status) if status.code.is_none() && status.signal == Some(9) => {}
-                        other => return Err(format!("expected a recorded signal 9 death, got {other:?}")),
-                    }
-                    loop {
-                        let batch = handle.output(Some("adp")).read();
-                        if let OutputEnd::Failed(reason) = batch.end {
-                            return Err(reason);
-                        }
-                        let lines = batch.lines;
-                        let restarted = lines.iter().filter(|line| ready.is_match(line)).count() >= 2;
-                        if restarted && lines.iter().any(|line| line.contains("restarting in 2 seconds")) {
-                            break;
-                        }
-                        tokio::time::sleep(POLL_INTERVAL).await;
-                    }
-                    let new_pid = handle
-                        .exec(
-                            ExecCommand {
-                                argv: ["s6-svstat", "-o", "pid", "/var/run/s6/services/data-plane"]
-                                    .map(String::from)
-                                    .to_vec(),
-                                env: Vec::new(),
-                                stdin: None,
-                            },
-                            Duration::from_secs(10),
-                        )
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    if new_pid.exit_code != 0 || old_pid.stdout == new_pid.stdout || new_pid.stdout == b"-1\n" {
-                        return Err(format!(
-                            "ADP did not restart with a new PID: {:?} -> {:?}",
-                            old_pid.stdout, new_pid.stdout
-                        ));
-                    }
-                    if !matches!(handle.exit("agent"), ExitObservation::Running) {
-                        return Err("the Agent stopped during ADP's restart".into());
-                    }
-                    Ok("ADP's signal death was recorded and its supervisor restarted it".into())
-                }
+            let old_pid = handle
+                .exec(
+                    ExecCommand {
+                        argv: ["s6-svstat", "-o", "pid", "/var/run/s6/services/data-plane"]
+                            .map(String::from)
+                            .to_vec(),
+                        env: Vec::new(),
+                        stdin: None,
+                    },
+                    Duration::from_secs(10),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            if old_pid.exit_code != 0 {
+                return Err(format!("cannot read ADP's supervised PID: {:?}", old_pid.stderr));
             }
+            let killed = handle
+                .exec(
+                    ExecCommand {
+                        argv: ["s6-svc", "-k", "/var/run/s6/services/data-plane"]
+                            .map(String::from)
+                            .to_vec(),
+                        env: Vec::new(),
+                        stdin: None,
+                    },
+                    Duration::from_secs(10),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            if killed.exit_code != 0 {
+                return Err(format!("s6-svc failed: {:?}", killed.stderr));
+            }
+            match handle.wait_for_exit("adp").await {
+                ExitObservation::Exited(status) if status.code.is_none() && status.signal == Some(9) => {}
+                other => return Err(format!("expected a recorded signal 9 death, got {other:?}")),
+            }
+            loop {
+                let batch = handle.output(Some("adp")).read();
+                if let OutputEnd::Failed(reason) = batch.end {
+                    return Err(reason);
+                }
+                let lines = batch.lines;
+                let restarted = lines.iter().filter(|line| ready.is_match(line)).count() >= 2;
+                if restarted && lines.iter().any(|line| line.contains("restarting in 2 seconds")) {
+                    break;
+                }
+                tokio::time::sleep(POLL_INTERVAL).await;
+            }
+            let new_pid = handle
+                .exec(
+                    ExecCommand {
+                        argv: ["s6-svstat", "-o", "pid", "/var/run/s6/services/data-plane"]
+                            .map(String::from)
+                            .to_vec(),
+                        env: Vec::new(),
+                        stdin: None,
+                    },
+                    Duration::from_secs(10),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            if new_pid.exit_code != 0 || old_pid.stdout == new_pid.stdout || new_pid.stdout == b"-1\n" {
+                return Err(format!(
+                    "ADP did not restart with a new PID: {:?} -> {:?}",
+                    old_pid.stdout, new_pid.stdout
+                ));
+            }
+            if !matches!(handle.exit("agent"), ExitObservation::Running) {
+                return Err("the Agent stopped during ADP's restart".into());
+            }
+            Ok("ADP's signal death was recorded and its supervisor restarted it".into())
         })
         .await;
         let (status, message) = match outcome {
@@ -339,7 +299,7 @@ impl Step for AgentAction {
     }
 }
 
-impl StepFactory for AgentAction {
+impl StepFactory for Restart {
     fn name(&self) -> &'static str {
         Step::name(self)
     }
@@ -348,7 +308,7 @@ impl StepFactory for AgentAction {
     }
 }
 
-fn connected_case(step: &str) -> serde_json::Value {
+fn connected_case(procedure: serde_json::Value) -> serde_json::Value {
     json!({
         "timeout": "180s", "subject_os": ["linux"],
         "participants": {
@@ -359,7 +319,7 @@ fn connected_case(step: &str) -> serde_json::Value {
                 "DD_DOGSTATSD_NON_LOCAL_TRAFFIC": "true",
             }}},
         },
-        "procedure": [{"step": step}],
+        "procedure": procedure,
     })
 }
 
@@ -367,16 +327,24 @@ fn connected_case(step: &str) -> serde_json::Value {
 #[ignore = "needs product images; run with make test-panoramic-products"]
 async fn agent_adp_delivers_dogstatsd_metrics_to_its_connected_intake() {
     let _ = crate::default_crypto_provider().install_default();
+    let case = connected_case(json!([
+        {"step": "log_contains", "on": "adp", "pattern": r#"listen_addr:"udp://[^"]+" \| DogStatsD listener started\."#,
+         "regex": true, "timeout": "60s"},
+        {"step": "send", "on": "adp", "endpoint": "dogstatsd_udp", "payload": "panoramic.test:1|c", "timeout": "10s"},
+        {"step": "intake_has_metric", "on": "intake", "name": "panoramic.test", "timeout": "90s"},
+    ]));
     let (_logs, report) = run_native_case(
         panoramic_participants::REGISTERED_TYPES,
-        &[&AgentAction::Metrics],
-        connected_case("metrics"),
+        panoramic_steps::REGISTERED_STEPS,
+        case,
         product_bindings(),
         CancellationToken::new(),
     )
     .await;
     assert_eq!(report["outcome"], "passed", "{report:#}");
-    assert_eq!(report["assertions"][0]["status"], "passed");
+    let assertions = report["assertions"].as_array().unwrap();
+    assert_eq!(assertions.len(), 3);
+    assert!(assertions.iter().all(|step| step["status"] == "passed"), "{report:#}");
     let phases = report["phase_timings"].as_array().unwrap();
     let position = |name: &str| phases.iter().position(|phase| phase["phase"] == name).unwrap();
     assert!(position("start:intake") < position("start:adp"));
@@ -388,8 +356,8 @@ async fn a_killed_adp_is_recorded_as_a_signal_death_and_restarted_by_its_supervi
     let _ = crate::default_crypto_provider().install_default();
     let (_logs, report) = run_native_case(
         panoramic_participants::REGISTERED_TYPES,
-        &[&AgentAction::Restart],
-        connected_case("restart"),
+        &[&Restart],
+        connected_case(json!([{"step": "restart"}])),
         product_bindings(),
         CancellationToken::new(),
     )
