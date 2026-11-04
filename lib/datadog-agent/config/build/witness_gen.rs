@@ -27,8 +27,6 @@ struct FieldInfo {
     type_text: String,
     /// `Some(struct_name)` when this field is a nested-section struct.
     section_struct: Option<String>,
-    /// Every `#[serde(alias = "...")]` value carried on this field.
-    aliases: Vec<String>,
 }
 
 /// `struct name -> { field name -> field info }`, built from the generated configuration file.
@@ -48,8 +46,6 @@ struct ResolvedKey {
     sections: Vec<String>,
     /// The field name of the leaf on its owning struct (root or the innermost section).
     leaf_field: String,
-    /// Every `#[serde(alias = "...")]` value on the leaf field.
-    aliases: Vec<String>,
 }
 
 /// Writes `witness.rs` to `src/generated/` and `leaves.rs` to `out_dir`.
@@ -109,45 +105,17 @@ fn collect_structs(file: &syn::File) -> StructMap {
             let ident = field.ident.as_ref().expect("named field has an identifier").to_string();
             let type_text = type_to_string(&field.ty);
             let section_struct = section_inner(&field.ty, &struct_names);
-            let aliases = field_aliases(field);
             fields.insert(
                 ident,
                 FieldInfo {
                     type_text,
                     section_struct,
-                    aliases,
                 },
             );
         }
         out.insert(name, fields);
     }
     out
-}
-
-/// Collects every `#[serde(alias = "...")]` value on a field.
-///
-/// Scans rendered `#[serde(...)]` arguments instead of parsing `syn::Meta`: the attributes also
-/// contain keys such as `default` and `deserialize_with`, which this generator does not need.
-fn field_aliases(field: &syn::Field) -> Vec<String> {
-    let mut aliases = Vec::new();
-    for attr in &field.attrs {
-        if !attr.path().is_ident("serde") {
-            continue;
-        }
-        let Ok(list) = attr.meta.require_list() else { continue };
-        let rendered = list.tokens.to_string();
-        for item in rendered.split(',') {
-            let item = item.trim();
-            let Some(value) = item.strip_prefix("alias") else {
-                continue;
-            };
-            let Some(value) = value.trim_start().strip_prefix('=') else {
-                continue;
-            };
-            aliases.push(value.trim().trim_matches('"').to_string());
-        }
-    }
-    aliases
 }
 
 /// If `ty` names a nested section struct (one of `struct_names`), return that struct name.
@@ -217,7 +185,6 @@ fn resolve_key(dotted: &str, structs: &StructMap) -> ResolvedKey {
                 type_text: info.type_text.clone(),
                 sections,
                 leaf_field: (*segment).to_string(),
-                aliases: info.aliases.clone(),
             };
         }
 
@@ -432,13 +399,11 @@ fn render_leaves(resolved: &[ResolvedKey]) -> String {
     out.push_str("}\n\n");
 
     // Descriptor.
-    out.push_str("/// One supported configuration leaf: its dotted key, serde aliases, and a borrowing accessor.\n");
+    out.push_str("/// One supported configuration leaf: its dotted key and a borrowing accessor.\n");
     out.push_str("#[derive(Debug, Clone, Copy)]\n");
     out.push_str("pub struct Leaf {\n");
     out.push_str("    /// The dotted key, exactly as written in the schema overlay.\n");
     out.push_str("    pub key: &'static str,\n");
-    out.push_str("    /// Every `#[serde(alias = \"...\")]` value this leaf's field also accepts, if any.\n");
-    out.push_str("    pub aliases: &'static [&'static str],\n");
     out.push_str("    /// Reads this leaf's typed value out of a `DatadogConfiguration`, borrowing where the type\n");
     out.push_str("    /// allows it.\n");
     out.push_str("    pub get: for<'a> fn(&'a DatadogConfiguration) -> LeafValue<'a>,\n");
@@ -461,17 +426,7 @@ fn render_leaves(resolved: &[ResolvedKey]) -> String {
             None => "|_| LeafValue::Uncompared".to_string(),
         };
 
-        let aliases = if key.aliases.is_empty() {
-            "&[]".to_string()
-        } else {
-            let items: Vec<String> = key.aliases.iter().map(|a| format!("\"{a}\"")).collect();
-            format!("&[{}]", items.join(", "))
-        };
-
-        out.push_str(&format!(
-            "    Leaf {{ key: \"{}\", aliases: {}, get: {} }},\n",
-            key.dotted, aliases, get
-        ));
+        out.push_str(&format!("    Leaf {{ key: \"{}\", get: {} }},\n", key.dotted, get));
     }
     out.push_str("];\n");
 

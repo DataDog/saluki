@@ -79,7 +79,8 @@ tikv-jemallocator = { workspace = true, features = [
 tikv-jemallocator = { workspace = true, features = ["background_threads", "stats"] }
 
 [dev-dependencies]
-datadog-agent-config-testing = { workspace = true }
+# Build-script-only dependency: regenerates the configuration documentation during test builds.
+datadog-agent-config-docs = { workspace = true }
 derive-where = { workspace = true }
 rcgen = { workspace = true, features = ["crypto", "pem"] }
 saluki-components = { workspace = true, features = ["test-util"] }

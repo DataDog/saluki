@@ -553,8 +553,6 @@ pub struct DatadogConfiguration {
     #[serde(
         default = "defaults::datadog_configuration_statsd_metric_namespace_blacklist"
     )]
-    /// Alias defined in schema overlay.
-    #[serde(alias = "statsd_metric_namespace_blocklist")]
     #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub statsd_metric_namespace_blacklist: Vec<String>,
 

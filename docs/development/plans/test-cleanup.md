@@ -142,7 +142,7 @@ otherwise keep hand-rolling the thing it replaces.
   - [medium/medium] Six `run_request_builder` integration tests in `datadog/metrics/mod.rs` share unextracted
     setup/teardown boilerplate, and are themselves oversized, multi-concern tests (KI-12).
   - [high/medium] Datadog encoder payload-building/enrichment logic, and the logs/traces encoders' documented
-    enrichment/formatting behavior, lack unit tests beyond config smoke tests.
+    enrichment/formatting behavior, lack unit tests.
   - [medium/medium] The `dsd_stats` destination has zero tests despite a non-trivial stateful collection protocol;
     the Prometheus destination's core metric-translation/merge/tag-collection logic is untested, including its
     documented distribution-as-DDSketch-summary limitation.
@@ -238,8 +238,7 @@ otherwise keep hand-rolling the thing it replaces.
   - [low/small] `DogStatsDPrefixFilter` tests hand-roll the full struct literal roughly 12 times instead of a
     parameterized builder helper; the fixture-builder-helper pattern proven in one component isn't reused by its
     sibling.
-  - [low/small] `TagFilterlistConfiguration`'s documented `context_cache_capacity` default/override is never tested,
-    alongside inconsistent config-smoke-test coverage across sibling components.
+  - [low/small] `TagFilterlistConfiguration`'s documented `context_cache_capacity` default/override is never tested.
   - [medium/trivial] The OTTL processors' documented default `error_mode` (`Propagate`) is never exercised by
     omitting the config key.
   - [low/small] OTTL's per-value-type "set" tests repeat near-identical bodies instead of being table-driven
@@ -355,7 +354,7 @@ otherwise keep hand-rolling the thing it replaces.
   - [low/trivial] KI-9: an assertion-free, print-only struct-size test exists in `data_model::event`.
   - [low/small] `EventType`/`PayloadType` bitmask `Display` formatting has zero test coverage.
 
-- [ ] **G20 — config-overlay-model, commons, config-testing, metrics-v3, saluki-error/protos, correctness tooling test cleanup**
+- [ ] **G20 — config-overlay-model, commons, metrics-v3, saluki-error/protos, correctness tooling test cleanup**
   (`tobz/test-cleanup-overlay-commons-correctness-tests`, `test(datadog-agent)`)
   - [high/medium] `SchemaOverlay`'s per-entry validation rules are precisely documented but almost entirely
     untested.
@@ -363,8 +362,6 @@ otherwise keep hand-rolling the thing it replaces.
   - [low/trivial] Duplicate test config-building helpers exist in `commons`' `ipc/config.rs`.
   - [low/small] Real dispatch/conversion logic in otherwise-thin utility crates has zero tests; `saluki-error`'s
     documented anyhow-forwarding contract (`ErrorContext`, `generic_error!`) is unverified by any test.
-  - [low/small] `config-testing`'s `run_config_smoke_tests` documents three guarantees with no meta-test verifying
-    any of them; its own crate-role rationale is a plain `//` comment, so it won't render as crate documentation.
   - [medium/medium] `stele`'s V3 metric wire-format decoder is untested for RATE/GAUGE types and FLOAT32/FLOAT64
     encodings — `try_from_v3`'s doc describes general columnar decoding, but tests cover only 2 of 16
     type-combination branches.
