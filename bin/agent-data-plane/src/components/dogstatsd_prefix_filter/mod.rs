@@ -1,8 +1,9 @@
 //! DogStatsD metric prefix and listener-side metric filter transform.
 
-use agent_data_plane_config::{domains::dogstatsd::MetricFilter, Live};
+use agent_data_plane_config::domains::dogstatsd::MetricFilter;
 use async_trait::async_trait;
 use metrics::{Counter, Gauge};
+use saluki_common::sync::live::Live;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::data_model::event::{
     metric::{Metric, MetricValues},
@@ -277,8 +278,6 @@ impl Transform for DogStatsDPrefixFilter {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use metrics::set_default_local_recorder;
     use saluki_core::{
         components::test_util::{ComponentControl, Output, TestComponentDriver},
@@ -620,11 +619,8 @@ mod tests {
             match_prefix: false,
             prefix_rules: Vec::new(),
         };
-        let cell = Arc::new(arc_swap::ArcSwap::from_pointee(initial));
-        let (tick_tx, tick_rx) = tokio::sync::watch::channel(());
-        let metric_filter = Live::new_dynamic(Arc::clone(&cell), tick_rx, |config| {
-            &config.domains.dogstatsd.metric_filter
-        });
+        let (mut publisher, source) = saluki_common::sync::live::channel(initial);
+        let metric_filter = source.live(|config| &config.domains.dogstatsd.metric_filter);
         let builder = DogStatsDPrefixFilterConfiguration::new(String::new(), Vec::new(), metric_filter);
         let (control, mut outputs) = TestComponentDriver::options()
             .with_component_id("prefix_filter")
@@ -635,14 +631,13 @@ mod tests {
 
         assert_eq!(kept(&control, output, &["foobar", "foo", "bar"]).await, ["bar", "foo"]);
 
-        let mut updated = (*cell.load_full()).clone();
+        let mut updated = (*source.load()).clone();
         updated.domains.dogstatsd.metric_filter = MetricFilter {
             values: vec!["foo".to_string()],
             match_prefix: true,
             prefix_rules: Vec::new(),
         };
-        cell.store(Arc::new(updated));
-        tick_tx.send_replace(());
+        publisher.publish(updated);
         control
             .wait_until(
                 || updates() == Some(1),
