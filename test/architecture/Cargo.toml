@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 guppy = { workspace = true }
 proc-macro2 = { workspace = true, features = ["span-locations"] }
+snafu = { workspace = true }
 syn = { workspace = true, features = ["visit"] }
 
 [dev-dependencies]

@@ -7,6 +7,7 @@ use std::{
 };
 
 use proc_macro2::{Ident, TokenStream, TokenTree};
+use snafu::{ResultExt as _, Snafu};
 use syn::{
     ext::IdentExt as _,
     visit::{self, Visit},
@@ -14,9 +15,11 @@ use syn::{
 };
 
 /// An error reading or parsing sources.
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
+#[snafu(context(suffix(Snafu)))]
 pub enum Error {
     /// A directory or file couldn't be read.
+    #[snafu(display("failed to read {}: {source}", path.display()))]
     Read {
         /// The path being read.
         path: PathBuf,
@@ -25,6 +28,7 @@ pub enum Error {
     },
 
     /// A file couldn't be parsed as Rust.
+    #[snafu(display("failed to parse {}:{line}: {message}", path.display()))]
     Parse {
         /// The file.
         path: PathBuf,
@@ -35,18 +39,24 @@ pub enum Error {
     },
 
     /// The scanned directories hold no `.rs` file.
+    #[snafu(display("no `.rs` files under {}", display_paths(dirs)))]
     NoSources {
         /// The scanned directories.
         dirs: Vec<PathBuf>,
     },
 
     /// The crate root given for alias derivation isn't among the scanned files.
+    #[snafu(display("crate root {} isn't a scanned file", path.display()))]
     MissingCrateRoot {
         /// The crate root.
         path: PathBuf,
     },
 
     /// A glob import of a scanned name binds names that alias derivation can't see.
+    #[snafu(display(
+        "{}:{line}: glob import of a guarded name; import the names explicitly",
+        path.display()
+    ))]
     GlobImport {
         /// The file.
         path: PathBuf,
@@ -55,34 +65,9 @@ pub enum Error {
     },
 }
 
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Read { path, source } => write!(f, "failed to read {}: {source}", path.display()),
-            Self::Parse { path, line, message } => {
-                write!(f, "failed to parse {}:{line}: {message}", path.display())
-            }
-            Self::NoSources { dirs } => {
-                let dirs: Vec<_> = dirs.iter().map(|dir| dir.display().to_string()).collect();
-                write!(f, "no `.rs` files under {}", dirs.join(", "))
-            }
-            Self::MissingCrateRoot { path } => write!(f, "crate root {} isn't a scanned file", path.display()),
-            Self::GlobImport { path, line } => write!(
-                f,
-                "{}:{line}: glob import of a guarded name; import the names explicitly",
-                path.display()
-            ),
-        }
-    }
-}
-
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Read { source, .. } => Some(source),
-            _ => None,
-        }
-    }
+fn display_paths(paths: &[PathBuf]) -> String {
+    let paths: Vec<_> = paths.iter().map(|path| path.display().to_string()).collect();
+    paths.join(", ")
 }
 
 /// The syntax containing a matched identifier.
@@ -147,11 +132,12 @@ impl SourceFile {
     fn parse(path: PathBuf, text: &str) -> Result<Self, Error> {
         match syn::parse_file(text) {
             Ok(syntax) => Ok(Self { path, syntax }),
-            Err(error) => Err(Error::Parse {
+            Err(error) => ParseSnafu {
                 path,
                 line: error.span().start().line,
                 message: error.to_string(),
-            }),
+            }
+            .fail(),
         }
     }
 
@@ -203,15 +189,12 @@ impl SourceTree {
             collect_rust_files(dir, &mut paths)?;
         }
         if paths.is_empty() {
-            return Err(Error::NoSources { dirs: dirs.to_vec() });
+            return NoSourcesSnafu { dirs: dirs.to_vec() }.fail();
         }
         let files = paths
             .into_iter()
             .map(|path| {
-                let text = fs::read_to_string(&path).map_err(|source| Error::Read {
-                    path: path.clone(),
-                    source,
-                })?;
+                let text = fs::read_to_string(&path).context(ReadSnafu { path: &path })?;
                 SourceFile::parse(path, &text)
             })
             .collect::<Result<_, _>>()?;
@@ -243,9 +226,7 @@ impl SourceTree {
     /// guarded name or alias. Glob-bound names can't be enumerated from the import syntax.
     pub fn aliases(&self, crate_root: &Path, names: &BTreeSet<String>) -> Result<BTreeSet<String>, Error> {
         if !self.files.iter().any(|file| file.path == crate_root) {
-            return Err(Error::MissingCrateRoot {
-                path: crate_root.to_path_buf(),
-            });
+            return MissingCrateRootSnafu { path: crate_root }.fail();
         }
         let mut known = names.clone();
         loop {
@@ -264,15 +245,11 @@ impl SourceTree {
 }
 
 fn collect_rust_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), Error> {
-    let read_error = |source| Error::Read {
-        path: dir.to_path_buf(),
-        source,
-    };
     let mut entries = fs::read_dir(dir)
-        .map_err(read_error)?
+        .context(ReadSnafu { path: dir })?
         .map(|entry| entry.map(|entry| entry.path()))
         .collect::<Result<Vec<_>, _>>()
-        .map_err(read_error)?;
+        .context(ReadSnafu { path: dir })?;
     entries.sort();
     for path in entries {
         if path.is_dir() {
@@ -431,10 +408,11 @@ impl Bindings<'_> {
             }
             UseTree::Glob(glob) => {
                 if named && exported {
-                    return Err(Error::GlobImport {
-                        path: self.path.to_path_buf(),
+                    return GlobImportSnafu {
+                        path: self.path,
                         line: glob.star_token.spans[0].start().line,
-                    });
+                    }
+                    .fail();
                 }
             }
             UseTree::Group(group) => {

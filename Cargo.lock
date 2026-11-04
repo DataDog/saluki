@@ -294,6 +294,7 @@ version = "0.1.0"
 dependencies = [
  "guppy",
  "proc-macro2",
+ "snafu",
  "syn 3.0.9",
  "tempfile",
 ]
