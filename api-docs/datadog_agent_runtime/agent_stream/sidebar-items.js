@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["AGENT_DECLARED_ONLY_SOURCE","AGENT_DEFAULT_SOURCE","AGENT_UNSET_SOURCES"],"fn":["config_event_to_update","proto_value_to_serde_value","setting_to_config_setting","snapshot_to_settings"]};

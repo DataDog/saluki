@@ -3176,7 +3176,7 @@
 <a href=#3176 id=3176 data-nosnippet>3176</a>    }
 <a href=#3177 id=3177 data-nosnippet>3177</a>
 <a href=#3178 id=3178 data-nosnippet>3178</a>    <span class="attr">#[test]
-<a href=#3179 id=3179 data-nosnippet>3179</a>    </span><span class="kw">fn </span>metric_namespace_translates_schema_default_and_blocklist_alias() {
+<a href=#3179 id=3179 data-nosnippet>3179</a>    </span><span class="kw">fn </span>metric_namespace_translates_schema_default_and_blacklist() {
 <a href=#3180 id=3180 data-nosnippet>3180</a>        <span class="kw">let </span>(default_config, errors) = translate_explicit(<span class="macro">json!</span>({}));
 <a href=#3181 id=3181 data-nosnippet>3181</a>        <span class="macro">assert!</span>(errors.is_none());
 <a href=#3182 id=3182 data-nosnippet>3182</a>        <span class="macro">assert_eq!</span>(
@@ -3190,384 +3190,386 @@
 <a href=#3190 id=3190 data-nosnippet>3190</a>
 <a href=#3191 id=3191 data-nosnippet>3191</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
 <a href=#3192 id=3192 data-nosnippet>3192</a>            <span class="string">"statsd_metric_namespace"</span>: <span class="string">"tenant"</span>,
-<a href=#3193 id=3193 data-nosnippet>3193</a>            <span class="string">"statsd_metric_namespace_blocklist"</span>: [<span class="string">"custom"</span>],
-<a href=#3194 id=3194 data-nosnippet>3194</a>        }));
-<a href=#3195 id=3195 data-nosnippet>3195</a>        <span class="macro">assert!</span>(errors.is_none());
-<a href=#3196 id=3196 data-nosnippet>3196</a>        <span class="macro">assert_eq!</span>(config.domains.dogstatsd.prefix_filter.metric_namespace, <span class="string">"tenant"</span>);
-<a href=#3197 id=3197 data-nosnippet>3197</a>        <span class="macro">assert_eq!</span>(
-<a href=#3198 id=3198 data-nosnippet>3198</a>            config.domains.dogstatsd.prefix_filter.metric_namespace_blocklist,
-<a href=#3199 id=3199 data-nosnippet>3199</a>            <span class="macro">vec!</span>[<span class="string">"custom"</span>.to_string()]
-<a href=#3200 id=3200 data-nosnippet>3200</a>        );
-<a href=#3201 id=3201 data-nosnippet>3201</a>    }
-<a href=#3202 id=3202 data-nosnippet>3202</a>
-<a href=#3203 id=3203 data-nosnippet>3203</a>    <span class="attr">#[test]
-<a href=#3204 id=3204 data-nosnippet>3204</a>    </span><span class="kw">fn </span>tag_filter_actions_preserve_tolerant_parsing() {
-<a href=#3205 id=3205 data-nosnippet>3205</a>        <span class="kw">use </span>agent_data_plane_config::domains::dogstatsd::FilterAction;
-<a href=#3206 id=3206 data-nosnippet>3206</a>
-<a href=#3207 id=3207 data-nosnippet>3207</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
-<a href=#3208 id=3208 data-nosnippet>3208</a>            <span class="string">"metric_tag_filterlist"</span>: [
-<a href=#3209 id=3209 data-nosnippet>3209</a>                { <span class="string">"metric_name"</span>: <span class="string">"missing"</span>, <span class="string">"tags"</span>: [<span class="string">"a"</span>] },
-<a href=#3210 id=3210 data-nosnippet>3210</a>                { <span class="string">"metric_name"</span>: <span class="string">"null"</span>, <span class="string">"action"</span>: null, <span class="string">"tags"</span>: [<span class="string">"b"</span>] },
-<a href=#3211 id=3211 data-nosnippet>3211</a>                { <span class="string">"metric_name"</span>: <span class="string">"empty"</span>, <span class="string">"action"</span>: <span class="string">""</span>, <span class="string">"tags"</span>: [<span class="string">"c"</span>] },
-<a href=#3212 id=3212 data-nosnippet>3212</a>                { <span class="string">"metric_name"</span>: <span class="string">"include"</span>, <span class="string">"action"</span>: <span class="string">"include"</span>, <span class="string">"tags"</span>: [<span class="string">"d"</span>] },
-<a href=#3213 id=3213 data-nosnippet>3213</a>                { <span class="string">"metric_name"</span>: <span class="string">"exclude"</span>, <span class="string">"action"</span>: <span class="string">"exclude"</span>, <span class="string">"tags"</span>: [<span class="string">"e"</span>] },
-<a href=#3214 id=3214 data-nosnippet>3214</a>                { <span class="string">"metric_name"</span>: <span class="string">"unknown"</span>, <span class="string">"action"</span>: <span class="string">"exlude"</span>, <span class="string">"tags"</span>: [<span class="string">"f"</span>] },
-<a href=#3215 id=3215 data-nosnippet>3215</a>            ],
-<a href=#3216 id=3216 data-nosnippet>3216</a>        }));
-<a href=#3217 id=3217 data-nosnippet>3217</a>
-<a href=#3218 id=3218 data-nosnippet>3218</a>        <span class="macro">assert!</span>(errors.is_none());
-<a href=#3219 id=3219 data-nosnippet>3219</a>        <span class="kw">let </span>entries = <span class="kw-2">&amp;</span>config.domains.dogstatsd.tag_filterlist;
-<a href=#3220 id=3220 data-nosnippet>3220</a>        <span class="kw">let </span>actions: Vec&lt;<span class="kw">_</span>&gt; = entries.iter().map(|entry| entry.action).collect();
-<a href=#3221 id=3221 data-nosnippet>3221</a>        <span class="macro">assert_eq!</span>(
-<a href=#3222 id=3222 data-nosnippet>3222</a>            actions,
-<a href=#3223 id=3223 data-nosnippet>3223</a>            <span class="macro">vec!</span>[
-<a href=#3224 id=3224 data-nosnippet>3224</a>                FilterAction::Exclude,
-<a href=#3225 id=3225 data-nosnippet>3225</a>                FilterAction::Exclude,
+<a href=#3193 id=3193 data-nosnippet>3193</a>            <span class="string">"statsd_metric_namespace_blacklist"</span>: [<span class="string">"custom"</span>],
+<a href=#3194 id=3194 data-nosnippet>3194</a>            <span class="comment">// The Agent has no such key, so it is ignored rather than read as the blacklist.
+<a href=#3195 id=3195 data-nosnippet>3195</a>            </span><span class="string">"statsd_metric_namespace_blocklist"</span>: [<span class="string">"ignored"</span>],
+<a href=#3196 id=3196 data-nosnippet>3196</a>        }));
+<a href=#3197 id=3197 data-nosnippet>3197</a>        <span class="macro">assert!</span>(errors.is_none());
+<a href=#3198 id=3198 data-nosnippet>3198</a>        <span class="macro">assert_eq!</span>(config.domains.dogstatsd.prefix_filter.metric_namespace, <span class="string">"tenant"</span>);
+<a href=#3199 id=3199 data-nosnippet>3199</a>        <span class="macro">assert_eq!</span>(
+<a href=#3200 id=3200 data-nosnippet>3200</a>            config.domains.dogstatsd.prefix_filter.metric_namespace_blocklist,
+<a href=#3201 id=3201 data-nosnippet>3201</a>            <span class="macro">vec!</span>[<span class="string">"custom"</span>.to_string()]
+<a href=#3202 id=3202 data-nosnippet>3202</a>        );
+<a href=#3203 id=3203 data-nosnippet>3203</a>    }
+<a href=#3204 id=3204 data-nosnippet>3204</a>
+<a href=#3205 id=3205 data-nosnippet>3205</a>    <span class="attr">#[test]
+<a href=#3206 id=3206 data-nosnippet>3206</a>    </span><span class="kw">fn </span>tag_filter_actions_preserve_tolerant_parsing() {
+<a href=#3207 id=3207 data-nosnippet>3207</a>        <span class="kw">use </span>agent_data_plane_config::domains::dogstatsd::FilterAction;
+<a href=#3208 id=3208 data-nosnippet>3208</a>
+<a href=#3209 id=3209 data-nosnippet>3209</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
+<a href=#3210 id=3210 data-nosnippet>3210</a>            <span class="string">"metric_tag_filterlist"</span>: [
+<a href=#3211 id=3211 data-nosnippet>3211</a>                { <span class="string">"metric_name"</span>: <span class="string">"missing"</span>, <span class="string">"tags"</span>: [<span class="string">"a"</span>] },
+<a href=#3212 id=3212 data-nosnippet>3212</a>                { <span class="string">"metric_name"</span>: <span class="string">"null"</span>, <span class="string">"action"</span>: null, <span class="string">"tags"</span>: [<span class="string">"b"</span>] },
+<a href=#3213 id=3213 data-nosnippet>3213</a>                { <span class="string">"metric_name"</span>: <span class="string">"empty"</span>, <span class="string">"action"</span>: <span class="string">""</span>, <span class="string">"tags"</span>: [<span class="string">"c"</span>] },
+<a href=#3214 id=3214 data-nosnippet>3214</a>                { <span class="string">"metric_name"</span>: <span class="string">"include"</span>, <span class="string">"action"</span>: <span class="string">"include"</span>, <span class="string">"tags"</span>: [<span class="string">"d"</span>] },
+<a href=#3215 id=3215 data-nosnippet>3215</a>                { <span class="string">"metric_name"</span>: <span class="string">"exclude"</span>, <span class="string">"action"</span>: <span class="string">"exclude"</span>, <span class="string">"tags"</span>: [<span class="string">"e"</span>] },
+<a href=#3216 id=3216 data-nosnippet>3216</a>                { <span class="string">"metric_name"</span>: <span class="string">"unknown"</span>, <span class="string">"action"</span>: <span class="string">"exlude"</span>, <span class="string">"tags"</span>: [<span class="string">"f"</span>] },
+<a href=#3217 id=3217 data-nosnippet>3217</a>            ],
+<a href=#3218 id=3218 data-nosnippet>3218</a>        }));
+<a href=#3219 id=3219 data-nosnippet>3219</a>
+<a href=#3220 id=3220 data-nosnippet>3220</a>        <span class="macro">assert!</span>(errors.is_none());
+<a href=#3221 id=3221 data-nosnippet>3221</a>        <span class="kw">let </span>entries = <span class="kw-2">&amp;</span>config.domains.dogstatsd.tag_filterlist;
+<a href=#3222 id=3222 data-nosnippet>3222</a>        <span class="kw">let </span>actions: Vec&lt;<span class="kw">_</span>&gt; = entries.iter().map(|entry| entry.action).collect();
+<a href=#3223 id=3223 data-nosnippet>3223</a>        <span class="macro">assert_eq!</span>(
+<a href=#3224 id=3224 data-nosnippet>3224</a>            actions,
+<a href=#3225 id=3225 data-nosnippet>3225</a>            <span class="macro">vec!</span>[
 <a href=#3226 id=3226 data-nosnippet>3226</a>                FilterAction::Exclude,
-<a href=#3227 id=3227 data-nosnippet>3227</a>                FilterAction::Include,
+<a href=#3227 id=3227 data-nosnippet>3227</a>                FilterAction::Exclude,
 <a href=#3228 id=3228 data-nosnippet>3228</a>                FilterAction::Exclude,
-<a href=#3229 id=3229 data-nosnippet>3229</a>                FilterAction::Exclude,
-<a href=#3230 id=3230 data-nosnippet>3230</a>            ]
-<a href=#3231 id=3231 data-nosnippet>3231</a>        );
-<a href=#3232 id=3232 data-nosnippet>3232</a>        <span class="macro">assert_eq!</span>(entries[<span class="number">0</span>].metric_name, <span class="string">"missing"</span>);
-<a href=#3233 id=3233 data-nosnippet>3233</a>        <span class="macro">assert_eq!</span>(entries[<span class="number">5</span>].tags, [<span class="string">"f"</span>]);
-<a href=#3234 id=3234 data-nosnippet>3234</a>    }
-<a href=#3235 id=3235 data-nosnippet>3235</a>
-<a href=#3236 id=3236 data-nosnippet>3236</a>    <span class="attr">#[test]
-<a href=#3237 id=3237 data-nosnippet>3237</a>    </span><span class="kw">fn </span>tag_filter_entry_without_tags_is_kept_with_no_tags() {
-<a href=#3238 id=3238 data-nosnippet>3238</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
-<a href=#3239 id=3239 data-nosnippet>3239</a>            <span class="string">"metric_tag_filterlist"</span>: [{ <span class="string">"metric_name"</span>: <span class="string">"svc.latency" </span>}],
-<a href=#3240 id=3240 data-nosnippet>3240</a>        }));
-<a href=#3241 id=3241 data-nosnippet>3241</a>
-<a href=#3242 id=3242 data-nosnippet>3242</a>        <span class="macro">assert!</span>(errors.is_none(), <span class="string">"the Agent accepts an entry without tags"</span>);
-<a href=#3243 id=3243 data-nosnippet>3243</a>        <span class="kw">let </span>entries = <span class="kw-2">&amp;</span>config.domains.dogstatsd.tag_filterlist;
-<a href=#3244 id=3244 data-nosnippet>3244</a>        <span class="macro">assert_eq!</span>(entries.len(), <span class="number">1</span>);
-<a href=#3245 id=3245 data-nosnippet>3245</a>        <span class="macro">assert_eq!</span>(entries[<span class="number">0</span>].metric_name, <span class="string">"svc.latency"</span>);
-<a href=#3246 id=3246 data-nosnippet>3246</a>        <span class="macro">assert!</span>(entries[<span class="number">0</span>].tags.is_empty());
-<a href=#3247 id=3247 data-nosnippet>3247</a>    }
-<a href=#3248 id=3248 data-nosnippet>3248</a>
-<a href=#3249 id=3249 data-nosnippet>3249</a>    <span class="attr">#[test]
-<a href=#3250 id=3250 data-nosnippet>3250</a>    </span><span class="kw">fn </span>malformed_tag_filter_entry_does_not_drop_valid_neighbors() {
-<a href=#3251 id=3251 data-nosnippet>3251</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
-<a href=#3252 id=3252 data-nosnippet>3252</a>            <span class="string">"metric_tag_filterlist"</span>: [
-<a href=#3253 id=3253 data-nosnippet>3253</a>                { <span class="string">"metric_name"</span>: <span class="string">"before"</span>, <span class="string">"tags"</span>: [<span class="string">"a"</span>] },
-<a href=#3254 id=3254 data-nosnippet>3254</a>                { <span class="string">"tags"</span>: [<span class="string">"orphan"</span>] },
-<a href=#3255 id=3255 data-nosnippet>3255</a>                { <span class="string">"metric_name"</span>: <span class="string">"after"</span>, <span class="string">"tags"</span>: [<span class="string">"b"</span>] },
-<a href=#3256 id=3256 data-nosnippet>3256</a>            ],
-<a href=#3257 id=3257 data-nosnippet>3257</a>        }));
-<a href=#3258 id=3258 data-nosnippet>3258</a>
-<a href=#3259 id=3259 data-nosnippet>3259</a>        <span class="kw">let </span>names: Vec&lt;<span class="kw">_</span>&gt; = config
-<a href=#3260 id=3260 data-nosnippet>3260</a>            .domains
-<a href=#3261 id=3261 data-nosnippet>3261</a>            .dogstatsd
-<a href=#3262 id=3262 data-nosnippet>3262</a>            .tag_filterlist
-<a href=#3263 id=3263 data-nosnippet>3263</a>            .iter()
-<a href=#3264 id=3264 data-nosnippet>3264</a>            .map(|entry| entry.metric_name.as_str())
-<a href=#3265 id=3265 data-nosnippet>3265</a>            .collect();
-<a href=#3266 id=3266 data-nosnippet>3266</a>        <span class="macro">assert_eq!</span>(names, [<span class="string">"before"</span>, <span class="string">"after"</span>]);
-<a href=#3267 id=3267 data-nosnippet>3267</a>        <span class="macro">assert!</span>(
-<a href=#3268 id=3268 data-nosnippet>3268</a>            errors.is_some(),
-<a href=#3269 id=3269 data-nosnippet>3269</a>            <span class="string">"an entry without a metric name must record a translation error"
-<a href=#3270 id=3270 data-nosnippet>3270</a>        </span>);
-<a href=#3271 id=3271 data-nosnippet>3271</a>    }
-<a href=#3272 id=3272 data-nosnippet>3272</a>
-<a href=#3273 id=3273 data-nosnippet>3273</a>    <span class="attr">#[test]
-<a href=#3274 id=3274 data-nosnippet>3274</a>    </span><span class="kw">fn </span>ipc_settings_default_to_schema_values_when_unset() {
-<a href=#3275 id=3275 data-nosnippet>3275</a>        <span class="comment">// The typed model derives `Default`, so a translation that silently skipped these keys would
-<a href=#3276 id=3276 data-nosnippet>3276</a>        // leave zeroes behind and still look healthy. Pin the schema defaults instead.
-<a href=#3277 id=3277 data-nosnippet>3277</a>        </span><span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({}));
-<a href=#3278 id=3278 data-nosnippet>3278</a>
-<a href=#3279 id=3279 data-nosnippet>3279</a>        <span class="macro">assert!</span>(errors.is_none());
-<a href=#3280 id=3280 data-nosnippet>3280</a>        <span class="macro">assert_eq!</span>(config.control.ipc.cmd_port, <span class="number">5001</span>);
-<a href=#3281 id=3281 data-nosnippet>3281</a>        <span class="macro">assert_eq!</span>(config.control.ipc.grpc_max_message_size, <span class="number">128 </span>* <span class="number">1024 </span>* <span class="number">1024</span>);
-<a href=#3282 id=3282 data-nosnippet>3282</a>        <span class="macro">assert_eq!</span>(config.control.ipc.vsock_addr, <span class="string">""</span>);
-<a href=#3283 id=3283 data-nosnippet>3283</a>    }
-<a href=#3284 id=3284 data-nosnippet>3284</a>
-<a href=#3285 id=3285 data-nosnippet>3285</a>    <span class="attr">#[test]
-<a href=#3286 id=3286 data-nosnippet>3286</a>    </span><span class="kw">fn </span>ipc_auth_paths_preserve_empty_defaults_and_explicit_values() {
-<a href=#3287 id=3287 data-nosnippet>3287</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({}));
-<a href=#3288 id=3288 data-nosnippet>3288</a>        <span class="macro">assert!</span>(errors.is_none());
-<a href=#3289 id=3289 data-nosnippet>3289</a>        <span class="macro">assert!</span>(config.control.ipc.auth_token_file_path.as_os_str().is_empty());
-<a href=#3290 id=3290 data-nosnippet>3290</a>        <span class="macro">assert!</span>(config.control.ipc.ipc_cert_file_path.as_os_str().is_empty());
-<a href=#3291 id=3291 data-nosnippet>3291</a>
-<a href=#3292 id=3292 data-nosnippet>3292</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
-<a href=#3293 id=3293 data-nosnippet>3293</a>            <span class="string">"auth_token_file_path"</span>: <span class="string">"/secret/auth_token"</span>,
-<a href=#3294 id=3294 data-nosnippet>3294</a>            <span class="string">"ipc_cert_file_path"</span>: <span class="string">"/secret/ipc_cert.pem"</span>,
-<a href=#3295 id=3295 data-nosnippet>3295</a>        }));
-<a href=#3296 id=3296 data-nosnippet>3296</a>        <span class="macro">assert!</span>(errors.is_none());
-<a href=#3297 id=3297 data-nosnippet>3297</a>        <span class="macro">assert_eq!</span>(
-<a href=#3298 id=3298 data-nosnippet>3298</a>            config.control.ipc.auth_token_file_path,
-<a href=#3299 id=3299 data-nosnippet>3299</a>            PathBuf::from(<span class="string">"/secret/auth_token"</span>)
-<a href=#3300 id=3300 data-nosnippet>3300</a>        );
-<a href=#3301 id=3301 data-nosnippet>3301</a>        <span class="macro">assert_eq!</span>(
-<a href=#3302 id=3302 data-nosnippet>3302</a>            config.control.ipc.ipc_cert_file_path,
-<a href=#3303 id=3303 data-nosnippet>3303</a>            PathBuf::from(<span class="string">"/secret/ipc_cert.pem"</span>)
-<a href=#3304 id=3304 data-nosnippet>3304</a>        );
-<a href=#3305 id=3305 data-nosnippet>3305</a>    }
-<a href=#3306 id=3306 data-nosnippet>3306</a>
-<a href=#3307 id=3307 data-nosnippet>3307</a>    <span class="attr">#[test]
-<a href=#3308 id=3308 data-nosnippet>3308</a>    </span><span class="kw">fn </span>cmd_port_preserves_u16_validation() {
-<a href=#3309 id=3309 data-nosnippet>3309</a>        <span class="kw">for </span>value <span class="kw">in </span>[<span class="number">0</span>, <span class="number">5001</span>, u16::MAX <span class="kw">as </span>i64] {
-<a href=#3310 id=3310 data-nosnippet>3310</a>            <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({ <span class="string">"cmd_port"</span>: value }));
-<a href=#3311 id=3311 data-nosnippet>3311</a>
-<a href=#3312 id=3312 data-nosnippet>3312</a>            <span class="macro">assert!</span>(errors.is_none());
-<a href=#3313 id=3313 data-nosnippet>3313</a>            <span class="macro">assert_eq!</span>(config.control.ipc.cmd_port, value <span class="kw">as </span>u16);
-<a href=#3314 id=3314 data-nosnippet>3314</a>        }
-<a href=#3315 id=3315 data-nosnippet>3315</a>
-<a href=#3316 id=3316 data-nosnippet>3316</a>        <span class="kw">for </span>value <span class="kw">in </span>[-<span class="number">1</span>, u16::MAX <span class="kw">as </span>i64 + <span class="number">1</span>] {
-<a href=#3317 id=3317 data-nosnippet>3317</a>            <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({ <span class="string">"cmd_port"</span>: value }));
-<a href=#3318 id=3318 data-nosnippet>3318</a>
-<a href=#3319 id=3319 data-nosnippet>3319</a>            <span class="macro">assert_eq!</span>(config.control.ipc.cmd_port, <span class="number">0</span>);
-<a href=#3320 id=3320 data-nosnippet>3320</a>            <span class="kw">let </span>errors = errors.expect(<span class="string">"an out-of-range port should record a translation error"</span>);
-<a href=#3321 id=3321 data-nosnippet>3321</a>            <span class="macro">assert!</span>(errors.to_string().contains(<span class="string">"cmd_port"</span>));
-<a href=#3322 id=3322 data-nosnippet>3322</a>        }
-<a href=#3323 id=3323 data-nosnippet>3323</a>    }
-<a href=#3324 id=3324 data-nosnippet>3324</a>
-<a href=#3325 id=3325 data-nosnippet>3325</a>    <span class="attr">#[test]
-<a href=#3326 id=3326 data-nosnippet>3326</a>    </span><span class="kw">fn </span>negative_ipc_grpc_max_message_size_is_rejected() {
-<a href=#3327 id=3327 data-nosnippet>3327</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
-<a href=#3328 id=3328 data-nosnippet>3328</a>            <span class="string">"agent_ipc"</span>: { <span class="string">"grpc_max_message_size"</span>: -<span class="number">1 </span>},
-<a href=#3329 id=3329 data-nosnippet>3329</a>        }));
-<a href=#3330 id=3330 data-nosnippet>3330</a>
-<a href=#3331 id=3331 data-nosnippet>3331</a>        <span class="macro">assert_eq!</span>(config.control.ipc.grpc_max_message_size, <span class="number">0</span>);
-<a href=#3332 id=3332 data-nosnippet>3332</a>        <span class="kw">let </span>errors = errors.expect(<span class="string">"a negative maximum message size must record a translation error"</span>);
-<a href=#3333 id=3333 data-nosnippet>3333</a>        <span class="macro">assert!</span>(errors.to_string().contains(<span class="string">"agent_ipc.grpc_max_message_size"</span>));
-<a href=#3334 id=3334 data-nosnippet>3334</a>    }
-<a href=#3335 id=3335 data-nosnippet>3335</a>
-<a href=#3336 id=3336 data-nosnippet>3336</a>    <span class="attr">#[test]
-<a href=#3337 id=3337 data-nosnippet>3337</a>    </span><span class="kw">fn </span>negative_tag_filter_cache_capacity_is_rejected() {
-<a href=#3338 id=3338 data-nosnippet>3338</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
-<a href=#3339 id=3339 data-nosnippet>3339</a>            <span class="string">"data_plane"</span>: { <span class="string">"dogstatsd"</span>: { <span class="string">"aggregator_tag_filter_cache_capacity"</span>: -<span class="number">1 </span>} },
-<a href=#3340 id=3340 data-nosnippet>3340</a>        }));
-<a href=#3341 id=3341 data-nosnippet>3341</a>
-<a href=#3342 id=3342 data-nosnippet>3342</a>        <span class="macro">assert_eq!</span>(
-<a href=#3343 id=3343 data-nosnippet>3343</a>            config
-<a href=#3344 id=3344 data-nosnippet>3344</a>                .domains
-<a href=#3345 id=3345 data-nosnippet>3345</a>                .dogstatsd
-<a href=#3346 id=3346 data-nosnippet>3346</a>                .aggregation
-<a href=#3347 id=3347 data-nosnippet>3347</a>                .aggregator_tag_filter_cache_capacity,
-<a href=#3348 id=3348 data-nosnippet>3348</a>            <span class="number">0
-<a href=#3349 id=3349 data-nosnippet>3349</a>        </span>);
-<a href=#3350 id=3350 data-nosnippet>3350</a>        <span class="kw">let </span>errors = errors.expect(<span class="string">"a negative cache capacity must record a translation error"</span>);
-<a href=#3351 id=3351 data-nosnippet>3351</a>        <span class="macro">assert!</span>(errors
-<a href=#3352 id=3352 data-nosnippet>3352</a>            .to_string()
-<a href=#3353 id=3353 data-nosnippet>3353</a>            .contains(<span class="string">"data_plane.dogstatsd.aggregator_tag_filter_cache_capacity"</span>));
-<a href=#3354 id=3354 data-nosnippet>3354</a>    }
-<a href=#3355 id=3355 data-nosnippet>3355</a>
-<a href=#3356 id=3356 data-nosnippet>3356</a>    <span class="attr">#[test]
-<a href=#3357 id=3357 data-nosnippet>3357</a>    </span><span class="kw">fn </span>otlp_trace_internal_port_preserves_u16_validation() {
-<a href=#3358 id=3358 data-nosnippet>3358</a>        <span class="comment">// The typed forwarder receives this value after translation. Rejecting conversion here
-<a href=#3359 id=3359 data-nosnippet>3359</a>        // preserves the u16 validation formerly provided by GenericConfiguration instead of
-<a href=#3360 id=3360 data-nosnippet>3360</a>        // clamping invalid ports.
-<a href=#3361 id=3361 data-nosnippet>3361</a>        </span><span class="kw">for </span>value <span class="kw">in </span>[<span class="number">0</span>, <span class="number">5003</span>, u16::MAX <span class="kw">as </span>i64] {
-<a href=#3362 id=3362 data-nosnippet>3362</a>            <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
-<a href=#3363 id=3363 data-nosnippet>3363</a>                <span class="string">"otlp_config"</span>: { <span class="string">"traces"</span>: { <span class="string">"internal_port"</span>: value } }
-<a href=#3364 id=3364 data-nosnippet>3364</a>            }));
-<a href=#3365 id=3365 data-nosnippet>3365</a>
-<a href=#3366 id=3366 data-nosnippet>3366</a>            <span class="macro">assert!</span>(errors.is_none());
-<a href=#3367 id=3367 data-nosnippet>3367</a>            <span class="macro">assert_eq!</span>(config.domains.otlp.traces.internal_port, value <span class="kw">as </span>u16);
-<a href=#3368 id=3368 data-nosnippet>3368</a>        }
-<a href=#3369 id=3369 data-nosnippet>3369</a>
-<a href=#3370 id=3370 data-nosnippet>3370</a>        <span class="kw">for </span>value <span class="kw">in </span>[-<span class="number">1</span>, u16::MAX <span class="kw">as </span>i64 + <span class="number">1</span>] {
-<a href=#3371 id=3371 data-nosnippet>3371</a>            <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
-<a href=#3372 id=3372 data-nosnippet>3372</a>                <span class="string">"otlp_config"</span>: { <span class="string">"traces"</span>: { <span class="string">"internal_port"</span>: value } }
-<a href=#3373 id=3373 data-nosnippet>3373</a>            }));
-<a href=#3374 id=3374 data-nosnippet>3374</a>
-<a href=#3375 id=3375 data-nosnippet>3375</a>            <span class="macro">assert_eq!</span>(config.domains.otlp.traces.internal_port, <span class="number">0</span>);
-<a href=#3376 id=3376 data-nosnippet>3376</a>            <span class="kw">let </span>errors = errors.expect(<span class="string">"an out-of-range port should record a translation error"</span>);
-<a href=#3377 id=3377 data-nosnippet>3377</a>            <span class="macro">assert!</span>(errors.to_string().contains(<span class="string">"otlp_config.traces.internal_port"</span>));
-<a href=#3378 id=3378 data-nosnippet>3378</a>        }
-<a href=#3379 id=3379 data-nosnippet>3379</a>    }
-<a href=#3380 id=3380 data-nosnippet>3380</a>
-<a href=#3381 id=3381 data-nosnippet>3381</a>    <span class="attr">#[test]
-<a href=#3382 id=3382 data-nosnippet>3382</a>    </span><span class="kw">fn </span>summary_mode_translates_known_values() {
-<a href=#3383 id=3383 data-nosnippet>3383</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
-<a href=#3384 id=3384 data-nosnippet>3384</a>            <span class="string">"otlp_config"</span>: {
-<a href=#3385 id=3385 data-nosnippet>3385</a>                <span class="string">"metrics"</span>: {
-<a href=#3386 id=3386 data-nosnippet>3386</a>                    <span class="string">"summaries"</span>: {
-<a href=#3387 id=3387 data-nosnippet>3387</a>                        <span class="string">"mode"</span>: <span class="string">"noquantiles"
-<a href=#3388 id=3388 data-nosnippet>3388</a>                    </span>}
-<a href=#3389 id=3389 data-nosnippet>3389</a>                }
-<a href=#3390 id=3390 data-nosnippet>3390</a>            }
-<a href=#3391 id=3391 data-nosnippet>3391</a>        }));
-<a href=#3392 id=3392 data-nosnippet>3392</a>
-<a href=#3393 id=3393 data-nosnippet>3393</a>        <span class="macro">assert!</span>(errors.is_none());
-<a href=#3394 id=3394 data-nosnippet>3394</a>        <span class="macro">assert_eq!</span>(config.domains.otlp.metrics.summaries.mode, SummaryMode::NoQuantiles);
-<a href=#3395 id=3395 data-nosnippet>3395</a>    }
-<a href=#3396 id=3396 data-nosnippet>3396</a>
-<a href=#3397 id=3397 data-nosnippet>3397</a>    <span class="attr">#[test]
-<a href=#3398 id=3398 data-nosnippet>3398</a>    </span><span class="kw">fn </span>invalid_summary_mode_records_error_and_keeps_default() {
-<a href=#3399 id=3399 data-nosnippet>3399</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
-<a href=#3400 id=3400 data-nosnippet>3400</a>            <span class="string">"otlp_config"</span>: {
-<a href=#3401 id=3401 data-nosnippet>3401</a>                <span class="string">"metrics"</span>: {
-<a href=#3402 id=3402 data-nosnippet>3402</a>                    <span class="string">"summaries"</span>: {
-<a href=#3403 id=3403 data-nosnippet>3403</a>                        <span class="string">"mode"</span>: <span class="string">"unsupported"
-<a href=#3404 id=3404 data-nosnippet>3404</a>                    </span>}
-<a href=#3405 id=3405 data-nosnippet>3405</a>                }
-<a href=#3406 id=3406 data-nosnippet>3406</a>            }
-<a href=#3407 id=3407 data-nosnippet>3407</a>        }));
-<a href=#3408 id=3408 data-nosnippet>3408</a>
-<a href=#3409 id=3409 data-nosnippet>3409</a>        <span class="macro">assert_eq!</span>(config.domains.otlp.metrics.summaries.mode, SummaryMode::Gauges);
-<a href=#3410 id=3410 data-nosnippet>3410</a>        <span class="kw">let </span>errors = errors.expect(<span class="string">"invalid mode should record a translation error"</span>);
-<a href=#3411 id=3411 data-nosnippet>3411</a>        <span class="macro">assert!</span>(errors.to_string().contains(<span class="string">"otlp_config.metrics.summaries.mode"</span>));
-<a href=#3412 id=3412 data-nosnippet>3412</a>        <span class="macro">assert!</span>(errors.to_string().contains(<span class="string">"unknown summary mode `unsupported`"</span>));
-<a href=#3413 id=3413 data-nosnippet>3413</a>    }
-<a href=#3414 id=3414 data-nosnippet>3414</a>
-<a href=#3415 id=3415 data-nosnippet>3415</a>    <span class="attr">#[test]
-<a href=#3416 id=3416 data-nosnippet>3416</a>    </span><span class="kw">fn </span>cumulative_monotonic_sum_mode_translates_known_values() {
-<a href=#3417 id=3417 data-nosnippet>3417</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
-<a href=#3418 id=3418 data-nosnippet>3418</a>            <span class="string">"otlp_config"</span>: {
-<a href=#3419 id=3419 data-nosnippet>3419</a>                <span class="string">"metrics"</span>: {
-<a href=#3420 id=3420 data-nosnippet>3420</a>                    <span class="string">"sums"</span>: {
-<a href=#3421 id=3421 data-nosnippet>3421</a>                        <span class="string">"cumulative_monotonic_mode"</span>: <span class="string">"raw_value"
-<a href=#3422 id=3422 data-nosnippet>3422</a>                    </span>}
-<a href=#3423 id=3423 data-nosnippet>3423</a>                }
-<a href=#3424 id=3424 data-nosnippet>3424</a>            }
-<a href=#3425 id=3425 data-nosnippet>3425</a>        }));
-<a href=#3426 id=3426 data-nosnippet>3426</a>
-<a href=#3427 id=3427 data-nosnippet>3427</a>        <span class="macro">assert!</span>(errors.is_none());
-<a href=#3428 id=3428 data-nosnippet>3428</a>        <span class="macro">assert_eq!</span>(
-<a href=#3429 id=3429 data-nosnippet>3429</a>            config.domains.otlp.metrics.sums.cumulative_monotonic_mode,
-<a href=#3430 id=3430 data-nosnippet>3430</a>            CumulativeMonotonicMode::RawValue
-<a href=#3431 id=3431 data-nosnippet>3431</a>        );
-<a href=#3432 id=3432 data-nosnippet>3432</a>    }
-<a href=#3433 id=3433 data-nosnippet>3433</a>
-<a href=#3434 id=3434 data-nosnippet>3434</a>    <span class="attr">#[test]
-<a href=#3435 id=3435 data-nosnippet>3435</a>    </span><span class="kw">fn </span>invalid_cumulative_monotonic_sum_mode_records_error_and_keeps_default() {
-<a href=#3436 id=3436 data-nosnippet>3436</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
-<a href=#3437 id=3437 data-nosnippet>3437</a>            <span class="string">"otlp_config"</span>: {
-<a href=#3438 id=3438 data-nosnippet>3438</a>                <span class="string">"metrics"</span>: {
-<a href=#3439 id=3439 data-nosnippet>3439</a>                    <span class="string">"sums"</span>: {
-<a href=#3440 id=3440 data-nosnippet>3440</a>                        <span class="string">"cumulative_monotonic_mode"</span>: <span class="string">"unsupported"
-<a href=#3441 id=3441 data-nosnippet>3441</a>                    </span>}
-<a href=#3442 id=3442 data-nosnippet>3442</a>                }
-<a href=#3443 id=3443 data-nosnippet>3443</a>            }
-<a href=#3444 id=3444 data-nosnippet>3444</a>        }));
-<a href=#3445 id=3445 data-nosnippet>3445</a>
-<a href=#3446 id=3446 data-nosnippet>3446</a>        <span class="macro">assert_eq!</span>(
-<a href=#3447 id=3447 data-nosnippet>3447</a>            config.domains.otlp.metrics.sums.cumulative_monotonic_mode,
-<a href=#3448 id=3448 data-nosnippet>3448</a>            CumulativeMonotonicMode::ToDelta
-<a href=#3449 id=3449 data-nosnippet>3449</a>        );
-<a href=#3450 id=3450 data-nosnippet>3450</a>        <span class="kw">let </span>errors = errors.expect(<span class="string">"invalid mode should record a translation error"</span>);
-<a href=#3451 id=3451 data-nosnippet>3451</a>        <span class="macro">assert!</span>(errors
-<a href=#3452 id=3452 data-nosnippet>3452</a>            .to_string()
-<a href=#3453 id=3453 data-nosnippet>3453</a>            .contains(<span class="string">"otlp_config.metrics.sums.cumulative_monotonic_mode"</span>));
-<a href=#3454 id=3454 data-nosnippet>3454</a>        <span class="macro">assert!</span>(errors
-<a href=#3455 id=3455 data-nosnippet>3455</a>            .to_string()
-<a href=#3456 id=3456 data-nosnippet>3456</a>            .contains(<span class="string">"unknown cumulative monotonic sum mode `unsupported`"</span>));
-<a href=#3457 id=3457 data-nosnippet>3457</a>    }
-<a href=#3458 id=3458 data-nosnippet>3458</a>
-<a href=#3459 id=3459 data-nosnippet>3459</a>    <span class="attr">#[test]
-<a href=#3460 id=3460 data-nosnippet>3460</a>    </span><span class="kw">fn </span>initial_cumulative_monotonic_value_translates_known_values() {
-<a href=#3461 id=3461 data-nosnippet>3461</a>        <span class="kw">for </span>(value, expected) <span class="kw">in </span>[
-<a href=#3462 id=3462 data-nosnippet>3462</a>            (<span class="string">"auto"</span>, InitialCumulativeMonotonicValue::Auto),
-<a href=#3463 id=3463 data-nosnippet>3463</a>            (<span class="string">"drop"</span>, InitialCumulativeMonotonicValue::Drop),
-<a href=#3464 id=3464 data-nosnippet>3464</a>            (<span class="string">"keep"</span>, InitialCumulativeMonotonicValue::Keep),
-<a href=#3465 id=3465 data-nosnippet>3465</a>        ] {
-<a href=#3466 id=3466 data-nosnippet>3466</a>            <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
-<a href=#3467 id=3467 data-nosnippet>3467</a>                <span class="string">"otlp_config"</span>: {
-<a href=#3468 id=3468 data-nosnippet>3468</a>                    <span class="string">"metrics"</span>: {
-<a href=#3469 id=3469 data-nosnippet>3469</a>                        <span class="string">"sums"</span>: {
-<a href=#3470 id=3470 data-nosnippet>3470</a>                            <span class="string">"initial_cumulative_monotonic_value"</span>: value
-<a href=#3471 id=3471 data-nosnippet>3471</a>                        }
-<a href=#3472 id=3472 data-nosnippet>3472</a>                    }
-<a href=#3473 id=3473 data-nosnippet>3473</a>                }
-<a href=#3474 id=3474 data-nosnippet>3474</a>            }));
-<a href=#3475 id=3475 data-nosnippet>3475</a>
-<a href=#3476 id=3476 data-nosnippet>3476</a>            <span class="macro">assert!</span>(errors.is_none());
-<a href=#3477 id=3477 data-nosnippet>3477</a>            <span class="macro">assert_eq!</span>(
-<a href=#3478 id=3478 data-nosnippet>3478</a>                config.domains.otlp.metrics.sums.initial_cumulative_monotonic_value,
-<a href=#3479 id=3479 data-nosnippet>3479</a>                expected
-<a href=#3480 id=3480 data-nosnippet>3480</a>            );
-<a href=#3481 id=3481 data-nosnippet>3481</a>        }
-<a href=#3482 id=3482 data-nosnippet>3482</a>    }
-<a href=#3483 id=3483 data-nosnippet>3483</a>
-<a href=#3484 id=3484 data-nosnippet>3484</a>    <span class="attr">#[test]
-<a href=#3485 id=3485 data-nosnippet>3485</a>    </span><span class="kw">fn </span>invalid_initial_cumulative_monotonic_value_records_error_and_keeps_default() {
-<a href=#3486 id=3486 data-nosnippet>3486</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
-<a href=#3487 id=3487 data-nosnippet>3487</a>            <span class="string">"otlp_config"</span>: {
-<a href=#3488 id=3488 data-nosnippet>3488</a>                <span class="string">"metrics"</span>: {
-<a href=#3489 id=3489 data-nosnippet>3489</a>                    <span class="string">"sums"</span>: {
-<a href=#3490 id=3490 data-nosnippet>3490</a>                        <span class="string">"initial_cumulative_monotonic_value"</span>: <span class="string">"unsupported"
-<a href=#3491 id=3491 data-nosnippet>3491</a>                    </span>}
-<a href=#3492 id=3492 data-nosnippet>3492</a>                }
-<a href=#3493 id=3493 data-nosnippet>3493</a>            }
-<a href=#3494 id=3494 data-nosnippet>3494</a>        }));
-<a href=#3495 id=3495 data-nosnippet>3495</a>
-<a href=#3496 id=3496 data-nosnippet>3496</a>        <span class="macro">assert_eq!</span>(
-<a href=#3497 id=3497 data-nosnippet>3497</a>            config.domains.otlp.metrics.sums.initial_cumulative_monotonic_value,
-<a href=#3498 id=3498 data-nosnippet>3498</a>            InitialCumulativeMonotonicValue::Auto
-<a href=#3499 id=3499 data-nosnippet>3499</a>        );
-<a href=#3500 id=3500 data-nosnippet>3500</a>        <span class="kw">let </span>errors = errors.expect(<span class="string">"invalid value should record a translation error"</span>);
-<a href=#3501 id=3501 data-nosnippet>3501</a>        <span class="macro">assert!</span>(errors
-<a href=#3502 id=3502 data-nosnippet>3502</a>            .to_string()
-<a href=#3503 id=3503 data-nosnippet>3503</a>            .contains(<span class="string">"otlp_config.metrics.sums.initial_cumulative_monotonic_value"</span>));
-<a href=#3504 id=3504 data-nosnippet>3504</a>        <span class="macro">assert!</span>(errors
-<a href=#3505 id=3505 data-nosnippet>3505</a>            .to_string()
-<a href=#3506 id=3506 data-nosnippet>3506</a>            .contains(<span class="string">"unknown initial cumulative monotonic value `unsupported`"</span>));
-<a href=#3507 id=3507 data-nosnippet>3507</a>    }
-<a href=#3508 id=3508 data-nosnippet>3508</a>
-<a href=#3509 id=3509 data-nosnippet>3509</a>    <span class="attr">#[test]
-<a href=#3510 id=3510 data-nosnippet>3510</a>    </span><span class="kw">fn </span>grpc_max_recv_msg_size_zero_translates_to_grpc_go_default() {
-<a href=#3511 id=3511 data-nosnippet>3511</a>        <span class="comment">// The schema default of `0` selects grpc-go's built-in 4 MiB limit, so translation must
-<a href=#3512 id=3512 data-nosnippet>3512</a>        // substitute the default; any positive value is carried through unchanged.
-<a href=#3513 id=3513 data-nosnippet>3513</a>        </span><span class="kw">for </span>(configured, expected) <span class="kw">in </span>[
-<a href=#3514 id=3514 data-nosnippet>3514</a>            (<span class="macro">json!</span>({}), DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB),
-<a href=#3515 id=3515 data-nosnippet>3515</a>            (
-<a href=#3516 id=3516 data-nosnippet>3516</a>                <span class="macro">json!</span>({ <span class="string">"max_recv_msg_size_mib"</span>: <span class="number">0 </span>}),
-<a href=#3517 id=3517 data-nosnippet>3517</a>                DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
-<a href=#3518 id=3518 data-nosnippet>3518</a>            ),
-<a href=#3519 id=3519 data-nosnippet>3519</a>            (<span class="macro">json!</span>({ <span class="string">"max_recv_msg_size_mib"</span>: <span class="number">8 </span>}), <span class="number">8</span>),
-<a href=#3520 id=3520 data-nosnippet>3520</a>        ] {
-<a href=#3521 id=3521 data-nosnippet>3521</a>            <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
-<a href=#3522 id=3522 data-nosnippet>3522</a>                <span class="string">"otlp_config"</span>: { <span class="string">"receiver"</span>: { <span class="string">"protocols"</span>: { <span class="string">"grpc"</span>: configured } } }
-<a href=#3523 id=3523 data-nosnippet>3523</a>            }));
-<a href=#3524 id=3524 data-nosnippet>3524</a>
-<a href=#3525 id=3525 data-nosnippet>3525</a>            <span class="macro">assert!</span>(errors.is_none());
-<a href=#3526 id=3526 data-nosnippet>3526</a>            <span class="macro">assert_eq!</span>(config.domains.otlp.receiver.grpc.max_recv_msg_size_mib, expected);
-<a href=#3527 id=3527 data-nosnippet>3527</a>        }
-<a href=#3528 id=3528 data-nosnippet>3528</a>    }
-<a href=#3529 id=3529 data-nosnippet>3529</a>
-<a href=#3530 id=3530 data-nosnippet>3530</a>    <span class="attr">#[test]
-<a href=#3531 id=3531 data-nosnippet>3531</a>    </span><span class="kw">fn </span>otlp_metrics_delta_ttl_translates_explicit_value() {
-<a href=#3532 id=3532 data-nosnippet>3532</a>        <span class="comment">// An explicit integer (seconds) is carried through the witness as a `Duration`.
-<a href=#3533 id=3533 data-nosnippet>3533</a>        </span><span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
-<a href=#3534 id=3534 data-nosnippet>3534</a>            <span class="string">"otlp_config"</span>: { <span class="string">"metrics"</span>: { <span class="string">"delta_ttl"</span>: <span class="number">7200 </span>} }
-<a href=#3535 id=3535 data-nosnippet>3535</a>        }));
-<a href=#3536 id=3536 data-nosnippet>3536</a>
-<a href=#3537 id=3537 data-nosnippet>3537</a>        <span class="macro">assert!</span>(errors.is_none());
-<a href=#3538 id=3538 data-nosnippet>3538</a>        <span class="macro">assert_eq!</span>(config.domains.otlp.metrics.delta_ttl, Duration::from_secs(<span class="number">7200</span>));
-<a href=#3539 id=3539 data-nosnippet>3539</a>    }
-<a href=#3540 id=3540 data-nosnippet>3540</a>
-<a href=#3541 id=3541 data-nosnippet>3541</a>    <span class="attr">#[test]
-<a href=#3542 id=3542 data-nosnippet>3542</a>    </span><span class="kw">fn </span>otlp_metrics_delta_ttl_defaults_to_3600s_when_unset() {
-<a href=#3543 id=3543 data-nosnippet>3543</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({}));
-<a href=#3544 id=3544 data-nosnippet>3544</a>
-<a href=#3545 id=3545 data-nosnippet>3545</a>        <span class="macro">assert!</span>(errors.is_none());
-<a href=#3546 id=3546 data-nosnippet>3546</a>        <span class="macro">assert_eq!</span>(config.domains.otlp.metrics.delta_ttl, DEFAULT_DELTA_TTL);
-<a href=#3547 id=3547 data-nosnippet>3547</a>    }
-<a href=#3548 id=3548 data-nosnippet>3548</a>
-<a href=#3549 id=3549 data-nosnippet>3549</a>    <span class="attr">#[test]
-<a href=#3550 id=3550 data-nosnippet>3550</a>    </span><span class="kw">fn </span>otlp_metrics_delta_ttl_negative_records_error_and_keeps_default() {
-<a href=#3551 id=3551 data-nosnippet>3551</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
-<a href=#3552 id=3552 data-nosnippet>3552</a>            <span class="string">"otlp_config"</span>: { <span class="string">"metrics"</span>: { <span class="string">"delta_ttl"</span>: -<span class="number">1 </span>} }
-<a href=#3553 id=3553 data-nosnippet>3553</a>        }));
-<a href=#3554 id=3554 data-nosnippet>3554</a>
-<a href=#3555 id=3555 data-nosnippet>3555</a>        <span class="macro">assert_eq!</span>(config.domains.otlp.metrics.delta_ttl, DEFAULT_DELTA_TTL);
-<a href=#3556 id=3556 data-nosnippet>3556</a>        <span class="kw">let </span>errors = errors.expect(<span class="string">"negative delta_ttl should record a translation error"</span>);
-<a href=#3557 id=3557 data-nosnippet>3557</a>        <span class="macro">assert!</span>(errors.to_string().contains(<span class="string">"otlp_config.metrics.delta_ttl"</span>));
-<a href=#3558 id=3558 data-nosnippet>3558</a>        <span class="macro">assert!</span>(errors.to_string().contains(<span class="string">"time to live must be positive"</span>));
-<a href=#3559 id=3559 data-nosnippet>3559</a>    }
-<a href=#3560 id=3560 data-nosnippet>3560</a>
-<a href=#3561 id=3561 data-nosnippet>3561</a>    <span class="attr">#[test]
-<a href=#3562 id=3562 data-nosnippet>3562</a>    </span><span class="kw">fn </span>otlp_metrics_delta_ttl_zero_records_error_and_keeps_default() {
-<a href=#3563 id=3563 data-nosnippet>3563</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
-<a href=#3564 id=3564 data-nosnippet>3564</a>            <span class="string">"otlp_config"</span>: { <span class="string">"metrics"</span>: { <span class="string">"delta_ttl"</span>: <span class="number">0 </span>} }
-<a href=#3565 id=3565 data-nosnippet>3565</a>        }));
-<a href=#3566 id=3566 data-nosnippet>3566</a>
-<a href=#3567 id=3567 data-nosnippet>3567</a>        <span class="macro">assert_eq!</span>(config.domains.otlp.metrics.delta_ttl, DEFAULT_DELTA_TTL);
-<a href=#3568 id=3568 data-nosnippet>3568</a>        <span class="kw">let </span>errors = errors.expect(<span class="string">"zero delta_ttl should record a translation error"</span>);
-<a href=#3569 id=3569 data-nosnippet>3569</a>        <span class="macro">assert!</span>(errors.to_string().contains(<span class="string">"otlp_config.metrics.delta_ttl"</span>));
-<a href=#3570 id=3570 data-nosnippet>3570</a>        <span class="macro">assert!</span>(errors.to_string().contains(<span class="string">"time to live must be positive"</span>));
-<a href=#3571 id=3571 data-nosnippet>3571</a>    }
-<a href=#3572 id=3572 data-nosnippet>3572</a>}
+<a href=#3229 id=3229 data-nosnippet>3229</a>                FilterAction::Include,
+<a href=#3230 id=3230 data-nosnippet>3230</a>                FilterAction::Exclude,
+<a href=#3231 id=3231 data-nosnippet>3231</a>                FilterAction::Exclude,
+<a href=#3232 id=3232 data-nosnippet>3232</a>            ]
+<a href=#3233 id=3233 data-nosnippet>3233</a>        );
+<a href=#3234 id=3234 data-nosnippet>3234</a>        <span class="macro">assert_eq!</span>(entries[<span class="number">0</span>].metric_name, <span class="string">"missing"</span>);
+<a href=#3235 id=3235 data-nosnippet>3235</a>        <span class="macro">assert_eq!</span>(entries[<span class="number">5</span>].tags, [<span class="string">"f"</span>]);
+<a href=#3236 id=3236 data-nosnippet>3236</a>    }
+<a href=#3237 id=3237 data-nosnippet>3237</a>
+<a href=#3238 id=3238 data-nosnippet>3238</a>    <span class="attr">#[test]
+<a href=#3239 id=3239 data-nosnippet>3239</a>    </span><span class="kw">fn </span>tag_filter_entry_without_tags_is_kept_with_no_tags() {
+<a href=#3240 id=3240 data-nosnippet>3240</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
+<a href=#3241 id=3241 data-nosnippet>3241</a>            <span class="string">"metric_tag_filterlist"</span>: [{ <span class="string">"metric_name"</span>: <span class="string">"svc.latency" </span>}],
+<a href=#3242 id=3242 data-nosnippet>3242</a>        }));
+<a href=#3243 id=3243 data-nosnippet>3243</a>
+<a href=#3244 id=3244 data-nosnippet>3244</a>        <span class="macro">assert!</span>(errors.is_none(), <span class="string">"the Agent accepts an entry without tags"</span>);
+<a href=#3245 id=3245 data-nosnippet>3245</a>        <span class="kw">let </span>entries = <span class="kw-2">&amp;</span>config.domains.dogstatsd.tag_filterlist;
+<a href=#3246 id=3246 data-nosnippet>3246</a>        <span class="macro">assert_eq!</span>(entries.len(), <span class="number">1</span>);
+<a href=#3247 id=3247 data-nosnippet>3247</a>        <span class="macro">assert_eq!</span>(entries[<span class="number">0</span>].metric_name, <span class="string">"svc.latency"</span>);
+<a href=#3248 id=3248 data-nosnippet>3248</a>        <span class="macro">assert!</span>(entries[<span class="number">0</span>].tags.is_empty());
+<a href=#3249 id=3249 data-nosnippet>3249</a>    }
+<a href=#3250 id=3250 data-nosnippet>3250</a>
+<a href=#3251 id=3251 data-nosnippet>3251</a>    <span class="attr">#[test]
+<a href=#3252 id=3252 data-nosnippet>3252</a>    </span><span class="kw">fn </span>malformed_tag_filter_entry_does_not_drop_valid_neighbors() {
+<a href=#3253 id=3253 data-nosnippet>3253</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
+<a href=#3254 id=3254 data-nosnippet>3254</a>            <span class="string">"metric_tag_filterlist"</span>: [
+<a href=#3255 id=3255 data-nosnippet>3255</a>                { <span class="string">"metric_name"</span>: <span class="string">"before"</span>, <span class="string">"tags"</span>: [<span class="string">"a"</span>] },
+<a href=#3256 id=3256 data-nosnippet>3256</a>                { <span class="string">"tags"</span>: [<span class="string">"orphan"</span>] },
+<a href=#3257 id=3257 data-nosnippet>3257</a>                { <span class="string">"metric_name"</span>: <span class="string">"after"</span>, <span class="string">"tags"</span>: [<span class="string">"b"</span>] },
+<a href=#3258 id=3258 data-nosnippet>3258</a>            ],
+<a href=#3259 id=3259 data-nosnippet>3259</a>        }));
+<a href=#3260 id=3260 data-nosnippet>3260</a>
+<a href=#3261 id=3261 data-nosnippet>3261</a>        <span class="kw">let </span>names: Vec&lt;<span class="kw">_</span>&gt; = config
+<a href=#3262 id=3262 data-nosnippet>3262</a>            .domains
+<a href=#3263 id=3263 data-nosnippet>3263</a>            .dogstatsd
+<a href=#3264 id=3264 data-nosnippet>3264</a>            .tag_filterlist
+<a href=#3265 id=3265 data-nosnippet>3265</a>            .iter()
+<a href=#3266 id=3266 data-nosnippet>3266</a>            .map(|entry| entry.metric_name.as_str())
+<a href=#3267 id=3267 data-nosnippet>3267</a>            .collect();
+<a href=#3268 id=3268 data-nosnippet>3268</a>        <span class="macro">assert_eq!</span>(names, [<span class="string">"before"</span>, <span class="string">"after"</span>]);
+<a href=#3269 id=3269 data-nosnippet>3269</a>        <span class="macro">assert!</span>(
+<a href=#3270 id=3270 data-nosnippet>3270</a>            errors.is_some(),
+<a href=#3271 id=3271 data-nosnippet>3271</a>            <span class="string">"an entry without a metric name must record a translation error"
+<a href=#3272 id=3272 data-nosnippet>3272</a>        </span>);
+<a href=#3273 id=3273 data-nosnippet>3273</a>    }
+<a href=#3274 id=3274 data-nosnippet>3274</a>
+<a href=#3275 id=3275 data-nosnippet>3275</a>    <span class="attr">#[test]
+<a href=#3276 id=3276 data-nosnippet>3276</a>    </span><span class="kw">fn </span>ipc_settings_default_to_schema_values_when_unset() {
+<a href=#3277 id=3277 data-nosnippet>3277</a>        <span class="comment">// The typed model derives `Default`, so a translation that silently skipped these keys would
+<a href=#3278 id=3278 data-nosnippet>3278</a>        // leave zeroes behind and still look healthy. Pin the schema defaults instead.
+<a href=#3279 id=3279 data-nosnippet>3279</a>        </span><span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({}));
+<a href=#3280 id=3280 data-nosnippet>3280</a>
+<a href=#3281 id=3281 data-nosnippet>3281</a>        <span class="macro">assert!</span>(errors.is_none());
+<a href=#3282 id=3282 data-nosnippet>3282</a>        <span class="macro">assert_eq!</span>(config.control.ipc.cmd_port, <span class="number">5001</span>);
+<a href=#3283 id=3283 data-nosnippet>3283</a>        <span class="macro">assert_eq!</span>(config.control.ipc.grpc_max_message_size, <span class="number">128 </span>* <span class="number">1024 </span>* <span class="number">1024</span>);
+<a href=#3284 id=3284 data-nosnippet>3284</a>        <span class="macro">assert_eq!</span>(config.control.ipc.vsock_addr, <span class="string">""</span>);
+<a href=#3285 id=3285 data-nosnippet>3285</a>    }
+<a href=#3286 id=3286 data-nosnippet>3286</a>
+<a href=#3287 id=3287 data-nosnippet>3287</a>    <span class="attr">#[test]
+<a href=#3288 id=3288 data-nosnippet>3288</a>    </span><span class="kw">fn </span>ipc_auth_paths_preserve_empty_defaults_and_explicit_values() {
+<a href=#3289 id=3289 data-nosnippet>3289</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({}));
+<a href=#3290 id=3290 data-nosnippet>3290</a>        <span class="macro">assert!</span>(errors.is_none());
+<a href=#3291 id=3291 data-nosnippet>3291</a>        <span class="macro">assert!</span>(config.control.ipc.auth_token_file_path.as_os_str().is_empty());
+<a href=#3292 id=3292 data-nosnippet>3292</a>        <span class="macro">assert!</span>(config.control.ipc.ipc_cert_file_path.as_os_str().is_empty());
+<a href=#3293 id=3293 data-nosnippet>3293</a>
+<a href=#3294 id=3294 data-nosnippet>3294</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
+<a href=#3295 id=3295 data-nosnippet>3295</a>            <span class="string">"auth_token_file_path"</span>: <span class="string">"/secret/auth_token"</span>,
+<a href=#3296 id=3296 data-nosnippet>3296</a>            <span class="string">"ipc_cert_file_path"</span>: <span class="string">"/secret/ipc_cert.pem"</span>,
+<a href=#3297 id=3297 data-nosnippet>3297</a>        }));
+<a href=#3298 id=3298 data-nosnippet>3298</a>        <span class="macro">assert!</span>(errors.is_none());
+<a href=#3299 id=3299 data-nosnippet>3299</a>        <span class="macro">assert_eq!</span>(
+<a href=#3300 id=3300 data-nosnippet>3300</a>            config.control.ipc.auth_token_file_path,
+<a href=#3301 id=3301 data-nosnippet>3301</a>            PathBuf::from(<span class="string">"/secret/auth_token"</span>)
+<a href=#3302 id=3302 data-nosnippet>3302</a>        );
+<a href=#3303 id=3303 data-nosnippet>3303</a>        <span class="macro">assert_eq!</span>(
+<a href=#3304 id=3304 data-nosnippet>3304</a>            config.control.ipc.ipc_cert_file_path,
+<a href=#3305 id=3305 data-nosnippet>3305</a>            PathBuf::from(<span class="string">"/secret/ipc_cert.pem"</span>)
+<a href=#3306 id=3306 data-nosnippet>3306</a>        );
+<a href=#3307 id=3307 data-nosnippet>3307</a>    }
+<a href=#3308 id=3308 data-nosnippet>3308</a>
+<a href=#3309 id=3309 data-nosnippet>3309</a>    <span class="attr">#[test]
+<a href=#3310 id=3310 data-nosnippet>3310</a>    </span><span class="kw">fn </span>cmd_port_preserves_u16_validation() {
+<a href=#3311 id=3311 data-nosnippet>3311</a>        <span class="kw">for </span>value <span class="kw">in </span>[<span class="number">0</span>, <span class="number">5001</span>, u16::MAX <span class="kw">as </span>i64] {
+<a href=#3312 id=3312 data-nosnippet>3312</a>            <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({ <span class="string">"cmd_port"</span>: value }));
+<a href=#3313 id=3313 data-nosnippet>3313</a>
+<a href=#3314 id=3314 data-nosnippet>3314</a>            <span class="macro">assert!</span>(errors.is_none());
+<a href=#3315 id=3315 data-nosnippet>3315</a>            <span class="macro">assert_eq!</span>(config.control.ipc.cmd_port, value <span class="kw">as </span>u16);
+<a href=#3316 id=3316 data-nosnippet>3316</a>        }
+<a href=#3317 id=3317 data-nosnippet>3317</a>
+<a href=#3318 id=3318 data-nosnippet>3318</a>        <span class="kw">for </span>value <span class="kw">in </span>[-<span class="number">1</span>, u16::MAX <span class="kw">as </span>i64 + <span class="number">1</span>] {
+<a href=#3319 id=3319 data-nosnippet>3319</a>            <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({ <span class="string">"cmd_port"</span>: value }));
+<a href=#3320 id=3320 data-nosnippet>3320</a>
+<a href=#3321 id=3321 data-nosnippet>3321</a>            <span class="macro">assert_eq!</span>(config.control.ipc.cmd_port, <span class="number">0</span>);
+<a href=#3322 id=3322 data-nosnippet>3322</a>            <span class="kw">let </span>errors = errors.expect(<span class="string">"an out-of-range port should record a translation error"</span>);
+<a href=#3323 id=3323 data-nosnippet>3323</a>            <span class="macro">assert!</span>(errors.to_string().contains(<span class="string">"cmd_port"</span>));
+<a href=#3324 id=3324 data-nosnippet>3324</a>        }
+<a href=#3325 id=3325 data-nosnippet>3325</a>    }
+<a href=#3326 id=3326 data-nosnippet>3326</a>
+<a href=#3327 id=3327 data-nosnippet>3327</a>    <span class="attr">#[test]
+<a href=#3328 id=3328 data-nosnippet>3328</a>    </span><span class="kw">fn </span>negative_ipc_grpc_max_message_size_is_rejected() {
+<a href=#3329 id=3329 data-nosnippet>3329</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
+<a href=#3330 id=3330 data-nosnippet>3330</a>            <span class="string">"agent_ipc"</span>: { <span class="string">"grpc_max_message_size"</span>: -<span class="number">1 </span>},
+<a href=#3331 id=3331 data-nosnippet>3331</a>        }));
+<a href=#3332 id=3332 data-nosnippet>3332</a>
+<a href=#3333 id=3333 data-nosnippet>3333</a>        <span class="macro">assert_eq!</span>(config.control.ipc.grpc_max_message_size, <span class="number">0</span>);
+<a href=#3334 id=3334 data-nosnippet>3334</a>        <span class="kw">let </span>errors = errors.expect(<span class="string">"a negative maximum message size must record a translation error"</span>);
+<a href=#3335 id=3335 data-nosnippet>3335</a>        <span class="macro">assert!</span>(errors.to_string().contains(<span class="string">"agent_ipc.grpc_max_message_size"</span>));
+<a href=#3336 id=3336 data-nosnippet>3336</a>    }
+<a href=#3337 id=3337 data-nosnippet>3337</a>
+<a href=#3338 id=3338 data-nosnippet>3338</a>    <span class="attr">#[test]
+<a href=#3339 id=3339 data-nosnippet>3339</a>    </span><span class="kw">fn </span>negative_tag_filter_cache_capacity_is_rejected() {
+<a href=#3340 id=3340 data-nosnippet>3340</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
+<a href=#3341 id=3341 data-nosnippet>3341</a>            <span class="string">"data_plane"</span>: { <span class="string">"dogstatsd"</span>: { <span class="string">"aggregator_tag_filter_cache_capacity"</span>: -<span class="number">1 </span>} },
+<a href=#3342 id=3342 data-nosnippet>3342</a>        }));
+<a href=#3343 id=3343 data-nosnippet>3343</a>
+<a href=#3344 id=3344 data-nosnippet>3344</a>        <span class="macro">assert_eq!</span>(
+<a href=#3345 id=3345 data-nosnippet>3345</a>            config
+<a href=#3346 id=3346 data-nosnippet>3346</a>                .domains
+<a href=#3347 id=3347 data-nosnippet>3347</a>                .dogstatsd
+<a href=#3348 id=3348 data-nosnippet>3348</a>                .aggregation
+<a href=#3349 id=3349 data-nosnippet>3349</a>                .aggregator_tag_filter_cache_capacity,
+<a href=#3350 id=3350 data-nosnippet>3350</a>            <span class="number">0
+<a href=#3351 id=3351 data-nosnippet>3351</a>        </span>);
+<a href=#3352 id=3352 data-nosnippet>3352</a>        <span class="kw">let </span>errors = errors.expect(<span class="string">"a negative cache capacity must record a translation error"</span>);
+<a href=#3353 id=3353 data-nosnippet>3353</a>        <span class="macro">assert!</span>(errors
+<a href=#3354 id=3354 data-nosnippet>3354</a>            .to_string()
+<a href=#3355 id=3355 data-nosnippet>3355</a>            .contains(<span class="string">"data_plane.dogstatsd.aggregator_tag_filter_cache_capacity"</span>));
+<a href=#3356 id=3356 data-nosnippet>3356</a>    }
+<a href=#3357 id=3357 data-nosnippet>3357</a>
+<a href=#3358 id=3358 data-nosnippet>3358</a>    <span class="attr">#[test]
+<a href=#3359 id=3359 data-nosnippet>3359</a>    </span><span class="kw">fn </span>otlp_trace_internal_port_preserves_u16_validation() {
+<a href=#3360 id=3360 data-nosnippet>3360</a>        <span class="comment">// The typed forwarder receives this value after translation. Rejecting conversion here
+<a href=#3361 id=3361 data-nosnippet>3361</a>        // preserves the u16 validation formerly provided by GenericConfiguration instead of
+<a href=#3362 id=3362 data-nosnippet>3362</a>        // clamping invalid ports.
+<a href=#3363 id=3363 data-nosnippet>3363</a>        </span><span class="kw">for </span>value <span class="kw">in </span>[<span class="number">0</span>, <span class="number">5003</span>, u16::MAX <span class="kw">as </span>i64] {
+<a href=#3364 id=3364 data-nosnippet>3364</a>            <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
+<a href=#3365 id=3365 data-nosnippet>3365</a>                <span class="string">"otlp_config"</span>: { <span class="string">"traces"</span>: { <span class="string">"internal_port"</span>: value } }
+<a href=#3366 id=3366 data-nosnippet>3366</a>            }));
+<a href=#3367 id=3367 data-nosnippet>3367</a>
+<a href=#3368 id=3368 data-nosnippet>3368</a>            <span class="macro">assert!</span>(errors.is_none());
+<a href=#3369 id=3369 data-nosnippet>3369</a>            <span class="macro">assert_eq!</span>(config.domains.otlp.traces.internal_port, value <span class="kw">as </span>u16);
+<a href=#3370 id=3370 data-nosnippet>3370</a>        }
+<a href=#3371 id=3371 data-nosnippet>3371</a>
+<a href=#3372 id=3372 data-nosnippet>3372</a>        <span class="kw">for </span>value <span class="kw">in </span>[-<span class="number">1</span>, u16::MAX <span class="kw">as </span>i64 + <span class="number">1</span>] {
+<a href=#3373 id=3373 data-nosnippet>3373</a>            <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
+<a href=#3374 id=3374 data-nosnippet>3374</a>                <span class="string">"otlp_config"</span>: { <span class="string">"traces"</span>: { <span class="string">"internal_port"</span>: value } }
+<a href=#3375 id=3375 data-nosnippet>3375</a>            }));
+<a href=#3376 id=3376 data-nosnippet>3376</a>
+<a href=#3377 id=3377 data-nosnippet>3377</a>            <span class="macro">assert_eq!</span>(config.domains.otlp.traces.internal_port, <span class="number">0</span>);
+<a href=#3378 id=3378 data-nosnippet>3378</a>            <span class="kw">let </span>errors = errors.expect(<span class="string">"an out-of-range port should record a translation error"</span>);
+<a href=#3379 id=3379 data-nosnippet>3379</a>            <span class="macro">assert!</span>(errors.to_string().contains(<span class="string">"otlp_config.traces.internal_port"</span>));
+<a href=#3380 id=3380 data-nosnippet>3380</a>        }
+<a href=#3381 id=3381 data-nosnippet>3381</a>    }
+<a href=#3382 id=3382 data-nosnippet>3382</a>
+<a href=#3383 id=3383 data-nosnippet>3383</a>    <span class="attr">#[test]
+<a href=#3384 id=3384 data-nosnippet>3384</a>    </span><span class="kw">fn </span>summary_mode_translates_known_values() {
+<a href=#3385 id=3385 data-nosnippet>3385</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
+<a href=#3386 id=3386 data-nosnippet>3386</a>            <span class="string">"otlp_config"</span>: {
+<a href=#3387 id=3387 data-nosnippet>3387</a>                <span class="string">"metrics"</span>: {
+<a href=#3388 id=3388 data-nosnippet>3388</a>                    <span class="string">"summaries"</span>: {
+<a href=#3389 id=3389 data-nosnippet>3389</a>                        <span class="string">"mode"</span>: <span class="string">"noquantiles"
+<a href=#3390 id=3390 data-nosnippet>3390</a>                    </span>}
+<a href=#3391 id=3391 data-nosnippet>3391</a>                }
+<a href=#3392 id=3392 data-nosnippet>3392</a>            }
+<a href=#3393 id=3393 data-nosnippet>3393</a>        }));
+<a href=#3394 id=3394 data-nosnippet>3394</a>
+<a href=#3395 id=3395 data-nosnippet>3395</a>        <span class="macro">assert!</span>(errors.is_none());
+<a href=#3396 id=3396 data-nosnippet>3396</a>        <span class="macro">assert_eq!</span>(config.domains.otlp.metrics.summaries.mode, SummaryMode::NoQuantiles);
+<a href=#3397 id=3397 data-nosnippet>3397</a>    }
+<a href=#3398 id=3398 data-nosnippet>3398</a>
+<a href=#3399 id=3399 data-nosnippet>3399</a>    <span class="attr">#[test]
+<a href=#3400 id=3400 data-nosnippet>3400</a>    </span><span class="kw">fn </span>invalid_summary_mode_records_error_and_keeps_default() {
+<a href=#3401 id=3401 data-nosnippet>3401</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
+<a href=#3402 id=3402 data-nosnippet>3402</a>            <span class="string">"otlp_config"</span>: {
+<a href=#3403 id=3403 data-nosnippet>3403</a>                <span class="string">"metrics"</span>: {
+<a href=#3404 id=3404 data-nosnippet>3404</a>                    <span class="string">"summaries"</span>: {
+<a href=#3405 id=3405 data-nosnippet>3405</a>                        <span class="string">"mode"</span>: <span class="string">"unsupported"
+<a href=#3406 id=3406 data-nosnippet>3406</a>                    </span>}
+<a href=#3407 id=3407 data-nosnippet>3407</a>                }
+<a href=#3408 id=3408 data-nosnippet>3408</a>            }
+<a href=#3409 id=3409 data-nosnippet>3409</a>        }));
+<a href=#3410 id=3410 data-nosnippet>3410</a>
+<a href=#3411 id=3411 data-nosnippet>3411</a>        <span class="macro">assert_eq!</span>(config.domains.otlp.metrics.summaries.mode, SummaryMode::Gauges);
+<a href=#3412 id=3412 data-nosnippet>3412</a>        <span class="kw">let </span>errors = errors.expect(<span class="string">"invalid mode should record a translation error"</span>);
+<a href=#3413 id=3413 data-nosnippet>3413</a>        <span class="macro">assert!</span>(errors.to_string().contains(<span class="string">"otlp_config.metrics.summaries.mode"</span>));
+<a href=#3414 id=3414 data-nosnippet>3414</a>        <span class="macro">assert!</span>(errors.to_string().contains(<span class="string">"unknown summary mode `unsupported`"</span>));
+<a href=#3415 id=3415 data-nosnippet>3415</a>    }
+<a href=#3416 id=3416 data-nosnippet>3416</a>
+<a href=#3417 id=3417 data-nosnippet>3417</a>    <span class="attr">#[test]
+<a href=#3418 id=3418 data-nosnippet>3418</a>    </span><span class="kw">fn </span>cumulative_monotonic_sum_mode_translates_known_values() {
+<a href=#3419 id=3419 data-nosnippet>3419</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
+<a href=#3420 id=3420 data-nosnippet>3420</a>            <span class="string">"otlp_config"</span>: {
+<a href=#3421 id=3421 data-nosnippet>3421</a>                <span class="string">"metrics"</span>: {
+<a href=#3422 id=3422 data-nosnippet>3422</a>                    <span class="string">"sums"</span>: {
+<a href=#3423 id=3423 data-nosnippet>3423</a>                        <span class="string">"cumulative_monotonic_mode"</span>: <span class="string">"raw_value"
+<a href=#3424 id=3424 data-nosnippet>3424</a>                    </span>}
+<a href=#3425 id=3425 data-nosnippet>3425</a>                }
+<a href=#3426 id=3426 data-nosnippet>3426</a>            }
+<a href=#3427 id=3427 data-nosnippet>3427</a>        }));
+<a href=#3428 id=3428 data-nosnippet>3428</a>
+<a href=#3429 id=3429 data-nosnippet>3429</a>        <span class="macro">assert!</span>(errors.is_none());
+<a href=#3430 id=3430 data-nosnippet>3430</a>        <span class="macro">assert_eq!</span>(
+<a href=#3431 id=3431 data-nosnippet>3431</a>            config.domains.otlp.metrics.sums.cumulative_monotonic_mode,
+<a href=#3432 id=3432 data-nosnippet>3432</a>            CumulativeMonotonicMode::RawValue
+<a href=#3433 id=3433 data-nosnippet>3433</a>        );
+<a href=#3434 id=3434 data-nosnippet>3434</a>    }
+<a href=#3435 id=3435 data-nosnippet>3435</a>
+<a href=#3436 id=3436 data-nosnippet>3436</a>    <span class="attr">#[test]
+<a href=#3437 id=3437 data-nosnippet>3437</a>    </span><span class="kw">fn </span>invalid_cumulative_monotonic_sum_mode_records_error_and_keeps_default() {
+<a href=#3438 id=3438 data-nosnippet>3438</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
+<a href=#3439 id=3439 data-nosnippet>3439</a>            <span class="string">"otlp_config"</span>: {
+<a href=#3440 id=3440 data-nosnippet>3440</a>                <span class="string">"metrics"</span>: {
+<a href=#3441 id=3441 data-nosnippet>3441</a>                    <span class="string">"sums"</span>: {
+<a href=#3442 id=3442 data-nosnippet>3442</a>                        <span class="string">"cumulative_monotonic_mode"</span>: <span class="string">"unsupported"
+<a href=#3443 id=3443 data-nosnippet>3443</a>                    </span>}
+<a href=#3444 id=3444 data-nosnippet>3444</a>                }
+<a href=#3445 id=3445 data-nosnippet>3445</a>            }
+<a href=#3446 id=3446 data-nosnippet>3446</a>        }));
+<a href=#3447 id=3447 data-nosnippet>3447</a>
+<a href=#3448 id=3448 data-nosnippet>3448</a>        <span class="macro">assert_eq!</span>(
+<a href=#3449 id=3449 data-nosnippet>3449</a>            config.domains.otlp.metrics.sums.cumulative_monotonic_mode,
+<a href=#3450 id=3450 data-nosnippet>3450</a>            CumulativeMonotonicMode::ToDelta
+<a href=#3451 id=3451 data-nosnippet>3451</a>        );
+<a href=#3452 id=3452 data-nosnippet>3452</a>        <span class="kw">let </span>errors = errors.expect(<span class="string">"invalid mode should record a translation error"</span>);
+<a href=#3453 id=3453 data-nosnippet>3453</a>        <span class="macro">assert!</span>(errors
+<a href=#3454 id=3454 data-nosnippet>3454</a>            .to_string()
+<a href=#3455 id=3455 data-nosnippet>3455</a>            .contains(<span class="string">"otlp_config.metrics.sums.cumulative_monotonic_mode"</span>));
+<a href=#3456 id=3456 data-nosnippet>3456</a>        <span class="macro">assert!</span>(errors
+<a href=#3457 id=3457 data-nosnippet>3457</a>            .to_string()
+<a href=#3458 id=3458 data-nosnippet>3458</a>            .contains(<span class="string">"unknown cumulative monotonic sum mode `unsupported`"</span>));
+<a href=#3459 id=3459 data-nosnippet>3459</a>    }
+<a href=#3460 id=3460 data-nosnippet>3460</a>
+<a href=#3461 id=3461 data-nosnippet>3461</a>    <span class="attr">#[test]
+<a href=#3462 id=3462 data-nosnippet>3462</a>    </span><span class="kw">fn </span>initial_cumulative_monotonic_value_translates_known_values() {
+<a href=#3463 id=3463 data-nosnippet>3463</a>        <span class="kw">for </span>(value, expected) <span class="kw">in </span>[
+<a href=#3464 id=3464 data-nosnippet>3464</a>            (<span class="string">"auto"</span>, InitialCumulativeMonotonicValue::Auto),
+<a href=#3465 id=3465 data-nosnippet>3465</a>            (<span class="string">"drop"</span>, InitialCumulativeMonotonicValue::Drop),
+<a href=#3466 id=3466 data-nosnippet>3466</a>            (<span class="string">"keep"</span>, InitialCumulativeMonotonicValue::Keep),
+<a href=#3467 id=3467 data-nosnippet>3467</a>        ] {
+<a href=#3468 id=3468 data-nosnippet>3468</a>            <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
+<a href=#3469 id=3469 data-nosnippet>3469</a>                <span class="string">"otlp_config"</span>: {
+<a href=#3470 id=3470 data-nosnippet>3470</a>                    <span class="string">"metrics"</span>: {
+<a href=#3471 id=3471 data-nosnippet>3471</a>                        <span class="string">"sums"</span>: {
+<a href=#3472 id=3472 data-nosnippet>3472</a>                            <span class="string">"initial_cumulative_monotonic_value"</span>: value
+<a href=#3473 id=3473 data-nosnippet>3473</a>                        }
+<a href=#3474 id=3474 data-nosnippet>3474</a>                    }
+<a href=#3475 id=3475 data-nosnippet>3475</a>                }
+<a href=#3476 id=3476 data-nosnippet>3476</a>            }));
+<a href=#3477 id=3477 data-nosnippet>3477</a>
+<a href=#3478 id=3478 data-nosnippet>3478</a>            <span class="macro">assert!</span>(errors.is_none());
+<a href=#3479 id=3479 data-nosnippet>3479</a>            <span class="macro">assert_eq!</span>(
+<a href=#3480 id=3480 data-nosnippet>3480</a>                config.domains.otlp.metrics.sums.initial_cumulative_monotonic_value,
+<a href=#3481 id=3481 data-nosnippet>3481</a>                expected
+<a href=#3482 id=3482 data-nosnippet>3482</a>            );
+<a href=#3483 id=3483 data-nosnippet>3483</a>        }
+<a href=#3484 id=3484 data-nosnippet>3484</a>    }
+<a href=#3485 id=3485 data-nosnippet>3485</a>
+<a href=#3486 id=3486 data-nosnippet>3486</a>    <span class="attr">#[test]
+<a href=#3487 id=3487 data-nosnippet>3487</a>    </span><span class="kw">fn </span>invalid_initial_cumulative_monotonic_value_records_error_and_keeps_default() {
+<a href=#3488 id=3488 data-nosnippet>3488</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
+<a href=#3489 id=3489 data-nosnippet>3489</a>            <span class="string">"otlp_config"</span>: {
+<a href=#3490 id=3490 data-nosnippet>3490</a>                <span class="string">"metrics"</span>: {
+<a href=#3491 id=3491 data-nosnippet>3491</a>                    <span class="string">"sums"</span>: {
+<a href=#3492 id=3492 data-nosnippet>3492</a>                        <span class="string">"initial_cumulative_monotonic_value"</span>: <span class="string">"unsupported"
+<a href=#3493 id=3493 data-nosnippet>3493</a>                    </span>}
+<a href=#3494 id=3494 data-nosnippet>3494</a>                }
+<a href=#3495 id=3495 data-nosnippet>3495</a>            }
+<a href=#3496 id=3496 data-nosnippet>3496</a>        }));
+<a href=#3497 id=3497 data-nosnippet>3497</a>
+<a href=#3498 id=3498 data-nosnippet>3498</a>        <span class="macro">assert_eq!</span>(
+<a href=#3499 id=3499 data-nosnippet>3499</a>            config.domains.otlp.metrics.sums.initial_cumulative_monotonic_value,
+<a href=#3500 id=3500 data-nosnippet>3500</a>            InitialCumulativeMonotonicValue::Auto
+<a href=#3501 id=3501 data-nosnippet>3501</a>        );
+<a href=#3502 id=3502 data-nosnippet>3502</a>        <span class="kw">let </span>errors = errors.expect(<span class="string">"invalid value should record a translation error"</span>);
+<a href=#3503 id=3503 data-nosnippet>3503</a>        <span class="macro">assert!</span>(errors
+<a href=#3504 id=3504 data-nosnippet>3504</a>            .to_string()
+<a href=#3505 id=3505 data-nosnippet>3505</a>            .contains(<span class="string">"otlp_config.metrics.sums.initial_cumulative_monotonic_value"</span>));
+<a href=#3506 id=3506 data-nosnippet>3506</a>        <span class="macro">assert!</span>(errors
+<a href=#3507 id=3507 data-nosnippet>3507</a>            .to_string()
+<a href=#3508 id=3508 data-nosnippet>3508</a>            .contains(<span class="string">"unknown initial cumulative monotonic value `unsupported`"</span>));
+<a href=#3509 id=3509 data-nosnippet>3509</a>    }
+<a href=#3510 id=3510 data-nosnippet>3510</a>
+<a href=#3511 id=3511 data-nosnippet>3511</a>    <span class="attr">#[test]
+<a href=#3512 id=3512 data-nosnippet>3512</a>    </span><span class="kw">fn </span>grpc_max_recv_msg_size_zero_translates_to_grpc_go_default() {
+<a href=#3513 id=3513 data-nosnippet>3513</a>        <span class="comment">// The schema default of `0` selects grpc-go's built-in 4 MiB limit, so translation must
+<a href=#3514 id=3514 data-nosnippet>3514</a>        // substitute the default; any positive value is carried through unchanged.
+<a href=#3515 id=3515 data-nosnippet>3515</a>        </span><span class="kw">for </span>(configured, expected) <span class="kw">in </span>[
+<a href=#3516 id=3516 data-nosnippet>3516</a>            (<span class="macro">json!</span>({}), DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB),
+<a href=#3517 id=3517 data-nosnippet>3517</a>            (
+<a href=#3518 id=3518 data-nosnippet>3518</a>                <span class="macro">json!</span>({ <span class="string">"max_recv_msg_size_mib"</span>: <span class="number">0 </span>}),
+<a href=#3519 id=3519 data-nosnippet>3519</a>                DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
+<a href=#3520 id=3520 data-nosnippet>3520</a>            ),
+<a href=#3521 id=3521 data-nosnippet>3521</a>            (<span class="macro">json!</span>({ <span class="string">"max_recv_msg_size_mib"</span>: <span class="number">8 </span>}), <span class="number">8</span>),
+<a href=#3522 id=3522 data-nosnippet>3522</a>        ] {
+<a href=#3523 id=3523 data-nosnippet>3523</a>            <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
+<a href=#3524 id=3524 data-nosnippet>3524</a>                <span class="string">"otlp_config"</span>: { <span class="string">"receiver"</span>: { <span class="string">"protocols"</span>: { <span class="string">"grpc"</span>: configured } } }
+<a href=#3525 id=3525 data-nosnippet>3525</a>            }));
+<a href=#3526 id=3526 data-nosnippet>3526</a>
+<a href=#3527 id=3527 data-nosnippet>3527</a>            <span class="macro">assert!</span>(errors.is_none());
+<a href=#3528 id=3528 data-nosnippet>3528</a>            <span class="macro">assert_eq!</span>(config.domains.otlp.receiver.grpc.max_recv_msg_size_mib, expected);
+<a href=#3529 id=3529 data-nosnippet>3529</a>        }
+<a href=#3530 id=3530 data-nosnippet>3530</a>    }
+<a href=#3531 id=3531 data-nosnippet>3531</a>
+<a href=#3532 id=3532 data-nosnippet>3532</a>    <span class="attr">#[test]
+<a href=#3533 id=3533 data-nosnippet>3533</a>    </span><span class="kw">fn </span>otlp_metrics_delta_ttl_translates_explicit_value() {
+<a href=#3534 id=3534 data-nosnippet>3534</a>        <span class="comment">// An explicit integer (seconds) is carried through the witness as a `Duration`.
+<a href=#3535 id=3535 data-nosnippet>3535</a>        </span><span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
+<a href=#3536 id=3536 data-nosnippet>3536</a>            <span class="string">"otlp_config"</span>: { <span class="string">"metrics"</span>: { <span class="string">"delta_ttl"</span>: <span class="number">7200 </span>} }
+<a href=#3537 id=3537 data-nosnippet>3537</a>        }));
+<a href=#3538 id=3538 data-nosnippet>3538</a>
+<a href=#3539 id=3539 data-nosnippet>3539</a>        <span class="macro">assert!</span>(errors.is_none());
+<a href=#3540 id=3540 data-nosnippet>3540</a>        <span class="macro">assert_eq!</span>(config.domains.otlp.metrics.delta_ttl, Duration::from_secs(<span class="number">7200</span>));
+<a href=#3541 id=3541 data-nosnippet>3541</a>    }
+<a href=#3542 id=3542 data-nosnippet>3542</a>
+<a href=#3543 id=3543 data-nosnippet>3543</a>    <span class="attr">#[test]
+<a href=#3544 id=3544 data-nosnippet>3544</a>    </span><span class="kw">fn </span>otlp_metrics_delta_ttl_defaults_to_3600s_when_unset() {
+<a href=#3545 id=3545 data-nosnippet>3545</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({}));
+<a href=#3546 id=3546 data-nosnippet>3546</a>
+<a href=#3547 id=3547 data-nosnippet>3547</a>        <span class="macro">assert!</span>(errors.is_none());
+<a href=#3548 id=3548 data-nosnippet>3548</a>        <span class="macro">assert_eq!</span>(config.domains.otlp.metrics.delta_ttl, DEFAULT_DELTA_TTL);
+<a href=#3549 id=3549 data-nosnippet>3549</a>    }
+<a href=#3550 id=3550 data-nosnippet>3550</a>
+<a href=#3551 id=3551 data-nosnippet>3551</a>    <span class="attr">#[test]
+<a href=#3552 id=3552 data-nosnippet>3552</a>    </span><span class="kw">fn </span>otlp_metrics_delta_ttl_negative_records_error_and_keeps_default() {
+<a href=#3553 id=3553 data-nosnippet>3553</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
+<a href=#3554 id=3554 data-nosnippet>3554</a>            <span class="string">"otlp_config"</span>: { <span class="string">"metrics"</span>: { <span class="string">"delta_ttl"</span>: -<span class="number">1 </span>} }
+<a href=#3555 id=3555 data-nosnippet>3555</a>        }));
+<a href=#3556 id=3556 data-nosnippet>3556</a>
+<a href=#3557 id=3557 data-nosnippet>3557</a>        <span class="macro">assert_eq!</span>(config.domains.otlp.metrics.delta_ttl, DEFAULT_DELTA_TTL);
+<a href=#3558 id=3558 data-nosnippet>3558</a>        <span class="kw">let </span>errors = errors.expect(<span class="string">"negative delta_ttl should record a translation error"</span>);
+<a href=#3559 id=3559 data-nosnippet>3559</a>        <span class="macro">assert!</span>(errors.to_string().contains(<span class="string">"otlp_config.metrics.delta_ttl"</span>));
+<a href=#3560 id=3560 data-nosnippet>3560</a>        <span class="macro">assert!</span>(errors.to_string().contains(<span class="string">"time to live must be positive"</span>));
+<a href=#3561 id=3561 data-nosnippet>3561</a>    }
+<a href=#3562 id=3562 data-nosnippet>3562</a>
+<a href=#3563 id=3563 data-nosnippet>3563</a>    <span class="attr">#[test]
+<a href=#3564 id=3564 data-nosnippet>3564</a>    </span><span class="kw">fn </span>otlp_metrics_delta_ttl_zero_records_error_and_keeps_default() {
+<a href=#3565 id=3565 data-nosnippet>3565</a>        <span class="kw">let </span>(config, errors) = translate_explicit(<span class="macro">json!</span>({
+<a href=#3566 id=3566 data-nosnippet>3566</a>            <span class="string">"otlp_config"</span>: { <span class="string">"metrics"</span>: { <span class="string">"delta_ttl"</span>: <span class="number">0 </span>} }
+<a href=#3567 id=3567 data-nosnippet>3567</a>        }));
+<a href=#3568 id=3568 data-nosnippet>3568</a>
+<a href=#3569 id=3569 data-nosnippet>3569</a>        <span class="macro">assert_eq!</span>(config.domains.otlp.metrics.delta_ttl, DEFAULT_DELTA_TTL);
+<a href=#3570 id=3570 data-nosnippet>3570</a>        <span class="kw">let </span>errors = errors.expect(<span class="string">"zero delta_ttl should record a translation error"</span>);
+<a href=#3571 id=3571 data-nosnippet>3571</a>        <span class="macro">assert!</span>(errors.to_string().contains(<span class="string">"otlp_config.metrics.delta_ttl"</span>));
+<a href=#3572 id=3572 data-nosnippet>3572</a>        <span class="macro">assert!</span>(errors.to_string().contains(<span class="string">"time to live must be positive"</span>));
+<a href=#3573 id=3573 data-nosnippet>3573</a>    }
+<a href=#3574 id=3574 data-nosnippet>3574</a>}
 </code></pre></div></section></main></body></html>
