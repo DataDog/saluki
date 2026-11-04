@@ -19,15 +19,15 @@ use crate::{
     artifact::ArtifactRole,
     backend::LateFact,
     endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind, EndpointOperation, Port},
-    handle::{probe_from_runner_host, HandleError},
+    handle::HandleError,
     layout::{Os, Realization, RealizationKind},
     participant::{
         CaseValues, EffectiveConfig, ExitChannel, FactDeclaration, OutputChannel, OutputStream, ParticipantType,
         ProcessSpec,
     },
-    probe::{AttemptLimits, ProbeAnswer},
+    probe::{AttemptLimits, ProbeAnswer, POLL_INTERVAL},
     record::{AssertionStatus, StepReport},
-    step::{decode_fields, Need, Step, StepContext, StepFactory, StepFields},
+    step::{decode_fields, ExitObservation, Need, OutputEnd, Step, StepContext, StepFactory, StepFields},
 };
 
 pub(crate) fn step_timeout() -> CaseDuration {
@@ -94,9 +94,18 @@ impl Step for Probe {
                 }
             }
             if let Some(process) = &self.process {
-                let report = crate::step::test_support::wait_for_exit(cx, &self.on, process).await;
-                if report.status != AssertionStatus::Passed {
-                    return Err((report.status, report.message));
+                match cx
+                    .handle(&self.on)
+                    .expect("probe needs its participant")
+                    .wait_for_exit(process)
+                    .await
+                {
+                    ExitObservation::Exited(status) if status.code == Some(0) => {}
+                    ExitObservation::Exited(status) => {
+                        return Err((AssertionStatus::Failed, format!("process exited: {status:?}")));
+                    }
+                    ExitObservation::Undetermined(reason) => return Err((AssertionStatus::Errored, reason)),
+                    ExitObservation::Running => unreachable!("wait_for_exit waits for a terminal observation"),
                 }
             }
             Ok(())
@@ -144,7 +153,19 @@ impl Step for Marker {
         vec![Need::Handle(self.on.clone())]
     }
     async fn run(&self, cx: &StepContext<'_>) -> StepReport {
-        crate::step::test_support::wait_for_output(cx, &self.on, "marker").await
+        let started = Instant::now();
+        let handle = cx.handle(&self.on).expect("marker needs its participant");
+        let mut output = handle.output(None);
+        loop {
+            let batch = output.read();
+            if batch.lines.iter().any(|line| line == "marker") {
+                return StepReport::new(started, AssertionStatus::Passed, "marker observed");
+            }
+            if let OutputEnd::Failed(reason) = batch.end {
+                return StepReport::new(started, AssertionStatus::Errored, reason);
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
     }
 }
 
@@ -225,19 +246,11 @@ impl Step for Reach {
     async fn run(&self, cx: &StepContext<'_>) -> StepReport {
         let started = Instant::now();
         let server = &self.endpoint.participant;
-        let route = cx
-            .runner_host_route(
-                server,
-                &self.endpoint.endpoint,
-                self.operation.unwrap_or(EndpointOperation::Probe),
-            )
-            .expect("reach needs a planned route");
-        let result = probe_from_runner_host(
-            route,
-            cx.handle(server).expect("reach needs its server").primitives,
-            &AttemptLimits::new(self.budget()),
-        )
-        .await;
+        let result = cx
+            .handle(server)
+            .expect("reach needs its server")
+            .probe(&self.endpoint.endpoint, &AttemptLimits::new(self.budget()))
+            .await;
         let (status, message) = match result {
             Ok(ProbeAnswer::Listening) => (AssertionStatus::Passed, "endpoint is listening".into()),
             Ok(ProbeAnswer::NotListening { reason }) => (AssertionStatus::Failed, reason),

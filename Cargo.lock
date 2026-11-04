@@ -4571,6 +4571,7 @@ name = "panoramic-steps"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "futures",
  "panoramic-core",
  "regex",
  "serde",

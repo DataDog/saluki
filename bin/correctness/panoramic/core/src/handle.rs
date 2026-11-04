@@ -2,7 +2,6 @@
 
 use std::time::Duration;
 
-use airlock::{exec::ExecOutput, files::FileStat};
 use async_trait::async_trait;
 use snafu::Snafu;
 
@@ -16,30 +15,68 @@ use crate::{
 };
 
 /// One command for a participant to run.
-pub(crate) struct ExecCommand {
+pub struct ExecCommand {
     /// The program followed by its arguments.
-    pub(crate) argv: Vec<String>,
+    pub argv: Vec<String>,
     /// Variables added to the participant's environment.
-    pub(crate) env: Vec<(String, String)>,
+    pub env: Vec<(String, String)>,
     /// Bytes written to stdin, which is then closed; `None` runs with no stdin.
     ///
     /// The backend writes all bytes and closes stdin, even for an empty payload.
-    pub(crate) stdin: Option<Vec<u8>>,
+    pub stdin: Option<Vec<u8>>,
+}
+
+/// Captured command output and its exit code.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecOutput {
+    /// Bytes written to standard output.
+    pub stdout: Vec<u8>,
+    /// Bytes written to standard error.
+    pub stderr: Vec<u8>,
+    /// The command's exit code.
+    pub exit_code: i64,
+}
+
+/// A path's kind, permission bits and size.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileStatus {
+    /// The kind of path.
+    pub kind: FileKind,
+    /// Unix permission bits, including `setuid`, `setgid` and sticky bits.
+    pub mode: u32,
+    /// Size in bytes.
+    pub size: u64,
+}
+
+/// The kind of a participant's filesystem path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FileKind {
+    /// A regular file.
+    File,
+    /// A directory.
+    Directory,
+    /// A symbolic link.
+    Symlink {
+        /// The target path reported by the backend.
+        target: String,
+    },
+    /// A Unix socket.
+    Socket,
+    /// A named pipe.
+    NamedPipe,
+    /// A device or unrecognized kind.
+    Other,
 }
 
 /// Operations on one participant, implemented by its backend.
 #[async_trait]
 pub(crate) trait Primitives: Send + Sync {
     /// Runs a command, abandoning it after `limit`. Any exit code is data.
-    #[cfg_attr(
-        not(any(test, feature = "test-util")),
-        expect(dead_code, reason = "Command steps use the backend execution primitive.")
-    )]
     async fn exec(&self, command: ExecCommand, limit: Duration) -> Result<ExecOutput, HandleError>;
     /// Reads a regular file; `None` when the path is missing.
     async fn read_file(&self, path: &str) -> Result<Option<Vec<u8>>, HandleError>;
     /// Reports a path's kind, mode and size; `None` when the path is missing.
-    async fn stat(&self, path: &str) -> Result<Option<FileStat>, HandleError>;
+    async fn stat(&self, path: &str) -> Result<Option<FileStatus>, HandleError>;
     /// Probes an address as seen from inside this participant.
     async fn probe(&self, address: &ResolvedAddress, limits: &AttemptLimits) -> Result<ProbeAnswer, HandleError>;
     /// Sends a payload to an address as seen from inside this participant.
@@ -79,10 +116,6 @@ pub(crate) async fn http_status_from_runner_host(
 }
 
 /// Sends through the plan's route for `EndpointOperation::Send`, using the server for a courier route.
-#[cfg_attr(
-    not(any(test, feature = "test-util")),
-    expect(dead_code, reason = "Steps reach endpoints through these routes.")
-)]
 pub(crate) async fn send_from_runner_host(
     route: &RunnerHostRoute, server: &dyn Primitives, payload: &[u8], limits: &AttemptLimits,
 ) -> Result<(), HandleError> {
@@ -153,7 +186,7 @@ mod tests {
             panic!("routing does not read files");
         }
 
-        async fn stat(&self, _path: &str) -> Result<Option<FileStat>, HandleError> {
+        async fn stat(&self, _path: &str) -> Result<Option<FileStatus>, HandleError> {
             panic!("routing does not stat files");
         }
 

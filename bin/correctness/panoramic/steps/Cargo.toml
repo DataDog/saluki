@@ -14,6 +14,7 @@ test-util = ["dep:serde-saphyr"]
 
 [dependencies]
 async-trait = { workspace = true }
+futures = { workspace = true }
 panoramic-core = { workspace = true }
 regex = { workspace = true, features = ["std"] }
 serde = { workspace = true }

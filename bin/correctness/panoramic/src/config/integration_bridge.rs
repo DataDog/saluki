@@ -655,7 +655,12 @@ mod tests {
     #[test]
     fn translation_rejects_a_step_on_another_participant() {
         let planned_config = CaseValues::default();
-        for factory in REGISTERED_STEPS {
+        for factory in REGISTERED_STEPS.iter().filter(|factory| {
+            matches!(
+                factory.name(),
+                FileContains::NAME | LogContains::NAME | LogNotContains::NAME
+            )
+        }) {
             for (parallel, label) in [(false, "1"), (true, "1.1")] {
                 let mut file: CaseFile = serde_saphyr::from_str(PARTICIPANT_FIELDS).unwrap();
                 let mut fields = valid_fields(factory.name());
@@ -688,7 +693,7 @@ mod tests {
     }
 
     #[test]
-    fn every_registered_step_translates_to_a_log_or_file_assertion_on_every_subject_os() {
+    fn only_log_and_file_steps_translate_on_every_subject_os() {
         let planned_config = CaseValues::default();
         for factory in REGISTERED_STEPS {
             let yaml = PARTICIPANT_FIELDS
@@ -702,14 +707,24 @@ mod tests {
                 fields,
             })];
             for os in &file.subject_os {
-                let config = integration_config(
+                let result = integration_config(
                     &file,
                     "alpha",
                     Path::new("alpha/config.yaml"),
                     |_, _| None,
                     |_| Some(&planned_config),
-                )
-                .unwrap();
+                );
+                if !matches!(
+                    factory.name(),
+                    FileContains::NAME | LogContains::NAME | LogNotContains::NAME
+                ) {
+                    assert_eq!(
+                        result.unwrap_err(),
+                        format!("step 1 '{}' has no integration runner equivalent", factory.name())
+                    );
+                    continue;
+                }
+                let config = result.unwrap();
                 let [AssertionStep::Single(assertion)] = config.procedure.as_slice() else {
                     panic!("expected one assertion for '{}' on {os:?}", factory.name());
                 };

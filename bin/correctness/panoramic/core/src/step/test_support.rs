@@ -1,8 +1,12 @@
 //! Step execution fixtures and readers for native lifecycle tests.
 
-use std::{path::Path, sync::Mutex, time::SystemTime};
+use std::{
+    collections::VecDeque,
+    path::Path,
+    sync::{Arc, Mutex},
+    time::SystemTime,
+};
 
-use airlock::{exec::ExecOutput, files::FileStat};
 use saluki_error::GenericError;
 use serde_json::{json, Value};
 use tokio::sync::watch;
@@ -11,16 +15,17 @@ use super::*;
 use crate::{
     artifact::ArtifactRole,
     case::{CaseLoader, Registries, TypedCase, TypedCaseLoader},
-    endpoint::{ResolvedAddress, RunnerHostRoute},
-    handle::ExecCommand,
+    endpoint::{Endpoint, Port, ResolvedAddress},
     layout::{Os, Realization, RealizationKind},
-    observe::{output::OutputLine, Capture, ParticipantExit, ProcessOutput},
-    participant::{FactDeclaration, OutputStream, ParticipantType},
+    observe::{
+        exit_record::RecordRefresh, output::OutputLine, Capture, ParticipantExit, ProcessObservation, ProcessOutput,
+    },
+    participant::{EffectiveConfig, FactDeclaration, OutputStream, ParticipantType},
     plan::Planner,
     probe::{AttemptLimits, ProbeAnswer},
 };
 
-struct Fixture;
+struct Fixture(&'static [&'static str]);
 
 impl ParticipantType for Fixture {
     fn name(&self) -> &'static str {
@@ -33,7 +38,13 @@ impl ParticipantType for Fixture {
         &[]
     }
     fn processes(&self) -> &'static [&'static str] {
-        &["main", "worker"]
+        self.0
+    }
+    fn endpoints(&self, _: Realization, _: &EffectiveConfig) -> Result<BTreeMap<String, Endpoint>, String> {
+        Ok(BTreeMap::from([
+            ("tcp".into(), Endpoint::tcp(Port::Fixed(1001))),
+            ("udp".into(), Endpoint::udp(Port::Fixed(1002))),
+        ]))
     }
     fn facts(&self, _: Realization) -> &'static [FactDeclaration] {
         &[FactDeclaration {
@@ -67,8 +78,9 @@ pub async fn run_step(factory: &dyn StepFactory, fields: &StepFields) -> StepRep
 pub async fn run_step_with(
     factory: &dyn StepFactory, fields: &StepFields, fake: Option<&FakeParticipant>,
 ) -> StepReport {
+    let fixture = Fixture(fake.map_or(&["main", "worker"][..], |fake| fake.process_names));
     let registries = Registries {
-        participant_types: &[&Fixture],
+        participant_types: &[&fixture],
         steps: &[factory],
         typed_case_roles: &[],
     };
@@ -80,7 +92,7 @@ pub async fn run_step_with(
         "procedure": [fields],
     })
     .to_string();
-    let case = CaseLoader::new(registries, Fixture, "fixture")
+    let case = CaseLoader::new(registries, Fixture(fixture.0), "fixture")
         .load_content(&content, "case", Path::new("cases/case/config.yaml"))
         .unwrap()
         .remove(0);
@@ -94,6 +106,29 @@ pub async fn run_step_with(
     let crate::case::ProcedureNode::Step(step) = &plan.procedure()[0] else {
         panic!("step tests have one sequential step");
     };
+    let mut refreshers = tokio::task::JoinSet::new();
+    if let Some(fake) = fake {
+        for process in fake.processes.values() {
+            let mut requests = process.requests.clone();
+            let served = process.served.clone();
+            let status = process.status.clone();
+            let reveal = process.reveal.clone();
+            let delay = process.refresh_delay;
+            refreshers.spawn(async move {
+                while requests.changed().await.is_ok() {
+                    let ticket = *requests.borrow_and_update();
+                    match delay {
+                        Some(delay) => tokio::time::sleep(delay).await,
+                        None => std::future::pending().await,
+                    }
+                    if let Some(observation) = reveal.lock().unwrap().take() {
+                        status.send_replace(observation);
+                    }
+                    served.send_replace(ticket);
+                }
+            });
+        }
+    }
     let participants = fake
         .map(|fake| {
             BTreeMap::from([(
@@ -111,22 +146,39 @@ pub async fn run_step_with(
 
 type FileAnswer = Result<Option<Vec<u8>>, HandleError>;
 
-/// A participant whose output, capture state and files can change while a step runs.
+struct FakeProcess {
+    refresh_delay: Option<Duration>,
+    status: watch::Sender<ExitObservation>,
+    requests: watch::Receiver<u64>,
+    served: watch::Sender<u64>,
+    reveal: Arc<Mutex<Option<ExitObservation>>>,
+}
+
+/// A participant with scripted output, exits, file reads and probe answers.
 pub struct FakeParticipant {
     observation: ParticipantObservation,
     exit: watch::Sender<ParticipantExit>,
     capture: watch::Sender<Capture>,
     process_captures: BTreeMap<&'static str, watch::Sender<Capture>>,
     files: Mutex<BTreeMap<String, FileAnswer>>,
+    process_names: &'static [&'static str],
+    processes: BTreeMap<&'static str, FakeProcess>,
+    probes: Mutex<VecDeque<Result<ProbeAnswer, HandleError>>>,
 }
 
 impl Default for FakeParticipant {
     fn default() -> Self {
+        Self::new(&["main", "worker"])
+    }
+}
+
+impl FakeParticipant {
+    /// Creates a participant declaring the given process names.
+    pub fn new(process_names: &'static [&'static str]) -> Self {
         let (exit, exit_rx) = watch::channel(ParticipantExit::Running);
         let (capture, capture_rx) = watch::channel(Capture::Following);
         let mut observation = ParticipantObservation::new(exit_rx, capture_rx, Default::default(), Default::default());
-        let process_captures = Fixture
-            .processes()
+        let process_captures = process_names
             .iter()
             .map(|&name| {
                 let (tx, rx) = watch::channel(Capture::Following);
@@ -140,17 +192,78 @@ impl Default for FakeParticipant {
                 (name, tx)
             })
             .collect();
+        let processes = process_names
+            .iter()
+            .map(|&name| {
+                let (status, status_rx) = watch::channel(ExitObservation::Running);
+                let (requests, requests_rx) = watch::channel(0);
+                let (served, served_rx) = watch::channel(0);
+                observation.processes.insert(
+                    name,
+                    ProcessObservation::Record {
+                        status: status_rx,
+                        refresh: Some(Arc::new(RecordRefresh {
+                            requests,
+                            served: served_rx,
+                        })),
+                    },
+                );
+                (
+                    name,
+                    FakeProcess {
+                        refresh_delay: Some(Duration::ZERO),
+                        status,
+                        requests: requests_rx,
+                        served,
+                        reveal: Arc::new(Mutex::new(None)),
+                    },
+                )
+            })
+            .collect();
         Self {
             observation,
             exit,
             capture,
             process_captures,
             files: Mutex::new(BTreeMap::new()),
+            process_names,
+            processes,
+            probes: Mutex::new(VecDeque::new()),
         }
     }
-}
 
-impl FakeParticipant {
+    /// Sets the named process's exit observation.
+    ///
+    /// # Panics
+    ///
+    /// Panics for a process the fixture does not declare.
+    pub fn set_exit(&self, process: &str, observation: ExitObservation) {
+        self.processes[process].status.send_replace(observation);
+    }
+
+    /// Reveals an exit only when the running step requests a re-read.
+    ///
+    /// # Panics
+    ///
+    /// Panics for a process the fixture does not declare.
+    pub fn reveal_on_refresh(&self, process: &str, observation: ExitObservation) {
+        *self.processes[process].reveal.lock().unwrap() = Some(observation);
+    }
+
+    /// Delays a process's re-read response; `None` leaves requests pending.
+    ///
+    /// # Panics
+    ///
+    /// Panics for a process the fixture does not declare.
+    pub fn delay_refresh(&mut self, process: &str, delay: Option<Duration>) {
+        self.processes.get_mut(process).unwrap().refresh_delay = delay;
+    }
+
+    /// Queues a probe result; the last queued answer repeats.
+    pub fn push_probe(&self, answer: Result<ProbeAnswer, HandleError>) {
+        self.probes.lock().unwrap().push_back(answer);
+    }
+
     /// Appends a line tagged with its process, or participant-wide output for `None`.
     pub fn push_line(&self, process: Option<&'static str>, text: &str) {
         self.observation.lines.push(OutputLine {
@@ -190,142 +303,30 @@ impl Primitives for FakeParticipant {
     async fn read_file(&self, path: &str) -> Result<Option<Vec<u8>>, HandleError> {
         self.files.lock().unwrap().get(path).cloned().unwrap_or(Ok(None))
     }
-    async fn stat(&self, _: &str) -> Result<Option<FileStat>, HandleError> {
+    async fn stat(&self, _: &str) -> Result<Option<FileStatus>, HandleError> {
         panic!("file and output steps do not stat files");
     }
     async fn probe(&self, _: &ResolvedAddress, _: &AttemptLimits) -> Result<ProbeAnswer, HandleError> {
-        panic!("file and output steps do not probe endpoints");
+        let mut probes = self.probes.lock().unwrap();
+        if probes.len() > 1 {
+            probes.pop_front().unwrap()
+        } else {
+            probes.front().expect("the step must script its probe answers").clone()
+        }
     }
     async fn send(&self, _: &ResolvedAddress, _: &[u8], _: &AttemptLimits) -> Result<(), HandleError> {
         panic!("file and output steps do not send payloads");
     }
 }
 
-/// Reads a started participant's container ID for daemon-side fault injection.
-pub fn container_id(cx: &StepContext<'_>, on: &str) -> Option<String> {
-    cx.late_fact(on, LateFact::ContainerId).map(str::to_owned)
-}
-
-/// Waits for a named process, reporting a step error if its exit is unknown.
-///
-/// # Panics
-///
-/// Panics if the step did not declare an existing participant and process.
-pub async fn wait_for_exit(cx: &StepContext<'_>, on: &str, process: &str) -> StepReport {
-    use crate::{observe::ExitObservation, record::AssertionStatus};
-    let started = tokio::time::Instant::now();
-    let observation = cx
-        .handle(on)
-        .unwrap()
-        .observation
-        .process(process)
-        .unwrap()
-        .settled()
-        .await;
-    let (status, message) = match observation {
-        ExitObservation::Exited(status) if status.code == Some(0) => (AssertionStatus::Passed, "process exited".into()),
-        ExitObservation::Exited(status) => (AssertionStatus::Failed, format!("process exited: {status:?}")),
-        ExitObservation::Undetermined(reason) => (AssertionStatus::Errored, reason),
-        ExitObservation::Running => unreachable!("settled waits for a terminal observation"),
-    };
-    StepReport::new(started, status, message)
-}
-
-/// Waits for an exact output line, reporting a step error if capture is lost or overflows.
-///
-/// # Panics
-///
-/// Panics if the step did not declare an existing participant.
-pub async fn wait_for_output(cx: &StepContext<'_>, on: &str, text: &str) -> StepReport {
-    use crate::{probe::POLL_INTERVAL, record::AssertionStatus};
-    let started = tokio::time::Instant::now();
-    let handle = cx.handle(on).unwrap();
-    let mut output = handle.output(None);
-    loop {
-        let batch = output.read();
-        if batch.lines.iter().any(|line| line == text) {
-            return StepReport::new(started, AssertionStatus::Passed, format!("{text} observed"));
-        }
-        if let OutputEnd::Failed(reason) = batch.end {
-            return StepReport::new(started, AssertionStatus::Errored, reason);
-        }
-        tokio::time::sleep(POLL_INTERVAL).await;
-    }
-}
-
-/// Returns a direct runner-host route's port, or `None` for a missing or courier route.
+/// Returns a direct request route's port for tests that issue their own HTTP requests.
+/// Returns `None` for a missing or courier route.
 pub fn runner_host_port(
     cx: &StepContext<'_>, server: &str, endpoint: &str, operation: EndpointOperation,
 ) -> Option<u16> {
-    match cx.runner_host_route(server, endpoint, operation)? {
+    match cx.plan.runner_host_route(server, endpoint, operation)? {
         RunnerHostRoute::Direct(address) => address.port,
         RunnerHostRoute::Courier(_) => None,
-    }
-}
-
-/// Sends bytes through the endpoint's planned runner-host route, with a ten-second attempt limit.
-///
-/// # Errors
-///
-/// Returns an error for a missing route or participant, or a failed send.
-pub async fn send(cx: &StepContext<'_>, server: &str, endpoint: &str, payload: &[u8]) -> Result<(), String> {
-    let route = cx
-        .runner_host_route(server, endpoint, EndpointOperation::Send)
-        .ok_or_else(|| format!("no send route for '{server}.{endpoint}'"))?;
-    let handle = cx
-        .handle(server)
-        .ok_or_else(|| format!("participant '{server}' has not started"))?;
-    crate::handle::send_from_runner_host(
-        route,
-        handle.primitives,
-        payload,
-        &crate::probe::AttemptLimits::new(Duration::from_secs(10)),
-    )
-    .await
-    .map_err(|error| error.to_string())
-}
-
-/// Runs a command through a started participant's backend with a ten-second limit.
-///
-/// # Errors
-///
-/// Returns an error if the participant is missing or execution fails.
-pub async fn exec(cx: &StepContext<'_>, on: &str, argv: &[&str]) -> Result<airlock::exec::ExecOutput, String> {
-    let handle = cx
-        .handle(on)
-        .ok_or_else(|| format!("participant '{on}' has not started"))?;
-    handle
-        .primitives
-        .exec(
-            crate::handle::ExecCommand {
-                argv: argv.iter().map(|arg| (*arg).into()).collect(),
-                env: Vec::new(),
-                stdin: None,
-            },
-            Duration::from_secs(10),
-        )
-        .await
-        .map_err(|error| error.to_string())
-}
-
-/// Returns the named process's current exit report, or `None` if it is not observed.
-pub fn process_exit(cx: &StepContext<'_>, on: &str, process: &str) -> Option<crate::result::ProcessExitReport> {
-    Some(cx.handle(on)?.observation.process(process)?.snapshot())
-}
-
-/// Reads the named process's retained output lines.
-///
-/// # Errors
-///
-/// Returns an error for missing observations, a failed capture or an overflowed line buffer.
-pub fn process_output(cx: &StepContext<'_>, on: &str, process: &str) -> Result<Vec<String>, String> {
-    let handle = cx
-        .handle(on)
-        .ok_or_else(|| format!("participant '{on}' has not started"))?;
-    let batch = handle.output(Some(process)).read();
-    match batch.end {
-        OutputEnd::Failed(reason) => Err(reason),
-        OutputEnd::Open | OutputEnd::Complete => Ok(batch.lines),
     }
 }
 
@@ -336,12 +337,16 @@ mod tests {
     #[test]
     fn output_cursors_filter_processes_and_advance_independently() {
         let fake = FakeParticipant::default();
-        let handle = Handle {
-            primitives: &fake,
+        let mut all = OutputCursor {
             observation: &fake.observation,
+            process: None,
+            cursor: 0,
         };
-        let mut all = handle.output(None);
-        let mut worker = handle.output(Some("worker"));
+        let mut worker = OutputCursor {
+            observation: &fake.observation,
+            process: Some("worker"),
+            cursor: 0,
+        };
         fake.push_line(None, "shared");
         fake.push_line(Some("main"), "main line");
         fake.push_line(Some("worker"), "worker line");
@@ -357,11 +362,11 @@ mod tests {
     fn output_completes_only_after_exit_and_every_capture_finishes() {
         for exit_first in [false, true] {
             let fake = FakeParticipant::default();
-            let handle = Handle {
-                primitives: &fake,
+            let mut output = OutputCursor {
                 observation: &fake.observation,
+                process: None,
+                cursor: 0,
             };
-            let mut output = handle.output(Some("main"));
             fake.capture.send_replace(Capture::Complete);
             fake.process_captures["main"].send_replace(Capture::Complete);
             if exit_first {
@@ -386,31 +391,100 @@ mod tests {
     }
 
     #[test]
-    fn filtered_output_reports_a_failure_in_another_processs_capture() {
+    fn filtered_output_ignores_other_captures_and_reports_its_own_failure() {
         let fake = FakeParticipant::default();
-        let handle = Handle {
-            primitives: &fake,
+        let mut output = OutputCursor {
             observation: &fake.observation,
+            process: Some("worker"),
+            cursor: 0,
         };
-        let mut output = handle.output(Some("worker"));
         fake.process_captures["main"].send_replace(Capture::Failed {
             reason: "main capture lost".into(),
         });
         fake.push_line(Some("worker"), "worker line");
         let batch = output.read();
         assert_eq!(batch.lines, ["worker line"]);
-        assert_eq!(batch.end, OutputEnd::Failed("main capture lost".into()));
+        assert_eq!(batch.end, OutputEnd::Open);
+        fake.fail_capture("participant capture lost");
+        assert_eq!(output.read().end, OutputEnd::Open);
+        fake.process_captures["worker"].send_replace(Capture::Failed {
+            reason: "worker capture lost".into(),
+        });
+        assert_eq!(output.read().end, OutputEnd::Failed("worker capture lost".into()));
+    }
+
+    #[test]
+    fn a_process_owning_the_container_output_reports_its_capture_failure() {
+        let mut fake = FakeParticipant::default();
+        fake.observation.outputs.get_mut("main").unwrap().capture = fake.capture.subscribe();
+        let mut output = OutputCursor {
+            observation: &fake.observation,
+            process: Some("main"),
+            cursor: 0,
+        };
+        fake.fail_capture("log stream lost");
+        assert_eq!(output.read().end, OutputEnd::Failed("log stream lost".into()));
+    }
+
+    #[test]
+    fn an_all_process_cursor_reports_any_process_capture_failure() {
+        let fake = FakeParticipant::default();
+        let mut output = OutputCursor {
+            observation: &fake.observation,
+            process: None,
+            cursor: 0,
+        };
+        fake.process_captures["worker"].send_replace(Capture::Failed {
+            reason: "worker capture lost".into(),
+        });
+        assert_eq!(output.read().end, OutputEnd::Failed("worker capture lost".into()));
+    }
+
+    #[test]
+    fn filtered_output_completes_after_its_capture_and_the_participant_exit() {
+        for exit_first in [false, true] {
+            let fake = FakeParticipant::default();
+            let mut output = OutputCursor {
+                observation: &fake.observation,
+                process: Some("main"),
+                cursor: 0,
+            };
+            if exit_first {
+                fake.exit.send_replace(ParticipantExit::Exited { code: 0, error: None });
+            } else {
+                fake.process_captures["main"].send_replace(Capture::Complete);
+            }
+            assert_eq!(output.read().end, OutputEnd::Open);
+            fake.exit.send_replace(ParticipantExit::Exited { code: 0, error: None });
+            fake.process_captures["main"].send_replace(Capture::Complete);
+            assert_eq!(output.read().end, OutputEnd::Complete);
+        }
+    }
+
+    #[test]
+    fn line_buffer_overflow_fails_a_process_filtered_cursor() {
+        let mut fake = FakeParticipant::default();
+        fake.observation.lines = crate::observe::output::OutputLines::new(1);
+        let mut output = OutputCursor {
+            observation: &fake.observation,
+            process: Some("worker"),
+            cursor: 0,
+        };
+        fake.push_line(Some("main"), "overflow");
+        assert!(
+            matches!(output.read().end, OutputEnd::Failed(reason) if reason.contains("in-memory output exceeded the 1-byte line-text bound"))
+        );
     }
 
     #[test]
     fn output_returns_retained_lines_before_capture_failure_or_overflow() {
         let mut fake = FakeParticipant::default();
         fake.observation.lines = crate::observe::output::OutputLines::new(5);
-        let handle = Handle {
-            primitives: &fake,
+        let mut output = OutputCursor {
             observation: &fake.observation,
+            process: None,
+            cursor: 0,
         };
-        let mut output = handle.output(None);
         fake.push_line(None, "first");
         fake.fail_capture("capture lost");
         let batch = output.read();

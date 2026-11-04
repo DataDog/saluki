@@ -252,9 +252,29 @@ The native log and file steps accept `on`, `pattern` and an optional `regex` fla
   observed file state.
 
 Capture failures and failed read mechanisms are errors, not assertion failures. Output steps scan available lines
-before reporting a capture failure. A failure in any capture of the participant errors the step, even when `process`
-restricts the lines it searches. The integration bridge translates these three steps; log steps on the bridge must
-omit `process`.
+before reporting a capture failure. With `process`, only that process's capture failure errors the step; a process
+that uses container output also observes failures of that capture. Without `process`, a failure in any capture of
+the participant errors the step. The shared line-buffer bound applies to every cursor, even when narrowed to one
+process.
+
+Native process and endpoint steps also require `on`:
+
+- `process_stable_for` requires `duration` and optionally accepts `process`. It checks the named process, or every
+  declared process when `process` is omitted. The participant must declare at least one process. Every checked
+  process must be running at the start, throughout the window and at the end. An exit before or during the window
+  fails, even if a supervisor restarts the process.
+  The step concurrently re-reads exit records at the end, allowing up to five seconds for all reads.
+- `exits_with` requires `process`, `code` and `timeout`. It waits for the process's first exit and compares the code
+  exactly: code 10 does not satisfy code 1. A different code, a signal death or a process still running at timeout
+  fails. It re-reads the exit record before reporting a timeout.
+- `port_listening` requires `endpoint` and `timeout`. It probes the named endpoint through its planned route until
+  it listens or the timeout expires. An addressable UDP endpoint also passes, because UDP cannot confirm a listener.
+  A timeout fails after any product answer; it errors if only harness failures prevented observation. A participant
+  exit does not end the retry window early.
+
+An undetermined process exit errors stability and exit assertions. A process's first recorded exit remains final
+across supervised restarts. The integration bridge translates only `log_contains`, `log_not_contains` and
+`file_contains`; log steps on the bridge must omit `process`.
 
 The `observe` phase gives exited participants up to five seconds to finish
 capturing output; it also runs after a setup failure if any participant started. Running participants are skipped, and

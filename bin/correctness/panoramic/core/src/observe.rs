@@ -1,6 +1,6 @@
 //! Participant exit and output observations maintained by case-owned tasks.
 
-use std::{collections::BTreeMap, future::Future, path::PathBuf, sync::Arc, time::SystemTime};
+use std::{collections::BTreeMap, fmt, future::Future, path::PathBuf, sync::Arc, time::SystemTime};
 
 use airlock::{exec::OutputChunk, observe::ContainerExit};
 use futures::{Stream, StreamExt as _};
@@ -19,7 +19,7 @@ use crate::{
 
 /// A process exit reported by its declared channel.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ExitStatus {
+pub struct ExitStatus {
     /// The exit code. Docker represents signal deaths as 128 plus the signal number.
     pub code: Option<i32>,
     /// The signal from an exit record, set for a signal death instead of `code`.
@@ -30,9 +30,25 @@ pub(crate) struct ExitStatus {
     pub recorded_at: Option<SystemTime>,
 }
 
+impl fmt::Display for ExitStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(code) = self.code {
+            write!(f, "code {code}")?;
+        } else if let Some(signal) = self.signal {
+            write!(f, "signal {signal}")?;
+        } else {
+            f.write_str("unknown status")?;
+        }
+        if let Some(reason) = &self.reason {
+            write!(f, " ({reason})")?;
+        }
+        Ok(())
+    }
+}
+
 /// A named process's first exit, or the state of waiting for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ExitObservation {
+pub enum ExitObservation {
     /// The declared channel is awaiting an exit.
     Running,
     /// The first exit, retained across process restarts.
@@ -47,7 +63,10 @@ pub(crate) enum ProcessObservation {
     /// Shares the participant's container exit observation.
     Container(watch::Receiver<ParticipantExit>),
     /// Receives the first recorded exit from a case-owned watcher.
-    Record(watch::Receiver<ExitObservation>),
+    Record {
+        status: watch::Receiver<ExitObservation>,
+        refresh: Option<Arc<exit_record::RecordRefresh>>,
+    },
 }
 
 impl ProcessObservation {
@@ -74,7 +93,7 @@ impl ProcessObservation {
                 };
                 (observation, receiver.has_changed().is_err())
             }
-            Self::Record(receiver) => {
+            Self::Record { status: receiver, .. } => {
                 let current = receiver.borrow();
                 (current.clone(), receiver.has_changed().is_err())
             }
@@ -86,10 +105,43 @@ impl ProcessObservation {
         }
     }
 
+    /// Re-reads a running process's record, waiting for a read started after this request.
+    pub(crate) async fn refresh(&self) -> ExitObservation {
+        let current = self.current();
+        let Self::Record {
+            refresh: Some(refresh), ..
+        } = self
+        else {
+            return current;
+        };
+        if current != ExitObservation::Running {
+            return current;
+        }
+        let mut served = refresh.served.clone();
+        let mut ticket = 0;
+        refresh.requests.send_modify(|value| {
+            *value += 1;
+            ticket = *value;
+        });
+        loop {
+            if *served.borrow_and_update() >= ticket {
+                return self.current();
+            }
+            tokio::select! {
+                observation = self.settled() => return observation,
+                changed = served.changed() => {
+                    if changed.is_err() {
+                        return self.current();
+                    }
+                }
+            }
+        }
+    }
+
     pub(crate) fn snapshot(&self) -> ProcessExitReport {
         let source = match self {
             Self::Container(_) => ExitSource::Container,
-            Self::Record(_) => ExitSource::Record,
+            Self::Record { .. } => ExitSource::Record,
         };
         match self.current() {
             ExitObservation::Running => ProcessExitReport::Running { source },
@@ -103,10 +155,6 @@ impl ProcessObservation {
         }
     }
 
-    #[cfg_attr(
-        not(any(test, feature = "test-util")),
-        expect(dead_code, reason = "Exit steps and the run report read process exit observations.")
-    )]
     /// Waits for an exit or an observation error, including loss of the channel.
     pub(crate) async fn settled(&self) -> ExitObservation {
         let mut observation = self.clone();
@@ -119,7 +167,7 @@ impl ProcessObservation {
                 Self::Container(receiver) => {
                     let _ = receiver.changed().await;
                 }
-                Self::Record(receiver) => {
+                Self::Record { status: receiver, .. } => {
                     let _ = receiver.changed().await;
                 }
             }
@@ -306,10 +354,6 @@ impl ParticipantObservation {
         capture_state(&self.capture_rx)
     }
 
-    #[cfg_attr(
-        not(any(test, feature = "test-util")),
-        expect(dead_code, reason = "Exit steps and the run report read process exit observations.")
-    )]
     /// Looks up a process declared by the participant's type.
     pub(crate) fn process(&self, name: &str) -> Option<&ProcessObservation> {
         self.processes.get(name)
@@ -424,6 +468,24 @@ mod tests {
     }
 
     #[test]
+    fn exit_status_displays_codes_signals_and_reasons() {
+        for (code, signal, reason, expected) in [
+            (Some(1), None, None, "code 1"),
+            (None, Some(9), None, "signal 9"),
+            (Some(3), None, Some("runtime failure"), "code 3 (runtime failure)"),
+            (None, Some(15), Some("stopped"), "signal 15 (stopped)"),
+        ] {
+            let status = ExitStatus {
+                code,
+                signal,
+                reason: reason.map(str::to_owned),
+                recorded_at: None,
+            };
+            assert_eq!(status.to_string(), expected);
+        }
+    }
+
+    #[test]
     fn exit_reports_keep_the_state_source_code_signal_and_failure_reason() {
         use serde_json::json;
         for (exit, expected) in [
@@ -472,7 +534,14 @@ mod tests {
         ] {
             let (_tx, rx) = watch::channel(exit);
             assert_eq!(
-                serde_json::to_value(ProcessObservation::Record(rx).snapshot()).unwrap(),
+                serde_json::to_value(
+                    ProcessObservation::Record {
+                        status: rx,
+                        refresh: None
+                    }
+                    .snapshot()
+                )
+                .unwrap(),
                 expected
             );
         }
@@ -521,10 +590,13 @@ mod tests {
                 },
             );
             let (_tx, rx) = watch::channel(ExitObservation::Undetermined("record missing".into()));
-            fixture
-                .observation
-                .processes
-                .insert(name, ProcessObservation::Record(rx));
+            fixture.observation.processes.insert(
+                name,
+                ProcessObservation::Record {
+                    status: rx,
+                    refresh: None,
+                },
+            );
             specs.push(spec);
         }
         let report = serde_json::to_value(fixture.observation.snapshot(&specs)).unwrap();
@@ -594,6 +666,7 @@ mod tests {
             let process = fixture.observation.process("main").unwrap();
             assert!(fixture.observation.process("unknown").is_none());
             assert_eq!(process.current(), ExitObservation::Running);
+            assert_eq!(process.refresh().await, ExitObservation::Running);
             let started = Instant::now();
             let (_, observed) = tokio::join!(
                 async {
@@ -604,6 +677,7 @@ mod tests {
             );
             assert_eq!(observed, expected);
             assert_eq!(process.current(), expected);
+            assert_eq!(process.refresh().await, expected);
             assert_eq!(started.elapsed(), Duration::from_secs(1));
         }
     }
@@ -615,7 +689,10 @@ mod tests {
         drop((container_tx, record_tx));
         for observation in [
             ProcessObservation::Container(container_rx),
-            ProcessObservation::Record(record_rx),
+            ProcessObservation::Record {
+                status: record_rx,
+                refresh: None,
+            },
         ] {
             let expected = ExitObservation::Undetermined("exit observation ended without a status".into());
             assert_eq!(observation.current(), expected);

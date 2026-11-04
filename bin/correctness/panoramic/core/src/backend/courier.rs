@@ -2,13 +2,12 @@
 
 use std::{fmt, future::Future};
 
-use airlock::exec::ExecOutput;
 use panoramic_courier::{Command, Invocation, Report, ReportError, Target};
 use saluki_error::GenericError;
 
 use crate::{
     endpoint::{EndpointKind, ResolvedAddress},
-    handle::{ExecCommand, HandleError},
+    handle::{ExecCommand, ExecOutput, HandleError},
     probe::{AttemptLimits, ProbeAnswer},
 };
 

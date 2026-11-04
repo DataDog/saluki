@@ -197,7 +197,10 @@ fn registered_template_fields_match_step_types_and_other_fields_reject_reference
     for factory in REGISTERED_STEPS {
         let mut fields = valid_fields(factory.name());
         fields.insert("on".into(), Value::String("adp".into()));
-        if factory.name() != "file_contains" {
+        if matches!(
+            factory.name(),
+            "exits_with" | "log_contains" | "log_not_contains" | "process_stable_for"
+        ) {
             fields.insert("process".into(), Value::String("agent".into()));
         }
         assert!(factory
@@ -206,7 +209,7 @@ fn registered_template_fields_match_step_types_and_other_fields_reject_reference
             .all(|field| fields.contains_key(*field)));
         for field in fields
             .keys()
-            .filter(|field| !matches!(field.as_str(), "during" | "timeout"))
+            .filter(|field| fields[*field].is_string() && !matches!(field.as_str(), "duration" | "during" | "timeout"))
         {
             let mut referenced = fields.clone();
             referenced.insert(field.clone(), Value::String("{{ adp.facts.default_log_file }}".into()));
@@ -255,15 +258,15 @@ fn participant_step_errors_name_the_canonical_file_and_step() {
     for (fields, expected) in [
         (
             "step: wait_ready",
-            "names unknown step 'wait_ready'; registered steps: file_contains, log_contains, log_not_contains",
+            "names unknown step 'wait_ready'; registered steps: exits_with, file_contains, log_contains, log_not_contains, port_listening, process_stable_for",
         ),
         (
             "step: adp_cli, on: adp, args: [status]",
-            "names unknown step 'adp_cli'; registered steps: file_contains, log_contains, log_not_contains",
+            "names unknown step 'adp_cli'; registered steps: exits_with, file_contains, log_contains, log_not_contains, port_listening, process_stable_for",
         ),
         (
-            "step: port_listening, on: adp, port: 58125, protocol: udp, timeout: 1s",
-            "names unknown step 'port_listening'; registered steps: file_contains, log_contains, log_not_contains",
+            "step: port_listening, on: adp, timeout: 1s",
+            "missing field `endpoint`",
         ),
         (
             "step: file_contains, on: adp, path: /logs/output.log, pattern: null, timeout: 1s",

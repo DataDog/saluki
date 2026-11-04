@@ -6,8 +6,8 @@ use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
 
 use airlock::{
     driver::{ContainerRef, Driver, DriverConfig, Protocol},
-    exec::{ExecOutput, ExecRequest},
-    files::{ContainerFile, FileStat},
+    exec::ExecRequest,
+    files::ContainerFile,
     group::{IsolationGroup, SHARED_ROOT},
 };
 use async_trait::async_trait;
@@ -18,10 +18,10 @@ use tokio::sync::watch;
 use super::{courier, RunBackends};
 use crate::{
     endpoint::{ResolvedAddress, RunnerHostPort, Transport},
-    handle::{ExecCommand, HandleError, Primitives},
+    handle::{ExecCommand, ExecOutput, FileKind, FileStatus, HandleError, Primitives},
     layout::Os,
     observe::{
-        exit_record::watch_record,
+        exit_record::{watch_record, RecordRefresh},
         follow_output,
         output::{host_output_file, FileOutput, FILE_OUTPUT_START},
         watch_exit, Capture, ExitObservation, ParticipantExit, ParticipantObservation, ProcessObservation,
@@ -210,6 +210,8 @@ impl LinuxParticipant {
                     let name = spec.name;
                     let exit = exit_rx.clone();
                     let (tx, rx) = watch::channel(ExitObservation::Running);
+                    let (requests, requests_rx) = watch::channel(0);
+                    let (served_tx, served) = watch::channel(0);
                     tasks.spawn(async move {
                         watch_record(
                             || participant.driver.read_file(&path),
@@ -218,10 +220,14 @@ impl LinuxParticipant {
                             &participant.name,
                             name,
                             &path,
+                            (requests_rx, served_tx),
                         )
                         .await;
                     });
-                    ProcessObservation::Record(rx)
+                    ProcessObservation::Record {
+                        status: rx,
+                        refresh: Some(Arc::new(RecordRefresh { requests, served })),
+                    }
                 }
             };
             observation.processes.insert(spec.name, process);
@@ -306,6 +312,7 @@ impl Primitives for LinuxParticipant {
                     self.name,
                 ),
             })?
+            .map(ExecOutput::from)
             .map_err(|error| HandleError::Harness {
                 message: format!("Exec in participant '{}' failed: {error:#}", self.name),
             })
@@ -317,15 +324,19 @@ impl Primitives for LinuxParticipant {
         })
     }
 
-    async fn stat(&self, path: &str) -> Result<Option<FileStat>, HandleError> {
-        self.driver.stat(path).await.map_err(|error| HandleError::Harness {
-            message: format!("Failed to stat '{path}' in participant '{}': {error:#}", self.name),
-        })
+    async fn stat(&self, path: &str) -> Result<Option<FileStatus>, HandleError> {
+        self.driver
+            .stat(path)
+            .await
+            .map(|status| status.map(FileStatus::from))
+            .map_err(|error| HandleError::Harness {
+                message: format!("Failed to stat '{path}' in participant '{}': {error:#}", self.name),
+            })
     }
 
     async fn probe(&self, address: &ResolvedAddress, limits: &AttemptLimits) -> Result<ProbeAnswer, HandleError> {
         courier::probe(
-            |command| self.driver.exec(exec_request(command)),
+            |command| async { self.driver.exec(exec_request(command)).await.map(ExecOutput::from) },
             COURIER_PATH,
             address,
             limits,
@@ -335,13 +346,42 @@ impl Primitives for LinuxParticipant {
 
     async fn send(&self, address: &ResolvedAddress, payload: &[u8], limits: &AttemptLimits) -> Result<(), HandleError> {
         courier::send(
-            |command| self.driver.exec(exec_request(command)),
+            |command| async { self.driver.exec(exec_request(command)).await.map(ExecOutput::from) },
             COURIER_PATH,
             address,
             payload,
             limits,
         )
         .await
+    }
+}
+
+impl From<airlock::exec::ExecOutput> for ExecOutput {
+    fn from(output: airlock::exec::ExecOutput) -> Self {
+        Self {
+            stdout: output.stdout,
+            stderr: output.stderr,
+            exit_code: output.exit_code,
+        }
+    }
+}
+
+impl From<airlock::files::FileStat> for FileStatus {
+    fn from(status: airlock::files::FileStat) -> Self {
+        use airlock::files::FileKind as BackendKind;
+        let kind = match status.kind {
+            BackendKind::File => FileKind::File,
+            BackendKind::Directory => FileKind::Directory,
+            BackendKind::Symlink { target } => FileKind::Symlink { target },
+            BackendKind::Socket => FileKind::Socket,
+            BackendKind::NamedPipe => FileKind::NamedPipe,
+            BackendKind::Other => FileKind::Other,
+        };
+        Self {
+            kind,
+            mode: status.mode,
+            size: status.size,
+        }
     }
 }
 
@@ -390,6 +430,57 @@ pub(crate) mod daemon_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_output_preserves_backend_bytes_and_exit_code() {
+        let output = ExecOutput::from(airlock::exec::ExecOutput {
+            stdout: vec![0, 255, b'\n'],
+            stderr: vec![254, 0],
+            exit_code: 17,
+        });
+        assert_eq!(
+            output,
+            ExecOutput {
+                stdout: vec![0, 255, b'\n'],
+                stderr: vec![254, 0],
+                exit_code: 17
+            }
+        );
+    }
+
+    #[test]
+    fn file_status_preserves_backend_kinds_modes_and_sizes() {
+        use airlock::files::FileKind as BackendKind;
+        for (kind, expected) in [
+            (BackendKind::File, FileKind::File),
+            (BackendKind::Directory, FileKind::Directory),
+            (
+                BackendKind::Symlink {
+                    target: "/target".into(),
+                },
+                FileKind::Symlink {
+                    target: "/target".into(),
+                },
+            ),
+            (BackendKind::Socket, FileKind::Socket),
+            (BackendKind::NamedPipe, FileKind::NamedPipe),
+            (BackendKind::Other, FileKind::Other),
+        ] {
+            let status = FileStatus::from(airlock::files::FileStat {
+                kind,
+                mode: 0o4755,
+                size: 123456789,
+            });
+            assert_eq!(
+                status,
+                FileStatus {
+                    kind: expected,
+                    mode: 0o4755,
+                    size: 123456789
+                }
+            );
+        }
+    }
 
     #[test]
     fn every_container_gets_its_name_and_observation_directories() {

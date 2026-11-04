@@ -8,8 +8,7 @@ use panoramic_core::{
     endpoint::EndpointOperation,
     probe::{AttemptLimits, POLL_INTERVAL},
     record::{AssertionStatus, StepReport},
-    result::{ExitSource, ProcessExitReport},
-    step::{test_support, Need, Step, StepContext, StepFactory, StepFields},
+    step::{test_support, ExecCommand, ExitObservation, Need, OutputEnd, Step, StepContext, StepFactory, StepFields},
 };
 use panoramic_participants::{AgentAdp, TOOLS_LINUX_IMAGE};
 use serde_json::json;
@@ -65,7 +64,15 @@ impl Step for Forward {
                 }
                 intakes.push(IntakeClient::new(port));
             }
-            test_support::send(cx, "first", "dogstatsd_forward", PACKET).await?;
+            cx.handle("first")
+                .ok_or("participant 'first' has not started")?
+                .send(
+                    "dogstatsd_forward",
+                    PACKET,
+                    &AttemptLimits::new(Duration::from_secs(10)),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
             loop {
                 let limits = AttemptLimits::new(BUDGET.saturating_sub(started.elapsed()));
                 let packets = tokio::time::timeout(limits.attempt, async {
@@ -205,18 +212,20 @@ impl Step for AgentAction {
         let started = Instant::now();
         let ready = regex::Regex::new(r#"listen_addr:"udp://[^"]+:58125" \| DogStatsD listener started\."#).unwrap();
         let outcome = tokio::time::timeout(AGENT_BUDGET, async {
+            let handle = cx.handle("adp").ok_or("participant 'adp' has not started")?;
             loop {
-                let lines = test_support::process_output(cx, "adp", "adp")?;
+                let batch = handle.output(Some("adp")).read();
+                if let OutputEnd::Failed(reason) = batch.end {
+                    return Err(reason);
+                }
+                let lines = batch.lines;
                 if lines.iter().any(|line| ready.is_match(line)) {
                     break;
                 }
-                if !matches!(
-                    test_support::process_exit(cx, "adp", "adp"),
-                    Some(ProcessExitReport::Running { .. })
-                ) {
+                let exit = handle.exit("adp");
+                if !matches!(exit, ExitObservation::Running) {
                     return Err(format!(
-                        "ADP exited before its listener was ready: {:?}; output: {lines:?}",
-                        test_support::process_exit(cx, "adp", "adp")
+                        "ADP exited before its listener was ready: {exit:?}; output: {lines:?}"
                     ));
                 }
                 tokio::time::sleep(POLL_INTERVAL).await;
@@ -227,7 +236,10 @@ impl Step for AgentAction {
                         .ok_or("intake.api has no runner-host port")?;
                     let intake = IntakeClient::new(port);
                     loop {
-                        test_support::send(cx, "adp", "dogstatsd_udp", PACKET).await?;
+                        handle
+                            .send("dogstatsd_udp", PACKET, &AttemptLimits::new(Duration::from_secs(10)))
+                            .await
+                            .map_err(|error| error.to_string())?;
                         let limits = AttemptLimits::new(AGENT_BUDGET.saturating_sub(started.elapsed()));
                         let metrics = tokio::time::timeout(limits.attempt, intake.metrics())
                             .await
@@ -240,57 +252,74 @@ impl Step for AgentAction {
                     }
                 }
                 Self::Restart => {
-                    let old_pid = test_support::exec(
-                        cx,
-                        "adp",
-                        &["s6-svstat", "-o", "pid", "/var/run/s6/services/data-plane"],
-                    )
-                    .await?;
+                    let old_pid = handle
+                        .exec(
+                            ExecCommand {
+                                argv: ["s6-svstat", "-o", "pid", "/var/run/s6/services/data-plane"]
+                                    .map(String::from)
+                                    .to_vec(),
+                                env: Vec::new(),
+                                stdin: None,
+                            },
+                            Duration::from_secs(10),
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
                     if old_pid.exit_code != 0 {
                         return Err(format!("cannot read ADP's supervised PID: {:?}", old_pid.stderr));
                     }
-                    let killed =
-                        test_support::exec(cx, "adp", &["s6-svc", "-k", "/var/run/s6/services/data-plane"]).await?;
+                    let killed = handle
+                        .exec(
+                            ExecCommand {
+                                argv: ["s6-svc", "-k", "/var/run/s6/services/data-plane"]
+                                    .map(String::from)
+                                    .to_vec(),
+                                env: Vec::new(),
+                                stdin: None,
+                            },
+                            Duration::from_secs(10),
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
                     if killed.exit_code != 0 {
                         return Err(format!("s6-svc failed: {:?}", killed.stderr));
                     }
-                    loop {
-                        match test_support::process_exit(cx, "adp", "adp") {
-                            Some(ProcessExitReport::Running { .. }) => {}
-                            Some(ProcessExitReport::Exited {
-                                code: None,
-                                signal: Some(9),
-                                source: ExitSource::Record,
-                                ..
-                            }) => break,
-                            other => return Err(format!("expected a recorded signal 9 death, got {other:?}")),
-                        }
-                        tokio::time::sleep(POLL_INTERVAL).await;
+                    match handle.wait_for_exit("adp").await {
+                        ExitObservation::Exited(status) if status.code.is_none() && status.signal == Some(9) => {}
+                        other => return Err(format!("expected a recorded signal 9 death, got {other:?}")),
                     }
                     loop {
-                        let lines = test_support::process_output(cx, "adp", "adp")?;
+                        let batch = handle.output(Some("adp")).read();
+                        if let OutputEnd::Failed(reason) = batch.end {
+                            return Err(reason);
+                        }
+                        let lines = batch.lines;
                         let restarted = lines.iter().filter(|line| ready.is_match(line)).count() >= 2;
                         if restarted && lines.iter().any(|line| line.contains("restarting in 2 seconds")) {
                             break;
                         }
                         tokio::time::sleep(POLL_INTERVAL).await;
                     }
-                    let new_pid = test_support::exec(
-                        cx,
-                        "adp",
-                        &["s6-svstat", "-o", "pid", "/var/run/s6/services/data-plane"],
-                    )
-                    .await?;
+                    let new_pid = handle
+                        .exec(
+                            ExecCommand {
+                                argv: ["s6-svstat", "-o", "pid", "/var/run/s6/services/data-plane"]
+                                    .map(String::from)
+                                    .to_vec(),
+                                env: Vec::new(),
+                                stdin: None,
+                            },
+                            Duration::from_secs(10),
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
                     if new_pid.exit_code != 0 || old_pid.stdout == new_pid.stdout || new_pid.stdout == b"-1\n" {
                         return Err(format!(
                             "ADP did not restart with a new PID: {:?} -> {:?}",
                             old_pid.stdout, new_pid.stdout
                         ));
                     }
-                    if !matches!(
-                        test_support::process_exit(cx, "adp", "agent"),
-                        Some(ProcessExitReport::Running { .. })
-                    ) {
+                    if !matches!(handle.exit("agent"), ExitObservation::Running) {
                         return Err("the Agent stopped during ADP's restart".into());
                     }
                     Ok("ADP's signal death was recorded and its supervisor restarted it".into())

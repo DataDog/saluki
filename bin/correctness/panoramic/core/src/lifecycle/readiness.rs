@@ -1,12 +1,12 @@
 //! Waits for the readiness evidence required by a start level.
 
-use airlock::{files::FileKind, observe::ContainerExit};
+use airlock::observe::ContainerExit;
 use futures::future::join_all;
 use tokio::time::{sleep, Instant};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    handle::{http_status_from_runner_host, probe_from_runner_host, HandleError, Primitives},
+    handle::{http_status_from_runner_host, probe_from_runner_host, FileKind, HandleError, Primitives},
     observe::{Capture, ParticipantObservation},
     plan::{ParticipantPlan, PlannedCheck, StartGate},
     probe::{probe, AttemptLimits, ProbeAnswer, ProbeError, POLL_INTERVAL},
@@ -191,11 +191,11 @@ async fn check_once(
 mod tests {
     use std::{collections::VecDeque, future::pending, sync::Mutex, time::Duration};
 
-    use airlock::{exec::ExecOutput, files::FileStat};
     use async_trait::async_trait;
     use tokio::sync::watch;
 
     use super::*;
+    use crate::handle::{ExecOutput, FileStatus};
     use crate::observe::{output::OutputLine, ParticipantExit, ProcessOutput};
     use crate::participant::OutputStream;
     use crate::{
@@ -258,11 +258,11 @@ mod tests {
         async fn read_file(&self, _: &str) -> Result<Option<Vec<u8>>, HandleError> {
             panic!("readiness must stat files");
         }
-        async fn stat(&self, path: &str) -> Result<Option<FileStat>, HandleError> {
+        async fn stat(&self, path: &str) -> Result<Option<FileStatus>, HandleError> {
             let Answer::Stat(kind) = self.answer(format!("stat {path}")).await? else {
                 panic!("expected a stat answer");
             };
-            Ok(kind.map(|kind| FileStat {
+            Ok(kind.map(|kind| FileStatus {
                 kind,
                 mode: 0o600,
                 size: 0,

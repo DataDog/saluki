@@ -9,7 +9,6 @@ use std::{
 
 use airlock::{
     docker::{image_id, Docker},
-    files::FileKind,
     observe::ContainerExit,
 };
 use bollard::{
@@ -306,7 +305,7 @@ async fn a_participant_is_created_from_its_recipe_and_shares_the_host_pid_namesp
         let primitives: &dyn Primitives = &participant;
         assert_eq!(
             primitives.stat(COURIER_PATH).await.unwrap(),
-            Some(FileStat {
+            Some(FileStatus {
                 kind: FileKind::File,
                 mode: 0o755,
                 size: courier_size
@@ -318,7 +317,7 @@ async fn a_participant_is_created_from_its_recipe_and_shares_the_host_pid_namesp
         );
         assert_eq!(
             primitives.stat("/etc/panoramic-test/config").await.unwrap(),
-            Some(FileStat {
+            Some(FileStatus {
                 kind: FileKind::File,
                 mode: 0o600,
                 size: 6

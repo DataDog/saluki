@@ -17,14 +17,17 @@ pub const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const MIN_REQUEST: Duration = Duration::from_millis(1);
 
 /// What a probe learned about an endpoint.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum ProbeAnswer {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProbeAnswer {
     /// The endpoint accepted a connection.
     Listening,
     /// A UDP connect succeeded; listener availability remains unknown.
     Addressable,
     /// The endpoint was unreachable or the probe timed out.
-    NotListening { reason: String },
+    NotListening {
+        /// Why the endpoint could not be reached.
+        reason: String,
+    },
 }
 
 /// Limits for one polling attempt.

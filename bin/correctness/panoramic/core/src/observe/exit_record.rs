@@ -11,17 +11,25 @@ use tokio::{sync::watch, time::sleep};
 use super::{ExitObservation, ExitStatus, ParticipantExit};
 use crate::probe::POLL_INTERVAL;
 
+/// Tickets linking a refresh request to a read that began after it.
+pub(crate) struct RecordRefresh {
+    pub(crate) requests: watch::Sender<u64>,
+    pub(crate) served: watch::Receiver<u64>,
+}
+
 /// Polls the first record line, waiting for its newline while the participant is running.
 /// Reads once more when the participant exits or its wait fails, accepting a final line without a newline.
 /// Publishes one terminal state: the first exit, or an error for a missing, unreadable or malformed record.
 pub(crate) async fn watch_record<F>(
     mut read: impl FnMut() -> F, mut participant_exit: watch::Receiver<ParticipantExit>,
     tx: watch::Sender<ExitObservation>, participant: &str, process: &str, path: &str,
+    (mut requests, served): (watch::Receiver<u64>, watch::Sender<u64>),
 ) where
     F: Future<Output = Result<Option<Vec<u8>>, GenericError>>,
 {
     let observation = loop {
         // Snapshot before reading so an exit during the read still triggers a final read.
+        let requested = *requests.borrow_and_update();
         let exit = participant_exit.borrow_and_update().clone();
         let final_read = !matches!(exit, ParticipantExit::Running);
         let contents = match read().await {
@@ -67,7 +75,9 @@ pub(crate) async fn watch_record<F>(
             }
             ParticipantExit::Running => {}
         }
+        served.send_replace(requested);
         tokio::select! {
+            Ok(()) = requests.changed() => {},
             _ = sleep(POLL_INTERVAL) => {},
             Ok(()) = participant_exit.changed() => {},
         }
@@ -224,6 +234,8 @@ mod tests {
             }));
             let (exit_tx, exit_rx) = watch::channel(ParticipantExit::Running);
             let (tx, rx) = watch::channel(ExitObservation::Running);
+            let (requests, requests_rx) = watch::channel(0);
+            let (served_tx, served) = watch::channel(0);
             let tasks = CaseTasks::new(&CancellationToken::new());
             let watcher = tasks.spawn({
                 let file = file.clone();
@@ -244,6 +256,7 @@ mod tests {
                         "p",
                         "svc",
                         "/exit/svc",
+                        (requests_rx, served_tx),
                     )
                     .await;
                 }
@@ -251,7 +264,10 @@ mod tests {
             Self {
                 file,
                 exit_tx,
-                observation: ProcessObservation::Record(rx),
+                observation: ProcessObservation::Record {
+                    status: rx,
+                    refresh: Some(Arc::new(RecordRefresh { requests, served })),
+                },
                 tasks,
                 watcher,
             }
@@ -282,6 +298,105 @@ mod tests {
             reason: None,
             recorded_at: Some(SystemTime::UNIX_EPOCH + Duration::from_millis(1500)),
         })
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refresh_reads_an_exit_written_since_the_last_poll() {
+        let fixture = Fixture::new(None, false);
+        fixture.read_once().await;
+        fixture.file.lock().unwrap().contents = Some(b"3 0 1.5\n".to_vec());
+        let started = Instant::now();
+        assert_eq!(fixture.observation.refresh().await, exited(3));
+        assert_eq!(started.elapsed(), Duration::ZERO);
+        assert_eq!(fixture.file.lock().unwrap().reads, 2);
+        fixture.finish().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refresh_of_a_running_record_waits_for_a_new_read() {
+        let fixture = Fixture::new(None, false);
+        fixture.read_once().await;
+        let started = Instant::now();
+        let (first, second) = tokio::join!(fixture.observation.refresh(), fixture.observation.refresh());
+        assert_eq!(first, ExitObservation::Running);
+        assert_eq!(second, ExitObservation::Running);
+        assert_eq!(started.elapsed(), Duration::ZERO);
+        assert_eq!(fixture.file.lock().unwrap().reads, 2);
+        fixture.finish().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_read_already_in_progress_cannot_serve_a_new_refresh_ticket() {
+        let file = Arc::new(Mutex::new(FileState {
+            contents: None,
+            error: false,
+            reads: 0,
+        }));
+        let (_exit, exit_rx) = watch::channel(ParticipantExit::Running);
+        let (status_tx, status) = watch::channel(ExitObservation::Running);
+        let (requests, requests_rx) = watch::channel(0);
+        let (served_tx, served) = watch::channel(0);
+        let observation = ProcessObservation::Record {
+            status,
+            refresh: Some(Arc::new(RecordRefresh { requests, served })),
+        };
+        let tasks = CaseTasks::new(&CancellationToken::new());
+        let watcher = tasks.spawn({
+            let file = file.clone();
+            async move {
+                watch_record(
+                    || {
+                        let mut file = file.lock().unwrap();
+                        file.reads += 1;
+                        let contents = file.contents.clone();
+                        async move {
+                            sleep(Duration::from_millis(100)).await;
+                            Ok(contents)
+                        }
+                    },
+                    exit_rx,
+                    status_tx,
+                    "p",
+                    "svc",
+                    "/exit/svc",
+                    (requests_rx, served_tx),
+                )
+                .await;
+            }
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(file.lock().unwrap().reads, 1);
+        file.lock().unwrap().contents = Some(b"3 0 1.5\n".to_vec());
+        let started = Instant::now();
+        assert_eq!(observation.refresh().await, exited(3));
+        assert_eq!(started.elapsed(), Duration::from_millis(200));
+        assert_eq!(file.lock().unwrap().reads, 2);
+        assert_eq!(tasks.stop_all(Instant::now() + TASK_STOP_TIME).await, 0);
+        watcher.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refresh_of_a_settled_record_returns_without_reading_again() {
+        let fixture = Fixture::new(Some(b"3 0 1.5\n"), false);
+        assert_eq!(fixture.settled().await, exited(3));
+        let started = Instant::now();
+        assert_eq!(fixture.observation.refresh().await, exited(3));
+        assert_eq!(started.elapsed(), Duration::ZERO);
+        assert_eq!(fixture.file.lock().unwrap().reads, 1);
+        fixture.finish().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refresh_after_the_record_watcher_stops_is_undetermined() {
+        let fixture = Fixture::new(None, false);
+        fixture.read_once().await;
+        assert_eq!(fixture.tasks.stop_all(Instant::now() + TASK_STOP_TIME).await, 0);
+        assert_eq!(
+            fixture.observation.refresh().await,
+            ExitObservation::Undetermined("exit observation ended without a status".into())
+        );
+        assert_eq!(fixture.file.lock().unwrap().reads, 1);
+        fixture.finish().await;
     }
 
     #[tokio::test(start_paused = true)]
@@ -347,10 +462,18 @@ mod tests {
             "p",
             "svc",
             "/exit/svc",
+            (watch::channel(0).1, watch::channel(0).0),
         )
         .await;
         assert_eq!(reads, 2);
-        assert_eq!(ProcessObservation::Record(rx).current(), exited(3));
+        assert_eq!(
+            ProcessObservation::Record {
+                status: rx,
+                refresh: None
+            }
+            .current(),
+            exited(3)
+        );
     }
 
     #[tokio::test(start_paused = true)]

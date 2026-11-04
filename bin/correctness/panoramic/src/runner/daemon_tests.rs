@@ -8,12 +8,13 @@ use panoramic_core::{
     backend::LateFact,
     layout::{Os, Realization, RealizationKind},
     participant::{ExitChannel, OutputChannel, OutputStream, ProcessSpec, RenderedConfig},
+    probe::POLL_INTERVAL,
     recipe::{
         test_support::{shell, with_output_line_bytes},
         Recipe,
     },
-    record::StepReport,
-    step::{decode_fields, test_support, Need, Step, StepContext, StepFactory, StepFields},
+    record::{AssertionStatus, StepReport},
+    step::{decode_fields, ExitObservation, Need, OutputEnd, Step, StepContext, StepFactory, StepFields},
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -99,14 +100,40 @@ impl Step for Wait {
         BOUND
     }
     async fn run(&self, cx: &StepContext<'_>) -> StepReport {
-        let _ = self.entered.send(test_support::container_id(cx, "first").unwrap());
+        let handle = cx.handle("first").expect("wait needs its participant");
+        let _ = self
+            .entered
+            .send(handle.late(LateFact::ContainerId).unwrap().to_owned());
         if let Some(removed) = &self.removed {
             // Finish fault injection before the case can enter reclaim and race the external removal.
             removed.cancelled().await;
         }
+        let started = tokio::time::Instant::now();
         match &self.condition {
-            WaitFor::Exit { process } => test_support::wait_for_exit(cx, "first", process).await,
-            WaitFor::Output { text } => test_support::wait_for_output(cx, "first", text).await,
+            WaitFor::Exit { process } => {
+                let (status, message) = match handle.wait_for_exit(process).await {
+                    ExitObservation::Exited(status) if status.code == Some(0) => {
+                        (AssertionStatus::Passed, "process exited".into())
+                    }
+                    ExitObservation::Exited(status) => (AssertionStatus::Failed, format!("process exited: {status:?}")),
+                    ExitObservation::Undetermined(reason) => (AssertionStatus::Errored, reason),
+                    ExitObservation::Running => unreachable!("wait_for_exit waits for a terminal observation"),
+                };
+                StepReport::new(started, status, message)
+            }
+            WaitFor::Output { text } => {
+                let mut output = handle.output(None);
+                loop {
+                    let batch = output.read();
+                    if batch.lines.iter().any(|line| line == text) {
+                        return StepReport::new(started, AssertionStatus::Passed, format!("{text} observed"));
+                    }
+                    if let OutputEnd::Failed(reason) = batch.end {
+                        return StepReport::new(started, AssertionStatus::Errored, reason);
+                    }
+                    tokio::time::sleep(POLL_INTERVAL).await;
+                }
+            }
         }
     }
 }

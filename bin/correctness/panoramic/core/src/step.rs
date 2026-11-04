@@ -6,16 +6,20 @@ use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-pub use crate::handle::HandleError;
+pub use crate::handle::{ExecCommand, ExecOutput, FileKind, FileStatus, HandleError};
+pub use crate::observe::{ExitObservation, ExitStatus};
 use crate::{
     backend::LateFact,
     case::{template::Reference, StepTemplate},
-    endpoint::EndpointOperation,
-    handle::Primitives,
+    endpoint::{EndpointOperation, RunnerHostRoute},
+    handle::{probe_from_runner_host, send_from_runner_host, Primitives},
     observe::{Capture, ParticipantExit, ParticipantObservation},
     plan::ParticipantPlan,
+    probe::{AttemptLimits, ProbeAnswer},
     record::StepReport,
 };
+
+const EXIT_REFRESH_LIMIT: Duration = Duration::from_secs(5);
 
 /// A step's fields as written in the case file, keyed by field name.
 pub type StepFields = BTreeMap<String, Value>;
@@ -74,24 +78,19 @@ impl<'a> StepContext<'a> {
 
     /// Returns a borrowed handle, or `None` if the participant did not start.
     pub fn handle(&self, name: &str) -> Option<Handle<'_>> {
-        self.participants.get(name).map(|participant| Handle {
-            primitives: participant.primitives,
-            observation: participant.observation,
-        })
+        self.participants
+            .get_key_value(name)
+            .map(|(&name, participant)| Handle {
+                name,
+                plan: self.plan,
+                late: &participant.late,
+                primitives: participant.primitives,
+                observation: participant.observation,
+            })
     }
 
     pub(crate) fn late_fact(&self, name: &str, fact: LateFact) -> Option<&str> {
         self.participants.get(name)?.late.get(&fact).copied()
-    }
-
-    #[cfg_attr(
-        not(any(test, feature = "test-util")),
-        expect(dead_code, reason = "Runner-host routes for endpoint steps.")
-    )]
-    pub(crate) fn runner_host_route(
-        &self, server: &str, endpoint: &str, operation: EndpointOperation,
-    ) -> Option<&crate::endpoint::RunnerHostRoute> {
-        self.plan.runner_host_route(server, endpoint, operation)
     }
 
     /// Resolves a step template using planned facts and the started participants' late facts.
@@ -116,13 +115,31 @@ impl<'a> StepContext<'a> {
     }
 }
 
-/// A started participant's files and captured output, borrowed for a step.
+/// A started participant's observations and operations, borrowed for a step.
 pub struct Handle<'a> {
-    pub(crate) primitives: &'a dyn Primitives,
+    name: &'a str,
+    plan: ParticipantPlan<'a>,
+    late: &'a BTreeMap<LateFact, &'a str>,
+    primitives: &'a dyn Primitives,
     observation: &'a ParticipantObservation,
 }
 
 impl Handle<'_> {
+    /// The participant's case name.
+    pub fn name(&self) -> &str {
+        self.name
+    }
+
+    /// A fact learned when creating or starting the participant.
+    pub fn late(&self, fact: LateFact) -> Option<&str> {
+        self.late.get(&fact).copied()
+    }
+
+    /// Declared process names in sorted order.
+    pub fn processes(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.observation.processes.keys().copied()
+    }
+
     /// Reads output from its beginning, optionally restricted to a named process.
     pub fn output<'a>(&'a self, process: Option<&'a str>) -> OutputCursor<'a> {
         OutputCursor {
@@ -139,6 +156,76 @@ impl Handle<'_> {
     /// Distinguishes a failed read mechanism from an unsuccessful product answer.
     pub async fn read_file(&self, path: &str) -> Result<Option<Vec<u8>>, HandleError> {
         self.primitives.read_file(path).await
+    }
+
+    /// Runs a command with the given limit; every exit code is returned as data.
+    ///
+    /// # Errors
+    ///
+    /// Returns a harness error if execution fails or exceeds the limit.
+    pub async fn exec(&self, command: ExecCommand, limit: Duration) -> Result<ExecOutput, HandleError> {
+        self.primitives.exec(command, limit).await
+    }
+
+    /// The process's current exit observation, or an error for an undeclared process.
+    pub fn exit(&self, process: &str) -> ExitObservation {
+        match self.observation.process(process) {
+            Some(observation) => observation.current(),
+            None => ExitObservation::Undetermined(format!("participant '{}' has no process '{process}'", self.name)),
+        }
+    }
+
+    /// Waits for the first exit or an observation error.
+    pub async fn wait_for_exit(&self, process: &str) -> ExitObservation {
+        match self.observation.process(process) {
+            Some(observation) => observation.settled().await,
+            None => self.exit(process),
+        }
+    }
+
+    /// Re-reads the process's exit channel, bounded to five seconds.
+    pub async fn refresh_exit(&self, process: &str) -> ExitObservation {
+        match self.observation.process(process) {
+            Some(observation) => tokio::time::timeout(EXIT_REFRESH_LIMIT, observation.refresh())
+                .await
+                .unwrap_or_else(|_| {
+                    ExitObservation::Undetermined(format!(
+                        "exit record of process '{process}' was not re-read within {EXIT_REFRESH_LIMIT:?}"
+                    ))
+                }),
+            None => self.exit(process),
+        }
+    }
+
+    /// Probes an endpoint through its planned runner-host route.
+    ///
+    /// # Errors
+    ///
+    /// Returns a harness error for a missing endpoint need or failed probe mechanism.
+    pub async fn probe(&self, endpoint: &str, limits: &AttemptLimits) -> Result<ProbeAnswer, HandleError> {
+        let route = self.route(endpoint, EndpointOperation::Probe)?;
+        probe_from_runner_host(route, self.primitives, limits).await
+    }
+
+    /// Sends bytes through an endpoint's planned runner-host route.
+    ///
+    /// # Errors
+    ///
+    /// Distinguishes a missing endpoint need or failed mechanism from an unsuccessful product answer.
+    pub async fn send(&self, endpoint: &str, payload: &[u8], limits: &AttemptLimits) -> Result<(), HandleError> {
+        let route = self.route(endpoint, EndpointOperation::Send)?;
+        send_from_runner_host(route, self.primitives, payload, limits).await
+    }
+
+    fn route(&self, endpoint: &str, operation: EndpointOperation) -> Result<&RunnerHostRoute, HandleError> {
+        self.plan
+            .runner_host_route(self.name, endpoint, operation)
+            .ok_or_else(|| HandleError::Harness {
+                message: format!(
+                    "no {operation:?} route for '{}.{endpoint}'; the step must declare an endpoint need",
+                    self.name
+                ),
+            })
     }
 }
 
@@ -162,10 +249,10 @@ pub struct OutputBatch {
 pub enum OutputEnd {
     /// More output may arrive.
     Open,
-    /// The participant exited and every output capture finished.
+    /// The participant exited and every selected output capture finished.
     Complete,
-    /// Any capture of the participant failed or the retained line buffer overflowed,
-    /// even when the cursor filters lines to one process.
+    /// A selected process's capture failed, or the shared retained line buffer overflowed.
+    /// A cursor over all output reports failures from any capture.
     Failed(String),
 }
 
@@ -173,9 +260,19 @@ impl OutputCursor<'_> {
     /// Reads available lines before reporting completion or capture failure.
     pub fn read(&mut self) -> OutputBatch {
         // Snapshot captures first so a final batch cannot be skipped on completion.
-        let captures = std::iter::once(self.observation.capture())
-            .chain(self.observation.outputs.values().map(|output| output.current()))
-            .collect::<Vec<_>>();
+        let captures = match self.process {
+            Some(process) => vec![self
+                .observation
+                .outputs
+                .get(process)
+                .map(|output| output.current())
+                .unwrap_or_else(|| Capture::Failed {
+                    reason: format!("no output capture for process '{process}'"),
+                })],
+            None => std::iter::once(self.observation.capture())
+                .chain(self.observation.outputs.values().map(|output| output.current()))
+                .collect::<Vec<_>>(),
+        };
         let end = if let Some(Capture::Failed { reason }) = captures
             .iter()
             .find(|capture| matches!(capture, Capture::Failed { .. }))
@@ -246,7 +343,6 @@ pub mod test_support;
 
 #[cfg(test)]
 mod tests {
-    use airlock::{exec::ExecOutput, files::FileStat};
     use tokio::sync::watch;
 
     use super::*;
@@ -254,7 +350,6 @@ mod tests {
         case::fixtures::{self, FixtureConfig},
         case::ProcedureNode,
         endpoint::ResolvedAddress,
-        handle::{ExecCommand, HandleError},
         layout::Os,
         observe::{Capture, ParticipantExit},
         plan::{CasePlan, Planner},
@@ -277,25 +372,144 @@ mod tests {
             .unwrap()
     }
 
-    struct Files;
+    struct Backend;
 
     #[async_trait]
-    impl Primitives for Files {
+    impl Primitives for Backend {
         async fn read_file(&self, path: &str) -> Result<Option<Vec<u8>>, HandleError> {
             Ok((path == "/logs/output.log/created-id/192.0.2.7").then(Vec::new))
         }
-        async fn exec(&self, _: ExecCommand, _: Duration) -> Result<ExecOutput, HandleError> {
+        async fn exec(&self, command: ExecCommand, limit: Duration) -> Result<ExecOutput, HandleError> {
+            assert_eq!(command.argv, ["tool", "argument"]);
+            assert_eq!(command.env, [("KEY".into(), "value".into())]);
+            assert_eq!(command.stdin, Some(vec![0, 255]));
+            assert_eq!(limit, Duration::from_secs(2));
+            Ok(ExecOutput {
+                stdout: vec![0, 255],
+                stderr: vec![254],
+                exit_code: 17,
+            })
+        }
+        async fn stat(&self, _: &str) -> Result<Option<FileStatus>, HandleError> {
             panic!("the step reads a file");
         }
-        async fn stat(&self, _: &str) -> Result<Option<FileStat>, HandleError> {
-            panic!("the step reads a file");
+        async fn probe(&self, address: &ResolvedAddress, limits: &AttemptLimits) -> Result<ProbeAnswer, HandleError> {
+            assert_eq!(address.kind, crate::endpoint::EndpointKind::Udp);
+            assert_eq!(address.url, "udp://subject:9000");
+            assert_eq!(limits, &AttemptLimits::new(Duration::from_secs(3)));
+            Ok(ProbeAnswer::Addressable)
         }
-        async fn probe(&self, _: &ResolvedAddress, _: &AttemptLimits) -> Result<ProbeAnswer, HandleError> {
-            panic!("the step reads a file");
+        async fn send(
+            &self, address: &ResolvedAddress, payload: &[u8], limits: &AttemptLimits,
+        ) -> Result<(), HandleError> {
+            assert_eq!(address.kind, crate::endpoint::EndpointKind::Udp);
+            assert_eq!(address.url, "udp://subject:9000");
+            assert_eq!(payload, b"payload");
+            assert_eq!(limits, &AttemptLimits::new(Duration::from_secs(3)));
+            Ok(())
         }
-        async fn send(&self, _: &ResolvedAddress, _: &[u8], _: &AttemptLimits) -> Result<(), HandleError> {
-            panic!("the step reads a file");
+    }
+
+    #[tokio::test]
+    async fn handles_use_planned_endpoint_routes_and_reject_undeclared_needs() {
+        let plan = compile("timeout: 30s\nsubject_os: [linux]\nparticipants:\n  subject: {type: server, subject: true}\nprocedure:\n  - {step: reach, endpoint: subject.metrics}\n  - {step: reach, endpoint: subject.metrics, operation: send}");
+        let (_exit, exit_rx) = watch::channel(ParticipantExit::Running);
+        let (_capture, capture_rx) = watch::channel(Capture::Following);
+        let observation = ParticipantObservation::new(exit_rx, capture_rx, Default::default(), Default::default());
+        let cx = StepContext::new(
+            plan.participants().unwrap(),
+            BTreeMap::from([(
+                "subject",
+                StepParticipant {
+                    primitives: &Backend,
+                    observation: &observation,
+                    late: BTreeMap::from([(LateFact::ContainerId, "id")]),
+                },
+            )]),
+        );
+        let handle = cx.handle("subject").unwrap();
+        assert_eq!(handle.name(), "subject");
+        assert_eq!(handle.late(LateFact::ContainerId), Some("id"));
+        assert_eq!(handle.late(LateFact::Ip), None);
+        let limits = AttemptLimits::new(Duration::from_secs(3));
+        assert_eq!(handle.probe("metrics", &limits).await, Ok(ProbeAnswer::Addressable));
+        assert_eq!(handle.send("metrics", b"payload", &limits).await, Ok(()));
+        for error in [
+            handle.probe("api", &limits).await.unwrap_err(),
+            handle.send("api", b"payload", &limits).await.unwrap_err(),
+        ] {
+            let HandleError::Harness { message } = error else {
+                panic!("a missing route is a harness error");
+            };
+            assert!(message.contains("subject.api"), "{message}");
+            assert!(message.contains("the step must declare an endpoint need"), "{message}");
         }
+        let output = handle
+            .exec(
+                ExecCommand {
+                    argv: vec!["tool".into(), "argument".into()],
+                    env: vec![("KEY".into(), "value".into())],
+                    stdin: Some(vec![0, 255]),
+                },
+                Duration::from_secs(2),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            output,
+            ExecOutput {
+                stdout: vec![0, 255],
+                stderr: vec![254],
+                exit_code: 17
+            }
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn handles_report_unknown_processes_and_bound_exit_refreshes() {
+        use crate::observe::{exit_record::RecordRefresh, ProcessObservation};
+        let plan = compile(FACT_CASE);
+        let (_exit, exit_rx) = watch::channel(ParticipantExit::Running);
+        let (_capture, capture_rx) = watch::channel(Capture::Following);
+        let mut observation =
+            ParticipantObservation::new(exit_rx.clone(), capture_rx, Default::default(), Default::default());
+        let (_status, status) = watch::channel(ExitObservation::Running);
+        let (requests, _requests_rx) = watch::channel(0);
+        let (_served, served) = watch::channel(0);
+        observation.processes.insert(
+            "worker",
+            ProcessObservation::Record {
+                status,
+                refresh: Some(std::sync::Arc::new(RecordRefresh { requests, served })),
+            },
+        );
+        observation
+            .processes
+            .insert("server", ProcessObservation::Container(exit_rx));
+        let cx = StepContext::new(
+            plan.participants().unwrap(),
+            BTreeMap::from([(
+                "subject",
+                StepParticipant {
+                    primitives: &Backend,
+                    observation: &observation,
+                    late: BTreeMap::new(),
+                },
+            )]),
+        );
+        let handle = cx.handle("subject").unwrap();
+        assert_eq!(handle.processes().collect::<Vec<_>>(), ["server", "worker"]);
+        let expected = ExitObservation::Undetermined("participant 'subject' has no process 'missing'".into());
+        assert_eq!(handle.exit("missing"), expected);
+        assert_eq!(handle.wait_for_exit("missing").await, expected);
+        assert_eq!(handle.refresh_exit("missing").await, expected);
+        assert_eq!(handle.refresh_exit("server").await, ExitObservation::Running);
+        let started = tokio::time::Instant::now();
+        assert_eq!(
+            handle.refresh_exit("worker").await,
+            ExitObservation::Undetermined("exit record of process 'worker' was not re-read within 5s".into())
+        );
+        assert_eq!(started.elapsed(), Duration::from_secs(5));
     }
 
     #[tokio::test]
@@ -329,7 +543,7 @@ mod tests {
                 BTreeMap::from([(
                     "subject",
                     StepParticipant {
-                        primitives: &Files,
+                        primitives: &Backend,
                         observation: &observation,
                         late,
                     },
@@ -354,7 +568,7 @@ mod tests {
             BTreeMap::from([(
                 "subject",
                 StepParticipant {
-                    primitives: &Files,
+                    primitives: &Backend,
                     observation: &observation,
                     late: BTreeMap::from([(LateFact::Ip, "{{unresolved}}")]),
                 },
