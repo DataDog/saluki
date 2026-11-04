@@ -1,11 +1,11 @@
 //! A stand-in `datadog-intake` server for unit tests.
 
-use std::net::TcpListener as StdTcpListener;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
@@ -14,12 +14,20 @@ pub(crate) fn install_crypto_provider() {
     let _ = crate::default_crypto_provider().install_default();
 }
 
-/// Returns a local port with no listener, so every request to it fails to connect.
+/// Returns a local port with no listener, so every connection to it is refused.
+///
+/// The port stays bound, without listening, until the test process exits. Releasing it at once would let a test
+/// running in parallel bind the same ephemeral port and start answering on it.
 ///
 /// Windows retries a refused connection for about two seconds before failing.
 pub(crate) fn closed_port() -> u16 {
-    let listener = StdTcpListener::bind("127.0.0.1:0").expect("should bind an ephemeral port");
-    listener.local_addr().expect("should have a local address").port()
+    let socket = TcpSocket::new_v4().expect("should create a socket");
+    socket
+        .bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+        .expect("should bind an ephemeral port");
+    let port = socket.local_addr().expect("should have a local address").port();
+    std::mem::forget(socket);
+    port
 }
 
 /// A local HTTP server answering the `datadog-intake` dump endpoints. It stops when dropped.
