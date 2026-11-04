@@ -69,7 +69,7 @@ use std::{
 use agent_data_plane_config::control::MemoryMode;
 use agent_data_plane_config::defaults::{
     DEFAULT_ENABLE_GLOBAL_LIMITER, DEFAULT_MAX_RESOURCE_LEN, DEFAULT_MEMORY_SLOP_FACTOR, DEFAULT_METRICS_LEVEL,
-    DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STRING_INTERNER_SIZE_BYTES,
+    DEFAULT_STATEFUL_METRICS_WORKERS, DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STRING_INTERNER_SIZE_BYTES,
 };
 use agent_data_plane_config::domains::dogstatsd::{validate_metric_tag_value_allowlists, MetricTagValueAllowlistEntry};
 use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter, OttlTransform};
@@ -289,7 +289,7 @@ pub struct DataPlaneExperimental {
 }
 
 /// Experimental stateful metrics settings (`data_plane.experimental.stateful_metrics.*`).
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct StatefulMetrics {
     /// Plaintext gRPC intake origin for integration testing; unset by default, preserving HTTP delivery.
@@ -297,6 +297,20 @@ pub struct StatefulMetrics {
     /// Set an `http://host:port` endpoint only for integration testing. Empty values, paths, queries,
     /// and credentials are invalid. Changing this setting requires a restart.
     pub endpoint: Option<String>,
+    /// Independent sender workers; defaults to three and rejects zero.
+    ///
+    /// Increase this for high-throughput workloads at the cost of per-worker queues and dictionary memory.
+    /// Requires a restart.
+    pub workers: NonZeroUsize,
+}
+
+impl Default for StatefulMetrics {
+    fn default() -> Self {
+        Self {
+            endpoint: None,
+            workers: DEFAULT_STATEFUL_METRICS_WORKERS,
+        }
+    }
 }
 
 /// `data_plane.experimental.apm.*`: the APM proxy in front of the trace-agent.
@@ -582,6 +596,7 @@ impl SalukiOnly {
     /// of fields, so it does not matter whether `seed` runs before or after the drive.
     pub(crate) fn seed(&self, config: &mut SalukiConfiguration) {
         config.domains.stateful_metrics.endpoint = self.data_plane.experimental.stateful_metrics.endpoint.clone();
+        config.domains.stateful_metrics.workers = self.data_plane.experimental.stateful_metrics.workers;
         // control
         if let Some(v) = self.data_plane.standalone_mode {
             config.control.standalone_mode = v;
