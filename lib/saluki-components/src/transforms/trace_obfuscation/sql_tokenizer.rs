@@ -154,7 +154,7 @@ impl<'a> SQLTokenizer<'a> {
             '-' => {
                 if self.last_char == '-' {
                     self.advance();
-                    self.scan_comment_to_eol()
+                    self.scan_comment_to_eol(2)
                 } else if self.last_char == '>' {
                     self.advance();
                     if self.last_char == '>' {
@@ -195,7 +195,7 @@ impl<'a> SQLTokenizer<'a> {
                     let start = self.pos - 2;
                     (TokenKind::JSONDelete, &self.buf[start..self.pos])
                 } else {
-                    self.scan_comment_to_eol()
+                    self.scan_comment_to_eol(1)
                 }
             }
             '$' => self.scan_dollar_quoted_or_var(),
@@ -411,8 +411,10 @@ impl<'a> SQLTokenizer<'a> {
         (kind, buf)
     }
 
-    fn scan_comment_to_eol(&mut self) -> (TokenKind, &'a [u8]) {
-        let start = self.pos - 2;
+    /// Scans a comment through the end of the line, where `marker_len` is the number of bytes in the comment marker
+    /// that have already been consumed.
+    fn scan_comment_to_eol(&mut self, marker_len: usize) -> (TokenKind, &'a [u8]) {
+        let start = self.pos - marker_len;
 
         while self.last_char != '\n' && self.last_char != END_CHAR {
             self.advance();
@@ -607,4 +609,76 @@ fn is_digit(ch: char) -> bool {
 
 fn is_letter(ch: char) -> bool {
     ch.is_ascii_alphabetic()
+}
+
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    fn scan_all(sql: &str) -> Vec<(TokenKind, String)> {
+        let config = SqlObfuscationConfig::default();
+        let mut tokenizer = SQLTokenizer::new(sql, true, &config);
+        let mut tokens = Vec::new();
+
+        // Every token consumes input, so this bound is only a guard against a non-terminating scan.
+        for _ in 0..(2 * sql.len() + 8) {
+            let (kind, buf) = tokenizer.scan();
+            if matches!(kind, TokenKind::EndChar | TokenKind::LexError) {
+                break;
+            }
+            tokens.push((kind, String::from_utf8_lossy(buf).into_owned()));
+        }
+        tokens
+    }
+
+    #[test]
+    fn comment_marker_at_statement_start() {
+        let cases = [
+            ("#", TokenKind::Comment, "#"),
+            ("# c", TokenKind::Comment, "# c"),
+            ("#x", TokenKind::Comment, "#x"),
+            ("#>", TokenKind::JSONSelectPath, "#>"),
+            ("#>>", TokenKind::JSONSelectPathText, "#>>"),
+            ("#-", TokenKind::JSONDelete, "#-"),
+        ];
+
+        for (input, kind, text) in cases {
+            for prefix in ["", " "] {
+                let sql = format!("{prefix}{input}");
+                assert_eq!(scan_all(&sql), vec![(kind, text.to_string())], "input: {sql:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn comment_marker_after_statement_text() {
+        assert_eq!(
+            scan_all("select 1 # c"),
+            vec![
+                (TokenKind::Select, "select".to_string()),
+                (TokenKind::Number, "1".to_string()),
+                (TokenKind::Comment, "# c".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn double_dash_comment_at_statement_start() {
+        assert_eq!(scan_all("-- c"), vec![(TokenKind::Comment, "-- c".to_string())]);
+        assert_eq!(scan_all("--"), vec![(TokenKind::Comment, "--".to_string())]);
+    }
+
+    proptest! {
+        #[test]
+        fn property_test_scan_never_panics_on_printable_input(sql in "[ -~\\n\\t]{0,64}") {
+            scan_all(&sql);
+        }
+
+        #[test]
+        fn property_test_scan_never_panics_on_marker_heavy_input(sql in "[#>\\-/*: .$a1'\"{}]{0,24}") {
+            scan_all(&sql);
+        }
+    }
 }

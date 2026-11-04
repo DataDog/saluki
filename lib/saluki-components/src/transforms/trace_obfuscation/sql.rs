@@ -584,4 +584,17 @@ LIMIT 1000"#,
             assert_eq!(result.query, expected, "Failed for query: {}", query);
         }
     }
+
+    #[test]
+    fn comment_only_statements_do_not_panic() {
+        let config = default_config();
+        for sql in ["#", "# c", "#x", " #", "-- c", "--"] {
+            if let Ok(obfuscated) = obfuscate_sql_string(sql, &config) {
+                assert!(
+                    !obfuscated.query.contains(['#', '-']),
+                    "comment kept for {sql:?}: {obfuscated:?}"
+                );
+            }
+        }
+    }
 }

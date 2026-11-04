@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Fix SQL obfuscation of statements that begin with a ``#`` comment.
