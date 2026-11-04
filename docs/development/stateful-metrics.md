@@ -170,7 +170,7 @@ logical batches, and the sender flushes the queues through their persistence pat
 ### Internal retries
 
 The core keeps each payload it sends in its compressed wire form, once, with the keys of the
-dictionary definitions it references, instead of the logical batch. After a retryable failure, a
+dictionary definitions it references, instead of the logical batch. After a temporary failure, a
 drain timeout, or a credential change, it queues the endpoint's unacknowledged payloads and replays
 them on the next stream ahead of newer ones, resending the same compressed bytes under new batch IDs.
 Definitions a replay needs that its bytes do not carry are sent first as a definitions-only batch.
