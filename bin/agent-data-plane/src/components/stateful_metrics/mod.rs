@@ -329,14 +329,14 @@ impl StatefulMetricsWorker {
     }
 
     async fn accept(&mut self, events: impl IntoIterator<Item = Event>) {
-        let series = events
-            .into_iter()
-            .filter_map(|event| match event {
-                Event::Metric(metric) => conversion::convert(&metric)
-                    .filter(|series| !series.name().is_empty() && !series.points().is_empty()),
-                _ => None,
-            })
-            .collect();
+        let events = events.into_iter();
+        let mut series = Vec::with_capacity(events.size_hint().0);
+        series.extend(events.filter_map(|event| match event {
+            Event::Metric(metric) => {
+                conversion::convert(&metric).filter(|series| !series.name().is_empty() && !series.points().is_empty())
+            }
+            _ => None,
+        }));
         self.enqueue(LogicalMetricBatch::new(series)).await;
     }
 

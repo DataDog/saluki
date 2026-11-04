@@ -1,7 +1,7 @@
 # Testing stateful metrics delivery
 
 ADP embeds `foldspace-core` through a pinned Cargo dependency from the
-[Foldspace metrics stack](https://github.com/DataDog/foldspace/pull/129). You do not copy Foldspace
+[Foldspace metrics stack](https://github.com/DataDog/foldspace/pull/143). You do not copy Foldspace
 source into Saluki or run a separate client binary.
 
 Configuration selects delivery for count, rate, and gauge series. When the stateful endpoint is
@@ -104,9 +104,11 @@ from its existing configuration stream. The test-only standalone mode can also d
 
 ## Delivery and retry behavior
 
-ADP converts enriched series once to self-contained `LogicalMetricBatch` values. Rate normalization,
+ADP converts enriched series once to `LogicalMetricBatch` values. Rate normalization,
 resources, tags, origin, source type, and unit follow the V3 encoder's semantics. Non-finite points
-and empty series are excluded. The sender does not retain original ADP `Metric` objects.
+and empty series are excluded. The sender does not retain original ADP `Metric` objects, but each
+series shares the `Tag` handles of its context instead of copying the tag strings. Interned, shared,
+and inlined tags clone without copying.
 
 The destination reuses the HTTP forwarder's `PendingTransactions<T>` scheduling and `RetryQueue<T>`
 storage machinery with a distinct logical-batch entry type:
@@ -125,8 +127,10 @@ storage machinery with a distinct logical-batch entry type:
 Queue capacity, memory limits, disk location, disk limits, spill ratio, and file age use the existing
 forwarder settings, including `forwarder_high_prio_buffer_size`,
 `forwarder_retry_queue_payloads_max_size`, `forwarder_storage_path`, and
-`forwarder_storage_max_size_in_bytes`. Queue byte accounting estimates the owned logical data,
-including series, points, tags, and resource strings. This is not a total process memory bound.
+`forwarder_storage_max_size_in_bytes`. Queue byte accounting estimates the logical data as if owned,
+including series, points, tags, and resource strings. Conversion shares tags with the aggregator's
+contexts instead of copying them, but queued batches keep those tags alive, so they count in full.
+Queued tags also keep their DogStatsD interner entries alive. With `allow_context_heap_allocations: false`, a full interner can drop new contexts; the default permits heap fallback. This is not a total process memory bound.
 
 Disk storage is enabled only when configured. Its directory is separate from HTTP transactions and
 includes the logical format version, destination hash, and the original single-sender suffix. If requested storage cannot
