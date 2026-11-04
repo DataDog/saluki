@@ -70,9 +70,9 @@ impl TestScope {
         &self, name: &str, image: &str, recipe: &ContainerRecipe, ports: &[RunnerHostPort],
         options: &BTreeMap<String, Value>,
     ) -> Result<LinuxParticipant, GenericError> {
-        let participant = self.scope.participant(name, image, recipe, ports, options)?;
+        let participant = self.scope.container(name, image, recipe, ports, options)?;
         self.ledger
-            .participant(name, participant.container_ref(), Duration::from_secs(1));
+            .participant(name, participant.removal(), Duration::from_secs(1));
         Ok(participant)
     }
 }
@@ -302,7 +302,8 @@ async fn a_participant_is_created_from_its_recipe_and_shares_the_host_pid_namesp
         let participant = scope
             .participant("p", &test_image(), &recipe, &[], &BTreeMap::new())
             .unwrap();
-        let id = participant.create().await.unwrap();
+        let facts: BTreeMap<_, _> = participant.create().await.unwrap().into_iter().collect();
+        let id = &facts[&LateFact::ContainerId];
         assert_eq!(id.len(), 64);
         assert!(id
             .bytes()
@@ -336,13 +337,8 @@ async fn a_participant_is_created_from_its_recipe_and_shares_the_host_pid_namesp
                 .as_deref(),
             Some(b"placed".as_slice())
         );
-        participant
-            .start()
-            .await
-            .unwrap()
-            .expect("a running participant has an IP")
-            .parse::<Ipv4Addr>()
-            .unwrap();
+        let facts: BTreeMap<_, _> = participant.start().await.unwrap().into_iter().collect();
+        facts[&LateFact::Ip].parse::<Ipv4Addr>().unwrap();
         assert_eq!(
             wait_for_file(primitives, "/airlock/p/shared/env", b"hello\n").await,
             b"hello\n"
@@ -378,7 +374,8 @@ async fn a_participant_with_host_cgroup_namespace_sees_its_container_id_in_its_c
             let participant = scope
                 .participant(name, &test_image(), &recipe("exec sleep 60"), &[], &options)
                 .unwrap();
-            let id = participant.create().await.unwrap();
+            let facts: BTreeMap<_, _> = participant.create().await.unwrap().into_iter().collect();
+            let id = &facts[&LateFact::ContainerId];
             assert_eq!(id.len(), 64);
             participant.start().await.unwrap();
             let output = participant
@@ -390,7 +387,7 @@ async fn a_participant_with_host_cgroup_namespace_sees_its_container_id_in_its_c
             let cgroup = String::from_utf8(output.stdout).unwrap();
             assert!(!cgroup.trim().is_empty());
             assert_eq!(
-                cgroup.contains(&id),
+                cgroup.contains(id.as_str()),
                 host_cgroup_namespace,
                 "host_cgroup_namespace={host_cgroup_namespace}, container={id}, cgroup={cgroup:?}"
             );
@@ -632,18 +629,19 @@ async fn a_container_reference_removes_its_participant_after_the_participant_is_
         let participant = scope
             .participant("p", &test_image(), &recipe("exec sleep 60"), &[], &BTreeMap::new())
             .unwrap();
-        let reference = participant.container_ref();
-        let id = participant.create().await.unwrap();
+        let reference = participant.driver.container_ref();
+        let facts: BTreeMap<_, _> = participant.create().await.unwrap().into_iter().collect();
+        let id = &facts[&LateFact::ContainerId];
         participant.start().await.unwrap();
         drop(participant);
         let docker = airlock::docker::connect().unwrap();
-        assert!(docker.inspect_container(&id, None).await.is_ok());
+        assert!(docker.inspect_container(id, None).await.is_ok());
         reference
             .stop_and_remove(Duration::from_secs(1), Instant::now() + Duration::from_secs(15))
             .await
             .unwrap();
         assert!(matches!(
-            docker.inspect_container(&id, None).await,
+            docker.inspect_container(id, None).await,
             Err(Error::DockerResponseServerError { status_code: 404, .. })
         ));
         reference
@@ -705,11 +703,12 @@ wait"#,
             .participant("srv", &test_image(), &recipe, &ports, &BTreeMap::new())
             .unwrap();
         assert_eq!(participant.ports, ports);
-        let id = participant.create().await.unwrap();
+        let facts: BTreeMap<_, _> = participant.create().await.unwrap().into_iter().collect();
+        let id = &facts[&LateFact::ContainerId];
         participant.start().await.unwrap();
         wait_for_file(&participant, "/airlock/srv/shared/ready", b"ready").await;
         let docker = airlock::docker::connect().unwrap();
-        let config = docker.inspect_container(&id, None).await.unwrap().host_config.unwrap();
+        let config = docker.inspect_container(id, None).await.unwrap().host_config.unwrap();
         assert_ne!(config.publish_all_ports, Some(true));
         assert_eq!(
             config.port_bindings,
@@ -864,7 +863,7 @@ async fn a_stopped_containers_exit_and_output_are_observed() {
             .unwrap()
             .unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let observation = participant.observe(&[], &tasks, dir.path()).await;
+        let observation = participant.clone().observe(&[], &tasks, dir.path()).await;
         let exit = timeout(Duration::from_secs(5), observation.stopped()).await.unwrap();
         assert_eq!(exit, ContainerExit { code: 3, error: None });
         timeout(Duration::from_secs(5), async {
@@ -887,13 +886,13 @@ async fn a_removed_container_leaves_exit_and_capture_errors() {
     in_scope(&["p"], courier_bytes(), |scope, tasks| async move {
         let participant = Arc::new(start_participant(&scope, "p", &recipe("exec sleep 60")).await);
         let deadline = Instant::now() + Duration::from_secs(10);
-        let container = participant.container_ref();
+        let container = participant.driver.container_ref();
         tokio::time::timeout_at(deadline, container.stop_and_remove(Duration::ZERO, deadline))
             .await
             .unwrap()
             .unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let observation = participant.observe(&[], &tasks, dir.path()).await;
+        let observation = participant.clone().observe(&[], &tasks, dir.path()).await;
         timeout(Duration::from_secs(5), async {
             while observation.exit() == ParticipantExit::Running {
                 sleep(Duration::from_millis(25)).await;
@@ -932,7 +931,7 @@ async fn a_restarted_process_keeps_its_first_recorded_exit() {
             "for c in 3 4; do echo \"$c 0 1700000000.00000000$c\" >> $PANORAMIC_EXIT_DIR/svc; sleep 1; done; exec sleep 60";
         let participant = Arc::new(start_participant(&scope, "p", &recipe(script)).await);
         let dir = tempfile::tempdir().unwrap();
-        let observation = participant.observe(EXIT_SPECS, &tasks, dir.path()).await;
+        let observation = participant.clone().observe(EXIT_SPECS, &tasks, dir.path()).await;
         let svc = observation.process("svc").unwrap();
         let first = timeout(Duration::from_secs(5), svc.settled()).await.unwrap();
         assert_eq!(
@@ -974,7 +973,7 @@ async fn a_record_written_as_the_container_stops_is_read_after_it_stops() {
             .unwrap()
             .unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let observation = participant.observe(EXIT_SPECS, &tasks, dir.path()).await;
+        let observation = participant.clone().observe(EXIT_SPECS, &tasks, dir.path()).await;
         let main = timeout(Duration::from_secs(5), observation.process("main").unwrap().settled())
             .await
             .unwrap();
@@ -1009,7 +1008,7 @@ async fn a_container_that_stops_without_a_record_leaves_its_process_undetermined
     in_scope(&["p"], courier_bytes(), |scope, tasks| async move {
         let participant = Arc::new(start_participant(&scope, "p", &recipe("exit 0")).await);
         let dir = tempfile::tempdir().unwrap();
-        let observation = participant.observe(EXIT_SPECS, &tasks, dir.path()).await;
+        let observation = participant.clone().observe(EXIT_SPECS, &tasks, dir.path()).await;
         let main = timeout(Duration::from_secs(5), observation.process("main").unwrap().settled())
             .await
             .unwrap();
@@ -1066,7 +1065,7 @@ async fn a_processs_output_file_is_followed_while_it_runs_and_completed_after_it
         let script = "echo before > $PANORAMIC_LOG_DIR/output; while [ ! -f /airlock/p/shared/continue ]; do sleep 0.1; done; echo during >> $PANORAMIC_LOG_DIR/output; while [ ! -f /airlock/p/shared/finish ]; do sleep 0.1; done; printf last >> $PANORAMIC_LOG_DIR/output";
         let participant = Arc::new(start_participant(&scope, "p", &recipe(script)).await);
         let dir = tempfile::tempdir().unwrap();
-        let observation = participant.observe(EXIT_SPECS, &tasks, dir.path()).await;
+        let observation = participant.clone().observe(EXIT_SPECS, &tasks, dir.path()).await;
         wait_for_output_lines(&observation, "svc", 1).await;
         participant.exec(command(&["touch", "/airlock/p/shared/continue"]), Duration::from_secs(5)).await.unwrap();
         wait_for_output_lines(&observation, "svc", 2).await;
@@ -1088,7 +1087,7 @@ async fn a_log_file_created_after_following_starts_is_followed_from_its_first_by
     in_scope(&["p"], courier_bytes(), |scope, tasks| async move {
         let participant = Arc::new(start_participant(&scope, "p", &recipe("exec sleep 60")).await);
         let dir = tempfile::tempdir().unwrap();
-        let observation = participant.observe(EXIT_SPECS, &tasks, dir.path()).await;
+        let observation = participant.clone().observe(EXIT_SPECS, &tasks, dir.path()).await;
         // Inspect the exec's command line before creating the file, so this exercises the missing-file retry.
         let script = "for p in /proc/[0-9]*/cmdline; do tr '\\000' ' ' < \"$p\" 2>/dev/null; echo; done";
         timeout(Duration::from_secs(10), async {
@@ -1148,7 +1147,7 @@ async fn the_output_of_a_process_that_exits_before_its_follower_starts_is_read_a
             .unwrap()
             .unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let observation = participant.observe(EXIT_SPECS, &tasks, dir.path()).await;
+        let observation = participant.clone().observe(EXIT_SPECS, &tasks, dir.path()).await;
         wait_for_capture(&observation.outputs["svc"]).await;
         assert_eq!(
             std::fs::read(&observation.outputs["svc"].paths[0]).unwrap(),
@@ -1182,7 +1181,7 @@ async fn container_output_lines_are_tagged_with_their_process_and_stream() {
                 .await,
             );
             let dir = tempfile::tempdir().unwrap();
-            let observation = participant.observe(EXIT_SPECS, &tasks, dir.path()).await;
+            let observation = participant.clone().observe(EXIT_SPECS, &tasks, dir.path()).await;
             let output = &observation.outputs["main"];
             wait_for_capture(output).await;
             wait_for_capture(&observation.outputs["svc"]).await;

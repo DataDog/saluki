@@ -9,20 +9,23 @@ use tokio::time::{timeout, Instant as TokioInstant};
 
 use super::*;
 use crate::{
-    backend::linux_container::daemon_tests::{courier_bytes, host_ports, remaining_resources},
+    backend::{
+        linux_container::daemon_tests::{courier_bytes, host_ports, remaining_resources},
+        COURIER_LINUX_BINARY, FIXUP_IMAGE,
+    },
     case::{
         fixtures::{self, FixtureConfig, FixtureTypes},
         CaseLoader, Registries,
     },
     deadline::Budget,
     endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind, Evidence, Port},
-    layout::Realization,
+    layout::{Os, Realization},
     participant::{EffectiveConfig, ExitChannel, OutputChannel, RenderedConfig},
     plan::{
         fixtures::{attach_endpoint_evidence, participant_evidence},
         CasePlan, Planner,
     },
-    recipe::{ContainerRecipe, RecipeFile},
+    recipe::{ContainerRecipe, Recipe, RecipeFile},
     record::StepStatus,
     result::{ReclaimResult, TestOutcome},
     tasks::TASK_STOP_TIME,

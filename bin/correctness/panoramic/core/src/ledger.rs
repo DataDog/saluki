@@ -59,7 +59,7 @@ enum Resource {
     /// A participant stopped with its type's grace before removal.
     Participant {
         name: String,
-        container: ContainerRef,
+        removal: ParticipantRemoval,
         grace: Duration,
     },
     /// Native scope resources removed through the run's Docker connection.
@@ -73,6 +73,19 @@ enum Resource {
     Namespace { name: String, client: Client },
     /// A host directory whose removal depends on earlier results in the reclaim walk.
     Directory(PathBuf),
+}
+
+/// Backend-owned resources needed to stop and remove a participant.
+pub(crate) enum ParticipantRemoval {
+    Container(ContainerRef),
+}
+
+impl ParticipantRemoval {
+    async fn stop(self, grace: Duration, deadline: Instant) -> Result<(), GenericError> {
+        match self {
+            Self::Container(container) => container.stop_and_remove(grace, deadline).await,
+        }
+    }
 }
 
 /// A namespace awaiting confirmation that deletion finished.
@@ -96,9 +109,7 @@ impl Resource {
     /// A directory or namespace that is already gone counts as removed.
     async fn remove(self, deadline: Instant) -> Result<Option<Terminating>, GenericError> {
         match self {
-            Self::Participant { container, grace, .. } => {
-                container.stop_and_remove(grace, deadline).await.map(|()| None)
-            }
+            Self::Participant { removal, grace, .. } => removal.stop(grace, deadline).await.map(|()| None),
             Self::LinuxScope { backends, scope } => backends.remove_linux_scope(&scope).await.map(|()| None),
             Self::IsolationGroup(id) => Driver::clean_related_resources(id).await.map(|()| None),
             Self::Process(process) => process.cleanup().await.map(|()| None),
@@ -235,10 +246,10 @@ impl ResourceLedger {
     }
 
     /// Registers a participant before its creation request.
-    pub(crate) fn participant(&self, name: &str, container: ContainerRef, grace: Duration) {
+    pub(crate) fn participant(&self, name: &str, removal: ParticipantRemoval, grace: Duration) {
         self.register(Resource::Participant {
             name: name.into(),
-            container,
+            removal,
             grace,
         });
     }

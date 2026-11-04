@@ -10,6 +10,14 @@ pub enum Recipe {
     Container(ContainerRecipe),
 }
 
+impl Recipe {
+    pub(crate) fn roles(&self) -> Vec<ArtifactRole> {
+        match self {
+            Self::Container(recipe) => vec![recipe.image],
+        }
+    }
+}
+
 /// Image role, entrypoint, command, environment, files and host mounts for one container.
 pub struct ContainerRecipe {
     pub(crate) image: ArtifactRole,

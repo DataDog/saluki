@@ -5,7 +5,7 @@
 use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
 
 use airlock::{
-    driver::{ContainerRef, Driver, DriverConfig, Protocol},
+    driver::{Driver, DriverConfig, Protocol},
     exec::ExecRequest,
     files::ContainerFile,
     group::{IsolationGroup, SHARED_ROOT},
@@ -16,11 +16,13 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde_json::Value;
 use tokio::sync::watch;
 
-use super::{courier, RunBackends};
+use super::{courier, LateFact, ParticipantRequest, RunBackends, RuntimeParticipant, ScopeRuntime};
 use crate::{
+    artifact::ArtifactKind,
     endpoint::{ResolvedAddress, RunnerHostPort, Transport},
     handle::{ExecCommand, ExecOutput, FileKind, FileStatus, HandleError, Primitives},
-    layout::Os,
+    layout::{Os, RealizationKind},
+    ledger::ParticipantRemoval,
     observe::{
         exit_record::{watch_record, RecordRefresh},
         follow_output,
@@ -31,7 +33,7 @@ use crate::{
     participant::{ExitChannel, OutputChannel, ProcessSpec},
     plan::ScopeLayout,
     probe::{AttemptLimits, ProbeAnswer},
-    recipe::{ContainerRecipe, RecipeFile},
+    recipe::{ContainerRecipe, Recipe, RecipeFile},
     tasks::CaseTasks,
 };
 
@@ -76,9 +78,34 @@ impl RunBackends {
     }
 }
 
+impl ScopeRuntime for LinuxScope {
+    fn participant(&self, request: ParticipantRequest<'_>) -> Result<Arc<dyn RuntimeParticipant>, String> {
+        let ParticipantRequest {
+            name,
+            realization,
+            recipe,
+            runner_host_ports,
+            inputs,
+            options,
+        } = request;
+        debug_assert_eq!(realization.kind, RealizationKind::LinuxContainer);
+        let Recipe::Container(recipe) = recipe;
+        if !matches!(recipe.image.kind, ArtifactKind::Image { os: Os::Linux }) {
+            return Err(format!(
+                "recipe of participant '{name}' names role '{}', which is not a Linux image",
+                recipe.image.name,
+            ));
+        }
+        let image = inputs.image(recipe.image)?;
+        self.container(name, image, &recipe, &runner_host_ports, options)
+            .map(|participant| Arc::new(participant) as Arc<dyn RuntimeParticipant>)
+            .map_err(|error| format!("participant '{name}': {error:#}"))
+    }
+}
+
 impl LinuxScope {
     /// Builds a participant from its image and recipe, publishing each runner-host port on `127.0.0.1`.
-    pub(crate) fn participant(
+    fn container(
         &self, name: &str, image: &str, recipe: &ContainerRecipe, ports: &[RunnerHostPort],
         options: &BTreeMap<String, Value>,
     ) -> Result<LinuxParticipant, GenericError> {
@@ -148,15 +175,13 @@ pub(crate) struct LinuxParticipant {
     output_line_bytes: Option<usize>,
 }
 
-impl LinuxParticipant {
-    /// Returns a removal reference before creation, so reclaim can be registered first.
-    pub(crate) fn container_ref(&self) -> ContainerRef {
-        self.driver.container_ref()
+#[async_trait]
+impl RuntimeParticipant for LinuxParticipant {
+    fn removal(&self) -> ParticipantRemoval {
+        ParticipantRemoval::Container(self.driver.container_ref())
     }
 
-    /// Creates the container and places its files, returning the full container ID.
-    /// On placement failure the container exists; reclaim it through `container_ref` or scope removal.
-    pub(crate) async fn create(&self) -> Result<String, GenericError> {
+    async fn create(&self) -> Result<Vec<(LateFact, String)>, GenericError> {
         let id = self
             .driver
             .create()
@@ -166,12 +191,10 @@ impl LinuxParticipant {
             .place_files(&self.files)
             .await
             .with_error_context(|| format!("Failed to place files in participant '{}'", self.name))?;
-        Ok(id)
+        Ok(vec![(LateFact::ContainerId, id)])
     }
 
-    /// Starts the participant and returns its IP if still attached to the network.
-    /// Returns `None` if an immediate exit has already detached the container.
-    pub(crate) async fn start(&self) -> Result<Option<String>, GenericError> {
+    async fn start(&self) -> Result<Vec<(LateFact, String)>, GenericError> {
         let details = self
             .driver
             .start_container()
@@ -187,13 +210,15 @@ impl LinuxParticipant {
                     .join(", ");
                 format!("{context}, which publishes runner-host ports {ports}; run one panoramic invocation per runner host and Docker daemon at a time")
             })?;
-        Ok(details.container_ip().map(str::to_owned))
+        Ok(details
+            .container_ip()
+            .map(|ip| (LateFact::Ip, ip.to_owned()))
+            .into_iter()
+            .collect())
     }
 
-    /// Follows a started container's exit and output, and each record-channel process's exit,
-    /// until the case stops its tasks.
-    pub(crate) async fn observe(
-        self: &Arc<Self>, specs: &[ProcessSpec], tasks: &CaseTasks, output_dir: &Path,
+    async fn observe(
+        self: Arc<Self>, specs: &'static [ProcessSpec], tasks: &CaseTasks, output_dir: &Path,
     ) -> ParticipantObservation {
         let (exit_tx, exit_rx) = watch::channel(ParticipantExit::Running);
         let (capture_tx, capture_rx) = watch::channel(Capture::Following);

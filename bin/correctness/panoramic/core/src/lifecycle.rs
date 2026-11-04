@@ -13,18 +13,14 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     artifact::{binary_identity, ArtifactKind, ArtifactRole, VerifiedArtifact},
-    backend::{
-        linux_container::{LinuxParticipant, LinuxScope},
-        RunBackends, COURIER_LINUX_BINARY, FIXUP_IMAGE,
-    },
+    backend::{self, runtime, LateFact, ParticipantRequest, RunBackends, RuntimeParticipant, ScopeRuntime},
     deadline::Deadline,
     handle::Primitives,
-    layout::{Os, Realization, RealizationKind},
+    layout::{Realization, RealizationKind},
     ledger::ResourceLedger,
     observe::ParticipantObservation,
     participant::{check_process_specs, find_type, ParticipantType, ProcessSpec},
     plan::ParticipantPlan,
-    recipe::Recipe,
     record::CaseRecord,
     result::{ErrorKind, ParticipantReport, PhaseTracker, TestResult},
     tasks::CaseTasks,
@@ -105,7 +101,7 @@ impl Observations {
 
 /// Verified image IDs and container-binary bytes shared by every native case in a run.
 pub struct NativeInputs {
-    backends: Arc<RunBackends>,
+    pub(crate) backends: Arc<RunBackends>,
     images: BTreeMap<&'static str, String>,
     binaries: BTreeMap<&'static str, Bytes>,
 }
@@ -144,11 +140,37 @@ impl NativeInputs {
         Ok(inputs)
     }
 
-    fn image(&self, role: ArtifactRole) -> Result<&str, String> {
+    pub(crate) fn image(&self, role: ArtifactRole) -> Result<&str, String> {
         self.images
             .get(role.name)
             .map(String::as_str)
             .ok_or_else(|| format!("native inputs lack verified image role '{}'", role.name))
+    }
+
+    pub(crate) fn container_binary(&self, role: ArtifactRole) -> Result<&Bytes, String> {
+        self.binaries
+            .get(role.name)
+            .ok_or_else(|| format!("native inputs lack verified binary role '{}'", role.name))
+    }
+
+    fn require_backends(&self, kinds: impl IntoIterator<Item = RealizationKind>) -> Result<(), String> {
+        for kind in kinds {
+            for role in backend::artifacts(kind) {
+                let present = match role.kind {
+                    ArtifactKind::Image { .. } => self.images.contains_key(role.name),
+                    ArtifactKind::ContainerBinary { .. } => self.binaries.contains_key(role.name),
+                    ArtifactKind::Binary | ArtifactKind::Install { .. } => false,
+                };
+                if !present {
+                    return Err(format!(
+                        "native inputs lack verified {} role '{}'",
+                        role.kind.name(),
+                        role.name
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -174,16 +196,20 @@ pub struct CaseControl {
 
 /// The registered scope used to create every participant in a case.
 struct Prepared {
-    scope: LinuxScope,
+    scopes: BTreeMap<RealizationKind, Box<dyn ScopeRuntime>>,
     id: String,
     process_specs: BTreeMap<String, &'static [ProcessSpec]>,
 }
 
+struct Created {
+    participant: Arc<dyn RuntimeParticipant>,
+    late: BTreeMap<LateFact, String>,
+}
+
 /// A started participant and its live observations.
 struct Started {
-    participant: Arc<LinuxParticipant>,
-    container_id: String,
-    ip: Option<String>,
+    participant: Arc<dyn RuntimeParticipant>,
+    late: BTreeMap<LateFact, String>,
     observation: Arc<ParticipantObservation>,
 }
 
@@ -219,9 +245,11 @@ pub async fn run(
             let creation = create(plan, types, inputs, control, &prepared, name, &created).await;
             phase.finish();
             match creation {
-                Ok((participant, container_id)) => {
-                    created.insert(name.clone(), container_id);
-                    participants.insert(name.clone(), Arc::new(participant));
+                Ok(participant) => {
+                    if let Some(id) = participant.late.get(&LateFact::ContainerId) {
+                        created.insert(name.clone(), id.clone());
+                    }
+                    participants.insert(name.clone(), participant);
                 }
                 Err(error) => return fail(error),
             }
@@ -240,15 +268,7 @@ pub async fn run(
                 &control.cancel,
             )
             .await?;
-            start_level(
-                level,
-                &mut participants,
-                &mut running,
-                &created,
-                &prepared.process_specs,
-                control,
-            )
-            .await
+            start_level(level, &mut participants, &mut running, &prepared.process_specs, control).await
         }
         .await;
         phase.finish();
@@ -292,7 +312,9 @@ async fn prepare(
     let layout = plan.layout();
     let unsupported = layout
         .iter()
-        .filter(|(_, realization)| realization.os != Os::Linux || realization.kind != RealizationKind::LinuxContainer)
+        .filter(|(_, realization)| {
+            runtime::implemented(realization.kind).is_none_or(|oses| !oses.contains(&realization.os))
+        })
         .map(|(name, realization)| {
             format!(
                 "panoramic cannot create {} participants natively: '{name}' on {}",
@@ -317,32 +339,21 @@ async fn prepare(
         std::fs::create_dir_all(&path)
             .map_err(|error| format!("cannot create the output directory '{}': {error}", path.display()))?;
     }
-    let image = inputs.image(FIXUP_IMAGE)?;
-    let courier = inputs.binaries.get(COURIER_LINUX_BINARY.name).ok_or_else(|| {
-        format!(
-            "native inputs lack verified binary role '{}'",
-            COURIER_LINUX_BINARY.name
-        )
-    })?;
-    let scope = plan.scope();
-    let id = scope.id();
-    let names = file.participants.keys().map(String::as_str).collect::<Vec<_>>();
-    control.ledger.linux_scope(inputs.backends.clone(), scope.clone());
-    let scope = control
-        .ledger
-        .create(
-            &id,
-            &control.cancel,
-            inputs
-                .backends
-                .prepare_linux_scope(scope, &names, image, courier.clone()),
-        )
-        .await
-        .ok_or_else(|| "cancelled while preparing the isolation scope".to_string())?
-        .map_err(|error| format!("failed to prepare isolation scope '{id}': {error:#}"))?;
+    let mut participants_by_kind = BTreeMap::<_, Vec<_>>::new();
+    for (name, realization) in layout.iter() {
+        participants_by_kind.entry(realization.kind).or_default().push(name);
+    }
+    inputs.require_backends(participants_by_kind.keys().copied())?;
+    let mut scopes = BTreeMap::new();
+    for (kind, participants) in participants_by_kind {
+        scopes.insert(
+            kind,
+            runtime::prepare(kind, plan.scope(), &participants, inputs, control).await?,
+        );
+    }
     Ok(Prepared {
-        scope,
-        id,
+        scopes,
+        id: plan.scope().id(),
         process_specs,
     })
 }
@@ -350,7 +361,7 @@ async fn prepare(
 async fn create(
     plan: ParticipantPlan<'_>, types: &[&dyn ParticipantType], inputs: &NativeInputs, control: &CaseControl,
     prepared: &Prepared, name: &str, created: &BTreeMap<String, String>,
-) -> Result<(LinuxParticipant, String), String> {
+) -> Result<Created, String> {
     let config = render::render(plan, name, created)?;
     let realization = plan
         .layout()
@@ -360,57 +371,50 @@ async fn create(
     let type_name = &file.participants[name].participant_type;
     let participant_type = find_type(types, type_name)
         .ok_or_else(|| format!("participant '{name}' has unregistered type '{type_name}'"))?;
-    let Recipe::Container(recipe) = participant_type
+    let recipe = participant_type
         .recipe(realization, &config)
         .map_err(|error| format!("participant '{name}': {error}"))?;
-    if !participant_type.artifacts(realization).contains(&recipe.image) {
-        return Err(undeclared_role(name, type_name, recipe.image, realization));
+    for role in recipe.roles() {
+        if !participant_type.artifacts(realization).contains(&role) {
+            return Err(undeclared_role(name, type_name, role, realization));
+        }
     }
-    if !matches!(recipe.image.kind, ArtifactKind::Image { os: Os::Linux }) {
-        return Err(format!(
-            "recipe of participant '{name}' names role '{}', which is not a Linux image",
-            recipe.image.name,
-        ));
-    }
-    let image = inputs.image(recipe.image)?;
     let options = file.participants[name]
         .realization
         .as_ref()
         .map(|realization| &realization.options);
-    let participant = prepared
-        .scope
-        .participant(
-            name,
-            image,
-            &recipe,
-            &plan.runner_host_ports(name),
-            options.unwrap_or(&BTreeMap::new()),
-        )
-        .map_err(|error| format!("participant '{name}': {error:#}"))?;
-    control.ledger.participant(
+    let participant = prepared.scopes[&realization.kind].participant(ParticipantRequest {
         name,
-        participant.container_ref(),
-        participant_type.stop_grace(realization),
-    );
+        realization,
+        recipe,
+        runner_host_ports: plan.runner_host_ports(name),
+        options: options.unwrap_or(&BTreeMap::new()),
+        inputs,
+    })?;
+    control
+        .ledger
+        .participant(name, participant.removal(), participant_type.stop_grace(realization));
     control
         .observations
         .register(name, type_name, realization, prepared.process_specs[name]);
-    let container_id = control
+    let late = control
         .ledger
         .create_participant(name, &prepared.id, &control.cancel, participant.create())
         .await
         .ok_or_else(|| format!("cancelled while creating participant '{name}'"))?
         .map_err(|error| format!("{error:#}"))?;
-    Ok((participant, container_id))
+    Ok(Created {
+        participant,
+        late: late.into_iter().collect(),
+    })
 }
 
 async fn start_level(
-    level: &[String], participants: &mut BTreeMap<String, Arc<LinuxParticipant>>,
-    running: &mut BTreeMap<String, Started>, created: &BTreeMap<String, String>,
+    level: &[String], participants: &mut BTreeMap<String, Created>, running: &mut BTreeMap<String, Started>,
     process_specs: &BTreeMap<String, &'static [ProcessSpec]>, control: &CaseControl,
 ) -> Result<(), String> {
     let results = join_all(level.iter().map(|name| {
-        let participant = participants
+        let Created { participant, mut late } = participants
             .remove(name)
             .expect("start order names created participants");
         async move {
@@ -421,16 +425,17 @@ async fn start_level(
                 .ok_or_else(|| format!("cancelled while starting participant '{name}'"))
                 .and_then(|result| result.map_err(|error| format!("participant '{name}': {error:#}")));
             let result = match result {
-                Ok(ip) => {
+                Ok(facts) => {
+                    late.extend(facts);
                     let observation = participant
+                        .clone()
                         .observe(process_specs[name], &control.tasks, &control.log_dir.join(name))
                         .await;
                     let observation = Arc::new(observation);
                     control.observations.started(name, observation.clone());
                     Ok(Started {
-                        container_id: created[name].clone(),
                         participant,
-                        ip,
+                        late,
                         observation,
                     })
                 }
@@ -470,9 +475,10 @@ fn undeclared_role(participant: &str, type_name: &str, role: ArtifactRole, reali
 mod tests {
     use super::*;
     use crate::{
-        backend::docker::test_util::FakeDocker,
+        backend::{docker::test_util::FakeDocker, COURIER_LINUX_BINARY, FIXUP_IMAGE},
         case::fixtures,
         deadline::Budget,
+        layout::Os,
         participant::{ExitChannel, OutputChannel, OutputStream, RenderedConfig},
         plan::{CasePlan, Planner},
     };
@@ -696,6 +702,99 @@ mod tests {
         );
         assert!(api.calls.lock().unwrap().is_empty());
         assert!(control.ledger.labels().is_empty());
+    }
+
+    #[tokio::test]
+    async fn unsupported_realizations_name_every_participant_before_registering_any_scope() {
+        const TYPES: &[&dyn ParticipantType] = &[&fixtures::Server, &fixtures::PodServer];
+        let registries = crate::case::Registries {
+            participant_types: TYPES,
+            ..fixtures::REGISTRIES
+        };
+        let loader = crate::case::CaseLoader::new(registries, fixtures::FixtureTypes, "fixture-participants");
+        for (os, participants, expected) in [
+            (
+                Os::MacOs,
+                "  subject: {type: server, subject: true}",
+                "panoramic cannot create host-process-group participants natively: 'subject' on macos",
+            ),
+            (
+                Os::Windows,
+                "  subject: {type: server, subject: true}",
+                "panoramic cannot create windows-container participants natively: 'subject' on windows",
+            ),
+            (
+                Os::Linux,
+                "  subject: {type: pod-server, subject: true, realization: {kind: kubernetes-pod}}",
+                "panoramic cannot create kubernetes-pod participants natively: 'subject' on linux",
+            ),
+            (
+                Os::MacOs,
+                "  subject: {type: server, subject: true}\n  other: {type: server, os: windows}",
+                "panoramic cannot create windows-container participants natively: 'other' on windows; \
+                 panoramic cannot create host-process-group participants natively: 'subject' on macos",
+            ),
+            (
+                Os::Linux,
+                "  subject: {type: server, subject: true}\n  other: {type: server, os: windows}\n  z: {type: server, os: windows}",
+                "panoramic cannot create windows-container participants natively: 'other' on windows; \
+                 panoramic cannot create windows-container participants natively: 'z' on windows",
+            ),
+        ] {
+            let yaml = format!("timeout: 1s\nsubject_os: [{}]\nparticipants:\n{participants}\n{}\n", os.name(), fixtures::minimal_procedure!());
+            let case = loader.load_content(&yaml, "case", Path::new("/cases/case/config.yaml")).unwrap().remove(0);
+            let plan = Planner::with_run(registries, "testcase").compile(case, os).unwrap().into_plan().unwrap();
+            let api = FakeDocker::new(Some("linux"));
+            let inputs = NativeInputs::new(Arc::new(RunBackends::with_docker(api.daemon())), &[], Path::new(".")).unwrap();
+            let log_dir = tempfile::tempdir().unwrap();
+            let cancel = CancellationToken::new();
+            let control = CaseControl {
+                observations: Observations::default(),
+                record: CaseRecord::default(),
+                deadline: Deadline::after(Budget::Case, Duration::from_secs(60)),
+                tasks: CaseTasks::new(&cancel),
+                cancel,
+                log_dir: log_dir.path().into(),
+                phases: PhaseTracker::default(),
+                ledger: ResourceLedger::default(),
+            };
+            let result = run(plan.participants().unwrap(), TYPES, &inputs, &control).await;
+            let error = result.error.unwrap();
+            assert_eq!(error.kind, ErrorKind::Setup);
+            assert_eq!(error.message, expected);
+            assert!(api.calls.lock().unwrap().is_empty());
+            assert!(control.ledger.labels().is_empty());
+            assert!(control.observations.snapshot().is_empty());
+            assert_eq!(std::fs::read_dir(log_dir.path()).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn backend_inputs_are_checked_for_each_kind_including_after_a_kind_without_artifacts() {
+        for other in [
+            RealizationKind::HostProcessGroup,
+            RealizationKind::WindowsContainer,
+            RealizationKind::KubernetesPod,
+        ] {
+            for kinds in [
+                [other, RealizationKind::LinuxContainer],
+                [RealizationKind::LinuxContainer, other],
+            ] {
+                let mut inputs = NativeInputs::new(Arc::default(), &[], Path::new(".")).unwrap();
+                assert_eq!(inputs.require_backends([other]), Ok(()));
+                assert_eq!(
+                    inputs.require_backends(kinds),
+                    Err("native inputs lack verified image role 'fixup-image'".into())
+                );
+                inputs.images.insert(FIXUP_IMAGE.name, "sha256:fixup".into());
+                assert_eq!(
+                    inputs.require_backends(kinds),
+                    Err("native inputs lack verified binary role 'courier-linux-binary'".into())
+                );
+                inputs.binaries.insert(COURIER_LINUX_BINARY.name, Bytes::new());
+                assert_eq!(inputs.require_backends(kinds), Ok(()));
+            }
+        }
     }
 
     #[tokio::test]

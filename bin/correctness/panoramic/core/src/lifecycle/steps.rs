@@ -6,7 +6,6 @@ use async_trait::async_trait;
 
 use super::{CaseControl, Started};
 use crate::{
-    backend::LateFact,
     case::ProcedureNode,
     plan::ParticipantPlan,
     procedure::{Member, Procedure},
@@ -18,10 +17,11 @@ pub(super) async fn run(plan: ParticipantPlan<'_>, running: &BTreeMap<String, St
     let participants = running
         .iter()
         .map(|(name, started)| {
-            let mut late = BTreeMap::from([(LateFact::ContainerId, started.container_id.as_str())]);
-            if let Some(ip) = &started.ip {
-                late.insert(LateFact::Ip, ip.as_str());
-            }
+            let late = started
+                .late
+                .iter()
+                .map(|(fact, value)| (*fact, value.as_str()))
+                .collect();
             (
                 name.as_str(),
                 StepParticipant {

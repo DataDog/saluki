@@ -8,7 +8,9 @@ pub(crate) mod docker;
 pub(crate) mod http;
 pub(crate) mod linux_container;
 mod run;
+pub(crate) mod runtime;
 pub use run::RunBackends;
+pub(crate) use runtime::{ParticipantRequest, RuntimeParticipant, ScopeRuntime};
 
 use crate::{
     artifact::{ArtifactKind, ArtifactRole},
