@@ -79,7 +79,10 @@ pub(crate) async fn http_status_from_runner_host(
 }
 
 /// Sends through the plan's route for `EndpointOperation::Send`, using the server for a courier route.
-#[cfg_attr(not(test), expect(dead_code, reason = "Steps reach endpoints through these routes."))]
+#[cfg_attr(
+    not(any(test, feature = "test-util")),
+    expect(dead_code, reason = "Steps reach endpoints through these routes.")
+)]
 pub(crate) async fn send_from_runner_host(
     route: &RunnerHostRoute, server: &dyn Primitives, payload: &[u8], limits: &AttemptLimits,
 ) -> Result<(), HandleError> {

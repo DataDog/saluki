@@ -60,11 +60,27 @@ and snapshots after a case body exceeds its cancellation grace.
 They are ignored by default. Run them with `make test-panoramic-daemon`, which builds the Linux courier first.
 `PANORAMIC_TEST_IMAGE` defaults to `alpine:latest`; load it first, because these tests never pull images.
 They fail if the daemon, image or courier is missing.
-The target runs every ignored test in both `panoramic-core` and `panoramic`, including the runner failure and report
-tests.
+The target runs the ignored backend, lifecycle, runner failure and report tests in `panoramic-core` and `panoramic`.
 
 CI: the `test-container-daemon` job in `.gitlab/e2e.yml` runs them after airlock's daemon tests, with
 `PANORAMIC_TEST_IMAGE` set to the same local Alpine image.
+
+### Panoramic product tests
+
+Run `make test-panoramic-products` to exercise real product images through the native runner. These ignored tests
+run locally, separately from the Alpine daemon suite.
+The target builds the Linux courier and requires a Docker daemon with the images already loaded.
+Image bindings come from:
+
+| Variable | Artifact role | Local default |
+| --- | --- | --- |
+| `PANORAMIC_AGENT_ADP_LINUX_IMAGE` | `agent-adp-linux-image` | `saluki-images/datadog-agent:testing-devel` |
+| `PANORAMIC_TOOLS_LINUX_IMAGE` | `tools-linux-image` | `saluki-images/correctness-tools:latest` |
+| `PANORAMIC_TEST_IMAGE` | `fixup-image` | `alpine:latest` |
+
+Each test verifies the roles its case needs. The intake test starts two intakes in one scope, waits for each ready
+route, sends a forwarded DogStatsD packet to one, and checks that only that intake retains it. Tests check the native
+participant reports and confirm that the scope's containers, volume and network are removed.
 
 ## Correctness tests (panoramic)
 
@@ -226,6 +242,20 @@ The `observe` phase gives exited participants up to five seconds to finish
 capturing output; it also runs after a setup failure if any participant started. Running participants are skipped, and
 case cancellation ends the wait. The runner snapshots observations, stops observation tasks, then reclaims resources.
 Each case keeps its chosen route.
+
+The `datadog-intake` participant runs the mock intake in a Linux container from `tools-linux-image`, with one process
+named `intake`. Its exit and output come from the container. It serves two endpoints:
+
+| Endpoint | Kind | Listen variable | Default |
+| --- | --- | --- | --- |
+| `api` | HTTP | `INTAKE_HTTP_LISTEN_ADDR` | `0.0.0.0:2049` |
+| `dogstatsd_forward` | UDP | `INTAKE_DOGSTATSD_LISTEN_ADDR` | `0.0.0.0:9125` |
+
+Set these variables in `config.env` to change the listener ports. Each must be a socket address with a nonzero port
+and host `0.0.0.0` or `[::]`, so participants and published ports can reach it. Both endpoints declare readiness as
+HTTP 200 from `api` at `/ready`: the intake binds UDP before starting HTTP. Connections wait for that evidence before
+starting their consumer. Each intake stores its own telemetry. When the listen variables are unset, the intake binary
+uses the defaults listed above.
 
 The integration runner's translation supports this subset of the schema:
 

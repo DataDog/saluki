@@ -93,35 +93,27 @@ pub(crate) enum Listener {
 
 /// Where a network listener's port comes from.
 #[derive(Clone, Copy, Debug)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "Only core's test participant types declare listener ports.")
-)]
-pub(crate) enum Port {
+pub enum Port {
     /// A port the participant type derives from its configuration.
     Fixed(u16),
     /// A port only the case knows, supplied as `config.endpoints.<name>.port`.
     FromCase,
     /// A host-process-group port core assigns when configuration sets none.
-    /// `deliver` maps it to the environment variables from which the type derives it.
     Assigned {
+        /// Maps the assigned port to the listener's environment variables.
         deliver: fn(u16) -> BTreeMap<String, String>,
     },
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "Endpoints are constructed by core's test participant types.")
-)]
 impl Endpoint {
     /// Attaches readiness evidence to this endpoint.
-    pub(crate) fn with_ready(mut self, evidence: Evidence) -> Self {
+    pub fn with_ready(mut self, evidence: Evidence) -> Self {
         self.ready = Some(evidence);
         self
     }
 
     /// Declares a TCP listener at the given port.
-    pub(crate) fn tcp(port: Port) -> Self {
+    pub fn tcp(port: Port) -> Self {
         Self {
             kind: EndpointKind::Tcp,
             listener: Listener::Port(port),
@@ -130,7 +122,7 @@ impl Endpoint {
     }
 
     /// Declares a UDP listener at the given port.
-    pub(crate) fn udp(port: Port) -> Self {
+    pub fn udp(port: Port) -> Self {
         Self {
             kind: EndpointKind::Udp,
             listener: Listener::Port(port),
@@ -139,7 +131,7 @@ impl Endpoint {
     }
 
     /// Declares an HTTP listener at the given port.
-    pub(crate) fn http(port: Port) -> Self {
+    pub fn http(port: Port) -> Self {
         Self {
             kind: EndpointKind::Http,
             listener: Listener::Port(port),
@@ -148,7 +140,7 @@ impl Endpoint {
     }
 
     /// Declares a gRPC listener at the given port.
-    pub(crate) fn grpc(port: Port) -> Self {
+    pub fn grpc(port: Port) -> Self {
         Self {
             kind: EndpointKind::Grpc,
             listener: Listener::Port(port),
@@ -157,7 +149,7 @@ impl Endpoint {
     }
 
     /// Declares a Unix datagram socket at the given path.
-    pub(crate) fn unix_datagram(path: impl Into<String>) -> Self {
+    pub fn unix_datagram(path: impl Into<String>) -> Self {
         Self {
             kind: EndpointKind::UnixDatagram,
             listener: Listener::Path(path.into()),
@@ -166,7 +158,7 @@ impl Endpoint {
     }
 
     /// Declares a Unix stream socket at the given path.
-    pub(crate) fn unix_stream(path: impl Into<String>) -> Self {
+    pub fn unix_stream(path: impl Into<String>) -> Self {
         Self {
             kind: EndpointKind::UnixStream,
             listener: Listener::Path(path.into()),
@@ -175,7 +167,7 @@ impl Endpoint {
     }
 
     /// Declares a named pipe with the given name.
-    pub(crate) fn named_pipe(name: impl Into<String>) -> Self {
+    pub fn named_pipe(name: impl Into<String>) -> Self {
         Self {
             kind: EndpointKind::NamedPipe,
             listener: Listener::Pipe(name.into()),
@@ -203,12 +195,9 @@ pub(crate) enum Check {
 /// Default time allowed to observe readiness evidence.
 const DEFAULT_READINESS_BOUND: Duration = Duration::from_secs(60);
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "Only core's test participant types declare readiness evidence.")
-)]
 impl Evidence {
-    pub(crate) fn tcp_accepts(endpoint: impl Into<String>) -> Self {
+    /// Waits for a TCP connection to succeed at the named endpoint.
+    pub fn tcp_accepts(endpoint: impl Into<String>) -> Self {
         Self {
             check: Check::TcpAccepts {
                 endpoint: endpoint.into(),
@@ -217,7 +206,8 @@ impl Evidence {
         }
     }
 
-    pub(crate) fn http_ok(endpoint: impl Into<String>, path: impl Into<String>) -> Self {
+    /// Waits for HTTP 200 at the named endpoint and path.
+    pub fn http_ok(endpoint: impl Into<String>, path: impl Into<String>) -> Self {
         Self {
             check: Check::HttpOk {
                 endpoint: endpoint.into(),
@@ -227,7 +217,8 @@ impl Evidence {
         }
     }
 
-    pub(crate) fn socket_exists(endpoint: impl Into<String>) -> Self {
+    /// Waits for the named endpoint's socket to exist.
+    pub fn socket_exists(endpoint: impl Into<String>) -> Self {
         Self {
             check: Check::SocketExists {
                 endpoint: endpoint.into(),
@@ -236,14 +227,16 @@ impl Evidence {
         }
     }
 
-    pub(crate) fn file_exists(path: impl Into<String>) -> Self {
+    /// Waits for a file to exist at the given path.
+    pub fn file_exists(path: impl Into<String>) -> Self {
         Self {
             check: Check::FileExists { path: path.into() },
             within: DEFAULT_READINESS_BOUND,
         }
     }
 
-    pub(crate) fn output_matches(process: impl Into<String>, pattern: impl Into<String>) -> Self {
+    /// Waits for a regex match in the named process's output.
+    pub fn output_matches(process: impl Into<String>, pattern: impl Into<String>) -> Self {
         Self {
             check: Check::OutputMatches {
                 process: process.into(),
@@ -253,7 +246,8 @@ impl Evidence {
         }
     }
 
-    pub(crate) fn within(mut self, within: Duration) -> Self {
+    /// Replaces the default sixty-second readiness bound.
+    pub fn within(mut self, within: Duration) -> Self {
         self.within = within;
         self
     }
@@ -328,6 +322,24 @@ pub enum Delivery {
         /// Computes exactly the declared keys from the consumer-visible address.
         value: fn(&ResolvedAddress) -> BTreeMap<String, String>,
     },
+}
+
+/// Assertions for participant declarations in downstream tests.
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_support {
+    use super::*;
+
+    /// Checks a network endpoint's kind, fixed port and readiness evidence.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any declaration differs from the expected value.
+    #[track_caller]
+    pub fn assert_network_endpoint(endpoint: &Endpoint, kind: EndpointKind, port: u16, ready: Option<Evidence>) {
+        assert_eq!(endpoint.kind, kind);
+        assert!(matches!(endpoint.listener, Listener::Port(Port::Fixed(actual)) if actual == port));
+        assert_eq!(endpoint.ready, ready);
+    }
 }
 
 #[cfg(test)]

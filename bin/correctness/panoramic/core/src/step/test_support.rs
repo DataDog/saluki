@@ -128,3 +128,35 @@ pub async fn wait_for_output(cx: &StepContext<'_>, on: &str, text: &str) -> Step
         tokio::time::sleep(POLL_INTERVAL).await;
     }
 }
+
+/// Returns a direct runner-host route's port, or `None` for a missing or courier route.
+pub fn runner_host_port(
+    cx: &StepContext<'_>, server: &str, endpoint: &str, operation: EndpointOperation,
+) -> Option<u16> {
+    match cx.runner_host_route(server, endpoint, operation)? {
+        RunnerHostRoute::Direct(address) => address.port,
+        RunnerHostRoute::Courier(_) => None,
+    }
+}
+
+/// Sends bytes through the endpoint's planned runner-host route, with a ten-second attempt limit.
+///
+/// # Errors
+///
+/// Returns an error for a missing route or participant, or a failed send.
+pub async fn send(cx: &StepContext<'_>, server: &str, endpoint: &str, payload: &[u8]) -> Result<(), String> {
+    let route = cx
+        .runner_host_route(server, endpoint, EndpointOperation::Send)
+        .ok_or_else(|| format!("no send route for '{server}.{endpoint}'"))?;
+    let primitives = cx
+        .primitives(server)
+        .ok_or_else(|| format!("participant '{server}' has not started"))?;
+    crate::handle::send_from_runner_host(
+        route,
+        primitives,
+        payload,
+        &crate::probe::AttemptLimits::new(Duration::from_secs(10)),
+    )
+    .await
+    .map_err(|error| error.to_string())
+}

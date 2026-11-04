@@ -20,6 +20,32 @@ pub struct ContainerRecipe {
     pub(crate) mounts: Vec<HostMount>,
 }
 
+impl ContainerRecipe {
+    /// Creates a recipe using the image's entrypoint, command and environment defaults.
+    pub fn new(image: ArtifactRole) -> Self {
+        Self {
+            image,
+            entrypoint: None,
+            command: None,
+            env: BTreeMap::new(),
+            files: Vec::new(),
+            mounts: Vec::new(),
+        }
+    }
+
+    /// Replaces the image's entrypoint.
+    pub fn with_entrypoint(mut self, entrypoint: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.entrypoint = Some(entrypoint.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Sets the rendered environment, overriding matching image defaults.
+    pub fn with_env(mut self, env: BTreeMap<String, String>) -> Self {
+        self.env = env;
+        self
+    }
+}
+
 /// A file to place at an absolute container path.
 pub(crate) struct RecipeFile {
     pub(crate) path: String,
@@ -40,6 +66,31 @@ pub(crate) struct HostMount {
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_support {
     use super::*;
+
+    /// Checks a recipe that overrides only the image entrypoint and environment.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the recipe differs from the expected declarations or adds files, mounts or a command.
+    #[track_caller]
+    pub fn assert_container(recipe: &Recipe, image: ArtifactRole, entrypoint: &[&str], env: &BTreeMap<String, String>) {
+        let Recipe::Container(recipe) = recipe;
+        assert_eq!(recipe.image, image);
+        assert_eq!(recipe.entrypoint.as_deref().unwrap(), entrypoint);
+        assert_eq!(&recipe.env, env);
+        assert!(recipe.command.is_none());
+        assert!(recipe.files.is_empty());
+        assert!(recipe.mounts.is_empty());
+    }
+
+    /// Builds rendered configuration with the supplied environment and empty files and parameters.
+    pub fn rendered_env(env: BTreeMap<String, String>) -> crate::participant::RenderedConfig {
+        crate::participant::RenderedConfig {
+            env,
+            params: BTreeMap::new(),
+            files: BTreeMap::new(),
+        }
+    }
 
     /// Builds a container recipe with the supplied image, entrypoint and command.
     pub fn container(image: ArtifactRole, entrypoint: &[&str], command: &[&str]) -> Recipe {

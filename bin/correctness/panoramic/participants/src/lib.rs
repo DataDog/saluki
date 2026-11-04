@@ -8,11 +8,12 @@
 use panoramic_core::participant::ParticipantType;
 
 mod agent_adp;
+mod datadog_intake;
 mod tools;
-pub use self::{agent_adp::AgentAdp, tools::TOOLS_LINUX_IMAGE};
+pub use self::{agent_adp::AgentAdp, datadog_intake::DatadogIntake, tools::TOOLS_LINUX_IMAGE};
 
 /// Participant types available to case files.
-pub const REGISTERED_TYPES: &[&dyn ParticipantType] = &[&AgentAdp];
+pub const REGISTERED_TYPES: &[&dyn ParticipantType] = &[&AgentAdp, &DatadogIntake];
 
 #[cfg(test)]
 mod tests {
@@ -27,15 +28,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registered_types_are_agent_adp_under_its_name() {
+    fn registered_types_are_agent_adp_and_datadog_intake_under_their_names() {
         assert_eq!(
             REGISTERED_TYPES
                 .iter()
                 .map(|participant_type| participant_type.name())
                 .collect::<Vec<_>>(),
-            [AgentAdp::NAME]
+            [AgentAdp::NAME, DatadogIntake::NAME]
         );
         assert_eq!(AgentAdp::NAME, "agent-adp");
+        assert_eq!(DatadogIntake::NAME, "datadog-intake");
     }
 
     #[test]

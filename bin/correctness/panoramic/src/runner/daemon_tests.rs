@@ -3,14 +3,11 @@
 use std::{collections::BTreeMap, io::Read as _};
 
 use async_trait::async_trait;
-use clap::Parser as _;
 use panoramic_core::{
-    artifact::{ArtifactKind, ArtifactManifest, ArtifactRole},
-    backend::{self, LateFact, RunBackends, FIXUP_IMAGE},
-    case::{CaseLoader, Registries},
+    artifact::{ArtifactKind, ArtifactRole},
+    backend::LateFact,
     layout::{Os, Realization, RealizationKind},
     participant::{ExitChannel, OutputChannel, OutputStream, ProcessSpec, RenderedConfig},
-    plan::Planner,
     recipe::{test_support::shell, Recipe},
     record::StepReport,
     step::{decode_fields, test_support, Need, Step, StepContext, StepFactory, StepFields},
@@ -19,13 +16,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
-use super::{report_tests::assert_scope_removed, test_support::test_runner_settings, *};
-use crate::{
-    cli::{Cli, Command},
-    config::typed_case::TypedConfigLoader,
-    console::Console,
-    run_command,
-};
+use super::*;
 
 const BOUND: Duration = Duration::from_secs(120);
 const IMAGE: ArtifactRole = ArtifactRole {
@@ -155,100 +146,19 @@ fn waiting() -> Value {
 }
 
 async fn run_case(participants: Value, procedure: Value, fault: Fault) -> (tempfile::TempDir, Value) {
-    let logs = tempfile::tempdir().unwrap();
     let (entered_tx, mut entered_rx) = mpsc::unbounded_channel();
     let removed = matches!(fault, Fault::Remove).then(CancellationToken::new);
     let factory = WaitFactory {
         entered: entered_tx,
         removed: removed.clone(),
     };
-    let registries = Registries {
-        participant_types: &[&Fixture],
-        steps: &[&factory],
-        typed_case_roles: &[],
-    };
-    let case = CaseLoader::new(registries, TypedConfigLoader, "native")
-        .load_content(
-            &json!({
-                "timeout": if matches!(fault, Fault::Deadline) { "10s" } else { "90s" },
-                "subject_os": ["linux"], "participants": participants, "procedure": procedure,
-            })
-            .to_string(),
-            "failure",
-            &logs.path().join("cases/failure/config.yaml"),
-        )
-        .unwrap()
-        .remove(0);
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(3).unwrap();
-    let courier = backend::artifacts(RealizationKind::LinuxContainer)
-        .iter()
-        .find(|role| matches!(role.kind, ArtifactKind::ContainerBinary { .. }))
-        .unwrap();
+    let case = json!({
+        "timeout": if matches!(fault, Fault::Deadline) { "10s" } else { "90s" },
+        "subject_os": ["linux"], "participants": participants, "procedure": procedure,
+    });
     let image = std::env::var("PANORAMIC_TEST_IMAGE").unwrap_or_else(|_| "alpine:latest".into());
-    let manifest = ArtifactManifest::new(
-        "runner tests",
-        BTreeMap::from([
-            (IMAGE.name.into(), image.clone()),
-            (FIXUP_IMAGE.name.into(), image),
-            (
-                courier.name.into(),
-                root.join(courier.local_default).to_str().unwrap().into(),
-            ),
-        ]),
-    )
-    .unwrap();
-    let path = logs.path().join("artifacts.toml");
-    std::fs::write(&path, manifest.render()).unwrap();
-    let plan = Planner::new(registries, ArtifactManifest::load(&path).unwrap())
-        .unwrap()
-        .compile(case, Os::Linux)
-        .unwrap()
-        .into_plan()
-        .unwrap();
-    let scope = panoramic_core::plan::test_support::scope_id(&plan).unwrap();
-    eprintln!("Runner failure test scope: {scope}");
-    let built = BuiltCase {
-        plan,
-        execution: Execution::Native,
-    };
-    let Command::Run(cmd) = Cli::try_parse_from([
-        "panoramic",
-        "run",
-        "--subject-os",
-        "linux",
-        "--no-tui",
-        "--artifacts",
-        path.to_str().unwrap(),
-    ])
-    .unwrap()
-    .command
-    else {
-        panic!("expected run")
-    };
-    let (verified, native) = run_command::prepare_artifacts(
-        Arc::new(RunBackends::default()),
-        &cmd,
-        &Console { use_tui: false },
-        Os::Linux,
-        std::slice::from_ref(&built),
-        &BTreeMap::new(),
-    )
-    .await
-    .unwrap();
-    let verified = serde_json::to_value(verified.unwrap()).unwrap();
-    assert!(verified
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|artifact| artifact["role"] == IMAGE.name
-            && artifact["identity"]
-                .as_str()
-                .is_some_and(|identity| !identity.is_empty())));
-    let mut runner =
-        Runner::new(logs.path(), test_runner_settings(logs.path())).with_native(native.unwrap(), &[&Fixture]);
-    runner.register(built).unwrap();
+    let bindings = BTreeMap::from([(IMAGE.name.into(), image)]);
     let cancel = CancellationToken::new();
-    let (tx, mut rx) = mpsc::unbounded_channel();
     let inject = async {
         if matches!(fault, Fault::None) {
             return Ok(());
@@ -292,48 +202,19 @@ async fn run_case(participants: Value, procedure: Value, fault: Fault) -> (tempf
         }
         Ok::<(), String>(())
     };
-    let (_, injection) = tokio::time::timeout(BOUND, async {
-        tokio::join!(runner.run_tests(RunArgs::new(cancel.clone(), tx)), async {
+    let steps = [&factory as &dyn StepFactory];
+    let (result, injection) = tokio::join!(
+        super::test_support::run_native_case(&[&Fixture], &steps, case, bindings, cancel.clone()),
+        async {
             let result = inject.await;
             if result.is_err() {
                 cancel.cancel();
             }
             result
-        })
-    })
-    .await
-    .expect("the runner must return after its cleanup budgets");
-    let mut completed = Vec::new();
-    while let Ok(event) = rx.try_recv() {
-        if let TestEvent::TestCompleted { result, .. } = event {
-            completed.push(result);
         }
-    }
-    assert_scope_removed(&scope).await;
+    );
     injection.unwrap();
-    assert_eq!(completed.len(), 1);
-    let result = &completed[0];
-    let report: Value =
-        serde_json::from_slice(&std::fs::read(result.log_dir.as_ref().unwrap().join("result.json")).unwrap()).unwrap();
-    assert_eq!(report["schema_version"], 3);
-    assert_eq!(
-        report["participants"],
-        serde_json::to_value(&result.participants).unwrap()
-    );
-    assert_eq!(report["issues"], json!([]), "{report:#}");
-    let reclaim = report["reclaim"].as_array().unwrap();
-    assert_eq!(reclaim.len(), 3, "{report:#}");
-    for (entry, name) in reclaim.iter().zip(["second", "first"]) {
-        assert_eq!(
-            *entry,
-            json!({"resource": format!("participant:{name}"), "participant": name, "result": "reclaimed"})
-        );
-    }
-    assert_eq!(
-        reclaim[2],
-        json!({"resource": format!("isolation_group:{scope}"), "result": "reclaimed"})
-    );
-    (logs, report)
+    result
 }
 
 #[tokio::test]

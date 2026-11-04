@@ -1250,12 +1250,154 @@ pub(crate) mod test_support {
 
     use panoramic_core::layout::Os;
     use panoramic_core::record::{AssertionResult, AssertionStatus};
-    use tokio::sync::Notify;
+    use tokio::sync::{mpsc, Notify};
 
     use super::*;
     use crate::assertions::run_assertion_steps;
     use crate::assertions::test_support::{host_context, procedure};
     use crate::config::typed_case::LoadedCase;
+
+    /// Runs a native case through artifact verification, checks its report and confirms scope removal.
+    pub(crate) async fn run_native_case(
+        participant_types: &'static [&'static dyn ParticipantType], steps: &[&dyn panoramic_core::step::StepFactory],
+        case_json: serde_json::Value, mut bindings: BTreeMap<String, String>, cancel: CancellationToken,
+    ) -> (tempfile::TempDir, serde_json::Value) {
+        use clap::Parser as _;
+        use panoramic_core::{
+            artifact::{ArtifactKind, ArtifactManifest},
+            backend::{self, RunBackends, FIXUP_IMAGE},
+            case::CaseLoader,
+            layout::RealizationKind,
+            plan::Planner,
+        };
+        use serde_json::{json, Value};
+
+        use super::report_tests::assert_scope_removed;
+        use crate::{
+            cli::{Cli, Command},
+            config::typed_case::TypedConfigLoader,
+            console::Console,
+            run_command,
+        };
+
+        let registries = panoramic_core::case::Registries {
+            participant_types,
+            steps,
+            typed_case_roles: &[],
+        };
+        let logs = tempfile::tempdir().unwrap();
+        let participants = case_json["participants"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let case = CaseLoader::new(registries, TypedConfigLoader, "native")
+            .load_content(
+                &case_json.to_string(),
+                "native",
+                &logs.path().join("cases/native/config.yaml"),
+            )
+            .unwrap()
+            .remove(0);
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(3).unwrap();
+        let courier = backend::artifacts(RealizationKind::LinuxContainer)
+            .iter()
+            .find(|role| matches!(role.kind, ArtifactKind::ContainerBinary { .. }))
+            .unwrap();
+        let image = std::env::var("PANORAMIC_TEST_IMAGE").unwrap_or_else(|_| "alpine:latest".into());
+        bindings.entry(FIXUP_IMAGE.name.into()).or_insert(image);
+        bindings
+            .entry(courier.name.into())
+            .or_insert_with(|| root.join(courier.local_default).to_str().unwrap().into());
+        let manifest = ArtifactManifest::new("runner tests", bindings).unwrap();
+        let path = logs.path().join("artifacts.toml");
+        std::fs::write(&path, manifest.render()).unwrap();
+        let plan = Planner::new(registries, ArtifactManifest::load(&path).unwrap())
+            .unwrap()
+            .compile(case, Os::Linux)
+            .unwrap()
+            .into_plan()
+            .unwrap();
+        let scope = panoramic_core::plan::test_support::scope_id(&plan).unwrap();
+        eprintln!("Native runner test scope: {scope}");
+        let built = BuiltCase {
+            plan,
+            execution: Execution::Native,
+        };
+        let Command::Run(cmd) = Cli::try_parse_from([
+            "panoramic",
+            "run",
+            "--subject-os",
+            "linux",
+            "--no-tui",
+            "--artifacts",
+            path.to_str().unwrap(),
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("expected run")
+        };
+        let (verified, native) = run_command::prepare_artifacts(
+            Arc::new(RunBackends::default()),
+            &cmd,
+            &Console { use_tui: false },
+            Os::Linux,
+            std::slice::from_ref(&built),
+            &BTreeMap::new(),
+        )
+        .await
+        .unwrap();
+        let verified = serde_json::to_value(verified.unwrap()).unwrap();
+        let verified = verified.as_array().unwrap();
+        assert_eq!(verified.len(), built.plan.artifacts().len());
+        for binding in built.plan.artifacts() {
+            assert!(verified.iter().any(|artifact| artifact["role"] == binding.role.name
+                && artifact["identity"]
+                    .as_str()
+                    .is_some_and(|identity| !identity.is_empty())));
+        }
+        let mut runner =
+            Runner::new(logs.path(), test_runner_settings(logs.path())).with_native(native.unwrap(), participant_types);
+        runner.register(built).unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tokio::time::timeout(Duration::from_secs(120), runner.run_tests(RunArgs::new(cancel, tx)))
+            .await
+            .expect("the runner must return after its cleanup budgets");
+        let mut completed = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let TestEvent::TestCompleted { result, .. } = event {
+                completed.push(result);
+            }
+        }
+        assert_scope_removed(&scope).await;
+        assert_eq!(completed.len(), 1);
+        let result = &completed[0];
+        let report: Value =
+            serde_json::from_slice(&std::fs::read(result.log_dir.as_ref().unwrap().join("result.json")).unwrap())
+                .unwrap();
+        assert_eq!(report["schema_version"], 3);
+        assert_eq!(
+            report["participants"],
+            serde_json::to_value(&result.participants).unwrap()
+        );
+        assert_eq!(report["issues"], json!([]), "{report:#}");
+        let reclaim = report["reclaim"].as_array().unwrap();
+        assert_eq!(reclaim.len(), participants.len() + 1, "{report:#}");
+        // These fixtures create in name order; reclaim runs in reverse create order.
+        for (entry, name) in reclaim.iter().zip(participants.iter().rev()) {
+            assert_eq!(
+                *entry,
+                json!({"resource": format!("participant:{name}"), "participant": name, "result": "reclaimed"})
+            );
+        }
+        assert_eq!(
+            reclaim[participants.len()],
+            json!({"resource": format!("isolation_group:{scope}"), "result": "reclaimed"})
+        );
+        (logs, report)
+    }
 
     /// What a [`ScriptedTest`] does once it has entered its phase.
     #[derive(Clone, Copy, Debug)]
@@ -2901,3 +3043,6 @@ mod report_tests;
 
 #[cfg(test)]
 mod daemon_tests;
+
+#[cfg(test)]
+mod product_tests;

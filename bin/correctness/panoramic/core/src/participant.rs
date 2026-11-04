@@ -97,6 +97,13 @@ pub struct RenderedConfig {
     pub(crate) files: BTreeMap<String, Vec<u8>>,
 }
 
+impl RenderedConfig {
+    /// Environment after resolving references and connection deliveries for creation.
+    pub fn env(&self) -> &BTreeMap<String, String> {
+        &self.env
+    }
+}
+
 /// The core-provided fact naming a participant's directory for served sockets.
 pub const SHARED_DIR_FACT: &str = "shared_dir";
 

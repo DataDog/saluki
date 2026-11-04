@@ -625,7 +625,13 @@ test-panoramic-daemon: check-rust-build-tools cargo-install-cargo-nextest build-
 test-panoramic-daemon: ## Runs panoramic's backend, lifecycle and runner daemon tests against a real Docker daemon (the image in $PANORAMIC_TEST_IMAGE, default alpine:latest, must already be local)
 	@echo "[*] Running panoramic daemon tests..."
 	cargo nextest run -p panoramic-core --run-ignored only --no-fail-fast
-	cargo nextest run -p panoramic --run-ignored only --no-fail-fast
+	cargo nextest run -p panoramic --run-ignored only --no-fail-fast -E 'not test(/^runner::product_tests::/)'
+
+.PHONY: test-panoramic-products
+test-panoramic-products: check-rust-build-tools cargo-install-cargo-nextest build-courier-linux
+test-panoramic-products: ## Runs native product tests with local images ($PANORAMIC_AGENT_ADP_LINUX_IMAGE and $PANORAMIC_TOOLS_LINUX_IMAGE)
+	@echo "[*] Running panoramic product tests..."
+	cargo nextest run -p panoramic --run-ignored only --no-fail-fast -E 'test(/^runner::product_tests::/)'
 
 .PHONY: test-all
 test-all: ## Test everything

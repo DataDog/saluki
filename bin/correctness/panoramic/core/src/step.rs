@@ -71,7 +71,10 @@ impl<'a> StepContext<'a> {
         Self { plan, participants }
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "Participant I/O for native steps."))]
+    #[cfg_attr(
+        not(any(test, feature = "test-util")),
+        expect(dead_code, reason = "Participant I/O for native steps.")
+    )]
     pub(crate) fn primitives(&self, name: &str) -> Option<&dyn Primitives> {
         self.participants.get(name).map(|participant| participant.primitives)
     }
@@ -88,7 +91,10 @@ impl<'a> StepContext<'a> {
         self.participants.get(name)?.late.get(&fact).copied()
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "Runner-host routes for native steps."))]
+    #[cfg_attr(
+        not(any(test, feature = "test-util")),
+        expect(dead_code, reason = "Runner-host routes for native steps.")
+    )]
     pub(crate) fn runner_host_route(
         &self, server: &str, endpoint: &str, operation: EndpointOperation,
     ) -> Option<&RunnerHostRoute> {
