@@ -191,7 +191,7 @@ mod tests {
     use tokio::sync::watch;
 
     use super::*;
-    use crate::handle::{ExecOutput, FileStatus};
+    use crate::handle::{ExecOutput, FileStatus, HttpResponse};
     use crate::observe::{output::OutputLine, ParticipantExit, ProcessOutput};
     use crate::participant::OutputStream;
     use crate::{
@@ -201,6 +201,7 @@ mod tests {
 
     enum Answer {
         Probe(ProbeAnswer),
+        Http(u16),
         Stat(Option<FileKind>),
         Error(HandleError),
     }
@@ -273,6 +274,16 @@ mod tests {
         }
         async fn send(&self, _: &ResolvedAddress, _: &[u8], _: &AttemptLimits) -> Result<(), HandleError> {
             panic!("readiness must not send payloads");
+        }
+        async fn http(
+            &self, address: &ResolvedAddress, path: &str, headers_only: bool, limits: &AttemptLimits,
+        ) -> Result<HttpResponse, HandleError> {
+            assert!(headers_only);
+            assert!(limits.attempt <= crate::probe::PROBE_TIMEOUT);
+            let Answer::Http(status) = self.answer(format!("http {}{path}", address.url)).await? else {
+                panic!("expected an HTTP answer")
+            };
+            Ok(HttpResponse { status, body: vec![] })
         }
     }
 
@@ -840,7 +851,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn http_checks_through_the_courier_fail_as_a_harness_error() {
+    async fn http_checks_through_the_courier_use_the_server() {
         let tcp = tcp_gate();
         let PlannedCheck::Accepts(route) = tcp.check else {
             unreachable!()
@@ -853,9 +864,7 @@ mod tests {
             evidence: Evidence::http_ok("api", "/ready"),
             ..tcp
         };
-        let server = Server::new([]);
-        let expected = "participant 'consumer' cannot start: checking http-ok on 'api' at '/ready' of participant \
-            'server' failed: HTTP checks through the courier are not supported";
+        let server = Server::new([Answer::Http(200)]);
         assert_eq!(
             wait_for_gates(
                 [("consumer", &gate)],
@@ -863,9 +872,9 @@ mod tests {
                 &CancellationToken::new()
             )
             .await,
-            Err(expected.into()),
+            Ok(()),
         );
-        assert!(server.calls.lock().unwrap().is_empty());
+        assert_eq!(*server.calls.lock().unwrap(), ["http tcp://server:8080/ready"]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -913,11 +922,14 @@ mod tests {
             evidence: Evidence::http_ok("api", path),
             ..tcp.clone()
         });
-        let server = Server::new([]);
+        let server = Server::new(["first failure", "second failure"].map(|message| {
+            Answer::Error(HandleError::Harness {
+                message: message.into(),
+            })
+        }));
         let expected = "participant 'consumer' cannot start: checking http-ok on 'api' at '/ready' of participant \
-            'server' failed: HTTP checks through the courier are not supported; participant 'consumer' \
-            cannot start: checking http-ok on 'api' at '/live' of participant 'server' failed: HTTP checks \
-            through the courier are not supported";
+            'server' failed: first failure; participant 'consumer' \
+            cannot start: checking http-ok on 'api' at '/live' of participant 'server' failed: second failure";
         assert_eq!(
             wait_for_gates(
                 gates.iter().map(|gate| ("consumer", gate)),
@@ -927,6 +939,9 @@ mod tests {
             .await,
             Err(expected.into())
         );
-        assert!(server.calls.lock().unwrap().is_empty());
+        assert_eq!(
+            *server.calls.lock().unwrap(),
+            ["http tcp://server:8080/ready", "http tcp://server:8080/live"]
+        );
     }
 }

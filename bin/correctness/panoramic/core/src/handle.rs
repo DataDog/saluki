@@ -99,6 +99,10 @@ pub(crate) trait Primitives: Send + Sync {
     async fn probe(&self, address: &ResolvedAddress, limits: &AttemptLimits) -> Result<ProbeAnswer, HandleError>;
     /// Sends a payload to an address as seen from inside this participant.
     async fn send(&self, address: &ResolvedAddress, payload: &[u8], limits: &AttemptLimits) -> Result<(), HandleError>;
+    /// Makes an HTTP GET to an address as seen from inside this participant.
+    async fn http(
+        &self, address: &ResolvedAddress, path: &str, headers_only: bool, limits: &AttemptLimits,
+    ) -> Result<HttpResponse, HandleError>;
 }
 
 /// Probes through the plan's route for `EndpointOperation::Probe`, using the server for a courier route.
@@ -114,7 +118,7 @@ pub(crate) async fn probe_from_runner_host(
 /// Requests an HTTP status through the plan's request route.
 /// Invalid requests and unsupported routes are harness failures; connection errors and timeouts are product failures.
 pub(crate) async fn http_status_from_runner_host(
-    route: &RunnerHostRoute, _server: &dyn Primitives, path: &str, limits: &AttemptLimits,
+    route: &RunnerHostRoute, server: &dyn Primitives, path: &str, limits: &AttemptLimits,
 ) -> Result<u16, HandleError> {
     match route {
         RunnerHostRoute::Direct(address) => {
@@ -127,22 +131,23 @@ pub(crate) async fn http_status_from_runner_host(
                 }),
             }
         }
-        RunnerHostRoute::Courier(_) => Err(HandleError::Harness {
-            message: "HTTP checks through the courier are not supported".into(),
-        }),
+        RunnerHostRoute::Courier(address) => server
+            .http(address, path, true, limits)
+            .await
+            .map(|response| response.status),
     }
 }
 
 /// Gets an HTTP response through the plan's request route, bounded through completion of its body.
 pub(crate) async fn http_get_from_runner_host(
-    route: &RunnerHostRoute, path: &str, limits: &AttemptLimits,
+    route: &RunnerHostRoute, server: &dyn Primitives, path: &str, limits: &AttemptLimits,
 ) -> Result<HttpResponse, HandleError> {
-    http_get_with_from_runner_host(route, path, TlsVerification::Verify, limits).await
+    http_get_with_from_runner_host(route, server, path, TlsVerification::Verify, limits).await
 }
 
 /// Gets an HTTP response with an explicit TLS verification policy.
 pub(crate) async fn http_get_with_from_runner_host(
-    route: &RunnerHostRoute, path: &str, verification: TlsVerification, limits: &AttemptLimits,
+    route: &RunnerHostRoute, server: &dyn Primitives, path: &str, verification: TlsVerification, limits: &AttemptLimits,
 ) -> Result<HttpResponse, HandleError> {
     match route {
         RunnerHostRoute::Direct(address) => {
@@ -158,9 +163,14 @@ pub(crate) async fn http_get_with_from_runner_host(
                 }),
             }
         }
-        RunnerHostRoute::Courier(_) => Err(HandleError::Harness {
-            message: "HTTP requests through the courier are not supported".into(),
-        }),
+        RunnerHostRoute::Courier(address) => {
+            if verification == TlsVerification::Skip {
+                return Err(HandleError::Harness {
+                    message: "courier HTTP requests do not support skipping TLS verification".into(),
+                });
+            }
+            server.http(address, path, false, limits).await
+        }
     }
 }
 
@@ -222,10 +232,26 @@ mod tests {
                     assert_eq!(command.stdin.as_deref(), Some(b"payload".as_slice()));
                     Report::Sent { bytes: 7 }
                 }
+                "http" => {
+                    let invocation = panoramic_courier::Invocation::parse(&command.argv[1..]).unwrap();
+                    let panoramic_courier::Command::Http { url, headers_only } = invocation.command else {
+                        unreachable!()
+                    };
+                    assert_eq!(url, "http://127.0.0.1:1003/dump");
+                    assert!(command.stdin.is_none());
+                    Report::Responded {
+                        status: 503,
+                        bytes: if headers_only { 0 } else { 3 },
+                    }
+                }
                 command => panic!("unexpected command: {command}"),
             };
             Ok(ExecOutput {
-                stdout: vec![],
+                stdout: if matches!(report, Report::Responded { bytes: 3, .. }) {
+                    b"x\0\xff".to_vec()
+                } else {
+                    vec![]
+                },
                 stderr: serde_json::to_vec(&report).unwrap(),
                 exit_code: report.exit_code().into(),
             })
@@ -269,6 +295,26 @@ mod tests {
                 "/courier",
                 address,
                 payload,
+                limits,
+            )
+            .await
+        }
+
+        async fn http(
+            &self, address: &ResolvedAddress, path: &str, headers_only: bool, limits: &AttemptLimits,
+        ) -> Result<HttpResponse, HandleError> {
+            assert_eq!(
+                Some(address),
+                self.address.as_ref(),
+                "a direct route must not use the server"
+            );
+            self.calls.lock().unwrap().push("http");
+            courier::http(
+                |command| async { self.exec(command, limits.attempt).await.map_err(GenericError::new) },
+                "/courier",
+                address,
+                path,
+                headers_only,
                 limits,
             )
             .await
@@ -429,10 +475,14 @@ mod tests {
                 assert_eq!(stream.read(&mut [0]).await.unwrap(), 0);
             };
             let limits = AttemptLimits::new(Duration::from_secs(5));
+            let server = Server {
+                address: None,
+                ..server(false)
+            };
             tokio::time::timeout(Duration::from_secs(5), async {
                 let (_, result) = tokio::join!(
                     responder,
-                    http_get_from_runner_host(&route, "/dump?kind=records", &limits)
+                    http_get_from_runner_host(&route, &server, "/dump?kind=records", &limits)
                 );
                 assert_eq!(
                     result,
@@ -448,21 +498,77 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_http_get_through_a_courier_route_is_a_harness_error() {
+    async fn courier_http_routes_return_the_response_and_status_checks_request_only_headers() {
         let RunnerHostRoute::Direct(address) = http_route(1003) else {
-            unreachable!();
+            unreachable!()
         };
+        let server = Server {
+            address: Some(address.clone()),
+            ..server(false)
+        };
+        let route = RunnerHostRoute::Courier(address);
+        let limits = AttemptLimits::new(Duration::from_secs(5));
         assert_eq!(
-            http_get_from_runner_host(
-                &RunnerHostRoute::Courier(address),
-                "/dump",
-                &AttemptLimits::new(Duration::from_secs(5)),
-            )
-            .await,
-            Err(HandleError::Harness {
-                message: "HTTP requests through the courier are not supported".into(),
+            http_get_from_runner_host(&route, &server, "/dump", &limits).await,
+            Ok(HttpResponse {
+                status: 503,
+                body: b"x\0\xff".to_vec()
             })
         );
+        assert_eq!(
+            http_status_from_runner_host(&route, &server, "/dump", &limits).await,
+            Ok(503)
+        );
+        assert_eq!(*server.calls.lock().unwrap(), ["http", "http"]);
+    }
+
+    #[tokio::test]
+    async fn courier_tls_gets_with_verification_and_status_checks_fail_before_exec() {
+        let RunnerHostRoute::Direct(mut address) = http_route(1003) else {
+            unreachable!()
+        };
+        address.url = address.url.replacen("http:", "https:", 1);
+        let server = Server {
+            address: Some(address.clone()),
+            ..server(true)
+        };
+        let expected = HandleError::Harness {
+            message: format!("courier HTTP requests do not support TLS endpoints ({})", address.url),
+        };
+        let route = RunnerHostRoute::Courier(address);
+        let limits = AttemptLimits::new(Duration::from_secs(5));
+        assert_eq!(
+            http_get_with_from_runner_host(&route, &server, "/dump", TlsVerification::Verify, &limits).await,
+            Err(expected.clone())
+        );
+        assert_eq!(
+            http_status_from_runner_host(&route, &server, "/dump", &limits).await,
+            Err(expected)
+        );
+        assert_eq!(*server.calls.lock().unwrap(), ["http", "http"]);
+    }
+
+    #[tokio::test]
+    async fn courier_http_rejects_skipped_tls_verification_before_dispatch() {
+        for scheme in ["http", "https"] {
+            let RunnerHostRoute::Direct(mut address) = http_route(1003) else {
+                unreachable!()
+            };
+            address.url = address.url.replacen("http:", &format!("{scheme}:"), 1);
+            let server = Server {
+                address: Some(address.clone()),
+                ..server(false)
+            };
+            let route = RunnerHostRoute::Courier(address);
+            let limits = AttemptLimits::new(Duration::from_secs(5));
+            assert_eq!(
+                http_get_with_from_runner_host(&route, &server, "/dump", TlsVerification::Skip, &limits).await,
+                Err(HandleError::Harness {
+                    message: "courier HTTP requests do not support skipping TLS verification".into(),
+                })
+            );
+            assert!(server.calls.lock().unwrap().is_empty());
+        }
     }
 
     #[tokio::test]
@@ -491,8 +597,12 @@ mod tests {
                 assert_eq!(stream.read(&mut [0]).await.unwrap(), 0);
             };
             let limits = AttemptLimits::new(Duration::from_millis(100));
+            let server = Server {
+                address: None,
+                ..server(false)
+            };
             tokio::time::timeout(Duration::from_secs(5), async {
-                let (_, result) = tokio::join!(responder, http_get_from_runner_host(&route, "/dump", &limits));
+                let (_, result) = tokio::join!(responder, http_get_from_runner_host(&route, &server, "/dump", &limits));
                 assert_eq!(
                     result,
                     Err(HandleError::Product {
@@ -518,7 +628,7 @@ mod tests {
         let route = http_route(port);
         for result in [
             http_status_from_runner_host(&route, &server, "/a b", &limits).await,
-            http_get_from_runner_host(&route, "/a b", &limits)
+            http_get_from_runner_host(&route, &server, "/a b", &limits)
                 .await
                 .map(|response| response.status),
         ] {
@@ -533,7 +643,9 @@ mod tests {
             http_status_from_runner_host(&route, &server, "/ready", &limits)
                 .await
                 .unwrap_err(),
-            http_get_from_runner_host(&route, "/ready", &limits).await.unwrap_err(),
+            http_get_from_runner_host(&route, &server, "/ready", &limits)
+                .await
+                .unwrap_err(),
         ] {
             assert!(
                 matches!(error, HandleError::Product { ref message } if message.to_lowercase().contains("refused")),

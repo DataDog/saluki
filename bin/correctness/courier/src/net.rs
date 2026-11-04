@@ -74,6 +74,31 @@ pub(crate) fn connect_unix_datagram(path: &str, to: &Target) -> Result<tokio::ne
     Ok(socket)
 }
 
+#[cfg(windows)]
+pub(crate) async fn connect_named_pipe(
+    name: &str, to: &Target,
+) -> Result<tokio::net::windows::named_pipe::NamedPipeClient, Report> {
+    use tokio::net::windows::named_pipe::ClientOptions;
+
+    let path = format!(r"\\.\pipe\{name}");
+    loop {
+        match ClientOptions::new().read(false).open(&path) {
+            Ok(pipe) => return Ok(pipe),
+            Err(error) if error.raw_os_error() == Some(231) => {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            Err(error) => {
+                return Err(Report::Unreachable {
+                    reason: format!("{to}: {error}"),
+                })
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub(crate) const UNSUPPORTED_PIPE_REASON: &str = "named pipes are supported only on Windows";
+
 #[cfg(not(unix))]
 pub(crate) const UNSUPPORTED_UNIX_REASON: &str = "Unix sockets are not supported on this platform";
 

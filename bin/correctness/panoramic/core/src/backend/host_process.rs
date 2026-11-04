@@ -30,7 +30,7 @@ use tokio::{
 use super::{courier, LateFact, ParticipantRequest, RuntimeParticipant, ScopeRuntime};
 use crate::{
     endpoint::ResolvedAddress,
-    handle::{ExecCommand, ExecOutput, FileKind, FileStatus, HandleError, Primitives},
+    handle::{ExecCommand, ExecOutput, FileKind, FileStatus, HandleError, HttpResponse, Primitives},
     layout::Os,
     ledger::{ParticipantRemoval, ResourceLedger},
     observe::{
@@ -650,6 +650,12 @@ impl Primitives for HostParticipant {
 
     async fn send(&self, address: &ResolvedAddress, payload: &[u8], limits: &AttemptLimits) -> Result<(), HandleError> {
         courier::send_in_process(address, payload, limits).await
+    }
+
+    async fn http(
+        &self, address: &ResolvedAddress, path: &str, headers_only: bool, limits: &AttemptLimits,
+    ) -> Result<HttpResponse, HandleError> {
+        courier::http_in_process(address, path, headers_only, limits).await
     }
 }
 

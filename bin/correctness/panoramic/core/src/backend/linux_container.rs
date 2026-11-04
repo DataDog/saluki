@@ -20,7 +20,7 @@ use super::{courier, LateFact, ParticipantRequest, RunBackends, RuntimeParticipa
 use crate::{
     artifact::ArtifactKind,
     endpoint::{ResolvedAddress, RunnerHostPort, Transport},
-    handle::{ExecCommand, ExecOutput, FileKind, FileStatus, HandleError, Primitives},
+    handle::{ExecCommand, ExecOutput, FileKind, FileStatus, HandleError, HttpResponse, Primitives},
     layout::{Os, RealizationKind},
     ledger::ParticipantRemoval,
     observe::{
@@ -395,6 +395,20 @@ impl Primitives for LinuxParticipant {
             COURIER_PATH,
             address,
             payload,
+            limits,
+        )
+        .await
+    }
+
+    async fn http(
+        &self, address: &ResolvedAddress, path: &str, headers_only: bool, limits: &AttemptLimits,
+    ) -> Result<HttpResponse, HandleError> {
+        courier::http(
+            |command| async { self.driver.exec(exec_request(command)).await.map(ExecOutput::from) },
+            COURIER_PATH,
+            address,
+            path,
+            headers_only,
             limits,
         )
         .await

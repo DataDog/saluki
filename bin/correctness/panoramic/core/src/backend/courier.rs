@@ -7,7 +7,7 @@ use saluki_error::GenericError;
 
 use crate::{
     endpoint::{EndpointKind, ResolvedAddress},
-    handle::{ExecCommand, ExecOutput, HandleError},
+    handle::{ExecCommand, ExecOutput, HandleError, HttpResponse},
     probe::{AttemptLimits, ProbeAnswer},
 };
 
@@ -43,9 +43,11 @@ pub(crate) fn target(address: &ResolvedAddress) -> Result<Target, HandleError> {
             }
         }
         EndpointKind::NamedPipe => {
-            return Err(HandleError::Harness {
-                message: format!("The courier can't reach the named-pipe endpoint {}", address.url),
-            });
+            let path = address.path.as_deref().ok_or_else(|| missing("a path"))?;
+            let name = path.strip_prefix(r"\\.\pipe\").ok_or_else(|| HandleError::Harness {
+                message: format!("The courier needs a local named-pipe path, got {path:?}"),
+            })?;
+            Target::NamedPipe { name: name.into() }
         }
     };
     // Target's fields must follow parse's rules; parsing its rendering checks them.
@@ -73,12 +75,14 @@ where
     F: Future<Output = Result<ExecOutput, GenericError>>,
 {
     let command = Command::Probe { to: target(address)? };
-    let report = invoke(exec, executable, &command, None, limits).await?;
+    let (report, _) = invoke(exec, executable, &command, None, limits).await?;
     probe_answer(&command, report)
 }
 
 fn probe_answer(command: &Command, report: Report) -> Result<ProbeAnswer, HandleError> {
-    let (Command::Probe { to } | Command::Send { to }) = command;
+    let (Command::Probe { to } | Command::Send { to }) = command else {
+        unreachable!()
+    };
     match report {
         Report::Listening => Ok(ProbeAnswer::Listening),
         Report::Addressable => Ok(ProbeAnswer::Addressable),
@@ -87,7 +91,7 @@ fn probe_answer(command: &Command, report: Report) -> Result<ProbeAnswer, Handle
             reason: format!("{to}: no answer within {limit_ms} ms"),
         }),
         Report::Usage { reason } | Report::Failed { reason } => Err(harness_error(command, reason)),
-        report @ (Report::Sent { .. } | Report::SendFailed { .. }) => {
+        report @ (Report::Sent { .. } | Report::SendFailed { .. } | Report::Responded { .. }) => {
             Err(harness_error(command, format!("unexpected outcome {report:?}")))
         }
     }
@@ -109,15 +113,12 @@ where
     F: Future<Output = Result<ExecOutput, GenericError>>,
 {
     let command = send_command(address)?;
-    let report = invoke(exec, executable, &command, Some(payload.to_vec()), limits).await?;
+    let (report, _) = invoke(exec, executable, &command, Some(payload.to_vec()), limits).await?;
     send_outcome(&command, report, payload.len())
 }
 
 fn send_command(address: &ResolvedAddress) -> Result<Command, HandleError> {
-    if matches!(
-        address.kind,
-        EndpointKind::Http | EndpointKind::Grpc | EndpointKind::NamedPipe
-    ) {
+    if matches!(address.kind, EndpointKind::Http | EndpointKind::Grpc) {
         return Err(HandleError::Harness {
             message: format!(
                 "The courier can't send raw bytes to {} endpoints ({})",
@@ -130,7 +131,9 @@ fn send_command(address: &ResolvedAddress) -> Result<Command, HandleError> {
 }
 
 fn send_outcome(command: &Command, report: Report, payload_len: usize) -> Result<(), HandleError> {
-    let (Command::Probe { to } | Command::Send { to }) = command;
+    let (Command::Probe { to } | Command::Send { to }) = command else {
+        unreachable!()
+    };
     match report {
         Report::Sent { bytes } if bytes == payload_len as u64 => Ok(()),
         Report::Sent { bytes } => Err(harness_error(
@@ -142,7 +145,7 @@ fn send_outcome(command: &Command, report: Report, payload_len: usize) -> Result
             message: format!("{to}: the send did not finish within {limit_ms} ms"),
         }),
         Report::Usage { reason } | Report::Failed { reason } => Err(harness_error(command, reason)),
-        report @ (Report::Listening | Report::Addressable) => {
+        report @ (Report::Listening | Report::Addressable | Report::Responded { .. }) => {
             Err(harness_error(command, format!("unexpected outcome {report:?}")))
         }
     }
@@ -154,9 +157,9 @@ pub(crate) async fn probe_in_process(
 ) -> Result<ProbeAnswer, HandleError> {
     let invocation = Invocation {
         command: Command::Probe { to: target(address)? },
-        timeout: limits.request,
+        timeout: Some(limits.request),
     };
-    let report = panoramic_courier::execute(&invocation, tokio::io::empty()).await;
+    let report = panoramic_courier::execute(&invocation, tokio::io::empty(), tokio::io::sink()).await;
     probe_answer(&invocation.command, report)
 }
 
@@ -166,22 +169,91 @@ pub(crate) async fn send_in_process(
 ) -> Result<(), HandleError> {
     let invocation = Invocation {
         command: send_command(address)?,
-        timeout: limits.request,
+        timeout: Some(limits.request),
     };
-    let report = panoramic_courier::execute(&invocation, payload).await;
+    let report = panoramic_courier::execute(&invocation, payload, tokio::io::sink()).await;
     send_outcome(&invocation.command, report, payload.len())
+}
+
+/// Fetches a plain HTTP response through a bounded courier exec.
+pub(crate) async fn http<E, F>(
+    exec: E, executable: &str, address: &ResolvedAddress, path: &str, headers_only: bool, limits: &AttemptLimits,
+) -> Result<HttpResponse, HandleError>
+where
+    E: FnOnce(ExecCommand) -> F,
+    F: Future<Output = Result<ExecOutput, GenericError>>,
+{
+    let command = http_command(address, path, headers_only)?;
+    let (report, stdout) = invoke(exec, executable, &command, None, limits).await?;
+    http_outcome(&command, report, stdout, headers_only)
+}
+
+fn http_command(address: &ResolvedAddress, path: &str, headers_only: bool) -> Result<Command, HandleError> {
+    if address.kind != EndpointKind::Http || !path.starts_with('/') {
+        return Err(HandleError::Harness {
+            message: "Courier HTTP requests require an HTTP endpoint and a path starting with '/'".into(),
+        });
+    }
+    if address.url.starts_with("https://") {
+        return Err(HandleError::Harness {
+            message: format!("courier HTTP requests do not support TLS endpoints ({})", address.url),
+        });
+    }
+    let target = target(address)?.to_string();
+    let authority = target.strip_prefix("tcp://").expect("HTTP targets use TCP");
+    Ok(Command::Http {
+        url: format!("http://{authority}{path}"),
+        headers_only,
+    })
+}
+
+fn http_outcome(
+    command: &Command, report: Report, stdout: Vec<u8>, headers_only: bool,
+) -> Result<HttpResponse, HandleError> {
+    match report {
+        Report::Responded { status, bytes } if bytes == stdout.len() as u64 && (!headers_only || bytes == 0) => {
+            Ok(HttpResponse { status, body: stdout })
+        }
+        Report::Responded { bytes, .. } => Err(harness_error(
+            command,
+            format!(
+                "reported {bytes} body bytes, captured {} (headers-only: {headers_only})",
+                stdout.len()
+            ),
+        )),
+        Report::Unreachable { reason } => Err(HandleError::Product { message: reason }),
+        Report::TimedOut { limit_ms } => Err(HandleError::Product {
+            message: format!("HTTP request timed out after {limit_ms} ms"),
+        }),
+        Report::Usage { reason } | Report::Failed { reason } => Err(harness_error(command, reason)),
+        report => Err(harness_error(command, format!("unexpected outcome {report:?}"))),
+    }
+}
+
+/// Fetches a plain HTTP response with the courier library on the runner host.
+#[cfg(unix)]
+pub(crate) async fn http_in_process(
+    address: &ResolvedAddress, path: &str, headers_only: bool, limits: &AttemptLimits,
+) -> Result<HttpResponse, HandleError> {
+    let invocation = Invocation {
+        command: http_command(address, path, headers_only)?,
+        timeout: Some(limits.request),
+    };
+    let mut stdout = Vec::new();
+    let report = panoramic_courier::execute(&invocation, tokio::io::empty(), &mut stdout).await;
+    http_outcome(&invocation.command, report, stdout, headers_only)
 }
 
 async fn invoke<E, F>(
     exec: E, executable: &str, command: &Command, stdin: Option<Vec<u8>>, limits: &AttemptLimits,
-) -> Result<Report, HandleError>
+) -> Result<(Report, Vec<u8>), HandleError>
 where
     E: FnOnce(ExecCommand) -> F,
     F: Future<Output = Result<ExecOutput, GenericError>>,
 {
     let invocation = Invocation {
         command: command.clone(),
-        timeout: limits.request,
+        timeout: Some(limits.request),
     };
     let mut argv = vec![executable.to_owned()];
     argv.extend(invocation.args());
@@ -204,7 +276,7 @@ where
         )
     })?
     .map_err(|error| harness_error(command, format!("exec failed: {error:#}")))?;
-    Report::from_exec(output.exit_code, &output.stderr).map_err(|error| match error {
+    let report = Report::from_exec(output.exit_code, &output.stderr).map_err(|error| match error {
         ReportError::NoReport { .. } => {
             let tail = &output.stderr[output.stderr.len().saturating_sub(1024)..];
             let tail = String::from_utf8_lossy(tail);
@@ -217,13 +289,16 @@ where
             harness_error(command, message)
         }
         ReportError::NotStarted { .. } | ReportError::Mismatch { .. } => harness_error(command, error),
-    })
+    })?;
+    Ok((report, output.stdout))
 }
 
 fn harness_error(command: &Command, problem: impl fmt::Display) -> HandleError {
     let (name, to) = match command {
-        Command::Probe { to } => ("probe", to),
-        Command::Send { to } => ("send", to),
+        Command::Probe { to } => ("probe", to.to_string()),
+        Command::Send { to } => ("send", to.to_string()),
+        Command::Http { url, .. } => ("http", url.clone()),
+        Command::Follow { path } => ("follow", path.clone()),
     };
     HandleError::Harness {
         message: format!("The courier {name} to {to} failed: {problem}"),
@@ -262,7 +337,7 @@ mod tests {
                 None,
                 Some("/airlock/srv/shared/a.sock".into()),
             ),
-            EndpointKind::NamedPipe => (r"\\.\pipe\listener".into(), None, None, None),
+            EndpointKind::NamedPipe => ("npipe://listener".into(), None, None, Some(r"\\.\pipe\listener".into())),
         };
         ResolvedAddress {
             kind,
@@ -429,7 +504,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_in_process_send_to_an_http_endpoint_is_a_harness_error() {
-        for kind in [EndpointKind::Http, EndpointKind::Grpc, EndpointKind::NamedPipe] {
+        for kind in [EndpointKind::Http, EndpointKind::Grpc] {
             let address = address(kind);
             let error = send_in_process(&address, PAYLOAD, &AttemptLimits::new(Duration::from_secs(1)))
                 .await
@@ -532,9 +607,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unsupported_sends_and_named_pipe_probes_fail_before_exec() {
+    async fn unsupported_sends_fail_before_exec() {
         let limits = AttemptLimits::new(Duration::from_secs(3));
-        for kind in [EndpointKind::Http, EndpointKind::Grpc, EndpointKind::NamedPipe] {
+        for kind in [EndpointKind::Http, EndpointKind::Grpc] {
             let resolved = address(kind);
             let error = send(unexpected_exec, "/courier", &resolved, PAYLOAD, &limits)
                 .await
@@ -544,15 +619,6 @@ mod tests {
             assert!(error.to_string().contains(&resolved.url));
             assert_private_message(&error);
         }
-        let error = probe(unexpected_exec, "/courier", &address(EndpointKind::NamedPipe), &limits)
-            .await
-            .unwrap_err();
-        assert_eq!(
-            error,
-            HandleError::Harness {
-                message: r"The courier can't reach the named-pipe endpoint \\.\pipe\listener".into()
-            }
-        );
     }
 
     #[tokio::test]
@@ -851,5 +917,295 @@ mod tests {
             "send",
             "abandoned the courier after 3s without an exit; it may still be running",
         );
+    }
+
+    #[tokio::test]
+    async fn the_courier_reaches_named_pipe_endpoints_by_their_local_name() {
+        let address = address(EndpointKind::NamedPipe);
+        assert_eq!(
+            target(&address).unwrap(),
+            Target::NamedPipe {
+                name: "listener".into()
+            }
+        );
+        let limits = AttemptLimits::new(Duration::from_secs(3));
+        send(
+            |command| async move {
+                assert_eq!(
+                    command.argv,
+                    [
+                        "courier.exe",
+                        "send",
+                        "--to",
+                        "npipe://listener",
+                        "--timeout-ms",
+                        "1500"
+                    ]
+                );
+                assert_eq!(command.stdin.as_deref(), Some(PAYLOAD));
+                Ok(output(Report::Sent {
+                    bytes: PAYLOAD.len() as u64,
+                }))
+            },
+            "courier.exe",
+            &address,
+            PAYLOAD,
+            &limits,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            probe(
+                |command| async move {
+                    assert_eq!(
+                        command.argv,
+                        [
+                            "courier.exe",
+                            "probe",
+                            "--to",
+                            "npipe://listener",
+                            "--timeout-ms",
+                            "1500"
+                        ]
+                    );
+                    Ok(output(Report::Listening))
+                },
+                "courier.exe",
+                &address,
+                &limits
+            )
+            .await,
+            Ok(ProbeAnswer::Listening)
+        );
+        for path in [None, Some("listener"), Some(r"\\.\pipe\"), Some(r"\\.\pipe\a\b")] {
+            let invalid = ResolvedAddress {
+                path: path.map(str::to_owned),
+                ..address.clone()
+            };
+            assert!(matches!(
+                probe(unexpected_exec, "courier.exe", &invalid, &limits).await,
+                Err(HandleError::Harness { .. })
+            ));
+        }
+    }
+
+    async fn http_output(
+        output: Result<ExecOutput, GenericError>, headers_only: bool,
+    ) -> Result<HttpResponse, HandleError> {
+        http(
+            |_| async { output },
+            "/courier",
+            &address(EndpointKind::Http),
+            "/dump",
+            headers_only,
+            &AttemptLimits::new(Duration::from_secs(3)),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn courier_http_outcomes_separate_product_responses_from_mechanism_failures() {
+        let response = output(Report::Responded {
+            status: 503,
+            bytes: PAYLOAD.len() as u64,
+        });
+        assert_eq!(
+            http_output(Ok(response.clone()), false).await,
+            Ok(HttpResponse {
+                status: 503,
+                body: PAYLOAD.to_vec()
+            })
+        );
+        assert!(matches!(
+            http_output(Ok(response), true).await,
+            Err(HandleError::Harness { .. })
+        ));
+        for report in [
+            Report::Unreachable {
+                reason: "refused".into(),
+            },
+            Report::TimedOut { limit_ms: 1500 },
+        ] {
+            assert!(matches!(
+                http_output(Ok(output(report)), false).await,
+                Err(HandleError::Product { .. })
+            ));
+        }
+        for report in [
+            Report::Responded { status: 200, bytes: 0 },
+            Report::Responded {
+                status: 200,
+                bytes: PAYLOAD.len() as u64 + 1,
+            },
+            Report::Usage {
+                reason: "invalid URL".into(),
+            },
+            Report::Failed {
+                reason: "stdout unavailable".into(),
+            },
+            Report::Listening,
+            Report::Addressable,
+            Report::Sent {
+                bytes: PAYLOAD.len() as u64,
+            },
+            Report::SendFailed {
+                reason: "unexpected send failure".into(),
+            },
+        ] {
+            let error = http_output(Ok(output(report)), false).await.unwrap_err();
+            assert!(matches!(error, HandleError::Harness { .. }));
+            assert_private_message(&error);
+        }
+        for exit_code in [10, 126, 127] {
+            let mut result = output(Report::Responded {
+                status: 200,
+                bytes: PAYLOAD.len() as u64,
+            });
+            result.exit_code = exit_code;
+            assert!(matches!(
+                http_output(Ok(result), false).await,
+                Err(HandleError::Harness { .. })
+            ));
+        }
+        assert!(matches!(
+            http_output(Err(generic_error!("exec failed")), false).await,
+            Err(HandleError::Harness { .. })
+        ));
+        let result = ExecOutput {
+            stdout: vec![],
+            stderr: vec![],
+            exit_code: 0,
+        };
+        assert!(matches!(
+            http_output(Ok(result), false).await,
+            Err(HandleError::Harness { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn courier_http_uses_typed_http_addresses_and_headers_only_has_no_body() {
+        let limits = AttemptLimits::new(Duration::from_secs(3));
+        let address = ResolvedAddress {
+            host: Some("::1".into()),
+            url: "ignored://other:12".into(),
+            ..address(EndpointKind::Http)
+        };
+        let result = http(
+            |command| async move {
+                assert_eq!(
+                    command.argv,
+                    [
+                        "/courier",
+                        "http",
+                        "--url",
+                        "http://[::1]:80/ready?a=1",
+                        "--headers-only",
+                        "--timeout-ms",
+                        "1500"
+                    ]
+                );
+                assert!(command.stdin.is_none());
+                let mut output = output(Report::Responded { status: 204, bytes: 0 });
+                output.stdout.clear();
+                Ok(output)
+            },
+            "/courier",
+            &address,
+            "/ready?a=1",
+            true,
+            &limits,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            result,
+            HttpResponse {
+                status: 204,
+                body: vec![]
+            }
+        );
+        let grpc = ResolvedAddress {
+            kind: EndpointKind::Grpc,
+            ..address
+        };
+        assert!(matches!(
+            http(unexpected_exec, "/courier", &grpc, "/", false, &limits).await,
+            Err(HandleError::Harness { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn courier_http_rejects_tls_endpoints_before_exec_or_in_process_io() {
+        // The TCP target loses the HTTPS scheme; reject TLS before constructing a plain HTTP command.
+        let address = ResolvedAddress {
+            url: "https://server:443/".into(),
+            host: Some("server".into()),
+            port: Some(443),
+            ..address(EndpointKind::Http)
+        };
+        let limits = AttemptLimits::new(Duration::from_secs(3));
+        let expected = Err(HandleError::Harness {
+            message: "courier HTTP requests do not support TLS endpoints (https://server:443/)".into(),
+        });
+        for headers_only in [false, true] {
+            assert_eq!(
+                http(unexpected_exec, "/courier", &address, "/", headers_only, &limits).await,
+                expected
+            );
+            #[cfg(unix)]
+            assert_eq!(http_in_process(&address, "/", headers_only, &limits).await, expected);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_courier_http_exec_that_outlasts_the_attempt_is_a_harness_error() {
+        let limits = AttemptLimits::new(Duration::from_secs(3));
+        let start = Instant::now();
+        let error = http(
+            |_| pending(),
+            "/courier",
+            &address(EndpointKind::Http),
+            "/dump",
+            false,
+            &limits,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(start.elapsed(), limits.attempt);
+        assert!(matches!(error, HandleError::Harness { .. }));
+        assert!(error.to_string().contains("abandoned the courier"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn in_process_http_uses_the_same_response_contract() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = local_address(EndpointKind::Http, listener.local_addr().unwrap().port());
+        let limits = AttemptLimits::new(Duration::from_secs(5));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let responder = async {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    request.push(stream.read_u8().await.unwrap());
+                }
+                assert!(request.starts_with(b"GET /dump HTTP/1.1\r\n"));
+                stream
+                    .write_all(b"HTTP/1.1 503 Unavailable\r\nContent-Length: 3\r\n\r\n\0\xff\n")
+                    .await
+                    .unwrap();
+            };
+            let ((), result) = tokio::join!(responder, http_in_process(&address, "/dump", false, &limits));
+            assert_eq!(
+                result,
+                Ok(HttpResponse {
+                    status: 503,
+                    body: b"\0\xff\n".to_vec()
+                })
+            );
+        })
+        .await
+        .unwrap();
     }
 }

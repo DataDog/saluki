@@ -10,7 +10,14 @@ pub enum Report {
         /// Number of bytes accepted by the transport.
         bytes: u64,
     },
-    /// A TCP, Unix stream or Unix datagram connect succeeded.
+    /// An HTTP server returned a response, regardless of status.
+    Responded {
+        /// HTTP status code.
+        status: u16,
+        /// Body bytes written to stdout; zero for headers-only requests.
+        bytes: u64,
+    },
+    /// A TCP, Unix socket or named pipe connect succeeded.
     Listening,
     /// A UDP socket connected; this does not establish that a listener exists.
     Addressable,
@@ -45,7 +52,7 @@ impl Report {
     /// Returns the process exit code for this outcome.
     pub fn exit_code(&self) -> i32 {
         match self {
-            Self::Sent { .. } | Self::Listening | Self::Addressable => 0,
+            Self::Sent { .. } | Self::Responded { .. } | Self::Listening | Self::Addressable => 0,
             Self::Usage { .. } => 2,
             Self::Unreachable { .. } => 10,
             Self::SendFailed { .. } => 11,
@@ -115,9 +122,10 @@ pub enum ReportError {
 mod tests {
     use super::*;
 
-    fn reports() -> [Report; 8] {
+    fn reports() -> [Report; 9] {
         [
             Report::Sent { bytes: 42 },
+            Report::Responded { status: 503, bytes: 42 },
             Report::Listening,
             Report::Addressable,
             Report::Usage {
@@ -138,7 +146,7 @@ mod tests {
 
     #[test]
     fn every_report_survives_its_stderr_line_and_exit_code() {
-        for (report, expected_code) in reports().into_iter().zip([0, 0, 0, 2, 10, 11, 12, 13]) {
+        for (report, expected_code) in reports().into_iter().zip([0, 0, 0, 0, 2, 10, 11, 12, 13]) {
             let mut line = serde_json::to_vec(&report).unwrap();
             line.push(b'\n');
             assert_eq!(report.exit_code(), expected_code);

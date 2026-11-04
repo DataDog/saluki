@@ -36,6 +36,21 @@ impl Architecture {
             .into_iter()
             .find(|architecture| architecture.elf_machine() == machine)
     }
+
+    /// Returns the PE machine value for this architecture.
+    pub(crate) fn pe_machine(self) -> u16 {
+        match self {
+            Self::X86_64 => 0x8664,
+            Self::Aarch64 => 0xAA64,
+        }
+    }
+
+    /// Returns the supported architecture with this PE machine value.
+    pub(crate) fn from_pe_machine(machine: u16) -> Option<Self> {
+        [Self::X86_64, Self::Aarch64]
+            .into_iter()
+            .find(|architecture| architecture.pe_machine() == machine)
+    }
 }
 
 /// Returns the ELF machine of a 64-bit little-endian executable without a `PT_INTERP` segment.

@@ -8,9 +8,12 @@ use sha2::{Digest, Sha256};
 
 use super::{
     elf::{self, Architecture},
-    ArtifactBinding, ArtifactKind,
+    pe, ArtifactBinding, ArtifactKind,
 };
-use crate::backend::docker::{image_id_within_deadline, DockerDaemon};
+use crate::{
+    backend::docker::{image_id_within_deadline, DockerDaemon},
+    layout::Os,
+};
 
 /// One binding's verification or pull outcome.
 #[derive(Debug)]
@@ -67,7 +70,7 @@ pub fn verified_artifacts(results: &[ArtifactVerification]) -> Result<Vec<Verifi
 
 /// Verifies each binding, resolving relative paths against `base`, in input order.
 /// Images are inspected on the command's Docker daemon, which must run the image role's OS.
-/// Container binaries must be static executables for the daemon's OS and architecture.
+/// Container binaries must match the daemon's OS and architecture; Linux binaries must be static.
 /// Files are identified by their SHA-256 digest.
 /// A daemon timeout fails the remaining image bindings; file checks continue.
 pub(crate) async fn verify(
@@ -104,19 +107,29 @@ pub(crate) async fn verify(
                 let local = tokio::task::spawn_blocking(move || {
                     let mut file = open_binary(&path)?;
                     let identity = hash_binary(&mut file, &path)?;
-                    let machine = elf::static_machine(&mut file, &path)?;
-                    Ok((identity, machine))
+                    let (machine, architecture, format) = match os {
+                        Os::Linux => {
+                            let machine = elf::static_machine(&mut file, &path)?;
+                            (machine, Architecture::from_elf_machine(machine), "ELF")
+                        }
+                        Os::Windows => {
+                            let machine = pe::machine(&mut file, &path)?;
+                            (machine, Architecture::from_pe_machine(machine), "PE")
+                        }
+                        Os::MacOs => return Err("container binaries run on linux or windows".into()),
+                    };
+                    Ok((identity, machine, architecture, format))
                 })
                 .await
                 .unwrap_or_else(|error| Err(format!("cannot verify '{display}': {error}")));
                 match local {
                     Err(error) => Err(error),
-                    Ok((identity, machine)) => match docker.architecture(os).await {
+                    Ok((identity, machine, built_for, format)) => match docker.architecture(os).await {
                         Err(error) => Err(error),
-                        Ok(architecture) if architecture.elf_machine() == machine => Ok(identity),
+                        Ok(architecture) if Some(architecture) == built_for => Ok(identity),
                         Ok(architecture) => {
-                            let built_for = Architecture::from_elf_machine(machine).map_or_else(
-                                || format!("ELF machine {machine}"),
+                            let built_for = built_for.map_or_else(
+                                || format!("{format} machine {machine}"),
                                 |architecture| architecture.name().to_string(),
                             );
                             Err(format!(
@@ -199,7 +212,7 @@ mod tests {
     use super::*;
     use crate::{
         artifact::{
-            test_util::{write_elf, write_executable},
+            test_util::{write_elf, write_executable, write_pe},
             ArtifactRole, BindingSource,
         },
         backend::docker::{
@@ -353,6 +366,53 @@ mod tests {
             .await;
             assert_eq!(results[0].identity, Err(format!("'{}' {expected}", path.display())));
         }
+    }
+
+    #[tokio::test]
+    async fn windows_container_binaries_are_verified_by_pe_machine_against_the_daemon() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tool.exe");
+        for (machine, daemon, problem) in [
+            (0x8664, "x86_64", None),
+            (0xAA64, "aarch64", None),
+            (0x8664, "aarch64", Some("x86_64")),
+            (0xAA64, "x86_64", Some("aarch64")),
+            (0x014c, "x86_64", Some("PE machine 332")),
+        ] {
+            write_pe(&path, machine);
+            let mut api = FakeDocker::new(Some("windows"));
+            api.info.as_mut().unwrap().architecture = Some(daemon.into());
+            let bindings = [binding(
+                "tool",
+                ArtifactKind::ContainerBinary { os: Os::Windows },
+                "tool.exe",
+            )];
+            let results = verify(&api.daemon(), &bindings, dir.path()).await;
+            let expected = match problem {
+                Some(built_for) => Err(format!(
+                    "'{}' is built for {built_for}, but the Docker daemon runs on {daemon}",
+                    path.display()
+                )),
+                None => Ok(format!("sha256:{:x}", Sha256::digest(std::fs::read(&path).unwrap()))),
+            };
+            assert_eq!(results[0].identity, expected);
+            assert_eq!(*api.calls.lock().unwrap(), ["connect", "info"]);
+        }
+        write_executable(&path);
+        let results = verify_with(
+            &[binding(
+                "tool",
+                ArtifactKind::ContainerBinary { os: Os::Windows },
+                "tool.exe",
+            )],
+            dir.path(),
+            || panic!("invalid PE files must not connect"),
+        )
+        .await;
+        assert_eq!(
+            results[0].identity,
+            Err(format!("'{}' is not a PE executable", path.display()))
+        );
     }
 
     #[tokio::test]

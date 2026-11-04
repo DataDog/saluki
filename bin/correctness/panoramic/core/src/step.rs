@@ -279,7 +279,7 @@ impl Handle<'_> {
         &self, endpoint: &str, path: &str, verification: TlsVerification, limits: &AttemptLimits,
     ) -> Result<HttpResponse, HandleError> {
         let route = self.route(endpoint, EndpointOperation::Request)?;
-        http_get_with_from_runner_host(route, path, verification, limits).await
+        http_get_with_from_runner_host(route, self.primitives, path, verification, limits).await
     }
 
     fn route(&self, endpoint: &str, operation: EndpointOperation) -> Result<&RunnerHostRoute, HandleError> {
@@ -499,6 +499,11 @@ mod tests {
             assert_eq!(payload, b"payload");
             assert_eq!(limits, &AttemptLimits::new(Duration::from_secs(3)));
             Ok(())
+        }
+        async fn http(
+            &self, _: &ResolvedAddress, _: &str, _: bool, _: &AttemptLimits,
+        ) -> Result<HttpResponse, HandleError> {
+            panic!("this participant expects HTTP requests to use a direct route");
         }
     }
 

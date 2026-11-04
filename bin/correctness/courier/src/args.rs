@@ -17,6 +17,18 @@ pub enum Command {
         /// Endpoint to probe.
         to: Target,
     },
+    /// Make a plain HTTP GET, streaming its body to stdout.
+    Http {
+        /// Absolute HTTP URL with an explicit port.
+        url: String,
+        /// Return after receiving headers without reading the body.
+        headers_only: bool,
+    },
+    /// Copy an append-only file to stdout until the process is stopped.
+    Follow {
+        /// Absolute file path on the courier's host.
+        path: String,
+    },
 }
 
 /// A command and its whole-process time budget.
@@ -24,35 +36,38 @@ pub enum Command {
 pub struct Invocation {
     /// Operation to execute.
     pub command: Command,
-    /// Budget for reading stdin, resolving, connecting and writing.
-    pub timeout: Duration,
+    /// Budget for stdin and network I/O; absent only for file following.
+    pub timeout: Option<Duration>,
 }
 
 impl Invocation {
     /// Returns the wire budget, rounded up to milliseconds and clamped to `1..=u64::MAX`.
-    pub fn timeout_ms(&self) -> u64 {
+    pub fn timeout_ms(&self) -> Option<u64> {
         self.timeout
-            .as_nanos()
-            .div_ceil(1_000_000)
-            .clamp(1, u128::from(u64::MAX)) as u64
+            .map(|timeout| timeout.as_nanos().div_ceil(1_000_000).clamp(1, u128::from(u64::MAX)) as u64)
     }
 
     /// Renders arguments after the executable name, rounding the budget up to whole milliseconds.
     pub fn args(&self) -> Vec<String> {
-        let (command, to) = match &self.command {
-            Command::Send { to } => ("send", to),
-            Command::Probe { to } => ("probe", to),
+        let mut args = match &self.command {
+            Command::Send { to } => vec!["send".into(), "--to".into(), to.to_string()],
+            Command::Probe { to } => vec!["probe".into(), "--to".into(), to.to_string()],
+            Command::Http { url, headers_only } => {
+                let mut args = vec!["http".into(), "--url".into(), url.clone()];
+                if *headers_only {
+                    args.push("--headers-only".into());
+                }
+                args
+            }
+            Command::Follow { path } => vec!["follow".into(), "--path".into(), path.clone()],
         };
-        vec![
-            command.into(),
-            "--to".into(),
-            to.to_string(),
-            "--timeout-ms".into(),
-            self.timeout_ms().to_string(),
-        ]
+        if let Some(timeout) = self.timeout_ms() {
+            args.extend(["--timeout-ms".into(), timeout.to_string()]);
+        }
+        args
     }
 
-    /// Parses arguments after the executable name. Both flags are required and may appear in either order.
+    /// Parses arguments after the executable name. Flags may appear in any order.
     ///
     /// # Errors
     ///
@@ -60,23 +75,26 @@ impl Invocation {
     pub fn parse(args: impl IntoIterator<Item = impl AsRef<str>>) -> Result<Self, UsageError> {
         let mut args = args.into_iter();
         let command = args.next().ok_or_else(|| UsageError {
-            reason: "missing command; use send or probe".into(),
+            reason: "missing command; use send, probe, http or follow".into(),
         })?;
-        if !matches!(command.as_ref(), "send" | "probe") {
+        let command = command.as_ref();
+        if !matches!(command, "send" | "probe" | "http" | "follow") {
             return Err(UsageError {
-                reason: format!("unknown command {:?}; use send or probe", command.as_ref()),
+                reason: format!("unknown command {command:?}; use send, probe, http or follow"),
             });
         }
-        let mut to = None;
+        let mut destination = None;
         let mut timeout = None;
+        let mut headers_only = false;
         while let Some(flag) = args.next() {
             let flag = flag.as_ref();
-            let repeated = match flag {
-                "--to" => to.is_some(),
-                "--timeout-ms" => timeout.is_some(),
+            let repeated = match (command, flag) {
+                ("send" | "probe", "--to") | ("http", "--url") | ("follow", "--path") => destination.is_some(),
+                ("send" | "probe" | "http", "--timeout-ms") => timeout.is_some(),
+                ("http", "--headers-only") => headers_only,
                 _ => {
                     return Err(UsageError {
-                        reason: format!("unknown flag {flag:?}"),
+                        reason: format!("unknown flag {flag:?} for {command}"),
                     })
                 }
             };
@@ -84,6 +102,10 @@ impl Invocation {
                 return Err(UsageError {
                     reason: format!("repeated flag {flag}"),
                 });
+            }
+            if flag == "--headers-only" {
+                headers_only = true;
+                continue;
             }
             let value = args.next().ok_or_else(|| UsageError {
                 reason: format!("{flag} requires a value"),
@@ -94,9 +116,7 @@ impl Invocation {
                     reason: format!("{flag} requires a value, got flag {value:?}"),
                 });
             }
-            if flag == "--to" {
-                to = Some(Target::parse(value)?);
-            } else {
+            if flag == "--timeout-ms" {
                 let milliseconds = value
                     .parse::<u64>()
                     .ok()
@@ -108,19 +128,45 @@ impl Invocation {
                         ),
                     })?;
                 timeout = Some(Duration::from_millis(milliseconds));
+            } else {
+                destination = Some(value.to_owned());
             }
         }
-        let to = to.ok_or_else(|| UsageError {
-            reason: "missing --to".into(),
+        let destination = destination.ok_or_else(|| UsageError {
+            reason: format!(
+                "missing {}",
+                match command {
+                    "http" => "--url",
+                    "follow" => "--path",
+                    _ => "--to",
+                }
+            ),
         })?;
-        let timeout = timeout.ok_or_else(|| UsageError {
-            reason: "missing --timeout-ms".into(),
-        })?;
-        let command = if command.as_ref() == "send" {
-            Command::Send { to }
-        } else {
-            Command::Probe { to }
+        let command = match command {
+            "send" => Command::Send {
+                to: Target::parse(&destination)?,
+            },
+            "probe" => Command::Probe {
+                to: Target::parse(&destination)?,
+            },
+            "http" => {
+                crate::http::request(&destination)?;
+                Command::Http {
+                    url: destination,
+                    headers_only,
+                }
+            }
+            "follow" => {
+                crate::follow::validate_path(&destination)?;
+                Command::Follow { path: destination }
+            }
+            _ => unreachable!(),
         };
+        if !matches!(command, Command::Follow { .. }) && timeout.is_none() {
+            return Err(UsageError {
+                reason: "missing --timeout-ms".into(),
+            });
+        }
         Ok(Self { command, timeout })
     }
 }
@@ -146,12 +192,13 @@ mod tests {
             "udp://[::1]:8125",
             "unix:///run/a.sock",
             "unixgram:///run/a.sock",
+            "npipe://listener",
         ] {
             let to = Target::parse(url).unwrap();
             for command in [Command::Send { to: to.clone() }, Command::Probe { to }] {
                 let invocation = Invocation {
                     command,
-                    timeout: Duration::from_millis(1500),
+                    timeout: Some(Duration::from_millis(1500)),
                 };
                 let args = invocation.args();
                 assert_eq!(Invocation::parse(&args).unwrap(), invocation);
@@ -165,7 +212,7 @@ mod tests {
     fn malformed_args_are_usage_errors_that_name_the_problem() {
         for (args, problem) in [
             ("", "command"),
-            ("http", "http"),
+            ("http", "--url"),
             ("send --timeout-ms 1", "--to"),
             ("probe --to tcp://h:1", "--timeout-ms"),
             ("send --to tcp://h:1 --to tcp://h:2", "--to"),
@@ -214,17 +261,69 @@ mod tests {
                 command: Command::Probe {
                     to: Target::parse("tcp://h:1").unwrap(),
                 },
-                timeout,
+                timeout: Some(timeout),
             };
             assert_eq!(invocation.args()[4], expected);
             assert_eq!(
                 Invocation::parse(invocation.args())
                     .unwrap()
                     .timeout
+                    .unwrap()
                     .as_millis()
                     .to_string(),
                 expected
             );
+        }
+    }
+
+    #[test]
+    fn http_and_follow_invocations_render_args_that_parse_back_to_themselves() {
+        for args in [
+            vec![
+                "http",
+                "--url",
+                "http://localhost:8080/records?a=1",
+                "--timeout-ms",
+                "300",
+            ],
+            vec![
+                "http",
+                "--headers-only",
+                "--timeout-ms",
+                "300",
+                "--url",
+                "http://[::1]:8080/ready",
+            ],
+            vec!["follow", "--path", r"C:\logs\output.log"],
+        ] {
+            let invocation = Invocation::parse(args).unwrap();
+            assert_eq!(Invocation::parse(invocation.args()).unwrap(), invocation);
+        }
+        let path = std::env::current_dir().unwrap().join("output.log");
+        let invocation = Invocation::parse(["follow", "--path", path.to_str().unwrap()]).unwrap();
+        assert_eq!(Invocation::parse(invocation.args()).unwrap(), invocation);
+        assert_eq!(invocation.timeout, None);
+    }
+
+    #[test]
+    fn follow_rejects_timeouts_and_http_requires_one() {
+        for (args, problem) in [
+            (
+                vec!["follow", "--path", r"C:\log", "--timeout-ms", "10"],
+                "--timeout-ms",
+            ),
+            (vec!["http", "--url", "http://localhost:80/"], "--timeout-ms"),
+            (vec!["follow", "--path", "relative"], "absolute"),
+            (
+                vec!["http", "--url", "https://localhost:80/", "--timeout-ms", "10"],
+                "http://",
+            ),
+            (vec!["http", "--url", "http://localhost/", "--timeout-ms", "10"], "port"),
+            (vec!["http", "--headers-only", "--headers-only"], "repeated"),
+            (vec!["probe", "--headers-only"], "--headers-only"),
+            (vec!["follow", "--path", r"C:\log", "--path", r"C:\other"], "repeated"),
+        ] {
+            assert!(Invocation::parse(args).unwrap_err().to_string().contains(problem));
         }
     }
 }

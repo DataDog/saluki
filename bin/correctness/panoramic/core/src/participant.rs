@@ -261,7 +261,7 @@ impl OpContext<'_> {
             attempt: self.limit,
             ..AttemptLimits::new(self.limit)
         };
-        http_get_from_runner_host(route, path, &limits).await
+        http_get_from_runner_host(route, self.primitives, path, &limits).await
     }
 }
 

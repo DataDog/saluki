@@ -545,6 +545,11 @@ impl Primitives for FakeParticipant {
             sends.front().expect("the step must script its send answers").clone()
         }
     }
+    async fn http(
+        &self, _: &ResolvedAddress, _: &str, _: bool, _: &AttemptLimits,
+    ) -> Result<HttpResponse, HandleError> {
+        panic!("this participant expects HTTP requests to use a direct route");
+    }
 }
 
 #[cfg(test)]

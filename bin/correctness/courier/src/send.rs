@@ -20,6 +20,26 @@ pub(crate) async fn send(to: &Target, payload: &[u8]) -> Report {
                     })?;
                 check_datagram_length(to, written, payload.len())?;
             }
+            #[cfg(windows)]
+            Target::NamedPipe { name } => {
+                let mut pipe = crate::net::connect_named_pipe(name, to).await?;
+                let result = async {
+                    pipe.write_all(payload).await?;
+                    // Named-pipe writes can return while Mio still owns buffered bytes; Tokio's flush is a no-op.
+                    // A further write waits for that operation and reports its error before the courier exits.
+                    pipe.write(&[]).await.map(|_| ())
+                }
+                .await;
+                result.map_err(|error| Report::SendFailed {
+                    reason: format!("{to}: {error}"),
+                })?;
+            }
+            #[cfg(not(windows))]
+            Target::NamedPipe { .. } => {
+                return Err(Report::Failed {
+                    reason: crate::net::UNSUPPORTED_PIPE_REASON.into(),
+                })
+            }
             #[cfg(unix)]
             Target::UnixStream { path } => {
                 let stream = crate::net::connect_unix(path, to).await?;

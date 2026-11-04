@@ -183,7 +183,7 @@ impl LineBuffer {
 }
 
 /// Written inside the container before following a file, distinguishing file bytes from exec-start errors.
-pub(crate) const FILE_OUTPUT_START: &str = "panoramic-file-output\n";
+pub(crate) const FILE_OUTPUT_START: &str = panoramic_courier::FOLLOW_STARTED;
 
 /// One file source, copied to its host path and tagged as the declared process stream.
 pub(crate) struct FileOutput {
@@ -565,7 +565,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_file_followers_startup_marker_is_removed_across_split_and_empty_frames() {
-        let prefix = FILE_OUTPUT_START.as_bytes();
+        let prefix = panoramic_courier::FOLLOW_STARTED.as_bytes();
         let contents = format!("first\n{FILE_OUTPUT_START}last");
         for split in 0..=prefix.len() {
             let fixture = Fixture::new();

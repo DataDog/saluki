@@ -5,7 +5,8 @@ use crate::UsageError;
 /// An endpoint as seen from inside the container running the courier.
 ///
 /// Directly constructed values must follow [`Target::parse`]'s rules: a nonempty hostname or IP literal
-/// with IPv6 brackets omitted, a port in `1..=65535`, and a socket path starting with `/`.
+/// with IPv6 brackets omitted, a port in `1..=65535`, a socket path starting with `/`, and a nonempty
+/// pipe name without separators or NUL.
 /// Use [`Target::parse`] to validate a target URL.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Target {
@@ -23,6 +24,11 @@ pub enum Target {
         /// Destination port, from 1 through 65535.
         port: u16,
     },
+    /// A Windows named pipe.
+    NamedPipe {
+        /// Name below the local pipe namespace, without separators or NUL.
+        name: String,
+    },
     /// A Unix stream socket.
     UnixStream {
         /// Absolute path in the container's filesystem.
@@ -36,21 +42,29 @@ pub enum Target {
 }
 
 impl Target {
-    /// Parses a `tcp://`, `udp://`, `unix://` or `unixgram://` URL.
+    /// Parses a `tcp://`, `udp://`, `unix://`, `unixgram://` or `npipe://` URL.
     ///
     /// Socket paths are preserved verbatim, independent of the caller's operating system.
     ///
     /// # Errors
     ///
-    /// Returns a usage error naming the input if its scheme, host, port or socket path is invalid.
+    /// Returns a usage error naming the input if its scheme, host, port, socket path or pipe name is invalid.
     pub fn parse(input: &str) -> Result<Self, UsageError> {
         let invalid = |problem| UsageError {
             reason: format!("invalid target {input:?}: {problem}"),
         };
         let (scheme, address) = input
             .split_once("://")
-            .ok_or_else(|| invalid("expected tcp://, udp://, unix:// or unixgram://"))?;
+            .ok_or_else(|| invalid("expected tcp://, udp://, unix://, unixgram:// or npipe://"))?;
         match scheme {
+            "npipe" => {
+                if address.is_empty() || address.contains(['\\', '/', '\0']) {
+                    return Err(invalid("pipe name must be nonempty with no separators or NUL"));
+                }
+                Ok(Self::NamedPipe {
+                    name: address.to_owned(),
+                })
+            }
             "unix" | "unixgram" => {
                 if !address.starts_with('/') {
                     return Err(invalid("socket path must be absolute"));
@@ -96,7 +110,7 @@ impl Target {
                     Self::Udp { host, port }
                 })
             }
-            _ => Err(invalid("unknown scheme; use tcp, udp, unix or unixgram")),
+            _ => Err(invalid("unknown scheme; use tcp, udp, unix, unixgram or npipe")),
         }
     }
 }
@@ -112,6 +126,7 @@ impl fmt::Display for Target {
                     write!(f, "{scheme}://{host}:{port}")
                 }
             }
+            Self::NamedPipe { name } => write!(f, "npipe://{name}"),
             Self::UnixStream { path } => write!(f, "unix://{path}"),
             Self::UnixDatagram { path } => write!(f, "unixgram://{path}"),
         }
@@ -173,5 +188,20 @@ mod tests {
                 path: "/run/a/../b with spaces.sock".into()
             }
         );
+    }
+
+    #[test]
+    fn named_pipe_targets_round_trip_and_reject_empty_names_separators_and_nul() {
+        let target = Target::NamedPipe {
+            name: "listener with spaces".into(),
+        };
+        assert_eq!(target.to_string(), "npipe://listener with spaces");
+        assert_eq!(Target::parse(&target.to_string()).unwrap(), target);
+        for name in ["", r"a\b", "a/b", "a\0b", r"\\.\pipe\listener"] {
+            assert!(Target::parse(&format!("npipe://{name}"))
+                .unwrap_err()
+                .to_string()
+                .contains("pipe name"));
+        }
     }
 }

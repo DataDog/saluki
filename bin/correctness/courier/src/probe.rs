@@ -15,6 +15,15 @@ pub(crate) async fn probe(to: &Target) -> Report {
                 })?;
                 Ok(Report::Addressable)
             }
+            #[cfg(windows)]
+            Target::NamedPipe { name } => {
+                crate::net::connect_named_pipe(name, to).await?;
+                Ok(Report::Listening)
+            }
+            #[cfg(not(windows))]
+            Target::NamedPipe { .. } => Err(Report::Failed {
+                reason: crate::net::UNSUPPORTED_PIPE_REASON.into(),
+            }),
             #[cfg(unix)]
             Target::UnixStream { path } => {
                 crate::net::connect_unix(path, to).await?;

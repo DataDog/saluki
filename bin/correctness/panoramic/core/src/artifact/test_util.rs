@@ -41,3 +41,16 @@ pub(crate) fn write_elf(path: &Path, class: u8, endian: u8, kind: u16, machine: 
     write_executable(path);
     std::fs::write(path, bytes).unwrap();
 }
+
+/// Writes a DOS header and executable PE file header.
+#[cfg(test)]
+pub(crate) fn write_pe(path: &Path, machine: u16) {
+    let mut bytes = vec![0; 152];
+    bytes[..2].copy_from_slice(b"MZ");
+    bytes[60..64].copy_from_slice(&128u32.to_le_bytes());
+    bytes[128..132].copy_from_slice(b"PE\0\0");
+    bytes[132..134].copy_from_slice(&machine.to_le_bytes());
+    bytes[150..152].copy_from_slice(&0x0002u16.to_le_bytes());
+    write_executable(path);
+    std::fs::write(path, bytes).unwrap();
+}

@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::layout::Os;
 
 pub(crate) mod elf;
+mod pe;
 mod pull;
 mod verify;
 pub(crate) use pull::pull;

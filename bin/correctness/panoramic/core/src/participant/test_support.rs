@@ -96,4 +96,9 @@ where
     async fn send(&self, _: &ResolvedAddress, _: &[u8], _: &AttemptLimits) -> Result<(), HandleError> {
         panic!("the operation only executes commands");
     }
+    async fn http(
+        &self, _: &ResolvedAddress, _: &str, _: bool, _: &AttemptLimits,
+    ) -> Result<HttpResponse, HandleError> {
+        panic!("the operation expects HTTP requests to use a direct route");
+    }
 }

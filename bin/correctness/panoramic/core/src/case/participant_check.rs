@@ -639,11 +639,12 @@ mod tests {
 
         for overlay in [false, true] {
             let suffix = if overlay { " in its 'linux' overlay" } else { "" };
-            for from in [
+            let missing_paths = [
                 "missing.yaml",
                 #[cfg(unix)]
                 "dangling.yaml",
-            ] {
+            ];
+            for from in missing_paths {
                 let yaml = file_case("settings.yaml", Path::new(from), false, overlay);
                 let message = FILE_LOADER
                     .load_content(&yaml, "alpha", &source)
