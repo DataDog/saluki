@@ -4702,13 +4702,18 @@ mod supervision {
         let buffer = metrics.next().await.expect("the metrics output should stay open");
         assert_eq!(buffer.len(), 1);
 
-        // Now back the output up: the first of these fills the single slot, the second blocks a decoder. Each is sent
-        // in its own decoder flush window, so they're dispatched as separate buffers even if the same decoder decodes
-        // both.
-        for payload in [b"second.metric:1|c".as_slice(), b"third.metric:1|c".as_slice()] {
-            client.send_to(payload, listen_addr).await.expect("client should send");
-            tokio::time::sleep(BACKPRESSURE_SETTLE).await;
-        }
+        // Now back the output up with a single datagram holding one more metric than an event buffer can hold. The
+        // decoder that receives it dispatches a full buffer as soon as the buffer fills, which takes the single slot,
+        // and then blocks dispatching the remaining metric, either on its next flush or when it drains at shutdown.
+        // This doesn't depend on which decoder receives the datagram, or on when decoders flush.
+        let backed_up_metrics = EventsBuffer::default().capacity() + 1;
+        // Short metric lines keep the datagram within the source's 8 KiB receive buffer.
+        let payload = vec!["m:1|c"; backed_up_metrics].join("\n");
+        client
+            .send_to(payload.as_bytes(), listen_addr)
+            .await
+            .expect("client should send");
+        tokio::time::sleep(BACKPRESSURE_SETTLE).await;
 
         // From here on, the test does not wait on the socket. Thus, it can pause the clock, and the hold below then
         // takes no real time.
@@ -4730,7 +4735,11 @@ mod supervision {
         let drained = 1 + metrics.collect().await.iter().map(EventsBuffer::len).sum::<usize>();
 
         // Nothing accepted before shutdown should have been dropped on the way out.
-        assert_eq!(drained, 3, "every queued datagram should have been dispatched");
+        assert_eq!(
+            drained,
+            1 + backed_up_metrics,
+            "every queued metric should have been dispatched"
+        );
 
         control
             .wait()
