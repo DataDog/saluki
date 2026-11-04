@@ -89,7 +89,7 @@ func main() {
 		{"collision-log-source", input{Message: "m", Status: "info", Properties: map[string]any{"datadog.log.source": "custom_source"}}},
 		{"empty-status", input{Hostname: host("host-a"), Message: "m", Status: "", Properties: map[string]any{"k": "v"}}},
 		{"html-characters", input{Message: "<a href=\"x\">&amp;</a>", Status: "info", Properties: map[string]any{"<key>": "a & b > c"}}},
-		{"line-separators", input{Message: "one two three", Status: "info"}},
+		{"line-separators", input{Message: "one\u2028two\u2029three", Status: "info"}},
 		{"control-characters", input{Message: "tab\tnew\nline\rcr\x00nul\x1fus\x7fdel\"quote\\backslash/slash", Status: "info"}},
 		{"non-ascii", input{Message: "café ☕ 日本語 😀", Status: "info", Properties: map[string]any{"ключ": "значение"}}},
 		{"numbers", input{Message: "m", Status: "info", Properties: map[string]any{
