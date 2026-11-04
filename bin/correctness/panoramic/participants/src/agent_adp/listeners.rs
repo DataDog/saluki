@@ -429,7 +429,7 @@ fn loopback_host(host: &str) -> bool {
 mod tests {
     use panoramic_core::{
         endpoint::test_support::{assert_network_endpoint, assert_socket_endpoint, assigned_delivery},
-        participant::{EffectiveConfig, ParticipantType},
+        participant::{CaseValues, EffectiveConfig, ParticipantType},
     };
 
     use super::*;
@@ -497,6 +497,74 @@ mod tests {
                 ("DD_DATA_PLANE_OTLP_PROXY_ENABLED".into(), "true".into()),
             ]),
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn listener_failure_configurations_serve_the_unusable_socket_and_no_udp_listener_when_its_port_is_zero() {
+        let linux = Realization {
+            os: Os::Linux,
+            kind: RealizationKind::LinuxContainer,
+        };
+        for realization in [linux, MACOS] {
+            for (name, required, disabled) in [
+                ("no-listener", "false", true),
+                ("require-listener", "true", true),
+                ("skip-failed-listener", "true", false),
+            ] {
+                let socket = format!("/dev/null/saluki-dogstatsd-{name}.sock");
+                let mut case = CaseValues {
+                    env: BTreeMap::from([
+                        ("DD_DATA_PLANE_ENABLED".into(), "true".into()),
+                        ("DD_DATA_PLANE_STANDALONE_MODE".into(), "false".into()),
+                        ("DD_DATA_PLANE_DOGSTATSD_ENABLED".into(), "true".into()),
+                        ("DD_DOGSTATSD_SOCKET".into(), socket.clone()),
+                        ("DD_DOGSTATSD_REQUIRE_LISTENER".into(), required.into()),
+                    ]),
+                    ..Default::default()
+                };
+                if disabled {
+                    case.env.insert("DD_DOGSTATSD_PORT".into(), "0".into());
+                }
+                AgentAdp.validate_config(realization, &case).unwrap();
+                let mut env = AgentAdp.default_env(realization, &case);
+                env.extend(case.env);
+                let mut config = EffectiveConfig {
+                    env,
+                    ..Default::default()
+                };
+                let endpoints = AgentAdp.endpoints(realization, &config).unwrap();
+                assert_socket_endpoint(
+                    &endpoints["dogstatsd_uds"],
+                    EndpointKind::UnixDatagram,
+                    &socket,
+                    Some(Evidence::socket_exists("dogstatsd_uds")),
+                );
+                if disabled || realization == linux {
+                    assert!(!endpoints.contains_key("dogstatsd_udp"), "{realization:?}: {name}");
+                } else {
+                    assert_eq!(
+                        assigned_delivery(&endpoints["dogstatsd_udp"], EndpointKind::Udp)(20001),
+                        BTreeMap::from([("DD_DOGSTATSD_PORT".into(), "20001".into())])
+                    );
+                }
+                if !disabled && realization == linux {
+                    // Loopback UDP stays private to the container; non-local traffic exposes its fixed port.
+                    config
+                        .env
+                        .insert("DD_DOGSTATSD_NON_LOCAL_TRAFFIC".into(), "true".into());
+                    let endpoints = AgentAdp.endpoints(realization, &config).unwrap();
+                    assert_network_endpoint(
+                        &endpoints["dogstatsd_udp"],
+                        EndpointKind::Udp,
+                        58125,
+                        Some(Evidence::output_matches(
+                            "adp",
+                            r#"listen_addr:"udp://[^"]+:58125" \| DogStatsD listener started\."#,
+                        )),
+                    );
+                }
+            }
         }
     }
 

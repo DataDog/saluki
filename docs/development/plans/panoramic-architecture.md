@@ -95,7 +95,7 @@ Use product `config_dump` output from CI runs to compare effective product confi
 
 | Suite | Files | Selected rows (subject OS / runtime) | Disabled rows | Assertions (subject OS) | Actions (subject OS) |
 | --- | --- | --- | --- | --- | --- |
-| integration | 52 | linux / linux: 33; linux / linux-container: 12; macos / host-process-group: 2; macos / mac: 29; windows / windows: 34 | 0 | linux: 192; macos: 130; windows: 144 | linux: 25; macos: 14; windows: 16 |
+| integration | 52 | linux / linux: 30; linux / linux-container: 15; macos / host-process-group: 5; macos / mac: 26; windows / windows: 34 | 0 | linux: 192; macos: 130; windows: 144 | linux: 25; macos: 14; windows: 16 |
 | correctness | 42 | linux / docker: 39; linux / kubernetes_in_docker: 7 | 2 | — | — |
 
 Total: 158 rows.
@@ -234,18 +234,18 @@ Total: 158 rows.
 | dogstatsd-host-tag | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 6, actions: 1 | 0 |
 | dogstatsd-intake-metric | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 4, actions: 2 | 0 |
 | dogstatsd-named-pipe-windows | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 9, actions: 1 | 0 |
-| dogstatsd-no-listener-continues | integration | linux | linux | selected | test-integration | integration | old | assertions: 4, actions: 0 | 0 |
-| dogstatsd-no-listener-continues | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 4, actions: 0 | 0 |
+| dogstatsd-no-listener-continues | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 4, actions: 0 | 0 |
+| dogstatsd-no-listener-continues | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 4, actions: 0 | 0 |
 | dogstatsd-non-local-overrides-bind-host | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
 | dogstatsd-non-local-overrides-bind-host | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
 | dogstatsd-non-local-overrides-bind-host | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
 | dogstatsd-replay-unix | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 1 | 0 |
 | dogstatsd-replay-unix | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 3, actions: 1 | 0 |
 | dogstatsd-replay-windows | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 1 | 0 |
-| dogstatsd-require-listener-exit | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
-| dogstatsd-require-listener-exit | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
-| dogstatsd-skip-failed-listener | integration | linux | linux | selected | test-integration | integration | old | assertions: 4, actions: 0 | 0 |
-| dogstatsd-skip-failed-listener | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 4, actions: 0 | 0 |
+| dogstatsd-require-listener-exit | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 0 | 0 |
+| dogstatsd-require-listener-exit | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
+| dogstatsd-skip-failed-listener | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 4, actions: 0 | 0 |
+| dogstatsd-skip-failed-listener | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 4, actions: 0 | 0 |
 | dogstatsd-top | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 5, actions: 1 | 0 |
 | dogstatsd-top-windows | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 5, actions: 1 | 0 |
 | liveness-container-tags | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 4, actions: 1 | 0 |
@@ -296,6 +296,15 @@ address when the case leaves it unset. Recipes receive their absolute participan
 `RenderedConfig::directory`. The Agent and ADP start together: ADP's IPC connect retry re-reads the token for about
 20 seconds. Readiness gates consumers. The inventory uses `Planner::with_run` under `test-util` to keep substituted
 host paths deterministic.
+
+`dogstatsd-no-listener-continues`, `dogstatsd-require-listener-exit` and `dogstatsd-skip-failed-listener` run natively
+on Linux and macOS. Their socket paths remain product configuration under `/dev/null`. The cases assert binding
+failures for these unconsumed sockets. Stability watches the Agent and ADP's own exits. `exits_with` reads ADP's first
+exit record on Linux and its waited status on macOS.
+
+The skip-failed case checks ADP's UDP listener-started log line to prove the listener bound successfully.
+A UDP connect alone succeeds even when the destination has no listener. Log steps search all processes' output,
+plus the container log on Linux; the listener-started check names ADP.
 
 ## Native Remote Configuration cases
 
@@ -373,6 +382,7 @@ jobs, identifies the runner and execution value, and names the commit whose inve
 Link CI runs; don't copy their logs into the repository.
 
 <!-- migration-proofs:begin -->
+
 | Case | Subject OS | Execution | Proof |
 | --- | --- | --- | --- |
 | adp-logging-default-path | linux | native | Pending CI. Before: Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351927) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
@@ -392,6 +402,12 @@ Link CI runs; don't copy their logs into the repository.
 | otlp-tls | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `d1efbab740`. |
 | dogstatsd-top | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `d1efbab740`. |
 | liveness-container-tags | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `d1efbab740`. |
+| dogstatsd-no-listener-continues | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `b8ace701c8`. |
+| dogstatsd-no-listener-continues | macos | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-macos-arm64` and `test-integration-macos-amd64` run before this change. Compared with the inventory at `b8ace701c8`. |
+| dogstatsd-require-listener-exit | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `b8ace701c8`. |
+| dogstatsd-require-listener-exit | macos | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-macos-arm64` and `test-integration-macos-amd64` run before this change. Compared with the inventory at `b8ace701c8`. |
+| dogstatsd-skip-failed-listener | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `b8ace701c8`. |
+| dogstatsd-skip-failed-listener | macos | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-macos-arm64` and `test-integration-macos-amd64` run before this change. Compared with the inventory at `b8ace701c8`. |
 <!-- migration-proofs:end -->
 
 Native runs use fresh participant directories and reclaim them after each case.

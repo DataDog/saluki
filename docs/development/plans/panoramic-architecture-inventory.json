@@ -2757,14 +2757,16 @@
       "name": "dogstatsd-no-listener-continues",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/dogstatsd-no-listener-continues/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -2776,13 +2778,16 @@
       "name": "dogstatsd-no-listener-continues",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/dogstatsd-no-listener-continues/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -2906,14 +2911,16 @@
       "name": "dogstatsd-require-listener-exit",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/dogstatsd-require-listener-exit/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -2925,13 +2932,16 @@
       "name": "dogstatsd-require-listener-exit",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/dogstatsd-require-listener-exit/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -2943,14 +2953,16 @@
       "name": "dogstatsd-skip-failed-listener",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/dogstatsd-skip-failed-listener/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -2962,13 +2974,16 @@
       "name": "dogstatsd-skip-failed-listener",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/dogstatsd-skip-failed-listener/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -8840,64 +8855,104 @@
     },
     "integration/dogstatsd-no-listener-continues": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies ADP keeps running when no DogStatsD listener can be created and none is required",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_DOGSTATSD_PORT": "0",
-          "DD_DOGSTATSD_REQUIRE_LISTENER": "false",
-          "DD_DOGSTATSD_SOCKET": "/dev/null/saluki-dogstatsd-no-listener.sock",
-          "DD_HOSTNAME": "integration-test-dsd-no-listener-continues"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "dogstatsd-no-listener-continues",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "Can't create DogStatsD unixgram listener.",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
-          },
-          {
-            "assertion": "log_contains",
-            "pattern": "Could not start DogStatsD.",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_PORT": "0",
+                "DD_DOGSTATSD_REQUIRE_LISTENER": "false",
+                "DD_DOGSTATSD_SOCKET": "/dev/null/saluki-dogstatsd-no-listener.sock",
+                "DD_HOSTNAME": "integration-test-dsd-no-listener-continues"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac"
-        ],
-        "timeout": "120s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Can't create DogStatsD unixgram listener.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "on": "adp",
+              "pattern": "Could not start DogStatsD.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_PORT": "0",
+                "DD_DOGSTATSD_REQUIRE_LISTENER": "false",
+                "DD_DOGSTATSD_SOCKET": "/dev/null/saluki-dogstatsd-no-listener.sock",
+                "DD_HOSTNAME": "integration-test-dsd-no-listener-continues"
+              },
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Can't create DogStatsD unixgram listener.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "on": "adp",
+              "pattern": "Could not start DogStatsD.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 2,
@@ -9147,54 +9202,86 @@
     },
     "integration/dogstatsd-require-listener-exit": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies ADP exits when no DogStatsD listener can be created and one is required",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_DOGSTATSD_PORT": "0",
-          "DD_DOGSTATSD_REQUIRE_LISTENER": "true",
-          "DD_DOGSTATSD_SOCKET": "/dev/null/saluki-dogstatsd-require-listener.sock",
-          "DD_HOSTNAME": "integration-test-dsd-require-listener-exit"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "dogstatsd-require-listener-exit",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "Can't create DogStatsD unixgram listener.",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_PORT": "0",
+                "DD_DOGSTATSD_REQUIRE_LISTENER": "true",
+                "DD_DOGSTATSD_SOCKET": "/dev/null/saluki-dogstatsd-require-listener.sock",
+                "DD_HOSTNAME": "integration-test-dsd-require-listener-exit"
+              },
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
           },
-          {
-            "assertion": "log_contains",
-            "pattern": "No listeners could be created",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Can't create DogStatsD unixgram listener.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "on": "adp",
+              "pattern": "No listeners could be created",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "code": 1,
+              "on": "adp",
+              "process": "adp",
+              "step": "exits_with",
+              "timeout": "60s"
+            }
+          ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_PORT": "0",
+                "DD_DOGSTATSD_REQUIRE_LISTENER": "true",
+                "DD_DOGSTATSD_SOCKET": "/dev/null/saluki-dogstatsd-require-listener.sock",
+                "DD_HOSTNAME": "integration-test-dsd-require-listener-exit"
+              },
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
           },
-          {
-            "assertion": "adp_exits_with",
-            "expected_code": 1,
-            "timeout": "60s"
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac"
-        ],
-        "timeout": "120s"
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Can't create DogStatsD unixgram listener.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "on": "adp",
+              "pattern": "No listeners could be created",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "code": 1,
+              "on": "adp",
+              "process": "adp",
+              "step": "exits_with",
+              "timeout": "60s"
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 3,
@@ -9202,7 +9289,7 @@
         "parallel_assertions": 0,
         "actions": 0,
         "by_kind": {
-          "adp_exits_with": 1,
+          "exits_with": 1,
           "log_contains": 2
         }
       },
@@ -9210,64 +9297,106 @@
     },
     "integration/dogstatsd-skip-failed-listener": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [
-            "58125/udp"
-          ],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies ADP skips a DogStatsD listener that can't be created and keeps the others",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_DOGSTATSD_REQUIRE_LISTENER": "true",
-          "DD_DOGSTATSD_SOCKET": "/dev/null/saluki-dogstatsd-skip-failed-listener.sock",
-          "DD_HOSTNAME": "integration-test-dsd-skip-failed-listener"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "dogstatsd-skip-failed-listener",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "Can't create DogStatsD unixgram listener.",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_REQUIRE_LISTENER": "true",
+                "DD_DOGSTATSD_SOCKET": "/dev/null/saluki-dogstatsd-skip-failed-listener.sock",
+                "DD_HOSTNAME": "integration-test-dsd-skip-failed-listener"
+              },
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
           },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Can't create DogStatsD unixgram listener.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "on": "adp",
+                  "pattern": "listen_addr:\"udp://[^\"]+\" \\| DogStatsD listener started\\.",
+                  "process": "adp",
+                  "regex": true,
+                  "step": "log_contains",
+                  "timeout": "60s"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "Could not start DogStatsD.|panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_REQUIRE_LISTENER": "true",
+                "DD_DOGSTATSD_SOCKET": "/dev/null/saluki-dogstatsd-skip-failed-listener.sock",
+                "DD_HOSTNAME": "integration-test-dsd-skip-failed-listener"
               },
-              {
-                "assertion": "port_listening",
-                "port": 58125,
-                "protocol": "udp",
-                "timeout": "60s"
-              },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "Could not start DogStatsD.|panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac"
-        ],
-        "timeout": "120s"
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Can't create DogStatsD unixgram listener.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "on": "adp",
+                  "pattern": "listen_addr:\"udp://[^\"]+\" \\| DogStatsD listener started\\.",
+                  "process": "adp",
+                  "regex": true,
+                  "step": "log_contains",
+                  "timeout": "60s"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "Could not start DogStatsD.|panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 1,
@@ -9275,9 +9404,8 @@
         "parallel_assertions": 3,
         "actions": 0,
         "by_kind": {
-          "log_contains": 1,
+          "log_contains": 2,
           "log_not_contains": 1,
-          "port_listening": 1,
           "process_stable_for": 1
         }
       },

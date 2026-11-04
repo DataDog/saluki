@@ -1138,6 +1138,30 @@ fn participant_cases_run_natively_on_linux_and_macos_and_use_the_bridge_on_windo
 }
 
 #[test]
+fn the_listener_failure_cases_run_natively_on_linux_and_macos() {
+    let root = repository_root().join("test/integration/cases");
+    for name in [
+        "dogstatsd-no-listener-continues",
+        "dogstatsd-require-listener-exit",
+        "dogstatsd-skip-failed-listener",
+    ] {
+        for os in [Os::Linux, Os::MacOs] {
+            let case = crate::CASE_LOADER
+                .load_file(&root.join(name).join("config.yaml"))
+                .unwrap()
+                .remove(0);
+            assert_eq!(
+                case.subject_os().iter().copied().collect::<Vec<_>>(),
+                [Os::Linux, Os::MacOs]
+            );
+            let plan = planner().compile(case, os).unwrap().into_plan().unwrap();
+            assert_eq!(plan.case().name(), name);
+            assert_eq!(route(&plan), Route::Native, "{name} on {os:?}");
+        }
+    }
+}
+
+#[test]
 fn every_selected_correctness_case_declares_a_local_baseline_image() {
     let inventory = Inventory::generate(&repository_root());
     for row in inventory

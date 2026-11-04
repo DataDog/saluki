@@ -4,33 +4,41 @@
 # directory, so no DogStatsD listener can be created. With `dogstatsd_require_listener` disabled,
 # the core agent logs the failure and keeps running without DogStatsD. ADP must do the same.
 
-type: integration
 name: "dogstatsd-no-listener-continues"
 description: "Verifies ADP keeps running when no DogStatsD listener can be created and none is required"
 timeout: 120s
-runtimes: [linux, mac]
+subject_os: [linux, macos]
 
-env:
-  DD_API_KEY: "00000000000000000000000000000000"
-  DD_HOSTNAME: "integration-test-dsd-no-listener-continues"
-  DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_STANDALONE_MODE: "false"
-  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-  DD_DOGSTATSD_PORT: "0"
-  DD_DOGSTATSD_SOCKET: "/dev/null/saluki-dogstatsd-no-listener.sock"
-  DD_DOGSTATSD_REQUIRE_LISTENER: "false"
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    config:
+      env:
+        DD_API_KEY: "00000000000000000000000000000000"
+        DD_HOSTNAME: "integration-test-dsd-no-listener-continues"
+        DD_DATA_PLANE_ENABLED: "true"
+        DD_DATA_PLANE_STANDALONE_MODE: "false"
+        DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+        DD_DOGSTATSD_PORT: "0"
+        DD_DOGSTATSD_SOCKET: "/dev/null/saluki-dogstatsd-no-listener.sock"
+        DD_DOGSTATSD_REQUIRE_LISTENER: "false"
 
 procedure:
-  - assertion: log_contains
+  - step: log_contains
+    on: adp
     pattern: "Can't create DogStatsD unixgram listener."
     timeout: 60s
-  - assertion: log_contains
+  - step: log_contains
+    on: adp
     pattern: "Could not start DogStatsD."
     timeout: 60s
   - parallel:
-      - assertion: process_stable_for
+      - step: process_stable_for
+        on: adp
         duration: 10s
-      - assertion: log_not_contains
+      - step: log_not_contains
+        on: adp
         pattern: "panic|PANIC"
         regex: true
         during: 10s

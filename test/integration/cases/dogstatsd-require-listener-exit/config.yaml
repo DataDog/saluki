@@ -4,30 +4,38 @@
 # directory, so no DogStatsD listener can be created. With `dogstatsd_require_listener` enabled,
 # ADP must fail to start, as the core agent does.
 
-type: integration
 name: "dogstatsd-require-listener-exit"
 description: "Verifies ADP exits when no DogStatsD listener can be created and one is required"
 timeout: 120s
-runtimes: [linux, mac]
+subject_os: [linux, macos]
 
-env:
-  DD_API_KEY: "00000000000000000000000000000000"
-  DD_HOSTNAME: "integration-test-dsd-require-listener-exit"
-  DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_STANDALONE_MODE: "false"
-  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-  DD_DOGSTATSD_PORT: "0"
-  DD_DOGSTATSD_SOCKET: "/dev/null/saluki-dogstatsd-require-listener.sock"
-  DD_DOGSTATSD_REQUIRE_LISTENER: "true"
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    config:
+      env:
+        DD_API_KEY: "00000000000000000000000000000000"
+        DD_HOSTNAME: "integration-test-dsd-require-listener-exit"
+        DD_DATA_PLANE_ENABLED: "true"
+        DD_DATA_PLANE_STANDALONE_MODE: "false"
+        DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+        DD_DOGSTATSD_PORT: "0"
+        DD_DOGSTATSD_SOCKET: "/dev/null/saluki-dogstatsd-require-listener.sock"
+        DD_DOGSTATSD_REQUIRE_LISTENER: "true"
 
 procedure:
-  - assertion: log_contains
+  - step: log_contains
+    on: adp
     pattern: "Can't create DogStatsD unixgram listener."
     timeout: 60s
-  - assertion: log_contains
+  - step: log_contains
+    on: adp
     pattern: "No listeners could be created"
     timeout: 60s
   # Expected code is 1 because the failed source build ends `run` with an error.
-  - assertion: adp_exits_with
-    expected_code: 1
+  - step: exits_with
+    on: adp
+    process: adp
+    code: 1
     timeout: 60s
